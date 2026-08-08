@@ -71,17 +71,25 @@ function renderParts() {
     }
 
     const del = document.createElement("button");
+    del.type = "button";
     del.className = "row-del";
     del.textContent = "×";
     del.title = `Delete part ${part.id}`;
+    del.setAttribute("aria-label", `Delete part ${part.id}`);
     del.addEventListener("click", (e) => {
       e.stopPropagation();
       actions.deletePart(part.id);
     });
     li.appendChild(del);
 
-    li.addEventListener("click", () => actions.selectPart(part.id));
+    li.addEventListener("click", (e) => {
+      if (e.target.closest(".row-del")) return;
+      actions.selectPart(part.id);
+    });
     li.addEventListener("keydown", (e) => {
+      // Enter on the delete button activates the button; don't also let it
+      // bubble here and select the row.
+      if (e.target !== li) return;
       if (e.key === "Enter") actions.selectPart(part.id);
     });
     partsList.appendChild(li);
@@ -125,6 +133,7 @@ function renderInstances() {
 
     li.addEventListener("click", () => actions.selectAssembly(inst.id));
     li.addEventListener("keydown", (e) => {
+      if (e.target !== li) return;
       if (e.key === "Enter") actions.selectAssembly(inst.id);
     });
     instancesList.appendChild(li);

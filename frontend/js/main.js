@@ -6,6 +6,7 @@ import { state, setState, onKeys } from "./state.js";
 import * as viewport from "./viewport.js";
 import * as tree from "./tree.js";
 import * as inspector from "./inspector.js";
+import * as editor from "./editor.js";
 import * as chat from "./chat.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
@@ -14,6 +15,7 @@ const meshBuffers = new Map(); // partId -> {buffer, key}
 let selectSeq = 0;
 let lastFittedTarget = null; // part id or "__assembly__"
 let assemblyRefreshTimer = null;
+let projectRefreshTimer = null;
 
 // ------------------------------------------------------------------ actions
 
@@ -40,6 +42,7 @@ async function refreshProjectsList() {
 }
 
 async function loadProject(name) {
+  if (!confirmDiscardEdits(null)) return; // switching projects drops the editor
   let detail;
   try {
     detail = await api.getProject(name);
@@ -99,9 +102,32 @@ async function refreshProject() {
   }
 }
 
+// Coalesce bursts of server-side project mutations (an agent creating or
+// deleting several parts in a row) into one project refetch.
+function scheduleProjectRefresh() {
+  clearTimeout(projectRefreshTimer);
+  projectRefreshTimer = setTimeout(() => refreshProject(), 300);
+}
+
+function partKnown(partId) {
+  return !!(state.project && state.project.parts.some((p) => p.id === partId));
+}
+
 // ---------------------------------------------------------------- selection
 
+// True when it is safe to navigate away from the current part's editor.
+// Asks the user before discarding unsaved script edits; a cancelled dialog
+// keeps the current selection.
+function confirmDiscardEdits(nextPartId) {
+  if (!state.selectedPart || nextPartId === state.selectedPart) return true;
+  if (!state.part || !editor.isDirty()) return true;
+  // The edited part no longer exists (deleted): nothing can be saved.
+  if (!partKnown(state.selectedPart)) return true;
+  return confirm("Discard unsaved script changes?");
+}
+
 async function selectPart(partId) {
+  if (!confirmDiscardEdits(partId)) return;
   const seq = ++selectSeq;
   setState({ mode: "part", selectedPart: partId, selectedInstance: null });
   inspector.hideBanner();
@@ -123,6 +149,12 @@ async function selectPart(partId) {
 }
 
 async function selectAssembly(instanceId) {
+  if (instanceId && state.project) {
+    // Selecting an instance swaps its part into the inspector below, which
+    // would silently drop unsaved edits to the current part's script.
+    const next = state.project.assembly.instances.find((i) => i.id === instanceId);
+    if (next && !confirmDiscardEdits(next.part)) return;
+  }
   const entering = state.mode !== "assembly";
   const seq = ++selectSeq;
   setState({ mode: "assembly", selectedInstance: instanceId });
@@ -338,7 +370,14 @@ function connectWS() {
   ws.onopen = () => {
     wsBackoff = 500;
     setState({ connected: true });
-    if (hadConnection) refreshProject(); // resync after a drop
+    if (hadConnection) {
+      // Terminal events (rebuild_finished/failed, chat_done) may have been
+      // published while the socket was down: drop stale in-flight markers,
+      // then resync from the server.
+      setState({ rebuilding: new Set() });
+      chat.resetSending();
+      refreshProject();
+    }
     hadConnection = true;
   };
   ws.onmessage = (e) => {
@@ -372,6 +411,9 @@ function handleEvent(ev) {
       if (ev.project !== state.projectName) return;
       state.rebuilding.add(ev.part);
       setState({ rebuilding: state.rebuilding });
+      // A rebuild for a part we don't know about: created behind our back
+      // (e.g. by an agent) — pull the project list back in sync.
+      if (!partKnown(ev.part)) scheduleProjectRefresh();
       return;
     }
     case "rebuild_finished": {
@@ -388,6 +430,11 @@ function handleEvent(ev) {
         };
         setState({ part: state.part });
       }
+      // The event carries metrics but not params/script: after an
+      // agent-driven set_params/update_part the inspector would show stale
+      // values, so refetch the full detail for the selected part.
+      if (state.selectedPart === ev.part) refreshPartDetail(ev.part);
+      if (!partKnown(ev.part)) scheduleProjectRefresh();
       reloadMesh(ev.part);
       if (state.mode === "assembly") scheduleAssemblyRefresh();
       return;
@@ -402,10 +449,13 @@ function handleEvent(ev) {
         setState({ part: state.part });
         inspector.showBanner(ev.error);
       }
+      if (!partKnown(ev.part)) scheduleProjectRefresh();
       return;
     }
     case "project_changed": {
-      if (ev.project === state.projectName) refreshProject();
+      // Covers part create/delete/update as well as assembly edits made
+      // server-side; debounced so agent-driven bursts refetch once.
+      if (ev.project === state.projectName) scheduleProjectRefresh();
       return;
     }
     case "chat_delta":
@@ -439,7 +489,13 @@ function updateHUD() {
   }
   let stateText = "ok";
   let stateClass = "";
-  if (state.rebuilding.size) {
+  // In part mode only this part's rebuild matters; any rebuilding part
+  // affects the assembly view.
+  const buildingHere =
+    state.mode === "assembly"
+      ? state.rebuilding.size > 0
+      : state.rebuilding.has(state.selectedPart);
+  if (buildingHere) {
     stateText = "building…";
     stateClass = "building";
   } else if (
@@ -494,19 +550,43 @@ function updateEmptyState() {
 
 // ---------------------------------------------------------------- toolbar
 
+// Single place that shows/hides a dropdown so the trigger button's
+// aria-expanded always mirrors the menu state.
+function setMenuHidden(menu, hidden) {
+  menu.classList.toggle("hidden", hidden);
+  const wrap = menu.closest(".menu-wrap");
+  const btn = wrap && wrap.querySelector("button[aria-haspopup]");
+  if (btn) btn.setAttribute("aria-expanded", hidden ? "false" : "true");
+}
+
 function setupMenus() {
   const wraps = [...document.querySelectorAll(".menu-wrap")];
   document.addEventListener("click", (e) => {
     for (const wrap of wraps) {
       if (!wrap.contains(e.target)) {
-        wrap.querySelector(".menu").classList.add("hidden");
+        setMenuHidden(wrap.querySelector(".menu"), true);
       }
     }
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      for (const wrap of wraps) wrap.querySelector(".menu").classList.add("hidden");
+      for (const wrap of wraps) setMenuHidden(wrap.querySelector(".menu"), true);
+      return;
     }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const open = wraps
+      .map((w) => w.querySelector(".menu"))
+      .find((m) => !m.classList.contains("hidden"));
+    if (!open) return;
+    const items = [...open.querySelectorAll(".menu-item")].filter((i) => !i.disabled);
+    if (!items.length) return;
+    e.preventDefault();
+    const idx = items.indexOf(document.activeElement);
+    const next =
+      e.key === "ArrowDown"
+        ? items[(idx + 1) % items.length]
+        : items[(idx - 1 + items.length) % items.length];
+    next.focus();
   });
 }
 
@@ -516,7 +596,7 @@ function setupProjectMenu() {
   btn.addEventListener("click", async (e) => {
     e.stopPropagation();
     if (!menu.classList.contains("hidden")) {
-      menu.classList.add("hidden");
+      setMenuHidden(menu, true);
       return;
     }
     await refreshProjectsList();
@@ -532,7 +612,7 @@ function setupProjectMenu() {
       meta.textContent = `${proj.n_parts} part${proj.n_parts === 1 ? "" : "s"}`;
       item.append(label, meta);
       item.addEventListener("click", () => {
-        menu.classList.add("hidden");
+        setMenuHidden(menu, true);
         if (proj.name !== state.projectName) loadProject(proj.name);
       });
       menu.appendChild(item);
@@ -546,7 +626,7 @@ function setupProjectMenu() {
     add.className = "menu-item";
     add.textContent = "New project…";
     add.addEventListener("click", () => {
-      menu.classList.add("hidden");
+      setMenuHidden(menu, true);
       newProjectPrompt();
     });
     menu.appendChild(add);
@@ -554,11 +634,11 @@ function setupProjectMenu() {
     open.className = "menu-item";
     open.textContent = "Open by path…";
     open.addEventListener("click", () => {
-      menu.classList.add("hidden");
+      setMenuHidden(menu, true);
       openProjectPrompt();
     });
     menu.appendChild(open);
-    menu.classList.remove("hidden");
+    setMenuHidden(menu, false);
   });
 }
 
@@ -600,7 +680,7 @@ function setupExportMenu() {
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
     if (!menu.classList.contains("hidden")) {
-      menu.classList.add("hidden");
+      setMenuHidden(menu, true);
       return;
     }
     const hasPart = !!state.selectedPart;
@@ -610,12 +690,12 @@ function setupExportMenu() {
       const [kind] = item.dataset.export.split(":");
       item.disabled = kind === "part" ? !hasPart : !hasInstances;
     }
-    menu.classList.remove("hidden");
+    setMenuHidden(menu, false);
   });
   menu.addEventListener("click", (e) => {
     const item = e.target.closest("[data-export]");
     if (!item || item.disabled) return;
-    menu.classList.add("hidden");
+    setMenuHidden(menu, true);
     const [kind, format] = item.dataset.export.split(":");
     runExport(kind, format);
   });

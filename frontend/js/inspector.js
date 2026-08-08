@@ -19,6 +19,10 @@ let renderedSpecJson = null;
 
 // debounced param patching
 let pending = {};
+// name -> count of PATCHes queued/awaiting a response for that param. Kept
+// separate from `pending` so syncParamValues doesn't snap an input back to
+// the pre-patch value between the debounce flush and the server's reply.
+let inflight = {};
 let pendingPartId = null;
 let debounceTimer = null;
 let patchChain = Promise.resolve();
@@ -107,6 +111,7 @@ function render() {
     renderedPartId = part.id;
     renderedSpecJson = specJson;
     pending = {};
+    inflight = {};
     pendingPartId = part.id;
     buildParamControls(part);
   } else {
@@ -233,7 +238,9 @@ function syncParamValues(part) {
   for (const wrap of paramsPane.querySelectorAll(".param")) {
     const name = wrap.dataset.param;
     if (!(name in spec)) continue;
-    if (name in pending) continue; // user's edit is still in flight
+    // The user's edit is still debouncing or awaiting the PATCH response —
+    // don't snap the control back to the server's stale value.
+    if (name in pending || name in inflight) continue;
     const value = effectiveValue(part, name, spec[name]);
     for (const input of wrap.querySelectorAll("input")) {
       if (document.activeElement === input) continue;
@@ -270,12 +277,23 @@ function flushParams() {
   const names = Object.keys(values);
   if (!names.length || !partId) return;
   const proj = state.projectName;
+  // Reference-count: a later flush may re-send a name before the earlier
+  // PATCH resolves, and each response must only release its own claim.
+  for (const n of names) inflight[n] = (inflight[n] || 0) + 1;
+  const releaseInflight = () => {
+    for (const n of names) {
+      if (inflight[n] > 1) inflight[n] -= 1;
+      else delete inflight[n];
+    }
+  };
   patchChain = patchChain.then(async () => {
     try {
       const result = await api.patchParams(proj, partId, values);
       applyRebuildResult(partId, result, values);
     } catch (err) {
       showBanner(err instanceof ApiError ? err.error : { message: String(err) });
+    } finally {
+      releaseInflight();
     }
   });
 }

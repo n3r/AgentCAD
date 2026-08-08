@@ -41,6 +41,9 @@ export function init() {
       historyProject = state.projectName;
       messagesEl.textContent = "";
       streamEl = null;
+      // A turn from the previous project can no longer complete here; its
+      // chat_done would be filtered out, so don't leave the input locked.
+      setSending(false);
       if (state.chatAvailable && state.projectName) loadHistory(state.projectName);
     }
   });
@@ -153,9 +156,20 @@ function setSending(on) {
   inputEl.placeholder = on ? "Agent is working…" : "Ask the agent to model something…";
 }
 
+// Called by main.js when the websocket reconnects: a chat_done published
+// while the socket was down is gone for good, so unlock the composer.
+export function resetSending() {
+  if (sending) setSending(false);
+}
+
 // ------------------------------------------------------------- ws events
 
 export function handleEvent(ev) {
+  if (ev.type === "chat_done") {
+    // Always release the composer, even if the turn belongs to a project
+    // we have since navigated away from — otherwise 'sending' sticks forever.
+    setSending(false);
+  }
   if (ev.project && state.projectName && ev.project !== state.projectName) return;
   switch (ev.type) {
     case "chat_delta": {
@@ -187,16 +201,25 @@ export function handleEvent(ev) {
         chip.querySelector(".tool-status").textContent =
           ev.ok === false ? "error" : "ok";
         if (ev.result !== undefined) {
+          // The backend sends `result` as a pre-serialized JSON string,
+          // truncated to 2000 chars (so it may be cut mid-token). Render it
+          // verbatim via textContent — never innerHTML — and mark truncation.
           const pre = chip.querySelector("pre");
-          pre.textContent += "\n→ " + safeJson(ev.result);
+          let text;
+          if (typeof ev.result === "string") {
+            text = ev.result;
+            if (text.length >= 2000) text += " … (truncated)";
+          } else {
+            text = safeJson(ev.result); // older/other payload shapes
+          }
+          if (pre) pre.textContent += "\n→ " + text;
         }
       }
       scrollDown();
       break;
     }
     case "chat_done": {
-      finishStream();
-      setSending(false);
+      finishStream(); // sending already reset above, before the project filter
       break;
     }
   }
