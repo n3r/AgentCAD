@@ -294,6 +294,12 @@ def create_app(
         finally:
             service.bus.unsubscribe(q)
 
+    # ---------------------------------------------------------- route packs
+
+    # Extension point: each agentcad/server/routes_*.py exports either an
+    # APIRouter named `router`, or `build_router(service, registry) -> APIRouter`.
+    _mount_route_packs(app, service, registry)
+
     # -------------------------------------------------------------- static
 
     if FRONTEND_DIR.is_dir():
@@ -307,3 +313,19 @@ def create_app(
                 app.mount(f"/{sub}", StaticFiles(directory=path), name=sub)
 
     return app
+
+
+def _mount_route_packs(app: FastAPI, service: AgentCADService, registry: ToolRegistry) -> None:
+    import importlib
+    import pkgutil
+
+    import agentcad.server as server_pkg
+
+    for info in pkgutil.iter_modules(server_pkg.__path__):
+        if not info.name.startswith("routes_"):
+            continue
+        module = importlib.import_module(f"agentcad.server.{info.name}")
+        builder = getattr(module, "build_router", None)
+        router = builder(service, registry) if callable(builder) else getattr(module, "router", None)
+        if router is not None:
+            app.include_router(router, prefix="/api")

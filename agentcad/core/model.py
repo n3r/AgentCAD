@@ -45,14 +45,21 @@ class PartRecord:
     label: str
     material: str
     params: dict[str, float] = field(default_factory=dict)
+    kind: str = "script"  # "script" | "reference"
+    source: str | None = None  # reference parts only: project-relative import path
 
     def to_manifest(self) -> dict:
-        return {
+        data = {
             "id": self.id,
             "label": self.label,
             "material": self.material,
             "params": self.params,
         }
+        if self.kind != "script":
+            data["kind"] = self.kind
+        if self.source is not None:
+            data["source"] = self.source
+        return data
 
 
 @dataclass
@@ -62,6 +69,7 @@ class InstanceSpec:
     position: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     rotation_deg: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     color: str | None = None
+    mate: dict | None = None  # optional declarative mate; resolves to transform
 
     def to_manifest(self) -> dict:
         data = {
@@ -72,6 +80,8 @@ class InstanceSpec:
         }
         if self.color:
             data["color"] = self.color
+        if self.mate:
+            data["mate"] = self.mate
         return data
 
 

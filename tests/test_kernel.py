@@ -192,3 +192,20 @@ def test_determinism_identical_mesh_bytes(kernel, tmp_path):
     _, mesh_a = build(kernel, tmp_path / "a", BOX_SCRIPT)
     _, mesh_b = build(kernel, tmp_path / "b", BOX_SCRIPT)
     assert mesh_a.read_bytes() == mesh_b.read_bytes()
+
+
+def test_nested_compound_volume_sums_solids(kernel, tmp_path):
+    # build123d 0.11 Compound.volume undercounts a nested compound; the worker
+    # must sum per-solid volumes. Two disjoint 10mm cubes -> 2000 mm^3.
+    script = (
+        "from build123d import *\n"
+        'PARAMS = {"g": {"default": 30.0, "min": 20.0, "max": 60.0}}\n'
+        "def build(p):\n"
+        "    a = Solid.make_box(10, 10, 10)\n"
+        "    b = Solid.make_box(10, 10, 10).moved(Location((p.g, 0, 0)))\n"
+        "    inner = Compound(children=[b])\n"
+        "    return Compound(children=[a, inner])\n"
+    )
+    result, _ = build(kernel, tmp_path, script)
+    assert result["metrics"]["volume_mm3"] == pytest.approx(2000.0, rel=1e-6)
+    assert result["metrics"]["n_solids"] == 2

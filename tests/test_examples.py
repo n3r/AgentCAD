@@ -29,8 +29,15 @@ def service(kernel, tmp_path_factory):
 
 
 @pytest.fixture(scope="module", params=EXAMPLE_DIRS, ids=lambda p: p.name)
-def example(request, service):
-    detail = service.open_project(str(request.param))
+def example(request, service, tmp_path_factory):
+    # Copy the example into a temp dir first: the tests mutate params and write
+    # caches, and we must never touch the committed example on disk.
+    import shutil
+
+    src = request.param
+    dest = tmp_path_factory.mktemp("ex") / src.name
+    shutil.copytree(src, dest, ignore=shutil.ignore_patterns(".cache", "exports"))
+    detail = service.open_project(str(dest))
     return service, detail["name"]
 
 

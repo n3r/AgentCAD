@@ -255,7 +255,29 @@ def build_registry(service: AgentCADService) -> ToolRegistry:
         lambda: service.part_template(),
     ))
 
+    _load_tool_packs(registry, service)
     return registry
+
+
+def _load_tool_packs(registry: "ToolRegistry", service: AgentCADService) -> None:
+    """Discover agentcad/core/tools_*.py and let each register its v2 tools.
+
+    Extension point: each module exports ``register(registry, service)``. A
+    pack may skip registration (e.g. FEM tools when the optional extra is not
+    installed) so agents never see a tool that cannot run.
+    """
+    import importlib
+    import pkgutil
+
+    import agentcad.core as core_pkg
+
+    for info in pkgutil.iter_modules(core_pkg.__path__):
+        if not info.name.startswith("tools_"):
+            continue
+        module = importlib.import_module(f"agentcad.core.{info.name}")
+        register = getattr(module, "register", None)
+        if callable(register):
+            register(registry, service)
 
 
 def _with_hint(result: dict) -> dict:
@@ -266,3 +288,8 @@ def _with_hint(result: dict) -> dict:
                     "contract and common failure modes; the previous geometry is unchanged.",
         }
     return result
+
+
+# Public aliases for tool packs (agentcad/core/tools_*.py).
+schema = _schema
+with_hint = _with_hint

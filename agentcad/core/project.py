@@ -23,7 +23,7 @@ from .model import (
     validate_vec3,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2 adds part kind/source (reference imports) and instance mates
 
 
 def _empty_manifest(name: str) -> dict:
@@ -104,6 +104,8 @@ class ProjectStore:
                     label=entry.get("label", entry["id"]),
                     material=entry.get("material", DEFAULT_MATERIAL),
                     params={k: float(v) for k, v in entry.get("params", {}).items()},
+                    kind=entry.get("kind", "script"),
+                    source=entry.get("source"),
                 )
         raise NotFoundError(f"part {part_id!r} not found in project {proj!r}")
 
@@ -122,18 +124,30 @@ class ProjectStore:
         self._atomic_write(self.script_path(proj, part_id), text.encode())
 
     def add_part(
-        self, proj: str, part_id: str, label: str, material: str, script: str
+        self,
+        proj: str,
+        part_id: str,
+        label: str,
+        material: str,
+        script: str,
+        *,
+        kind: str = "script",
+        source: str | None = None,
     ) -> PartRecord:
         validate_id(part_id, "part id")
         get_material(material)
         manifest = self.manifest(proj)
         if any(p["id"] == part_id for p in manifest["parts"]):
             raise ConflictError(f"part {part_id!r} already exists")
-        record = PartRecord(id=part_id, label=label or part_id, material=material)
+        record = PartRecord(
+            id=part_id, label=label or part_id, material=material,
+            kind=kind, source=source,
+        )
         manifest["parts"].append(record.to_manifest())
-        script_file = self.script_path(proj, part_id)
-        script_file.parent.mkdir(parents=True, exist_ok=True)
-        self._atomic_write(script_file, script.encode())
+        if kind == "script":
+            script_file = self.script_path(proj, part_id)
+            script_file.parent.mkdir(parents=True, exist_ok=True)
+            self._atomic_write(script_file, script.encode())
         self.save_manifest(proj, manifest)
         return record
 
@@ -197,6 +211,7 @@ class ProjectStore:
                 position=[float(v) for v in i.get("position", [0, 0, 0])],
                 rotation_deg=[float(v) for v in i.get("rotation_deg", [0, 0, 0])],
                 color=i.get("color"),
+                mate=i.get("mate"),
             )
             for i in self.manifest(proj)["assembly"]["instances"]
         ]
@@ -236,6 +251,11 @@ class ProjectStore:
 
     def exports_dir(self, proj: str) -> Path:
         path = self._resolve(proj) / "exports"
+        path.mkdir(exist_ok=True)
+        return path
+
+    def imports_dir(self, proj: str) -> Path:
+        path = self._resolve(proj) / "imports"
         path.mkdir(exist_ok=True)
         return path
 

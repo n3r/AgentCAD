@@ -35,10 +35,10 @@ def test_set_params_rebuilds_and_caches(demo, monkeypatch):
     calls = {"build": 0}
     original = demo.kernel.request
 
-    def counting(method, params, timeout_s=None):
+    def counting(method, params, timeout_s=None, affinity=None):
         if method == "build":
             calls["build"] += 1
-        return original(method, params, timeout_s=timeout_s)
+        return original(method, params, timeout_s=timeout_s, affinity=affinity)
 
     monkeypatch.setattr(demo.kernel, "request", counting)
 

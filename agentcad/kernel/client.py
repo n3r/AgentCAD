@@ -98,7 +98,15 @@ class KernelClient:
 
     # --------------------------------------------------------------- request
 
-    def request(self, method: str, params: dict, timeout_s: float | None = None) -> dict:
+    def request(
+        self,
+        method: str,
+        params: dict,
+        timeout_s: float | None = None,
+        affinity: str | None = None,
+    ) -> dict:
+        # `affinity` lets a worker pool route a part to a consistent worker so
+        # its shape LRU stays warm; a single client ignores it.
         with self._lock:
             self._ensure_started()
             return self._request_locked(method, params, timeout_s)

@@ -51,6 +51,15 @@ class EventBus:
                 pass  # slow consumer: drop rather than block the kernel path
 
 
+class _DefaultMaterialResolver:
+    """v1 material lookup: the fixed builtin table, project-independent. The
+    materials-v2 pack replaces ``service.materials`` with a project-aware,
+    user-extensible resolver exposing the same ``density(proj, id)`` method."""
+
+    def density(self, proj: str, material_id: str) -> float:
+        return get_material(material_id).density_g_cm3
+
+
 class AgentCADService:
     def __init__(self, projects_dir: Path, kernel: KernelClient, bus: EventBus):
         self.store = ProjectStore(projects_dir)
@@ -59,6 +68,21 @@ class AgentCADService:
         self._lock = threading.RLock()
         self._status: dict[tuple[str, str], dict] = {}
         self._spec_cache: dict[str, dict] = {}
+        # Seams the v2 feature packs replace; defaults preserve v1 behavior.
+        self.materials = _DefaultMaterialResolver()
+
+    def _resolved_instances(self, proj: str):
+        """Assembly instances with any declarative mates resolved to concrete
+        transforms. Seam: when the mates module is present it resolves mate
+        chains (and rejects cycles); otherwise instances pass through."""
+        instances = self.store.instances(proj)
+        if not any(getattr(i, "mate", None) for i in instances):
+            return instances
+        try:
+            from . import mates
+        except ImportError:
+            return instances
+        return mates.resolve(self, proj, instances)
 
     # ------------------------------------------------------------- projects
 
@@ -112,17 +136,25 @@ class AgentCADService:
         label: str | None = None,
         script: str | None = None,
         material: str = "al6061",
+        kind: str = "script",
+        source: str | None = None,
     ) -> dict:
+        if kind not in ("script", "reference"):
+            raise ValidationError(f"unknown part kind {kind!r}")
+        if kind == "reference" and not source:
+            raise ValidationError("reference parts require a 'source' import path")
         with self._lock:
             self.store.add_part(
-                proj, part_id, label or part_id, material, script or DEFAULT_PART_SCRIPT
+                proj, part_id, label or part_id, material,
+                script or DEFAULT_PART_SCRIPT, kind=kind, source=source,
             )
         self.bus.publish({"type": "project_changed", "project": proj})
         return self.get_part(proj, part_id)
 
     def get_part(self, proj: str, part_id: str) -> dict:
         record = self.store.get_part(proj, part_id)
-        script = self.store.read_script(proj, part_id)
+        is_reference = record.kind == "reference"
+        script = None if is_reference else self.store.read_script(proj, part_id)
         self._ensure_built(proj, part_id)
         status = self._status.get((proj, part_id), {"state": "unbuilt"})
         detail = {
@@ -130,8 +162,10 @@ class AgentCADService:
             "label": record.label,
             "material": record.material,
             "params": record.params,
+            "kind": record.kind,
+            "source": record.source,
             "script": script,
-            "params_spec": self._params_spec(script),
+            "params_spec": None if is_reference else self._params_spec(script),
             "status": {
                 "state": status.get("state", "unbuilt"),
                 "error": status.get("error"),
@@ -260,7 +294,7 @@ class AgentCADService:
     # ------------------------------------------------------------- assembly
 
     def get_assembly(self, proj: str) -> dict:
-        instances = self.store.instances(proj)
+        instances = self._resolved_instances(proj)
         detail = []
         total_mass = 0.0
         bounds_min = [math.inf] * 3
@@ -316,41 +350,47 @@ class AgentCADService:
         self.bus.publish({"type": "project_changed", "project": proj})
         return self.get_assembly(proj)
 
-    def check_interference(self, proj: str, min_volume: float = 0.001) -> dict:
-        items = []
-        for inst in self.store.instances(proj):
-            record = self.store.get_part(proj, inst.part)
-            items.append(
-                {
-                    "name": inst.id,
-                    "script": self.store.read_script(proj, inst.part),
-                    "params": record.params,
-                    "position": inst.position,
-                    "rotation_deg": inst.rotation_deg,
-                }
+    def _shape_item(self, proj: str, record, resolved) -> dict:
+        """Build a worker item (script or reference) for a placed instance."""
+        item = {
+            "position": resolved.position,
+            "rotation_deg": resolved.rotation_deg,
+        }
+        if record.kind == "reference":
+            item["source"] = str(
+                self.store.imports_dir(proj) / Path(record.source).name
             )
+        else:
+            item["script"] = self.store.read_script(proj, record.id)
+            item["params"] = record.params
+        return item
+
+    def check_interference(self, proj: str, min_volume: float = 0.001) -> dict:
+        resolved = self._resolved_instances(proj)
+        items = []
+        for inst in resolved:
+            record = self.store.get_part(proj, inst.part)
+            item = self._shape_item(proj, record, inst)
+            item["name"] = inst.id
+            items.append(item)
         if len(items) < 2:
             return {"pairs": [], "checked": len(items)}
         result = self.kernel.request(
             "interference", {"items": items, "min_volume": min_volume},
             timeout_s=300.0,
         )
-        return {"pairs": result["pairs"], "checked": len(items)}
+        out = {"pairs": result["pairs"], "checked": len(items)}
+        if result.get("skipped_mesh"):
+            out["skipped_mesh"] = result["skipped_mesh"]
+        return out
 
     def export_assembly(self, proj: str, format: str) -> dict:
         if format not in ("step", "stl"):
             raise ValidationError("assembly export supports formats: step, stl")
         items = []
-        for inst in self.store.instances(proj):
+        for inst in self._resolved_instances(proj):
             record = self.store.get_part(proj, inst.part)
-            items.append(
-                {
-                    "script": self.store.read_script(proj, inst.part),
-                    "params": record.params,
-                    "position": inst.position,
-                    "rotation_deg": inst.rotation_deg,
-                }
-            )
+            items.append(self._shape_item(proj, record, inst))
         if not items:
             raise ValidationError("assembly has no instances to export")
         out = self.store.exports_dir(proj) / f"assembly.{format}"
@@ -367,10 +407,34 @@ class AgentCADService:
 
     # -------------------------------------------------------------- rebuild
 
-    def _cache_key(self, script: str, params: dict, density: float) -> str:
+    def material_density(self, proj: str, material_id: str) -> float:
+        """Density (g/cm^3) for mass metrics. Seam: the resolver is swapped for
+        the project-aware v2 resolver; the default reads the builtin table."""
+        return self.materials.density(proj, material_id)
+
+    def _content_signature(self, proj: str, record) -> str:
+        """Cache-key content for a part: script text for scripts, or file
+        identity (path+mtime+size) for reference parts."""
+        if record.kind == "reference":
+            src = self.store.imports_dir(proj) / Path(record.source).name \
+                if record.source else None
+            if src and src.is_file():
+                st = src.stat()
+                return f"ref:{record.source}:{st.st_mtime_ns}:{st.st_size}"
+            return f"ref:{record.source}:missing"
+        return self.store.read_script(proj, record.id)
+
+    def _cache_key_for(self, proj: str, record) -> str:
+        return self._cache_key(
+            self._content_signature(proj, record),
+            record.params,
+            self.material_density(proj, record.material),
+        )
+
+    def _cache_key(self, content: str, params: dict, density: float) -> str:
         payload = json.dumps(
             {
-                "script": script,
+                "content": content,
                 "params": {k: params[k] for k in sorted(params)},
                 "density": density,
                 "tolerance": MESH_TOLERANCE,
@@ -382,33 +446,23 @@ class AgentCADService:
 
     def _ensure_built(self, proj: str, part_id: str) -> dict:
         status = self._status.get((proj, part_id))
-        if status is not None:
+        if status is not None and status["state"] in ("ok", "error"):
+            record = self.store.get_part(proj, part_id)
+            current = self._cache_key_for(proj, record)
             if status["state"] == "ok":
                 mesh = self.store.cache_dir(proj) / f"{status['cache_key']}.acm"
-                current = self._cache_key(
-                    self.store.read_script(proj, part_id),
-                    self.store.get_part(proj, part_id).params,
-                    get_material(self.store.get_part(proj, part_id).material).density_g_cm3,
-                )
                 if mesh.is_file() and current == status["cache_key"]:
                     return {"ok": True, "metrics": status["metrics"],
                             "warnings": status.get("warnings", []),
                             "cache_key": status["cache_key"]}
-            elif status["state"] == "error":
-                current = self._cache_key(
-                    self.store.read_script(proj, part_id),
-                    self.store.get_part(proj, part_id).params,
-                    get_material(self.store.get_part(proj, part_id).material).density_g_cm3,
-                )
-                if current == status["cache_key"]:
-                    return {"ok": False, "error": status["error"]}
+            elif current == status["cache_key"]:
+                return {"ok": False, "error": status["error"]}
         return self._rebuild(proj, part_id)
 
     def _rebuild(self, proj: str, part_id: str) -> dict:
         record = self.store.get_part(proj, part_id)
-        script = self.store.read_script(proj, part_id)
-        density = get_material(record.material).density_g_cm3
-        key = self._cache_key(script, record.params, density)
+        density = self.material_density(proj, record.material)
+        key = self._cache_key_for(proj, record)
         cache = self.store.cache_dir(proj)
         mesh_path = cache / f"{key}.acm"
         metrics_path = cache / f"{key}.metrics.json"
@@ -449,17 +503,28 @@ class AgentCADService:
                         "warnings": stored.get("warnings", []),
                         "cache_key": key}
 
+        if record.kind == "reference":
+            method = "build_reference"
+            build_params = {
+                "source_path": str(
+                    self.store.imports_dir(proj) / Path(record.source).name
+                ),
+                "density_g_cm3": density,
+                "mesh_path": str(mesh_path),
+                "tolerance": MESH_TOLERANCE,
+            }
+        else:
+            method = "build"
+            build_params = {
+                "script": self.store.read_script(proj, part_id),
+                "params": record.params,
+                "density_g_cm3": density,
+                "mesh_path": str(mesh_path),
+                "tolerance": MESH_TOLERANCE,
+            }
         try:
             result = self.kernel.request(
-                "build",
-                {
-                    "script": script,
-                    "params": record.params,
-                    "density_g_cm3": density,
-                    "mesh_path": str(mesh_path),
-                    "tolerance": MESH_TOLERANCE,
-                },
-                timeout_s=120.0,
+                method, build_params, timeout_s=300.0, affinity=part_id
             )
         except KernelError as exc:
             payload = exc.to_payload()

@@ -166,8 +166,19 @@ def build_shape(script: str, overrides: dict) -> tuple[object, dict, list[str]]:
 # ------------------------------------------------------------------- geometry
 
 
+def _shape_volume(shape) -> float:
+    """Total solid volume. build123d 0.11 ``Compound.volume`` undercounts a
+    *nested* compound (it reports only the first child subtree), so sum over
+    the flattened solid list; fall back to ``.volume`` for non-solid shapes
+    (e.g. an imported STL Face)."""
+    solids = shape.solids()
+    if solids:
+        return float(sum(s.volume for s in solids))
+    return float(shape.volume)
+
+
 def _metrics(shape, density_g_cm3: float) -> dict:
-    volume = float(shape.volume)
+    volume = _shape_volume(shape)
     bb = shape.bounding_box()
     com = shape.center(b3d.CenterOf.MASS)
     return {
@@ -270,10 +281,25 @@ def handle_export(params: dict) -> dict:
     )
 
 
+def _item_shape(item: dict) -> tuple[object, str]:
+    """Resolve an assembly/interference item to (shape, kind).
+
+    Script items carry ``script`` (+ ``params``); reference items carry
+    ``source`` (a path). ``kind`` is "script"/"solid" (booleanable) or "mesh"
+    (STL — placeable and exportable, but not booleanable)."""
+    if item.get("source"):
+        from .refload import load_reference
+
+        shape, ref_kind = load_reference(item["source"])
+        return shape, ref_kind
+    shape, _values, _warnings = build_shape(item["script"], item.get("params", {}))
+    return shape, "script"
+
+
 def handle_export_assembly(params: dict) -> dict:
     placed = []
     for item in params["items"]:
-        shape, _v, _w = build_shape(item["script"], item.get("params", {}))
+        shape, _kind = _item_shape(item)
         placed.append(
             _place(shape, item.get("position", [0, 0, 0]), item.get("rotation_deg", [0, 0, 0]))
         )
@@ -287,8 +313,14 @@ def handle_interference(params: dict) -> dict:
     items = params["items"]
     min_volume = float(params.get("min_volume", 0.001))
     placed = []
+    skipped_mesh = []
     for item in items:
-        shape, _v, _w = build_shape(item["script"], item.get("params", {}))
+        shape, kind = _item_shape(item)
+        if kind == "mesh":
+            # Booleans on an STL mesh Face segfault OCCT — exclude it from the
+            # pairwise check and report it so the caller can surface the gap.
+            skipped_mesh.append(item.get("name", "?"))
+            continue
         placed.append(
             (
                 item.get("name", "?"),
@@ -300,14 +332,17 @@ def handle_interference(params: dict) -> dict:
         for j in range(i + 1, len(placed)):
             name_a, shape_a = placed[i]
             name_b, shape_b = placed[j]
-            # Note: Shape.intersect() returns a ShapeList in build123d 0.9;
+            # Note: Shape.intersect() returns a ShapeList in build123d 0.9+;
             # the & operator returns a single Part (empty Compound when disjoint).
             with contextlib.redirect_stdout(sys.stderr):
                 common = shape_a & shape_b
             volume = float(common.volume)
             if volume > min_volume:
                 pairs.append({"a": name_a, "b": name_b, "volume_mm3": volume})
-    return {"pairs": pairs}
+    result = {"pairs": pairs}
+    if skipped_mesh:
+        result["skipped_mesh"] = skipped_mesh
+    return result
 
 
 HANDLERS = {
@@ -320,6 +355,67 @@ HANDLERS = {
 }
 
 
+# A shared toolbox handed to handler packs so v2 features (reference imports,
+# drawings, analysis, FEM, connectors) reuse the exact build/metric/export/
+# tessellate paths instead of re-deriving them. Extension point: each module
+# in agentcad/kernel/handlers/ may export HANDLERS (dict) and/or a
+# register(toolbox) -> dict function.
+WORKER_TOOLBOX = {
+    "b3d": b3d,
+    "build_shape": build_shape,
+    "metrics": _metrics,
+    "shape_volume": _shape_volume,
+    "place": _place,
+    "export_shape": _export_shape,
+    "atomic_write": _atomic_write,
+    "tessellate": tessellate,
+    "WorkerError": WorkerError,
+    "ERROR_SCRIPT": ERROR_SCRIPT,
+    "ERROR_CONTRACT": ERROR_CONTRACT,
+    "ERROR_KERNEL": ERROR_KERNEL,
+}
+
+
+def _load_handler_packs() -> None:
+    """Discover agentcad/kernel/handlers/*.py and merge their handlers."""
+    import importlib
+    import pkgutil
+
+    try:
+        from . import handlers as handlers_pkg
+    except ImportError:
+        return
+    for info in pkgutil.iter_modules(handlers_pkg.__path__):
+        if info.name.startswith("_"):
+            continue
+        module = importlib.import_module(f".handlers.{info.name}", __package__)
+        register = getattr(module, "register", None)
+        pack = register(WORKER_TOOLBOX) if callable(register) else None
+        pack = pack if isinstance(pack, dict) else getattr(module, "HANDLERS", {})
+        for name, fn in pack.items():
+            if name in HANDLERS:
+                print(f"warning: handler {name!r} from {info.name} shadows a "
+                      "builtin; ignoring", file=sys.stderr)
+                continue
+            HANDLERS[name] = fn
+
+
+def _diagnose(err: "WorkerError") -> "WorkerError":
+    """Error Doctor: enrich a kernel/script/contract error with a plain-language
+    hint keyed off its message + traceback. No-op if the doctor module is
+    absent or already provided a hint."""
+    if err.details.get("hint"):
+        return err
+    try:
+        from .error_doctor import diagnose
+    except ImportError:
+        return err
+    hint = diagnose(err.type, err.message, err.details.get("traceback", ""))
+    if hint:
+        err.details = {**err.details, "hint": hint}
+    return err
+
+
 # ----------------------------------------------------------------- main loop
 
 
@@ -329,17 +425,20 @@ def _dispatch(method: str, params: dict) -> dict:
         raise WorkerError(ERROR_CONTRACT, f"unknown method {method!r}")
     try:
         return handler(params)
-    except WorkerError:
-        raise
+    except WorkerError as err:
+        raise _diagnose(err) from err
     except Exception as exc:  # noqa: BLE001 — OCCT throws many exception types
-        raise WorkerError(
-            ERROR_KERNEL,
-            f"{type(exc).__name__}: {exc}",
-            {"traceback": traceback.format_exc()},
+        raise _diagnose(
+            WorkerError(
+                ERROR_KERNEL,
+                f"{type(exc).__name__}: {exc}",
+                {"traceback": traceback.format_exc()},
+            )
         ) from exc
 
 
 def main() -> None:
+    _load_handler_packs()
     stdout = sys.stdout
     for line in sys.stdin:
         line = line.strip()
