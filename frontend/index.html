@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentCAD</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='4' width='9' height='9' rx='1.5' fill='%23272930'/%3E%3Crect x='5' y='2' width='9' height='9' rx='1.5' fill='none' stroke='%23d99a4e' stroke-width='1.5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/vendor/codemirror.css">
+  <link rel="stylesheet" href="/css/app.css">
+  <script type="importmap">
+    { "imports": { "three": "/vendor/three.module.min.js" } }
+  </script>
+  <script src="/vendor/codemirror.js"></script>
+  <script src="/vendor/python.js"></script>
+</head>
+<body>
+
+  <header id="toolbar">
+    <div id="brand">Agent<b>CAD</b></div>
+
+    <div class="menu-wrap">
+      <button id="project-btn" class="tb-btn" aria-haspopup="menu">
+        <span id="project-name">No project</span><span class="chev">▾</span>
+      </button>
+      <div id="project-menu" class="menu left hidden" role="menu"></div>
+    </div>
+
+    <div class="toolbar-spacer"></div>
+
+    <div id="rebuild-indicator" class="hidden">
+      <span class="spinner" aria-hidden="true"></span>
+      <span id="rebuild-label">Rebuilding…</span>
+    </div>
+
+    <button id="fit-btn" class="tb-btn" title="Fit view (F)">Fit</button>
+
+    <div class="menu-wrap">
+      <button id="export-btn" class="tb-btn" aria-haspopup="menu">
+        Export<span class="chev">▾</span>
+      </button>
+      <div id="export-menu" class="menu right hidden" role="menu">
+        <div class="menu-label">Part</div>
+        <button class="menu-item" data-export="part:step">STEP <span class="meta">.step</span></button>
+        <button class="menu-item" data-export="part:stl">STL <span class="meta">.stl</span></button>
+        <button class="menu-item" data-export="part:3mf">3MF <span class="meta">.3mf</span></button>
+        <div class="menu-sep"></div>
+        <div class="menu-label">Assembly</div>
+        <button class="menu-item" data-export="assembly:step">STEP <span class="meta">.step</span></button>
+        <button class="menu-item" data-export="assembly:stl">STL <span class="meta">.stl</span></button>
+      </div>
+    </div>
+
+    <div id="conn-dot" title="Server connection"></div>
+  </header>
+
+  <div id="workspace">
+    <aside id="sidebar">
+      <div class="side-section">
+        <div class="side-head">
+          <span>Parts</span>
+          <button id="add-part-btn" class="side-add" title="New part">+</button>
+        </div>
+        <ul id="parts-list" class="side-list"></ul>
+      </div>
+      <div class="side-section">
+        <div class="side-head" id="assembly-head" style="cursor:pointer" title="Show assembly">
+          <span>Assembly</span>
+        </div>
+        <ul id="instances-list" class="side-list"></ul>
+      </div>
+    </aside>
+
+    <main id="viewport">
+      <div id="hud" class="hidden"></div>
+      <div id="viewport-empty" class="hidden"></div>
+    </main>
+
+    <aside id="inspector">
+      <nav id="tabs">
+        <button class="tab active" data-tab="params">Parameters</button>
+        <button class="tab" data-tab="code">Code</button>
+        <button class="tab" data-tab="metrics">Metrics</button>
+      </nav>
+
+      <div id="banner" class="hidden">
+        <div class="banner-head">
+          <span id="banner-title">error</span>
+          <button id="banner-close" class="banner-close" title="Dismiss">×</button>
+        </div>
+        <pre id="banner-body"></pre>
+      </div>
+
+      <div id="pane-params" class="pane"></div>
+      <div id="pane-code" class="pane hidden">
+        <div id="editor-host"></div>
+        <div class="editor-actions">
+          <span id="editor-dirty"></span>
+          <button id="save-btn" class="tb-btn">Save &amp; Rebuild</button>
+        </div>
+      </div>
+      <div id="pane-metrics" class="pane hidden"></div>
+    </aside>
+  </div>
+
+  <section id="chat-dock" class="collapsed">
+    <header id="chat-head">
+      <span class="chat-title">Agent</span>
+      <span id="chat-hint" class="chat-hint"></span>
+      <span id="chat-chevron">▲</span>
+    </header>
+    <div id="chat-body">
+      <div id="chat-empty" class="hidden"></div>
+      <div id="chat-messages"></div>
+      <form id="chat-form">
+        <input id="chat-input" type="text" autocomplete="off"
+               placeholder="Ask the agent to model something…">
+        <button id="chat-send" class="tb-btn" type="submit">Send</button>
+      </form>
+    </div>
+  </section>
+
+  <div id="toasts"></div>
+
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>

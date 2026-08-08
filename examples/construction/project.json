@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "name": "construction",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "gusset_plate",
+      "label": "Truss Gusset Plate",
+      "material": "steel_a36",
+      "params": {
+        "plate_t": 10.0,
+        "diag_angle_deg": 45.0,
+        "chord_w": 80.0,
+        "diag_w": 60.0,
+        "hole_d": 18.0,
+        "pitch": 45.0,
+        "n_rows": 2.0,
+        "edge_dist": 30.0
+      }
+    },
+    {
+      "id": "base_plate",
+      "label": "Column Base Plate",
+      "material": "steel_a36",
+      "params": {
+        "plate_w": 300.0,
+        "plate_l": 300.0,
+        "plate_t": 20.0,
+        "hss_w": 150.0,
+        "slot_w": 22.0,
+        "slot_l": 45.0,
+        "anchor_offset": 50.0
+      }
+    },
+    {
+      "id": "angle_bracket",
+      "label": "Erection Angle Bracket",
+      "material": "steel_a36",
+      "params": {
+        "leg_a": 90.0,
+        "leg_b": 90.0,
+        "width": 80.0,
+        "thk": 10.0,
+        "hole_d": 14.0,
+        "fillet_r": 6.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": [
+      {
+        "id": "base_plate_1",
+        "part": "base_plate",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#5d6d7e"
+      },
+      {
+        "id": "gusset_1",
+        "part": "gusset_plate",
+        "position": [
+          0,
+          0,
+          21
+        ],
+        "rotation_deg": [
+          90,
+          0,
+          0
+        ],
+        "color": "#8a93a5"
+      },
+      {
+        "id": "bracket_left",
+        "part": "angle_bracket",
+        "position": [
+          -40,
+          0.5,
+          20.5
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          90
+        ],
+        "color": "#7f8fa6"
+      },
+      {
+        "id": "bracket_right",
+        "part": "angle_bracket",
+        "position": [
+          40,
+          -10.5,
+          20.5
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          -90
+        ],
+        "color": "#7f8fa6"
+      }
+    ]
+  }
+}
