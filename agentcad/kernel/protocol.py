@@ -21,6 +21,7 @@ ERROR_CRASH = "kernel_crash"
 
 METHODS = (
     "ping",
+    "inspect",
     "build",
     "export",
     "export_assembly",

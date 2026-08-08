@@ -223,6 +223,28 @@ def handle_ping(params: dict) -> dict:
     return {"ok": True, "build123d": getattr(b3d, "__version__", "unknown")}
 
 
+def handle_inspect(params: dict) -> dict:
+    """Validate the script contract and return normalized PARAMS specs."""
+    ns = _exec_script(params["script"])
+    if "PARAMS" not in ns:
+        raise WorkerError(ERROR_CONTRACT, "script must define a PARAMS dict")
+    if "build" not in ns or not callable(ns["build"]):
+        raise WorkerError(ERROR_CONTRACT, "script must define a build(p) function")
+    spec = _validate_params_spec(ns["PARAMS"])
+    return {
+        "params_spec": {
+            name: {
+                "default": entry["default"],
+                "min": entry.get("min"),
+                "max": entry.get("max"),
+                "unit": entry.get("unit"),
+                "description": entry.get("description"),
+            }
+            for name, entry in spec.items()
+        }
+    }
+
+
 def handle_build(params: dict) -> dict:
     shape, _values, warnings = build_shape(params["script"], params.get("params", {}))
     tolerance = float(params.get("tolerance", 0.1))
@@ -286,6 +308,7 @@ def handle_interference(params: dict) -> dict:
 
 HANDLERS = {
     "ping": handle_ping,
+    "inspect": handle_inspect,
     "build": handle_build,
     "export": handle_export,
     "export_assembly": handle_export_assembly,
