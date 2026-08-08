@@ -499,22 +499,26 @@ def _bbox_corners(bbox: dict) -> list[list[float]]:
 def _apply_transform(
     point: list[float], position: list[float], rotation_deg: list[float]
 ) -> list[float]:
-    """Intrinsic XYZ Euler rotation (degrees) then translation."""
+    """Intrinsic XYZ Euler rotation (degrees) then translation.
+
+    Intrinsic XYZ means R = Rx . Ry . Rz, so the Z rotation hits the vector
+    first (matches build123d Location and THREE.Euler 'XYZ').
+    """
     rx, ry, rz = (math.radians(a) for a in rotation_deg)
     x, y, z = point
-    # rotate about X
-    y, z = (
-        y * math.cos(rx) - z * math.sin(rx),
-        y * math.sin(rx) + z * math.cos(rx),
+    # rotate about Z
+    x, y = (
+        x * math.cos(rz) - y * math.sin(rz),
+        x * math.sin(rz) + y * math.cos(rz),
     )
     # rotate about Y
     x, z = (
         x * math.cos(ry) + z * math.sin(ry),
         -x * math.sin(ry) + z * math.cos(ry),
     )
-    # rotate about Z
-    x, y = (
-        x * math.cos(rz) - y * math.sin(rz),
-        x * math.sin(rz) + y * math.cos(rz),
+    # rotate about X
+    y, z = (
+        y * math.cos(rx) - z * math.sin(rx),
+        y * math.sin(rx) + z * math.cos(rx),
     )
     return [x + position[0], y + position[1], z + position[2]]

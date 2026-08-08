@@ -103,6 +103,35 @@ def test_events_published(demo):
     assert "rebuild_finished" in types
 
 
+LONG_BOX_SCRIPT = (
+    "from build123d import *\n"
+    'PARAMS = {"l": {"default": 20.0, "min": 1.0, "max": 100.0}}\n'
+    "def build(p):\n"
+    "    with BuildPart() as part:\n"
+    "        Box(p.l, 4, 2)\n"
+    "    return part.part\n"
+)
+
+
+def test_assembly_rollup_multi_axis_rotation_intrinsic_xyz(demo):
+    # build123d Location((0,0,0),(90,0,90)) maps an X-elongated box onto Z
+    # (intrinsic XYZ Euler); the bbox rollup must agree with the kernel.
+    demo.create_part("demo", "beam", script=LONG_BOX_SCRIPT)
+    demo.set_assembly(
+        "demo",
+        [{"id": "a", "part": "beam", "position": [0, 0, 0],
+          "rotation_deg": [90, 0, 90]}],
+    )
+    assembly = demo.get_assembly("demo")
+    extents = [
+        assembly["bbox"]["max"][axis] - assembly["bbox"]["min"][axis]
+        for axis in range(3)
+    ]
+    assert extents[2] == pytest.approx(20.0, abs=0.05)
+    assert extents[0] == pytest.approx(4.0, abs=0.05)
+    assert extents[1] == pytest.approx(2.0, abs=0.05)
+
+
 def test_assembly_rollup_with_rotation(demo):
     # 10mm cube rotated 45 deg about Z: xy extent grows to 10*sqrt(2)
     demo.set_assembly(
