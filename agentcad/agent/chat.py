@@ -6,10 +6,16 @@ publishes progress on the EventBus so the UI can stream it over the WebSocket:
 
     {"type": "chat_delta",       "project": ..., "text": ...}
     {"type": "chat_tool_call",   "project": ..., "name": ..., "args": ...}
-    {"type": "chat_tool_result", "project": ..., "name": ..., "ok": bool}
+    {"type": "chat_tool_result", "project": ..., "name": ..., "ok": bool,
+     "result": <JSON string, truncated to 2000 chars>}
     {"type": "chat_done",        "project": ..., "turn_id": ...}
 
-History is kept in memory per project for the server's lifetime.
+History is kept in memory per project for the server's lifetime. Turns are
+serialized per project with an asyncio.Lock — the user message is appended
+inside the lock — so concurrent POST /api/chat calls cannot interleave
+histories and break the Messages API tool_use/tool_result pairing. If a turn
+dies between issuing tool_use and recording results, the history is repaired
+with synthetic error tool_results before the lock is released.
 """
 
 from __future__ import annotations
@@ -91,6 +97,7 @@ class ChatEngine:
         self._client: Any = None
         self._history: dict[str, list[dict]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     # ---------------------------------------------------------- availability
 
@@ -124,10 +131,7 @@ class ChatEngine:
         if not isinstance(message, str) or not message.strip():
             raise ValidationError("chat message must be a non-empty string")
         turn_id = uuid.uuid4().hex[:12]
-        self._history.setdefault(project, []).append(
-            {"role": "user", "content": message}
-        )
-        task = asyncio.create_task(self._run_turn(project, turn_id))
+        task = asyncio.create_task(self._run_turn(project, turn_id, message))
         self._tasks[turn_id] = task
         task.add_done_callback(lambda _t: self._tasks.pop(turn_id, None))
         return {"turn_id": turn_id}
@@ -142,12 +146,18 @@ class ChatEngine:
             for tool in self.registry.list()
         ]
 
-    async def _run_turn(self, project: str, turn_id: str) -> None:
+    async def _run_turn(self, project: str, turn_id: str, message: str) -> None:
+        lock = self._locks.setdefault(project, asyncio.Lock())
+        async with lock:
+            await self._run_turn_locked(project, turn_id, message)
+
+    async def _run_turn_locked(self, project: str, turn_id: str, message: str) -> None:
+        history = self._history.setdefault(project, [])
         try:
             if self._client is None:
                 self._client = self._client_factory()
             loop = asyncio.get_running_loop()
-            history = self._history.setdefault(project, [])
+            history.append({"role": "user", "content": message})
             tools = self._tool_definitions()
             calls = 0
 
@@ -197,19 +207,21 @@ class ChatEngine:
                         isinstance(result, dict)
                         and (result.get("error") or result.get("ok") is False)
                     )
+                    result_json = json.dumps(result, default=str)
                     self.bus.publish(
                         {
                             "type": "chat_tool_result",
                             "project": project,
                             "name": name,
                             "ok": ok,
+                            "result": result_json[:2000],
                         }
                     )
                     results.append(
                         {
                             "type": "tool_result",
                             "tool_use_id": block.get("id", ""),
-                            "content": json.dumps(result, default=str),
+                            "content": result_json,
                         }
                     )
                     calls += 1
@@ -227,6 +239,7 @@ class ChatEngine:
                     break
         except Exception as exc:  # noqa: BLE001 — a failed turn must not kill the server
             print(f"chat turn {turn_id} failed: {exc!r}", file=sys.stderr)
+            self._repair_history(history)
             self.bus.publish(
                 {
                     "type": "chat_delta",
@@ -238,3 +251,33 @@ class ChatEngine:
             self.bus.publish(
                 {"type": "chat_done", "project": project, "turn_id": turn_id}
             )
+
+    @staticmethod
+    def _repair_history(history: list[dict]) -> None:
+        """Keep the transcript valid: every assistant tool_use must be followed
+        by matching tool_results. Called when a turn dies mid-loop."""
+        if not history or history[-1].get("role") != "assistant":
+            return
+        content = history[-1].get("content")
+        if not isinstance(content, list):
+            return
+        dangling = [
+            b for b in content
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        ]
+        if not dangling:
+            return
+        history.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": b.get("id", ""),
+                        "content": "[tool execution interrupted by an error]",
+                        "is_error": True,
+                    }
+                    for b in dangling
+                ],
+            }
+        )

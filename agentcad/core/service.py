@@ -117,6 +117,7 @@ class AgentCADService:
             self.store.add_part(
                 proj, part_id, label or part_id, material, script or DEFAULT_PART_SCRIPT
             )
+        self.bus.publish({"type": "project_changed", "project": proj})
         return self.get_part(proj, part_id)
 
     def get_part(self, proj: str, part_id: str) -> dict:
@@ -156,15 +157,41 @@ class AgentCADService:
                 self.store.update_part_entry(
                     proj, part_id, label=label, material=material
                 )
+        self.bus.publish({"type": "project_changed", "project": proj})
         return self._rebuild(proj, part_id)
 
     def set_params(self, proj: str, part_id: str, values: dict) -> dict:
+        """Set parameter overrides. A value of None removes the override.
+
+        Names are validated against the script's PARAMS spec *before* anything
+        is written, so a typo can never poison the manifest (spec §8).
+        """
         for name, value in values.items():
+            if value is None:
+                continue
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValidationError(f"parameter {name!r} must be a number")
         with self._lock:
             record = self.store.get_part(proj, part_id)
-            merged = {**record.params, **{k: float(v) for k, v in values.items()}}
+            script = self.store.read_script(proj, part_id)
+            spec = self._params_spec(script)
+            if spec is None:
+                raise ValidationError(
+                    "cannot set parameters: the part script does not currently "
+                    "load — fix the script first (see get_part.status)",
+                )
+            unknown = sorted(set(values) - set(spec))
+            if unknown:
+                raise ValidationError(
+                    f"unknown parameter(s): {', '.join(unknown)}",
+                    {"unknown": unknown, "known": sorted(spec)},
+                )
+            merged = dict(record.params)
+            for name, value in values.items():
+                if value is None:
+                    merged.pop(name, None)
+                else:
+                    merged[name] = float(value)
             self.store.update_part_entry(proj, part_id, params=merged)
         return self._rebuild(proj, part_id)
 
@@ -172,32 +199,42 @@ class AgentCADService:
         with self._lock:
             self.store.remove_part(proj, part_id)
             self._status.pop((proj, part_id), None)
+        self.bus.publish({"type": "project_changed", "project": proj})
 
     def get_metrics(self, proj: str, part_id: str) -> dict:
         self.store.get_part(proj, part_id)
         result = self._ensure_built(proj, part_id)
         if not result["ok"]:
             raise KernelErrorFromResult(result)
-        return self._status[(proj, part_id)]["metrics"]
+        return result["metrics"]
 
-    def ensure_mesh(self, proj: str, part_id: str) -> Path:
+    def mesh_info(self, proj: str, part_id: str) -> dict:
+        """Built mesh path + cache key, from the build result (no racy re-read
+        of the shared status dict — a concurrent delete cannot KeyError us)."""
         self.store.get_part(proj, part_id)
         result = self._ensure_built(proj, part_id)
         if not result["ok"]:
             raise KernelErrorFromResult(result)
-        key = self._status[(proj, part_id)]["cache_key"]
-        return self.store.cache_dir(proj) / f"{key}.acm"
+        key = result["cache_key"]
+        return {"path": self.store.cache_dir(proj) / f"{key}.acm", "key": key}
+
+    def ensure_mesh(self, proj: str, part_id: str) -> Path:
+        return self.mesh_info(proj, part_id)["path"]
 
     def mesh_summary(self, proj: str, part_id: str) -> dict:
         from ..kernel import acm
 
-        mesh = acm.read(self.ensure_mesh(proj, part_id))
-        metrics = self._status[(proj, part_id)]["metrics"]
+        self.store.get_part(proj, part_id)
+        result = self._ensure_built(proj, part_id)
+        if not result["ok"]:
+            raise KernelErrorFromResult(result)
+        key = result["cache_key"]
+        mesh = acm.read(self.store.cache_dir(proj) / f"{key}.acm")
         return {
             "vertices": len(mesh["positions"]),
             "triangles": len(mesh["indices"]),
             "edges": len(mesh["edge_lengths"]),
-            "bbox": metrics["bbox"],
+            "bbox": result["metrics"]["bbox"],
         }
 
     def export_part(
@@ -216,6 +253,7 @@ class AgentCADService:
                 "out_path": str(out),
                 "tolerance": tolerance,
             },
+            timeout_s=300.0,  # export may rebuild the shape from scratch
         )
         return result
 
@@ -354,7 +392,8 @@ class AgentCADService:
                 )
                 if mesh.is_file() and current == status["cache_key"]:
                     return {"ok": True, "metrics": status["metrics"],
-                            "warnings": status.get("warnings", [])}
+                            "warnings": status.get("warnings", []),
+                            "cache_key": status["cache_key"]}
             elif status["state"] == "error":
                 current = self._cache_key(
                     self.store.read_script(proj, part_id),
@@ -379,25 +418,36 @@ class AgentCADService:
         )
 
         if mesh_path.is_file() and metrics_path.is_file():
-            stored = json.loads(metrics_path.read_text())
-            self._status[(proj, part_id)] = {
-                "state": "ok",
-                "cache_key": key,
-                "metrics": stored["metrics"],
-                "warnings": stored.get("warnings", []),
-                "error": None,
-            }
-            self.bus.publish(
-                {
-                    "type": "rebuild_finished",
-                    "project": proj,
-                    "part": part_id,
-                    "metrics": stored["metrics"],
-                    "cached": True,
+            try:
+                stored = json.loads(metrics_path.read_text())
+                cached_metrics = stored["metrics"]
+            except (json.JSONDecodeError, KeyError, OSError):
+                # A crash mid-write left a corrupt sidecar: discard it and
+                # fall through to a fresh kernel build (spec §8).
+                try:
+                    metrics_path.unlink()
+                except OSError:
+                    pass
+            else:
+                self._status[(proj, part_id)] = {
+                    "state": "ok",
+                    "cache_key": key,
+                    "metrics": cached_metrics,
+                    "warnings": stored.get("warnings", []),
+                    "error": None,
                 }
-            )
-            return {"ok": True, "metrics": stored["metrics"],
-                    "warnings": stored.get("warnings", [])}
+                self.bus.publish(
+                    {
+                        "type": "rebuild_finished",
+                        "project": proj,
+                        "part": part_id,
+                        "metrics": cached_metrics,
+                        "cached": True,
+                    }
+                )
+                return {"ok": True, "metrics": cached_metrics,
+                        "warnings": stored.get("warnings", []),
+                        "cache_key": key}
 
         try:
             result = self.kernel.request(
@@ -432,7 +482,10 @@ class AgentCADService:
 
         metrics = result["metrics"]
         warnings = result.get("warnings", [])
-        metrics_path.write_text(json.dumps({"metrics": metrics, "warnings": warnings}))
+        ProjectStore._atomic_write(
+            metrics_path,
+            json.dumps({"metrics": metrics, "warnings": warnings}).encode(),
+        )
         self._status[(proj, part_id)] = {
             "state": "ok",
             "cache_key": key,
@@ -449,7 +502,8 @@ class AgentCADService:
                 "cached": False,
             }
         )
-        return {"ok": True, "metrics": metrics, "warnings": warnings}
+        return {"ok": True, "metrics": metrics, "warnings": warnings,
+                "cache_key": key}
 
     def _params_spec(self, script: str) -> dict | None:
         key = hashlib.sha256(script.encode()).hexdigest()
@@ -457,9 +511,10 @@ class AgentCADService:
             return self._spec_cache[key]
         try:
             result = self.kernel.request("inspect", {"script": script})
+            spec = result["params_spec"]
         except KernelError:
-            return None
-        spec = result["params_spec"]
+            spec = None  # negative-cache: a broken/hanging script is
+            # inspected at most once per content hash, not on every read
         if len(self._spec_cache) > 256:
             self._spec_cache.clear()
         self._spec_cache[key] = spec

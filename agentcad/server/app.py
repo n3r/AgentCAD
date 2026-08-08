@@ -52,12 +52,54 @@ def _error_response(exc: AppError) -> JSONResponse:
     )
 
 
+LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+
+def _hostname(host_header: str) -> str:
+    """Host header without the port ([::1]:8630 -> [::1], 127.0.0.1:8630 -> 127.0.0.1)."""
+    host = host_header.strip()
+    if host.startswith("["):  # bracketed IPv6
+        return host.split("]", 1)[0] + "]"
+    return host.rsplit(":", 1)[0] if ":" in host else host
+
+
+def _browser_request_allowed(headers, allowed_hosts: frozenset) -> tuple[bool, str]:
+    """Same-origin policy for a localhost-only, unauthenticated API.
+
+    1. Host must be a local name — defeats DNS rebinding (a rebound
+       evil.com carries Host: evil.com).
+    2. If the browser sent an Origin header it must exactly match our own
+       origin — defeats cross-origin "simple request" CSRF against
+       state-changing routes. Non-browser clients send no Origin and pass.
+    """
+    host = headers.get("host", "")
+    if _hostname(host) not in allowed_hosts:
+        return False, f"disallowed Host {host!r}"
+    origin = headers.get("origin")
+    if origin is not None and origin != f"http://{host}":
+        return False, f"cross-origin request from {origin!r} rejected"
+    return True, ""
+
+
 def create_app(
     service: AgentCADService,
     registry: ToolRegistry,
     chat_engine=None,
+    extra_allowed_hosts: frozenset | set = frozenset(),
 ) -> FastAPI:
     app = FastAPI(title="AgentCAD", version=agentcad.__version__)
+    allowed_hosts = frozenset(LOCAL_HOSTNAMES) | frozenset(extra_allowed_hosts)
+
+    @app.middleware("http")
+    async def local_origin_guard(request: Request, call_next):
+        allowed, reason = _browser_request_allowed(request.headers, allowed_hosts)
+        if not allowed:
+            return JSONResponse(
+                status_code=403,
+                content={"error": {"type": "ForbiddenOrigin", "message": reason,
+                                   "details": {}}},
+            )
+        return await call_next(request)
 
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError):
@@ -151,12 +193,11 @@ def create_app(
 
     @app.get("/api/projects/{proj}/parts/{part_id}/mesh")
     def get_mesh(proj: str, part_id: str):
-        path = service.ensure_mesh(proj, part_id)
-        key = service._status[(proj, part_id)]["cache_key"]
+        info = service.mesh_info(proj, part_id)
         return Response(
-            content=path.read_bytes(),
+            content=info["path"].read_bytes(),
             media_type="application/octet-stream",
-            headers={"Cache-Control": "no-store", "X-Mesh-Key": key},
+            headers={"Cache-Control": "no-store", "X-Mesh-Key": info["key"]},
         )
 
     @app.post("/api/projects/{proj}/parts/{part_id}/export")
@@ -231,6 +272,12 @@ def create_app(
 
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket):
+        # Browsers do not apply same-origin policy to WebSockets: enforce the
+        # same host/origin rules as HTTP before accepting the stream.
+        allowed, _reason = _browser_request_allowed(ws.headers, allowed_hosts)
+        if not allowed:
+            await ws.close(code=1008)
+            return
         await ws.accept()
         q = service.bus.subscribe()
         loop = asyncio.get_running_loop()

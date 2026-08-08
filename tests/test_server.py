@@ -11,8 +11,12 @@ from .conftest import BOX_SCRIPT
 @pytest.fixture
 def client(kernel, tmp_path):
     service = AgentCADService(tmp_path / "projects", kernel, EventBus())
-    app = create_app(service, build_registry(service))
-    return TestClient(app)
+    # TestClient always sends Host: testserver on WebSocket connects,
+    # so tests must allow it explicitly; production defaults stay local-only.
+    app = create_app(
+        service, build_registry(service), extra_allowed_hosts={"testserver"}
+    )
+    return TestClient(app, base_url="http://127.0.0.1")
 
 
 @pytest.fixture
@@ -110,6 +114,39 @@ def test_tools_endpoints(demo):
 
     result = demo.post("/api/tools/get_metrics", json={"project": "demo", "part_id": "box"}).json()
     assert result["volume_mm3"] > 0
+
+
+def test_host_header_guard(kernel, tmp_path):
+    service = AgentCADService(tmp_path / "p2", kernel, EventBus())
+    app = create_app(service, build_registry(service))
+    evil = TestClient(app, base_url="http://evil.example.com")
+    assert evil.get("/api/health").status_code == 403
+    local = TestClient(app, base_url="http://localhost")
+    assert local.get("/api/health").status_code == 200
+
+
+def test_cross_origin_post_rejected(demo):
+    response = demo.post(
+        "/api/tools/list_projects",
+        headers={"Origin": "http://evil.example.com"},
+    )
+    assert response.status_code == 403
+    # same-origin fetches (browser sends our own origin) still work
+    response = demo.post(
+        "/api/tools/list_projects",
+        headers={"Origin": "http://127.0.0.1", "Host": "127.0.0.1"},
+    )
+    assert response.status_code == 200
+
+
+def test_websocket_rejects_foreign_origin(demo):
+    import pytest as pytest_module
+
+    with pytest_module.raises(Exception):
+        with demo.websocket_connect(
+            "/ws", headers={"Origin": "http://evil.example.com"}
+        ) as ws:
+            ws.receive_json()
 
 
 def test_websocket_rebuild_events(demo):

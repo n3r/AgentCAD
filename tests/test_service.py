@@ -90,6 +90,52 @@ def test_assembly_and_interference(demo):
     assert result["pairs"][0]["volume_mm3"] == pytest.approx(500.0, rel=0.01)
 
 
+def test_set_params_unknown_name_rejected_nothing_written(demo):
+    from agentcad.core.model import ValidationError
+
+    with pytest.raises(ValidationError) as exc_info:
+        demo.set_params("demo", "box", {"tickness": 5.0})
+    assert "tickness" in str(exc_info.value)
+    # nothing was persisted: the part still rebuilds cleanly
+    assert demo.store.get_part("demo", "box").params.get("tickness") is None
+    assert demo.get_metrics("demo", "box")["volume_mm3"] > 0
+
+
+def test_set_params_null_removes_override(demo):
+    demo.set_params("demo", "box", {"size": 20.0})
+    assert demo.store.get_part("demo", "box").params == {"size": 20.0}
+    result = demo.set_params("demo", "box", {"size": None})
+    assert result["ok"] is True
+    assert demo.store.get_part("demo", "box").params == {}
+    assert result["metrics"]["volume_mm3"] == pytest.approx(1000.0, rel=1e-6)
+
+
+def test_corrupt_metrics_sidecar_recovers(demo):
+    demo.get_metrics("demo", "box")  # ensure built
+    key = demo._status[("demo", "box")]["cache_key"]
+    sidecar = demo.store.cache_dir("demo") / f"{key}.metrics.json"
+    sidecar.write_text("{truncated")
+    demo._status.clear()  # simulate a fresh server process
+    metrics = demo.get_metrics("demo", "box")  # must rebuild, not crash
+    assert metrics["volume_mm3"] == pytest.approx(1000.0, rel=1e-6)
+    assert "truncated" not in sidecar.read_text()
+
+
+def test_project_changed_published_on_part_crud(demo):
+    q = demo.bus.subscribe()
+    demo.create_part("demo", "box2", script=BOX_SCRIPT)
+    demo.delete_part("demo", "box2")
+    types = []
+    import queue as queue_module
+
+    while True:
+        try:
+            types.append(q.get_nowait()["type"])
+        except queue_module.Empty:
+            break
+    assert types.count("project_changed") >= 2
+
+
 def test_events_published(demo):
     q = demo.bus.subscribe()
     demo.set_params("demo", "box", {"size": 15.0})

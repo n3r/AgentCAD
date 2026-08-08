@@ -202,17 +202,21 @@ def _atomic_write(path: str, data: bytes) -> None:
 def _export_shape(shape, fmt: str, out_path: str, tolerance: float) -> dict:
     target = Path(out_path)
     target.parent.mkdir(parents=True, exist_ok=True)
+    # Write to a temp file with the same suffix (exporters sniff extensions),
+    # then atomically replace, so a killed export never leaves a torn file.
+    tmp = target.with_name(f".{target.stem}.tmp{target.suffix}")
     with contextlib.redirect_stdout(sys.stderr):
         if fmt == "step":
-            b3d.export_step(shape, str(target))
+            b3d.export_step(shape, str(tmp))
         elif fmt == "stl":
-            b3d.export_stl(shape, str(target), tolerance=tolerance)
+            b3d.export_stl(shape, str(tmp), tolerance=tolerance)
         elif fmt == "3mf":
             mesher = b3d.Mesher()
             mesher.add_shape(shape, linear_deflection=tolerance)
-            mesher.write(str(target))
+            mesher.write(str(tmp))
         else:
             raise WorkerError(ERROR_CONTRACT, f"unknown export format {fmt!r}")
+    os.replace(tmp, target)
     return {"path": str(target), "size_bytes": target.stat().st_size}
 
 

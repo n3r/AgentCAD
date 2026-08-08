@@ -165,3 +165,104 @@ def test_chat_unavailable_without_api_key(stack, monkeypatch):
 
     asyncio.run(main())
     assert engine.history(PROJECT) == []
+
+
+def test_concurrent_turns_serialize_and_history_stays_paired(stack):
+    service, registry, bus = stack
+    # Two turns, each: one tool_use round then an end_turn. If turns
+    # interleaved, the second user message would land between a tool_use
+    # assistant message and its tool_result.
+    fake = FakeAnthropic(
+        [
+            _response(
+                [_tool_use("t1", "list_projects", {})], "tool_use"
+            ),
+            _response([_text("first done")], "end_turn"),
+            _response(
+                [_tool_use("t2", "list_projects", {})], "tool_use"
+            ),
+            _response([_text("second done")], "end_turn"),
+        ]
+    )
+    engine = ChatEngine(
+        registry, bus, api_key="test-key", client_factory=lambda: fake
+    )
+
+    async def scenario():
+        await engine.start_turn(PROJECT, "first message")
+        await engine.start_turn(PROJECT, "second message")
+        for _ in range(200):
+            if not engine._tasks:
+                break
+            await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+
+    history = engine.history(PROJECT)
+    # Validate the tool_use/tool_result pairing invariant over the transcript.
+    for i, msg in enumerate(history):
+        if msg["role"] != "assistant":
+            continue
+        tool_ids = [
+            b["id"] for b in msg["content"]
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        ]
+        if not tool_ids:
+            continue
+        nxt = history[i + 1]
+        assert nxt["role"] == "user"
+        result_ids = [
+            b.get("tool_use_id") for b in nxt["content"]
+            if isinstance(b, dict) and b.get("type") == "tool_result"
+        ]
+        assert result_ids == tool_ids
+    # Both user messages present, in order, and both turns completed.
+    user_texts = [m["content"] for m in history if m["role"] == "user"
+                  and isinstance(m["content"], str)]
+    assert user_texts == ["first message", "second message"]
+
+
+def test_failed_turn_repairs_dangling_tool_use(stack):
+    service, registry, bus = stack
+
+    class ExplodingMessages:
+        def __init__(self):
+            self.calls = 0
+
+        async def create(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return _response(
+                    [_tool_use("t1", "list_projects", {})], "tool_use"
+                )
+            raise RuntimeError("api exploded mid-turn")
+
+    fake = SimpleNamespace(messages=ExplodingMessages())
+    engine = ChatEngine(
+        registry, bus, api_key="test-key", client_factory=lambda: fake
+    )
+
+    async def scenario():
+        await engine.start_turn(PROJECT, "hello")
+        for _ in range(200):
+            if not engine._tasks:
+                break
+            await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    history = engine.history(PROJECT)
+    # The dangling tool_use from the crashed turn must have matching results.
+    last_assistant = max(
+        i for i, m in enumerate(history) if m["role"] == "assistant"
+    )
+    tool_ids = [
+        b["id"] for b in history[last_assistant]["content"]
+        if isinstance(b, dict) and b.get("type") == "tool_use"
+    ]
+    if tool_ids:
+        nxt = history[last_assistant + 1]
+        result_ids = [
+            b.get("tool_use_id") for b in nxt["content"]
+            if isinstance(b, dict) and b.get("type") == "tool_result"
+        ]
+        assert result_ids == tool_ids

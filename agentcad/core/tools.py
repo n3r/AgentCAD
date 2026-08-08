@@ -162,7 +162,8 @@ def build_registry(service: AgentCADService) -> ToolRegistry:
     reg(Tool(
         "set_params",
         "Set parameter values (merged with existing overrides) and rebuild. "
-        "Values are clamped to the spec's min/max with warnings.",
+        "Values are clamped to the spec's min/max with warnings. Unknown names "
+        "are rejected before anything is written; a null value removes an override.",
         _schema(
             {
                 "project": _PROJ,

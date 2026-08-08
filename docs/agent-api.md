@@ -41,7 +41,7 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
 | `create_part` | **project, part_id**, label, script, material | Part detail with metrics (default template if no script). |
 | `get_part` | **project, part_id** | Script, `params_spec`, current params, status (state/error/warnings), metrics. |
 | `update_part_script` | **project, part_id**, script, label, material | Rebuild result. On failure: traceback + failing line + hint; previous geometry kept. |
-| `set_params` | **project, part_id, values** | Rebuild result. Values merge with existing overrides and clamp to min/max with warnings. |
+| `set_params` | **project, part_id, values** | Rebuild result. Values merge with existing overrides and clamp to min/max with warnings; unknown names are rejected before anything is written, and a `null` value removes an override. |
 | `delete_part` | **project, part_id** | `{deleted}` — fails with a conflict while assembly instances reference the part. |
 | `get_metrics` | **project, part_id** | `{volume_mm3, mass_g, area_mm2, bbox, center_of_mass, is_valid, n_faces, n_edges, n_solids}` |
 | `get_mesh_summary` | **project, part_id** | `{vertices, triangles, edges, bbox}` — statistics only, no binary buffer. |
