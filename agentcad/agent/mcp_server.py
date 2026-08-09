@@ -74,6 +74,13 @@ def _ensure_server(base: str) -> bool:
         file=sys.stderr,
     )
     try:
+        # Detach the server from this MCP process: setsid on POSIX; a new
+        # process group on Windows (start_new_session is POSIX-only).
+        detach = (
+            {"start_new_session": True}
+            if os.name == "posix"
+            else {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+        )
         subprocess.Popen(
             argv,
             # `uv run` needs the repo as cwd; the frozen executable is
@@ -81,7 +88,7 @@ def _ensure_server(base: str) -> bool:
             cwd=None if getattr(sys, "frozen", False) else REPO_ROOT,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
+            **detach,
         )
     except OSError as exc:
         print(f"agentcad-mcp: could not launch the server: {exc}", file=sys.stderr)

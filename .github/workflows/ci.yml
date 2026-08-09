@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main, roadmap]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # OCCT needs an X/GL stack even headless on Linux.
+      - name: Install OCCT system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1
+
+      - name: Sync dependencies (locked)
+        run: uv sync --locked
+
+      # The kernel worker pays a one-time build123d/OCCT import (~2 GB of
+      # wheels, ~10 s cold import); the suite amortizes it via a
+      # session-scoped fixture. FEM extras are intentionally absent — the
+      # suite must stay green without them.
+      - name: Run test suite
+        run: uv run pytest -q
+        env:
+          AGENTCAD_KERNEL_POOL_SIZE: "1"
