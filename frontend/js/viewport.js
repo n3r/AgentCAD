@@ -40,8 +40,19 @@ let gizmoInteracting = false; // a gizmo axis is being grabbed right now
 let gizmoDragged = false; // the grab actually moved the object
 let attachedInstanceId = null;
 
+// 3D palette, swapped by theme.js (dark defaults). Grid size/divisions are
+// remembered so a theme change can rebuild the grid in place.
+let sceneTheme = {
+  background: 0x17181b,
+  gridMajor: 0x2c2f36,
+  gridMinor: 0x22242a,
+  edge: 0x0d0e10,
+};
+let gridSize = 400;
+let gridDivisions = 40;
+
 const edgeMaterial = new THREE.LineBasicMaterial({
-  color: 0x0d0e10,
+  color: sceneTheme.edge,
   transparent: true,
   opacity: 0.5,
 });
@@ -137,7 +148,7 @@ export function init(container, { onPick } = {}) {
   container.appendChild(renderer.domElement);
 
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x17181b);
+  scene.background = new THREE.Color(sceneTheme.background);
 
   camera = new THREE.PerspectiveCamera(
     45,
@@ -200,14 +211,26 @@ export function init(container, { onPick } = {}) {
 }
 
 function setGrid(size, divisions) {
+  gridSize = size;
+  gridDivisions = divisions;
   if (gridHelper) {
     scene.remove(gridHelper);
     gridHelper.geometry.dispose();
     gridHelper.material.dispose();
   }
-  gridHelper = new THREE.GridHelper(size, divisions, 0x2c2f36, 0x22242a);
+  gridHelper = new THREE.GridHelper(size, divisions, sceneTheme.gridMajor, sceneTheme.gridMinor);
   gridHelper.rotation.x = Math.PI / 2; // lie in the XY plane (Z up)
   scene.add(gridHelper);
+}
+
+/** Swap the 3D palette: {background, gridMajor, gridMinor, edge}. Safe to
+ *  call before init() — the colors apply when the scene is created. */
+export function setTheme(colors) {
+  sceneTheme = colors;
+  edgeMaterial.color.set(colors.edge);
+  if (!scene) return;
+  scene.background.set(colors.background);
+  setGrid(gridSize, gridDivisions);
 }
 
 function pick(event) {

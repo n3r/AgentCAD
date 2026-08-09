@@ -11,6 +11,7 @@ import * as chat from "./chat.js";
 import * as placement from "./placement.js";
 import * as drawings from "./drawings.js";
 import * as sketcher from "./sketcher.js";
+import * as theme from "./theme.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 
@@ -1306,6 +1307,7 @@ function renderLockIndicator() {
 // -------------------------------------------------------------------- boot
 
 async function boot() {
+  theme.init(); // before viewport.init so the scene is born with the stored palette
   viewport.init(document.getElementById("viewport"), { onPick });
   tree.init(actions);
   inspector.init(actions);
