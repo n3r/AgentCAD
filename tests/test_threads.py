@@ -5,6 +5,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.portability
+
 
 def test_external_iso_thread_valid():
     from agentcad.toolkit.threads import external_thread

@@ -11,6 +11,8 @@ from agentcad.core.model import (
 from agentcad.core.project import ProjectStore
 from agentcad.core.templates import DEFAULT_PART_SCRIPT
 
+pytestmark = pytest.mark.portability
+
 
 @pytest.fixture
 def store(tmp_path):

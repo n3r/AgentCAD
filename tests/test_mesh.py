@@ -5,6 +5,8 @@ from agentcad.kernel import acm
 
 from .conftest import PLATE_SCRIPT
 
+pytestmark = pytest.mark.portability
+
 
 @pytest.fixture(scope="module")
 def plate_mesh(kernel, tmp_path_factory):

@@ -1,6 +1,10 @@
 import json
 
+import pytest
+
 from agentcad import config
+
+pytestmark = pytest.mark.portability
 
 
 def test_get_port_allocates_and_persists(tmp_path, monkeypatch):

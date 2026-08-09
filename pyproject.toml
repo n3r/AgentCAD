@@ -42,6 +42,8 @@ packages = ["agentcad"]
 timeout = 120
 testpaths = ["tests"]
 markers = [
+    "exhaustive: broad example stress coverage run by scheduled full CI",
     "integration: crosses a process, server, sandbox, or git boundary",
+    "portability: exercises an OS-sensitive boundary repeated on Linux and Windows CI",
     "slow: broad or timeout-driven coverage excluded by make test-fast",
 ]

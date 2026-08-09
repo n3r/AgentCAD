@@ -9,7 +9,11 @@ from agentcad.kernel.pool import KernelPool
 
 from .conftest import BOX_SCRIPT, make_test_service
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.portability,
+    pytest.mark.slow,
+]
 
 
 def _build(client, script, params, mesh_path):

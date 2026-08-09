@@ -11,11 +11,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 from agentcad._resources import resource_root
 from agentcad._spawn import worker_argv
 from agentcad.agent.mcp_server import _server_spawn_argv
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+pytestmark = pytest.mark.portability
 
 
 def _fake_frozen(monkeypatch, exe: str = "/opt/agentcad/agentcad") -> None:
