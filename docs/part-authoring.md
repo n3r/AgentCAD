@@ -167,6 +167,31 @@ but heavy (~9k triangles per M8 thread at mesh tolerance 0.1), so:
   specifically to bypass `bd_warehouse`'s `ThreadedHole(simple=False)` trap
   (~15 s and inserts no thread).
 
+## Analysis stand-ins for interference checking
+
+A script may define an optional ``analysis(p)`` alongside ``build(p)``: a
+simplified, **conservative** stand-in that ``check_interference`` uses in
+place of the display shape. The canonical case is real ISO thread geometry —
+exact helical B-reps make pairwise booleans hundreds of times slower, and
+production CAD suppresses threads in analysis for the same reason. A
+cosmetic shank at the thread's nominal (major) diameter strictly *contains*
+the real thread, so a clear envelope proves the real part clear:
+
+```python
+def _build(p, simple):
+    return threads.cap_screw("M8-1.25", p.length, simple=simple)
+
+def build(p):        # display / export / metrics: real thread
+    return _build(p, simple=False)
+
+def analysis(p):     # interference: nominal-diameter envelope (superset)
+    return _build(p, simple=True)
+```
+
+Keep the stand-in a superset of the real shape — an undersized analysis
+shape would hide genuine collisions. Display, export, drawings, and metrics
+always use ``build(p)``.
+
 ## Declaring connectors for mates
 
 A part script may declare named **connectors** so its instances can be posed

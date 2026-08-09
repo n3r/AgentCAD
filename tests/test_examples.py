@@ -18,9 +18,12 @@ EXAMPLE_DIRS = sorted(
     if (child / "project.json").is_file()
 )
 
-pytestmark = pytest.mark.skipif(
-    not EXAMPLE_DIRS, reason="no example projects present yet"
-)
+pytestmark = [
+    pytest.mark.skipif(not EXAMPLE_DIRS, reason="no example projects present yet"),
+    # the engine example (63 instances, real thread geometry) legitimately
+    # needs minutes for its extremes sweep, interference, and STEP export
+    pytest.mark.timeout(900),
+]
 
 
 @pytest.fixture(scope="module")

@@ -70,10 +70,11 @@ def build(p):
             radius=boss_d / 2, height=10)
         for sy in (-STUD_PITCH, STUD_PITCH):
             for sz in (-STUD_PITCH, STUD_PITCH):
-                head += Pos(67, y + sy, PORT_Z + sz) * Rot(Y=90) * Cylinder(
-                    radius=STUD_D / 2, height=24)
-                head += Pos(-63.5, y + sy, PORT_Z + sz) * Rot(Y=90) * \
-                    Cylinder(radius=STUD_D / 2, height=17)
+                # tapped stud holes; the threaded studs are stud_set parts
+                head -= Pos(50, y + sy, PORT_Z + sz) * Rot(Y=90) * Cylinder(
+                    radius=4.2, height=14)
+                head -= Pos(-50, y + sy, PORT_Z + sz) * Rot(Y=90) * Cylinder(
+                    radius=4.2, height=14)
         head += Pos(0, y, BASE_H + 2) * Cylinder(radius=8, height=4)
 
     # combustion chambers, port bores

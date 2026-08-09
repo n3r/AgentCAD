@@ -1,17 +1,18 @@
-"""Intake manifold: log plenum, four swept runners, one bolted flange per bank.
+"""Intake manifold: a hollow casting — plenum shell, tubular runners, one
+bolted flange per bank, with a continuous gas path you can see through.
 
-Built in the ENGINE frame (instance at the origin). What makes it a
-manifold rather than stacked primitives:
+Built in the ENGINE frame (instance at the origin). Construction order is
+what makes it a real part instead of stacked primitives:
 
-- one full-length flange PLATE per bank (not a floating pad per runner),
-  drilled with all eight stud clearance holes, seated 0.5 mm off the head
-  bosses over the heads' real studs — the ``intake_nut_set`` clamps it;
-- port bores drilled through the flange into each runner, so the casting
-  is open where a gas path belongs;
-- runners that leave the flange along the port normal and sweep tangent
-  into the plenum through cast socket collars;
-- the throttle body is a separate part bolted to the plenum's front flange
-  (4 tapped holes + spigot register), like the real article.
+1. the plenum is a SHELL (4 mm wall, capped ends), not a solid log;
+2. each runner is an annulus swept along its path — a tube, hollow along
+   its whole length;
+3. the gas channels are then swept as solids along the same paths, extended
+   proud of the flange faces, and SUBTRACTED — opening flange port,
+   runner bore, and plenum wall into one continuous passage;
+4. the runner/plenum junctions are blended with fillets (clamped by
+   safe_fillet when a size can't take them) — no fake collar discs;
+5. the throttle body is a separate part bolted to the tapped front flange.
 
 Geometry couples to the head/block defaults through the constants below.
 """
@@ -20,8 +21,10 @@ import math
 
 from build123d import *
 
+from agentcad.toolkit import safe_fillet
+
 C45 = math.cos(math.radians(45.0))
-SEAT_S = 168.9                        # deck + 0.9 head-gasket stack
+SEAT_S = 168.9
 HEAD_W = 100.0
 PORT_Z = 21.0
 BOSS_LEN = 10.0
@@ -29,8 +32,9 @@ STUD_PITCH = 17.0
 STUD_HOLE_R = 4.75
 PLENUM_L = 140.0
 FLANGE_T = 8.0
-PORT_YS_A = (-49.0, 31.0)             # bank A ports; bank B mirrors in x, y
-TB_BOLT_BC = 33.0                     # throttle flange bolt circle radius
+PORT_YS_A = (-49.0, 31.0)
+TB_BOLT_BC = 33.0
+WALL = 4.0
 
 PARAMS = {
     "runner_d": {"default": 30.0, "min": 24.0, "max": 34.0, "unit": "mm",
@@ -39,21 +43,36 @@ PARAMS = {
                  "description": "Plenum log outer diameter"},
     "plenum_height": {"default": 192.0, "min": 188.0, "max": 212.0, "unit": "mm",
                       "description": "Plenum axis height above the crank axis"},
-    "port_bore": {"default": 24.0, "min": 18.0, "max": 28.0, "unit": "mm",
-                  "description": "Gas-path bore drilled through flange and runner"},
+    "port_bore": {"default": 23.0, "min": 18.0, "max": 27.0, "unit": "mm",
+                  "description": "Gas-channel bore through flange, runner, and wall"},
 }
 
 
 def build(p):
-    # world XZ of a bank-A intake boss tip and the port normal / bank axis
     tip_x = (SEAT_S - (HEAD_W / 2 + BOSS_LEN) + PORT_Z) * C45
     tip_z = (SEAT_S + (HEAD_W / 2 + BOSS_LEN) + PORT_Z) * C45
     n = (-C45, C45)
     d = (C45, C45)
+    r_out = p.runner_d / 2
+    r_in = min(p.port_bore, p.runner_d - 5.0) / 2
+    pl_r = p.plenum_d / 2
 
+    # plenum shell with capped ends
     manifold = Pos(0, 0, p.plenum_height) * Rot(X=-90) * Cylinder(
-        radius=p.plenum_d / 2, height=PLENUM_L)
+        radius=pl_r, height=PLENUM_L)
+    manifold -= Pos(0, 0, p.plenum_height) * Rot(X=-90) * Cylinder(
+        radius=pl_r - WALL, height=PLENUM_L - 8)
 
+    def path_pts(sx, ry):
+        face = (sx * (tip_x + 0.5 * n[0]), ry, tip_z + 0.5 * n[1])
+        p1 = (sx * (tip_x + (FLANGE_T + 10) * n[0]), ry,
+              tip_z + (FLANGE_T + 10) * n[1])
+        p2 = (sx * (pl_r + 2), ry, p.plenum_height)
+        p3 = (sx * (pl_r - 16), ry, p.plenum_height)
+        tan1 = (sx * n[0], 0, n[1])
+        return face, p1, p2, p3, tan1
+
+    junctions = []
     for sx in (+1, -1):
         # one flange plate per bank, over both ports and all eight studs
         fc = (sx * (tip_x + (FLANGE_T / 2 + 0.5) * n[0]), -sx * 9.0,
@@ -61,41 +80,47 @@ def build(p):
         manifold += Pos(*fc) * Rot(Y=sx * 45) * Box(FLANGE_T, 132, 52)
 
         for ry_a in PORT_YS_A:
-            ry = sx * ry_a if sx > 0 else -ry_a
-            face = (sx * (tip_x + 0.5 * n[0]), ry, tip_z + 0.5 * n[1])
-            p1 = (sx * (tip_x + (FLANGE_T + 10) * n[0]), ry,
-                  tip_z + (FLANGE_T + 10) * n[1])
-            p2 = (sx * (p.plenum_d / 2 + 2), ry, p.plenum_height)
-            p3 = (sx * (p.plenum_d / 2 - 16), ry, p.plenum_height)
-            tan1 = (sx * n[0], 0, n[1])
-            with BuildPart() as runner:
+            ry = sx * ry_a
+            face, p1, p2, p3, tan1 = path_pts(sx, ry)
+            with BuildPart() as tube:
                 with BuildLine():
                     Line(face, p1)
                     TangentArc(p1, p2, tangent=tan1)
                     Line(p2, p3)
                 with BuildSketch(Plane(origin=face, z_dir=tan1)):
-                    Circle(p.runner_d / 2)
+                    Circle(r_out)
+                    Circle(r_in, mode=Mode.SUBTRACT)
                 sweep()
-            manifold += runner.part
+            manifold += tube.part
+            junctions.append((sx * pl_r, ry, p.plenum_height))
 
-            # cast socket collar where the runner meets the plenum
-            collar_at = (sx * (p.plenum_d / 2 + 4), ry, p.plenum_height)
-            manifold += Pos(*collar_at) * Rot(Y=sx * 90) * Cylinder(
-                radius=p.runner_d / 2 + 4, height=8)
-
-            # stud clearance holes, then the gas-path bore into the runner
+            # stud clearance holes through the flange
             for oy in (-STUD_PITCH, STUD_PITCH):
                 for od in (-STUD_PITCH, STUD_PITCH):
                     hc = (face[0] + 4 * sx * n[0] + od * sx * d[0], ry + oy,
                           face[2] + 4 * n[1] + od * d[1])
                     manifold -= Pos(*hc) * Rot(Y=sx * 45) * Rot(Y=90) * \
                         Cylinder(radius=STUD_HOLE_R, height=FLANGE_T + 2)
-            bore_c = (face[0] + 14 * sx * n[0], ry, face[2] + 14 * n[1])
-            manifold -= Pos(*bore_c) * Rot(Y=sx * 45) * Rot(Y=90) * Cylinder(
-                radius=p.port_bore / 2, height=30)
 
-    # front flange for the separate throttle body: disc, spigot bore,
-    # four tapped holes on the bolt circle
+    # gas channels: solid sweeps along the same paths, proud of the flange,
+    # subtracted last — they open flange, runner, and plenum wall through
+    for sx in (+1, -1):
+        for ry_a in PORT_YS_A:
+            ry = sx * ry_a
+            face, p1, p2, p3, tan1 = path_pts(sx, ry)
+            start = (face[0] - 3 * sx * n[0], ry, face[2] - 3 * n[1])
+            with BuildPart() as chan:
+                with BuildLine():
+                    Line(start, p1)
+                    TangentArc(p1, p2, tangent=tan1)
+                    Line(p2, p3)
+                with BuildSketch(Plane(origin=start, z_dir=tan1)):
+                    Circle(r_in)
+                sweep()
+            manifold -= chan.part
+
+    # front flange for the separate throttle body: disc, spigot bore into
+    # the plenum interior, four tapped holes on the bolt circle
     tb_y = -PLENUM_L / 2
     manifold += Pos(0, tb_y - 2, p.plenum_height) * Rot(X=-90) * Cylinder(
         radius=41.0, height=8)
@@ -108,7 +133,16 @@ def build(p):
         manifold -= Pos(hx, tb_y - 3, hz) * Rot(X=-90) * Cylinder(
             radius=2.7, height=14)
 
-    # stepped end cap closes the rear of the log
+    # stepped rear end cap detail
     manifold += Pos(0, PLENUM_L / 2 + 2, p.plenum_height) * Rot(X=-90) * \
-        Cylinder(radius=p.plenum_d / 2 - 5, height=4)
+        Cylinder(radius=pl_r - 5, height=4)
+
+    # blend the runner/plenum junctions — a cast neck, not an intersection
+    for jx, jy, jz in junctions:
+        near = [e for e in manifold.edges()
+                if (abs(e.center().Y - jy) < 14
+                    and abs(e.center().Z - jz) < 24
+                    and abs(abs(e.center().X) - abs(jx)) < 14)]
+        if near:
+            manifold, _r, _warn = safe_fillet(manifold, near, radius=3.0)
     return manifold

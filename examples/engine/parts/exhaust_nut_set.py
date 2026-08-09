@@ -42,12 +42,11 @@ def build(p):
     seat = 0.5 + FLANGE_T + 0.1
 
     nut = _nut(p)
-    nuts = None
+    nuts = []
     for ry in PORT_YS:
         for oy in (-STUD_PITCH, STUD_PITCH):
             for od in (-STUD_PITCH, STUD_PITCH):
                 px = tip_x + seat * n[0] + od * d[0]
                 pz = tip_z + seat * n[1] + od * d[1]
-                m = Pos(px, ry + oy, pz) * Rot(Y=135) * nut
-                nuts = m if nuts is None else nuts + m
-    return nuts
+                nuts.append(Pos(px, ry + oy, pz) * Rot(Y=135) * nut)
+    return Compound(children=nuts)

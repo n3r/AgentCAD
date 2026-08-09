@@ -23,13 +23,12 @@ PARAMS = {
 }
 
 
-def build(p):
-    screw = threads.cap_screw("M5-0.8", 16.0, simple=True)
-    parts = None
+def _build(p, simple):
+    screw = threads.cap_screw("M5-0.8", 16.0, simple=simple)
+    pieces = []
 
     def fuse(s):
-        nonlocal parts
-        parts = s if parts is None else parts + s
+        pieces.append(s)
 
     for ty in SADDLE_YS:
         cap = Pos(25.5, ty, CAM_Z + p.height / 2 + 0.05) * Box(
@@ -44,4 +43,14 @@ def build(p):
         fuse(cap)
         for bx in BOLT_XS:
             fuse(Pos(bx, ty, CAM_Z + p.height - 4.85) * screw)
-    return parts
+    return Compound(children=pieces)
+
+
+def build(p):
+    return _build(p, simple=False)
+
+
+def analysis(p):
+    """Conservative envelope for interference checking: cosmetic threads at
+    nominal diameter strictly contain the real thread geometry."""
+    return _build(p, simple=True)

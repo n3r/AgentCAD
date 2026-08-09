@@ -138,6 +138,15 @@
       }
     },
     {
+      "id": "stud_set",
+      "label": "Manifold Studs (16\u00d7 M8)",
+      "material": "steel_4340",
+      "params": {
+        "exhaust_len": 30.0,
+        "intake_len": 26.0
+      }
+    },
+    {
       "id": "head_gasket",
       "label": "Head Gasket",
       "material": "copper_c110",
@@ -1007,6 +1016,21 @@
         "color": "#b87333"
       },
       {
+        "id": "studs_a",
+        "part": "stud_set",
+        "position": [
+          119.4303,
+          -9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#41454c"
+      },
+      {
         "id": "head_bolts_a",
         "part": "head_bolt_set",
         "position": [
@@ -1175,6 +1199,21 @@
           180.0
         ],
         "color": "#b87333"
+      },
+      {
+        "id": "studs_b",
+        "part": "stud_set",
+        "position": [
+          -119.4303,
+          9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          180.0
+        ],
+        "color": "#41454c"
       },
       {
         "id": "head_bolts_b",

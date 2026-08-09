@@ -20,8 +20,31 @@ each serve both banks.
 Running fits are engineered throughout: 0.3 mm piston/bore, 0.25 mm
 big-end/pin, 0.1 mm wrist-pin/piston and 0.25 wrist-pin/rod, 0.3 mm
 main-journal/bore, 0.2 mm cam-journal/saddle, 0.05–0.5 mm on every static
-seat, and "tapped" holes run fastener-nominal + 0.4 (the cosmetic threads
-convention — see `examples/fasteners` for real ISO threads).
+seat.
+
+## Threads are real; analysis uses their envelope
+
+Every screw, and all 32 manifold studs, carry **real ISO thread geometry**
+(`bd_warehouse` via the toolkit). Tapped holes run nominal + 0.4 and nut
+bores nominal + 0.4 — mating internal threads are deliberately not modeled
+in contact, per the rule the `fasteners` example demonstrates: engaged
+thread pairs always interpenetrate in solid geometry. For
+`check_interference`, each fastener script defines the optional
+``analysis(p)`` contract hook: the same hardware with cosmetic
+nominal-diameter shanks — a strict *superset* of the real thread, so a
+clear check proves the real geometry clear, at a fraction of the boolean
+cost (exactly how production CAD suppresses threads in analysis).
+
+## Hollow where gas flows
+
+The intake manifold is a casting with a real gas path: a shelled plenum,
+annulus-swept runner tubes, and solid channel sweeps subtracted through
+flange, runner, and plenum wall — look into a port and you see the plenum.
+Runner/plenum junctions are fillet-blended, not butt-intersected. The
+exhaust manifolds are shelled the same way (tubular primaries into a hollow
+collector, open tail), and the throttle body's bore, butterfly, and shaft
+sit in a genuinely open passage bolted over the plenum's spigot with
+counterbored screws.
 
 ## The SOHC head — why the cam is offset
 

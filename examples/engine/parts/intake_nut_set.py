@@ -42,7 +42,7 @@ def build(p):
     seat = 0.5 + FLANGE_T + 0.1     # gasket float + flange + nut float
 
     nut = _nut(p)
-    nuts = None
+    nuts = []
     for sx in (+1, -1):
         for ry_a in PORT_YS_A:
             ry = sx * ry_a
@@ -50,6 +50,6 @@ def build(p):
                 for od in (-STUD_PITCH, STUD_PITCH):
                     px = sx * (tip_x + seat * n[0] + od * d[0])
                     pz = tip_z + seat * n[1] + od * d[1]
-                    m = Pos(px, ry + oy, pz) * Rot(Y=-sx * 45) * nut
-                    nuts = m if nuts is None else nuts + m
-    return nuts
+                    nuts.append(Pos(px, ry + oy, pz) * Rot(Y=-sx * 45)
+                                * nut)
+    return Compound(children=nuts)

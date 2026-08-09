@@ -11,7 +11,7 @@ import math
 
 from build123d import *
 
-from agentcad.toolkit import threads
+from agentcad.toolkit import safe_fillet, threads
 
 PLENUM_H = 192.0        # intake plenum axis height (intake default)
 PLENUM_L = 140.0
@@ -30,7 +30,7 @@ PARAMS = {
 }
 
 
-def build(p):
+def _build(p, simple):
     zc = PLENUM_H
 
     def disc(radius, y0, y1):
@@ -53,13 +53,33 @@ def build(p):
     # throttle lever on the +X shaft end
     tb += Pos(p.bore / 2 + 12, mid, zc + 9) * Box(6, 4, 26)
 
-    # flange holes + the four M6 screws into the plenum's tapped circle
-    screw = threads.cap_screw("M6-1", 16.0, simple=True)
+    # counterbored flange holes + four real-threaded M6 screws into the
+    # plenum's tapped circle, heads recessed into the flange
+    screw = threads.cap_screw("M6-1", 12.0, simple=simple)
     for k in range(4):
         a = math.radians(45 + k * 90)
         hx = TB_BOLT_BC * math.cos(a)
         hz = zc + TB_BOLT_BC * math.sin(a)
         tb -= Pos(hx, FACE_Y - 4, hz) * Rot(X=-90) * Cylinder(
             radius=3.2, height=10)
-        tb += Pos(hx, FACE_Y - 8.1, hz) * Rot(X=90) * screw
+        tb -= Pos(hx, FACE_Y - 6.1, hz) * Rot(X=-90) * Cylinder(
+            radius=5.3, height=4.2)
+        tb += Pos(hx, FACE_Y - 4.05, hz) * Rot(X=90) * screw
+
+    # blend the flange/body/trumpet steps
+    rims = [e for e in tb.edges().filter_by(GeomType.CIRCLE)
+            if abs(e.radius - p.flange_d / 2) < 1e-6
+            or abs(e.radius - (p.bore / 2 + 9)) < 1e-6]
+    if rims:
+        tb, _r, _warn = safe_fillet(tb, rims, radius=2.0)
     return tb
+
+
+def build(p):
+    return _build(p, simple=False)
+
+
+def analysis(p):
+    """Conservative envelope for interference checking: cosmetic threads at
+    nominal diameter strictly contain the real thread geometry."""
+    return _build(p, simple=True)

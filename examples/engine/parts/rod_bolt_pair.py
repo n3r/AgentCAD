@@ -18,10 +18,18 @@ PARAMS = {
 }
 
 
+def _build(p, simple):
+    screw = threads.cap_screw("M5-0.8", p.length, simple=simple)
+    pair = [Pos(sgn * p.spacing, 0, -12.05) * Rot(X=180) * screw
+            for sgn in (+1, -1)]
+    return Compound(children=pair)
+
+
 def build(p):
-    screw = threads.cap_screw("M5-0.8", p.length, simple=True)
-    pair = None
-    for sgn in (+1, -1):
-        b = Pos(sgn * p.spacing, 0, -12.05) * Rot(X=180) * screw
-        pair = b if pair is None else pair + b
-    return pair
+    return _build(p, simple=False)
+
+
+def analysis(p):
+    """Conservative envelope for interference checking: cosmetic threads at
+    nominal diameter strictly contain the real thread geometry."""
+    return _build(p, simple=True)

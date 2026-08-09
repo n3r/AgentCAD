@@ -24,17 +24,24 @@ PARAMS = {
 }
 
 
-def build(p):
-    screw = threads.cap_screw("M8-1.25", p.length, simple=True)
-    bolts = None
-    for k in range(6):
-        a = math.radians(60 * k)
-        b = Pos(BOLT_BC / 2 * math.cos(a), BOLT_BC / 2 * math.sin(a),
-                SEAT_Z + p.head_gap) * screw
-        bolts = b if bolts is None else bolts + b
-    return bolts
+def _build(p, simple):
+    screw = threads.cap_screw("M8-1.25", p.length, simple=simple)
+    bolts = [Pos(BOLT_BC / 2 * math.cos(math.radians(60 * k)),
+                 BOLT_BC / 2 * math.sin(math.radians(60 * k)),
+                 SEAT_Z + p.head_gap) * screw for k in range(6)]
+    return Compound(children=bolts)
 
 
 def connectors(p, part):
     """Same seat as the flywheel: rigid-mate to the crank's ``flange``."""
     return {"hub": {"type": "rigid", "location": ((0, 0, 0), (0, 0, 0))}}
+
+
+def build(p):
+    return _build(p, simple=False)
+
+
+def analysis(p):
+    """Conservative envelope for interference checking: cosmetic threads at
+    nominal diameter strictly contain the real thread geometry."""
+    return _build(p, simple=True)

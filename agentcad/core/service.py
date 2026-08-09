@@ -390,7 +390,7 @@ class AgentCADService:
             return {"pairs": [], "checked": len(items)}
         result = self.kernel.request(
             "interference", {"items": items, "min_volume": min_volume},
-            timeout_s=300.0,
+            timeout_s=600.0,  # large assemblies: pairs grow quadratically
         )
         out = {"pairs": result["pairs"], "checked": len(items)}
         if result.get("skipped_mesh"):
