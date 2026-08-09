@@ -36,6 +36,15 @@ def test_health(client):
     assert data["chat_available"] is False
 
 
+def test_frontend_theme_assets(client):
+    index = client.get("/").text
+    assert 'id="theme-btn"' in index
+    assert 'localStorage.getItem("agentcad.theme")' in index  # pre-paint restore
+    css = client.get("/css/app.css").text
+    assert ':root[data-theme="light"]' in css
+    assert client.get("/js/theme.js").status_code == 200
+
+
 def test_project_and_part_flow(demo):
     projects = demo.get("/api/projects").json()["projects"]
     assert projects[0]["name"] == "demo"
