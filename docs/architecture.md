@@ -173,8 +173,17 @@ export.
 
 A local, single-user engineering tool. Part scripts execute with user
 privileges inside the worker subprocess — the same trust model as running any
-code an agent writes in your working directory. Mitigations: the server binds
-`127.0.0.1` only; kernel requests time out; the worker is isolated so kernel
-crashes never take down the app; scripts live in the project directory where
-humans review them; the Anthropic API key is read from the environment and
-never persisted. OS-level sandboxing is on the roadmap.
+code an agent writes in your working directory. On macOS the worker is
+additionally confined by a seatbelt profile (`agentcad/kernel/sandbox.py`,
+via `/usr/bin/sandbox-exec`): deny-by-default, global read, writes allowed
+only inside the project roots (projects dir, registered examples,
+`~/.agentcad`, the system temp dir), and no network. A script can still
+compute anything and read world-readable files, but it cannot modify files
+outside its projects and cannot reach the network from inside the worker.
+`/api/health` reports the effective state (`"sandbox": "active" | "off" |
+"unsupported"`); opt out with `AGENTCAD_NO_SANDBOX=1` or `{"sandbox": false}`
+in `~/.agentcad/config.json` (env wins). Unchanged mitigations: the server
+binds `127.0.0.1` only; kernel requests time out; the worker is isolated so
+kernel crashes never take down the app; scripts live in the project directory
+where humans review them; the Anthropic API key is read from the environment
+and never persisted. Windows/Linux confinement is on the roadmap.

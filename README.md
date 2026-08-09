@@ -146,9 +146,13 @@ def build(p):
 
 AgentCAD is a local, single-user tool. Part scripts are Python and run with
 your privileges in an isolated kernel subprocess — review what agents write,
-the same way you review the code they write anywhere else. The server binds
-`127.0.0.1` only; kernel requests time out and the worker auto-respawns; the
-API key is read from the environment and never stored. Details in
+the same way you review the code they write anywhere else. On macOS the
+kernel worker additionally runs under a deny-by-default `sandbox-exec`
+profile: scripts can write only inside your project folders (+tmp) and have
+no network access — `GET /api/health` shows `"sandbox": "active"`; opt out
+with `AGENTCAD_NO_SANDBOX=1`. The server binds `127.0.0.1` only; kernel
+requests time out and the worker auto-respawns; the API key is read from the
+environment and never stored. Details in
 [docs/architecture.md](docs/architecture.md#trust-model).
 
 ## Project layout

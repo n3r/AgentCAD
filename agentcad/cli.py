@@ -30,11 +30,35 @@ def _build_service(projects_dir: Path):
     from .kernel.pool import KernelPool
 
     size = get_kernel_pool_size()
-    kernel = KernelClient() if size == 1 else KernelPool(size=size)
+    writable = _writable_roots(projects_dir)
+    if size == 1:
+        kernel = KernelClient(writable_dirs=writable)
+    else:
+        kernel = KernelPool(size=size, writable_dirs=writable)
     kernel.start()
     service = AgentCADService(projects_dir, kernel, EventBus())
     _register_examples(service)
     return service
+
+
+def _writable_roots(projects_dir: Path) -> list[str]:
+    """Directories the sandboxed kernel workers may write to: the projects
+    dir (part .cache meshes, exports/), the user config dir, each registered
+    example project, and the system temp dir (added by the profile builder
+    too, listed here for status transparency)."""
+    import tempfile
+
+    roots = [
+        str(projects_dir),
+        str(Path.home() / ".agentcad"),
+        tempfile.gettempdir(),
+    ]
+    examples = REPO_ROOT / "examples"
+    if examples.is_dir():
+        for child in sorted(examples.iterdir()):
+            if (child / "project.json").is_file():
+                roots.append(str(child))
+    return roots
 
 
 def _register_examples(service) -> None:

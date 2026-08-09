@@ -150,8 +150,11 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   meshes. Cache key = `sha256(content, params, density, tolerance)`.
 - **Security/trust**: server binds `127.0.0.1` only, with a Host-allowlist +
   same-origin guard (`server/app._browser_request_allowed`) on HTTP and WS.
-  Part scripts run with user privileges by design (local single-user tool) —
-  document, don't sandbox-theater. API key from env only, never persisted.
+  Part scripts run with user privileges by design (local single-user tool);
+  on macOS the kernel worker is additionally confined by a deny-by-default
+  `sandbox-exec` profile (`kernel/sandbox.py`: writes only in project roots,
+  no network; `AGENTCAD_NO_SANDBOX=1` opts out). API key from env only,
+  never persisted.
 - Comment density and style: match the surrounding file. Comments state
   constraints the code can't, not narration.
 

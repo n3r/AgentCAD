@@ -25,6 +25,7 @@ from ..core.model import (
 )
 from ..core.service import AgentCADService
 from ..core.tools import ToolRegistry
+from ..kernel import sandbox
 from ..kernel.client import KernelError
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
@@ -127,6 +128,11 @@ def create_app(
             "version": agentcad.__version__,
             "kernel": "ready" if service.kernel.alive else "starting",
             "chat_available": bool(chat_engine and chat_engine.available),
+            # Reflects the ACTUAL kernel the service runs (the client decides
+            # at construction and exposes .sandboxed), not a config recompute.
+            "sandbox": sandbox.status(
+                getattr(service.kernel, "sandboxed", False)
+            ),
         }
 
     # ------------------------------------------------------------ projects

@@ -8,12 +8,14 @@ hangs, crashes, or EOF. Thread-safe; one request in flight at a time.
 from __future__ import annotations
 
 import json
+import os
 import queue
 import subprocess
 import sys
 import threading
 from collections import deque
 
+from . import sandbox
 from .protocol import ERROR_CRASH, ERROR_TIMEOUT
 
 STARTUP_TIMEOUT_S = 180.0  # first ping pays the build123d import cost
@@ -31,7 +33,13 @@ class KernelError(Exception):
 
 
 class KernelClient:
-    def __init__(self, python_exe: str | None = None, timeout_s: float = 60.0):
+    def __init__(
+        self,
+        python_exe: str | None = None,
+        timeout_s: float = 60.0,
+        *,
+        writable_dirs: list[str] | None = None,
+    ):
         self._python = python_exe or sys.executable
         self._timeout = timeout_s
         self._proc: subprocess.Popen | None = None
@@ -39,6 +47,15 @@ class KernelClient:
         self._stderr_tail: deque[str] = deque(maxlen=200)
         self._lock = threading.Lock()
         self._next_id = 0
+        # Sandboxing is decided once, at construction, so every respawn of a
+        # timed-out/crashed worker gets the identical confinement. With
+        # writable_dirs=None (the default) the argv is exactly the historical
+        # one — no sandbox module behavior can affect existing callers.
+        argv = [self._python, "-u", "-m", "agentcad.kernel.worker"]
+        if writable_dirs is not None:
+            argv = sandbox.wrap_argv(argv, list(writable_dirs))
+        self.sandboxed: bool = argv[0:1] == [sandbox.SANDBOX_EXEC]
+        self._argv = argv
 
     # ------------------------------------------------------------- lifecycle
 
@@ -59,14 +76,20 @@ class KernelClient:
             return
         self._lines = queue.Queue()
         self._stderr_tail.clear()
+        env = None
+        if self.sandboxed:
+            # The profile denies writes to site-packages; don't even attempt
+            # .pyc writes there (each would be a denied open + sandbox log).
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
         self._proc = subprocess.Popen(
-            [self._python, "-u", "-m", "agentcad.kernel.worker"],
+            self._argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             bufsize=1,
+            env=env,
         )
         threading.Thread(
             target=self._drain_stdout, args=(self._proc, self._lines), daemon=True

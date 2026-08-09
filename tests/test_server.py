@@ -34,6 +34,8 @@ def test_health(client):
     assert data["status"] == "ok"
     assert data["kernel"] in ("ready", "starting")
     assert data["chat_available"] is False
+    # the shared session kernel is never sandboxed, so "active" is impossible
+    assert data["sandbox"] in ("off", "unsupported")
 
 
 def test_project_and_part_flow(demo):
