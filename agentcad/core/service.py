@@ -520,14 +520,20 @@ class AgentCADService:
         return self.materials.density(proj, material_id)
 
     def _content_signature(self, proj: str, record) -> str:
-        """Cache-key content for a part: script text for scripts, or file
-        identity (path+mtime+size) for reference parts."""
+        """Cache-key content for a part: script text for scripts, or the
+        imported file's content hash for reference parts.
+
+        Content, not path+mtime: imports/ is per working tree, so a branch
+        checkout restamps the mtime of a byte-identical file and would
+        otherwise mint a fresh cache key on every branch (breaking FR13's
+        determinism guarantee, and forcing a rebuild after every restore).
+        """
         if record.kind == "reference":
             src = self.store.imports_dir(proj) / Path(record.source).name \
                 if record.source else None
             if src and src.is_file():
-                st = src.stat()
-                return f"ref:{record.source}:{st.st_mtime_ns}:{st.st_size}"
+                digest = hashlib.sha256(src.read_bytes()).hexdigest()
+                return f"ref:{record.source}:sha256:{digest}"
             return f"ref:{record.source}:missing"
         return self.store.read_script(proj, record.id)
 

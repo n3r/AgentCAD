@@ -47,6 +47,12 @@ class ProjectStore:
         # (which all pack mutations funnel through) and write_script — and may
         # raise (ConflictError) to reject the write. None means unguarded.
         self.write_guard: Callable[[str], None] | None = None
+        # Branch resolver (set post-init by the versioning pack's
+        # BranchManager): maps (project, canonical path) to the working tree
+        # of the *calling client's* branch, so every authored-state read and
+        # write below becomes branch-aware without touching its call sites.
+        # None means "no branching": the project directory is the only tree.
+        self.branch_resolver: Callable[[str, Path], Path] | None = None
 
     # ------------------------------------------------------------- projects
 
@@ -58,6 +64,10 @@ class ProjectStore:
         found.update(self._external)
         out = []
         for name, path in sorted(found.items()):
+            # Report each project as the caller's branch sees it (part counts
+            # and path), not as the canonical directory does.
+            if self.branch_resolver is not None:
+                path = self.branch_resolver(name, path)
             try:
                 manifest = self._read_manifest(path)
             except ValidationError:
@@ -86,7 +96,7 @@ class ProjectStore:
         manifest = self._read_manifest(path)
         name = manifest.get("name", "")
         validate_id(name, "project name")
-        existing = self._resolve(name) if self._exists(name) else None
+        existing = self.canonical_path_of(name) if self._exists(name) else None
         if existing is not None and existing != path:
             raise ConflictError(
                 f"a different project named {name!r} is already registered"
@@ -95,7 +105,20 @@ class ProjectStore:
         return name
 
     def path_of(self, proj: str) -> Path:
+        """The calling client's working tree for ``proj`` (the project
+        directory unless a branch resolver says otherwise)."""
         return self._resolve(proj)
+
+    def canonical_path_of(self, proj: str) -> Path:
+        """The project directory itself — the default branch's working tree
+        and the home of shared, derived data (``.cache/``)."""
+        return self._locate(proj)
+
+    def lock_key(self, proj: str) -> str:
+        """Key for per-branch turn locks and undo stacks: the project name
+        when branching is inactive, otherwise the resolved working-tree path
+        (so two clients on two branches never contend)."""
+        return proj if self.branch_resolver is None else str(self._resolve(proj))
 
     # ---------------------------------------------------------------- parts
 
@@ -281,7 +304,9 @@ class ProjectStore:
         self._write_manifest(self._resolve(proj), manifest)
 
     def cache_dir(self, proj: str) -> Path:
-        path = self._resolve(proj) / ".cache"
+        # Canonical, never per-branch: cache keys are content-addressed, so
+        # identical script+params on any branch must hit the same entry (FR13).
+        path = self.canonical_path_of(proj) / ".cache"
         path.mkdir(exist_ok=True)
         return path
 
@@ -299,12 +324,19 @@ class ProjectStore:
 
     def _exists(self, proj: str) -> bool:
         try:
-            self._resolve(proj)
+            self._locate(proj)
             return True
         except NotFoundError:
             return False
 
     def _resolve(self, proj: str) -> Path:
+        """Working tree of the calling client's branch — what every authored
+        state read/write below goes through."""
+        canonical = self._locate(proj)
+        resolver = self.branch_resolver
+        return canonical if resolver is None else resolver(proj, canonical)
+
+    def _locate(self, proj: str) -> Path:
         if proj in self._external:
             return self._external[proj]
         path = self.root / proj

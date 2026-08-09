@@ -24,7 +24,11 @@ def register(registry, service) -> None:
     def acquire_turn(project: str, ttl_s: float = locks.DEFAULT_TTL_S) -> dict:
         service.store.manifest(project)  # existence check -> notfound_error
         holder = locks.current_client_id()
-        info = service.turnlock.acquire(project, holder, ttl_s)
+        # lock_key is the project name unless branching is active, where it is
+        # the caller's working tree: the turn is per-branch, not per-project.
+        info = service.turnlock.acquire(
+            service.store.lock_key(project), holder, ttl_s
+        )
         service.bus.publish(
             {"type": "lock_changed", "project": project, "holder": info["holder"]}
         )
@@ -32,7 +36,9 @@ def register(registry, service) -> None:
 
     def release_turn(project: str) -> dict:
         holder = locks.current_client_id()
-        result = service.turnlock.release(project, holder)
+        result = service.turnlock.release(
+            service.store.lock_key(project), holder
+        )
         service.bus.publish(
             {"type": "lock_changed", "project": project, "holder": None}
         )
@@ -40,7 +46,7 @@ def register(registry, service) -> None:
 
     def get_turn(project: str) -> dict:
         return {
-            "lock": service.turnlock.get(project),
+            "lock": service.turnlock.get(service.store.lock_key(project)),
             "you": locks.current_client_id(),
         }
 

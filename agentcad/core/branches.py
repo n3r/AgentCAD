@@ -1,0 +1,449 @@
+"""Per-project branches, worktrees and immutable versions (tags).
+
+Branches are native git refs in the project's existing ``.history`` repo, so
+``git log``/``diff``/``clone`` on a project see true branches and tags. The
+**default branch keeps the project directory** as its working tree — an
+unbranched project is byte-identical on disk to a pre-branching one, and the
+migration is a no-op — while every *other* branch gets a linked git worktree
+at ``<project>/.history/trees/<branch>/``. (Not ``.history/worktrees/``: that
+path is git's own per-worktree admin directory.)
+
+Switching is a pointer update, not a checkout: ``BranchManager.resolve_path``
+is installed as ``ProjectStore.branch_resolver``, so every authored-state read
+and write already funnelling through ``ProjectStore._resolve`` lands in the
+*calling client's* branch tree. Client identity is the ContextVar turn-locking
+already stamps (``locks.current_client_id()``), so the browser, each MCP agent
+and each chat lane can sit on different branches of one project concurrently.
+Derived data does not move: ``.cache/`` stays canonical and content-addressed,
+so a mesh built on one branch is a cache hit on every other (FR13).
+
+Sidecar state lives under ``.history/agentcad/`` (inside GIT_DIR, therefore
+never committed): ``config.json`` (the discovered default branch),
+``checkouts.json`` (per-client branch + branch → worktree directory names) and
+``tags.json`` (version referrers, for PRD-015).
+
+All git goes through ``ProjectHistory._run`` so the hermetic environment, the
+10 s timeout and the single git-executable probe are inherited.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
+from pathlib import Path
+from typing import Iterator
+
+from . import locks
+from .history import HistoryError, valid_ref_name
+from .model import ConflictError, NotFoundError, ValidationError
+from .project import ProjectStore
+
+# Branch names (FR1): lowercase, never starting with '-' (which git would read
+# as an option), no dots (tags may have them, branches may not).
+_BRANCH_RE = re.compile(r"^[a-z0-9][a-z0-9_/-]{0,63}$")
+
+# Highest-precedence override of branch resolution, used by the merge
+# validation pass (slice 3) to run ordinary service calls against a staged
+# worktree. Explicit and short-lived: set only inside ``pinned()``.
+pinned_tree_var: ContextVar[Path | None] = ContextVar(
+    "agentcad_pinned_tree", default=None
+)
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+class BranchManager:
+    """Branch/tag operations plus the per-client branch resolver.
+
+    Constructing one installs ``store.branch_resolver`` — that is the whole
+    integration: no service method changes, because the snapshot hook, the
+    turn lock and the undo cursor all key off the store's resolved path.
+    """
+
+    def __init__(self, service) -> None:
+        self.service = service
+        self.store: ProjectStore = service.store
+        self.history = service.history
+        self._lock = threading.RLock()
+        self._state: dict[str, dict] = {}
+        self.store.branch_resolver = self.resolve_path
+
+    # ------------------------------------------------------------ resolution
+
+    def resolve_path(self, proj: str, canonical: Path) -> Path:
+        """Working tree for ``proj`` in the calling context. Never raises —
+        an unreadable sidecar or a missing worktree degrades to the canonical
+        project directory, which is always a valid project."""
+        pinned = pinned_tree_var.get()
+        if pinned is not None:
+            return Path(pinned)
+        try:
+            state = self._state_for(proj)
+            branch = state["clients"].get(locks.current_client_id())
+            dirname = state["trees"].get(branch) if branch else None
+            if not dirname:
+                return canonical  # default branch (or not materialized)
+            tree = canonical / ".history" / "trees" / dirname
+            return tree if (tree / "project.json").is_file() else canonical
+        except Exception:  # noqa: BLE001 — resolution must never break a read
+            return canonical
+
+    @contextmanager
+    def pinned(self, proj: str, path: Path) -> Iterator[None]:
+        """Force every store path in this context to ``path`` (all projects —
+        the merge validation pass works on one project at a time)."""
+        token = pinned_tree_var.set(Path(path))
+        try:
+            yield
+        finally:
+            pinned_tree_var.reset(token)
+
+    # ---------------------------------------------------------------- state
+
+    def _agentcad_dir(self, canonical: Path) -> Path:
+        return canonical / ".history" / "agentcad"
+
+    def _state_for(self, proj: str) -> dict:
+        with self._lock:
+            state = self._state.get(proj)
+            if state is None:
+                state = self._load(proj)
+                self._state[proj] = state
+            return state
+
+    def _load(self, proj: str) -> dict:
+        canonical = self.store.canonical_path_of(proj)
+        base = self._agentcad_dir(canonical)
+        checkouts = _read_json(base / "checkouts.json")
+        state = {
+            "default": _read_json(base / "config.json").get("default_branch"),
+            "clients": {
+                str(k): str(v)
+                for k, v in (checkouts.get("clients") or {}).items()
+            },
+            "trees": {
+                str(k): str(v)
+                for k, v in (checkouts.get("trees") or {}).items()
+            },
+        }
+        if state["clients"] or state["trees"]:
+            # Drop entries naming branches that no longer exist (deleted by
+            # this app or by a power user running raw git).
+            known = {b["name"] for b in self.history.branches(canonical)}
+            state["clients"] = {
+                c: b for c, b in state["clients"].items() if b in known
+            }
+            state["trees"] = {
+                b: d for b, d in state["trees"].items() if b in known
+            }
+        return state
+
+    def _save(self, proj: str, state: dict) -> None:
+        base = self._agentcad_dir(self.store.canonical_path_of(proj))
+        ProjectStore._atomic_write(
+            base / "checkouts.json",
+            json.dumps({"clients": state["clients"], "trees": state["trees"]},
+                       indent=2).encode(),
+        )
+
+    # -------------------------------------------------------------- plumbing
+
+    def _run(self, path: Path, *args: str, check: bool = True):
+        try:
+            return self.history._run(path, *args, check=check)
+        except HistoryError as exc:
+            raise ValidationError(str(exc)) from exc
+
+    def _ensure_history(self, proj: str) -> Path:
+        """Canonical project path, guaranteed to have a repo with a commit.
+
+        Decision 8's migration: the repo (and the first snapshot for a project
+        that was never mutated) is created lazily on the first branching call;
+        whatever linear history exists simply *is* the default branch's.
+        """
+        if not self.history.available():
+            raise ValidationError("branching unavailable: git not found on PATH")
+        canonical = self.store.canonical_path_of(proj)
+        self.history._ensure_repo(canonical)
+        if self.history.head(canonical) is None:
+            self.history.snapshot(canonical, "initial snapshot")
+            if self.history.head(canonical) is None:
+                raise ValidationError(
+                    f"could not initialize history for project {proj!r}"
+                )
+        return canonical
+
+    @staticmethod
+    def _validate_branch_name(name: object) -> str:
+        if not isinstance(name, str) or not _BRANCH_RE.match(name) \
+                or not valid_ref_name(name):
+            raise ValidationError(
+                f"invalid branch name {name!r}",
+                {"pattern": _BRANCH_RE.pattern,
+                 "note": "lowercase; no '..', trailing '/', '.lock' or '@{'"},
+            )
+        return name
+
+    @staticmethod
+    def _validate_tag_name(name: object) -> str:
+        # Tags additionally allow dots, so 'v1.2' is a legal version name.
+        if not isinstance(name, str) or not valid_ref_name(name):
+            raise ValidationError(
+                f"invalid version name {name!r}",
+                {"pattern": r"^[a-z0-9][a-z0-9._/-]{0,63}$"},
+            )
+        return name
+
+    def _branch_names(self, canonical: Path) -> set[str]:
+        return {b["name"] for b in self.history.branches(canonical)}
+
+    # -------------------------------------------------------------- branches
+
+    def default_branch(self, proj: str) -> str:
+        """The branch whose working tree is the project directory. Discovered
+        from the repo (never assumed) and pinned in config.json, so a later
+        change to git's ``init.defaultBranch`` cannot re-point old projects."""
+        state = self._state_for(proj)
+        if state["default"]:
+            return state["default"]
+        canonical = self.store.canonical_path_of(proj)
+        if not self.history.available() or not self.history._has_repo(canonical):
+            return "master"  # not yet a repo: nothing to persist
+        result = self._run(canonical, "symbolic-ref", "--short", "HEAD",
+                           check=False)
+        name = result.stdout.strip() if result.returncode == 0 else ""
+        name = name or "master"
+        state["default"] = name
+        ProjectStore._atomic_write(
+            self._agentcad_dir(canonical) / "config.json",
+            json.dumps({"default_branch": name}, indent=2).encode(),
+        )
+        return name
+
+    def current(self, proj: str, client: str | None = None) -> str:
+        client = client or locks.current_client_id()
+        branch = self._state_for(proj)["clients"].get(client)
+        return branch or self.default_branch(proj)
+
+    def list(self, proj: str) -> dict:
+        canonical = self._ensure_history(proj)
+        state = self._state_for(proj)
+        default = self.default_branch(proj)
+        current = self.current(proj)
+        branches = []
+        for entry in self.history.branches(canonical):
+            name = entry["name"]
+            branches.append({
+                **entry,
+                "is_default": name == default,
+                "is_current": name == current,
+                "checked_out_by": sorted(
+                    c for c, b in state["clients"].items() if b == name
+                ),
+            })
+        return {
+            "branches": branches,
+            "current": current,
+            "default": default,
+            "you": locks.current_client_id(),
+        }
+
+    def create(self, proj: str, name: str, from_ref: str | None = None) -> dict:
+        """Create a branch and materialize its working tree. Does NOT switch
+        the caller (branch_switch does that, so an agent can prepare a branch
+        for someone else)."""
+        self._validate_branch_name(name)
+        canonical = self._ensure_history(proj)
+        with self._lock:
+            state = self._state_for(proj)
+            if name in self._branch_names(canonical):
+                raise ConflictError(f"branch {name!r} already exists")
+            source = from_ref or self.current(proj)
+            commit = self.history.resolve_ref(canonical, source)
+            if commit is None:
+                raise NotFoundError(f"unknown branch, tag or commit {source!r}")
+            result = self._run(canonical, "branch", name, commit, check=False)
+            if result.returncode != 0:
+                # e.g. 'feat' when 'feat/x' exists — git's own ref rules.
+                raise ValidationError(
+                    f"git refused branch {name!r}: "
+                    f"{result.stderr.strip() or result.stdout.strip()}"
+                )
+            state["trees"][name] = self._materialize(canonical, state, name)
+            self._save(proj, state)
+        payload = self.list(proj)
+        payload["created"] = name
+        return payload
+
+    def switch(self, proj: str, name: str) -> str:
+        """Point the calling client at ``name``. O(1): the tree already
+        exists. Snapshots the tree being left first, so a branch boundary is
+        always a clean, restorable state (FR3)."""
+        canonical = self._ensure_history(proj)
+        if name not in self._branch_names(canonical):
+            raise NotFoundError(f"branch {name!r} not found")
+        client = locks.current_client_id()
+        with self._lock:
+            state = self._state_for(proj)
+            self.history.snapshot(
+                self.store.path_of(proj), f"checkpoint before switch to {name}"
+            )
+            if name == self.default_branch(proj):
+                state["trees"].pop(name, None)
+            else:
+                state["trees"][name] = self._materialize(canonical, state, name)
+            state["clients"][client] = name
+            self._save(proj, state)
+        self.service.bus.publish(
+            {"type": "branch_changed", "project": proj, "client": client,
+             "branch": name}
+        )
+        return name
+
+    def delete(self, proj: str, name: str) -> dict:
+        canonical = self._ensure_history(proj)
+        if name == self.default_branch(proj):
+            raise ValidationError(f"cannot delete the default branch {name!r}")
+        with self._lock:
+            state = self._state_for(proj)
+            holders = sorted(
+                c for c, b in state["clients"].items() if b == name
+            )
+            if holders:
+                raise ValidationError(
+                    f"branch {name!r} is checked out by "
+                    f"{', '.join(holders)}; switch away first",
+                    {"checked_out_by": holders},
+                )
+            if name not in self._branch_names(canonical):
+                raise NotFoundError(f"branch {name!r} not found")
+            dirname = state["trees"].get(name)
+            if dirname:
+                self._run(canonical, "worktree", "remove", "--force",
+                          str(canonical / ".history" / "trees" / dirname),
+                          check=False)
+            self._run(canonical, "worktree", "prune", check=False)
+            result = self._run(canonical, "branch", "-D", name, check=False)
+            if result.returncode != 0:
+                raise ConflictError(
+                    f"could not delete branch {name!r}: "
+                    f"{result.stderr.strip() or result.stdout.strip()}"
+                )
+            state["trees"].pop(name, None)
+            self._save(proj, state)
+        payload = self.list(proj)
+        payload["deleted"] = name
+        return payload
+
+    def tree_of(self, proj: str, branch: str) -> Path:
+        """Working tree of ``branch`` (materializing it if needed)."""
+        canonical = self._ensure_history(proj)
+        if branch == self.default_branch(proj):
+            return canonical
+        if branch not in self._branch_names(canonical):
+            raise NotFoundError(f"branch {branch!r} not found")
+        with self._lock:
+            state = self._state_for(proj)
+            dirname = self._materialize(canonical, state, branch)
+            state["trees"][branch] = dirname
+            self._save(proj, state)
+        return canonical / ".history" / "trees" / dirname
+
+    # ------------------------------------------------------------- worktrees
+
+    def _materialize(self, canonical: Path, state: dict, name: str) -> str:
+        """Ensure a linked worktree exists for ``name``; return its directory
+        name under ``.history/trees/``."""
+        dirname = state["trees"].get(name) or self._tree_dirname(state, name)
+        target = canonical / ".history" / "trees" / dirname
+        if (target / "project.json").is_file():
+            return dirname
+        # A tree deleted out from under git stays registered and 'prunable',
+        # and blocks re-adding the same path — prune before every add.
+        self._run(canonical, "worktree", "prune", check=False)
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        result = self._run(canonical, "worktree", "add", str(target), name,
+                           check=False)
+        if result.returncode != 0:
+            raise ValidationError(
+                f"could not create a working tree for branch {name!r}: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+        return dirname
+
+    @staticmethod
+    def _tree_dirname(state: dict, name: str) -> str:
+        """Directory name for a branch: '/' is not a directory separator here,
+        so 'feat/x' becomes 'feat-x', disambiguated on collision."""
+        base = name.replace("/", "-") or "branch"
+        taken = set(state["trees"].values())
+        if base not in taken:
+            return base
+        for suffix in range(2, 100):
+            candidate = f"{base}-{suffix}"
+            if candidate not in taken:
+                return candidate
+        raise ConflictError(f"too many branch directories named like {base!r}")
+
+    # ------------------------------------------------------------------ tags
+
+    def tag(self, proj: str, name: str, message: str | None = None) -> dict:
+        """Create an immutable named version at the caller's branch head.
+
+        Annotated (so it carries author, date and message). Moving or
+        re-pointing a version is refused — there is deliberately no delete
+        tool, which is what makes FR5 hold.
+        """
+        self._validate_tag_name(name)
+        canonical = self._ensure_history(proj)
+        if name in {t["name"] for t in self.history.tags(canonical)}:
+            raise ConflictError(
+                f"version {name!r} already exists; versions are immutable"
+            )
+        tree = self.store.path_of(proj)
+        self.history.snapshot(tree, f"checkpoint before version {name}")
+        result = self._run(tree, "tag", "-a", name, "-m", message or name,
+                           check=False)
+        if result.returncode != 0:
+            raise ValidationError(
+                f"could not create version {name!r}: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+        records = _read_json(self._agentcad_dir(canonical) / "tags.json")
+        records[name] = {"referrers": []}
+        ProjectStore._atomic_write(
+            self._agentcad_dir(canonical) / "tags.json",
+            json.dumps(records, indent=2).encode(),
+        )
+        return {
+            "tag": name,
+            "commit": self.history.resolve_ref(tree, name),
+            "versions": self.versions(proj),
+        }
+
+    def versions(self, proj: str) -> list[dict]:
+        """Tags newest-first: {name, commit, ts, author, message, referrers}.
+
+        Tag timestamps have one-second resolution, so ties break on the name
+        (descending) to keep the order deterministic.
+        """
+        canonical = self.store.canonical_path_of(proj)
+        records = _read_json(self._agentcad_dir(canonical) / "tags.json")
+        rows = self.history.tags(canonical)
+        rows.sort(key=lambda r: (r["ts"], r["name"]), reverse=True)
+        for row in rows:
+            entry = records.get(row["name"]) or {}
+            row["referrers"] = list(entry.get("referrers") or [])
+        return rows
