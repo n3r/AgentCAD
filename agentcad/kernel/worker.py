@@ -337,11 +337,18 @@ def _shape_volume(shape) -> float:
     return float(shape.volume)
 
 
-def _metrics(shape, density_g_cm3: float) -> dict:
+def _metrics(shape, density_g_cm3: float, densities: dict | None = None,
+             labels: list | None = None) -> dict:
+    """Whole-shape metrics; multi-solid shapes additionally get a per-solid
+    ``solids`` list. ``labels`` names solids by index (fallback "solid_<i>");
+    ``densities`` maps label-or-index-string to a density override, a solid's
+    density resolving label match > index match > ``density_g_cm3``. The
+    aggregate mass of a multi-solid shape is the sum of per-solid masses;
+    single-solid shapes keep the plain volume*density math."""
     volume = _shape_volume(shape)
     bb = shape.bounding_box()
     com = shape.center(b3d.CenterOf.MASS)
-    return {
+    out = {
         "volume_mm3": volume,
         "area_mm2": float(shape.area),
         "mass_g": volume * density_g_cm3 / 1000.0,
@@ -355,6 +362,33 @@ def _metrics(shape, density_g_cm3: float) -> dict:
         "n_edges": len(shape.edges()),
         "n_solids": len(shape.solids()),
     }
+    solids = shape.solids()
+    if len(solids) > 1:
+        per_solid = []
+        for i, solid in enumerate(solids):
+            label = labels[i] if labels and i < len(labels) else f"solid_{i}"
+            density = density_g_cm3
+            if densities:
+                if label in densities:
+                    density = float(densities[label])
+                elif str(i) in densities:
+                    density = float(densities[str(i)])
+            solid_volume = float(solid.volume)
+            sbb = solid.bounding_box()
+            scom = solid.center(b3d.CenterOf.MASS)
+            per_solid.append({
+                "label": label,
+                "volume_mm3": solid_volume,
+                "mass_g": solid_volume * density / 1000.0,
+                "bbox": {
+                    "min": [sbb.min.X, sbb.min.Y, sbb.min.Z],
+                    "max": [sbb.max.X, sbb.max.Y, sbb.max.Z],
+                },
+                "center_of_mass": [scom.X, scom.Y, scom.Z],
+            })
+        out["solids"] = per_solid
+        out["mass_g"] = float(sum(s["mass_g"] for s in per_solid))
+    return out
 
 
 def _place(shape, position, rotation_deg):
@@ -430,15 +464,49 @@ def _normalized_spec_entry(entry: dict) -> dict:
     return out
 
 
+def _solid_labels(ns: dict) -> list | None:
+    """Optional SOLID_LABELS contract addition: a list of solid names applied
+    by index. Advisory — extra labels beyond n_solids are ignored (with a
+    warning added by handle_build)."""
+    labels = ns.get("SOLID_LABELS")
+    if labels is None:
+        return None
+    if not isinstance(labels, list) or not all(
+        isinstance(label, str) for label in labels
+    ):
+        raise WorkerError(
+            ERROR_CONTRACT, "SOLID_LABELS must be a list of strings"
+        )
+    return labels
+
+
 def handle_build(params: dict) -> dict:
-    shape, _values, warnings = build_shape(params["script"], params.get("params", {}))
+    shape, _values, warnings, ns = build_shape_ns(
+        params["script"], params.get("params", {})
+    )
+    labels = _solid_labels(ns)
     tolerance = float(params.get("tolerance", 0.1))
     buffer = tessellate(shape.wrapped, tolerance)
     _atomic_write(params["mesh_path"], buffer)
-    return {
-        "metrics": _metrics(shape, float(params.get("density_g_cm3", 1.0))),
-        "warnings": warnings,
-    }
+    densities = params.get("densities") or {}
+    metrics = _metrics(
+        shape,
+        float(params.get("density_g_cm3", 1.0)),
+        densities=densities or None,
+        labels=labels,
+    )
+    warnings = list(warnings)
+    if labels and len(labels) > metrics["n_solids"]:
+        warnings.append(
+            f"SOLID_LABELS has {len(labels)} labels but the part has "
+            f"{metrics['n_solids']} solid(s); extra labels are ignored"
+        )
+    solids = metrics.get("solids") or []
+    matchable = {s["label"] for s in solids} | {str(i) for i in range(len(solids))}
+    for key in sorted(densities):
+        if key not in matchable:
+            warnings.append(f"solid_materials: no solid matches {key}")
+    return {"metrics": metrics, "warnings": warnings}
 
 
 def handle_export(params: dict) -> dict:

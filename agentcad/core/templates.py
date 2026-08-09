@@ -44,6 +44,10 @@ A part is a plain build123d Python script defining exactly two things:
 2. build(p): receives an attribute namespace of resolved values (p.name)
    and must return a build123d Part, Solid, or Compound.
 
+Optional: SOLID_LABELS = ["body", "lid"]  # names a multi-solid Compound's
+solids by index; metrics.solids and set_solid_materials address solids by
+these labels (fallback solid_0, solid_1, ...).
+
 Units are millimeters; angles in degrees. Scripts run in a kernel worker
 with a 60 s timeout. Do not read files, loop forever, or print protocol
 noise — stdout is redirected. Raise exceptions freely: tracebacks are

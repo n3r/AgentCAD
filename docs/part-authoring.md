@@ -79,6 +79,24 @@ timeout, stdout redirected (use exceptions, not prints, to signal problems —
 tracebacks come back with the failing line number). Same script + same
 parameters → identical geometry, always.
 
+## Multi-solid parts and SOLID_LABELS
+
+A part whose `build(p)` returns a multi-solid `Compound` reports per-solid
+metrics: `metrics.solids` is an index-ordered list of
+`{label, volume_mm3, mass_g, bbox, center_of_mass}` alongside the whole-part
+aggregates. Optionally name the solids with a module-level
+
+```python
+SOLID_LABELS = ["body", "lid"]   # applied by index; must be a list of strings
+```
+
+Unnamed solids fall back to `solid_0`, `solid_1`, …; extra labels beyond the
+actual solid count are ignored with a warning (anything but a list of strings
+is a `contract_error`). Labels exist so agents and the `set_solid_materials`
+tool can address individual solids: assigning `{"lid": "steel_a36"}` gives
+that solid its own density, and the part's aggregate `mass_g` becomes the sum
+of per-solid masses. Single-solid parts are unchanged.
+
 ## Design for parameter robustness
 
 Your part must stay **manifold at every parameter extreme**, because sliders

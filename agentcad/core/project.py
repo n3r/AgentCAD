@@ -106,6 +106,7 @@ class ProjectStore:
                     params=dict(entry.get("params", {})),  # JSON scalars pass through
                     kind=entry.get("kind", "script"),
                     source=entry.get("source"),
+                    solid_materials=entry.get("solid_materials"),
                 )
         raise NotFoundError(f"part {part_id!r} not found in project {proj!r}")
 

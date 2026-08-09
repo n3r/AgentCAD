@@ -50,6 +50,7 @@ class PartRecord:
     params: dict[str, float | int | bool | str] = field(default_factory=dict)
     kind: str = "script"  # "script" | "reference"
     source: str | None = None  # reference parts only: project-relative import path
+    solid_materials: dict[str, str] | None = None  # solid label/index -> material id
 
     def to_manifest(self) -> dict:
         data = {
@@ -62,6 +63,8 @@ class PartRecord:
             data["kind"] = self.kind
         if self.source is not None:
             data["source"] = self.source
+        if self.solid_materials:
+            data["solid_materials"] = self.solid_materials
         return data
 
 

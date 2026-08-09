@@ -595,8 +595,23 @@ function metricsTable(part) {
       ${row("Faces", fmt(m.n_faces, 0))}
       ${row("Edges", fmt(m.n_edges, 0))}
       ${row("Solids", fmt(m.n_solids, 0))}
-    </table>`;
+    </table>
+    ${solidsTable(m.solids)}`;
   return host;
+}
+
+function solidsTable(solids) {
+  if (!Array.isArray(solids) || !solids.length) return "";
+  const rows = solids
+    .map((s) =>
+      row(
+        escapeHtml(s.label),
+        `${fmt(s.volume_mm3)}<span class="unit">mm³</span> · ` +
+          `${fmt(s.mass_g)}<span class="unit">g</span>`
+      )
+    )
+    .join("");
+  return `<div class="mat-head">Per-solid</div><table class="metrics-table">${rows}</table>`;
 }
 
 // ------------------------------------------------------------- material

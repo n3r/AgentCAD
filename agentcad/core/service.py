@@ -177,6 +177,7 @@ class AgentCADService:
             "params": record.params,
             "kind": record.kind,
             "source": record.source,
+            "solid_materials": record.solid_materials,
             "script": script,
             "params_spec": None if is_reference else self._params_spec(script),
             "status": {
@@ -441,24 +442,38 @@ class AgentCADService:
             return f"ref:{record.source}:missing"
         return self.store.read_script(proj, record.id)
 
+    def _solid_densities(self, proj: str, record) -> dict[str, float]:
+        """Resolved density per ``solid_materials`` key (label or index string).
+        Empty for reference parts and parts without per-solid materials."""
+        if record.kind != "script" or not record.solid_materials:
+            return {}
+        return {
+            key: self.material_density(proj, material_id)
+            for key, material_id in record.solid_materials.items()
+        }
+
     def _cache_key_for(self, proj: str, record) -> str:
         return self._cache_key(
             self._content_signature(proj, record),
             record.params,
             self.material_density(proj, record.material),
+            self._solid_densities(proj, record),
         )
 
-    def _cache_key(self, content: str, params: dict, density: float) -> str:
-        payload = json.dumps(
-            {
-                "content": content,
-                "params": {k: params[k] for k in sorted(params)},
-                "density": density,
-                "tolerance": MESH_TOLERANCE,
-                "format": "acm1",
-            },
-            sort_keys=True,
-        )
+    def _cache_key(self, content: str, params: dict, density: float,
+                   densities: dict | None = None) -> str:
+        payload_dict = {
+            "content": content,
+            "params": {k: params[k] for k in sorted(params)},
+            "density": density,
+            "tolerance": MESH_TOLERANCE,
+            "format": "acm1",
+        }
+        # Only added when per-solid densities exist, so cache keys of parts
+        # without solid_materials stay byte-identical to the pre-feature keys.
+        if densities:
+            payload_dict["densities"] = {k: densities[k] for k in sorted(densities)}
+        payload = json.dumps(payload_dict, sort_keys=True)
         return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
     def _ensure_built(self, proj: str, part_id: str) -> dict:
@@ -539,6 +554,9 @@ class AgentCADService:
                 "mesh_path": str(mesh_path),
                 "tolerance": MESH_TOLERANCE,
             }
+            solid_densities = self._solid_densities(proj, record)
+            if solid_densities:
+                build_params["densities"] = solid_densities
         try:
             result = self.kernel.request(
                 method, build_params, timeout_s=300.0, affinity=part_id

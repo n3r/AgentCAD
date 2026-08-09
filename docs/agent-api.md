@@ -55,7 +55,7 @@ of truth, and it omits `fem_static` unless the `[fem]` extra is installed.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `get_metrics` | **project, part_id** | `{volume_mm3, mass_g, area_mm2, bbox, center_of_mass, is_valid, n_faces, n_edges, n_solids}` |
+| `get_metrics` | **project, part_id** | `{volume_mm3, mass_g, area_mm2, bbox, center_of_mass, is_valid, n_faces, n_edges, n_solids, solids?}` — `solids` (multi-solid parts only) is an index-ordered `[{label, volume_mm3, mass_g, bbox, center_of_mass}]`. |
 | `get_mesh_summary` | **project, part_id** | `{vertices, triangles, edges, bbox}` — statistics only, no binary buffer. |
 | `export_part` | **project, part_id, format**, tolerance | Writes `exports/<part_id>.<format>`; formats `step`, `stl`, `3mf`. |
 
@@ -76,6 +76,7 @@ of truth, and it omits `fem_static` unless the `[fem]` extra is installed.
 |---|---|---|
 | `list_materials` | project | Resolved catalog (builtin < `~/.agentcad/materials.json` < project overrides): `{materials: [{id, label, category, density_g_cm3, source, E_gpa?, yield_mpa?, ultimate_mpa?, elongation_pct?, cte_um_m_k?, k_w_m_k?, max_service_temp_c?, cost_usd_kg?, notes?}], caveat, global_error}`. Values are typical datasheet figures, **not design allowables**. |
 | `set_project_materials` | **project, materials** | Replaces the project's `materials` section (a map `id → {density_g_cm3 required, …, category, notes}`); validates every entry, then returns the resolved list. |
+| `set_solid_materials` | **project, part_id, materials** | Assign a material per solid of a multi-solid *script* part. Read `get_metrics(...).solids[].label` first (labels come from the script's `SOLID_LABELS`, else `solid_0`, `solid_1`, …). `materials` maps a solid label or index string to a material id; unmatched keys build with a warning; `{}` clears. Per-solid and aggregate mass then use those densities (unmapped solids keep the part material). Returns the rebuild result plus `solid_materials`. |
 
 ### Import (reference parts)
 
