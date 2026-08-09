@@ -3,15 +3,14 @@
 import pytest
 
 from agentcad.core.model import ValidationError
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
 
-from .conftest import BOX_SCRIPT
+from .conftest import BOX_SCRIPT, make_test_service
 
 
 @pytest.fixture
 def service(kernel, tmp_path):
-    return AgentCADService(tmp_path / "projects", kernel, EventBus())
+    return make_test_service(tmp_path / "projects", kernel)
 
 
 def _make_step(kernel, out_path):

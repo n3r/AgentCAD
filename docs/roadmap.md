@@ -115,7 +115,7 @@ Tier-1 formats can ride late v5.
 
 ## Shipped before the PRD system (v0.1 → v3)
 
-The delivered base, summarized — details in `docs/changelog/0001–0058`:
+The delivered base, summarized — details in `docs/changelog/0001–0062`:
 script-as-model parts on the OCCT kernel with structured errors and the
 Error Doctor; projects and assemblies with rigid/revolute/cylindrical mates,
 driven-DOF motion sweeps, and interference checks; STEP/BREP/STL import;
@@ -126,8 +126,8 @@ helpers with curvature verification; linear-static/modal/thermal FEM; a
 constraint sketcher and face push/pull that emit script edits; server-side
 renders for agent vision; git-backed undo/history; turn locks and
 concurrent multi-agent sessions; mesh LOD streaming; macOS-sandboxed
-execution; a three-OS CI matrix; single-binary packaging; a 39-tool agent
-surface (42 with `[fem]`) over MCP, chat, and REST.
+execution; a three-OS CI matrix; single-binary packaging; a 42-tool agent
+surface (45 with `[fem]`) over MCP, chat, and REST.
 
 ## Deliberate non-goals
 

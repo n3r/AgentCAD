@@ -6,8 +6,10 @@ import json
 import pytest
 
 from agentcad.core.materials import MATERIALS
-from agentcad.core.service import MESH_TOLERANCE, AgentCADService, EventBus
+from agentcad.core.service import MESH_TOLERANCE
 from agentcad.core.tools import build_registry
+
+from .conftest import make_test_service
 
 AL = MATERIALS["al6061"].density_g_cm3
 STEEL = MATERIALS["steel_a36"].density_g_cm3
@@ -45,7 +47,7 @@ EXTRA_LABELS = TWO_BOX.replace(
 
 @pytest.fixture
 def demo(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    service = make_test_service(tmp_path / "projects", kernel)
     service.create_project("demo")
     service.create_part("demo", "duo", script=TWO_BOX)
     return service

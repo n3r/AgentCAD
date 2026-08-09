@@ -117,20 +117,13 @@ def register(toolbox: dict) -> dict:
                             transforms[iid]["rotation_deg"]))
                 for iid, shape in placeable
             ]
-            pairs = []
-            for i in range(len(placed)):
-                for j in range(i + 1, len(placed)):
-                    name_a, shape_a = placed[i]
-                    name_b, shape_b = placed[j]
-                    # `&` returns a single Part (Shape.intersect() would
-                    # return a ShapeList) — same rule as handle_interference.
-                    with contextlib.redirect_stdout(sys.stderr):
-                        common = shape_a & shape_b
-                    volume = float(common.volume)
-                    if volume > min_volume:
-                        pairs.append(
-                            {"a": name_a, "b": name_b, "volume_mm3": volume}
-                        )
+            # shared per-solid pairwise check: handles multi-solid Compound
+            # instances correctly (raw `&` on them misbehaves in build123d
+            # 0.9) and prefilters/crops by AABB — same path as
+            # handle_interference.
+            from ..worker import pairwise_interference
+
+            pairs = pairwise_interference(placed, min_volume)
             samples.append({"value": value, "pairs": pairs})
             if pairs and first_collision is None:
                 first_collision = value

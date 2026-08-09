@@ -18,14 +18,15 @@ The full capability surface is exposed three ways from one registry: a browser
 UI, an **MCP server** (for Claude Code and other MCP clients), and a built-in
 **chat agent**. All three are peers over the same service layer.
 
-Status: working, `v0.1.0`, ~122 tests. macOS today; the architecture is pure
+Status: working, `v0.1.0`, ~300 tests. macOS today; the architecture is pure
 Python + browser UI so Windows/Linux are reachable (packaging only).
 
 ## Quick start
 
 ```bash
 make setup        # uv sync  (installs build123d/OCCT wheels, ~2 GB, one time)
-make test         # uv run pytest -q   (full suite; needs the kernel)
+make test-fast    # two-worker suite excluding broad/timeout-driven slow tests
+make test         # full two-worker suite; needs the kernel
 make run          # start the server AND open the browser UI (port 8630)
 make serve        # headless server only
 make app          # build dist/AgentCAD.app (macOS launcher)
@@ -106,9 +107,12 @@ feature** — add packs:
    re-export the public name from `toolkit/__init__.py` if it's a top-level
    symbol.
 
-`AgentCADService` also exposes three seams you extend rather than fork:
-`self.materials` (density resolver), `mates.resolve` (assembly mates), and the
-kernel `affinity=` kwarg (pool routing).
+`AgentCADService` also exposes seams you extend rather than fork:
+`self.materials` (density resolver), `mates.resolve` (assembly mates), the
+kernel `affinity=` kwarg (pool routing), `ProjectStore.write_guard` (turn
+locking), and `self.history`/`self.undo_cursor` (git-backed snapshots +
+undo/redo — a mutating pack needs NO per-call hook: publishing
+`project_changed` after its write is what triggers the snapshot).
 
 ## The part-script contract
 
@@ -160,8 +164,12 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
 
 ## Testing (`make test`)
 
-- One **session-scoped `kernel` fixture** (`tests/conftest.py`) amortizes the
-  warm import; kernel-dependent tests share it.
+- Two xdist workers run by module scope, each with one **session-scoped
+  `kernel` fixture** (`tests/conftest.py`) that amortizes the warm import.
+- Ordinary service tests use `make_test_service`, which disables synchronous
+  git snapshots; `tests/test_history.py` and MCP integration keep real history.
+- Mark broad/process-heavy coverage `slow`; `make test-fast` excludes it while
+  `make test` and CI always run it.
 - **Examples tests run on a copy** — never mutate `examples/` in place.
 - FastAPI `TestClient` must pass `base_url="http://127.0.0.1"` and, for
   WebSocket tests, `create_app(..., extra_allowed_hosts={"testserver"})` (the
@@ -199,7 +207,7 @@ Write the changelog from the real diff, not from memory.
 ## Where to read more
 
 - `docs/architecture.md` — processes, components, ACM1 format, rebuild flow
-- `docs/agent-api.md` — the 25/26 agent tools with schemas + a worked loop
+- `docs/agent-api.md` — the 42/45 agent tools with schemas + a worked loop
 - `docs/part-authoring.md` — the script contract, toolkit, mates, sketch solver
 - `docs/user-guide.md` — the UI surface by surface
 - `docs/roadmap.md` — the PRD index with statuses (what we're building and why)

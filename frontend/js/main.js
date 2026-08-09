@@ -971,15 +971,14 @@ function setupExportMenu() {
 }
 
 // ------------------------------------------------------------------- undo
-// Project-level undo, backed by the server's git history: restore to
-// history[1] (the state before the latest snapshot — history[0] IS the
-// current state). Redo is intentionally not in the UI for v1; agents can
-// project_restore any commit id. The restore publishes project_changed, so
-// the view refreshes through the existing debounced WS path.
+// Project-level undo/redo, backed by the server's git history through the
+// undo cursor (POST /undo, /redo — two-stack semantics: each real mutation
+// is one step; redo clears on any new edit). The restore publishes
+// project_changed, so the view refreshes through the debounced WS path.
 
 let undoInFlight = false; // one restore at a time; ignore key/button spam
 
-async function undoLastChange() {
+async function stepHistory(verb) {
   if (!state.projectName) {
     toast("Open a project first", "error");
     return;
@@ -987,55 +986,43 @@ async function undoLastChange() {
   if (undoInFlight) return;
   undoInFlight = true;
   try {
-    let payload;
-    try {
-      payload = await api.projectHistory(state.projectName);
-    } catch (err) {
-      toast(`Undo failed: ${err.message}`, "error");
-      return;
-    }
-    if (payload.error) {
-      toast(`Undo failed: ${payload.error.message || "error"}`, "error");
-      return;
-    }
-    if (!payload.available) {
-      toast("Undo unavailable — git is not installed on the server", "error");
-      return;
-    }
-    const history = payload.history || [];
-    if (history.length < 2) {
-      toast("Nothing to undo");
-      return;
-    }
     let res;
     try {
-      res = await api.projectRestore(state.projectName, history[1].id);
+      res = await (verb === "undo"
+        ? api.undo(state.projectName)
+        : api.redo(state.projectName));
     } catch (err) {
-      toast(`Undo failed: ${err.message}`, "error");
+      // 409 = empty stack; anything else is a real failure.
+      const msg = err.error && err.error.message ? err.error.message : err.message;
+      const empty = /nothing to (undo|redo)/i.test(msg || "");
+      toast(empty ? `Nothing to ${verb}` : `${verb} failed: ${msg}`,
+            empty ? "info" : "error");
       return;
     }
     if (res.error) {
-      toast(`Undo failed: ${res.error.message || "error"}`, "error");
+      toast(`${verb} failed: ${res.error.message || "error"}`, "error");
       return;
     }
-    toast(`Undid: ${history[0].message || "last change"}`);
+    const label = res.undone || res.redone || "last change";
+    toast(`${verb === "undo" ? "Undid" : "Redid"}: ${label}`);
   } finally {
     undoInFlight = false;
   }
 }
 
-// The toolbar Undo button is created here rather than in index.html so the
-// history feature stays self-contained in main.js/api.js.
+function undoLastChange() {
+  return stepHistory("undo");
+}
+
+function redoLastChange() {
+  return stepHistory("redo");
+}
+
 function setupUndo() {
-  const fit = document.getElementById("fit-btn");
-  if (!fit || !fit.parentNode) return;
-  const btn = document.createElement("button");
-  btn.id = "undo-btn";
-  btn.className = "tb-btn";
-  btn.title = "Undo (Cmd+Z)";
-  btn.textContent = "Undo";
-  btn.addEventListener("click", undoLastChange);
-  fit.parentNode.insertBefore(btn, fit);
+  const undoBtn = document.getElementById("undo-btn");
+  const redoBtn = document.getElementById("redo-btn");
+  if (undoBtn) undoBtn.addEventListener("click", undoLastChange);
+  if (redoBtn) redoBtn.addEventListener("click", redoLastChange);
 }
 
 function setupKeys() {
@@ -1043,11 +1030,19 @@ function setupKeys() {
     const target = e.target instanceof Element ? e.target : document.body;
     const inField = target.closest("input, textarea, .CodeMirror") != null;
     if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "z") {
-      // In a text field (or with Shift = redo) leave the browser's native
-      // undo alone; elsewhere Cmd/Ctrl+Z is project-level undo.
-      if (inField || e.shiftKey) return;
+      // In a text field leave the browser's/CodeMirror's native text undo
+      // alone; elsewhere Cmd/Ctrl+Z is project undo, Shift+Cmd/Ctrl+Z redo.
+      if (inField) return;
       e.preventDefault();
-      undoLastChange();
+      if (e.shiftKey) redoLastChange();
+      else undoLastChange();
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "y") {
+      // Ctrl+Y — the Windows/Linux redo convention.
+      if (inField) return;
+      e.preventDefault();
+      redoLastChange();
       return;
     }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {

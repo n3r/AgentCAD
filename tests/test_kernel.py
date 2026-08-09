@@ -99,6 +99,8 @@ def test_bad_return_type_is_contract_error(kernel, tmp_path):
     assert "int" in exc_info.value.message
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_timeout_kills_and_recovers():
     client = KernelClient()
     client.start()
@@ -149,6 +151,36 @@ def test_interference_detects_overlap(kernel):
     assert ("a", "b") in pairs
     assert pairs[("a", "b")] == pytest.approx(500.0, rel=0.01)
     assert not any("c" in key for key in pairs)
+
+
+ANALYSIS_SCRIPT = '''\
+from build123d import *
+
+PARAMS = {"size": {"default": 30.0, "min": 1.0, "max": 100.0}}
+
+def build(p):
+    with BuildPart() as part:
+        Box(p.size, p.size, p.size)   # display shape: big, would interfere
+    return part.part
+
+def analysis(p):
+    with BuildPart() as part:
+        Box(2, 2, 2)                  # analysis envelope: tiny, clear
+    return part.part
+'''
+
+
+def test_interference_prefers_analysis_shape(kernel):
+    # The display shapes overlap massively; the analysis() stand-ins do not.
+    # check_interference must judge by analysis(), display by build().
+    items = [
+        {"name": "a", "script": ANALYSIS_SCRIPT, "params": {},
+         "position": [0, 0, 0], "rotation_deg": [0, 0, 0]},
+        {"name": "b", "script": ANALYSIS_SCRIPT, "params": {},
+         "position": [5, 0, 0], "rotation_deg": [0, 0, 0]},
+    ]
+    result = kernel.request("interference", {"items": items})
+    assert result["pairs"] == []
 
 
 def test_rotation_semantics(kernel, tmp_path):

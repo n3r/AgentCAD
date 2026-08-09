@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 39 tools (42 with the
+Agents drive AgentCAD through a single tool surface — 42 tools (45 with the
 `[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -42,6 +42,20 @@ of truth, and it omits the FEM tools unless the `[fem]` extra is installed.
 | Tool | Arguments | Returns |
 |---|---|---|
 | `part_template` | — | The part-script contract, a starter template, and a build123d cheat-sheet. Call this before writing your first script. |
+| `list_projects` | — | `{projects: [{name, path, n_parts}]}` |
+| `create_project` | **name** | Project detail. Names match `[a-z][a-z0-9_]{0,39}`. |
+| `open_project` | **path** | Opens an existing project directory (e.g. a bundled example) by absolute path. |
+| `get_project` | **project** | Manifest: parts (with build state), assembly instances, and a `materials` map (`id → {label, density_g_cm3}`). |
+| `create_part` | **project, part_id**, label, script, material | Part detail with metrics (default template if no `script`; `material` defaults to `al6061`). |
+| `get_part` | **project, part_id** | Script, `params_spec`, current params, status (state/error/warnings), metrics, plus `kind` (`script`\|`reference`) and `source`. For reference parts `script`/`params_spec` are `null` and `source` is the imported file. |
+| `update_part_script` | **project, part_id**, script, label, material | Rebuild result. On failure: traceback + failing line + hint; previous geometry kept. |
+| `set_params` | **project, part_id, values** | Rebuild result. Values (numbers, booleans, enum choices, or strings, per each param's `type` in `params_spec`) merge with existing overrides; numeric values clamp to min/max with warnings, while a wrong-typed value or non-member enum choice is rejected. Unknown names are rejected before anything is written, and a `null` value removes an override. |
+| `delete_part` | **project, part_id** | `{deleted}` — fails with a conflict while assembly instances reference the part. |
+
+### Turn locking and chat sessions
+
+| Tool | Arguments | Returns |
+|---|---|---|
 | `acquire_turn` | **project**, ttl_s | Take (or refresh) the per-project editing turn: `{holder, expires_at, you}`. While held, writes by every other client fail with `conflict_error` naming the holder. TTL default 120 s, clamped 5–3600; re-acquire to refresh. Identity = `X-Agent-Id` header (the MCP proxy sends `AGENTCAD_AGENT_ID` or `mcp`; built-in chat is `chat`; no header = `browser`). |
 | `release_turn` | **project** | Release your turn: `{released}` (`false` when nothing was held). Releasing a turn held by someone else is a `conflict_error`. |
 | `get_turn` | **project** | `{lock: {holder, expires_at} \| null, you}` — who holds the turn plus your own client identity. |
@@ -55,15 +69,6 @@ Turns in the same session queue; turns in different sessions run concurrently
 — cross-session write consistency is the per-project turn lock's job. A
 session's tool calls run under client identity `chat:<session>` (`chat` for
 `"main"`), so `get_turn` names the lane holding a lock.
-| `list_projects` | — | `{projects: [{name, path, n_parts}]}` |
-| `create_project` | **name** | Project detail. Names match `[a-z][a-z0-9_]{0,39}`. |
-| `open_project` | **path** | Opens an existing project directory (e.g. a bundled example) by absolute path. |
-| `get_project` | **project** | Manifest: parts (with build state), assembly instances, and a `materials` map (`id → {label, density_g_cm3}`). |
-| `create_part` | **project, part_id**, label, script, material | Part detail with metrics (default template if no `script`; `material` defaults to `al6061`). |
-| `get_part` | **project, part_id** | Script, `params_spec`, current params, status (state/error/warnings), metrics, plus `kind` (`script`\|`reference`) and `source`. For reference parts `script`/`params_spec` are `null` and `source` is the imported file. |
-| `update_part_script` | **project, part_id**, script, label, material | Rebuild result. On failure: traceback + failing line + hint; previous geometry kept. |
-| `set_params` | **project, part_id, values** | Rebuild result. Values (numbers, booleans, enum choices, or strings, per each param's `type` in `params_spec`) merge with existing overrides; numeric values clamp to min/max with warnings, while a wrong-typed value or non-member enum choice is rejected. Unknown names are rejected before anything is written, and a `null` value removes an override. |
-| `delete_part` | **project, part_id** | `{deleted}` — fails with a conflict while assembly instances reference the part. |
 
 ### Metrics, mesh, and export
 
@@ -111,7 +116,10 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 | `face_info` | **project, part_id, face_index** | Inspect one B-rep face by its mesh-order index (the same ordinal the viewport's face picking and the `mesh/faces` sidecar use): `{planar, normal, area_mm2, center, n_faces}`. |
 | `push_pull` | **project, part_id, face_index, distance_mm** | Direct-manipulation face offset recorded as code: validates the face is planar, then APPENDS an auto-generated wrapper to the script (`push_face(build(p), i, d)` — visible, editable, composable) and rebuilds. Positive distance grows the solid along the outward normal; negative cuts inward. The script stays the source of truth. |
 | `project_history` | **project**, limit | List the project's automatic history snapshots, newest first (`{id, message, ts}`); entry [0] is the current state. `available: false` + empty list when git is missing on the server. |
-| `project_restore` | **project, commit** | Restore the project to a snapshot id and append a linear "restore" commit (redo = restore the pre-undo id). Returns refreshed history + `{restored}`; validation_error on unknown commit/no git, conflict_error under someone else's turn lock. |
+| `project_restore` | **project, commit** | Restore the project to a snapshot id and append a linear "restore" commit. Returns refreshed history + `{restored}`; validation_error on unknown commit/no git, conflict_error under someone else's turn lock. A manual restore is itself one undoable step. |
+| `undo` | **project** | Undo the last mutation (any client's) by stepping back through the git history: `{undone, history: {available, undo, redo}}`. conflict_error when nothing to undo; after a server restart one step remains available. |
+| `redo` | **project** | Redo the most recently undone mutation. The redo stack clears when any new mutation happens. |
+| `get_history` | **project** | Undoable/redoable action labels, newest first, plus `available` (false when git is missing). The full durable snapshot log with commit ids is `project_history`. |
 | `render_view` | **project**, part_id, view, width, height | Server-side shaded orthographic render of built geometry so the agent can *see* the shape. `part_id` renders one part; omit it to render the whole placed assembly (instance transforms and colors honored; unbuildable instances are listed in `skipped`). `view` is `iso` (default), `front`, `top` or `right`; `width`/`height` are 64..2048 px (default 800×600). Writes `exports/renders/<part|assembly>_<view>.png` and returns `{path, width, height, view, png_base64}`; over MCP and in chat the PNG arrives as actual image content. |
 | `analyze_part` | **project, part_id, kind**, plane, axis, min_required | `kind=section` (cross-section area on `plane` XY\|XZ\|YZ), `wall` (min wall thickness; with `min_required` it adds an `ok` flag), `inertia` (mass-properties tensor + centre of mass), `projected_area` (silhouette area along `axis` X\|Y\|Z), `curvature` (per-face gaussian K in 1/mm² and mean H in 1/mm sampled on an 8×8 UV grid: `faces[]` with min/max/mean per face, `worst_gaussian_abs`, `n_faces`, `sampled_points`; H's sign is orientation-dependent — compare magnitudes; a true G2 blend shows no jump in K/H across the seam). Script parts only. |
 

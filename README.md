@@ -56,7 +56,7 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   helpers add ISO threads and fasteners — all importable from part scripts.
   An **Error Doctor** rewrites raw OCCT errors into plain-language fixes.
 
-The agent tool surface is now **39 tools** (was 17; 42 with the `[fem]`
+The agent tool surface is now **42 tools** (was 17; 45 with the `[fem]`
 extra), and multi-part rebuilds fan out across a small pool of warm kernel
 workers. v3 added typed parameters, per-solid semantics, sheet metal with
 flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,
@@ -76,14 +76,19 @@ make setup     # uv sync — installs build123d/OCCT (~2 GB of wheels, one time)
 make run       # starts the server and opens the UI at http://127.0.0.1:8630
 ```
 
-Three example projects are bundled and appear in the project switcher:
+Five example projects are bundled and appear in the project switcher:
 
 - **rocketry** — a liquid-engine thrust chamber (nozzle, injector plate, flange)
 - **construction** — a steel truss gusset node with bolt patterns
 - **prototyping** — a snap-fit electronics enclosure
+- **fasteners** — an M8 bolted joint with real ISO threads
+- **engine** — an assemblable SOHC 90° V4 (33 parts, 65 instances): split
+  main/rod caps, gaskets, dowels, rocker valvetrain, and all 72 fasteners —
+  every joint modeled the way the real engine bolts together
 
-Other useful targets: `make test` (full suite), `make app` (builds
-`dist/AgentCAD.app`), `make serve` (headless).
+Other useful targets: `make test-fast` (quick feedback), `make test` (full
+two-worker suite), `make app` (builds `dist/AgentCAD.app`), and `make serve`
+(headless). Use `make test-sequential` when debugging process interactions.
 
 Optional heavier analysis (linear-static FEM) installs as an extra — it is
 kept out of the core because it pulls in gmsh + scikit-fem + meshio:
@@ -155,7 +160,7 @@ def build(p):
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — processes, components, data flow
-- [docs/agent-api.md](docs/agent-api.md) — the 39-tool agent surface, MCP setup
+- [docs/agent-api.md](docs/agent-api.md) — the 42-tool agent surface, MCP setup
 - [docs/part-authoring.md](docs/part-authoring.md) — the script contract and toolkit
 - [docs/user-guide.md](docs/user-guide.md) — the UI, surface by surface
 - [docs/roadmap.md](docs/roadmap.md) — the forward roadmap: a PRD index with statuses

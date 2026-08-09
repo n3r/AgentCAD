@@ -5,10 +5,11 @@ import time
 
 import pytest
 
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.kernel.pool import KernelPool
 
-from .conftest import BOX_SCRIPT
+from .conftest import BOX_SCRIPT, make_test_service
+
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 def _build(client, script, params, mesh_path):
@@ -84,7 +85,7 @@ def test_service_works_with_pool(tmp_path):
     pool = KernelPool(size=2)
     pool.start()
     try:
-        service = AgentCADService(tmp_path / "projects", pool, EventBus())
+        service = make_test_service(tmp_path / "projects", pool)
         service.create_project("demo")
         service.create_part("demo", "box", script=BOX_SCRIPT)
         assert service.get_metrics("demo", "box")["volume_mm3"] == pytest.approx(1000.0, rel=1e-6)

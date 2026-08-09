@@ -40,6 +40,14 @@
         "bolt_d": 9.0,
         "bolt_circle_d": 118.0
       }
+    },
+    {
+      "id": "assembly_assembly",
+      "label": "assembly_assembly",
+      "material": "ss17_4ph",
+      "params": {},
+      "kind": "reference",
+      "source": "assembly-Assembly.step"
     }
   ],
   "assembly": {

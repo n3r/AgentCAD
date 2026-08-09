@@ -42,6 +42,7 @@ def register(registry, service) -> None:
             # same turn lock every other persistent write is checked against.
             service.store.write_guard(project)
         path = service.store.path_of(project)
+        head_before = service.history.head(path)
         service.history.in_restore = True
         try:
             try:
@@ -54,6 +55,15 @@ def register(registry, service) -> None:
             )
         finally:
             service.history.in_restore = False
+        # A manual restore is itself an undoable step: its follow-up commit's
+        # parent is the pre-restore state, so Cmd+Z can take it back. A no-op
+        # restore (tree already at the target) moves nothing and records
+        # nothing.
+        head = service.history.head(path)
+        if head and head != head_before:
+            service.undo_cursor.on_snapshot(
+                project, head, f"restore {commit[:8]}"
+            )
         # No cache surgery needed: build cache keys re-derive from the
         # restored content on the next read, so stale in-memory status
         # self-heals into a rebuild (or a cache hit on the old key).

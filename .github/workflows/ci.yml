@@ -14,7 +14,7 @@ jobs:
   test:
     name: pytest (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 90   # the engine example's threaded integration tests are heavy
     strategy:
       fail-fast: false
       matrix:
@@ -39,11 +39,10 @@ jobs:
       - name: Sync dependencies (locked)
         run: uv sync --locked
 
-      # The kernel worker pays a one-time build123d/OCCT import (~2 GB of
-      # wheels, ~10 s cold import); the suite amortizes it via a
-      # session-scoped fixture. FEM extras are intentionally absent — the
-      # suite must stay green without them.
+      # Two workers cap OCCT memory while parallelizing module scopes. Each
+      # worker amortizes its build123d import through a session fixture. FEM
+      # extras are intentionally absent — the suite must stay green without them.
       - name: Run test suite
-        run: uv run pytest -q
+        run: uv run pytest -q -n 2 --dist loadscope
         env:
           AGENTCAD_KERNEL_POOL_SIZE: "1"

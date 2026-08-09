@@ -6,8 +6,9 @@ import pytest
 
 from agentcad.core.model import ValidationError
 from agentcad.core.pmi import validate_pmi
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
+
+from .conftest import make_test_service
 
 # A flange-like part: plate with a central bore and a bolt circle (the same
 # known-good pattern as tests/test_drawings.py — 8 x 9 mm bolt holes).
@@ -48,7 +49,7 @@ FULL_PMI = {
 
 @pytest.fixture
 def demo(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    service = make_test_service(tmp_path / "projects", kernel)
     service.create_project("demo")
     service.create_part("demo", "flange", script=FLANGE)
     return service

@@ -194,3 +194,148 @@ class ProjectHistory:
             raise HistoryError(f"unknown commit {commit!r}")
         self._run(path, "checkout", commit, "--", ".")
         self.snapshot(path, f"restore {commit[:8]}")
+
+    # ---------------------------------------------------- cursor primitives
+
+    def head(self, project_path: Path | str) -> str | None:
+        """Current head commit id, or None (no repo / unborn / no git)."""
+        path = Path(project_path)
+        if not self.available() or not self._has_repo(path):
+            return None
+        result = self._run(path, "rev-parse", "HEAD", check=False)
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    def parent_of(self, project_path: Path | str, commit: str) -> str | None:
+        """First parent of ``commit``, or None (root commit / unknown id)."""
+        path = Path(project_path)
+        if not self.available() or not self._has_repo(path):
+            return None
+        if not isinstance(commit, str) or not _COMMIT_RE.match(commit):
+            return None
+        result = self._run(path, "rev-parse", f"{commit}^", check=False)
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    def has_commit(self, project_path: Path | str, commit: str) -> bool:
+        path = Path(project_path)
+        if not self.available() or not self._has_repo(path):
+            return False
+        if not isinstance(commit, str) or not _COMMIT_RE.match(commit):
+            return False
+        probe = self._run(path, "cat-file", "-e", f"{commit}^{{commit}}",
+                          check=False)
+        return probe.returncode == 0
+
+
+class UndoCursor:
+    """One-keystroke undo/redo over a project's linear git history.
+
+    The git history (ProjectHistory) is the durable record; this cursor is
+    the in-memory two-stack UX on top of it. Each real mutation snapshot
+    pushes its commit id + label onto the undo stack (and clears redo, the
+    standard semantics); ``undo`` restores the top mutation's PARENT tree,
+    moving that state's id to the redo stack; ``redo`` restores it back.
+    Every restore rides ProjectHistory.restore, so each step is itself a
+    linear "restore" commit and the durable history never rewrites.
+
+    Stacks are process-memory (like the chat history): after a server
+    restart ``undo`` degrades to a single step back through the latest
+    snapshot via the git log, and ``redo`` is empty. Bounded to
+    ``UNDO_LIMIT`` entries per project.
+    """
+
+    UNDO_LIMIT = 100
+
+    def __init__(self, history: ProjectHistory, store, bus) -> None:
+        import threading
+
+        self.history = history
+        self.store = store
+        self.bus = bus
+        self._lock = threading.Lock()
+        self._undo: dict[str, list[dict]] = {}
+        self._redo: dict[str, list[dict]] = {}
+
+    def on_snapshot(self, proj: str, commit_id: str, label: str) -> None:
+        """Record a real mutation snapshot (called from the service's bus
+        hook). Clears the redo stack — a new edit forks away from it."""
+        with self._lock:
+            stack = self._undo.setdefault(proj, [])
+            stack.append({"id": commit_id, "label": label})
+            del stack[: -self.UNDO_LIMIT]
+            self._redo.pop(proj, None)
+
+    def undo(self, proj: str) -> dict:
+        return self._step(proj, redo=False)
+
+    def redo(self, proj: str) -> dict:
+        return self._step(proj, redo=True)
+
+    def status(self, proj: str) -> dict:
+        """Undoable/redoable labels, newest first (no git calls)."""
+        with self._lock:
+            return {
+                "available": self.history.available(),
+                "undo": [e["label"] for e in reversed(self._undo.get(proj, []))],
+                "redo": [e["label"] for e in reversed(self._redo.get(proj, []))],
+            }
+
+    # ------------------------------------------------------------- internals
+
+    def _step(self, proj: str, *, redo: bool) -> dict:
+        from .model import ConflictError, ValidationError
+
+        verb = "redo" if redo else "undo"
+        if not self.history.available():
+            raise ValidationError("undo/redo unavailable: git not found on PATH")
+        path = self.store.path_of(proj)
+        # Turn-locking: undo/redo rewrites project files outside the store
+        # choke point, so it must invoke the same write guard explicitly.
+        if getattr(self.store, "write_guard", None):
+            self.store.write_guard(proj)
+        with self._lock:
+            source = (self._redo if redo else self._undo).setdefault(proj, [])
+            while source and not self.history.has_commit(path, source[-1]["id"]):
+                source.pop()  # history repo was pruned/replaced under us
+            entry = source.pop() if source else None
+            if entry is None and not redo:
+                # Post-restart fallback: one step back through the latest
+                # snapshot. Refused when that snapshot is itself a restore —
+                # undoing it would act as a redo, and repeated fallback undos
+                # would oscillate between two states.
+                log = self.history.log(path, limit=1)
+                if log and not log[0]["message"].startswith("restore "):
+                    entry = {"id": log[0]["id"], "message_from_log": True,
+                             "label": log[0]["message"]}
+            if entry is None:
+                raise ConflictError(f"nothing to {verb}")
+            if redo:
+                # entry["id"] captures the state to return to; going back is
+                # "undo the redo": restore its parent again later.
+                target = entry["id"]
+            else:
+                target = self.history.parent_of(path, entry["id"])
+                if target is None:
+                    # The root snapshot has no parent: nothing before it to
+                    # return to. Keep the stack entry — it wasn't consumed.
+                    if not entry.get("message_from_log"):
+                        source.append(entry)
+                    raise ConflictError(f"nothing to {verb}")
+            opposite = (self._undo if redo else self._redo).setdefault(proj, [])
+            opposite.append(entry)
+            del opposite[: -self.UNDO_LIMIT]
+            self.history.in_restore = True
+            try:
+                self.history.restore(path, target)
+                self.bus.publish(
+                    {"type": "project_changed", "project": proj, "reason": verb}
+                )
+            except HistoryError as exc:
+                opposite.pop()  # the step never happened; don't fake a redo
+                raise ValidationError(f"{verb} failed: {exc}") from exc
+            finally:
+                self.history.in_restore = False
+            counts = {
+                "undo": len(self._undo.get(proj, [])),
+                "redo": len(self._redo.get(proj, [])),
+            }
+        return {"label": entry["label"], **counts}

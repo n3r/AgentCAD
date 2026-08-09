@@ -55,6 +55,7 @@ def _error_response(exc: AppError) -> JSONResponse:
 
 
 LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "::1", "[::1]"}
+_WS_STOP = object()
 
 
 def _hostname(host_header: str) -> str:
@@ -81,6 +82,27 @@ def _browser_request_allowed(headers, allowed_hosts: frozenset) -> tuple[bool, s
     if origin is not None and origin != f"http://{host}":
         return False, f"cross-origin request from {origin!r} rejected"
     return True, ""
+
+
+async def _wait_for_websocket_disconnect(ws: WebSocket) -> None:
+    while True:
+        message = await ws.receive()
+        if message["type"] == "websocket.disconnect":
+            return
+
+
+def _wake_websocket_event_waiter(q: queue.Queue) -> None:
+    # A full queue belongs to a disconnected client, so discard one stale
+    # event to guarantee that the blocked q.get can consume the sentinel.
+    while True:
+        try:
+            q.put_nowait(_WS_STOP)
+            return
+        except queue.Full:
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                pass
 
 
 def create_app(
@@ -327,19 +349,33 @@ def create_app(
             return
         await ws.accept()
         q = service.bus.subscribe()
-        loop = asyncio.get_running_loop()
+        disconnect = asyncio.create_task(_wait_for_websocket_disconnect(ws))
+        event_waiter = asyncio.create_task(asyncio.to_thread(q.get))
         try:
             while True:
-                try:
-                    event = await loop.run_in_executor(None, q.get, True, 20.0)
-                except queue.Empty:
+                done, _pending = await asyncio.wait(
+                    {disconnect, event_waiter},
+                    timeout=20.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if disconnect in done:
+                    break
+                if event_waiter not in done:
                     await ws.send_text(json.dumps({"type": "ping"}))
                     continue
+                event = event_waiter.result()
+                if event is _WS_STOP:
+                    break
                 await ws.send_text(json.dumps(event))
+                event_waiter = asyncio.create_task(asyncio.to_thread(q.get))
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
             service.bus.unsubscribe(q)
+            _wake_websocket_event_waiter(q)
+            if not disconnect.done():
+                disconnect.cancel()
+            await asyncio.gather(disconnect, event_waiter, return_exceptions=True)
 
     # ---------------------------------------------------------- route packs
 

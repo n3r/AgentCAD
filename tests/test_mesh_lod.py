@@ -13,12 +13,11 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
 from agentcad.kernel import acm
 from agentcad.server.app import create_app
 
-from .conftest import BOX_SCRIPT
+from .conftest import BOX_SCRIPT, make_test_service
 
 # Dense enough at tolerance 0.05 (thousands of triangles) that a small
 # lod_min_triangles lets the worker-level tests stay fast.
@@ -137,7 +136,7 @@ def test_reference_stl_never_writes_lod(kernel, tmp_path):
 
 @pytest.fixture
 def service(kernel, tmp_path):
-    svc = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    svc = make_test_service(tmp_path / "projects", kernel)
     svc.create_project("demo")
     svc.create_part("demo", "box", script=BOX_SCRIPT)
     return svc
@@ -156,7 +155,7 @@ def test_mesh_info_falls_back_without_tier(service):
 
 def test_mesh_info_returns_tier_when_written(kernel, tmp_path, monkeypatch):
     monkeypatch.setattr("agentcad.core.service.LOD_TRIANGLE_THRESHOLD", 4)
-    svc = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    svc = make_test_service(tmp_path / "projects", kernel)
     svc.create_project("demo")
     svc.create_part("demo", "box", script=BOX_SCRIPT)
 
@@ -172,7 +171,7 @@ def test_mesh_info_returns_tier_when_written(kernel, tmp_path, monkeypatch):
 
 def test_metrics_sidecar_roundtrips_lods(kernel, tmp_path, monkeypatch):
     monkeypatch.setattr("agentcad.core.service.LOD_TRIANGLE_THRESHOLD", 4)
-    svc = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    svc = make_test_service(tmp_path / "projects", kernel)
     svc.create_project("demo")
     svc.create_part("demo", "box", script=BOX_SCRIPT)
 
@@ -194,7 +193,7 @@ def test_metrics_sidecar_roundtrips_lods(kernel, tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(kernel, tmp_path):
-    svc = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    svc = make_test_service(tmp_path / "projects", kernel)
     app = create_app(
         svc, build_registry(svc), extra_allowed_hosts={"testserver"}
     )

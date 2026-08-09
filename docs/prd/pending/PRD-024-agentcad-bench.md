@@ -88,7 +88,7 @@ agent-agnostic — the submission format is just the final project. A
 leaderboard row is scores + versions + config + a link to the
 reproducible submission.
 
-**The benched agent's path.** Nothing special — the ordinary 39-tool
+**The benched agent's path.** Nothing special — the ordinary 42-tool
 surface (42 with `[fem]`) on a scratch project, a task prompt, maybe an
 attached drawing image. That is the design: the benchmark measures the
 product surface as it ships.

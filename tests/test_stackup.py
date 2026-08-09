@@ -9,8 +9,9 @@ import math
 
 import pytest
 
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
+
+from .conftest import clone_test_service, make_test_service
 
 # A plate with rigid connectors at its left/right edges so instances chain
 # edge-to-edge along X (same PLATE-with-connectors pattern as test_mates.py).
@@ -35,24 +36,15 @@ WIDTH_PMI = {"dims": [{"id": "w1", "kind": "linear", "target": "width",
                        "plus": 0.1, "minus": 0.1}]}
 
 
-@pytest.fixture
-def demo(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+@pytest.fixture(scope="module")
+def stackup_projects(kernel, tmp_path_factory):
+    projects = tmp_path_factory.mktemp("stackup_projects")
+    service = make_test_service(projects, kernel)
     service.create_project("demo")
     for part_id in CHAIN_PARTS:
         service.create_part("demo", part_id, script=PLATE)
-    return service
-
-
-@pytest.fixture
-def registry(demo):
-    return build_registry(demo)
-
-
-@pytest.fixture
-def chain(demo, registry):
-    """base -> mid -> top mated edge-to-edge along X; width PMI on each part."""
-    demo.set_assembly("demo", [
+    registry = build_registry(service)
+    service.set_assembly("demo", [
         {"id": "base", "part": "plate_a", "position": [0, 0, 0]},
         {"id": "mid", "part": "plate_b"},
         {"id": "top", "part": "plate_c"},
@@ -66,6 +58,22 @@ def chain(demo, registry):
         result = registry.call("set_part_pmi", {
             "project": "demo", "part_id": part_id, "pmi": WIDTH_PMI})
         assert "error" not in result, result
+    return projects
+
+
+@pytest.fixture
+def demo(kernel, tmp_path, stackup_projects):
+    return clone_test_service(stackup_projects, tmp_path / "projects", kernel)
+
+
+@pytest.fixture
+def registry(demo):
+    return build_registry(demo)
+
+
+@pytest.fixture
+def chain(registry):
+    """Registry over a copied base -> mid -> top tolerance chain."""
     return registry
 
 

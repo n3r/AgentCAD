@@ -35,9 +35,10 @@ First launch is slower than the rest: the kernel worker imports
 build123d/OCCT once (~3 s, up to 180 s allowed) before the first build.
 After that, rebuilds are typically 10–100 ms.
 
-The three bundled examples (`rocketry`, `construction`, `prototyping`) are
-registered automatically from the repo's `examples/` directory and appear in
-the project switcher alongside your own projects.
+The five bundled examples (`rocketry`, `construction`, `prototyping`,
+`fasteners`, `engine`) are registered automatically from the repo's
+`examples/` directory and appear in the project switcher alongside your own
+projects.
 
 ## The workbench
 
@@ -77,6 +78,17 @@ next visit.
 `Rebuilding N parts…`) appears while any rebuild is in flight, driven by
 `rebuild_started`/`rebuild_finished` events — including rebuilds an agent
 triggered.
+
+**Undo / Redo** (↩ / ↪) — step backwards and forwards through the project's
+mutation history: parameter changes, instance moves, script saves, part
+add/delete, material, mate, and PMI edits. The history is **shared with the
+agent** — one Cmd+Z can revert a change the chat agent (or an MCP client)
+just made. A toast names what was undone. Keyboard: **Cmd+Z** / **Ctrl+Z**
+and **Shift+Cmd+Z** / **Ctrl+Y** — except inside the code editor or a text
+field, where the editor's own text undo keeps working. The snapshots
+themselves live in the per-project git history (durable, see below); the
+undo/redo *stacks* are per-server-session, so after a restart one step back
+remains available and redo starts empty.
 
 **Fit** — reframes the camera on the current content, keeping the viewing
 direction. Keyboard: **F**.
@@ -419,6 +431,8 @@ written to any of these files.
 | Key | Action |
 |---|---|
 | **F** | Fit view (when not typing in a field). |
+| **Cmd+Z** / **Ctrl+Z** | Undo the last project change (any client's). In the code editor / a text field it stays the editor's own text undo. |
+| **Shift+Cmd+Z** / **Ctrl+Y** | Redo the last undone change. |
 | **Cmd+S** / **Ctrl+S** | Save & Rebuild the current part's script — works from anywhere, not just the editor. |
 | **Esc** | Close an open toolbar menu. |
 | **Enter** | Select the focused sidebar row (rows are Tab-reachable). |

@@ -28,6 +28,7 @@ agentcad = "agentcad.cli:main"
 dev = [
     "pytest>=8",
     "pytest-timeout>=2.3",
+    "pytest-xdist>=3.8.0",
 ]
 
 [build-system]
@@ -40,3 +41,7 @@ packages = ["agentcad"]
 [tool.pytest.ini_options]
 timeout = 120
 testpaths = ["tests"]
+markers = [
+    "integration: crosses a process, server, sandbox, or git boundary",
+    "slow: broad or timeout-driven coverage excluded by make test-fast",
+]

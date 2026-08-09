@@ -1,4 +1,4 @@
-# 0059 — Competitive analysis + the v4–v6 human+agent cloud CAD roadmap
+# 0063 — Competitive analysis + the v4–v6 human+agent cloud CAD roadmap
 
 - **Commit:** pending
 - **Date:** 2026-08-09
