@@ -129,6 +129,13 @@ def _shape_key(script: str, values: dict) -> str:
 
 def build_shape(script: str, overrides: dict) -> tuple[object, dict, list[str]]:
     """Execute the script contract; returns (build123d shape, values, warnings)."""
+    shape, values, warnings, _ns = build_shape_ns(script, overrides)
+    return shape, values, warnings
+
+
+def build_shape_ns(script: str, overrides: dict) -> tuple[object, dict, list[str], dict]:
+    """Like build_shape but also returns the script's module namespace, so
+    callers can access optional contract additions such as connectors(p, part)."""
     ns = _exec_script(script)
     if "PARAMS" not in ns:
         raise WorkerError(ERROR_CONTRACT, "script must define a PARAMS dict")
@@ -140,7 +147,7 @@ def build_shape(script: str, overrides: dict) -> tuple[object, dict, list[str]]:
     key = _shape_key(script, values)
     if key in _SHAPE_CACHE:
         _SHAPE_CACHE.move_to_end(key)
-        return _SHAPE_CACHE[key], values, warnings
+        return _SHAPE_CACHE[key], values, warnings, ns
 
     try:
         with contextlib.redirect_stdout(sys.stderr):
@@ -160,7 +167,7 @@ def build_shape(script: str, overrides: dict) -> tuple[object, dict, list[str]]:
     _SHAPE_CACHE[key] = result
     if len(_SHAPE_CACHE) > _SHAPE_CACHE_MAX:
         _SHAPE_CACHE.popitem(last=False)
-    return result, values, warnings
+    return result, values, warnings, ns
 
 
 # ------------------------------------------------------------------- geometry
@@ -363,6 +370,7 @@ HANDLERS = {
 WORKER_TOOLBOX = {
     "b3d": b3d,
     "build_shape": build_shape,
+    "build_shape_ns": build_shape_ns,
     "metrics": _metrics,
     "shape_volume": _shape_volume,
     "place": _place,

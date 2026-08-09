@@ -343,6 +343,7 @@ class AgentCADService:
                         item.get("rotation_deg", [0, 0, 0]), "rotation_deg"
                     ),
                     color=item.get("color"),
+                    mate=item.get("mate"),
                 )
             )
         with self._lock:
