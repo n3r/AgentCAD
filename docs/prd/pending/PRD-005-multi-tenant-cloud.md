@@ -1,0 +1,281 @@
+# PRD-005 — Multi-tenant cloud service
+
+- **Status:** pending
+- **Phase:** v4 — collaborative core
+- **Created:** 2026-08-09
+- **Origin:** competitive analysis (Aug 2026)
+- **Depends on:** — (none hard; PRD-006 must land before hosting untrusted tenants)
+- **Related:** PRD-001 (push/pull syncs branches and tags), PRD-006 (worker isolation and metering), PRD-007 (share links ride tenancy), PRD-008 (presence names principals), PRD-020 (fleet principals and quotas)
+
+## Problem & motivation
+
+The server binds `127.0.0.1` only, behind a Host-allowlist and same-origin
+guard (`server/app._browser_request_allowed`); there is no concept of a
+second human user, and "identity" is an unauthenticated `X-Agent-Id` header
+dropped into a ContextVar (`agentcad/core/locks.py`) so turn locks can name a
+holder. Nothing can be hosted, nobody can be invited, and no action is
+attributable in a way anyone should trust. Every collaboration feature v4
+exists for — sharing (PRD-007), review threads and presence (PRD-008), a
+hosted registry index (PRD-011), agent fleets (PRD-020) — needs this
+substrate, and the roadmap's headline ("cloud CAD") is false until it exists.
+
+The competitive evidence: Onshape proves cloud-native CAD wins teams (2M+
+users, "PDM built in" as the killer pitch) and simultaneously proves the trap
+— no offline mode is its #1 recurring complaint and architecturally
+unfixable, and per-company API metering (the "85 requests/day" uproar) is a
+structural mismatch with agent workflows (market_research.md, "Cloud-native
+CAD: Onshape (the collaboration benchmark)"). Ondsel shows the other failure
+mode: a closed cloud layer on an open core died with the company
+(market_research.md, "Open-source CAD: FreeCAD, code-CAD, and the Ondsel
+lesson", "Business-model guardrails (the Ondsel constraint)"). The structural
+answer is local-first with sync, on an open-source stack that self-hosts —
+free wins for a git-substrate system ("Where AgentCAD wins", point 5), and
+exactly what the air-gapped A&D startups PTC courts need. Agents as
+authenticated principals with scoped permissions is what Onshape Labs is
+promising and has not shipped ("The 2025–26 convergence").
+
+## Users & jobs
+
+- **Team engineer (human):** work on shared projects from any machine; keep
+  working offline on a laptop; sync back without losing anything.
+- **Org admin (human):** control who can see/edit which projects; read a
+  trustworthy audit trail; manage agent credentials like team members.
+- **Design agent (chat/MCP):** act under a real, revocable identity with
+  scoped permissions (e.g. propose-but-not-merge once PRD-002 lands) instead
+  of a header anyone can spoof.
+- **Self-hoster / IT:** deploy the identical open-source stack on their own
+  infra — including air-gapped — with one compose file.
+- **CI and automation (PRD-004, PRD-020):** authenticate headlessly with
+  tokens scoped to exactly the projects they check.
+
+## Goals
+
+- G1. Real identity: OIDC and passkey (WebAuthn) auth; every request resolves
+  to an authenticated principal — `user:<handle>`, `agent:chat:<session>`,
+  `agent:mcp:<name>` — replacing the honor-system `X-Agent-Id` header.
+- G2. Tenancy: orgs contain workspaces contain projects; storage namespaced
+  per tenant; per-project roles (view / comment / edit / admin) enforced at
+  one choke point.
+- G3. Local-first stays sacred: a project remains a plain git repo;
+  `agentcad push/pull` syncs laptop ↔ cloud including branches and tags
+  (PRD-001); offline work is never blocked, divergence resolves through real
+  merges, never silent overwrite.
+- G4. Fairness: kernel pool scheduling is per-tenant fair — one tenant's
+  rebuild storm cannot starve another's single build.
+- G5. Auditability: an append-only log of every mutating action keyed by
+  principal, queryable by org admins.
+- G6. Self-host parity: `docker compose up` from the public repo deploys the
+  same binary the hosted service runs; hosted vs self-hosted differ by
+  configuration only. Signed/notarized desktop builds ride the same release
+  pipeline.
+
+## Non-goals
+
+- Billing, plans, payments — PRD-006's metering is the substrate; pricing is
+  not a PRD.
+- Share links, public viewing, customizer — PRD-007 (rides this).
+- Comments, presence UI — PRD-008 (consumes principals from this).
+- Same-file CRDT co-editing — deliberate roadmap non-goal.
+- Per-seat licensing or metered tool APIs — the business guardrails forbid
+  both (market_research.md, "Business-model guardrails").
+- Enterprise SSO ceremony (SAML/SCIM) — OIDC + passkeys cover the target
+  segment first.
+
+## Experience
+
+**Human path.** Sign in at the instance URL with a passkey or an OIDC
+provider; pick an org; workspaces list projects with role-appropriate
+affordances (a viewer gets no edit controls, no turn acquisition). Lock
+chips, history entries, and chat attributions show real names — the same
+chips that today say `mcp` or `chat` say `nikita` and `agent:mcp:claude`. To
+work offline: `agentcad clone https://…/acme/eng/rocket`, edit locally
+against the local kernel, `agentcad push` when back online; divergence drops
+into PRD-001 merge flow with surfaced conflicts.
+
+**Agent path.** An admin mints a token scoped to (org, projects, role,
+expiry) and puts it in the MCP config; every tool call executes as that
+principal. `get_turn` answers `user:nikita` vs `agent:mcp:claude`; a call
+outside the token's scope returns a structured `permission_error` naming the
+missing role. `whoami` lets an agent introspect its own scope before
+planning.
+
+**Handoff.** A human grants an agent edit on one project; the agent works,
+the human watches the same project live from the browser; the audit log
+records both, interleaved, with no ambiguity about who did what.
+
+## Functional requirements
+
+**Identity & auth**
+- FR1. OIDC authorization-code flow and WebAuthn passkeys; browser sessions
+  via secure cookies, API/MCP via bearer tokens. A self-hosted instance
+  works with local accounts + passkeys alone (no external IdP required).
+- FR2. Every request resolves to a principal (`user:…`, `agent:chat:…`,
+  `agent:mcp:…`); the resolved principal flows through the existing
+  `client_id_var` ContextVar so turn locks, history attribution, and events
+  need no per-feature changes. In cloud mode a bare `X-Agent-Id` header is
+  rejected, not trusted.
+- FR3. Agent tokens: minted and revoked by users/admins, scoped to org +
+  project set + role + expiry; revocation effective on the next request.
+- FR4. Local mode (no auth configured, `127.0.0.1`) behaves exactly as
+  today: no login, identity plumbing unchanged, full suite green — auth is a
+  deployment mode, never a tax on local use.
+
+**Tenancy & roles**
+- FR5. Orgs → workspaces → projects; storage rooted per tenant
+  (`<data>/orgs/<org>/<workspace>/<project>`); project names unique per
+  workspace; no cross-tenant path reachable through any route or tool.
+- FR6. Per-project roles view/comment/edit/admin (org-level defaults +
+  per-project overrides), enforced at the choke points that already exist:
+  `ProjectStore.write_guard` for writes (stacked with turn locks), the
+  `/api/tools/{name}` dispatch for tools, and read routes for reads.
+  Violations return `permission_error` (403) naming the required role.
+- FR7. HTTPS: TLS terminated by the compose stack's bundled proxy (or the
+  platform LB); the Host-allowlist/same-origin guard extends to the
+  configured public origins; localhost-only remains the default posture
+  outside cloud mode.
+
+**Sync & local-first**
+- FR8. `agentcad push` / `agentcad pull` sync a project's git repo (the
+  `.history` GIT_DIR engine from `agentcad/core/history.py`) with the hosted
+  copy over authenticated smart-HTTP; branches and tags (PRD-001) travel;
+  derived data (`.cache/`, `exports/`) never syncs.
+- FR9. Divergence on push/pull resolves via PRD-001 merge machinery —
+  conflicts are surfaced (CLI and UI), never silently last-writer-wins. A
+  pushed state is validated like any change: the server rebuilds on next
+  open/build and broken states show as ordinary build errors, not rejected
+  pushes.
+- FR10. `agentcad clone <url>` produces a fully working local project
+  (scripts, manifest, history) that builds offline with the local kernel.
+
+**Scheduling, audit, deployment**
+- FR11. Kernel pool requests carry the tenant; scheduling is weighted-fair
+  across tenants with bounded queue depth per tenant. Pool affinity keys are
+  namespaced by tenant + project so cross-tenant part-id collisions cannot
+  poison a worker's shape LRU.
+- FR12. Append-only audit log per org: `{ts, principal, action (tool/route),
+  project, args digest, outcome}` for every mutating call plus auth events;
+  admin-queryable; retention configurable.
+- FR13. UI identity: presence/lock chips, history, and chat attribution
+  render principal names (avatars where a profile exists); `project_history`
+  commits record the acting principal as git author.
+- FR14. One `docker compose up` from the public repo yields the full stack
+  (server, TLS proxy, persistent volume); the image wraps the same
+  distribution the PyInstaller bundle ships; zero closed components.
+- FR15. Release pipeline produces signed/notarized macOS and signed Windows
+  desktop builds alongside the compose image.
+
+## Agent surface
+
+New tools: `whoami {}` → principal, org, roles ·
+`create_agent_token {name, scope, role, ttl_days?}` (secret returned once) ·
+`revoke_agent_token {token_id}` · `grant_role {project, principal, role}` ·
+`revoke_role {project, principal}` · `list_members {org}` ·
+`sync_status {project}` → ahead/behind vs remote.
+Changed: every tool executes under an authenticated principal; `acquire_turn`
+/ `get_turn` / `release_turn` report principal identities; `project_history`
+entries carry the acting principal.
+New error types: `auth_error` (401), `permission_error` (403, details name
+the required role) — same structured `{error: {type, message, details}}`
+contract.
+CLI: `agentcad login`, `agentcad clone <url>`, `agentcad push`, `agentcad
+pull`. Events: the WS channel is tenant-scoped; `project_changed` gains the
+acting principal.
+
+## Technical approach
+
+- **Route pack** `agentcad/server/routes_auth.py` (OIDC/passkey flows,
+  sessions, tokens, membership) and an identity layer in the one middleware
+  that already assigns client identity in `app.create_app` — the sanctioned
+  core touch, since that seam exists precisely for this. RBAC lives in a new
+  `agentcad/core/authz.py` consulted by `write_guard`, tool dispatch, and
+  read routes.
+- **Tenant store resolution:** `ProjectStore` is already path-rooted; cloud
+  mode instantiates a store per tenant behind a resolver keyed by the
+  authenticated org/workspace. Identity/membership/audit persist in a
+  per-instance SQLite (WAL) — projects stay plain files and plain git repos
+  regardless.
+- **Sync:** serve each project's `.history` repo over authenticated
+  smart-HTTP (`git http-backend` behind the auth layer, or in-process
+  dulwich — decide in design); the CLI shells out to git with a credential
+  helper. The server materializes the worktree from the default branch on
+  receive (the GIT_DIR/worktree split makes this a checkout, not a copy).
+- **Fair scheduling:** extend `KernelPool` (`_pick` is affinity-hash +
+  round-robin today) with per-tenant weighted queues; the `affinity=` kwarg
+  seam already flows from the service — add `tenant=` beside it.
+- **Audit:** a tool-dispatch wrapper plus an EventBus subscriber appending
+  to the org's audit store.
+- **Frontend:** login page, org/workspace navigation, members and tokens
+  panels; identity chips reuse the existing lock-chip rendering.
+- **MCP remote mode:** `agentcad mcp --remote <url> --token …` proxies the
+  hosted API instead of auto-starting a local server.
+- Kernel untouched. Manifest untouched. All new behavior is additive; local
+  mode is the zero-config default.
+
+## MVP & phasing
+
+- **MVP:** auth (OIDC + passkeys + local accounts), orgs/workspaces/roles,
+  tenant-scoped stores, `permission_error` contract, audit log, push/pull
+  sync + clone, compose deployment with TLS, identity-aware UI chips, signed
+  desktop builds in the release pipeline.
+- **Phase 2:** agent tokens with scoped roles + `whoami`/token tools;
+  per-tenant fair scheduling (required before onboarding heavy tenants);
+  remote MCP mode; audit query UI.
+- **Phase 3:** org policy defaults (e.g. agents propose-but-not-merge with
+  PRD-002), workspace-level sharing defaults feeding PRD-007, hosted
+  registry scopes for PRD-011.
+
+## Acceptance criteria
+
+- AC1. Two users in one org collaborate on one project from two machines
+  against a hosted instance — both see edits live, attribution is correct
+  (browser session, staged instance).
+- AC2. A third user without access receives structured `permission_error` on
+  read and write; granting view then edit flips each capability without a
+  restart (test).
+- AC3. A laptop clone builds and edits fully offline, then `agentcad push`
+  syncs; a deliberately divergent branch surfaces PRD-001 merge conflicts
+  rather than overwriting (test + CLI session).
+- AC4. The whole stack deploys from the public repo with one compose file on
+  a clean VM; `/api/health` reports the deployment mode; TLS serves the UI
+  (documented run, CI-checked compose config).
+- AC5. An agent token scoped to project A edits A and is 403'd on project B;
+  revocation takes effect on the next call (test).
+- AC6. The audit log distinguishes a human edit, a chat-agent edit
+  (`agent:chat:main`), and an MCP edit (`agent:mcp:<name>`) on one project
+  (test).
+- AC7. Local mode unchanged: full suite green with no auth configured;
+  existing MCP setup keeps working unmodified (existing tests).
+- AC8. The macOS build passes notarization and the Windows build passes
+  signing in the release pipeline (CI evidence).
+
+## Risks & open questions
+
+- **Untrusted tenant code:** hosting strangers means executing their scripts
+  — gate hosted onboarding on PRD-006 (Linux confinement + quotas);
+  single-org self-host is safe earlier. Sequencing must be explicit in the
+  design spec.
+- **Sync conflict UX at the CLI:** pull-merge-push loops with PRD-001
+  conflicts need a humane CLI story; MVP may require resolving in the UI or
+  editor and re-pushing — document honestly.
+- **Identity store shape** (one SQLite per instance vs per-org files):
+  audit volume and membership queries favor SQLite; keep projects as files
+  either way. Decide in design with a migration note.
+- **Term collision:** tenancy "workspaces" vs PRD-025's UI workspace tabs
+  (Build/Produce/Test/Library/Market). Settle naming before either surface
+  ships — one of the two must rename.
+- **Compose TLS:** bundled ACME vs bring-your-own-proxy; default to bundled
+  Caddy-style automation with an escape hatch.
+- **WebSocket fan-out at tenant scale** (today one process, one bus): fine
+  for MVP scale; note the multi-process bus question for the design spec.
+
+## Competitive references
+
+Onshape (market_research.md, "Cloud-native CAD: Onshape"): the existence
+proof for cloud CAD and the cautionary tale — no offline (unfixable),
+metered API access, agent permissions promised via Onshape Labs but not
+shipped. Fusion Team: file-sync with component locking, not cloud-native.
+Ondsel ("Open-source CAD… the Ondsel lesson"): a closed cloud layer on an
+open core died with the company. We differ by: local-first with real git
+sync (offline is a feature, not a gap), agents as first-class authenticated
+principals with scoped revocable tokens, an identical open-source self-host
+path (one compose file), and no API metering ever — the API is the product.

@@ -1,10 +1,13 @@
-# Competitive Analysis — AgentCAD and the CAD Landscape
+# Market Research — AgentCAD and the CAD Landscape
 
 *August 2026. Compiled from primary-source web research (vendor docs, release
 announcements, pricing pages, user forums, funding news, academic benchmarks)
 plus the current state of this repo (v0.1 → v3, 39-tool agent surface). This
 document is the evidence base; the conclusions it feeds live in
-[roadmap.md](roadmap.md). Sources are linked per section.*
+[roadmap.md](roadmap.md) and the PRDs under [prd/](prd/). Part I is the
+competitive landscape; Part II holds the deep dives commissioned for specific
+PRDs (materials data, native CAD import, marketplaces, physics engines).
+Sources are linked per section.*
 
 ## The one-paragraph read
 
@@ -397,5 +400,194 @@ Not a business plan — three constraints the evidence imposes on the roadmap:
   concurrency + proposals deliver the value earlier; live co-editing of one
   script is a later polish, not the foundation.
 
-*Full per-cluster source lists live with each landscape section above. The
-forward feature plan built on this analysis is [roadmap.md](roadmap.md).*
+---
+
+# Part II — Deep dives (August 2026)
+
+Commissioned to ground specific PRDs. Same method: primary sources, linked.
+
+## Materials data (grounds PRD-028)
+
+**Commercial sources are license walls, not ingestion options.** MatWeb
+(115k+ datasheets) contractually forbids cataloging its database — personal
+extracts are capped at 500 materials, never for public release; its business
+is licensing data *into* CAD/FEA tools. MakeItFrom's EULA is personal and
+non-transferable. UL Prospector (45,000+ Yellow Cards for plastics) is
+$49–119/user/month, supplier-fed, non-redistributable. Ansys Granta's
+MaterialUniverse is the model for the *shape* of a credible library: ~4,000
+**generic** records with property ranges — not 45k supplier grades. MMPDS
+(FAA-accepted statistical aerospace allowables) is per-seat and strictly
+non-redistributable — link out, never ingest.
+
+**Legal nuance.** Under *Feist* (US), property values are uncopyrightable
+facts; but the EU Database Directive's sui generis right protects any
+substantial-investment database against extraction regardless, and site ToS
+bind as contract. Practical rule: hand-collect values fact-by-fact from
+multiple primary sources into our own selection/arrangement, with per-value
+citations; bulk extraction of any single database is off-limits.
+
+**Genuinely open:** NIST (public domain: TRC alloy data, WebBook, cryogenic
+DB); standards-defined values (EN 338 timber classes — C24 ⇒ f_m,k 24 MPa,
+E_0,mean 11 GPa, ρ_k 350 kg/m³; EN 206/ACI 318 concrete classes; ASTM/EN
+alloy grade minima); manufacturer datasheets cited fact-by-fact. FreeCAD
+ships ~100 core material cards plus the community **Supplemental-Materials**
+repo (data CC-BY-SA-4.0, PR-gated) — the direct OSS precedent for
+crowd-maintained engineering materials with a validation gate.
+
+**What tools ship:** SolidWorks ~500 materials + ~100 curves (overflow via
+Matereality's paid portal); Fusion a modest library + an additive process
+library; Onshape small built-in + company libraries; nTop starter set only.
+All disclaim "reference only — verify with your supplier"; temperature
+dependence is tabulated (T, value) pairs with linear interpolation
+(SolidWorks/Ansys convention). Per-calculation needs: static FEM E/ν/ρ/σ_y;
+modal E/ν/ρ; thermal k/c_p/CTE/T_max; cost $/kg×ρ; sheet-metal K-factor;
+process suitability (machinability, weldability, UL94, melt/glass temps).
+
+Sources: [MatWeb ToU](https://www.matweb.com/reference/terms.aspx) ·
+[MatWeb licensing](https://www.matweb.com/services/databaselicense.aspx) ·
+[Feist](https://supreme.justia.com/cases/federal/us/499/340/) ·
+[EU database right](https://europa.eu/youreurope/business/running-business/intellectual-property/database-protection/index_en.htm) ·
+[Granta Selector datasheet](https://www.ansys.com/content/dam/product/materials/granta-selector/granta-selector-product-datasheet.pdf) ·
+[MMPDS](https://www.mmpds.org/) · [NIST TRC](https://trc.nist.gov/metals_data/) ·
+[FreeCAD Supplemental-Materials](https://github.com/FreeCAD/Supplemental-Materials) ·
+[EN 338 C24 values](https://www.dataholz.eu/fileadmin/dataholz/media/baustoffe/Datenblaetter_en/vh_en_01.pdf) ·
+[SolidWorks ~500 materials](https://www.cati.com/blog/access-to-more-materials-than-ever/) ·
+[SW temperature-dependent properties](https://help.solidworks.com/2016/english/solidworks/cworks/t_Defining_Temperature-Dependent_Material.htm) ·
+[UL Prospector](https://www.ulprospector.com/plastics/en/yellowcards) · [JAHM MPDB](https://www.jahm.com/).
+
+## Native CAD import (grounds PRD-032, extends PRD-017)
+
+**Commercial translators:** HOOPS Exchange reads 30+ formats but runs
+~$33k/yr + ≥$20k/yr distribution — impossible in an OSS distribution.
+CAD Exchanger: per-format SDK licensing plus a **Cloud API priced per
+conversion** — the realistic hosted-connector route. Datakit: à-la-carte
+per-format. ODA: membership model, but its gratis **ODA File Converter**
+binary is what FreeCAD shells out to for DWG⇄DXF — the canonical
+OSS-compatible pattern (external process, no linking). Autodesk APS Model
+Derivative: cloud translation of ~60 formats including SLDPRT, CATPart,
+NX/Creo .prt, JT, Rhino at ~0.1 flex token per simple job.
+
+**Open-source reality:** OCCT 7.8+ itself reads STEP AP203/214/242 (XCAF
+names/colors/some PMI), IGES, BREP, glTF 2.0 (incl. Draco), OBJ, STL, VRML,
+PLY; 3MF via lib3mf (BSD) and DXF via ezdxf (MIT) are cheap adds. Parasolid
+is a hard wall (closed spec; SLDPRT's geometry is an embedded Parasolid
+stream — GitHub "SLDPRT readers" parse metadata, not B-rep). JT is ISO 14306
+nominally, but the practical toolkit is gated behind Siemens' program.
+LibreDWG (GPLv3) is the fully-free DWG fallback.
+
+**Competitors:** Onshape translates server-side (Parasolid kernel helps for
+SLDPRT/NX/Solid Edge): SOLIDWORKS 1999–2026, CATIA V5, NX, Creo, Inventor,
+JT, Rhino, Parasolid, STEP, glTF, 3MF — and imports arrive with an **empty
+feature list** ("parametric history wouldn't make sense transplanted").
+Fusion imports similarly via cloud translation. Nobody translates feature
+history; even $50k SDKs deliver dumb solids. STEP AP242 is genuinely the
+best neutral target (B-rep, assemblies, semantic PMI, persistent IDs) — but
+many exporters drop semantic PMI to graphics, and no STEP flavor carries
+sketches, constraints, or features.
+
+Sources: [HOOPS pricing](https://platform.softwareone.com/product/hoops-exchange/PCP-5549-7832) ·
+[CAD Exchanger](https://cadexchanger.com/products/sdk/) ·
+[ODA pricing](https://www.opendesign.com/pricing) ·
+[APS Model Derivative pricing](https://aps.autodesk.com/blog/forge-pricing-explained-3-what-does-each-forge-api-cost) ·
+[OCCT 7.8 formats](https://github.com/Open-Cascade-SAS/OCCT/discussions/1210) ·
+[Parasolid](https://en.wikipedia.org/wiki/Parasolid) ·
+[JT Open Toolkit](https://plm.sw.siemens.com/en-US/plm-components/jt/jt-open-toolkit/) ·
+[Onshape supported formats](https://cad.onshape.com/help/Content/translation.htm) ·
+[Onshape on lost history](https://forum.onshape.com/discussion/17328/when-importing-parts-from-solidworks-is-it-still-impossible-to-import-their-sketches-features) ·
+[Fusion formats](https://help.autodesk.com/view/fusion360/ENU/?guid=TPD-SUPPORTED-FILE-FORMATS) ·
+[AP242 PMI interop](https://www.ap242.org/geometry-assembly-pmi-interoperability.html).
+
+## Marketplaces & community platforms (grounds PRD-031, informs PRD-007/011/029)
+
+**Mechanics 2025–26:** Bambu **MakerWorld** is the growth engine — points
+redeemable for gift cards/cash (Exclusive Program gated to 2,000+ prints;
+fairness complaints), rampant points-farming forced a June 2025 rewards
+overhaul; its **Parametric Model Maker** (server-executed OpenSCAD pinned to
+the 2021 release, auto-built slider customizers) proves code-as-model at
+consumer scale. **Printables**: non-cash Prusameters + contests + heavy
+curation; AI-generated entries banned. Paid takes: Cults3D 20% (creator
+80%), MyMiniFactory ~30% base, TurboSquid 40→80% with exclusivity, CGTrader
+60–85%. **GrabCAD Library**: 7M+ engineers, 4M+ files — exposure-only, no
+validation, static dumb files. **Thingiverse** decayed through serial
+acquisitions and was sold to MyMiniFactory (Feb 2026); **Shapeways**' 2024
+Chapter 7 lost user files. Lesson: contribution persists where rewards are
+real and curation is funded; exposure-only communities decay.
+
+**The engineering gap:** McMaster-Carr (700k parts, in-house-modeled),
+TraceParts (100M+ models from parametric masters), CADENAS — all closed,
+vendor-fed. **Nobody offers community-contributed, kernel-validated
+parametric code components with STEP/drawing outputs and standards
+metadata.** That lane is open.
+
+**Code-as-model safety precedents:** VS Code Marketplace signs at publish,
+scans continuously — and still removed 110 malicious extensions in a year
+(name-reuse hijacks included): scanning alone is porous. npm's
+**Shai-Hulud** worm (Sept 2025) self-propagated through 500+ packages via
+publish tokens and install scripts (CISA alert; GitHub moved to trusted
+publishing). Hugging Face pairs scanning with a structural fix —
+**safetensors, a data-only format**. The equivalent structural move for CAD
+code: marketplace models execute only in the server-side sandboxed kernel;
+consumers get parameters and generated artifacts, never local execution.
+
+Sources: [MakerWorld points overhaul](https://www.fabbaloo.com/news/bambu-lab-overhauls-makerworld-points-system-to-curb-abuse-and-reward-quality) ·
+[Exclusive Model Program](https://blog.bambulab.com/exclusive-model-program-cash-rewards-and-copyright-support/) ·
+[PMM/OpenSCAD reference](https://mindflakes.com/posts/2026/05/04/makerworld-pmm-openscad-reference/) ·
+[Prusa rewards](https://www.prusa3d.com/p/prusa-reward-program/) ·
+[MMF acquires Thingiverse](https://www.tomshardware.com/3d-printing/myminifactory-acquires-thingiverse-to-save-3d-printing-file-sharing-from-ai-thingverse-has-eight-million-users-and-2-5-million-things) ·
+[Shapeways bankruptcy](https://www.cgchannel.com/2024/07/3d-printing-firm-shapeways-files-for-bankruptcy/) ·
+[Cults upload terms](https://cults3d.com/en/upload) ·
+[GrabCAD](https://resources.grabcad.com/company/) · [TraceParts](https://www.traceparts.com/en) ·
+[VS Marketplace security](https://developer.microsoft.com/blog/security-and-trust-in-visual-studio-marketplace/) ·
+[Shai-Hulud (Wiz)](https://www.wiz.io/blog/shai-hulud-npm-supply-chain-attack) ·
+[CISA alert](https://www.cisa.gov/news-events/alerts/2025/09/23/widespread-supply-chain-compromise-impacting-npm-ecosystem) ·
+[Protect AI × Hugging Face](https://huggingface.co/blog/pai-6-month).
+
+## Physics & motion (grounds PRD-030)
+
+**Engines:** **MuJoCo** (DeepMind) — Apache-2.0, pip wheel, monthly
+releases (v3.11.0 Jul 2026); hinge/slide/ball/free joints; **closed chains
+via MJCF equality constraints** (loops URDF cannot express); tunable soft
+convex contact; `mj_inverse` answers motor sizing directly; MJX/Warp for
+GPU scale. **Newton** (NVIDIA+DeepMind+Disney, Linux Foundation): 1.0 at
+GTC Mar 2026, robotics/RL-focused — watch, don't adopt. **PhysX 5**: BSD
+with GPU kernels open (Mar 2025) but no standalone Python — poor fit.
+**Bullet/PyBullet**: maintenance mode (3.2.7, Jan 2025) — fading.
+**Rapier**: Rust/WASM, Python "under development", game-grade. **Project
+Chrono**: true engineering multibody + FEA coupling, but conda-only SWIG
+API, slow cadence. **Drake** (TRI): pip, monthly, **hydroelastic contact**
+(most credible continuous contact forces short of FEA), IK/trajectory
+optimization — the engineering-grade second tier.
+
+**Incumbents:** SolidWorks Motion = embedded **ADAMS**: motors, springs, 3D
+contact, torque/power-vs-time, joint reactions exported as FEM loads — the
+canonical workflow. Fusion motion is kinematic-only (Event Simulation is
+extension-gated explicit dynamics). Onshape ships no dynamics; instead PTC
+connected Onshape to **NVIDIA Isaac Sim** (GTC Mar 2026), carrying mates
+into Isaac joints — validating the CAD-mates→sim bridge our URDF export
+anticipates. What engineers actually run: range-of-motion/clearance, cam/
+linkage force transmission, motor sizing over a duty cycle, contact events,
+peak loads → static FEM, vibration via modal.
+
+**Recommendation adopted (PRD-030):** MuJoCo first (poses + dynamics +
+inverse dynamics in one Apache-2.0 dependency that fits the sandboxed
+worker); convex-decomposed collision proxies (CoACD-class), never raw
+tessellation; worst-case-frame extraction into static FEM with inertia
+relief; Drake as the contact-fidelity tier later; do not build flexible-
+body/transient FEA/fatigue (burst or defer).
+
+Sources: [MuJoCo releases](https://github.com/google-deepmind/mujoco/releases) ·
+[MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp) ·
+[Newton 1.0](https://vnrobo.com/en/blog/nvidia-newton-physics-engine) ·
+[PhysX open source](https://www.phoronix.com/news/NVIDIA-OSS-PhysX-Flow-GPU) ·
+[bullet3](https://github.com/bulletphysics/bullet3) ·
+[Project Chrono](https://projectchrono.org/) ·
+[Drake releases](https://drake.mit.edu/release_notes/release_notes.html) ·
+[Drake hydroelastic](https://github.com/RobotLocomotion/drake/blob/master/tutorials/hydroelastic_contact_basics.ipynb) ·
+[SW Motion motor torque](https://www.goengineer.com/blog/solidworks-motion-study-analysis-motor-torque-and-power) ·
+[Onshape↔Isaac Sim](https://www.ptc.com/en/news/2026/ptc-announces-onshape-nvidia-isaac-sim-workflow).
+
+---
+
+*Full per-cluster source lists live with each section above. The forward
+feature plan built on this research is [roadmap.md](roadmap.md); the
+detailed requirements live in the [PRDs](prd/).*
