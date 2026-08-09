@@ -123,3 +123,33 @@ def test_patch_rejects_mate_driven_instance(demo):
     r = client.patch("/api/projects/demo/assembly/instances/plate1",
                      json={"position": [1, 2, 3]})
     assert r.status_code == 200
+
+
+def test_mate_to_reference_part_clean_error(demo, kernel, tmp_path):
+    # import a STEP reference part, then try to mate a script part to it
+    step = tmp_path / "ref.step"
+    kernel.request("export", {
+        "script": 'PARAMS={"s":{"default":10.0}}\nfrom build123d import *\n'
+                  'def build(p):\n    return Solid.make_box(10,10,10)\n',
+        "params": {}, "format": "step", "out_path": str(step)})
+    demo.create_part("demo", "imported", kind="reference", source="ref.step",
+                     label="Imported")
+    # copy the file into the project imports dir
+    import shutil
+    shutil.copy(step, demo.store.imports_dir("demo") / "ref.step")
+    with pytest.raises(ValidationError) as exc_info:
+        demo.set_assembly("demo", [
+            {"id": "imp1", "part": "imported", "position": [0, 0, 0]},
+            {"id": "pin1", "part": "pin",
+             "mate": {"connector": "base", "to_instance": "imp1", "to_connector": "x"}},
+        ])
+    assert "connector" in str(exc_info.value).lower() or "reference" in str(exc_info.value).lower()
+
+
+def test_dangling_mate_rejected_on_write(demo):
+    # can't set an instance mated to a non-existent anchor
+    with pytest.raises(ValidationError):
+        demo.set_assembly("demo", [
+            {"id": "pin1", "part": "pin",
+             "mate": {"connector": "base", "to_instance": "ghost", "to_connector": "top"}},
+        ])

@@ -16,6 +16,7 @@ const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 const meshBuffers = new Map(); // partId -> {buffer, key}
 let selectSeq = 0;
 let lastFittedTarget = null; // part id or "__assembly__"
+let localPatchUntil = 0; // suppress our own project_changed echo until this ts
 let assemblyRefreshTimer = null;
 let projectRefreshTimer = null;
 
@@ -90,6 +91,7 @@ async function refreshProject() {
   }
   setState({ project: detail });
   updateEmptyState();
+  loadMaterials(state.projectName); // keep the material picker in sync after edits
   const stillThere = detail.parts.some((p) => p.id === state.selectedPart);
   if (state.mode === "part") {
     if (!stillThere) {
@@ -397,6 +399,7 @@ function learnPartKind(detail) {
 async function patchInstanceTransform(instanceId, patch) {
   if (!state.projectName || !instanceId) return;
   try {
+    localPatchUntil = Date.now() + 700; // ignore our own project_changed echo
     const asm = await api.patchInstance(state.projectName, instanceId, patch);
     setState({ assembly: asm });
     // keep the project's raw instances roughly in sync (sidebar, mate flags)
@@ -628,8 +631,12 @@ function handleEvent(ev) {
     }
     case "project_changed": {
       // Covers part create/delete/update as well as assembly edits made
-      // server-side; debounced so agent-driven bursts refetch once.
-      if (ev.project === state.projectName) scheduleProjectRefresh();
+      // server-side; debounced so agent-driven bursts refetch once. Skip the
+      // echo of our own in-flight gizmo/transform commit so the reload can't
+      // detach the gizmo mid-interaction (local state already reflects it).
+      if (ev.project !== state.projectName) return;
+      if (Date.now() < localPatchUntil) return;
+      scheduleProjectRefresh();
       return;
     }
     case "chat_delta":

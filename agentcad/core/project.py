@@ -247,6 +247,18 @@ class ProjectStore:
             inst.rotation_deg = validate_vec3(
                 inst.rotation_deg, f"{inst.id}.rotation_deg"
             )
+        # Reject dangling mates on write, so removing an anchor instance can't
+        # leave the whole assembly unreadable (mate resolution would then fail).
+        for inst in instances:
+            if inst.mate:
+                target = inst.mate.get("to_instance")
+                if target not in seen:
+                    raise ValidationError(
+                        f"instance {inst.id!r}: mate.to_instance {target!r} "
+                        "is not an instance in this assembly"
+                    )
+                if target == inst.id:
+                    raise ValidationError(f"instance {inst.id!r}: mate to itself")
         manifest["assembly"]["instances"] = [i.to_manifest() for i in instances]
         self.save_manifest(proj, manifest)
 

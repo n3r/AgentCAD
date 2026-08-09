@@ -82,3 +82,22 @@ def test_fem_static_if_available(demo):
     })
     assert result["max_disp_mm"] > 0
     assert result["max_von_mises_mpa"] > 0
+
+
+def test_wall_probe_covers_all_solids(demo):
+    # two disjoint solids: a chunky block and a thin 0.4mm plate; min wall must
+    # find the thin one, not just the first solid.
+    thin = '''\
+from build123d import *
+PARAMS = {"t": {"default": 0.4, "min": 0.2, "max": 2.0, "unit": "mm", "description": "thin"}}
+def build(p):
+    block = Box(20, 20, 20)
+    plate = Pos(40, 0, 0) * Box(20, 20, p.t)
+    return Compound(children=[block, plate])
+'''
+    demo.create_part("demo", "twosolid", script=thin)
+    registry = build_registry(demo)
+    result = registry.call("analyze_part", {
+        "project": "demo", "part_id": "twosolid", "kind": "wall", "min_required": 1.0})
+    assert result["min_thickness_mm"] == pytest.approx(0.4, abs=0.1)
+    assert result["ok"] is False  # 0.4 < 1.0 required

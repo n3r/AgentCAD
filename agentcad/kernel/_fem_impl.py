@@ -82,7 +82,13 @@ def run_fem_static(toolbox: dict, params: dict) -> dict:
     # distribute total load over the loaded face area as a uniform traction
     d = np.array(load_dir, dtype=float)
     d /= np.linalg.norm(d) or 1.0
-    trac = load_N / _face_area(pts, m, load_facets)
+    area = _face_area(pts, m, load_facets)
+    if area <= 0:
+        raise ValueError(
+            f"load_face {loaded} matched no mesh facets — check axis/side "
+            "against the part's actual bounds"
+        )
+    trac = load_N / area
 
     @LinearForm
     def loading(v, w):

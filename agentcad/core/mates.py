@@ -17,9 +17,29 @@ from .model import ValidationError
 
 
 def resolve(service, proj: str, instances: list):
+    ids = {inst.id for inst in instances}
+    kinds = {inst.id: service.store.get_part(proj, inst.part).kind for inst in instances}
     items = []
     for inst in instances:
         record = service.store.get_part(proj, inst.part)
+        # Reference/imported parts declare no connectors and cannot mate; give a
+        # clear error instead of a cryptic KeyError deep in the resolver.
+        if inst.mate:
+            if record.kind != "script":
+                raise ValidationError(
+                    f"instance {inst.id!r}: reference/imported parts have no "
+                    "connectors and cannot be mated"
+                )
+            target = inst.mate.get("to_instance")
+            if target not in ids:
+                raise ValidationError(
+                    f"instance {inst.id!r}: mate.to_instance {target!r} not found"
+                )
+            if kinds.get(target) != "script":
+                raise ValidationError(
+                    f"instance {inst.id!r}: cannot mate to reference/imported "
+                    f"instance {target!r} (it has no connectors)"
+                )
         item = {
             "id": inst.id,
             "position": list(inst.position),

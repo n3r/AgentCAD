@@ -110,6 +110,8 @@ class AgentCADService:
                     "label": entry.get("label", entry["id"]),
                     "material": entry.get("material"),
                     "params": entry.get("params", {}),
+                    "kind": entry.get("kind", "script"),
+                    "source": entry.get("source"),
                     "state": status["state"] if status else "unbuilt",
                 }
             )
@@ -121,10 +123,21 @@ class AgentCADService:
             "assembly": {
                 "instances": [i.to_manifest() for i in self.store.instances(proj)]
             },
-            "materials": {
-                m.id: {"label": m.label, "density_g_cm3": m.density_g_cm3}
-                for m in MATERIALS.values()
-            },
+            "materials": self._materials_map(proj),
+        }
+
+    def _materials_map(self, proj: str) -> dict:
+        """Resolved material catalog (builtin + project overrides) matching the
+        densities mass metrics actually use. Falls back to builtins if the
+        project-aware resolver isn't active."""
+        effective = getattr(self.materials, "effective", None)
+        try:
+            catalog = effective(proj) if callable(effective) else MATERIALS
+        except Exception:  # noqa: BLE001 — never let a bad materials file break get_project
+            catalog = MATERIALS
+        return {
+            m.id: {"label": m.label, "density_g_cm3": m.density_g_cm3}
+            for m in catalog.values()
         }
 
     # ---------------------------------------------------------------- parts
@@ -303,8 +316,7 @@ class AgentCADService:
             entry = inst.to_manifest()
             built = self._ensure_built(proj, inst.part)
             if built["ok"]:
-                status = self._status[(proj, inst.part)]
-                metrics = status["metrics"]
+                metrics = built["metrics"]  # from the build result, not a racy re-read
                 entry["mass_g"] = metrics["mass_g"]
                 entry["state"] = "ok"
                 total_mass += metrics["mass_g"]

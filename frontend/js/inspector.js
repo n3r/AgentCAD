@@ -18,6 +18,11 @@ let paramsPane, metricsPane;
 let renderedPartId = null;
 let renderedSpecJson = null;
 
+// The material <select> is preserved across metric re-renders so a rebuild
+// (which fires often) can't tear it down while the user has the dropdown open.
+let materialBlockEl = null;
+let materialSig = null;
+
 // analysis results survive metric re-renders (a param edit shouldn't wipe them)
 let analysisPartId = null;
 let analysisResults = {}; // kind -> {loading} | {data} | {error}
@@ -446,7 +451,15 @@ function renderMetrics(part) {
     analysisResults = {};
   }
   metricsPane.textContent = "";
-  metricsPane.appendChild(materialBlock(part));
+  // Reuse the existing material block unless the part, its material, or the
+  // catalog actually changed — never rebuild a possibly-open <select>.
+  const catalog = (state.materials && state.materials.materials) || [];
+  const sig = JSON.stringify([part.id, part.material, catalog.map((m) => m.id)]);
+  if (!materialBlockEl || sig !== materialSig) {
+    materialBlockEl = materialBlock(part);
+    materialSig = sig;
+  }
+  metricsPane.appendChild(materialBlockEl);
   metricsPane.appendChild(metricsTable(part));
   metricsPane.appendChild(analysisBlock(part));
 }

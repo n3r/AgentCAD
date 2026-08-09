@@ -33,40 +33,42 @@ def _section(shape, plane_name: str, min_required=None) -> dict:
 
 
 def _min_wall(shape, min_required=None, grid: int = 8) -> dict:
-    solids = shape.solids()
-    solid = solids[0] if solids else shape
-    inter = IntCurvesFace_ShapeIntersector()
-    inter.Load(solid.wrapped, 1e-6)
+    # Probe EVERY solid: a thin feature on a second solid must not be missed
+    # (a first-solid-only probe reports a false "ok").
+    solids = shape.solids() or [shape]
     min_thick = float("inf")
     min_loc = None
-    exp = TopExp_Explorer(solid.wrapped, TopAbs_FACE)
-    while exp.More():
-        face = TopoDS.Face_s(exp.Current())
-        umin, umax, vmin, vmax = BRepTools.UVBounds_s(face)
-        gp_face = BRepGProp_Face(face)
-        reversed_ = face.Orientation() == TopAbs_REVERSED
-        for i in range(grid):
-            for j in range(grid):
-                u = umin + (umax - umin) * (i + 0.5) / grid
-                v = vmin + (vmax - vmin) * (j + 0.5) / grid
-                pnt, nrm = gp_Pnt(), gp_Vec()
-                gp_face.Normal(u, v, pnt, nrm)
-                if nrm.Magnitude() < 1e-9:
-                    continue
-                nrm.Normalize()
-                if reversed_:
-                    nrm.Reverse()
-                d = gp_Dir(-nrm.X(), -nrm.Y(), -nrm.Z())
-                inter.Perform(gp_Lin(pnt, d), 1e-4, 1e6)
-                best = None
-                for k in range(1, inter.NbPnt() + 1):
-                    w = inter.WParameter(k)
-                    if w > 1e-4 and (best is None or w < best):
-                        best = w
-                if best is not None and best < min_thick:
-                    min_thick = best
-                    min_loc = [pnt.X(), pnt.Y(), pnt.Z()]
-        exp.Next()
+    for solid in solids:
+        inter = IntCurvesFace_ShapeIntersector()
+        inter.Load(solid.wrapped, 1e-6)
+        exp = TopExp_Explorer(solid.wrapped, TopAbs_FACE)
+        while exp.More():
+            face = TopoDS.Face_s(exp.Current())
+            umin, umax, vmin, vmax = BRepTools.UVBounds_s(face)
+            gp_face = BRepGProp_Face(face)
+            reversed_ = face.Orientation() == TopAbs_REVERSED
+            for i in range(grid):
+                for j in range(grid):
+                    u = umin + (umax - umin) * (i + 0.5) / grid
+                    v = vmin + (vmax - vmin) * (j + 0.5) / grid
+                    pnt, nrm = gp_Pnt(), gp_Vec()
+                    gp_face.Normal(u, v, pnt, nrm)
+                    if nrm.Magnitude() < 1e-9:
+                        continue
+                    nrm.Normalize()
+                    if reversed_:
+                        nrm.Reverse()
+                    d = gp_Dir(-nrm.X(), -nrm.Y(), -nrm.Z())
+                    inter.Perform(gp_Lin(pnt, d), 1e-4, 1e6)
+                    best = None
+                    for k in range(1, inter.NbPnt() + 1):
+                        w = inter.WParameter(k)
+                        if w > 1e-4 and (best is None or w < best):
+                            best = w
+                    if best is not None and best < min_thick:
+                        min_thick = best
+                        min_loc = [pnt.X(), pnt.Y(), pnt.Z()]
+            exp.Next()
     out = {"kind": "wall", "min_thickness_mm": None if math.isinf(min_thick) else min_thick,
            "location": min_loc}
     if min_required is not None and not math.isinf(min_thick):

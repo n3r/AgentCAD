@@ -34,6 +34,13 @@ def build_router(service, registry) -> APIRouter:
                                    "details": {}}},
             )
         body = await request.json()
-        return registry.call("fem_static", {"project": proj, "part_id": part_id, **body})
+        args = {"project": proj, "part_id": part_id}
+        # Whitelist documented keys, forwarding only those present (the tool's
+        # typed args reject nulls / unexpected keys).
+        for key in ("fixed_face", "load_face", "load_N", "load_dir",
+                    "E_mpa", "nu", "mesh_size_mm"):
+            if body.get(key) is not None:
+                args[key] = body[key]
+        return registry.call("fem_static", args)
 
     return router
