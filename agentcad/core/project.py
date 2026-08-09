@@ -103,7 +103,7 @@ class ProjectStore:
                     id=entry["id"],
                     label=entry.get("label", entry["id"]),
                     material=entry.get("material", DEFAULT_MATERIAL),
-                    params={k: float(v) for k, v in entry.get("params", {}).items()},
+                    params=dict(entry.get("params", {})),  # JSON scalars pass through
                     kind=entry.get("kind", "script"),
                     source=entry.get("source"),
                 )
@@ -192,7 +192,7 @@ class ProjectStore:
         *,
         label: str | None = None,
         material: str | None = None,
-        params: dict[str, float] | None = None,
+        params: dict[str, float | int | bool | str] | None = None,
     ) -> PartRecord:
         manifest = self.manifest(proj)
         for entry in manifest["parts"]:
@@ -204,13 +204,12 @@ class ProjectStore:
                     entry["material"] = material
                 if params is not None:
                     for name, value in params.items():
-                        if isinstance(value, bool) or not isinstance(
-                            value, (int, float)
-                        ):
+                        if not isinstance(value, (int, float, bool, str)):
                             raise ValidationError(
-                                f"parameter {name!r} must be a number"
+                                f"parameter {name!r} must be a number, bool, "
+                                "or string"
                             )
-                    entry["params"] = {k: float(v) for k, v in params.items()}
+                    entry["params"] = dict(params)
                 self.save_manifest(proj, manifest)
                 return self.get_part(proj, part_id)
         raise NotFoundError(f"part {part_id!r} not found")

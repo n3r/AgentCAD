@@ -38,12 +38,36 @@ def build(p):
 
 Rules (enforced by the kernel — violations return `contract_error`):
 
-- `PARAMS` is a dict of numeric parameter specs. `default` is required and
-  must be a number; `min`, `max`, `unit`, `description` are optional but
-  strongly recommended — `min`+`max` gives the UI a slider, and the bundled
-  examples treat all four as mandatory style.
-- Project parameter overrides are **clamped** to `[min, max]` with a warning
-  (never an error), so agents and sliders can push bounds safely.
+- `PARAMS` is a dict of typed parameter specs. `default` is required;
+  `description` is optional but strongly recommended. An optional `"type"`
+  selects the kind of value — `"number"` (the default), `"int"`, `"bool"`,
+  `"enum"`, or `"string"`:
+  - **number / int**: `min`, `max`, `unit` are optional but recommended —
+    `min`+`max` gives the UI a slider, and the bundled examples treat
+    min/max/unit/description as mandatory style. `int` accepts only integral
+    values (`3.0` coerces to `3`; `3.5` is rejected).
+  - **bool**: `default` must be a real `True`/`False` (the UI shows a checkbox).
+  - **enum**: requires `choices`, a non-empty list of strings and/or numbers;
+    `default` and overrides must be members (the UI shows a dropdown).
+  - **string**: `default` must be a string; optional `max_len` (default 200).
+  - `min`/`max` are only legal on number/int specs, `choices` only on enum,
+    `max_len` only on string.
+
+  ```python
+  PARAMS = {
+      "size":   {"default": 20.0, "min": 5.0, "max": 80.0, "unit": "mm",
+                 "description": "Cube edge"},
+      "ribbed": {"default": True, "type": "bool", "description": "Add ribs"},
+      "finish": {"default": "raw", "type": "enum",
+                 "choices": ["raw", "anodized"], "description": "Surface finish"},
+      "label":  {"default": "acme", "type": "string", "max_len": 12,
+                 "description": "Engraving text"},
+  }
+  ```
+- Numeric parameter overrides are **clamped** to `[min, max]` with a warning
+  (never an error), so agents and sliders can push bounds safely. Non-numeric
+  overrides must match their spec exactly — a wrong-typed value or a
+  non-member enum choice is a `contract_error`.
 - `build(p)` receives an attribute namespace of resolved values (`p.width`)
   and must return a build123d `Part`, `Solid`, or `Compound`. Returning the
   `BuildPart` builder itself also works — AgentCAD takes `.part`.

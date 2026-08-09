@@ -43,13 +43,15 @@ kernel validates every change and returns real metrics (volume mm^3, mass g, are
 bounding box, center of mass, validity).
 
 Part-script contract (summary):
-- A part script defines PARAMS, a dict of numeric parameter specs
+- A part script defines PARAMS, a dict of typed parameter specs
   ({"name": {"default": ..., "min": ..., "max": ..., "unit": ..., "description": ...}}
-  with "default" required and the rest optional), and a function build(p) that
+  with "default" required and the rest optional; an optional "type" of "number"
+  (the default), "int", "bool", "enum" (requires "choices"), or "string" enables
+  non-numeric parameters), and a function build(p) that
   receives the resolved parameter values as attributes (p.name) and returns a
   build123d Part, Solid, or Compound.
-- Units are millimeters; angles are degrees. Parameter overrides outside min/max are
-  clamped with warnings; unknown parameter names are errors.
+- Units are millimeters; angles are degrees. Numeric overrides outside min/max are
+  clamped with warnings; wrong-typed values and unknown parameter names are errors.
 
 Working rules:
 - Call the part_template tool before writing your first part script in a

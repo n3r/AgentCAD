@@ -18,6 +18,10 @@ let paramsPane, metricsPane;
 let renderedPartId = null;
 let renderedSpecJson = null;
 
+// enum param name -> its choices array. Selects store a choice *index*, and
+// queue/sync index into this list so numeric choices keep their numeric type.
+let paramChoices = {};
+
 // The material <select> is preserved across metric re-renders so a rebuild
 // (which fires often) can't tear it down while the user has the dropdown open.
 let materialBlockEl = null;
@@ -130,6 +134,15 @@ function render() {
 
   const specJson = JSON.stringify(part.params_spec || null);
   if (part.id !== renderedPartId || specJson !== renderedSpecJson) {
+    // Clicking another part is exactly the gesture that blurs a just-edited
+    // field: an edit still debouncing for the old part must be committed, not
+    // discarded. flushParams snapshots pendingPartId, and applyRebuildResult
+    // only touches state.part when the ids match, so the late PATCH updates
+    // the old part's server state without disturbing the new selection.
+    if (Object.keys(pending).length && pendingPartId !== null && pendingPartId !== part.id) {
+      clearTimeout(debounceTimer);
+      flushParams();
+    }
     renderedPartId = part.id;
     renderedSpecJson = specJson;
     pending = {};
@@ -170,6 +183,7 @@ function niceStep(min, max) {
 
 function buildParamControls(part) {
   paramsPane.textContent = "";
+  paramChoices = {};
   const spec = part.params_spec;
   if (!spec || !Object.keys(spec).length) {
     paramsPane.innerHTML =
@@ -199,29 +213,58 @@ function buildParamControls(part) {
     const ctl = document.createElement("div");
     ctl.className = "param-ctl";
     const value = effectiveValue(part, name, entry);
-    const hasRange = entry.min != null && entry.max != null;
+    const type = entry.type || "number";
 
-    let slider = null;
-    if (hasRange) {
-      slider = document.createElement("input");
-      slider.type = "range";
-      slider.min = entry.min;
-      slider.max = entry.max;
-      slider.step = niceStep(entry.min, entry.max);
-      slider.value = value;
-      slider.setAttribute("aria-label", name);
-      ctl.appendChild(slider);
+    if (type === "bool") {
+      const check = document.createElement("input");
+      check.type = "checkbox";
+      check.className = "param-check";
+      check.checked = Boolean(value);
+      check.setAttribute("aria-label", name);
+      check.addEventListener("change", () => queueParam(name, check.checked));
+      ctl.appendChild(check);
+    } else if (type === "enum") {
+      const choices = entry.choices || [];
+      paramChoices[name] = choices;
+      const select = document.createElement("select");
+      select.className = "param-select";
+      select.setAttribute("aria-label", name);
+      // Surface a stale override that matches no declared choice instead of
+      // silently showing choices[0] (mirrors the material "(unknown)" row).
+      // The change handler's `choice !== undefined` guard ignores value "-1".
+      if (!choices.some((c) => c === value)) {
+        const opt = document.createElement("option");
+        opt.value = "-1";
+        opt.textContent = `${value} (not in choices)`;
+        opt.selected = true;
+        opt.disabled = true;
+        select.appendChild(opt);
+      }
+      choices.forEach((choice, i) => {
+        const opt = document.createElement("option");
+        opt.value = String(i);
+        opt.textContent = String(choice);
+        if (choice === value) opt.selected = true;
+        select.appendChild(opt);
+      });
+      select.addEventListener("change", () => {
+        const choice = choices[Number(select.value)];
+        if (choice !== undefined) queueParam(name, choice);
+      });
+      ctl.appendChild(select);
+    } else if (type === "string") {
+      const text = document.createElement("input");
+      text.type = "text";
+      text.className = "param-text";
+      if (entry.max_len != null) text.maxLength = entry.max_len;
+      text.value = value == null ? "" : value;
+      text.setAttribute("aria-label", `${name} value`);
+      // "change" (blur/Enter), not per keystroke; queueParam keeps the debounce.
+      text.addEventListener("change", () => queueParam(name, text.value));
+      ctl.appendChild(text);
+    } else {
+      buildNumericControls(ctl, name, entry, value, type === "int");
     }
-
-    const num = document.createElement("input");
-    num.type = "number";
-    num.className = "param-num";
-    num.step = "any";
-    if (entry.min != null) num.min = entry.min;
-    if (entry.max != null) num.max = entry.max;
-    num.value = value;
-    num.setAttribute("aria-label", `${name} value`);
-    ctl.appendChild(num);
     wrap.appendChild(ctl);
 
     if (entry.description) {
@@ -231,22 +274,62 @@ function buildParamControls(part) {
       wrap.appendChild(desc);
     }
 
-    if (slider) {
-      slider.addEventListener("input", () => {
-        num.value = slider.value;
-        queueParam(name, parseFloat(slider.value));
-      });
-    }
-    num.addEventListener("input", () => {
-      const v = parseFloat(num.value);
-      if (!Number.isFinite(v)) return;
-      if (slider) slider.value = v;
-      queueParam(name, v);
-    });
-
     paramsPane.appendChild(wrap);
   }
   appendWarningsHost();
+}
+
+function buildNumericControls(ctl, name, entry, value, isInt) {
+  const hasRange = entry.min != null && entry.max != null;
+
+  let slider = null;
+  if (hasRange) {
+    slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = entry.min;
+    slider.max = entry.max;
+    slider.step = isInt ? 1 : niceStep(entry.min, entry.max);
+    slider.value = value;
+    slider.setAttribute("aria-label", name);
+    ctl.appendChild(slider);
+  }
+
+  const num = document.createElement("input");
+  num.type = "number";
+  num.className = "param-num";
+  num.step = isInt ? "1" : "any";
+  if (entry.min != null) num.min = entry.min;
+  if (entry.max != null) num.max = entry.max;
+  num.value = value;
+  num.setAttribute("aria-label", `${name} value`);
+  ctl.appendChild(num);
+
+  if (slider) {
+    slider.addEventListener("input", () => {
+      num.value = slider.value;
+      queueParam(name, parseFloat(slider.value));
+    });
+  }
+  num.addEventListener("input", () => {
+    const v = parseFloat(num.value);
+    if (!Number.isFinite(v)) return;
+    // Mid-edit fractional values for an int param aren't sent (the kernel
+    // rejects them); step="1" already marks the field invalid while typing.
+    if (isInt && !Number.isInteger(v)) return;
+    if (slider) slider.value = v;
+    queueParam(name, v);
+  });
+  if (isInt) {
+    // On commit (blur/Enter), round a lingering fractional value and send it.
+    num.addEventListener("change", () => {
+      const v = parseFloat(num.value);
+      if (!Number.isFinite(v) || Number.isInteger(v)) return;
+      const rounded = Math.round(v);
+      num.value = rounded;
+      if (slider) slider.value = rounded;
+      queueParam(name, rounded);
+    });
+  }
 }
 
 function appendWarningsHost() {
@@ -321,8 +404,28 @@ function syncParamValues(part) {
     if (name in pending || name in inflight) continue;
     const value = effectiveValue(part, name, spec[name]);
     for (const input of wrap.querySelectorAll("input")) {
+      if (input.type === "checkbox") {
+        // Focus on a checkbox is not an in-progress edit — always sync it.
+        input.checked = Boolean(value);
+        continue;
+      }
+      // Text/number/range: skip the focused control so typing isn't clobbered.
       if (document.activeElement === input) continue;
       input.value = value;
+    }
+    const select = wrap.querySelector("select");
+    if (select) {
+      // Focus on a (closed) select is not an in-progress edit either.
+      // Options hold choice *indices* as values; a "(not in choices)"
+      // placeholder holds "-1", so match by option value, not selectedIndex.
+      const idx = (paramChoices[name] || []).findIndex((c) => c === value);
+      if (idx >= 0) {
+        select.value = String(idx);
+      } else {
+        const placeholder = select.querySelector('option[value="-1"]');
+        if (placeholder) placeholder.selected = true;
+        else select.selectedIndex = -1;
+      }
     }
   }
 }

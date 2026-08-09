@@ -63,6 +63,69 @@ def _exec_script(script: str) -> dict:
     return ns
 
 
+PARAM_TYPES = ("number", "int", "bool", "enum", "string")
+# Spec fields legal only on some types (unit/description are always allowed).
+_TYPE_ONLY_FIELDS = {
+    "min": ("number", "int"),
+    "max": ("number", "int"),
+    "choices": ("enum",),
+    "max_len": ("string",),
+}
+DEFAULT_MAX_LEN = 200
+
+
+def _effective_max_len(entry: dict):
+    """max_len with an explicit None treated as absent (inspect's normalized
+    output emits None for unset fields, and must round-trip as PARAMS)."""
+    max_len = entry.get("max_len")
+    return DEFAULT_MAX_LEN if max_len is None else max_len
+
+
+def _as_int(value):
+    """The value as an int if it is an integral number (3 or 3.0), else None.
+    bool passes isinstance(x, int), so it is rejected explicitly first."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not value.is_integer():
+        return None
+    return int(value)
+
+
+def _numeric_field(name: str, field: str, value, ptype: str):
+    if ptype == "int":
+        coerced = _as_int(value)
+        if coerced is None:
+            raise WorkerError(
+                ERROR_CONTRACT, f"PARAMS[{name!r}][{field!r}] must be an integer"
+            )
+        return coerced
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise WorkerError(
+            ERROR_CONTRACT, f"PARAMS[{name!r}][{field!r}] must be a number"
+        )
+    return value
+
+
+def _validate_numeric_spec(name: str, entry: dict, ptype: str) -> None:
+    default = _numeric_field(name, "default", entry["default"], ptype)
+    mn = entry.get("min")
+    mx = entry.get("max")
+    mn = None if mn is None else _numeric_field(name, "min", mn, ptype)
+    mx = None if mx is None else _numeric_field(name, "max", mx, ptype)
+    if mn is not None and mx is not None and mn > mx:
+        raise WorkerError(ERROR_CONTRACT, f"PARAMS[{name!r}]: min > max")
+    if (mn is not None and default < mn) or (mx is not None and default > mx):
+        raise WorkerError(
+            ERROR_CONTRACT, f"PARAMS[{name!r}]: default outside [min, max]"
+        )
+
+
+def _valid_choice(c) -> bool:
+    return isinstance(c, str) or (
+        not isinstance(c, bool) and isinstance(c, (int, float))
+    )
+
+
 def _validate_params_spec(spec) -> dict:
     if not isinstance(spec, dict):
         raise WorkerError(ERROR_CONTRACT, "PARAMS must be a dict of parameter specs")
@@ -73,26 +136,90 @@ def _validate_params_spec(spec) -> dict:
             raise WorkerError(
                 ERROR_CONTRACT, f"PARAMS[{name!r}] must be a dict with a 'default'"
             )
-        default = entry["default"]
-        if isinstance(default, bool) or not isinstance(default, (int, float)):
+        ptype = entry.get("type", "number")
+        if ptype not in PARAM_TYPES:
             raise WorkerError(
-                ERROR_CONTRACT, f"PARAMS[{name!r}]['default'] must be a number"
+                ERROR_CONTRACT,
+                f"PARAMS[{name!r}]['type'] must be one of: {', '.join(PARAM_TYPES)}",
             )
-        mn, mx = entry.get("min"), entry.get("max")
-        for bound_name, bound in (("min", mn), ("max", mx)):
-            if bound is not None and (
-                isinstance(bound, bool) or not isinstance(bound, (int, float))
+        for field, legal_on in _TYPE_ONLY_FIELDS.items():
+            # An explicit None means "absent" (inspect's normalized output
+            # emits None for unset fields and must be legal as PARAMS).
+            if entry.get(field) is not None and ptype not in legal_on:
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"PARAMS[{name!r}][{field!r}] is not allowed on a {ptype} spec",
+                )
+        default = entry["default"]
+        if ptype in ("number", "int"):
+            _validate_numeric_spec(name, entry, ptype)
+        elif ptype == "bool":
+            if not isinstance(default, bool):
+                raise WorkerError(
+                    ERROR_CONTRACT, f"PARAMS[{name!r}]['default'] must be a bool"
+                )
+        elif ptype == "enum":
+            choices = entry.get("choices")
+            if (
+                not isinstance(choices, list)
+                or not choices
+                or not all(_valid_choice(c) for c in choices)
             ):
                 raise WorkerError(
-                    ERROR_CONTRACT, f"PARAMS[{name!r}][{bound_name!r}] must be a number"
+                    ERROR_CONTRACT,
+                    f"PARAMS[{name!r}]['choices'] must be a non-empty list of "
+                    "strings and/or numbers",
                 )
-        if mn is not None and mx is not None and mn > mx:
-            raise WorkerError(ERROR_CONTRACT, f"PARAMS[{name!r}]: min > max")
-        if (mn is not None and default < mn) or (mx is not None and default > mx):
-            raise WorkerError(
-                ERROR_CONTRACT, f"PARAMS[{name!r}]: default outside [min, max]"
-            )
+            if isinstance(default, bool) or not any(default == c for c in choices):
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"PARAMS[{name!r}]: default {default!r} is not in choices",
+                    {"choices": choices},
+                )
+        else:  # string
+            if not isinstance(default, str):
+                raise WorkerError(
+                    ERROR_CONTRACT, f"PARAMS[{name!r}]['default'] must be a string"
+                )
+            max_len = _effective_max_len(entry)
+            if isinstance(max_len, bool) or not isinstance(max_len, int) or max_len <= 0:
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"PARAMS[{name!r}]['max_len'] must be a positive integer",
+                )
+            if len(default) > max_len:
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"PARAMS[{name!r}]: default exceeds max_len {max_len}",
+                )
     return spec
+
+
+def _resolve_numeric(
+    name: str, entry: dict, value, ptype: str, warnings: list[str]
+):
+    if ptype == "int":
+        coerced = _as_int(value)
+        if coerced is None:
+            raise WorkerError(
+                ERROR_CONTRACT, f"parameter {name!r} must be an integer, got {value!r}"
+            )
+        value = coerced
+    elif isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise WorkerError(
+            ERROR_CONTRACT, f"parameter {name!r} must be a number, got {value!r}"
+        )
+    mn, mx = entry.get("min"), entry.get("max")
+    if ptype == "int":  # bounds were validated integral; keep the value an int
+        mn = None if mn is None else int(mn)
+        mx = None if mx is None else int(mx)
+    if mn is not None and value < mn:
+        warnings.append(f"param {name} clamped to min {mn}")
+        value = mn
+    if mx is not None and value > mx:
+        warnings.append(f"param {name} clamped to max {mx}")
+        value = mx
+    return value
 
 
 def _resolve_params(spec: dict, overrides: dict) -> tuple[dict, list[str]]:
@@ -107,17 +234,43 @@ def _resolve_params(spec: dict, overrides: dict) -> tuple[dict, list[str]]:
     warnings: list[str] = []
     for name, entry in spec.items():
         value = overrides.get(name, entry["default"])
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise WorkerError(
-                ERROR_CONTRACT, f"parameter {name!r} must be a number, got {value!r}"
+        ptype = entry.get("type", "number")
+        if ptype in ("number", "int"):
+            value = _resolve_numeric(name, entry, value, ptype, warnings)
+        elif ptype == "bool":
+            if not isinstance(value, bool):
+                raise WorkerError(
+                    ERROR_CONTRACT, f"parameter {name!r} must be a bool, got {value!r}"
+                )
+        elif ptype == "enum":
+            choices = entry["choices"]
+            # Canonicalize to the declared choice (3.0 matches an int 3 but
+            # must reach build(p) — and the shape-cache key — as the int).
+            # bools are never members: True == 1 would match a numeric choice.
+            matched = (
+                None
+                if isinstance(value, bool)
+                else next((c for c in choices if value == c), None)
             )
-        mn, mx = entry.get("min"), entry.get("max")
-        if mn is not None and value < mn:
-            warnings.append(f"param {name} clamped to min {mn}")
-            value = mn
-        if mx is not None and value > mx:
-            warnings.append(f"param {name} clamped to max {mx}")
-            value = mx
+            if matched is None:
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"parameter {name!r} must be one of "
+                    f"{', '.join(repr(c) for c in choices)}, got {value!r}",
+                    {"choices": choices},
+                )
+            value = matched
+        else:  # string
+            if not isinstance(value, str):
+                raise WorkerError(
+                    ERROR_CONTRACT, f"parameter {name!r} must be a string, got {value!r}"
+                )
+            max_len = _effective_max_len(entry)
+            if len(value) > max_len:
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"parameter {name!r} exceeds max_len {max_len}",
+                )
         values[name] = value
     return values, warnings
 
@@ -255,16 +408,26 @@ def handle_inspect(params: dict) -> dict:
     spec = _validate_params_spec(ns["PARAMS"])
     return {
         "params_spec": {
-            name: {
-                "default": entry["default"],
-                "min": entry.get("min"),
-                "max": entry.get("max"),
-                "unit": entry.get("unit"),
-                "description": entry.get("description"),
-            }
-            for name, entry in spec.items()
+            name: _normalized_spec_entry(entry) for name, entry in spec.items()
         }
     }
+
+
+def _normalized_spec_entry(entry: dict) -> dict:
+    ptype = entry.get("type", "number")
+    out = {
+        "type": ptype,
+        "default": entry["default"],
+        "min": entry.get("min"),
+        "max": entry.get("max"),
+        "unit": entry.get("unit"),
+        "description": entry.get("description"),
+    }
+    if ptype == "enum":
+        out["choices"] = list(entry["choices"])
+    if ptype == "string":
+        out["max_len"] = _effective_max_len(entry)
+    return out
 
 
 def handle_build(params: dict) -> dict:

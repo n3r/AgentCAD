@@ -48,7 +48,7 @@ of truth, and it omits `fem_static` unless the `[fem]` extra is installed.
 | `create_part` | **project, part_id**, label, script, material | Part detail with metrics (default template if no `script`; `material` defaults to `al6061`). |
 | `get_part` | **project, part_id** | Script, `params_spec`, current params, status (state/error/warnings), metrics, plus `kind` (`script`\|`reference`) and `source`. For reference parts `script`/`params_spec` are `null` and `source` is the imported file. |
 | `update_part_script` | **project, part_id**, script, label, material | Rebuild result. On failure: traceback + failing line + hint; previous geometry kept. |
-| `set_params` | **project, part_id, values** | Rebuild result. Values merge with existing overrides and clamp to min/max with warnings; unknown names are rejected before anything is written, and a `null` value removes an override. |
+| `set_params` | **project, part_id, values** | Rebuild result. Values (numbers, booleans, enum choices, or strings, per each param's `type` in `params_spec`) merge with existing overrides; numeric values clamp to min/max with warnings, while a wrong-typed value or non-member enum choice is rejected. Unknown names are rejected before anything is written, and a `null` value removes an override. |
 | `delete_part` | **project, part_id** | `{deleted}` — fails with a conflict while assembly instances reference the part. |
 
 ### Metrics, mesh, and export

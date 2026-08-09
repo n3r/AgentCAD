@@ -1,10 +1,11 @@
+import json
 import queue
 
 import pytest
 
 from agentcad.core.service import AgentCADService, EventBus
 
-from .conftest import BOX_SCRIPT
+from .conftest import BOX_SCRIPT, NUMERIC_ENUM_SCRIPT, TYPED_SCRIPT
 
 BROKEN_SCRIPT = 'PARAMS = {"size": {"default": 1.0}}\ndef build(p):\n    raise RuntimeError("nope")\n'
 
@@ -108,6 +109,66 @@ def test_set_params_null_removes_override(demo):
     assert result["ok"] is True
     assert demo.store.get_part("demo", "box").params == {}
     assert result["metrics"]["volume_mm3"] == pytest.approx(1000.0, rel=1e-6)
+
+
+@pytest.fixture
+def typed(service):
+    service.create_project("demo")
+    service.create_part("demo", "widget", script=TYPED_SCRIPT)
+    return service
+
+
+def _manifest_params(service, proj, part_id):
+    manifest = json.loads(
+        (service.store.path_of(proj) / "project.json").read_text()
+    )
+    return next(p for p in manifest["parts"] if p["id"] == part_id)["params"]
+
+
+def test_set_params_typed_round_trip(typed):
+    result = typed.set_params(
+        "demo", "widget", {"holes": False, "grade": "wide", "label": "x"}
+    )
+    assert result["ok"] is True
+    part = typed.get_part("demo", "widget")
+    assert part["params"]["holes"] is False  # a real bool, not 0.0
+    assert part["params"]["grade"] == "wide"
+    assert part["params"]["label"] == "x"
+    # manifest on disk holds native JSON types
+    stored = _manifest_params(typed, "demo", "widget")
+    assert stored["holes"] is False
+    assert stored["grade"] == "wide"
+    assert stored["label"] == "x"
+
+
+def test_set_params_invalid_enum_rejected_manifest_unchanged(typed):
+    from agentcad.core.model import ValidationError
+
+    typed.set_params("demo", "widget", {"grade": "wide"})
+    with pytest.raises(ValidationError):
+        typed.set_params("demo", "widget", {"grade": "narrow", "label": "ok"})
+    assert _manifest_params(typed, "demo", "widget") == {"grade": "wide"}
+
+
+def test_set_params_numeric_enum_canonicalized_to_declared_choice(service):
+    # Caller sends 3.0 for the declared int choice 3: the manifest must store
+    # the author-declared int (JSON keeps 3 an int and 3.0 a float), and the
+    # rebuild must succeed (build uses range(p.n)).
+    service.create_project("demo")
+    service.create_part("demo", "gadget", script=NUMERIC_ENUM_SCRIPT)
+    result = service.set_params("demo", "gadget", {"n": 3.0})
+    assert result["ok"] is True
+    stored = _manifest_params(service, "demo", "gadget")["n"]
+    assert stored == 3
+    assert isinstance(stored, int) and not isinstance(stored, bool)
+
+
+def test_set_params_null_removes_bool_override(typed):
+    typed.set_params("demo", "widget", {"holes": False})
+    assert typed.store.get_part("demo", "widget").params == {"holes": False}
+    result = typed.set_params("demo", "widget", {"holes": None})
+    assert result["ok"] is True
+    assert typed.store.get_part("demo", "widget").params == {}
 
 
 def test_corrupt_metrics_sidecar_recovers(demo):

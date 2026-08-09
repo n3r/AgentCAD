@@ -28,12 +28,18 @@ AGENTCAD PART SCRIPT CONTRACT
 =============================
 A part is a plain build123d Python script defining exactly two things:
 
-1. PARAMS: dict of numeric parameter specs.
+1. PARAMS: dict of typed parameter specs.
    PARAMS = {"name": {"default": 10.0, "min": 1.0, "max": 100.0,
                       "unit": "mm", "description": "..."}}
-   - "default" is required and must be a number. min/max/unit/description
-     are optional but strongly recommended (min+max gives the UI a slider).
-   - Values passed by the project are clamped to [min, max] with a warning.
+   - "default" is required. Optional "type": "number" (default) | "int" |
+     "bool" | "enum" | "string". min/max/unit apply to number/int only
+     (min+max gives the UI a slider); enum requires "choices" (strings
+     and/or numbers); string takes "max_len" (default 200).
+   - Numeric values passed by the project are clamped to [min, max] with a
+     warning; bool/enum/string values must match their spec (an error if not).
+   - e.g. "ribbed": {"default": True, "type": "bool", "description": "..."},
+          "finish": {"default": "raw", "type": "enum",
+                     "choices": ["raw", "anodized"], "description": "..."}
 
 2. build(p): receives an attribute namespace of resolved values (p.name)
    and must return a build123d Part, Solid, or Compound.

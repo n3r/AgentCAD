@@ -210,14 +210,18 @@ class AgentCADService:
     def set_params(self, proj: str, part_id: str, values: dict) -> dict:
         """Set parameter overrides. A value of None removes the override.
 
-        Names are validated against the script's PARAMS spec *before* anything
-        is written, so a typo can never poison the manifest (spec §8).
+        Names and types are validated against the script's PARAMS spec *before*
+        anything is written, so a bad call can never poison the manifest
+        (spec §8). Numeric values are stored raw — the worker clamps at build.
         """
         for name, value in values.items():
             if value is None:
                 continue
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValidationError(f"parameter {name!r} must be a number")
+            if not isinstance(value, (int, float, bool, str)):
+                raise ValidationError(
+                    f"parameter {name!r} must be a JSON scalar "
+                    "(number, bool, or string)"
+                )
         with self._lock:
             record = self.store.get_part(proj, part_id)
             script = self.store.read_script(proj, part_id)
@@ -238,7 +242,7 @@ class AgentCADService:
                 if value is None:
                     merged.pop(name, None)
                 else:
-                    merged[name] = float(value)
+                    merged[name] = _normalize_param(name, spec[name], value)
             self.store.update_part_entry(proj, part_id, params=merged)
         return self._rebuild(proj, part_id)
 
@@ -617,6 +621,47 @@ class KernelErrorFromResult(KernelError):
             err.get("message", "build failed"),
             err.get("details", {}),
         )
+
+
+def _normalize_param(name: str, entry: dict, value):
+    """Validate one override against its (worker-normalized) spec entry and
+    normalize its Python type. Out-of-range numbers are NOT clamped here —
+    the worker clamps at build time with a warning."""
+    ptype = entry.get("type") or "number"
+    if ptype == "bool":
+        if not isinstance(value, bool):
+            raise ValidationError(f"parameter {name!r} must be a bool")
+        return value
+    if ptype == "enum":
+        choices = entry.get("choices") or []
+        # Canonicalize to the declared choice so the manifest stores the
+        # author-declared value (int 3 for a caller's 3.0, not the raw float).
+        # bools are never members: True == 1 would match a numeric choice.
+        matched = (
+            None
+            if isinstance(value, bool)
+            else next((c for c in choices if value == c), None)
+        )
+        if matched is None:
+            raise ValidationError(
+                f"parameter {name!r} must be one of the declared choices",
+                {"choices": choices},
+            )
+        return matched
+    if ptype == "string":
+        if not isinstance(value, str):
+            raise ValidationError(f"parameter {name!r} must be a string")
+        max_len = entry.get("max_len") or 200
+        if len(value) > max_len:
+            raise ValidationError(f"parameter {name!r} exceeds max_len {max_len}")
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationError(f"parameter {name!r} must be a number")
+    if ptype == "int":
+        if isinstance(value, float) and not value.is_integer():
+            raise ValidationError(f"parameter {name!r} must be an integer")
+        return int(value)
+    return float(value)
 
 
 def _bbox_corners(bbox: dict) -> list[list[float]]:
