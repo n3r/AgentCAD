@@ -271,14 +271,11 @@ directly. These are backend capabilities on the shared service — every change
 still flows through the same WebSocket, so the viewport, tree, and Metrics
 tab update live as the agent works, exactly as they do for a parameter edit.
 
-> **On-canvas controls are the next wave.** The browser UI's own widgets are
-> still the v1 set described above (viewport, parts/assembly tree, the
-> Parameters / Code / Metrics inspector, the Export menu). Dedicated
-> direct-manipulation surfaces for the features below — a transform gizmo on a
-> selected instance, a numeric transform panel, a material dropdown, an
-> Import button, an in-app drawing preview, analysis buttons in the Metrics
-> tab — are not in this build; drive these features via the agent or the API
-> for now.
+The on-canvas controls shipped with them: a transform gizmo on a selected
+instance (G/R switch modes; hold Shift to snap 1 mm / 5°), a numeric
+transform panel, a material dropdown, the Import button, the in-app drawing
+preview, analysis actions in the Metrics tab, the 2D sketcher, and face
+push/pull — everything below works both from the UI and through the agent.
 
 **Import existing CAD.** Upload a `.step`/`.stp`/`.brep`/`.stl` (≤100 MB) to
 the project's `imports/` directory (`POST /api/projects/<proj>/imports?filename=…`

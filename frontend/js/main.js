@@ -1068,6 +1068,15 @@ function setupKeys() {
       setState({ gizmoMode: k === "g" ? "translate" : "rotate" });
     }
   });
+  // Shift-to-snap while dragging the gizmo (1 mm / 5°) — the placement card
+  // advertises it, so it must actually be wired.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Shift") viewport.setGizmoSnap(true);
+  });
+  document.addEventListener("keyup", (e) => {
+    if (e.key === "Shift") viewport.setGizmoSnap(false);
+  });
+  window.addEventListener("blur", () => viewport.setGizmoSnap(false));
   document.getElementById("fit-btn").addEventListener("click", () => viewport.fit());
 }
 
