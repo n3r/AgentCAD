@@ -1,4 +1,4 @@
-# 0035 — Engine example v2: assembly-first rebuild + interference AABB prefilter
+# 0060 — Engine example v2: assembly-first rebuild + interference AABB prefilter
 
 - **Commit:** pending
 - **Date:** 2026-08-09

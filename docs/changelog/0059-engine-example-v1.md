@@ -1,4 +1,4 @@
-# 0034 — Engine example v1: dressed 90° V4 (visual fidelity level)
+# 0059 — Engine example v1: dressed 90° V4 (visual fidelity level)
 
 - **Commit:** 36bfae9
 - **Date:** 2026-08-09

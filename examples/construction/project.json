@@ -44,14 +44,6 @@
         "hole_d": 14.0,
         "fillet_r": 6.0
       }
-    },
-    {
-      "id": "ref_11",
-      "label": "ref_11",
-      "material": "al6061",
-      "params": {},
-      "kind": "reference",
-      "source": "11.stl"
     }
   ],
   "assembly": {
@@ -60,14 +52,14 @@
         "id": "base_plate_1",
         "part": "base_plate",
         "position": [
-          0,
-          0,
-          0
+          0.0,
+          0.0,
+          0.0
         ],
         "rotation_deg": [
-          0,
-          0,
-          0
+          0.0,
+          0.0,
+          0.0
         ],
         "color": "#5d6d7e"
       },
@@ -75,14 +67,14 @@
         "id": "gusset_1",
         "part": "gusset_plate",
         "position": [
-          0,
-          0,
-          21
+          0.0,
+          0.0,
+          21.0
         ],
         "rotation_deg": [
-          90,
-          0,
-          0
+          90.0,
+          0.0,
+          0.0
         ],
         "color": "#8a93a5"
       },
@@ -90,14 +82,14 @@
         "id": "bracket_left",
         "part": "angle_bracket",
         "position": [
-          -40,
+          -40.0,
           0.5,
           20.5
         ],
         "rotation_deg": [
-          0,
-          0,
-          90
+          0.0,
+          0.0,
+          90.0
         ],
         "color": "#7f8fa6"
       },
@@ -105,14 +97,14 @@
         "id": "bracket_right",
         "part": "angle_bracket",
         "position": [
-          40,
+          40.0,
           -10.5,
           20.5
         ],
         "rotation_deg": [
-          0,
-          0,
-          -90
+          0.0,
+          0.0,
+          -90.0
         ],
         "color": "#7f8fa6"
       }

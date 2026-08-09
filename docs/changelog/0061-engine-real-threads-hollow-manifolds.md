@@ -1,4 +1,4 @@
-# 0036 — Engine: real thread geometry, hollow manifolds, analysis() contract hook
+# 0061 — Engine: real thread geometry, hollow manifolds, analysis() contract hook
 
 - **Commit:** pending
 - **Date:** 2026-08-09
