@@ -210,3 +210,6 @@ robust parametric parts:
 - `examples/rocketry` — revolved profiles, polar patterns (thrust chamber).
 - `examples/construction` — sketch polygons, rotated hole groups (gusset node).
 - `examples/prototyping` — shells, bosses, slot patterns (snap-fit enclosure).
+- `examples/fasteners` — real ISO threads, `safe_fillet` (M8 bolted joint).
+- `examples/engine` — algebra-mode booleans, connectors + revolute/chained
+  mates, engineered running clearances (90° V4 engine).

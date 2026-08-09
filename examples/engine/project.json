@@ -1,0 +1,348 @@
+{
+  "schema_version": 2,
+  "name": "engine",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "engine_block",
+      "label": "Engine Block (90° V4)",
+      "material": "al6061",
+      "params": {
+        "bore": 66.0,
+        "stroke": 60.0,
+        "rod_length": 110.0,
+        "bank_angle": 90.0
+      }
+    },
+    {
+      "id": "crankshaft",
+      "label": "Crankshaft",
+      "material": "steel_4340",
+      "params": {
+        "stroke": 60.0,
+        "pin_d": 40.0,
+        "journal_d": 45.0,
+        "web_t": 12.0
+      }
+    },
+    {
+      "id": "piston",
+      "label": "Piston",
+      "material": "al7075",
+      "params": {
+        "diameter": 65.4,
+        "comp_height": 28.0,
+        "pin_d": 18.0,
+        "skirt": 22.0
+      }
+    },
+    {
+      "id": "connecting_rod",
+      "label": "Connecting Rod",
+      "material": "ti6al4v",
+      "params": {
+        "length": 110.0,
+        "big_end_bore": 40.5,
+        "small_end_bore": 18.6,
+        "width": 16.0
+      }
+    },
+    {
+      "id": "cylinder_head",
+      "label": "Cylinder Head (per bank)",
+      "material": "al6061",
+      "params": {
+        "bore": 66.0,
+        "chamber_depth": 10.0,
+        "cover_height": 18.0,
+        "port_d": 24.0
+      }
+    },
+    {
+      "id": "flywheel",
+      "label": "Flywheel",
+      "material": "steel_4130",
+      "params": {
+        "diameter": 200.0,
+        "thickness": 22.0,
+        "bolt_circle_d": 56.0,
+        "n_bolts": 6.0
+      }
+    },
+    {
+      "id": "oil_pan",
+      "label": "Oil Pan",
+      "material": "al6061",
+      "params": {
+        "length": 160.0,
+        "width": 150.0,
+        "depth": 45.0,
+        "wall": 3.0
+      }
+    },
+    {
+      "id": "intake_manifold",
+      "label": "Intake Manifold",
+      "material": "alsi10mg",
+      "params": {
+        "runner_d": 30.0,
+        "plenum_d": 56.0,
+        "plenum_height": 195.0,
+        "tb_d": 48.0
+      }
+    },
+    {
+      "id": "exhaust_manifold",
+      "label": "Exhaust Manifold (per bank)",
+      "material": "stainless_304",
+      "params": {
+        "primary_d": 34.0,
+        "collector_d": 60.0,
+        "drop": -10.0,
+        "tail_d": 42.0
+      }
+    },
+    {
+      "id": "timing_cover",
+      "label": "Timing Cover & Water Pump",
+      "material": "al6061",
+      "params": {
+        "thickness": 10.0,
+        "pump_d": 60.0,
+        "snout_hole": 34.0,
+        "boss_d": 56.0
+      }
+    },
+    {
+      "id": "crank_pulley",
+      "label": "Harmonic Damper Pulley",
+      "material": "steel_4130",
+      "params": {
+        "diameter": 96.0,
+        "ring_w": 10.0,
+        "hub_d": 44.0,
+        "bore_d": 28.6
+      }
+    },
+    {
+      "id": "oil_filter",
+      "label": "Oil Filter",
+      "material": "steel_4130",
+      "params": {
+        "diameter": 62.0,
+        "length": 70.0,
+        "base_d": 66.0,
+        "dome": 10.0
+      }
+    },
+    {
+      "id": "ignition_coil",
+      "label": "Ignition Coil",
+      "material": "abs",
+      "params": {
+        "body_d": 30.0,
+        "cap_d": 34.0,
+        "height": 22.0,
+        "connector_l": 20.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": [
+      {
+        "id": "block_1",
+        "part": "engine_block",
+        "position": [0.0, 0.0, 0.0],
+        "rotation_deg": [0.0, 0.0, 0.0],
+        "color": "#8b93a3"
+      },
+      {
+        "id": "crankshaft_1",
+        "part": "crankshaft",
+        "position": [0.0, 0.0, 0.0],
+        "rotation_deg": [0.0, 0.0, 0.0],
+        "color": "#4a4f57",
+        "mate": {
+          "connector": "hub",
+          "to_instance": "block_1",
+          "to_connector": "crank_axis",
+          "params": {"angle": 110.0}
+        }
+      },
+      {
+        "id": "flywheel_1",
+        "part": "flywheel",
+        "position": [0.0, 0.0, 0.0],
+        "rotation_deg": [0.0, 0.0, 0.0],
+        "color": "#3a3f47",
+        "mate": {
+          "connector": "hub",
+          "to_instance": "crankshaft_1",
+          "to_connector": "flange"
+        }
+      },
+      {
+        "id": "head_a",
+        "part": "cylinder_head",
+        "position": [0.0, 0.0, 0.0],
+        "rotation_deg": [0.0, 0.0, 0.0],
+        "color": "#a8b0bd",
+        "mate": {
+          "connector": "deck",
+          "to_instance": "block_1",
+          "to_connector": "head_a_seat"
+        }
+      },
+      {
+        "id": "head_b",
+        "part": "cylinder_head",
+        "position": [0.0, 0.0, 0.0],
+        "rotation_deg": [0.0, 0.0, 0.0],
+        "color": "#a8b0bd",
+        "mate": {
+          "connector": "deck",
+          "to_instance": "block_1",
+          "to_connector": "head_b_seat"
+        }
+      },
+      {
+        "id": "oil_pan_1",
+        "part": "oil_pan",
+        "position": [0.0, 0.0, 0.0],
+        "rotation_deg": [0.0, 0.0, 0.0],
+        "color": "#5f6672",
+        "mate": {
+          "connector": "rail",
+          "to_instance": "block_1",
+          "to_connector": "pan_rail"
+        }
+      },
+      {
+        "id": "piston_a1",
+        "part": "piston",
+        "position": [96.4891, -49.0, 96.4891],
+        "rotation_deg": [0.0, 45.0, 0.0],
+        "color": "#c8ccd2"
+      },
+      {
+        "id": "piston_b1",
+        "part": "piston",
+        "position": [-84.3333, -31.0, 84.3333],
+        "rotation_deg": [0.0, -45.0, 0.0],
+        "color": "#c8ccd2"
+      },
+      {
+        "id": "piston_a2",
+        "part": "piston",
+        "position": [58.0377, 31.0, 58.0377],
+        "rotation_deg": [0.0, 45.0, 0.0],
+        "color": "#c8ccd2"
+      },
+      {
+        "id": "piston_b2",
+        "part": "piston",
+        "position": [-66.4032, 49.0, 66.4032],
+        "rotation_deg": [0.0, -45.0, 0.0],
+        "color": "#c8ccd2"
+      },
+      {
+        "id": "rod_a1",
+        "part": "connecting_rod",
+        "position": [10.2606, -49.0, 28.1908],
+        "rotation_deg": [0.0, 51.6186, 0.0],
+        "color": "#7d8590"
+      },
+      {
+        "id": "rod_b1",
+        "part": "connecting_rod",
+        "position": [10.2606, -31.0, 28.1908],
+        "rotation_deg": [0.0, -59.3104, 0.0],
+        "color": "#7d8590"
+      },
+      {
+        "id": "rod_a2",
+        "part": "connecting_rod",
+        "position": [-10.2606, 31.0, -28.1908],
+        "rotation_deg": [0.0, 38.3814, 0.0],
+        "color": "#7d8590"
+      },
+      {
+        "id": "rod_b2",
+        "part": "connecting_rod",
+        "position": [-10.2606, 49.0, -28.1908],
+        "rotation_deg": [0.0, -30.6896, 0.0],
+        "color": "#7d8590"
+      },
+      {
+        "id": "intake_1",
+        "part": "intake_manifold",
+        "position": [0.0, 0.0, 0.0],
+        "rotation_deg": [0.0, 0.0, 0.0],
+        "color": "#b8bfc9"
+      },
+      {
+        "id": "exhaust_a",
+        "part": "exhaust_manifold",
+        "position": [0.0, 0.0, 0.0],
+        "rotation_deg": [0.0, 0.0, 0.0],
+        "color": "#8a7f74"
+      },
+      {
+        "id": "exhaust_b",
+        "part": "exhaust_manifold",
+        "position": [0.0, 0.0, 0.0],
+        "rotation_deg": [0.0, 0.0, 180.0],
+        "color": "#8a7f74"
+      },
+      {
+        "id": "timing_cover_1",
+        "part": "timing_cover",
+        "position": [0.0, 0.0, 0.0],
+        "rotation_deg": [0.0, 0.0, 0.0],
+        "color": "#9aa2ae"
+      },
+      {
+        "id": "crank_pulley_1",
+        "part": "crank_pulley",
+        "position": [0.0, -104.0, 0.0],
+        "rotation_deg": [90.0, 0.0, 0.0],
+        "color": "#3f444c"
+      },
+      {
+        "id": "oil_filter_1",
+        "part": "oil_filter",
+        "position": [0.0, 0.0, 0.0],
+        "rotation_deg": [0.0, 0.0, 0.0],
+        "color": "#2f5d8a"
+      },
+      {
+        "id": "coil_a1",
+        "part": "ignition_coil",
+        "position": [166.1036, -49.0, 166.1036],
+        "rotation_deg": [0.0, 45.0, 0.0],
+        "color": "#2e3238"
+      },
+      {
+        "id": "coil_a2",
+        "part": "ignition_coil",
+        "position": [166.1036, 31.0, 166.1036],
+        "rotation_deg": [0.0, 45.0, 0.0],
+        "color": "#2e3238"
+      },
+      {
+        "id": "coil_b1",
+        "part": "ignition_coil",
+        "position": [-166.1036, -31.0, 166.1036],
+        "rotation_deg": [0.0, -45.0, 0.0],
+        "color": "#2e3238"
+      },
+      {
+        "id": "coil_b2",
+        "part": "ignition_coil",
+        "position": [-166.1036, 49.0, 166.1036],
+        "rotation_deg": [0.0, -45.0, 0.0],
+        "color": "#2e3238"
+      }
+    ]
+  }
+}
