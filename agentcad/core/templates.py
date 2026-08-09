@@ -189,6 +189,36 @@ check_interference. Keep the bolt's threaded shank inside a clearance
 counterbore, or leave a standoff above the tapped thread, or use cosmetic
 threads -- see the `fasteners` example.
 
+SHEET METAL  (from agentcad.toolkit.sheetmetal import SheetPart; tool: flat_pattern)
+------------------------------------------------------------------------------------
+One declarative spec yields BOTH the folded solid and the manufacturing flat
+pattern, so they can never disagree. Base plate centered on the origin, width
+along X, depth along Y, z in [0, t]; edges left/right/front/back (x=-w/2,
+x=+w/2, y=-d/2, y=+d/2). Flanges bend UP (+Z), span the full edge, one per
+edge; angle in (0, 180) exclusive; inner_radius defaults to the thickness.
+Bend allowance BA = radians(angle) * (R + K*t); each flange adds BA + length
+of flat stock beyond its edge (K=0.44 default suits air-bent steel/aluminum).
+
+    def _sheet(p):
+        return (SheetPart(p.thick, k_factor=0.44)
+                .base(p.width, p.depth)
+                .flange("front", 90, p.flange_len, inner_radius=p.bend_r))
+    def build(p):
+        return _sheet(p).fold()          # single valid folded solid
+    def flat_pattern(p):                 # optional contract -> enables the
+        sp = _sheet(p)                   # flat_pattern export tool
+        return sp.unfold(), sp.bend_lines()
+
+    sp.unfold()       -> flat blank as a solid (base + BA+length tab per edge)
+    sp.flat_outline() -> [(x, y), ...] CCW outline polygon of the blank
+    sp.bend_lines()   -> [{"edge","a","b","angle_deg","inner_radius"}, ...]
+                         midlines BA/2 beyond each edge, in flat coords
+
+The flat_pattern tool renders the unfolded blank to SVG (outline + dashed
+bend lines with angle/radius callouts) or DXF (layers OUTLINE and BEND) at
+exports/<part>_flat.<ext>. Duplicate edges, angle 0/180, or flange() before
+base() raise ValueError; read sp.warnings after fold() if fusion fell back.
+
 CONNECTORS & MATES  (optional; backward compatible)
 ---------------------------------------------------
 Add a second top-level function to a part script to declare named connection

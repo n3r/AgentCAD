@@ -89,6 +89,7 @@ of truth, and it omits `fem_static` unless the `[fem]` extra is installed.
 | Tool | Arguments | Returns |
 |---|---|---|
 | `generate_drawing` | **project, part_id**, views, format | Projected front/top/right/iso views with overall dimensions and hole callouts detected from the geometry. `views` is a subset of `[top, front, right, iso]` (default all); `format` is `svg` (default) or `dxf`. Writes `exports/<part_id>_drawing.<ext>` and returns `{path, size_bytes, detected: {diameters_mm, hole_groups, label}}`. Script parts only. |
+| `flat_pattern` | **project, part_id**, format | Sheet-metal flat pattern: the unfolded blank's outline plus dashed bend lines with angle/radius callouts. Requires the script to define `flat_pattern(p)` returning a flat part or `(part, bend_lines)` — `SheetPart` from `agentcad.toolkit.sheetmetal` provides both. `format` is `svg` (default) or `dxf` (layers `OUTLINE`/`BEND`). Writes `exports/<part_id>_flat.<ext>` and returns `{path, size_bytes, flat_bbox_mm: {w, h}, n_bend_lines}`. Script parts only. |
 | `analyze_part` | **project, part_id, kind**, plane, axis, min_required | `kind=section` (cross-section area on `plane` XY\|XZ\|YZ), `wall` (min wall thickness; with `min_required` it adds an `ok` flag), `inertia` (mass-properties tensor + centre of mass), `projected_area` (silhouette area along `axis` X\|Y\|Z). Script parts only. |
 
 ### Sketch solving

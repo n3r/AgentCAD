@@ -209,6 +209,42 @@ but heavy (~9k triangles per M8 thread at mesh tolerance 0.1), so:
   specifically to bypass `bd_warehouse`'s `ThreadedHole(simple=False)` trap
   (~15 s and inserts no thread).
 
+### Sheet metal
+
+`agentcad.toolkit.sheetmetal.SheetPart` is a declarative builder: one spec
+yields BOTH the folded solid and the manufacturing flat pattern, so they can
+never disagree. `base(width, depth)` is a plate centered on the origin (width
+along X, depth along Y, z in `[0, t]`); `flange(edge, angle_deg, length,
+inner_radius=None)` adds a full-edge flange bending up (+Z) on `left`/`right`/
+`front`/`back` (one per edge; angle exclusive `(0, 180)`; `inner_radius`
+defaults to the thickness). Bend allowance is
+`BA = radians(angle) * (inner_radius + k_factor * thickness)` — each flange
+adds `BA + length` of flat stock beyond its edge (`k_factor=0.44` suits
+air-bent steel/aluminum).
+
+```python
+from agentcad.toolkit.sheetmetal import SheetPart
+
+def _sheet(p):
+    return (SheetPart(p.thick)
+            .base(p.width, p.depth)
+            .flange("front", 90, p.flange_len, inner_radius=p.bend_r))
+
+def build(p):
+    return _sheet(p).fold()          # single valid folded solid
+
+def flat_pattern(p):                 # optional contract → flat_pattern tool
+    sp = _sheet(p)
+    return sp.unfold(), sp.bend_lines()
+```
+
+`unfold()` returns the flat blank as a solid, `flat_outline()` its CCW outline
+polygon, and `bend_lines()` the bend midlines (`BA/2` beyond each edge, in
+flat coordinates). Declaring `flat_pattern(p)` enables the `flat_pattern`
+export tool (SVG, or DXF with `OUTLINE`/`BEND` layers). Duplicate edges,
+angle 0/180, or `flange()` before `base()` raise `ValueError`; read
+`sp.warnings` after `fold()` if fusion needed a fallback.
+
 ## Declaring connectors for mates
 
 A part script may declare named **connectors** so its instances can be posed
