@@ -1,16 +1,17 @@
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
 from agentcad.server.app import create_app
 
-from .conftest import BOX_SCRIPT
+from .conftest import BOX_SCRIPT, make_test_service
 
 
 @pytest.fixture
 def client(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    service = make_test_service(tmp_path / "projects", kernel)
     # TestClient always sends Host: testserver on WebSocket connects,
     # so tests must allow it explicitly; production defaults stay local-only.
     app = create_app(
@@ -128,7 +129,7 @@ def test_tools_endpoints(demo):
 
 
 def test_host_header_guard(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "p2", kernel, EventBus())
+    service = make_test_service(tmp_path / "p2", kernel)
     app = create_app(service, build_registry(service))
     evil = TestClient(app, base_url="http://evil.example.com")
     assert evil.get("/api/health").status_code == 403
@@ -170,3 +171,5 @@ def test_websocket_rebuild_events(demo):
             if "rebuild_finished" in seen:
                 break
         assert "rebuild_finished" in seen
+        disconnect_started = time.monotonic()
+    assert time.monotonic() - disconnect_started < 2.0

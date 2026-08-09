@@ -14,11 +14,15 @@ import pytest
 from agentcad.kernel import sandbox
 from agentcad.kernel.client import KernelClient, KernelError
 
-from .conftest import BOX_SCRIPT
+from .conftest import BOX_SCRIPT, make_test_service
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "darwin", reason="sandbox-exec confinement is macOS-only"
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.slow,
+    pytest.mark.skipif(
+        sys.platform != "darwin", reason="sandbox-exec confinement is macOS-only"
+    ),
+]
 
 AL_DENSITY = 2.70
 PROBE = Path.home() / "agentcad_sandbox_probe.txt"
@@ -174,11 +178,10 @@ def test_status_reflects_availability(monkeypatch, tmp_path):
 def test_health_reports_active_for_sandboxed_kernel(sboxed, tmp_path):
     from fastapi.testclient import TestClient
 
-    from agentcad.core.service import AgentCADService, EventBus
     from agentcad.core.tools import build_registry
     from agentcad.server.app import create_app
 
-    service = AgentCADService(tmp_path / "projects", sboxed, EventBus())
+    service = make_test_service(tmp_path / "projects", sboxed)
     app = create_app(
         service, build_registry(service), extra_allowed_hosts={"testserver"}
     )

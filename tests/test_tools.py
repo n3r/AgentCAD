@@ -1,9 +1,8 @@
 import pytest
 
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
 
-from .conftest import BOX_SCRIPT
+from .conftest import BOX_SCRIPT, make_test_service
 
 EXPECTED_TOOLS = {
     "list_projects", "create_project", "open_project", "get_project",
@@ -16,7 +15,7 @@ EXPECTED_TOOLS = {
 
 @pytest.fixture
 def registry(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    service = make_test_service(tmp_path / "projects", kernel)
     return build_registry(service)
 
 

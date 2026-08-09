@@ -3,16 +3,14 @@ import queue
 
 import pytest
 
-from agentcad.core.service import AgentCADService, EventBus
-
-from .conftest import BOX_SCRIPT, NUMERIC_ENUM_SCRIPT, TYPED_SCRIPT
+from .conftest import BOX_SCRIPT, NUMERIC_ENUM_SCRIPT, TYPED_SCRIPT, make_test_service
 
 BROKEN_SCRIPT = 'PARAMS = {"size": {"default": 1.0}}\ndef build(p):\n    raise RuntimeError("nope")\n'
 
 
 @pytest.fixture
 def service(kernel, tmp_path):
-    return AgentCADService(tmp_path / "projects", kernel, EventBus())
+    return make_test_service(tmp_path / "projects", kernel)
 
 
 @pytest.fixture

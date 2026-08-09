@@ -13,13 +13,12 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
 from agentcad.core.tools_facemod import PUSH_PULL_MARKER
 from agentcad.kernel import acm
 from agentcad.server.app import create_app
 
-from .conftest import BOX_SCRIPT
+from .conftest import BOX_SCRIPT, make_test_service
 
 BOX20_SCRIPT = '''\
 from build123d import *
@@ -201,7 +200,7 @@ def test_push_face_bad_index_and_zero_distance():
 
 @pytest.fixture
 def demo(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    service = make_test_service(tmp_path / "projects", kernel)
     service.create_project("demo")
     service.create_part("demo", "box", script=BOX20_SCRIPT)
     return service
@@ -310,7 +309,7 @@ def test_push_pull_zero_distance_rejected(demo):
 
 @pytest.fixture
 def client(kernel, tmp_path):
-    svc = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    svc = make_test_service(tmp_path / "projects", kernel)
     app = create_app(svc, build_registry(svc), extra_allowed_hosts={"testserver"})
     return TestClient(app, base_url="http://127.0.0.1"), svc
 

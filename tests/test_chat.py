@@ -18,9 +18,11 @@ from fastapi.testclient import TestClient
 
 from agentcad.agent.chat import ChatEngine, ChatUnavailable
 from agentcad.core.model import ValidationError
-from agentcad.core.service import AgentCADService, EventBus
+from agentcad.core.service import EventBus
 from agentcad.core.tools import Tool, build_registry, schema
 from agentcad.server.app import create_app
+
+from .conftest import make_test_service
 
 PROJECT = "chatproj"
 
@@ -66,7 +68,7 @@ class FakeAnthropic:
 @pytest.fixture()
 def stack(tmp_path):
     bus = EventBus()
-    service = AgentCADService(tmp_path / "projects", _UnusedKernel(), bus)
+    service = make_test_service(tmp_path / "projects", _UnusedKernel(), bus)
     registry = build_registry(service)
     return service, registry, bus
 
@@ -528,7 +530,7 @@ def test_session_turn_stamps_scoped_chat_identity(stack):
 
 def _chat_client(tmp_path, responses):
     bus = EventBus()
-    service = AgentCADService(tmp_path / "projects", _UnusedKernel(), bus)
+    service = make_test_service(tmp_path / "projects", _UnusedKernel(), bus)
     registry = build_registry(service)
     engine = ChatEngine(
         registry, bus, api_key="test-key",

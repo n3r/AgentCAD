@@ -6,10 +6,9 @@ import sys
 
 import pytest
 
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
 
-from .conftest import BOX_SCRIPT
+from .conftest import BOX_SCRIPT, make_test_service
 
 # BA for the canonical test bend: 90 deg, R=3, t=2, K=0.44
 BA_90 = (math.pi / 2) * (3 + 0.44 * 2)
@@ -158,7 +157,7 @@ def flat_pattern(p):
 
 @pytest.fixture
 def demo(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    service = make_test_service(tmp_path / "projects", kernel)
     service.create_project("demo")
     service.create_part("demo", "bracket", script=BRACKET)
     return service

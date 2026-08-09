@@ -3,8 +3,9 @@
 import pytest
 
 from agentcad.core.model import ConflictError, ValidationError
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
+
+from .conftest import make_test_service
 
 # A plate with a rigid connector 20mm up at its top center.
 PLATE = '''\
@@ -40,7 +41,7 @@ def connectors(p, part):
 
 @pytest.fixture
 def demo(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    service = make_test_service(tmp_path / "projects", kernel)
     service.create_project("demo")
     service.create_part("demo", "plate", script=PLATE)
     service.create_part("demo", "pin", script=PIN)

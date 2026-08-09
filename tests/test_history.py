@@ -21,9 +21,10 @@ from agentcad.core.tools import build_registry
 
 from .conftest import BOX_SCRIPT
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("git") is None, reason="git not found on PATH"
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(shutil.which("git") is None, reason="git not found on PATH"),
+]
 
 # Same PARAMS, doubled height: default size 10 -> volume 2000 instead of 1000.
 BOX_V2_SCRIPT = BOX_SCRIPT.replace(

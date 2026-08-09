@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from agentcad.core.service import AgentCADService, EventBus
+from .conftest import make_test_service
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
@@ -19,6 +19,8 @@ EXAMPLE_DIRS = sorted(
 )
 
 pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.slow,
     pytest.mark.skipif(not EXAMPLE_DIRS, reason="no example projects present yet"),
     # the engine example (63 instances, real thread geometry) legitimately
     # needs minutes for its extremes sweep, interference, and STEP export
@@ -28,7 +30,7 @@ pytestmark = [
 
 @pytest.fixture(scope="module")
 def service(kernel, tmp_path_factory):
-    return AgentCADService(tmp_path_factory.mktemp("projects"), kernel, EventBus())
+    return make_test_service(tmp_path_factory.mktemp("projects"), kernel)
 
 
 @pytest.fixture(scope="module", params=EXAMPLE_DIRS, ids=lambda p: p.name)
