@@ -1,8 +1,9 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 25 tools, assembled
-once in `agentcad/core/tools.py` (the 17 core tools) plus the v2 feature
-packs in `agentcad/core/tools_*.py` — and exposed two ways:
+Agents drive AgentCAD through a single tool surface — 39 tools (42 with the
+`[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
+tools) plus the v2/v3 feature packs in `agentcad/core/tools_*.py` — and
+exposed two ways:
 
 1. **MCP** (any MCP client, e.g. Claude Code): a stdio server that proxies
    the running HTTP API — and auto-starts the server if it isn't running.
@@ -34,13 +35,26 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
 
 Required arguments are **bold**; the rest are optional. Discover the live set
 and exact JSON Schemas at runtime with `GET /api/tools` — that is the source
-of truth, and it omits `fem_static` unless the `[fem]` extra is installed.
+of truth, and it omits the FEM tools unless the `[fem]` extra is installed.
 
 ### Projects and parts
 
 | Tool | Arguments | Returns |
 |---|---|---|
 | `part_template` | — | The part-script contract, a starter template, and a build123d cheat-sheet. Call this before writing your first script. |
+| `acquire_turn` | **project**, ttl_s | Take (or refresh) the per-project editing turn: `{holder, expires_at, you}`. While held, writes by every other client fail with `conflict_error` naming the holder. TTL default 120 s, clamped 5–3600; re-acquire to refresh. Identity = `X-Agent-Id` header (the MCP proxy sends `AGENTCAD_AGENT_ID` or `mcp`; built-in chat is `chat`; no header = `browser`). |
+| `release_turn` | **project** | Release your turn: `{released}` (`false` when nothing was held). Releasing a turn held by someone else is a `conflict_error`. |
+| `get_turn` | **project** | `{lock: {holder, expires_at} \| null, you}` — who holds the turn plus your own client identity. |
+
+**Chat sessions.** Chat history and turn serialization are keyed by
+`(project, session)`. `session` is an id matching `[a-z0-9_-]{1,32}`, default
+`"main"` (the browser dock's lane). `POST /api/chat` accepts an optional
+`"session"`; `GET`/`DELETE /api/chat/history` accept `?session=`; bad ids are
+422. All `chat_*` WebSocket events and history payloads carry `"session"`.
+Turns in the same session queue; turns in different sessions run concurrently
+— cross-session write consistency is the per-project turn lock's job. A
+session's tool calls run under client identity `chat:<session>` (`chat` for
+`"main"`), so `get_turn` names the lane holding a lock.
 | `list_projects` | — | `{projects: [{name, path, n_parts}]}` |
 | `create_project` | **name** | Project detail. Names match `[a-z][a-z0-9_]{0,39}`. |
 | `open_project` | **path** | Opens an existing project directory (e.g. a bundled example) by absolute path. |
@@ -48,14 +62,14 @@ of truth, and it omits `fem_static` unless the `[fem]` extra is installed.
 | `create_part` | **project, part_id**, label, script, material | Part detail with metrics (default template if no `script`; `material` defaults to `al6061`). |
 | `get_part` | **project, part_id** | Script, `params_spec`, current params, status (state/error/warnings), metrics, plus `kind` (`script`\|`reference`) and `source`. For reference parts `script`/`params_spec` are `null` and `source` is the imported file. |
 | `update_part_script` | **project, part_id**, script, label, material | Rebuild result. On failure: traceback + failing line + hint; previous geometry kept. |
-| `set_params` | **project, part_id, values** | Rebuild result. Values merge with existing overrides and clamp to min/max with warnings; unknown names are rejected before anything is written, and a `null` value removes an override. |
+| `set_params` | **project, part_id, values** | Rebuild result. Values (numbers, booleans, enum choices, or strings, per each param's `type` in `params_spec`) merge with existing overrides; numeric values clamp to min/max with warnings, while a wrong-typed value or non-member enum choice is rejected. Unknown names are rejected before anything is written, and a `null` value removes an override. |
 | `delete_part` | **project, part_id** | `{deleted}` — fails with a conflict while assembly instances reference the part. |
 
 ### Metrics, mesh, and export
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `get_metrics` | **project, part_id** | `{volume_mm3, mass_g, area_mm2, bbox, center_of_mass, is_valid, n_faces, n_edges, n_solids}` |
+| `get_metrics` | **project, part_id** | `{volume_mm3, mass_g, area_mm2, bbox, center_of_mass, is_valid, n_faces, n_edges, n_solids, solids?}` — `solids` (multi-solid parts only) is an index-ordered `[{label, volume_mm3, mass_g, bbox, center_of_mass}]`. |
 | `get_mesh_summary` | **project, part_id** | `{vertices, triangles, edges, bbox}` — statistics only, no binary buffer. |
 | `export_part` | **project, part_id, format**, tolerance | Writes `exports/<part_id>.<format>`; formats `step`, `stl`, `3mf`. |
 
@@ -69,6 +83,8 @@ of truth, and it omits `fem_static` unless the `[fem]` extra is installed.
 | `export_assembly` | **project, format** | Whole placed assembly as `step` or `stl`. |
 | `set_mate` | **project, instance, connector, to_instance, to_connector**, angle_deg, offset_mm | Constrain `instance` to `to_instance` via named connectors declared by a part's `connectors(p, part)`. The moving-side `connector` must be *rigid*; the anchor `to_connector` may be rigid/revolute/cylindrical, with `angle_deg`/`offset_mm` driving its DOF. Returns the updated assembly. |
 | `clear_mate` | **project, instance** | Removes the instance's mate; it reverts to its explicit position/rotation. Returns the updated assembly. |
+| `sweep_motion` | **project, instance**, angle_range, offset_range, samples, min_volume | Sweep a mated instance's driven DOF across `[start, end]` (exactly one of `angle_range` deg / `offset_range` mm; `samples` 2–60, default 12), re-resolving mates and boolean-checking every instance pair at each sample. Returns `{samples: [{value, pairs}], frames, clear, first_collision, skipped_mesh}` plus an `{instance, param, values}` echo — `frames[i]` maps every instance id to its resolved `{position, rotation_deg}` for animation; `first_collision` is the first swept value that overlaps (null when `clear`). STL references are skipped like `check_interference`. |
+| `tolerance_stackup` | **project, axis, from_instance, to_instance** | 1-D tolerance stack-up along a world axis (`x`\|`y`\|`z`) over the unique mate-forest path between the two instances (endpoints included; `from == to` analyzes that one instance's own dims). Each path instance contributes its part's linear PMI dims matching the axis (x=`width`, y=`depth`, z=`height`, via `set_part_pmi`). Returns `{axis, target, nominal_mm, worst_case: {plus, minus}, rss: {plus, minus}, contributors: [{instance, part, dims, plus, minus}], path, warnings}` — worst case is the linear sum, RSS the root-sum-of-squares per dim, `nominal_mm` the resolved axis distance; instances not connected by mates are a validation error. |
 
 ### Materials
 
@@ -76,6 +92,7 @@ of truth, and it omits `fem_static` unless the `[fem]` extra is installed.
 |---|---|---|
 | `list_materials` | project | Resolved catalog (builtin < `~/.agentcad/materials.json` < project overrides): `{materials: [{id, label, category, density_g_cm3, source, E_gpa?, yield_mpa?, ultimate_mpa?, elongation_pct?, cte_um_m_k?, k_w_m_k?, max_service_temp_c?, cost_usd_kg?, notes?}], caveat, global_error}`. Values are typical datasheet figures, **not design allowables**. |
 | `set_project_materials` | **project, materials** | Replaces the project's `materials` section (a map `id → {density_g_cm3 required, …, category, notes}`); validates every entry, then returns the resolved list. |
+| `set_solid_materials` | **project, part_id, materials** | Assign a material per solid of a multi-solid *script* part. Read `get_metrics(...).solids[].label` first (labels come from the script's `SOLID_LABELS`, else `solid_0`, `solid_1`, …). `materials` maps a solid label or index string to a material id; unmatched keys build with a warning; `{}` clears. Per-solid and aggregate mass then use those densities (unmapped solids keep the part material). Returns the rebuild result plus `solid_materials`. |
 
 ### Import (reference parts)
 
@@ -87,8 +104,16 @@ of truth, and it omits `fem_static` unless the `[fem]` extra is installed.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `generate_drawing` | **project, part_id**, views, format | Projected front/top/right/iso views with overall dimensions and hole callouts detected from the geometry. `views` is a subset of `[top, front, right, iso]` (default all); `format` is `svg` (default) or `dxf`. Writes `exports/<part_id>_drawing.<ext>` and returns `{path, size_bytes, detected: {diameters_mm, hole_groups, label}}`. Script parts only. |
-| `analyze_part` | **project, part_id, kind**, plane, axis, min_required | `kind=section` (cross-section area on `plane` XY\|XZ\|YZ), `wall` (min wall thickness; with `min_required` it adds an `ok` flag), `inertia` (mass-properties tensor + centre of mass), `projected_area` (silhouette area along `axis` X\|Y\|Z). Script parts only. |
+| `generate_drawing` | **project, part_id**, views, format | Projected front/top/right/iso views with overall dimensions and hole callouts detected from the geometry. `views` is a subset of `[top, front, right, iso]` (default all); `format` is `svg` (default) or `dxf`. Writes `exports/<part_id>_drawing.<ext>` and returns `{path, size_bytes, detected: {diameters_mm, hole_groups, label}}`. When the part has PMI (`set_part_pmi`), the SVG gains tolerance suffixes on the overall/diameter dimensions, boxed datum flags, and feature control frames; `detected` then also carries `pmi_rendered: {dims, datums, fcf}` and `pmi_warnings`. DXF output ignores PMI (v1). Script parts only. |
+| `flat_pattern` | **project, part_id**, format | Sheet-metal flat pattern: the unfolded blank's outline plus dashed bend lines with angle/radius callouts. Requires the script to define `flat_pattern(p)` returning a flat part or `(part, bend_lines)` — `SheetPart` from `agentcad.toolkit.sheetmetal` provides both. `format` is `svg` (default) or `dxf` (layers `OUTLINE`/`BEND`). Writes `exports/<part_id>_flat.<ext>` and returns `{path, size_bytes, flat_bbox_mm: {w, h}, n_bend_lines}`. Script parts only. |
+| `set_part_pmi` | **project, part_id, pmi** | Replaces the part's PMI / GD&T section (`{}` clears it): `dims` (`{id, kind: linear\|diameter, target: width\|height\|depth or nominal hole ⌀ mm, plus, minus, note?}`), `datums` (`{id: "A".."Z", face: top\|bottom\|left\|right\|front\|back}`), `fcf` (`{id, type: flatness\|position\|perpendicularity\|parallelism\|cylindricity, tol_mm, datums: [letters], note?}`). Validated before writing; works for script and reference parts. Returns `{part_id, pmi}`. |
+| `get_part_pmi` | **project, part_id** | The part's stored PMI section, with empty `dims`/`datums`/`fcf` when unset. |
+| `face_info` | **project, part_id, face_index** | Inspect one B-rep face by its mesh-order index (the same ordinal the viewport's face picking and the `mesh/faces` sidecar use): `{planar, normal, area_mm2, center, n_faces}`. |
+| `push_pull` | **project, part_id, face_index, distance_mm** | Direct-manipulation face offset recorded as code: validates the face is planar, then APPENDS an auto-generated wrapper to the script (`push_face(build(p), i, d)` — visible, editable, composable) and rebuilds. Positive distance grows the solid along the outward normal; negative cuts inward. The script stays the source of truth. |
+| `project_history` | **project**, limit | List the project's automatic history snapshots, newest first (`{id, message, ts}`); entry [0] is the current state. `available: false` + empty list when git is missing on the server. |
+| `project_restore` | **project, commit** | Restore the project to a snapshot id and append a linear "restore" commit (redo = restore the pre-undo id). Returns refreshed history + `{restored}`; validation_error on unknown commit/no git, conflict_error under someone else's turn lock. |
+| `render_view` | **project**, part_id, view, width, height | Server-side shaded orthographic render of built geometry so the agent can *see* the shape. `part_id` renders one part; omit it to render the whole placed assembly (instance transforms and colors honored; unbuildable instances are listed in `skipped`). `view` is `iso` (default), `front`, `top` or `right`; `width`/`height` are 64..2048 px (default 800×600). Writes `exports/renders/<part|assembly>_<view>.png` and returns `{path, width, height, view, png_base64}`; over MCP and in chat the PNG arrives as actual image content. |
+| `analyze_part` | **project, part_id, kind**, plane, axis, min_required | `kind=section` (cross-section area on `plane` XY\|XZ\|YZ), `wall` (min wall thickness; with `min_required` it adds an `ok` flag), `inertia` (mass-properties tensor + centre of mass), `projected_area` (silhouette area along `axis` X\|Y\|Z), `curvature` (per-face gaussian K in 1/mm² and mean H in 1/mm sampled on an 8×8 UV grid: `faces[]` with min/max/mean per face, `worst_gaussian_abs`, `n_faces`, `sampled_points`; H's sign is orientation-dependent — compare magnitudes; a true G2 blend shows no jump in K/H across the seam). Script parts only. |
 
 ### Sketch solving
 
@@ -103,13 +128,19 @@ tangent_circles`.
 
 ### FEM — present only with the `[fem]` extra
 
-`fem_static` is registered **only** when `agentcad[fem]` is installed, so it
-never appears in `GET /api/tools` (or to agents) otherwise — the philosophy is
-that agents must not see a tool that cannot run.
+The FEM tools are registered **only** when `agentcad[fem]` is installed, so
+they never appear in `GET /api/tools` (or to agents) otherwise — the
+philosophy is that agents must not see a tool that cannot run. Without the
+extra, the routes answer 501 with an install hint.
 
 | Tool | Arguments | Returns |
 |---|---|---|
 | `fem_static` | **project, part_id, fixed_face, load_face**, load_N, load_dir, E_mpa, nu, mesh_size_mm | Linear-static FEM: clamp one axis-aligned face, load another, return max displacement and max von Mises. `fixed_face`/`load_face` = `{axis: x\|y\|z, side: min\|max}`. |
+| `fem_modal` | **project, part_id**, n_modes, fixed_face, E_mpa, nu | Modal FEM: natural `frequencies_hz` (ascending) from a consistent-mass eigensolve; E and density default from the part material. `fixed_face` = `{axis: x\|y\|z, side: min\|max}`; omit it for free-free (rigid-body modes are dropped and noted). |
+| `fem_thermal` | **project, part_id, hot_face, cold_face, t_hot_c, t_cold_c**, k_w_m_k | Thermal FEM: steady-state conduction with fixed temperatures on two faces; returns `t_min_c`/`t_max_c` and `flux_w` (total heat flow through the hot face, W). k defaults from the part material's `k_w_m_k`. |
+
+Routes: `POST /api/projects/{proj}/parts/{id}/fem`, `.../fem/modal`,
+`.../fem/thermal`.
 
 ## A worked loop
 

@@ -38,12 +38,36 @@ def build(p):
 
 Rules (enforced by the kernel — violations return `contract_error`):
 
-- `PARAMS` is a dict of numeric parameter specs. `default` is required and
-  must be a number; `min`, `max`, `unit`, `description` are optional but
-  strongly recommended — `min`+`max` gives the UI a slider, and the bundled
-  examples treat all four as mandatory style.
-- Project parameter overrides are **clamped** to `[min, max]` with a warning
-  (never an error), so agents and sliders can push bounds safely.
+- `PARAMS` is a dict of typed parameter specs. `default` is required;
+  `description` is optional but strongly recommended. An optional `"type"`
+  selects the kind of value — `"number"` (the default), `"int"`, `"bool"`,
+  `"enum"`, or `"string"`:
+  - **number / int**: `min`, `max`, `unit` are optional but recommended —
+    `min`+`max` gives the UI a slider, and the bundled examples treat
+    min/max/unit/description as mandatory style. `int` accepts only integral
+    values (`3.0` coerces to `3`; `3.5` is rejected).
+  - **bool**: `default` must be a real `True`/`False` (the UI shows a checkbox).
+  - **enum**: requires `choices`, a non-empty list of strings and/or numbers;
+    `default` and overrides must be members (the UI shows a dropdown).
+  - **string**: `default` must be a string; optional `max_len` (default 200).
+  - `min`/`max` are only legal on number/int specs, `choices` only on enum,
+    `max_len` only on string.
+
+  ```python
+  PARAMS = {
+      "size":   {"default": 20.0, "min": 5.0, "max": 80.0, "unit": "mm",
+                 "description": "Cube edge"},
+      "ribbed": {"default": True, "type": "bool", "description": "Add ribs"},
+      "finish": {"default": "raw", "type": "enum",
+                 "choices": ["raw", "anodized"], "description": "Surface finish"},
+      "label":  {"default": "acme", "type": "string", "max_len": 12,
+                 "description": "Engraving text"},
+  }
+  ```
+- Numeric parameter overrides are **clamped** to `[min, max]` with a warning
+  (never an error), so agents and sliders can push bounds safely. Non-numeric
+  overrides must match their spec exactly — a wrong-typed value or a
+  non-member enum choice is a `contract_error`.
 - `build(p)` receives an attribute namespace of resolved values (`p.width`)
   and must return a build123d `Part`, `Solid`, or `Compound`. Returning the
   `BuildPart` builder itself also works — AgentCAD takes `.part`.
@@ -54,6 +78,24 @@ Execution environment: fresh module namespace per rebuild, 120 s build
 timeout, stdout redirected (use exceptions, not prints, to signal problems —
 tracebacks come back with the failing line number). Same script + same
 parameters → identical geometry, always.
+
+## Multi-solid parts and SOLID_LABELS
+
+A part whose `build(p)` returns a multi-solid `Compound` reports per-solid
+metrics: `metrics.solids` is an index-ordered list of
+`{label, volume_mm3, mass_g, bbox, center_of_mass}` alongside the whole-part
+aggregates. Optionally name the solids with a module-level
+
+```python
+SOLID_LABELS = ["body", "lid"]   # applied by index; must be a list of strings
+```
+
+Unnamed solids fall back to `solid_0`, `solid_1`, …; extra labels beyond the
+actual solid count are ignored with a warning (anything but a list of strings
+is a `contract_error`). Labels exist so agents and the `set_solid_materials`
+tool can address individual solids: assigning `{"lid": "steel_a36"}` gives
+that solid its own density, and the part's aggregate `mass_g` becomes the sum
+of per-solid masses. Single-solid parts are unchanged.
 
 ## Design for parameter robustness
 
@@ -137,12 +179,12 @@ spec = {
     "lines":  [{"name": "ab", "p1": "a", "p2": "b"}],
     "circles": [],
     "constraints": [
-        {"type": "horizontal", "line": "ab"},
-        {"type": "distance", "p1": "a", "p2": "b", "d": 40},
-        {"type": "distance_y", "p1": "b", "p2": "c", "d": 25},
+        {"type": "horizontal", "ln": "ab"},
+        {"type": "distance", "p": "a", "q": "b", "d": 40},
+        {"type": "distance_y", "p": "b", "q": "c", "d": 25},
     ],
 }
-sol = sketch.solve_sketch(spec)      # {"ok": True, "points": {"c": [40, 25], ...}, ...}
+sol = sketch.solve_sketch(spec)      # {"ok": True, "points": {"c": {"x": 40.0, "y": 25.0}, ...}, ...}
 ```
 
 The solver converges to the solution *nearest the initial guess*, so seed the
@@ -166,6 +208,58 @@ but heavy (~9k triangles per M8 thread at mesh tolerance 0.1), so:
   tap-drill size) then `add()` the returned thread solid. The wrappers exist
   specifically to bypass `bd_warehouse`'s `ThreadedHole(simple=False)` trap
   (~15 s and inserts no thread).
+
+### Surfacing (class-A)
+
+`from agentcad.toolkit import surfacing`:
+
+- `surfacing.smooth_loft(profiles, ruled=False) -> (part, warning|None)` —
+  loft one solid through 2+ planar profiles (Sketch/Face/Wire); falls back to
+  a ruled loft with a warning; RuntimeError when both fail.
+- `surfacing.blend_surface(face_a, face_b, continuity="G1") ->
+  (face, warning|None)` — transition surface between the two faces' nearest
+  edges with G0/G1/G2 continuity against the source faces (OCCT plate
+  filling). G2 is gated for numerical stability and degrades to G1 with a
+  warning when the plate balloons (an OCCT 7.x instability); surface the
+  warnings — they are honest. Verify blends with
+  `analyze_part(kind="curvature")`: a true G2 blend shows no jump in
+  curvature across the seam.
+
+### Sheet metal
+
+`agentcad.toolkit.sheetmetal.SheetPart` is a declarative builder: one spec
+yields BOTH the folded solid and the manufacturing flat pattern, so they can
+never disagree. `base(width, depth)` is a plate centered on the origin (width
+along X, depth along Y, z in `[0, t]`); `flange(edge, angle_deg, length,
+inner_radius=None)` adds a full-edge flange bending up (+Z) on `left`/`right`/
+`front`/`back` (one per edge; angle exclusive `(0, 180)`; `inner_radius`
+defaults to the thickness). Bend allowance is
+`BA = radians(angle) * (inner_radius + k_factor * thickness)` — each flange
+adds `BA + length` of flat stock beyond its edge (`k_factor=0.44` suits
+air-bent steel/aluminum).
+
+```python
+from agentcad.toolkit.sheetmetal import SheetPart
+
+def _sheet(p):
+    return (SheetPart(p.thick)
+            .base(p.width, p.depth)
+            .flange("front", 90, p.flange_len, inner_radius=p.bend_r))
+
+def build(p):
+    return _sheet(p).fold()          # single valid folded solid
+
+def flat_pattern(p):                 # optional contract → flat_pattern tool
+    sp = _sheet(p)
+    return sp.unfold(), sp.bend_lines()
+```
+
+`unfold()` returns the flat blank as a solid, `flat_outline()` its CCW outline
+polygon, and `bend_lines()` the bend midlines (`BA/2` beyond each edge, in
+flat coordinates). Declaring `flat_pattern(p)` enables the `flat_pattern`
+export tool (SVG, or DXF with `OUTLINE`/`BEND` layers). Duplicate edges,
+angle 0/180, or `flange()` before `base()` raise `ValueError`; read
+`sp.warnings` after `fold()` if fusion needed a fallback.
 
 ## Analysis stand-ins for interference checking
 
@@ -223,6 +317,25 @@ def connectors(p, part) -> dict:
   anchor connector carries the degree of freedom that `set_mate`'s
   `angle_deg`/`offset_mm` drive. The service resolves mate chains to concrete
   transforms at assembly read (topological order; cycles are rejected).
+
+## Tolerances and GD&T (PMI)
+
+Parts can carry a PMI section — annotation, not geometry — rendered by
+`generate_drawing` (SVG) as toleranced dimensions, datum flags, and feature
+control frames:
+
+```json
+{"dims":   [{"id": "d1", "kind": "linear",   "target": "width", "plus": 0.1, "minus": 0.1},
+            {"id": "d2", "kind": "diameter", "target": 9.0,     "plus": 0.05, "minus": 0.1}],
+ "datums": [{"id": "A", "face": "bottom"}],
+ "fcf":    [{"id": "f1", "type": "flatness", "tol_mm": 0.05, "datums": [], "note": "mounting face"}]}
+```
+
+Linear targets tolerance the overall extents (`width` = X, `height` = Z,
+`depth` = Y); diameter targets attach to circles detected in the top view
+within 0.05 mm of the nominal. Set with `set_part_pmi` (an empty object
+clears), read with `get_part_pmi`. Applies to script and reference parts;
+DXF drawings ignore PMI (v1).
 
 ## Cheat-sheet
 

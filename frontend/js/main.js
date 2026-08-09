@@ -10,15 +10,18 @@ import * as editor from "./editor.js";
 import * as chat from "./chat.js";
 import * as placement from "./placement.js";
 import * as drawings from "./drawings.js";
+import * as sketcher from "./sketcher.js";
+import * as theme from "./theme.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 
-const meshBuffers = new Map(); // partId -> {buffer, key}
+const meshBuffers = new Map(); // partId -> {buffer, key, lod} from api.getMesh
 let selectSeq = 0;
 let lastFittedTarget = null; // part id or "__assembly__"
 let localPatchUntil = 0; // suppress our own project_changed echo until this ts
 let assemblyRefreshTimer = null;
 let projectRefreshTimer = null;
+let lockHolder = null; // current turn-lock holder for this project (or null)
 
 // ------------------------------------------------------------------ actions
 
@@ -56,7 +59,10 @@ async function loadProject(name) {
   }
   meshBuffers.clear();
   viewport.clear();
+  clearFaceSelection();
   lastFittedTarget = null;
+  lockHolder = null; // lock state is per project; resync via lock_changed
+  renderLockIndicator();
   setState({
     projectName: name,
     project: detail,
@@ -137,6 +143,7 @@ function confirmDiscardEdits(nextPartId) {
 async function selectPart(partId) {
   if (!confirmDiscardEdits(partId)) return;
   const seq = ++selectSeq;
+  if (faceSel && faceSel.partId !== partId) clearFaceSelection();
   setState({ mode: "part", selectedPart: partId, selectedInstance: null });
   inspector.hideBanner();
   let detail = null;
@@ -168,6 +175,7 @@ async function selectAssembly(instanceId) {
   }
   const entering = state.mode !== "assembly";
   const seq = ++selectSeq;
+  clearFaceSelection();
   setState({ mode: "assembly", selectedInstance: instanceId });
   viewport.setSelectedInstance(instanceId);
 
@@ -226,6 +234,13 @@ async function loadAssembly() {
   updateHUD();
 }
 
+// Viewport geometry-cache key for a mesh entry. The lod qualifier keeps the
+// coarse tier and the full-resolution mesh of the same build apart in the
+// viewport's `${partId}:${key}` cache (same ACM1 format, different geometry).
+function geomKey(entry) {
+  return `${entry.key}:${entry.lod || "full"}`;
+}
+
 function renderAssemblyFromCache() {
   if (state.mode !== "assembly" || !state.assembly) return;
   const items = [];
@@ -236,7 +251,7 @@ function renderAssemblyFromCache() {
       instanceId: inst.id,
       partId: inst.part,
       buffer: entry.buffer,
-      key: entry.key,
+      key: geomKey(entry),
       position: inst.position,
       rotationDeg: inst.rotation_deg,
       color: tree.instanceColor(inst, i),
@@ -261,10 +276,19 @@ async function reloadMesh(partId) {
   if (state.mode === "part") {
     if (state.selectedPart !== partId) return;
     try {
-      const entry = await api.getMesh(state.projectName, partId);
+      // Progressive load: ask for the coarse tier first. Small parts have no
+      // tier — the server serves the full mesh in this same response
+      // (lod === "full") and no second request is made.
+      const entry = await api.getMesh(state.projectName, partId, "lod1");
       if (state.selectedPart !== partId || state.mode !== "part") return;
       meshBuffers.set(partId, entry);
-      viewport.showPart(partId, entry.buffer, entry.key);
+      viewport.showPart(partId, entry.buffer, geomKey(entry));
+      // A rebuild produced new geometry: any picked face index is stale.
+      if (faceSel && (faceSel.partId !== partId || faceSel.key !== entry.key)) {
+        clearFaceSelection();
+      }
+      if (entry.lod === "lod1") upgradeMeshToFull(partId);
+      else loadFaceMap(partId, entry.key);
     } catch (err) {
       if (err instanceof ApiError && err.status !== 0 && err.error) {
         markPartState(partId, "error");
@@ -273,7 +297,7 @@ async function reloadMesh(partId) {
       // or clear the stage so another part's geometry can't mislead.
       const lastGood = meshBuffers.get(partId);
       if (lastGood) {
-        viewport.showPart(partId, lastGood.buffer, lastGood.key);
+        viewport.showPart(partId, lastGood.buffer, geomKey(lastGood));
       } else {
         viewport.clear();
       }
@@ -290,6 +314,42 @@ async function reloadMesh(partId) {
     renderAssemblyFromCache();
   }
   updateHUD();
+}
+
+// The coarse tier is already on screen; fetch the full-resolution mesh in the
+// background and swap it in. Guarded like selectPart's async loads: bail if
+// the selection, mode, or project changed while the fetch was in flight — a
+// fresh reloadMesh will run its own upgrade then.
+async function upgradeMeshToFull(partId) {
+  const seq = selectSeq;
+  const proj = state.projectName;
+  let entry;
+  try {
+    entry = await api.getMesh(proj, partId);
+  } catch {
+    return; // keep the coarse tier; the next rebuild event retries
+  }
+  if (seq !== selectSeq || proj !== state.projectName) return;
+  if (state.mode !== "part" || state.selectedPart !== partId) return;
+  meshBuffers.set(partId, entry);
+  viewport.showPart(partId, entry.buffer, geomKey(entry));
+  loadFaceMap(partId, entry.key);
+  updateHUD();
+}
+
+// Fetch the triangle->B-rep-face sidecar for the FULL-resolution mesh and
+// hand it to the viewport's geometry cache, enabling face picking. 404 (a
+// stale pre-sidecar cache entry or a reference part) just leaves face
+// picking off for that part.
+async function loadFaceMap(partId, meshKey) {
+  let res;
+  try {
+    res = await api.getMeshFaces(state.projectName, partId);
+  } catch {
+    return;
+  }
+  if (res.key !== meshKey) return; // a rebuild landed mid-flight
+  viewport.setFaceMap(partId, `${meshKey}:full`, new Uint32Array(res.buffer));
 }
 
 async function refreshPartDetail(partId) {
@@ -639,6 +699,12 @@ function handleEvent(ev) {
       scheduleProjectRefresh();
       return;
     }
+    case "lock_changed": {
+      if (ev.project !== state.projectName) return;
+      lockHolder = ev.holder || null;
+      renderLockIndicator();
+      return;
+    }
     case "chat_delta":
     case "chat_tool_call":
     case "chat_tool_result":
@@ -904,10 +970,86 @@ function setupExportMenu() {
   });
 }
 
+// ------------------------------------------------------------------- undo
+// Project-level undo, backed by the server's git history: restore to
+// history[1] (the state before the latest snapshot — history[0] IS the
+// current state). Redo is intentionally not in the UI for v1; agents can
+// project_restore any commit id. The restore publishes project_changed, so
+// the view refreshes through the existing debounced WS path.
+
+let undoInFlight = false; // one restore at a time; ignore key/button spam
+
+async function undoLastChange() {
+  if (!state.projectName) {
+    toast("Open a project first", "error");
+    return;
+  }
+  if (undoInFlight) return;
+  undoInFlight = true;
+  try {
+    let payload;
+    try {
+      payload = await api.projectHistory(state.projectName);
+    } catch (err) {
+      toast(`Undo failed: ${err.message}`, "error");
+      return;
+    }
+    if (payload.error) {
+      toast(`Undo failed: ${payload.error.message || "error"}`, "error");
+      return;
+    }
+    if (!payload.available) {
+      toast("Undo unavailable — git is not installed on the server", "error");
+      return;
+    }
+    const history = payload.history || [];
+    if (history.length < 2) {
+      toast("Nothing to undo");
+      return;
+    }
+    let res;
+    try {
+      res = await api.projectRestore(state.projectName, history[1].id);
+    } catch (err) {
+      toast(`Undo failed: ${err.message}`, "error");
+      return;
+    }
+    if (res.error) {
+      toast(`Undo failed: ${res.error.message || "error"}`, "error");
+      return;
+    }
+    toast(`Undid: ${history[0].message || "last change"}`);
+  } finally {
+    undoInFlight = false;
+  }
+}
+
+// The toolbar Undo button is created here rather than in index.html so the
+// history feature stays self-contained in main.js/api.js.
+function setupUndo() {
+  const fit = document.getElementById("fit-btn");
+  if (!fit || !fit.parentNode) return;
+  const btn = document.createElement("button");
+  btn.id = "undo-btn";
+  btn.className = "tb-btn";
+  btn.title = "Undo (Cmd+Z)";
+  btn.textContent = "Undo";
+  btn.addEventListener("click", undoLastChange);
+  fit.parentNode.insertBefore(btn, fit);
+}
+
 function setupKeys() {
   document.addEventListener("keydown", (e) => {
     const target = e.target instanceof Element ? e.target : document.body;
     const inField = target.closest("input, textarea, .CodeMirror") != null;
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "z") {
+      // In a text field (or with Shift = redo) leave the browser's native
+      // undo alone; elsewhere Cmd/Ctrl+Z is project-level undo.
+      if (inField || e.shiftKey) return;
+      e.preventDefault();
+      undoLastChange();
+      return;
+    }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
       // CodeMirror handles its own Cmd+S; catch it everywhere else
       if (!target.closest(".CodeMirror")) {
@@ -927,6 +1069,15 @@ function setupKeys() {
       setState({ gizmoMode: k === "g" ? "translate" : "rotate" });
     }
   });
+  // Shift-to-snap while dragging the gizmo (1 mm / 5°) — the placement card
+  // advertises it, so it must actually be wired.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Shift") viewport.setGizmoSnap(true);
+  });
+  document.addEventListener("keyup", (e) => {
+    if (e.key === "Shift") viewport.setGizmoSnap(false);
+  });
+  window.addEventListener("blur", () => viewport.setGizmoSnap(false));
   document.getElementById("fit-btn").addEventListener("click", () => viewport.fit());
 }
 
@@ -941,13 +1092,173 @@ function toast(message, kind = "info") {
   setTimeout(() => el.remove(), kind === "error" ? 8000 : 4000);
 }
 
+// ---------------------------------------------------- face pick / push-pull
+
+// Part-mode face selection: clicking a face highlights it and opens a small
+// push/pull card (distance + Apply -> the push_pull tool). Alt+click or an
+// empty-space click clears. The selection is keyed to the mesh cache key, so
+// a rebuild (new key => new face indexing) drops it.
+let faceSel = null; // {partId, faceIndex, key, info|null}
+
+function clearFaceSelection() {
+  faceSel = null;
+  viewport.highlightFace(null, null);
+  renderFaceCard();
+}
+
+async function selectFace(partId, faceIndex) {
+  const entry = meshBuffers.get(partId);
+  if (!entry) return;
+  faceSel = { partId, faceIndex, key: entry.key, info: null };
+  viewport.highlightFace(partId, faceIndex);
+  renderFaceCard();
+  let res;
+  try {
+    res = await api.callTool("face_info", {
+      project: state.projectName,
+      part_id: partId,
+      face_index: faceIndex,
+    });
+  } catch {
+    return; // card stays in its loading state; Apply still validates server-side
+  }
+  if (!faceSel || faceSel.partId !== partId || faceSel.faceIndex !== faceIndex) return;
+  if (!res.error) {
+    faceSel.info = res;
+    renderFaceCard();
+  }
+}
+
+function renderFaceCard() {
+  const card = document.getElementById("facecard");
+  const body = document.getElementById("facecard-body");
+  if (!card || !body) return;
+  if (!faceSel || state.mode !== "part") {
+    card.classList.add("hidden");
+    return;
+  }
+  card.classList.remove("hidden");
+  body.textContent = "";
+
+  const title = document.createElement("div");
+  title.className = "placement-title";
+  const name = document.createElement("span");
+  name.className = "placement-id";
+  name.textContent = `Face ${faceSel.faceIndex}`;
+  const ref = document.createElement("span");
+  ref.className = "placement-part";
+  ref.textContent = faceSel.partId;
+  title.append(name, ref);
+  body.appendChild(title);
+
+  const info = faceSel.info;
+  const meta = document.createElement("div");
+  meta.className = "facecard-meta";
+  if (!info) {
+    meta.textContent = "inspecting…";
+  } else if (info.planar) {
+    meta.textContent =
+      `planar · ${info.area_mm2.toFixed(1)} mm² · ` +
+      `n [${info.normal.map((v) => v.toFixed(2)).join(", ")}]`;
+  } else {
+    meta.textContent = `not planar · ${info.area_mm2.toFixed(1)} mm²`;
+  }
+  body.appendChild(meta);
+
+  const planar = !!(info && info.planar);
+  const row = document.createElement("div");
+  row.className = "facecard-row";
+  const input = document.createElement("input");
+  input.type = "number";
+  input.step = "any";
+  input.className = "placement-num";
+  input.value = "5";
+  input.setAttribute("aria-label", "push/pull distance in millimetres");
+  input.disabled = !planar;
+  const apply = document.createElement("button");
+  apply.type = "button";
+  apply.className = "tb-btn";
+  apply.textContent = "Push/Pull";
+  apply.disabled = !planar;
+  apply.title = planar
+    ? "Positive distance adds material along the outward normal; negative cuts in"
+    : "Push/pull needs a planar face";
+  apply.addEventListener("click", () => applyPushPull(input, apply));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && planar) {
+      e.preventDefault();
+      applyPushPull(input, apply);
+    }
+  });
+  row.append(input, apply);
+  body.appendChild(row);
+
+  const hint = document.createElement("div");
+  hint.className = "placement-hint";
+  hint.textContent = planar
+    ? "mm · appends a marked block to the part script and rebuilds."
+    : "Only planar faces can be pushed/pulled. Alt+click clears.";
+  body.appendChild(hint);
+}
+
+async function applyPushPull(input, applyBtn) {
+  if (!faceSel) return;
+  const distance = parseFloat(input.value);
+  if (!Number.isFinite(distance) || distance === 0) {
+    toast("Enter a nonzero distance in mm", "error");
+    return;
+  }
+  const { partId, faceIndex } = faceSel;
+  applyBtn.disabled = true;
+  applyBtn.textContent = "Applying…";
+  let res;
+  try {
+    res = await api.callTool("push_pull", {
+      project: state.projectName,
+      part_id: partId,
+      face_index: faceIndex,
+      distance_mm: distance,
+    });
+  } catch (err) {
+    applyBtn.disabled = false;
+    applyBtn.textContent = "Push/Pull";
+    toast(`Push/pull failed: ${err.message}`, "error");
+    return;
+  }
+  // Tool failures come back as {error} at HTTP 200; rebuild failures as ok:false.
+  if (res.error) {
+    applyBtn.disabled = false;
+    applyBtn.textContent = "Push/Pull";
+    toast(`Push/pull failed: ${res.error.message || "error"}`, "error");
+    return;
+  }
+  if (res.ok === false) {
+    applyBtn.disabled = false;
+    applyBtn.textContent = "Push/Pull";
+    const msg = (res.error && res.error.message) || "rebuild failed";
+    toast(`Push/pull rebuilt with an error: ${msg}`, "error");
+    return;
+  }
+  toast(`Pushed face ${faceIndex} by ${distance} mm`);
+  // The rebuild's WS events refresh the mesh; the old face index is stale now.
+  clearFaceSelection();
+}
+
 // ----------------------------------------------------------------- widgets
 
-function onPick(hit) {
-  if (state.mode !== "assembly") return;
-  if (hit && hit.instanceId) {
-    selectAssembly(hit.instanceId);
+function onPick(hit, event) {
+  if (state.mode === "assembly") {
+    if (hit && hit.instanceId) {
+      selectAssembly(hit.instanceId);
+    }
+    return;
   }
+  // part mode: face picking
+  if ((event && event.altKey) || !hit || hit.faceIndex == null) {
+    clearFaceSelection();
+    return;
+  }
+  selectFace(hit.partId, hit.faceIndex);
 }
 
 function renderIndicators() {
@@ -969,19 +1280,46 @@ function renderIndicators() {
     : "Reconnecting…";
 }
 
+let lockEl = null; // lazily created toolbar chip (no markup/CSS changes)
+
+function renderLockIndicator() {
+  if (!lockEl) {
+    const connDot = document.getElementById("conn-dot");
+    if (!connDot || !connDot.parentNode) return;
+    lockEl = document.createElement("span");
+    lockEl.id = "lock-indicator";
+    lockEl.style.cssText =
+      "display:none;align-items:center;gap:4px;font-size:12px;" +
+      "opacity:0.85;margin-right:8px;white-space:nowrap;";
+    connDot.parentNode.insertBefore(lockEl, connDot);
+  }
+  if (lockHolder && lockHolder !== "browser") {
+    lockEl.textContent = `🔒 ${lockHolder}`;
+    lockEl.title =
+      `${lockHolder} holds the editing turn — ` +
+      "changes by others are rejected until release or expiry";
+    lockEl.style.display = "inline-flex";
+  } else {
+    lockEl.style.display = "none";
+  }
+}
+
 // -------------------------------------------------------------------- boot
 
 async function boot() {
+  theme.init(); // before viewport.init so the scene is born with the stored palette
   viewport.init(document.getElementById("viewport"), { onPick });
   tree.init(actions);
   inspector.init(actions);
   chat.init(actions);
   placement.init(actions);
   drawings.init(actions);
+  sketcher.init(actions);
   setupMenus();
   setupProjectMenu();
   setupExportMenu();
   setupImport();
+  setupUndo();
   setupKeys();
   onKeys(["rebuilding", "connected"], renderIndicators);
   onKeys(["rebuilding", "part", "mode", "selectedPart", "selectedInstance"], updateHUD);

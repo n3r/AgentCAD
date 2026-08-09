@@ -44,7 +44,7 @@ projects.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ AgentCAD  [project ▾]        (Rebuilding…)  [Fit] [Export ▾]  ●  │  toolbar
+│ AgentCAD  [project ▾]     (Rebuilding…)  [Fit] [Export ▾] ☀  ●  │  toolbar
 ├──────────┬───────────────────────────────────┬───────────────────┤
 │ Parts    │                                   │ Parameters │ Code │
 │  nozzle  │                                   │            │      │
@@ -93,6 +93,11 @@ Exports are written to `<project>/exports/<part>.<format>` (assembly:
 `exports/assembly.<format>`); a toast shows the full path and size. Nothing
 is downloaded through the browser — the file lands on disk next to the
 project.
+
+**Theme switcher** — the ☀/☾ button. Toggles between the dark (default) and
+light themes; the whole UI switches, including the 3D scene and the code
+editor. The choice is remembered (localStorage) and restored before first
+paint on the next visit.
 
 **Connection dot** — far right. Green means the WebSocket event stream is
 connected; gray means the UI is reconnecting (it retries with backoff and
@@ -272,14 +277,11 @@ directly. These are backend capabilities on the shared service — every change
 still flows through the same WebSocket, so the viewport, tree, and Metrics
 tab update live as the agent works, exactly as they do for a parameter edit.
 
-> **On-canvas controls are the next wave.** The browser UI's own widgets are
-> still the v1 set described above (viewport, parts/assembly tree, the
-> Parameters / Code / Metrics inspector, the Export menu). Dedicated
-> direct-manipulation surfaces for the features below — a transform gizmo on a
-> selected instance, a numeric transform panel, a material dropdown, an
-> Import button, an in-app drawing preview, analysis buttons in the Metrics
-> tab — are not in this build; drive these features via the agent or the API
-> for now.
+The on-canvas controls shipped with them: a transform gizmo on a selected
+instance (G/R switch modes; hold Shift to snap 1 mm / 5°), a numeric
+transform panel, a material dropdown, the Import button, the in-app drawing
+preview, analysis actions in the Metrics tab, the 2D sketcher, and face
+push/pull — everything below works both from the UI and through the agent.
 
 **Import existing CAD.** Upload a `.step`/`.stp`/`.brep`/`.stl` (≤100 MB) to
 the project's `imports/` directory (`POST /api/projects/<proj>/imports?filename=…`
@@ -305,6 +307,18 @@ The service resolves the mate to a concrete pose, so the instance moves in the
 viewport like any other. A mate is authoritative: a mated instance can't be
 posed by hand until you clear its mate.
 
+**Motion from mates.** A mate's free DOF can be driven, not just held. Select a
+mated instance and the placement card shows a compact *Motion* row: enter a
+from/to angle and press **Sweep** to watch the instance swing through its range
+in the viewport; the assembly snaps back to its real pose when the animation
+ends, and a toast reports either "Motion clear through range" or the first
+angle at which something collides. Agents get the same via the `sweep_motion`
+tool (angle in degrees for revolute/cylindrical mates, offset in mm for the
+cylindrical slide), which re-resolves the mate graph at each sampled value and
+boolean-checks every part pair — use it to prove a mechanism clears its housing
+before committing to a design. Imported STL instances cannot join the boolean
+check and are listed under `skipped_mesh`, exactly as in `check_interference`.
+
 **2D drawings.** Ask for a drawing of a (script) part and AgentCAD projects
 front/top/right/iso views with overall dimensions and hole callouts detected
 from the geometry, writing `exports/<part>_drawing.svg` (or `.dxf`). A
@@ -316,6 +330,53 @@ minimum wall thickness (optionally against a requirement), the projected
 silhouette area, or the full inertia tensor. Linear-static FEM is available
 only if the optional `agentcad[fem]` extra is installed (otherwise the tool
 and its route are absent).
+
+**Sketching & push/pull.** The ✏️ Sketch button (part mode) opens a 2D
+sketch editor over the viewport: draw points, lines, and circles, apply
+constraints (distance, horizontal/vertical, parallel/perpendicular, radius,
+coincident, fix), and watch the constraint solver keep the sketch consistent
+live — the status line shows solved/DOF state. "Insert into script" appends a
+`sketch_profile()` build123d function to the code editor; call it from
+`build(p)` and save. Clicking a face of a part highlights it and opens a
+small face card (area, normal) with a push/pull distance — applying it
+records the edit *in the script* as a visible, editable `push_face(...)`
+wrapper, so direct manipulation never bypasses the code. Alt+click clears
+the selection.
+
+**Huge meshes.** Heavy parts (over ~150k triangles) appear almost instantly
+as a coarse preview while the full-resolution mesh streams in behind it;
+small parts load in a single request exactly as before.
+
+**Undo & project history.** Every change you or an agent makes — scripts,
+parameters, assembly, mates, materials, PMI — is snapshotted into a
+per-project git history (`.history/` inside the project folder; derived
+`.cache/` and `exports/` are never tracked). Press Cmd/Ctrl+Z or the toolbar
+Undo button to roll back to the previous state; agents can jump to any
+snapshot with `project_restore`. Restores are themselves recorded as new
+snapshots, so history is linear and redo is just restoring the commit you
+were on before undoing. Requires git on the server's PATH; without it
+AgentCAD works normally, only history is disabled.
+
+**Working alongside agents.** When several agents (or an agent and you) edit
+one project at once, an agent can take the editing turn with `acquire_turn`.
+While the turn is held, everyone else's changes — including edits made from
+the browser UI — are rejected with a clear "project is locked by \<holder\>"
+message until the turn is released or its lock expires (default 120 s). The
+toolbar shows a lock chip naming the holder whenever an agent holds the turn.
+Reads are never blocked, and with no lock held everything behaves exactly as
+before. The chat dock is pinned to the default session: when another agent
+holds its own chat session on your project, the dock shows a one-line notice
+("another agent session is active: …") instead of mixing its stream into
+yours.
+
+**Seeing the model.** Agents can now look at what they build: the `render_view`
+tool rasterizes the built mesh to a shaded PNG entirely server-side (no GPU),
+either a single part or the whole placed assembly with instance colors. Views
+match the drawing pack (iso, front, top, right). The image is written to
+`exports/renders/` and returned as real image content over MCP and in the
+built-in chat, so a vision-capable model can check proportions, hole placement,
+and assembly layout instead of reasoning from numbers alone. The same render is
+available over HTTP via `POST /api/projects/<proj>/render`.
 
 ## Working with the bundled examples
 

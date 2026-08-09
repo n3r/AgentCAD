@@ -1,6 +1,6 @@
 # Engine example — an assemblable 90° V4
 
-A complete SOHC V4 engine built **assembly-first**: 32 parametric parts, 63
+A complete SOHC V4 engine built **assembly-first**: 33 parametric parts, 65
 instances, and every joint modeled the way a real engine bolts together —
 mating faces, alignment dowels, gaskets, matched hole patterns, and the
 fasteners themselves (72 screws and nuts, grouped into per-joint compound

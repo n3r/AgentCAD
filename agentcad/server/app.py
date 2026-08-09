@@ -10,13 +10,14 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
-from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import agentcad
+from .._resources import resource_root
+from ..core.locks import set_client_id
 from ..core.model import (
     AppError,
     ConflictError,
@@ -25,9 +26,10 @@ from ..core.model import (
 )
 from ..core.service import AgentCADService
 from ..core.tools import ToolRegistry
+from ..kernel import sandbox
 from ..kernel.client import KernelError
 
-FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+FRONTEND_DIR = resource_root() / "frontend"
 
 _ERROR_STATUS = {
     NotFoundError: 404,
@@ -99,6 +101,11 @@ def create_app(
                 content={"error": {"type": "ForbiddenOrigin", "message": reason,
                                    "details": {}}},
             )
+        # Client identity for turn locking: agents send X-Agent-Id; anything
+        # without the header (the browser UI, plain curl) is "browser". The
+        # ContextVar set here reaches async endpoints via the task context and
+        # sync endpoints via anyio's to_thread.run_sync context copy.
+        set_client_id(request.headers.get("x-agent-id") or "browser")
         return await call_next(request)
 
     @app.exception_handler(AppError)
@@ -127,6 +134,11 @@ def create_app(
             "version": agentcad.__version__,
             "kernel": "ready" if service.kernel.alive else "starting",
             "chat_available": bool(chat_engine and chat_engine.available),
+            # Reflects the ACTUAL kernel the service runs (the client decides
+            # at construction and exposes .sandboxed), not a config recompute.
+            "sandbox": sandbox.status(
+                getattr(service.kernel, "sandboxed", False)
+            ),
         }
 
     # ------------------------------------------------------------ projects
@@ -192,12 +204,40 @@ def create_app(
         return service.get_metrics(proj, part_id)
 
     @app.get("/api/projects/{proj}/parts/{part_id}/mesh")
-    def get_mesh(proj: str, part_id: str):
-        info = service.mesh_info(proj, part_id)
+    def get_mesh(proj: str, part_id: str, lod: str | None = None):
+        # ?lod=lod1 asks for the coarse preview tier; when the part has no
+        # such tier the full-resolution buffer is served (X-Mesh-Lod: full),
+        # so small parts cost the client zero extra requests.
+        info = service.mesh_info(proj, part_id, lod=lod)
         return Response(
             content=info["path"].read_bytes(),
             media_type="application/octet-stream",
-            headers={"Cache-Control": "no-store", "X-Mesh-Key": info["key"]},
+            headers={
+                "Cache-Control": "no-store",
+                "X-Mesh-Key": info["key"],
+                "X-Mesh-Lod": info.get("lod") or "full",
+            },
+        )
+
+    @app.get("/api/projects/{proj}/parts/{part_id}/mesh/faces")
+    def get_mesh_faces(proj: str, part_id: str):
+        # Triangle->B-rep-face sidecar for the FULL-resolution mesh (one u32
+        # per triangle, mesh face order). 404 when the build predates the
+        # sidecar (stale cache entry) or the part is a reference import.
+        info = service.mesh_info(proj, part_id)
+        sidecar = info["path"].parent / f"{info['key']}.faces.u32"
+        if not sidecar.is_file():
+            raise NotFoundError(
+                f"no face map for part {part_id!r} (rebuild required, or the "
+                "part is an imported reference)"
+            )
+        return Response(
+            content=sidecar.read_bytes(),
+            media_type="application/octet-stream",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Mesh-Key": info["key"],
+            },
         )
 
     @app.post("/api/projects/{proj}/parts/{part_id}/export")
@@ -255,18 +295,25 @@ def create_app(
         @app.post("/api/chat")
         async def chat(request: Request):
             body = await request.json()
+            # session defaults to "main" (the browser dock's lane); the engine
+            # validates the id ([a-z0-9_-]{1,32}) and raises 422 on a bad one.
             return await chat_engine.start_turn(
-                body.get("project", ""), body.get("message", "")
+                body.get("project", ""),
+                body.get("message", ""),
+                session=body.get("session", "main"),
             )
 
         @app.get("/api/chat/history")
-        def chat_history(project: str):
-            return {"messages": chat_engine.history(project)}
+        def chat_history(project: str, session: str = "main"):
+            return {
+                "messages": chat_engine.history(project, session),
+                "session": session,
+            }
 
         @app.delete("/api/chat/history")
-        def clear_chat_history(project: str):
-            chat_engine.clear_history(project)
-            return {"cleared": True}
+        def clear_chat_history(project: str, session: str = "main"):
+            chat_engine.clear_history(project, session)
+            return {"cleared": True, "session": session}
 
     # ------------------------------------------------------------------ ws
 

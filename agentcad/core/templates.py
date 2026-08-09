@@ -28,15 +28,29 @@ AGENTCAD PART SCRIPT CONTRACT
 =============================
 A part is a plain build123d Python script defining exactly two things:
 
-1. PARAMS: dict of numeric parameter specs.
+1. PARAMS: dict of typed parameter specs.
    PARAMS = {"name": {"default": 10.0, "min": 1.0, "max": 100.0,
                       "unit": "mm", "description": "..."}}
-   - "default" is required and must be a number. min/max/unit/description
-     are optional but strongly recommended (min+max gives the UI a slider).
-   - Values passed by the project are clamped to [min, max] with a warning.
+   - "default" is required. Optional "type": "number" (default) | "int" |
+     "bool" | "enum" | "string". min/max/unit apply to number/int only
+     (min+max gives the UI a slider); enum requires "choices" (strings
+     and/or numbers); string takes "max_len" (default 200).
+   - Numeric values passed by the project are clamped to [min, max] with a
+     warning; bool/enum/string values must match their spec (an error if not).
+   - e.g. "ribbed": {"default": True, "type": "bool", "description": "..."},
+          "finish": {"default": "raw", "type": "enum",
+                     "choices": ["raw", "anodized"], "description": "..."}
 
 2. build(p): receives an attribute namespace of resolved values (p.name)
    and must return a build123d Part, Solid, or Compound.
+
+Optional: SOLID_LABELS = ["body", "lid"]  # names a multi-solid Compound's
+solids by index; metrics.solids and set_solid_materials address solids by
+these labels (fallback solid_0, solid_1, ...).
+
+Surfacing: agentcad.toolkit.surfacing.smooth_loft / blend_surface --
+continuity-controlled lofts + G0/G1/G2 face blends; always propagate the
+returned warning. Verify with analyze_part(kind="curvature").
 
 Units are millimeters; angles in degrees. Scripts run in a kernel worker
 with a 60 s timeout. Do not read files, loop forever, or print protocol
@@ -178,6 +192,36 @@ interpenetrate as solids (that is how they grip), so a fully-driven bolt fails
 check_interference. Keep the bolt's threaded shank inside a clearance
 counterbore, or leave a standoff above the tapped thread, or use cosmetic
 threads -- see the `fasteners` example.
+
+SHEET METAL  (from agentcad.toolkit.sheetmetal import SheetPart; tool: flat_pattern)
+------------------------------------------------------------------------------------
+One declarative spec yields BOTH the folded solid and the manufacturing flat
+pattern, so they can never disagree. Base plate centered on the origin, width
+along X, depth along Y, z in [0, t]; edges left/right/front/back (x=-w/2,
+x=+w/2, y=-d/2, y=+d/2). Flanges bend UP (+Z), span the full edge, one per
+edge; angle in (0, 180) exclusive; inner_radius defaults to the thickness.
+Bend allowance BA = radians(angle) * (R + K*t); each flange adds BA + length
+of flat stock beyond its edge (K=0.44 default suits air-bent steel/aluminum).
+
+    def _sheet(p):
+        return (SheetPart(p.thick, k_factor=0.44)
+                .base(p.width, p.depth)
+                .flange("front", 90, p.flange_len, inner_radius=p.bend_r))
+    def build(p):
+        return _sheet(p).fold()          # single valid folded solid
+    def flat_pattern(p):                 # optional contract -> enables the
+        sp = _sheet(p)                   # flat_pattern export tool
+        return sp.unfold(), sp.bend_lines()
+
+    sp.unfold()       -> flat blank as a solid (base + BA+length tab per edge)
+    sp.flat_outline() -> [(x, y), ...] CCW outline polygon of the blank
+    sp.bend_lines()   -> [{"edge","a","b","angle_deg","inner_radius"}, ...]
+                         midlines BA/2 beyond each edge, in flat coords
+
+The flat_pattern tool renders the unfolded blank to SVG (outline + dashed
+bend lines with angle/radius callouts) or DXF (layers OUTLINE and BEND) at
+exports/<part>_flat.<ext>. Duplicate edges, angle 0/180, or flange() before
+base() raise ValueError; read sp.warnings after fold() if fusion fell back.
 
 CONNECTORS & MATES  (optional; backward compatible)
 ---------------------------------------------------

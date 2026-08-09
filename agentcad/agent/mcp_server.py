@@ -52,22 +52,43 @@ def _health_ok(base: str) -> bool:
         return False
 
 
+def _server_spawn_argv() -> list[str]:
+    """Command that starts the AgentCAD server in the background.
+
+    A frozen (PyInstaller) bundle has no repo and no uv — it re-execs its own
+    executable, whose entry point is the same `agentcad` CLI.
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "serve", "--no-open"]
+    return ["uv", "run", "agentcad", "serve", "--no-open"]
+
+
 def _ensure_server(base: str) -> bool:
     """Return True once /api/health answers, auto-starting the server if needed."""
     if _health_ok(base):
         return True
+    argv = _server_spawn_argv()
     print(
         f"agentcad-mcp: no server at {base}; "
-        "starting 'uv run agentcad serve --no-open' in the background",
+        f"starting {' '.join(argv)!r} in the background",
         file=sys.stderr,
     )
     try:
+        # Detach the server from this MCP process: setsid on POSIX; a new
+        # process group on Windows (start_new_session is POSIX-only).
+        detach = (
+            {"start_new_session": True}
+            if os.name == "posix"
+            else {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+        )
         subprocess.Popen(
-            ["uv", "run", "agentcad", "serve", "--no-open"],
-            cwd=REPO_ROOT,
+            argv,
+            # `uv run` needs the repo as cwd; the frozen executable is
+            # location-independent (REPO_ROOT is meaningless inside a bundle).
+            cwd=None if getattr(sys, "frozen", False) else REPO_ROOT,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
+            **detach,
         )
     except OSError as exc:
         print(f"agentcad-mcp: could not launch the server: {exc}", file=sys.stderr)
@@ -80,8 +101,34 @@ def _ensure_server(base: str) -> bool:
     return False
 
 
+def _tool_result(payload) -> types.CallToolResult:
+    """Wrap a tool payload as MCP content. Plain-JSON tools stay a single
+    TextContent blob; a result carrying ``png_base64`` (render_view) becomes
+    an ImageContent plus the JSON without the base64, so agents actually see
+    the image."""
+    content: list = []
+    if isinstance(payload, dict) and isinstance(payload.get("png_base64"), str):
+        content.append(
+            types.ImageContent(
+                type="image", data=payload["png_base64"], mimeType="image/png"
+            )
+        )
+        payload = {k: v for k, v in payload.items() if k != "png_base64"}
+    content.append(
+        types.TextContent(type="text", text=json.dumps(payload, indent=2, default=str))
+    )
+    return types.CallToolResult(content=content)
+
+
 async def _serve(base: str) -> None:
-    http = httpx.AsyncClient(base_url=base, timeout=REQUEST_TIMEOUT)
+    # Identity for the server's turn locking (acquire_turn/release_turn):
+    # every proxied call carries X-Agent-Id so concurrent MCP agents can be
+    # told apart. Set AGENTCAD_AGENT_ID to give each agent a stable name.
+    http = httpx.AsyncClient(
+        base_url=base,
+        timeout=REQUEST_TIMEOUT,
+        headers={"X-Agent-Id": os.environ.get("AGENTCAD_AGENT_ID", "mcp")},
+    )
 
     async def on_list_tools(ctx, params) -> types.ListToolsResult:
         try:
@@ -114,13 +161,7 @@ async def _serve(base: str) -> None:
                     "message": f"could not reach the AgentCAD server at {base}: {exc}",
                 }
             }
-        return types.CallToolResult(
-            content=[
-                types.TextContent(
-                    type="text", text=json.dumps(payload, indent=2, default=str)
-                )
-            ]
-        )
+        return _tool_result(payload)
 
     server = Server(
         "agentcad",
@@ -145,7 +186,7 @@ def run_mcp_server() -> None:
         print(
             f"agentcad-mcp: AgentCAD server unreachable at {base} after "
             f"{STARTUP_TIMEOUT_S:.0f}s. Start it manually with "
-            "'uv run agentcad serve --no-open' (or set AGENTCAD_URL) and retry.",
+            f"{' '.join(_server_spawn_argv())!r} (or set AGENTCAD_URL) and retry.",
             file=sys.stderr,
         )
         raise SystemExit(1)

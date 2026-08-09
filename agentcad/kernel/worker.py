@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import json
 import os
+import struct
 import sys
 import traceback
 import types
@@ -22,7 +23,7 @@ from pathlib import Path
 
 import build123d as b3d
 
-from .mesh import tessellate
+from .mesh import tessellate, tessellate_with_faces
 from .protocol import ERROR_CONTRACT, ERROR_KERNEL, ERROR_SCRIPT, WorkerError
 
 SCRIPT_FILENAME = "<part>"
@@ -63,6 +64,69 @@ def _exec_script(script: str) -> dict:
     return ns
 
 
+PARAM_TYPES = ("number", "int", "bool", "enum", "string")
+# Spec fields legal only on some types (unit/description are always allowed).
+_TYPE_ONLY_FIELDS = {
+    "min": ("number", "int"),
+    "max": ("number", "int"),
+    "choices": ("enum",),
+    "max_len": ("string",),
+}
+DEFAULT_MAX_LEN = 200
+
+
+def _effective_max_len(entry: dict):
+    """max_len with an explicit None treated as absent (inspect's normalized
+    output emits None for unset fields, and must round-trip as PARAMS)."""
+    max_len = entry.get("max_len")
+    return DEFAULT_MAX_LEN if max_len is None else max_len
+
+
+def _as_int(value):
+    """The value as an int if it is an integral number (3 or 3.0), else None.
+    bool passes isinstance(x, int), so it is rejected explicitly first."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not value.is_integer():
+        return None
+    return int(value)
+
+
+def _numeric_field(name: str, field: str, value, ptype: str):
+    if ptype == "int":
+        coerced = _as_int(value)
+        if coerced is None:
+            raise WorkerError(
+                ERROR_CONTRACT, f"PARAMS[{name!r}][{field!r}] must be an integer"
+            )
+        return coerced
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise WorkerError(
+            ERROR_CONTRACT, f"PARAMS[{name!r}][{field!r}] must be a number"
+        )
+    return value
+
+
+def _validate_numeric_spec(name: str, entry: dict, ptype: str) -> None:
+    default = _numeric_field(name, "default", entry["default"], ptype)
+    mn = entry.get("min")
+    mx = entry.get("max")
+    mn = None if mn is None else _numeric_field(name, "min", mn, ptype)
+    mx = None if mx is None else _numeric_field(name, "max", mx, ptype)
+    if mn is not None and mx is not None and mn > mx:
+        raise WorkerError(ERROR_CONTRACT, f"PARAMS[{name!r}]: min > max")
+    if (mn is not None and default < mn) or (mx is not None and default > mx):
+        raise WorkerError(
+            ERROR_CONTRACT, f"PARAMS[{name!r}]: default outside [min, max]"
+        )
+
+
+def _valid_choice(c) -> bool:
+    return isinstance(c, str) or (
+        not isinstance(c, bool) and isinstance(c, (int, float))
+    )
+
+
 def _validate_params_spec(spec) -> dict:
     if not isinstance(spec, dict):
         raise WorkerError(ERROR_CONTRACT, "PARAMS must be a dict of parameter specs")
@@ -73,26 +137,90 @@ def _validate_params_spec(spec) -> dict:
             raise WorkerError(
                 ERROR_CONTRACT, f"PARAMS[{name!r}] must be a dict with a 'default'"
             )
-        default = entry["default"]
-        if isinstance(default, bool) or not isinstance(default, (int, float)):
+        ptype = entry.get("type", "number")
+        if ptype not in PARAM_TYPES:
             raise WorkerError(
-                ERROR_CONTRACT, f"PARAMS[{name!r}]['default'] must be a number"
+                ERROR_CONTRACT,
+                f"PARAMS[{name!r}]['type'] must be one of: {', '.join(PARAM_TYPES)}",
             )
-        mn, mx = entry.get("min"), entry.get("max")
-        for bound_name, bound in (("min", mn), ("max", mx)):
-            if bound is not None and (
-                isinstance(bound, bool) or not isinstance(bound, (int, float))
+        for field, legal_on in _TYPE_ONLY_FIELDS.items():
+            # An explicit None means "absent" (inspect's normalized output
+            # emits None for unset fields and must be legal as PARAMS).
+            if entry.get(field) is not None and ptype not in legal_on:
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"PARAMS[{name!r}][{field!r}] is not allowed on a {ptype} spec",
+                )
+        default = entry["default"]
+        if ptype in ("number", "int"):
+            _validate_numeric_spec(name, entry, ptype)
+        elif ptype == "bool":
+            if not isinstance(default, bool):
+                raise WorkerError(
+                    ERROR_CONTRACT, f"PARAMS[{name!r}]['default'] must be a bool"
+                )
+        elif ptype == "enum":
+            choices = entry.get("choices")
+            if (
+                not isinstance(choices, list)
+                or not choices
+                or not all(_valid_choice(c) for c in choices)
             ):
                 raise WorkerError(
-                    ERROR_CONTRACT, f"PARAMS[{name!r}][{bound_name!r}] must be a number"
+                    ERROR_CONTRACT,
+                    f"PARAMS[{name!r}]['choices'] must be a non-empty list of "
+                    "strings and/or numbers",
                 )
-        if mn is not None and mx is not None and mn > mx:
-            raise WorkerError(ERROR_CONTRACT, f"PARAMS[{name!r}]: min > max")
-        if (mn is not None and default < mn) or (mx is not None and default > mx):
-            raise WorkerError(
-                ERROR_CONTRACT, f"PARAMS[{name!r}]: default outside [min, max]"
-            )
+            if isinstance(default, bool) or not any(default == c for c in choices):
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"PARAMS[{name!r}]: default {default!r} is not in choices",
+                    {"choices": choices},
+                )
+        else:  # string
+            if not isinstance(default, str):
+                raise WorkerError(
+                    ERROR_CONTRACT, f"PARAMS[{name!r}]['default'] must be a string"
+                )
+            max_len = _effective_max_len(entry)
+            if isinstance(max_len, bool) or not isinstance(max_len, int) or max_len <= 0:
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"PARAMS[{name!r}]['max_len'] must be a positive integer",
+                )
+            if len(default) > max_len:
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"PARAMS[{name!r}]: default exceeds max_len {max_len}",
+                )
     return spec
+
+
+def _resolve_numeric(
+    name: str, entry: dict, value, ptype: str, warnings: list[str]
+):
+    if ptype == "int":
+        coerced = _as_int(value)
+        if coerced is None:
+            raise WorkerError(
+                ERROR_CONTRACT, f"parameter {name!r} must be an integer, got {value!r}"
+            )
+        value = coerced
+    elif isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise WorkerError(
+            ERROR_CONTRACT, f"parameter {name!r} must be a number, got {value!r}"
+        )
+    mn, mx = entry.get("min"), entry.get("max")
+    if ptype == "int":  # bounds were validated integral; keep the value an int
+        mn = None if mn is None else int(mn)
+        mx = None if mx is None else int(mx)
+    if mn is not None and value < mn:
+        warnings.append(f"param {name} clamped to min {mn}")
+        value = mn
+    if mx is not None and value > mx:
+        warnings.append(f"param {name} clamped to max {mx}")
+        value = mx
+    return value
 
 
 def _resolve_params(spec: dict, overrides: dict) -> tuple[dict, list[str]]:
@@ -107,17 +235,43 @@ def _resolve_params(spec: dict, overrides: dict) -> tuple[dict, list[str]]:
     warnings: list[str] = []
     for name, entry in spec.items():
         value = overrides.get(name, entry["default"])
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise WorkerError(
-                ERROR_CONTRACT, f"parameter {name!r} must be a number, got {value!r}"
+        ptype = entry.get("type", "number")
+        if ptype in ("number", "int"):
+            value = _resolve_numeric(name, entry, value, ptype, warnings)
+        elif ptype == "bool":
+            if not isinstance(value, bool):
+                raise WorkerError(
+                    ERROR_CONTRACT, f"parameter {name!r} must be a bool, got {value!r}"
+                )
+        elif ptype == "enum":
+            choices = entry["choices"]
+            # Canonicalize to the declared choice (3.0 matches an int 3 but
+            # must reach build(p) — and the shape-cache key — as the int).
+            # bools are never members: True == 1 would match a numeric choice.
+            matched = (
+                None
+                if isinstance(value, bool)
+                else next((c for c in choices if value == c), None)
             )
-        mn, mx = entry.get("min"), entry.get("max")
-        if mn is not None and value < mn:
-            warnings.append(f"param {name} clamped to min {mn}")
-            value = mn
-        if mx is not None and value > mx:
-            warnings.append(f"param {name} clamped to max {mx}")
-            value = mx
+            if matched is None:
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"parameter {name!r} must be one of "
+                    f"{', '.join(repr(c) for c in choices)}, got {value!r}",
+                    {"choices": choices},
+                )
+            value = matched
+        else:  # string
+            if not isinstance(value, str):
+                raise WorkerError(
+                    ERROR_CONTRACT, f"parameter {name!r} must be a string, got {value!r}"
+                )
+            max_len = _effective_max_len(entry)
+            if len(value) > max_len:
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"parameter {name!r} exceeds max_len {max_len}",
+                )
         values[name] = value
     return values, warnings
 
@@ -184,11 +338,18 @@ def _shape_volume(shape) -> float:
     return float(shape.volume)
 
 
-def _metrics(shape, density_g_cm3: float) -> dict:
+def _metrics(shape, density_g_cm3: float, densities: dict | None = None,
+             labels: list | None = None) -> dict:
+    """Whole-shape metrics; multi-solid shapes additionally get a per-solid
+    ``solids`` list. ``labels`` names solids by index (fallback "solid_<i>");
+    ``densities`` maps label-or-index-string to a density override, a solid's
+    density resolving label match > index match > ``density_g_cm3``. The
+    aggregate mass of a multi-solid shape is the sum of per-solid masses;
+    single-solid shapes keep the plain volume*density math."""
     volume = _shape_volume(shape)
     bb = shape.bounding_box()
     com = shape.center(b3d.CenterOf.MASS)
-    return {
+    out = {
         "volume_mm3": volume,
         "area_mm2": float(shape.area),
         "mass_g": volume * density_g_cm3 / 1000.0,
@@ -202,6 +363,33 @@ def _metrics(shape, density_g_cm3: float) -> dict:
         "n_edges": len(shape.edges()),
         "n_solids": len(shape.solids()),
     }
+    solids = shape.solids()
+    if len(solids) > 1:
+        per_solid = []
+        for i, solid in enumerate(solids):
+            label = labels[i] if labels and i < len(labels) else f"solid_{i}"
+            density = density_g_cm3
+            if densities:
+                if label in densities:
+                    density = float(densities[label])
+                elif str(i) in densities:
+                    density = float(densities[str(i)])
+            solid_volume = float(solid.volume)
+            sbb = solid.bounding_box()
+            scom = solid.center(b3d.CenterOf.MASS)
+            per_solid.append({
+                "label": label,
+                "volume_mm3": solid_volume,
+                "mass_g": solid_volume * density / 1000.0,
+                "bbox": {
+                    "min": [sbb.min.X, sbb.min.Y, sbb.min.Z],
+                    "max": [sbb.max.X, sbb.max.Y, sbb.max.Z],
+                },
+                "center_of_mass": [scom.X, scom.Y, scom.Z],
+            })
+        out["solids"] = per_solid
+        out["mass_g"] = float(sum(s["mass_g"] for s in per_solid))
+    return out
 
 
 def _place(shape, position, rotation_deg):
@@ -215,6 +403,40 @@ def _atomic_write(path: str, data: bytes) -> None:
     tmp = target.with_name(target.name + ".tmp")
     tmp.write_bytes(data)
     os.replace(tmp, target)
+
+
+def _write_lod_tiers(ocp_shape, params: dict, buffer: bytes) -> tuple[int, list[str]]:
+    """Write coarse LOD sidecar meshes next to the already-written full mesh.
+
+    ``params["lod_tolerances"]`` maps a filename suffix (e.g. ``"lod1"``) to a
+    tessellation tolerance; each requested tier is written as
+    ``<mesh_path minus .acm>.<suffix>.acm`` in the same ACM1 format — but only
+    when the full mesh's triangle count exceeds ``params["lod_min_triangles"]``
+    (default 0), so small parts never pay for an extra tessellation. The full
+    mesh buffer already written is never touched (its bytes stay pinned).
+
+    Returns ``(full-mesh triangle count, list of tier suffixes written)``.
+    """
+    # ACM1 header: magic(4) | nv u32 | nt u32 | ... — triangle count at byte 8.
+    triangles = struct.unpack_from("<I", buffer, 8)[0]
+    lod_tolerances = params.get("lod_tolerances") or {}
+    min_triangles = int(params.get("lod_min_triangles") or 0)
+    lods: list[str] = []
+    if not lod_tolerances or triangles <= min_triangles:
+        return triangles, lods
+    # OCCT keeps an existing (finer) triangulation that already satisfies a
+    # coarser deflection, so the cached full-resolution mesh must be dropped
+    # or the tier would silently duplicate the full mesh.
+    from OCP.BRepTools import BRepTools  # kernel process only
+
+    mesh_path = str(params["mesh_path"])
+    base = mesh_path[: -len(".acm")] if mesh_path.endswith(".acm") else mesh_path
+    for suffix in sorted(lod_tolerances):
+        BRepTools.Clean_s(ocp_shape)
+        lod_buffer = tessellate(ocp_shape, float(lod_tolerances[suffix]))
+        _atomic_write(f"{base}.{suffix}.acm", lod_buffer)
+        lods.append(suffix)
+    return triangles, lods
 
 
 def _export_shape(shape, fmt: str, out_path: str, tolerance: float) -> dict:
@@ -255,26 +477,81 @@ def handle_inspect(params: dict) -> dict:
     spec = _validate_params_spec(ns["PARAMS"])
     return {
         "params_spec": {
-            name: {
-                "default": entry["default"],
-                "min": entry.get("min"),
-                "max": entry.get("max"),
-                "unit": entry.get("unit"),
-                "description": entry.get("description"),
-            }
-            for name, entry in spec.items()
+            name: _normalized_spec_entry(entry) for name, entry in spec.items()
         }
     }
 
 
+def _normalized_spec_entry(entry: dict) -> dict:
+    ptype = entry.get("type", "number")
+    out = {
+        "type": ptype,
+        "default": entry["default"],
+        "min": entry.get("min"),
+        "max": entry.get("max"),
+        "unit": entry.get("unit"),
+        "description": entry.get("description"),
+    }
+    if ptype == "enum":
+        out["choices"] = list(entry["choices"])
+    if ptype == "string":
+        out["max_len"] = _effective_max_len(entry)
+    return out
+
+
+def _solid_labels(ns: dict) -> list | None:
+    """Optional SOLID_LABELS contract addition: a list of solid names applied
+    by index. Advisory — extra labels beyond n_solids are ignored (with a
+    warning added by handle_build)."""
+    labels = ns.get("SOLID_LABELS")
+    if labels is None:
+        return None
+    if not isinstance(labels, list) or not all(
+        isinstance(label, str) for label in labels
+    ):
+        raise WorkerError(
+            ERROR_CONTRACT, "SOLID_LABELS must be a list of strings"
+        )
+    return labels
+
+
 def handle_build(params: dict) -> dict:
-    shape, _values, warnings = build_shape(params["script"], params.get("params", {}))
+    shape, _values, warnings, ns = build_shape_ns(
+        params["script"], params.get("params", {})
+    )
+    labels = _solid_labels(ns)
     tolerance = float(params.get("tolerance", 0.1))
-    buffer = tessellate(shape.wrapped, tolerance)
+    buffer, face_ids = tessellate_with_faces(shape.wrapped, tolerance)
     _atomic_write(params["mesh_path"], buffer)
+    # Triangle->B-rep-face sidecar (one u32 per triangle, mesh face order):
+    # written after the mesh so a reader that sees the sidecar has the mesh.
+    mesh_path = str(params["mesh_path"])
+    base_path = mesh_path[: -len(".acm")] if mesh_path.endswith(".acm") else mesh_path
+    _atomic_write(f"{base_path}.faces.u32", face_ids)
+    triangles, lods = _write_lod_tiers(shape.wrapped, params, buffer)
+    densities = params.get("densities") or {}
+    metrics = _metrics(
+        shape,
+        float(params.get("density_g_cm3", 1.0)),
+        densities=densities or None,
+        labels=labels,
+    )
+    warnings = list(warnings)
+    if labels and len(labels) > metrics["n_solids"]:
+        warnings.append(
+            f"SOLID_LABELS has {len(labels)} labels but the part has "
+            f"{metrics['n_solids']} solid(s); extra labels are ignored"
+        )
+    solids = metrics.get("solids") or []
+    matchable = {s["label"] for s in solids} | {str(i) for i in range(len(solids))}
+    for key in sorted(densities):
+        if key not in matchable:
+            warnings.append(f"solid_materials: no solid matches {key}")
     return {
-        "metrics": _metrics(shape, float(params.get("density_g_cm3", 1.0))),
+        "metrics": metrics,
         "warnings": warnings,
+        "triangles": triangles,
+        "lods": lods,
     }
 
 
@@ -339,29 +616,20 @@ def handle_export_assembly(params: dict) -> dict:
     )
 
 
-def handle_interference(params: dict) -> dict:
-    items = params["items"]
-    min_volume = float(params.get("min_volume", 0.001))
-    placed = []
-    skipped_mesh = []
-    for item in items:
-        shape, kind = _item_shape(item, analysis=True)
-        if kind == "mesh":
-            # Booleans on an STL mesh Face segfault OCCT — exclude it from the
-            # pairwise check and report it so the caller can surface the gap.
-            skipped_mesh.append(item.get("name", "?"))
-            continue
-        placed.append(
-            (
-                item.get("name", "?"),
-                _place(shape, item.get("position", [0, 0, 0]), item.get("rotation_deg", [0, 0, 0])),
-            )
-        )
-    # Decompose every instance into its solids up front. Two reasons:
-    # 1. build123d 0.9's ``&`` silently misbehaves when an operand is a
-    #    multi-solid Compound (bolt sets etc.) — Solid-vs-Solid is reliable;
-    # 2. per-solid AABB prefiltering skips almost all of the N*M work for
-    #    hardware compounds, where only one screw is near any given part.
+def pairwise_interference(placed, min_volume: float = 0.001) -> list[dict]:
+    """Exact pairwise intersection volumes for ``[(name, shape), ...]``.
+
+    Decomposes every shape into its solids up front, for two reasons:
+    1. build123d 0.9's ``&`` silently misbehaves when an operand is a
+       multi-solid Compound (bolt sets etc.) — Solid-vs-Solid is reliable;
+    2. per-solid AABB prefiltering skips almost all of the N*M work for
+       hardware compounds, where only one screw is near any given part.
+    When a solid pair's AABB overlap is small relative to the larger solid,
+    the larger one is cropped to the overlap box first (a cheap prismatic
+    boolean), so a small detailed solid — a threaded stud — is never
+    intersected against a whole casting. Shared by ``handle_interference``
+    and the motion sweep's per-sample collision check.
+    """
     decomposed = []
     for name, shape in placed:
         solids = shape.solids() or [shape]
@@ -389,19 +657,15 @@ def handle_interference(params: dict) -> dict:
         return b3d.Pos(*center) * b3d.Box(*size), \
             size[0] * size[1] * size[2]
 
+    def _common_vol(a, b):
+        c = a & b
+        return float(c.volume) if c is not None else 0.0
+
     def _solid_common(sa, ba, sb, bb):
-        # Interference can only exist inside the AABB overlap; when that
-        # region is small relative to the larger solid, crop it first — a
-        # cheap prismatic boolean — so a small detailed solid (a threaded
-        # stud) is never intersected against a whole casting.
         box, ov = _crop_box(ba, bb)
         big, big_bb = (sa, ba) if _box_volume(ba) >= _box_volume(bb) \
             else (sb, bb)
         small = sb if big is sa else sa
-        def _common_vol(a, b):
-            c = a & b
-            return float(c.volume) if c is not None else 0.0
-
         if ov < 0.4 * _box_volume(big_bb):
             cropped = big & box
             if cropped is None:
@@ -426,7 +690,30 @@ def handle_interference(params: dict) -> dict:
                         if _boxes_touch(ba, bb):
                             volume += _solid_common(sa, ba, sb, bb)
             if volume > min_volume:
-                pairs.append({"a": name_a, "b": name_b, "volume_mm3": volume})
+                pairs.append({"a": name_a, "b": name_b,
+                              "volume_mm3": volume})
+    return pairs
+
+
+def handle_interference(params: dict) -> dict:
+    items = params["items"]
+    min_volume = float(params.get("min_volume", 0.001))
+    placed = []
+    skipped_mesh = []
+    for item in items:
+        shape, kind = _item_shape(item, analysis=True)
+        if kind == "mesh":
+            # Booleans on an STL mesh Face segfault OCCT — exclude it from the
+            # pairwise check and report it so the caller can surface the gap.
+            skipped_mesh.append(item.get("name", "?"))
+            continue
+        placed.append(
+            (
+                item.get("name", "?"),
+                _place(shape, item.get("position", [0, 0, 0]), item.get("rotation_deg", [0, 0, 0])),
+            )
+        )
+    pairs = pairwise_interference(placed, min_volume)
     result = {"pairs": pairs}
     if skipped_mesh:
         result["skipped_mesh"] = skipped_mesh
@@ -458,6 +745,7 @@ WORKER_TOOLBOX = {
     "export_shape": _export_shape,
     "atomic_write": _atomic_write,
     "tessellate": tessellate,
+    "write_lod_tiers": _write_lod_tiers,
     "WorkerError": WorkerError,
     "ERROR_SCRIPT": ERROR_SCRIPT,
     "ERROR_CONTRACT": ERROR_CONTRACT,

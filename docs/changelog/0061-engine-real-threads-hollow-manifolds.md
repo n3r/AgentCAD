@@ -61,3 +61,7 @@ modeled in contact with the male threads (see the fasteners example's
 - `exhaust_manifold` skips its junction blend below Ø30 primaries: the
   OCCT fillet on that junction crashes the worker (a segfault, not a
   catchable failure) at small tube sizes.
+- Merge with main (post-roadmap): the per-solid pairwise check is extracted
+  as `worker.pairwise_interference` and the motion sweep's per-sample
+  collision loop now uses it too — its raw compound-`&` had the same
+  correctness bug, newly reachable via the engine's hardware compounds.

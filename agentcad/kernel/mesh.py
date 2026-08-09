@@ -27,12 +27,16 @@ from OCP.BRep import BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Curve
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.GCPnts import GCPnts_TangentialDeflection
-from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_Orientation
-from OCP.TopExp import TopExp, TopExp_Explorer
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_Orientation
+from OCP.TopExp import TopExp
 from OCP.TopLoc import TopLoc_Location
 from OCP.TopTools import TopTools_IndexedMapOfShape
 from OCP.TopoDS import TopoDS
 
+# Face iteration order is the contract picking/push-pull relies on; the ONE
+# source of truth lives in the toolkit (agentcad.toolkit.facemod) so the
+# triangle->face sidecar, face_info, and push_face can never disagree.
+from ..toolkit.facemod import iter_ocp_faces
 from . import acm
 
 ANGULAR_DEFLECTION = 0.35  # radians, for both meshing and edge discretization
@@ -105,19 +109,25 @@ def _crease_mesh_normals(pts, idx, crease_angle=CREASE_ANGLE):
     return out_pos, out_nrm, out_idx
 
 
-def tessellate(ocp_shape, tolerance: float = 0.1) -> bytes:
-    """Triangulate *ocp_shape* (a TopoDS_Shape) and return an ACM1 buffer."""
+def _tessellate_impl(ocp_shape, tolerance: float) -> tuple[bytes, bytes]:
+    """Shared triangulation core: (ACM1 buffer, triangle->face-index buffer).
+
+    The second buffer holds one little-endian u32 per triangle: the ordinal of
+    the B-rep face the triangle belongs to, counted in the SAME
+    ``TopExp_Explorer(FACE)`` order the tessellation loop below walks (see
+    ``agentcad.toolkit.facemod`` — the source of truth for that order). Faces
+    that yield no triangulation still consume an ordinal, so indices always
+    line up with ``faces_in_mesh_order``.
+    """
     BRepMesh_IncrementalMesh(ocp_shape, tolerance, False, ANGULAR_DEFLECTION, True)
 
     all_positions: list[np.ndarray] = []
     all_normals: list[np.ndarray] = []
     all_indices: list[np.ndarray] = []
+    all_face_ids: list[np.ndarray] = []
     base = 0
 
-    exp = TopExp_Explorer(ocp_shape, TopAbs_FACE)
-    while exp.More():
-        face = TopoDS.Face_s(exp.Current())
-        exp.Next()
+    for face_ordinal, face in enumerate(iter_ocp_faces(ocp_shape)):
         loc = TopLoc_Location()
         tri = BRep_Tool.Triangulation_s(face, loc)
         if tri is None:
@@ -154,19 +164,36 @@ def tessellate(ocp_shape, tolerance: float = 0.1) -> bytes:
         all_positions.append(f_pos)
         all_normals.append(f_nrm)
         all_indices.append(f_idx + base)
+        all_face_ids.append(np.full(len(f_idx), face_ordinal, dtype="<u4"))
         base += len(f_pos)
 
     if base == 0:
         positions = np.zeros((0, 3))
         normals = np.zeros((0, 3))
         indices = np.zeros((0, 3), dtype=np.int64)
+        face_ids = np.zeros(0, dtype="<u4")
     else:
         positions = np.vstack(all_positions)
         normals = np.vstack(all_normals)
         indices = np.vstack(all_indices)
+        face_ids = np.concatenate(all_face_ids)
 
     edge_lengths, edge_points = _discretize_edges(ocp_shape, tolerance)
-    return acm.pack(positions, normals, indices, edge_lengths, edge_points)
+    buffer = acm.pack(positions, normals, indices, edge_lengths, edge_points)
+    return buffer, np.ascontiguousarray(face_ids, dtype="<u4").tobytes()
+
+
+def tessellate(ocp_shape, tolerance: float = 0.1) -> bytes:
+    """Triangulate *ocp_shape* (a TopoDS_Shape) and return an ACM1 buffer."""
+    buffer, _face_ids = _tessellate_impl(ocp_shape, tolerance)
+    return buffer
+
+
+def tessellate_with_faces(ocp_shape, tolerance: float = 0.1) -> tuple[bytes, bytes]:
+    """Like :func:`tessellate` (byte-identical ACM1 buffer) plus a sidecar
+    buffer of one little-endian u32 per triangle: the mesh-order B-rep face
+    index that triangle belongs to."""
+    return _tessellate_impl(ocp_shape, tolerance)
 
 
 def _discretize_edges(ocp_shape, tolerance: float) -> tuple[np.ndarray, np.ndarray]:

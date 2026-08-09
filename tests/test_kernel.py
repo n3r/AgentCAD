@@ -2,7 +2,7 @@ import pytest
 
 from agentcad.kernel.client import KernelClient, KernelError
 
-from .conftest import BOX_SCRIPT, PLATE_SCRIPT
+from .conftest import BOX_SCRIPT, NUMERIC_ENUM_SCRIPT, PLATE_SCRIPT, TYPED_SCRIPT
 
 AL_DENSITY = 2.70
 
@@ -222,6 +222,149 @@ def test_determinism_identical_mesh_bytes(kernel, tmp_path):
     _, mesh_a = build(kernel, tmp_path / "a", BOX_SCRIPT)
     _, mesh_b = build(kernel, tmp_path / "b", BOX_SCRIPT)
     assert mesh_a.read_bytes() == mesh_b.read_bytes()
+
+
+# ------------------------------------------------------------- typed params
+
+
+def test_typed_params_inspect_normalizes_spec(kernel):
+    spec = kernel.request("inspect", {"script": TYPED_SCRIPT})["params_spec"]
+    assert spec["size"]["type"] == "number"
+    assert "choices" not in spec["size"] and "max_len" not in spec["size"]
+    assert spec["holes"]["type"] == "bool"
+    assert spec["holes"]["default"] is True
+    assert spec["grade"]["type"] == "enum"
+    assert spec["grade"]["choices"] == ["std", "wide"]
+    assert spec["label"]["type"] == "string"
+    assert spec["label"]["max_len"] == 10
+    assert spec["n"]["type"] == "int"
+    assert spec["n"]["min"] == 1 and spec["n"]["max"] == 4
+
+
+def test_typed_params_drive_geometry(kernel, tmp_path):
+    withholes, _ = build(kernel, tmp_path, TYPED_SCRIPT)
+    solid, _ = build(kernel, tmp_path, TYPED_SCRIPT, params={"holes": False})
+    assert solid["metrics"]["volume_mm3"] > withholes["metrics"]["volume_mm3"]
+
+    wide, _ = build(kernel, tmp_path, TYPED_SCRIPT, params={"grade": "wide"})
+    bbox = wide["metrics"]["bbox"]
+    assert bbox["max"][0] - bbox["min"][0] == pytest.approx(40.0, abs=0.01)
+    assert bbox["max"][1] - bbox["min"][1] == pytest.approx(20.0, abs=0.01)
+
+
+def test_typed_params_int_coerces_integral_float(kernel, tmp_path):
+    result, _ = build(kernel, tmp_path, TYPED_SCRIPT, params={"n": 3.0})
+    assert result["metrics"]["is_valid"] is True
+    assert result["warnings"] == []
+
+
+def test_typed_params_int_clamp_warns(kernel, tmp_path):
+    result, _ = build(kernel, tmp_path, TYPED_SCRIPT, params={"n": 9})
+    assert any("clamped" in w for w in result["warnings"])
+    assert result["metrics"]["is_valid"] is True
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"n": 3.5},          # int must be integral
+        {"holes": "yes"},    # bool takes only a real bool
+        {"label": "x" * 11}, # string over max_len
+    ],
+    ids=["int-fractional", "bool-string", "string-too-long"],
+)
+def test_typed_params_bad_override_is_contract_error(kernel, tmp_path, params):
+    with pytest.raises(KernelError) as exc_info:
+        build(kernel, tmp_path, TYPED_SCRIPT, params=params)
+    assert exc_info.value.type == "contract_error"
+
+
+def test_typed_params_numeric_enum_canonicalizes_to_declared_choice(kernel, tmp_path):
+    # 3.0 == the declared int choice 3, so it must resolve — and it must reach
+    # build(p) as the declared int (range(p.n) rejects a float).
+    exact, _ = build(kernel, tmp_path / "a", NUMERIC_ENUM_SCRIPT, params={"n": 3})
+    floaty, _ = build(kernel, tmp_path / "b", NUMERIC_ENUM_SCRIPT, params={"n": 3.0})
+    assert floaty["metrics"]["is_valid"] is True
+    assert floaty["metrics"]["volume_mm3"] == pytest.approx(
+        exact["metrics"]["volume_mm3"], rel=1e-9
+    )
+
+
+def test_typed_params_numeric_enum_still_rejects_bool(kernel, tmp_path):
+    # True == 1 numerically, but bools are never valid enum members.
+    with pytest.raises(KernelError) as exc_info:
+        build(kernel, tmp_path, NUMERIC_ENUM_SCRIPT, params={"n": True})
+    assert exc_info.value.type == "contract_error"
+
+
+def test_typed_params_inspect_output_round_trips_as_params(kernel, tmp_path):
+    # handle_inspect emits explicit None for absent min/max/unit; feeding its
+    # own normalized spec back in as PARAMS must be legal (None == absent).
+    spec = kernel.request("inspect", {"script": TYPED_SCRIPT})["params_spec"]
+    script = (
+        "import build123d as b3d\n"
+        f"PARAMS = {spec!r}\n"
+        "def build(p):\n"
+        "    return b3d.Box(10, 10, 10)\n"
+    )
+    respec = kernel.request("inspect", {"script": script})["params_spec"]
+    assert respec == spec
+    result, _ = build(kernel, tmp_path, script, params={"label": "hi"})
+    assert result["metrics"]["is_valid"] is True
+
+
+def test_typed_params_none_spec_fields_treated_as_absent(kernel, tmp_path):
+    script = (
+        "import build123d as b3d\n"
+        "PARAMS = {\n"
+        '    "flip": {"default": True, "type": "bool", "min": None, "max": None,'
+        ' "unit": None, "description": "x"},\n'
+        '    "tag": {"default": "a", "type": "string", "max_len": None,'
+        ' "description": "x"},\n'
+        "}\n"
+        "def build(p):\n"
+        "    return b3d.Box(10, 10, 10)\n"
+    )
+    spec = kernel.request("inspect", {"script": script})["params_spec"]
+    assert spec["tag"]["max_len"] == 200  # None means "use the default"
+    result, _ = build(kernel, tmp_path, script, params={"tag": "hello"})
+    assert result["metrics"]["is_valid"] is True
+
+
+def test_typed_params_enum_nonmember_reports_choices(kernel, tmp_path):
+    with pytest.raises(KernelError) as exc_info:
+        build(kernel, tmp_path, TYPED_SCRIPT, params={"grade": "narrow"})
+    err = exc_info.value
+    assert err.type == "contract_error"
+    assert err.details.get("choices") == ["std", "wide"] or "std" in err.message
+
+
+def _one_param_script(params_entry: str) -> str:
+    return (
+        "import build123d as b3d\n"
+        f"PARAMS = {{{params_entry}}}\n"
+        "def build(p):\n"
+        "    return b3d.Box(10, 10, 10)\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        '"g": {"default": "a", "type": "enum"}',                    # enum w/o choices
+        '"g": {"default": "a", "type": "enum", "choices": []}',     # empty choices
+        '"f": {"default": 1, "type": "bool"}',                      # bool default 1
+        '"f": {"default": True, "type": "bool", "min": 0}',         # min on a bool
+        '"s": {"default": 5, "type": "string"}',                    # string default 5
+        '"x": {"default": 1.0, "type": "flag"}',                    # unknown type
+    ],
+    ids=["enum-no-choices", "enum-empty", "bool-int-default",
+         "bool-with-min", "string-num-default", "unknown-type"],
+)
+def test_typed_params_bad_spec_is_contract_error(kernel, tmp_path, entry):
+    with pytest.raises(KernelError) as exc_info:
+        build(kernel, tmp_path, _one_param_script(entry))
+    assert exc_info.value.type == "contract_error"
 
 
 def test_nested_compound_volume_sums_solids(kernel, tmp_path):

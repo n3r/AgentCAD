@@ -11,10 +11,15 @@ import hashlib
 import json
 import math
 import queue
+import re
+import sys
 import threading
 from pathlib import Path
+from typing import Callable
 
 from ..kernel.client import KernelClient, KernelError
+from .history import ProjectHistory
+from .locks import TurnLock, current_client_id
 from .materials import MATERIALS, get_material
 from .model import InstanceSpec, NotFoundError, ValidationError, validate_vec3
 from .project import ProjectStore
@@ -24,11 +29,27 @@ MESH_TOLERANCE = 0.1
 EXPORT_TOLERANCE = 0.05
 EXPORT_FORMATS = ("step", "stl", "3mf")
 
+# Coarse preview tier for progressive mesh loading. Every kernel build is
+# asked for the tier; the WORKER writes it only when the full mesh's triangle
+# count exceeds the threshold, so small parts never pay for it. Tiers live as
+# <key>.lod1.acm sidecars next to the full <key>.acm (same ACM1 format).
+MESH_LOD_TOLERANCE = 0.8
+LOD_TRIANGLE_THRESHOLD = 150_000
+
+# A tier suffix names a cache sidecar file, so it must stay a plain token
+# (never a path fragment) no matter what a URL query hands us.
+_LOD_SUFFIX_RE = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
+
 
 class EventBus:
     def __init__(self) -> None:
         self._subscribers: list[queue.Queue] = []
         self._lock = threading.Lock()
+        # Optional pre-fan-out hook, invoked synchronously with each event
+        # before it reaches subscribers. The service uses it to snapshot
+        # project history on every project_changed publish — the one seam
+        # that sees every mutation path (service methods AND pack tools).
+        self.on_publish: Callable[[dict], None] | None = None
 
     def subscribe(self) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=256)
@@ -42,6 +63,13 @@ class EventBus:
                 self._subscribers.remove(q)
 
     def publish(self, event: dict) -> None:
+        hook = self.on_publish
+        if hook is not None:
+            try:
+                hook(event)
+            except Exception as exc:  # noqa: BLE001 — a hook bug must never
+                # break event delivery (or the mutation that published).
+                print(f"[bus] on_publish hook failed: {exc}", file=sys.stderr)
         with self._lock:
             subscribers = list(self._subscribers)
         for q in subscribers:
@@ -70,6 +98,41 @@ class AgentCADService:
         self._spec_cache: dict[str, dict] = {}
         # Seams the v2 feature packs replace; defaults preserve v1 behavior.
         self.materials = _DefaultMaterialResolver()
+        # Multi-user turn locking: every persistent store write is checked
+        # against the per-project turn lock under the caller's identity.
+        # With no lock held the guard is a no-op (full backward compat).
+        self.turnlock = TurnLock()
+        self.store.write_guard = (
+            lambda proj: self.turnlock.check(proj, current_client_id())
+        )
+        # Git-backed project history: snapshot on every project_changed
+        # publish. Hooking the bus (not the mutating methods) means pack
+        # mutations — mates/materials/PMI/solids, which write through the
+        # store and publish themselves — are covered by the same seam.
+        self.history = ProjectHistory()
+        bus.on_publish = self._snapshot_on_event
+
+    def _snapshot_on_event(self, event: dict) -> None:
+        """EventBus pre-fan-out hook: commit a history snapshot for each
+        project_changed publish. Every mutation path publishes AFTER its
+        write is persisted, so the snapshot always sees the new state.
+        Suppressed while project_restore runs — it commits its own linear
+        'restore' entry (see tools_history)."""
+        if event.get("type") != "project_changed" or self.history.in_restore:
+            return
+        proj = event.get("project")
+        if not proj:
+            return
+        try:
+            path = self.store.path_of(proj)
+        except NotFoundError:
+            return
+        message = "project_changed"
+        if event.get("part"):
+            message += f" {event['part']}"
+        if event.get("reason"):
+            message += f" ({event['reason']})"
+        self.history.snapshot(path, message)
 
     def _resolved_instances(self, proj: str):
         """Assembly instances with any declarative mates resolved to concrete
@@ -161,7 +224,9 @@ class AgentCADService:
                 proj, part_id, label or part_id, material,
                 script or DEFAULT_PART_SCRIPT, kind=kind, source=source,
             )
-        self.bus.publish({"type": "project_changed", "project": proj})
+        self.bus.publish(
+            {"type": "project_changed", "project": proj, "part": part_id}
+        )
         return self.get_part(proj, part_id)
 
     def get_part(self, proj: str, part_id: str) -> dict:
@@ -177,6 +242,7 @@ class AgentCADService:
             "params": record.params,
             "kind": record.kind,
             "source": record.source,
+            "solid_materials": record.solid_materials,
             "script": script,
             "params_spec": None if is_reference else self._params_spec(script),
             "status": {
@@ -204,20 +270,26 @@ class AgentCADService:
                 self.store.update_part_entry(
                     proj, part_id, label=label, material=material
                 )
-        self.bus.publish({"type": "project_changed", "project": proj})
+        self.bus.publish(
+            {"type": "project_changed", "project": proj, "part": part_id}
+        )
         return self._rebuild(proj, part_id)
 
     def set_params(self, proj: str, part_id: str, values: dict) -> dict:
         """Set parameter overrides. A value of None removes the override.
 
-        Names are validated against the script's PARAMS spec *before* anything
-        is written, so a typo can never poison the manifest (spec §8).
+        Names and types are validated against the script's PARAMS spec *before*
+        anything is written, so a bad call can never poison the manifest
+        (spec §8). Numeric values are stored raw — the worker clamps at build.
         """
         for name, value in values.items():
             if value is None:
                 continue
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValidationError(f"parameter {name!r} must be a number")
+            if not isinstance(value, (int, float, bool, str)):
+                raise ValidationError(
+                    f"parameter {name!r} must be a JSON scalar "
+                    "(number, bool, or string)"
+                )
         with self._lock:
             record = self.store.get_part(proj, part_id)
             script = self.store.read_script(proj, part_id)
@@ -238,15 +310,22 @@ class AgentCADService:
                 if value is None:
                     merged.pop(name, None)
                 else:
-                    merged[name] = float(value)
+                    merged[name] = _normalize_param(name, spec[name], value)
             self.store.update_part_entry(proj, part_id, params=merged)
+        # Param overrides are authored state persisted in the manifest, so
+        # they publish (and history-snapshot) like every other mutation.
+        self.bus.publish(
+            {"type": "project_changed", "project": proj, "part": part_id}
+        )
         return self._rebuild(proj, part_id)
 
     def delete_part(self, proj: str, part_id: str) -> None:
         with self._lock:
             self.store.remove_part(proj, part_id)
             self._status.pop((proj, part_id), None)
-        self.bus.publish({"type": "project_changed", "project": proj})
+        self.bus.publish(
+            {"type": "project_changed", "project": proj, "part": part_id}
+        )
 
     def get_metrics(self, proj: str, part_id: str) -> dict:
         self.store.get_part(proj, part_id)
@@ -255,15 +334,25 @@ class AgentCADService:
             raise KernelErrorFromResult(result)
         return result["metrics"]
 
-    def mesh_info(self, proj: str, part_id: str) -> dict:
+    def mesh_info(self, proj: str, part_id: str, lod: str | None = None) -> dict:
         """Built mesh path + cache key, from the build result (no racy re-read
-        of the shared status dict — a concurrent delete cannot KeyError us)."""
+        of the shared status dict — a concurrent delete cannot KeyError us).
+
+        When *lod* names an existing sidecar tier (``<key>.<lod>.acm``) that
+        tier's path is returned with ``lod`` set; otherwise the full-resolution
+        mesh with ``lod: None`` (small parts have no tier — that is the normal
+        fallback, not an error)."""
         self.store.get_part(proj, part_id)
         result = self._ensure_built(proj, part_id)
         if not result["ok"]:
             raise KernelErrorFromResult(result)
         key = result["cache_key"]
-        return {"path": self.store.cache_dir(proj) / f"{key}.acm", "key": key}
+        cache = self.store.cache_dir(proj)
+        if lod and _LOD_SUFFIX_RE.match(lod):
+            tier = cache / f"{key}.{lod}.acm"
+            if tier.is_file():
+                return {"path": tier, "key": key, "lod": lod}
+        return {"path": cache / f"{key}.acm", "key": key, "lod": None}
 
     def ensure_mesh(self, proj: str, part_id: str) -> Path:
         return self.mesh_info(proj, part_id)["path"]
@@ -437,24 +526,38 @@ class AgentCADService:
             return f"ref:{record.source}:missing"
         return self.store.read_script(proj, record.id)
 
+    def _solid_densities(self, proj: str, record) -> dict[str, float]:
+        """Resolved density per ``solid_materials`` key (label or index string).
+        Empty for reference parts and parts without per-solid materials."""
+        if record.kind != "script" or not record.solid_materials:
+            return {}
+        return {
+            key: self.material_density(proj, material_id)
+            for key, material_id in record.solid_materials.items()
+        }
+
     def _cache_key_for(self, proj: str, record) -> str:
         return self._cache_key(
             self._content_signature(proj, record),
             record.params,
             self.material_density(proj, record.material),
+            self._solid_densities(proj, record),
         )
 
-    def _cache_key(self, content: str, params: dict, density: float) -> str:
-        payload = json.dumps(
-            {
-                "content": content,
-                "params": {k: params[k] for k in sorted(params)},
-                "density": density,
-                "tolerance": MESH_TOLERANCE,
-                "format": "acm1",
-            },
-            sort_keys=True,
-        )
+    def _cache_key(self, content: str, params: dict, density: float,
+                   densities: dict | None = None) -> str:
+        payload_dict = {
+            "content": content,
+            "params": {k: params[k] for k in sorted(params)},
+            "density": density,
+            "tolerance": MESH_TOLERANCE,
+            "format": "acm1",
+        }
+        # Only added when per-solid densities exist, so cache keys of parts
+        # without solid_materials stay byte-identical to the pre-feature keys.
+        if densities:
+            payload_dict["densities"] = {k: densities[k] for k in sorted(densities)}
+        payload = json.dumps(payload_dict, sort_keys=True)
         return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
     def _ensure_built(self, proj: str, part_id: str) -> dict:
@@ -467,6 +570,7 @@ class AgentCADService:
                 if mesh.is_file() and current == status["cache_key"]:
                     return {"ok": True, "metrics": status["metrics"],
                             "warnings": status.get("warnings", []),
+                            "lods": status.get("lods", []),
                             "cache_key": status["cache_key"]}
             elif current == status["cache_key"]:
                 return {"ok": False, "error": status["error"]}
@@ -486,7 +590,7 @@ class AgentCADService:
 
         if mesh_path.is_file() and metrics_path.is_file():
             try:
-                stored = json.loads(metrics_path.read_text())
+                stored = json.loads(metrics_path.read_text(encoding="utf-8"))
                 cached_metrics = stored["metrics"]
             except (json.JSONDecodeError, KeyError, OSError):
                 # A crash mid-write left a corrupt sidecar: discard it and
@@ -501,6 +605,7 @@ class AgentCADService:
                     "cache_key": key,
                     "metrics": cached_metrics,
                     "warnings": stored.get("warnings", []),
+                    "lods": stored.get("lods", []),
                     "error": None,
                 }
                 self.bus.publish(
@@ -514,6 +619,7 @@ class AgentCADService:
                 )
                 return {"ok": True, "metrics": cached_metrics,
                         "warnings": stored.get("warnings", []),
+                        "lods": stored.get("lods", []),
                         "cache_key": key}
 
         if record.kind == "reference":
@@ -535,6 +641,13 @@ class AgentCADService:
                 "mesh_path": str(mesh_path),
                 "tolerance": MESH_TOLERANCE,
             }
+            solid_densities = self._solid_densities(proj, record)
+            if solid_densities:
+                build_params["densities"] = solid_densities
+        # Always request the preview tier; the worker writes it only when the
+        # full mesh exceeds the threshold (one round-trip, no service state).
+        build_params["lod_tolerances"] = {"lod1": MESH_LOD_TOLERANCE}
+        build_params["lod_min_triangles"] = LOD_TRIANGLE_THRESHOLD
         try:
             result = self.kernel.request(
                 method, build_params, timeout_s=300.0, affinity=part_id
@@ -560,15 +673,19 @@ class AgentCADService:
 
         metrics = result["metrics"]
         warnings = result.get("warnings", [])
+        lods = result.get("lods", [])
         ProjectStore._atomic_write(
             metrics_path,
-            json.dumps({"metrics": metrics, "warnings": warnings}).encode(),
+            json.dumps(
+                {"metrics": metrics, "warnings": warnings, "lods": lods}
+            ).encode(),
         )
         self._status[(proj, part_id)] = {
             "state": "ok",
             "cache_key": key,
             "metrics": metrics,
             "warnings": warnings,
+            "lods": lods,
             "error": None,
         }
         self.bus.publish(
@@ -581,7 +698,7 @@ class AgentCADService:
             }
         )
         return {"ok": True, "metrics": metrics, "warnings": warnings,
-                "cache_key": key}
+                "lods": lods, "cache_key": key}
 
     def _params_spec(self, script: str) -> dict | None:
         key = hashlib.sha256(script.encode()).hexdigest()
@@ -617,6 +734,47 @@ class KernelErrorFromResult(KernelError):
             err.get("message", "build failed"),
             err.get("details", {}),
         )
+
+
+def _normalize_param(name: str, entry: dict, value):
+    """Validate one override against its (worker-normalized) spec entry and
+    normalize its Python type. Out-of-range numbers are NOT clamped here —
+    the worker clamps at build time with a warning."""
+    ptype = entry.get("type") or "number"
+    if ptype == "bool":
+        if not isinstance(value, bool):
+            raise ValidationError(f"parameter {name!r} must be a bool")
+        return value
+    if ptype == "enum":
+        choices = entry.get("choices") or []
+        # Canonicalize to the declared choice so the manifest stores the
+        # author-declared value (int 3 for a caller's 3.0, not the raw float).
+        # bools are never members: True == 1 would match a numeric choice.
+        matched = (
+            None
+            if isinstance(value, bool)
+            else next((c for c in choices if value == c), None)
+        )
+        if matched is None:
+            raise ValidationError(
+                f"parameter {name!r} must be one of the declared choices",
+                {"choices": choices},
+            )
+        return matched
+    if ptype == "string":
+        if not isinstance(value, str):
+            raise ValidationError(f"parameter {name!r} must be a string")
+        max_len = entry.get("max_len") or 200
+        if len(value) > max_len:
+            raise ValidationError(f"parameter {name!r} exceeds max_len {max_len}")
+        return value
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationError(f"parameter {name!r} must be a number")
+    if ptype == "int":
+        if isinstance(value, float) and not value.is_integer():
+            raise ValidationError(f"parameter {name!r} must be an integer")
+        return int(value)
+    return float(value)
 
 
 def _bbox_corners(bbox: dict) -> list[list[float]]:

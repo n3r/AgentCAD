@@ -5,11 +5,14 @@
 // instance is positioned by a mate it shows a read-only note instead: the
 // transform is derived, so the gizmo and fields would lie.
 
+import { api } from "./api.js";
 import { state, setState, onKeys } from "./state.js";
+import * as viewport from "./viewport.js";
 
 let actions = null;
 let panel = null;
 let bodyEl = null;
+let sweeping = false; // a motion sweep animation is playing
 
 // Rebuild the panel structure only when identity/mate/mode changes; otherwise
 // just refresh the numeric values (so typing / a live drag isn't clobbered).
@@ -81,6 +84,7 @@ function build(inst, mated) {
       `<div class="placement-hint">Its transform is derived from the mate. ` +
       `Clear the mate to place it by hand.</div>`;
     bodyEl.appendChild(note);
+    bodyEl.appendChild(motionRow(inst));
     return;
   }
 
@@ -129,6 +133,96 @@ function build(inst, mated) {
     `<span class="placement-scale-glyph" aria-hidden="true">⇲</span>` +
     `<span>No scale handle — resize via the part's <b>Parameters</b>.</span>`;
   bodyEl.appendChild(scale);
+}
+
+// Motion: drive the mate's DOF through an angle range and watch the sweep on
+// stage. v1 driver UI — angle only, fixed sample count.
+function motionRow(inst) {
+  const wrap = document.createElement("div");
+  wrap.className = "placement-motion";
+  wrap.appendChild(rowLabel("Motion", "deg"));
+
+  const row = document.createElement("div");
+  row.className = "placement-motion-row";
+  const from = motionInput("sweep from angle", "0");
+  const to = motionInput("sweep to angle", "90");
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "placement-sweep-btn";
+  btn.textContent = "Sweep";
+  btn.disabled = sweeping;
+  btn.addEventListener("click", () => runSweep(inst, from, to));
+  row.append(from, to, btn);
+  wrap.appendChild(row);
+  return wrap;
+}
+
+// The panel may rebuild mid-sweep (selection change), so re-enable whatever
+// sweep button is live in the DOM rather than a possibly detached one.
+function setSweepEnabled(on) {
+  sweeping = !on;
+  const btn = bodyEl && bodyEl.querySelector(".placement-sweep-btn");
+  if (btn) btn.disabled = !on;
+}
+
+function motionInput(label, value) {
+  const inp = document.createElement("input");
+  inp.type = "number";
+  inp.step = "any";
+  inp.className = "placement-num";
+  inp.value = value;
+  inp.setAttribute("aria-label", label);
+  return inp;
+}
+
+async function runSweep(inst, fromEl, toEl) {
+  if (sweeping) return;
+  const from = parseFloat(fromEl.value);
+  const to = parseFloat(toEl.value);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) {
+    actions.toast("Enter numeric from/to angles first", "error");
+    return;
+  }
+  setSweepEnabled(false);
+  let res;
+  try {
+    res = await api.callTool("sweep_motion", {
+      project: state.projectName,
+      instance: inst.id,
+      angle_range: [from, to],
+      samples: 16,
+    });
+  } catch (err) {
+    setSweepEnabled(true);
+    actions.toast(`Sweep failed: ${err.message}`, "error");
+    return;
+  }
+  if (res.error) {
+    setSweepEnabled(true);
+    actions.toast(`Sweep failed: ${res.error.message || "error"}`, "error");
+    return;
+  }
+
+  // Snapshot the real assembly transforms so the stage snaps back afterwards.
+  const original = new Map();
+  for (const i of (state.assembly && state.assembly.instances) || []) {
+    original.set(i.id, { position: i.position, rotationDeg: i.rotation_deg });
+  }
+  for (const frame of res.frames || []) {
+    for (const [id, t] of Object.entries(frame)) {
+      viewport.setInstanceTransform(id, t.position, t.rotation_deg);
+    }
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  for (const [id, t] of original) {
+    viewport.setInstanceTransform(id, t.position, t.rotationDeg);
+  }
+  setSweepEnabled(true);
+  if (res.clear) {
+    actions.toast("Motion clear through range");
+  } else {
+    actions.toast(`Collision at ${res.first_collision}°`, "error");
+  }
 }
 
 function rowLabel(text, unit) {

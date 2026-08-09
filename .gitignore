@@ -1,4 +1,6 @@
 .venv/
+.buildvenv/
+build/
 __pycache__/
 *.pyc
 .cache/
@@ -7,3 +9,4 @@ exports/
 .pytest_cache/
 node_modules/
 .DS_Store
+.tiden/

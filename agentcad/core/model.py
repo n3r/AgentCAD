@@ -32,9 +32,12 @@ class ConflictError(AppError):
 @dataclass
 class ParamSpec:
     name: str
-    default: float
-    min: float | None = None
-    max: float | None = None
+    default: float | int | bool | str
+    type: str = "number"  # "number" | "int" | "bool" | "enum" | "string"
+    min: float | None = None  # number/int only
+    max: float | None = None  # number/int only
+    choices: list[str | float] | None = None  # enum only
+    max_len: int | None = None  # string only
     unit: str | None = None
     description: str | None = None
 
@@ -44,9 +47,10 @@ class PartRecord:
     id: str
     label: str
     material: str
-    params: dict[str, float] = field(default_factory=dict)
+    params: dict[str, float | int | bool | str] = field(default_factory=dict)
     kind: str = "script"  # "script" | "reference"
     source: str | None = None  # reference parts only: project-relative import path
+    solid_materials: dict[str, str] | None = None  # solid label/index -> material id
 
     def to_manifest(self) -> dict:
         data = {
@@ -59,6 +63,8 @@ class PartRecord:
             data["kind"] = self.kind
         if self.source is not None:
             data["source"] = self.source
+        if self.solid_materials:
+            data["solid_materials"] = self.solid_materials
         return data
 
 
