@@ -169,6 +169,18 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
 - Reproduce a bug as a failing test before fixing (see the mesh-normals fix and
   its `tests/test_mesh.py` regression tests for the pattern).
 
+## Changelog — REQUIRED for every commit
+
+**Every commit must include a detailed changelog entry under
+`docs/changelog/`.** Stage it *with* the change so the entry lands in the same
+commit. One file per commit, named `NNNN-<slug>.md` where `NNNN` is the next
+zero-padded sequence number (highest existing + 1) and `<slug>` is a short
+kebab-case summary. Follow the template in `docs/changelog/README.md`:
+a header (sequence, date, one-line summary), a **Summary** paragraph, a
+**Changes** list (grounded in what the diff actually does, not just the commit
+subject), a **Files** list, and **Notes** (rationale, gotchas, follow-ups).
+Write the changelog from the real diff, not from memory.
+
 ## Definition of done for a change
 
 1. `make test` green (state the count; no unexplained skips).
@@ -176,7 +188,9 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
 3. Docs updated if the surface changed (README, `docs/*.md`, and the
    `CHEATSHEET` in `templates.py` for authoring-facing changes).
 4. For UI changes: verify in a real browser (screenshot), zero console errors.
-5. Commit messages end with the `Co-Authored-By` trailer. Don't commit
+5. **A `docs/changelog/NNNN-<slug>.md` entry is written and staged with the
+   change** (see the Changelog section above).
+6. Commit messages end with the `Co-Authored-By` trailer. Don't commit
    server-generated manifest reformatting churn or the shared venv.
 
 ## Where to read more

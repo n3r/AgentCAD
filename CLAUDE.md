@@ -51,10 +51,18 @@ This project is built skill-first. Use the Superpowers process skills:
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests
   `importorskip` (suite is green without the `[fem]` extra).
 
+## Changelog — required every commit
+
+Every commit must include a detailed changelog entry staged with the change:
+`docs/changelog/NNNN-<slug>.md` (next zero-padded sequence number), following
+the template in `docs/changelog/README.md`. Write it from the actual diff. See
+the "Changelog" section of `AGENTS.md` for the full rule.
+
 ## Definition of done
 
 `make test` green (cite the count) · new behavior/bug has a test · docs updated
-if the surface changed · UI changes verified in a real browser · commits end
+if the surface changed · UI changes verified in a real browser · **a
+`docs/changelog/NNNN-<slug>.md` entry is staged with the change** · commits end
 with the `Co-Authored-By: Claude <noreply@anthropic.com>` trailer · don't
 commit manifest-reformatting churn or the venv.
 
