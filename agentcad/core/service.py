@@ -590,7 +590,7 @@ class AgentCADService:
 
         if mesh_path.is_file() and metrics_path.is_file():
             try:
-                stored = json.loads(metrics_path.read_text())
+                stored = json.loads(metrics_path.read_text(encoding="utf-8"))
                 cached_metrics = stored["metrics"]
             except (json.JSONDecodeError, KeyError, OSError):
                 # A crash mid-write left a corrupt sidecar: discard it and

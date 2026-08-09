@@ -95,6 +95,8 @@ class ProjectHistory:
                 env=env,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",  # git output is UTF-8; never the cp1252 locale
+                errors="replace",
                 timeout=_GIT_TIMEOUT_S,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:

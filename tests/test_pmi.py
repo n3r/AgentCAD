@@ -115,7 +115,7 @@ def test_set_get_clear_roundtrip(demo, registry):
 
     def on_disk_entry():
         manifest = json.loads(
-            (demo.store.path_of("demo") / "project.json").read_text())
+            (demo.store.path_of("demo") / "project.json").read_text(encoding="utf-8"))
         return next(p for p in manifest["parts"] if p["id"] == "flange")
 
     entry = on_disk_entry()
@@ -159,7 +159,7 @@ def test_drawing_renders_pmi_callouts(demo, registry):
     result = registry.call("generate_drawing", {
         "project": "demo", "part_id": "flange", "format": "svg"})
     assert "error" not in result, result
-    svg = (demo.store.exports_dir("demo") / "flange_drawing.svg").read_text()
+    svg = (demo.store.exports_dir("demo") / "flange_drawing.svg").read_text(encoding="utf-8")
     # linear width tolerance (plus == minus renders as ±)
     assert "±0.10" in svg
     # matched hole-group diameter callout gains the asymmetric suffix

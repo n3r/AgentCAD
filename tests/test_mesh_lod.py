@@ -178,7 +178,7 @@ def test_metrics_sidecar_roundtrips_lods(kernel, tmp_path, monkeypatch):
 
     key = svc._ensure_built("demo", "box")["cache_key"]
     sidecar = json.loads(
-        (svc.store.cache_dir("demo") / f"{key}.metrics.json").read_text()
+        (svc.store.cache_dir("demo") / f"{key}.metrics.json").read_text(encoding="utf-8")
     )
     assert sidecar["lods"] == ["lod1"]
     # Forget in-memory status: the cached-rebuild path must keep the list.

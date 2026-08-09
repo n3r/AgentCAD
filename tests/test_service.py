@@ -120,7 +120,7 @@ def typed(service):
 
 def _manifest_params(service, proj, part_id):
     manifest = json.loads(
-        (service.store.path_of(proj) / "project.json").read_text()
+        (service.store.path_of(proj) / "project.json").read_text(encoding="utf-8")
     )
     return next(p for p in manifest["parts"] if p["id"] == part_id)["params"]
 
@@ -175,11 +175,11 @@ def test_corrupt_metrics_sidecar_recovers(demo):
     demo.get_metrics("demo", "box")  # ensure built
     key = demo._status[("demo", "box")]["cache_key"]
     sidecar = demo.store.cache_dir("demo") / f"{key}.metrics.json"
-    sidecar.write_text("{truncated")
+    sidecar.write_text("{truncated", encoding="utf-8")
     demo._status.clear()  # simulate a fresh server process
     metrics = demo.get_metrics("demo", "box")  # must rebuild, not crash
     assert metrics["volume_mm3"] == pytest.approx(1000.0, rel=1e-6)
-    assert "truncated" not in sidecar.read_text()
+    assert "truncated" not in sidecar.read_text(encoding="utf-8")
 
 
 def test_project_changed_published_on_part_crud(demo):

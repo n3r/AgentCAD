@@ -89,7 +89,7 @@ def test_set_solid_materials_changes_mass_and_manifest(demo, tmp_path):
     )
     # persisted on disk
     manifest = json.loads(
-        (tmp_path / "projects" / "demo" / "project.json").read_text()
+        (tmp_path / "projects" / "demo" / "project.json").read_text(encoding="utf-8")
     )
     entry = next(p for p in manifest["parts"] if p["id"] == "duo")
     assert entry["solid_materials"] == {"lid": "steel_a36"}
@@ -119,7 +119,7 @@ def test_empty_dict_clears_solid_materials(demo, tmp_path):
     assert result["solid_materials"] is None
     assert result["metrics"]["mass_g"] == pytest.approx(2 * 1000.0 * AL / 1000.0)
     manifest = json.loads(
-        (tmp_path / "projects" / "demo" / "project.json").read_text()
+        (tmp_path / "projects" / "demo" / "project.json").read_text(encoding="utf-8")
     )
     entry = next(p for p in manifest["parts"] if p["id"] == "duo")
     assert "solid_materials" not in entry

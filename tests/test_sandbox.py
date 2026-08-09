@@ -162,7 +162,7 @@ def test_status_reflects_availability(monkeypatch, tmp_path):
     assert sandbox.status() == "off"
     # config file opt-out (env unset)
     monkeypatch.delenv("AGENTCAD_NO_SANDBOX")
-    (tmp_path / "cfg.json").write_text('{"sandbox": false}')
+    (tmp_path / "cfg.json").write_text('{"sandbox": false}', encoding="utf-8")
     monkeypatch.setenv("AGENTCAD_CONFIG", str(tmp_path / "cfg.json"))
     assert sandbox.status() == "off"
     # env wins over config in both directions

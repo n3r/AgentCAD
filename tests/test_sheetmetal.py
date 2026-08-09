@@ -173,7 +173,7 @@ def test_flat_pattern_svg(demo):
     assert result["size_bytes"] > 0
     assert result["flat_bbox_mm"]["w"] == pytest.approx(60, abs=0.1)
     assert result["flat_bbox_mm"]["h"] == pytest.approx(40 + BA_90 + 30, abs=0.1)
-    svg = (demo.store.exports_dir("demo") / "bracket_flat.svg").read_text()
+    svg = (demo.store.exports_dir("demo") / "bracket_flat.svg").read_text(encoding="utf-8")
     assert svg.startswith("<svg")
     assert 'id="BEND"' in svg and "stroke-dasharray" in svg
     assert "demo / bracket" in svg
