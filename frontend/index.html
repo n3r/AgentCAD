@@ -33,6 +33,17 @@
       <div id="project-menu" class="menu left hidden" role="menu"></div>
     </div>
 
+    <!-- Static markup: setupMenus() snapshots .menu-wrap once at boot, so a
+         menu inserted later gets no outside-click/Escape/arrow handling. -->
+    <div class="menu-wrap">
+      <button id="branch-btn" class="tb-btn hidden" aria-haspopup="menu"
+              aria-expanded="false" title="Current branch">
+        <span class="branch-glyph" aria-hidden="true">⑂</span>
+        <span id="branch-name">—</span><span class="chev">▾</span>
+      </button>
+      <div id="branch-menu" class="menu left hidden" role="menu"></div>
+    </div>
+
     <div class="toolbar-spacer"></div>
 
     <div id="rebuild-indicator" class="hidden">
@@ -152,13 +163,45 @@
   <div id="drawing-modal" class="modal-overlay hidden">
     <div class="modal">
       <header class="modal-head">
-        <span id="drawing-title">Drawing</span>
+        <span id="drawing-title" class="modal-title">Drawing</span>
         <div class="modal-actions">
           <a id="drawing-download" class="tb-btn hidden" download>Download SVG</a>
           <button id="drawing-close" class="tb-btn" type="button">Close</button>
         </div>
       </header>
       <div id="drawing-view" class="drawing-view"></div>
+    </div>
+  </div>
+
+  <div id="versions-modal" class="modal-overlay hidden">
+    <div class="modal narrow">
+      <header class="modal-head">
+        <span id="versions-title" class="modal-title">Versions</span>
+        <div class="modal-actions">
+          <button id="versions-tag" class="tb-btn" type="button">Tag current state…</button>
+          <button id="versions-close" class="tb-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div id="versions-body" class="ver-body"></div>
+    </div>
+  </div>
+
+  <div id="merge-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <header class="modal-head">
+        <span id="merge-title" class="modal-title">Merge</span>
+        <div class="modal-actions">
+          <button id="merge-abort" class="tb-btn hidden" type="button">Abort merge</button>
+          <button id="merge-close" class="tb-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div id="merge-body" class="conflict-body"></div>
+      <footer id="merge-foot" class="modal-foot hidden">
+        <span id="merge-progress" class="conflict-progress"></span>
+        <div class="modal-actions">
+          <button id="merge-complete" class="tb-btn" type="button">Complete merge</button>
+        </div>
+      </footer>
     </div>
   </div>
 

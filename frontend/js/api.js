@@ -94,6 +94,30 @@ export const api = {
   projectRestore: (proj, commit) =>
     request("POST", `/api/projects/${enc(proj)}/restore`, { commit }),
 
+  // ---- branches / versions / merge ----
+  // Like the tool passthrough, these routes answer HTTP 200 with an
+  // {"error": …} body for `merge_conflict`, so callers must check res.error in
+  // addition to catching ApiError (404/409/422 still throw).
+  listBranches: (proj) => request("GET", `/api/projects/${enc(proj)}/branches`),
+  createBranch: (proj, name, from) =>
+    request("POST", `/api/projects/${enc(proj)}/branches`, { name, from }),
+  switchBranch: (proj, name) =>
+    request("POST", `/api/projects/${enc(proj)}/branches/switch`, { name }),
+  deleteBranch: (proj, name) =>
+    request("DELETE", `/api/projects/${enc(proj)}/branches/${enc(name)}`),
+
+  listVersions: (proj) => request("GET", `/api/projects/${enc(proj)}/versions`),
+  createVersion: (proj, name, message) =>
+    request("POST", `/api/projects/${enc(proj)}/versions`, { name, message }),
+
+  mergeStatus: (proj) => request("GET", `/api/projects/${enc(proj)}/merge`),
+  /** body: {source, target?, allow_invalid?} */
+  mergeBranch: (proj, body) =>
+    request("POST", `/api/projects/${enc(proj)}/merge`, body),
+  resolveMerge: (proj, choices) =>
+    request("POST", `/api/projects/${enc(proj)}/merge/resolve`, { choices }),
+  abortMerge: (proj) => request("POST", `/api/projects/${enc(proj)}/merge/abort`),
+
   // ---- generic tool passthrough (used by import) ----
   callTool: (name, body) => request("POST", `/api/tools/${enc(name)}`, body),
 

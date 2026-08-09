@@ -12,8 +12,11 @@ import * as placement from "./placement.js";
 import * as drawings from "./drawings.js";
 import * as sketcher from "./sketcher.js";
 import * as theme from "./theme.js";
+import * as versions from "./versions.js";
+import * as merge from "./merge.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
+const BRANCH_RE = /^[a-z0-9][a-z0-9_/-]{0,63}$/;
 
 const meshBuffers = new Map(); // partId -> {buffer, key, lod} from api.getMesh
 let selectSeq = 0;
@@ -22,6 +25,7 @@ let localPatchUntil = 0; // suppress our own project_changed echo until this ts
 let assemblyRefreshTimer = null;
 let projectRefreshTimer = null;
 let lockHolder = null; // current turn-lock holder for this project (or null)
+let branchSwitchUntil = 0; // suppress the branch_changed echo of our own switch
 
 // ------------------------------------------------------------------ actions
 
@@ -35,6 +39,8 @@ const actions = {
   markPartState,
   patchInstanceTransform,
   toast,
+  refreshProject,
+  loadProject,
 };
 
 // ------------------------------------------------------------------ project
@@ -79,6 +85,9 @@ async function loadProject(name) {
   document.getElementById("project-name").textContent = name;
   updateEmptyState();
   loadMaterials(name);
+  loadBranchState().then((available) => {
+    if (available) merge.checkStaged(); // reopen a merge staged before the reload
+  });
 
   if (detail.parts.length) {
     await selectPart(detail.parts[0].id);
@@ -614,6 +623,7 @@ function connectWS() {
       setState({ rebuilding: new Set() });
       chat.resetSending();
       refreshProject();
+      loadBranchState();
     }
     hadConnection = true;
   };
@@ -697,6 +707,35 @@ function handleEvent(ev) {
       if (ev.project !== state.projectName) return;
       if (Date.now() < localPatchUntil) return;
       scheduleProjectRefresh();
+      return;
+    }
+    case "branch_changed": {
+      if (ev.project !== state.projectName) return;
+      if (ev.client !== state.clientId) {
+        // Another client moved: our cached list (and its meta) is stale, but
+        // our own working tree did not change.
+        setState({ branches: null });
+        return;
+      }
+      setState({ branch: ev.branch });
+      setBranchLabel(ev.branch);
+      // Our own switch already reset the context; a switch made elsewhere
+      // under this identity (a second tab, the chat agent) has not.
+      if (Date.now() < branchSwitchUntil) return;
+      reloadBranchContext();
+      return;
+    }
+    case "merge_completed": {
+      if (ev.project !== state.projectName) return;
+      const where = `${ev.source} into ${ev.target}`;
+      if (!ev.validation) {
+        toast(`Fast-forwarded ${ev.target} to ${ev.source}`);
+      } else if (ev.validation.ok === false) {
+        toast(`Merged ${where} with validation failures`, "error");
+      } else {
+        toast(`Merged ${where}`);
+      }
+      refreshProject();
       return;
     }
     case "lock_changed": {
@@ -921,6 +960,173 @@ async function openProjectPrompt() {
   await loadProject(detail.name);
 }
 
+// ------------------------------------------------------------------ branches
+// The switcher is a static .menu-wrap (setupMenus() snapshots them at boot).
+// It stays hidden when the server has no versioning routes — git missing means
+// the tool pack registered nothing and the project has no branches at all.
+
+async function loadBranchState() {
+  const btn = document.getElementById("branch-btn");
+  const proj = state.projectName;
+  if (!proj) {
+    btn.classList.add("hidden");
+    return false;
+  }
+  let payload;
+  try {
+    payload = await api.listBranches(proj);
+  } catch {
+    btn.classList.add("hidden");
+    setState({ branch: null, branches: null, clientId: null });
+    return false;
+  }
+  if (proj !== state.projectName) return false;
+  setState({
+    branches: payload.branches || [],
+    branch: payload.current,
+    clientId: payload.you,
+  });
+  setBranchLabel(payload.current);
+  btn.classList.remove("hidden");
+  return true;
+}
+
+function setBranchLabel(name) {
+  const label = document.getElementById("branch-name");
+  const btn = document.getElementById("branch-btn");
+  if (!label || !btn) return;
+  label.textContent = name || "—";
+  btn.title = name ? `Branch ${name} — click to switch, merge or tag` : "Current branch";
+}
+
+function setupBranchMenu() {
+  const btn = document.getElementById("branch-btn");
+  const menu = document.getElementById("branch-menu");
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!menu.classList.contains("hidden")) {
+      setMenuHidden(menu, true);
+      return;
+    }
+    await loadBranchState();
+    menu.innerHTML = "";
+    for (const branch of state.branches || []) {
+      const item = document.createElement("button");
+      item.className = "menu-item";
+      if (branch.is_current) item.classList.add("active");
+      const label = document.createElement("span");
+      label.textContent = branch.is_default ? `${branch.name} (default)` : branch.name;
+      const meta = document.createElement("span");
+      meta.className = "meta";
+      meta.textContent = versions.relTime(branch.ts);
+      item.title = branch.message || "";
+      item.append(label, meta);
+      item.addEventListener("click", () => {
+        setMenuHidden(menu, true);
+        if (!branch.is_current) switchToBranch(branch.name);
+      });
+      menu.appendChild(item);
+    }
+    const sep = document.createElement("div");
+    sep.className = "menu-sep";
+    menu.appendChild(sep);
+    for (const [label, run] of [
+      ["New branch…", newBranchPrompt],
+      ["Merge into…", () => merge.openPicker()],
+      ["Versions…", () => versions.open()],
+    ]) {
+      const item = document.createElement("button");
+      item.className = "menu-item";
+      item.textContent = label;
+      item.addEventListener("click", () => {
+        setMenuHidden(menu, true);
+        run();
+      });
+      menu.appendChild(item);
+    }
+    setMenuHidden(menu, false);
+  });
+}
+
+async function switchToBranch(name) {
+  if (!state.projectName || name === state.branch) return;
+  if (!confirmDiscardEdits(null)) return; // another branch's scripts differ
+  branchSwitchUntil = Date.now() + 1500;
+  try {
+    await api.switchBranch(state.projectName, name);
+  } catch (err) {
+    branchSwitchUntil = 0;
+    toast(`Switch failed: ${err.message}`, "error");
+    return;
+  }
+  setState({ branch: name });
+  setBranchLabel(name);
+  await reloadBranchContext();
+  toast(`Switched to ${name}`);
+}
+
+// The same context reset loadProject() performs: the branch's scripts, params
+// and assembly are different authored state, so every cached mesh and fitted
+// camera target is stale.
+async function reloadBranchContext() {
+  const proj = state.projectName;
+  if (!proj) return;
+  meshBuffers.clear();
+  viewport.clear();
+  clearFaceSelection();
+  lastFittedTarget = null;
+  let detail;
+  try {
+    detail = await api.getProject(proj);
+  } catch (err) {
+    toast(`Could not reload ${proj}: ${err.message}`, "error");
+    return;
+  }
+  if (proj !== state.projectName) return;
+  setState({ project: detail, rebuilding: new Set(), partKinds: {} });
+  updateEmptyState();
+  loadMaterials(proj);
+  if (state.mode === "assembly") {
+    await loadAssembly();
+    viewport.fit();
+    lastFittedTarget = "__assembly__";
+    return;
+  }
+  const keep = detail.parts.some((p) => p.id === state.selectedPart)
+    ? state.selectedPart
+    : detail.parts.length
+      ? detail.parts[0].id
+      : null;
+  if (keep) {
+    await selectPart(keep);
+  } else {
+    setState({ selectedPart: null, part: null });
+    updateHUD();
+  }
+}
+
+async function newBranchPrompt() {
+  if (!state.projectName) {
+    toast("Open a project first", "error");
+    return;
+  }
+  let name = prompt("New branch name ([a-z0-9][a-z0-9_/-]{0,63}):");
+  if (!name) return;
+  name = name.trim();
+  if (!BRANCH_RE.test(name)) {
+    toast(`Invalid branch name ${JSON.stringify(name)}`, "error");
+    return;
+  }
+  try {
+    await api.createBranch(state.projectName, name);
+  } catch (err) {
+    toast(`Create failed: ${err.message}`, "error");
+    return;
+  }
+  toast(`Created ${name}`);
+  await switchToBranch(name); // creating does not switch you server-side
+}
+
 function setupExportMenu() {
   const btn = document.getElementById("export-btn");
   const menu = document.getElementById("export-menu");
@@ -1025,6 +1231,11 @@ function setupUndo() {
   if (redoBtn) redoBtn.addEventListener("click", redoLastChange);
 }
 
+// Bare-key shortcuts (f/g/r) must not act behind an open dialog.
+function modalOpen() {
+  return document.querySelector(".modal-overlay:not(.hidden)") != null;
+}
+
 function setupKeys() {
   document.addEventListener("keydown", (e) => {
     const target = e.target instanceof Element ? e.target : document.body;
@@ -1053,7 +1264,7 @@ function setupKeys() {
       }
       return;
     }
-    if (inField || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (inField || modalOpen() || e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key.toLowerCase();
     if (k === "f") {
       viewport.fit();
@@ -1310,8 +1521,11 @@ async function boot() {
   placement.init(actions);
   drawings.init(actions);
   sketcher.init(actions);
+  versions.init(actions);
+  merge.init(actions);
   setupMenus();
   setupProjectMenu();
+  setupBranchMenu();
   setupExportMenu();
   setupImport();
   setupUndo();
