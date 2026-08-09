@@ -43,7 +43,7 @@ the project switcher alongside your own projects.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ AgentCAD  [project ▾]        (Rebuilding…)  [Fit] [Export ▾]  ●  │  toolbar
+│ AgentCAD  [project ▾]     (Rebuilding…)  [Fit] [Export ▾] ☀  ●  │  toolbar
 ├──────────┬───────────────────────────────────┬───────────────────┤
 │ Parts    │                                   │ Parameters │ Code │
 │  nozzle  │                                   │            │      │
@@ -92,6 +92,11 @@ Exports are written to `<project>/exports/<part>.<format>` (assembly:
 `exports/assembly.<format>`); a toast shows the full path and size. Nothing
 is downloaded through the browser — the file lands on disk next to the
 project.
+
+**Theme switcher** — the ☀/☾ button. Toggles between the dark (default) and
+light themes; the whole UI switches, including the 3D scene and the code
+editor. The choice is remembered (localStorage) and restored before first
+paint on the next visit.
 
 **Connection dot** — far right. Green means the WebSocket event stream is
 connected; gray means the UI is reconnecting (it retries with backoff and
