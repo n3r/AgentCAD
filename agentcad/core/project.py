@@ -115,10 +115,19 @@ class ProjectStore:
         return self._locate(proj)
 
     def lock_key(self, proj: str) -> str:
-        """Key for per-branch turn locks and undo stacks: the project name
-        when branching is inactive, otherwise the resolved working-tree path
-        (so two clients on two branches never contend)."""
-        return proj if self.branch_resolver is None else str(self._resolve(proj))
+        """Key for per-branch turn locks and undo stacks: the project name on
+        the default branch, the resolved working-tree path elsewhere (so two
+        clients on two branches never contend).
+
+        The default branch keeps the *project name* even with a resolver
+        installed — a project that never branches is then bit-identical to a
+        pre-branching one, keys included, which is what lets every existing
+        lock/undo behavior (and test) stand unchanged.
+        """
+        if self.branch_resolver is None:
+            return proj
+        resolved = self._resolve(proj)
+        return proj if resolved == self._locate(proj) else str(resolved)
 
     # ---------------------------------------------------------------- parts
 
