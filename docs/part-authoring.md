@@ -179,12 +179,12 @@ spec = {
     "lines":  [{"name": "ab", "p1": "a", "p2": "b"}],
     "circles": [],
     "constraints": [
-        {"type": "horizontal", "line": "ab"},
-        {"type": "distance", "p1": "a", "p2": "b", "d": 40},
-        {"type": "distance_y", "p1": "b", "p2": "c", "d": 25},
+        {"type": "horizontal", "ln": "ab"},
+        {"type": "distance", "p": "a", "q": "b", "d": 40},
+        {"type": "distance_y", "p": "b", "q": "c", "d": 25},
     ],
 }
-sol = sketch.solve_sketch(spec)      # {"ok": True, "points": {"c": [40, 25], ...}, ...}
+sol = sketch.solve_sketch(spec)      # {"ok": True, "points": {"c": {"x": 40.0, "y": 25.0}, ...}, ...}
 ```
 
 The solver converges to the solution *nearest the initial guess*, so seed the

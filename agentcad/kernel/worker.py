@@ -23,7 +23,7 @@ from pathlib import Path
 
 import build123d as b3d
 
-from .mesh import tessellate
+from .mesh import tessellate, tessellate_with_faces
 from .protocol import ERROR_CONTRACT, ERROR_KERNEL, ERROR_SCRIPT, WorkerError
 
 SCRIPT_FILENAME = "<part>"
@@ -521,8 +521,13 @@ def handle_build(params: dict) -> dict:
     )
     labels = _solid_labels(ns)
     tolerance = float(params.get("tolerance", 0.1))
-    buffer = tessellate(shape.wrapped, tolerance)
+    buffer, face_ids = tessellate_with_faces(shape.wrapped, tolerance)
     _atomic_write(params["mesh_path"], buffer)
+    # Triangle->B-rep-face sidecar (one u32 per triangle, mesh face order):
+    # written after the mesh so a reader that sees the sidecar has the mesh.
+    mesh_path = str(params["mesh_path"])
+    base_path = mesh_path[: -len(".acm")] if mesh_path.endswith(".acm") else mesh_path
+    _atomic_write(f"{base_path}.faces.u32", face_ids)
     triangles, lods = _write_lod_tiers(shape.wrapped, params, buffer)
     densities = params.get("densities") or {}
     metrics = _metrics(

@@ -10,6 +10,7 @@ import * as editor from "./editor.js";
 import * as chat from "./chat.js";
 import * as placement from "./placement.js";
 import * as drawings from "./drawings.js";
+import * as sketcher from "./sketcher.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 
@@ -57,6 +58,7 @@ async function loadProject(name) {
   }
   meshBuffers.clear();
   viewport.clear();
+  clearFaceSelection();
   lastFittedTarget = null;
   lockHolder = null; // lock state is per project; resync via lock_changed
   renderLockIndicator();
@@ -140,6 +142,7 @@ function confirmDiscardEdits(nextPartId) {
 async function selectPart(partId) {
   if (!confirmDiscardEdits(partId)) return;
   const seq = ++selectSeq;
+  if (faceSel && faceSel.partId !== partId) clearFaceSelection();
   setState({ mode: "part", selectedPart: partId, selectedInstance: null });
   inspector.hideBanner();
   let detail = null;
@@ -171,6 +174,7 @@ async function selectAssembly(instanceId) {
   }
   const entering = state.mode !== "assembly";
   const seq = ++selectSeq;
+  clearFaceSelection();
   setState({ mode: "assembly", selectedInstance: instanceId });
   viewport.setSelectedInstance(instanceId);
 
@@ -278,7 +282,12 @@ async function reloadMesh(partId) {
       if (state.selectedPart !== partId || state.mode !== "part") return;
       meshBuffers.set(partId, entry);
       viewport.showPart(partId, entry.buffer, geomKey(entry));
+      // A rebuild produced new geometry: any picked face index is stale.
+      if (faceSel && (faceSel.partId !== partId || faceSel.key !== entry.key)) {
+        clearFaceSelection();
+      }
       if (entry.lod === "lod1") upgradeMeshToFull(partId);
+      else loadFaceMap(partId, entry.key);
     } catch (err) {
       if (err instanceof ApiError && err.status !== 0 && err.error) {
         markPartState(partId, "error");
@@ -323,7 +332,23 @@ async function upgradeMeshToFull(partId) {
   if (state.mode !== "part" || state.selectedPart !== partId) return;
   meshBuffers.set(partId, entry);
   viewport.showPart(partId, entry.buffer, geomKey(entry));
+  loadFaceMap(partId, entry.key);
   updateHUD();
+}
+
+// Fetch the triangle->B-rep-face sidecar for the FULL-resolution mesh and
+// hand it to the viewport's geometry cache, enabling face picking. 404 (a
+// stale pre-sidecar cache entry or a reference part) just leaves face
+// picking off for that part.
+async function loadFaceMap(partId, meshKey) {
+  let res;
+  try {
+    res = await api.getMeshFaces(state.projectName, partId);
+  } catch {
+    return;
+  }
+  if (res.key !== meshKey) return; // a rebuild landed mid-flight
+  viewport.setFaceMap(partId, `${meshKey}:full`, new Uint32Array(res.buffer));
 }
 
 async function refreshPartDetail(partId) {
@@ -1057,13 +1082,173 @@ function toast(message, kind = "info") {
   setTimeout(() => el.remove(), kind === "error" ? 8000 : 4000);
 }
 
+// ---------------------------------------------------- face pick / push-pull
+
+// Part-mode face selection: clicking a face highlights it and opens a small
+// push/pull card (distance + Apply -> the push_pull tool). Alt+click or an
+// empty-space click clears. The selection is keyed to the mesh cache key, so
+// a rebuild (new key => new face indexing) drops it.
+let faceSel = null; // {partId, faceIndex, key, info|null}
+
+function clearFaceSelection() {
+  faceSel = null;
+  viewport.highlightFace(null, null);
+  renderFaceCard();
+}
+
+async function selectFace(partId, faceIndex) {
+  const entry = meshBuffers.get(partId);
+  if (!entry) return;
+  faceSel = { partId, faceIndex, key: entry.key, info: null };
+  viewport.highlightFace(partId, faceIndex);
+  renderFaceCard();
+  let res;
+  try {
+    res = await api.callTool("face_info", {
+      project: state.projectName,
+      part_id: partId,
+      face_index: faceIndex,
+    });
+  } catch {
+    return; // card stays in its loading state; Apply still validates server-side
+  }
+  if (!faceSel || faceSel.partId !== partId || faceSel.faceIndex !== faceIndex) return;
+  if (!res.error) {
+    faceSel.info = res;
+    renderFaceCard();
+  }
+}
+
+function renderFaceCard() {
+  const card = document.getElementById("facecard");
+  const body = document.getElementById("facecard-body");
+  if (!card || !body) return;
+  if (!faceSel || state.mode !== "part") {
+    card.classList.add("hidden");
+    return;
+  }
+  card.classList.remove("hidden");
+  body.textContent = "";
+
+  const title = document.createElement("div");
+  title.className = "placement-title";
+  const name = document.createElement("span");
+  name.className = "placement-id";
+  name.textContent = `Face ${faceSel.faceIndex}`;
+  const ref = document.createElement("span");
+  ref.className = "placement-part";
+  ref.textContent = faceSel.partId;
+  title.append(name, ref);
+  body.appendChild(title);
+
+  const info = faceSel.info;
+  const meta = document.createElement("div");
+  meta.className = "facecard-meta";
+  if (!info) {
+    meta.textContent = "inspecting…";
+  } else if (info.planar) {
+    meta.textContent =
+      `planar · ${info.area_mm2.toFixed(1)} mm² · ` +
+      `n [${info.normal.map((v) => v.toFixed(2)).join(", ")}]`;
+  } else {
+    meta.textContent = `not planar · ${info.area_mm2.toFixed(1)} mm²`;
+  }
+  body.appendChild(meta);
+
+  const planar = !!(info && info.planar);
+  const row = document.createElement("div");
+  row.className = "facecard-row";
+  const input = document.createElement("input");
+  input.type = "number";
+  input.step = "any";
+  input.className = "placement-num";
+  input.value = "5";
+  input.setAttribute("aria-label", "push/pull distance in millimetres");
+  input.disabled = !planar;
+  const apply = document.createElement("button");
+  apply.type = "button";
+  apply.className = "tb-btn";
+  apply.textContent = "Push/Pull";
+  apply.disabled = !planar;
+  apply.title = planar
+    ? "Positive distance adds material along the outward normal; negative cuts in"
+    : "Push/pull needs a planar face";
+  apply.addEventListener("click", () => applyPushPull(input, apply));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && planar) {
+      e.preventDefault();
+      applyPushPull(input, apply);
+    }
+  });
+  row.append(input, apply);
+  body.appendChild(row);
+
+  const hint = document.createElement("div");
+  hint.className = "placement-hint";
+  hint.textContent = planar
+    ? "mm · appends a marked block to the part script and rebuilds."
+    : "Only planar faces can be pushed/pulled. Alt+click clears.";
+  body.appendChild(hint);
+}
+
+async function applyPushPull(input, applyBtn) {
+  if (!faceSel) return;
+  const distance = parseFloat(input.value);
+  if (!Number.isFinite(distance) || distance === 0) {
+    toast("Enter a nonzero distance in mm", "error");
+    return;
+  }
+  const { partId, faceIndex } = faceSel;
+  applyBtn.disabled = true;
+  applyBtn.textContent = "Applying…";
+  let res;
+  try {
+    res = await api.callTool("push_pull", {
+      project: state.projectName,
+      part_id: partId,
+      face_index: faceIndex,
+      distance_mm: distance,
+    });
+  } catch (err) {
+    applyBtn.disabled = false;
+    applyBtn.textContent = "Push/Pull";
+    toast(`Push/pull failed: ${err.message}`, "error");
+    return;
+  }
+  // Tool failures come back as {error} at HTTP 200; rebuild failures as ok:false.
+  if (res.error) {
+    applyBtn.disabled = false;
+    applyBtn.textContent = "Push/Pull";
+    toast(`Push/pull failed: ${res.error.message || "error"}`, "error");
+    return;
+  }
+  if (res.ok === false) {
+    applyBtn.disabled = false;
+    applyBtn.textContent = "Push/Pull";
+    const msg = (res.error && res.error.message) || "rebuild failed";
+    toast(`Push/pull rebuilt with an error: ${msg}`, "error");
+    return;
+  }
+  toast(`Pushed face ${faceIndex} by ${distance} mm`);
+  // The rebuild's WS events refresh the mesh; the old face index is stale now.
+  clearFaceSelection();
+}
+
 // ----------------------------------------------------------------- widgets
 
-function onPick(hit) {
-  if (state.mode !== "assembly") return;
-  if (hit && hit.instanceId) {
-    selectAssembly(hit.instanceId);
+function onPick(hit, event) {
+  if (state.mode === "assembly") {
+    if (hit && hit.instanceId) {
+      selectAssembly(hit.instanceId);
+    }
+    return;
   }
+  // part mode: face picking
+  if ((event && event.altKey) || !hit || hit.faceIndex == null) {
+    clearFaceSelection();
+    return;
+  }
+  selectFace(hit.partId, hit.faceIndex);
 }
 
 function renderIndicators() {
@@ -1118,6 +1303,7 @@ async function boot() {
   chat.init(actions);
   placement.init(actions);
   drawings.init(actions);
+  sketcher.init(actions);
   setupMenus();
   setupProjectMenu();
   setupExportMenu();

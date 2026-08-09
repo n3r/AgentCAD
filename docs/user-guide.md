@@ -328,6 +328,18 @@ silhouette area, or the full inertia tensor. Linear-static FEM is available
 only if the optional `agentcad[fem]` extra is installed (otherwise the tool
 and its route are absent).
 
+**Sketching & push/pull.** The ✏️ Sketch button (part mode) opens a 2D
+sketch editor over the viewport: draw points, lines, and circles, apply
+constraints (distance, horizontal/vertical, parallel/perpendicular, radius,
+coincident, fix), and watch the constraint solver keep the sketch consistent
+live — the status line shows solved/DOF state. "Insert into script" appends a
+`sketch_profile()` build123d function to the code editor; call it from
+`build(p)` and save. Clicking a face of a part highlights it and opens a
+small face card (area, normal) with a push/pull distance — applying it
+records the edit *in the script* as a visible, editable `push_face(...)`
+wrapper, so direct manipulation never bypasses the code. Alt+click clears
+the selection.
+
 **Huge meshes.** Heavy parts (over ~150k triangles) appear almost instantly
 as a coarse preview while the full-resolution mesh streams in behind it;
 small parts load in a single request exactly as before.

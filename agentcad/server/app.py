@@ -219,6 +219,27 @@ def create_app(
             },
         )
 
+    @app.get("/api/projects/{proj}/parts/{part_id}/mesh/faces")
+    def get_mesh_faces(proj: str, part_id: str):
+        # Triangle->B-rep-face sidecar for the FULL-resolution mesh (one u32
+        # per triangle, mesh face order). 404 when the build predates the
+        # sidecar (stale cache entry) or the part is a reference import.
+        info = service.mesh_info(proj, part_id)
+        sidecar = info["path"].parent / f"{info['key']}.faces.u32"
+        if not sidecar.is_file():
+            raise NotFoundError(
+                f"no face map for part {part_id!r} (rebuild required, or the "
+                "part is an imported reference)"
+            )
+        return Response(
+            content=sidecar.read_bytes(),
+            media_type="application/octet-stream",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Mesh-Key": info["key"],
+            },
+        )
+
     @app.post("/api/projects/{proj}/parts/{part_id}/export")
     async def export_part(proj: str, part_id: str, request: Request):
         body = await request.json()

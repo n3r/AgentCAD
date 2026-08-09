@@ -93,6 +93,10 @@ export const api = {
   // ---- generic tool passthrough (used by import) ----
   callTool: (name, body) => request("POST", `/api/tools/${enc(name)}`, body),
 
+  // ---- 2D sketch solve (constraint solver) ----
+  solveSketch: (entities, constraints) =>
+    request("POST", "/api/sketch/solve", { entities, constraints }),
+
   /** Raw-body upload of an imported CAD file. Resolves {source, size_bytes};
    *  throws ApiError on rejection (too large, bad extension, empty). */
   async uploadImport(proj, filename, arrayBuffer) {
@@ -155,5 +159,31 @@ export const api = {
     const servedLod = res.headers.get("X-Mesh-Lod") || "full";
     const buffer = await res.arrayBuffer();
     return { buffer, key, lod: servedLod };
+  },
+
+  /** Fetch the mesh's triangle->B-rep-face sidecar (one u32 per triangle of
+   *  the FULL-resolution mesh). Resolves {buffer, key}; throws ApiError 404
+   *  when no sidecar exists (stale cache / reference part). */
+  async getMeshFaces(proj, id) {
+    let res;
+    try {
+      res = await fetch(`/api/projects/${enc(proj)}/parts/${enc(id)}/mesh/faces`);
+    } catch {
+      throw new ApiError(0, {
+        error: { type: "network_error", message: "server unreachable", details: {} },
+      });
+    }
+    if (!res.ok) {
+      let payload = null;
+      try {
+        payload = await res.json();
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(res.status, payload);
+    }
+    const key = res.headers.get("X-Mesh-Key") || "";
+    const buffer = await res.arrayBuffer();
+    return { buffer, key };
   },
 };
