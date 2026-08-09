@@ -204,12 +204,19 @@ def create_app(
         return service.get_metrics(proj, part_id)
 
     @app.get("/api/projects/{proj}/parts/{part_id}/mesh")
-    def get_mesh(proj: str, part_id: str):
-        info = service.mesh_info(proj, part_id)
+    def get_mesh(proj: str, part_id: str, lod: str | None = None):
+        # ?lod=lod1 asks for the coarse preview tier; when the part has no
+        # such tier the full-resolution buffer is served (X-Mesh-Lod: full),
+        # so small parts cost the client zero extra requests.
+        info = service.mesh_info(proj, part_id, lod=lod)
         return Response(
             content=info["path"].read_bytes(),
             media_type="application/octet-stream",
-            headers={"Cache-Control": "no-store", "X-Mesh-Key": info["key"]},
+            headers={
+                "Cache-Control": "no-store",
+                "X-Mesh-Key": info["key"],
+                "X-Mesh-Lod": info.get("lod") or "full",
+            },
         )
 
     @app.post("/api/projects/{proj}/parts/{part_id}/export")

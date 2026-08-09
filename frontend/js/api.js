@@ -125,12 +125,18 @@ export const api = {
   chatHistory: (project) =>
     request("GET", `/api/chat/history?project=${enc(project)}`),
 
-  /** Fetch the ACM1 binary mesh. Resolves {buffer, key}; throws ApiError
-   *  (502 with the build error) when the part's script is broken. */
-  async getMesh(proj, id) {
+  /** Fetch the ACM1 binary mesh. Resolves {buffer, key, lod}; throws ApiError
+   *  (502 with the build error) when the part's script is broken.
+   *  Pass lod ("lod1") to request a coarse preview tier — the server falls
+   *  back to the full mesh when no tier exists, and `lod` reports which
+   *  resolution actually arrived ("lod1" or "full"). */
+  async getMesh(proj, id, lod) {
     let res;
+    const url =
+      `/api/projects/${enc(proj)}/parts/${enc(id)}/mesh` +
+      (lod ? `?lod=${enc(lod)}` : "");
     try {
-      res = await fetch(`/api/projects/${enc(proj)}/parts/${enc(id)}/mesh`);
+      res = await fetch(url);
     } catch {
       throw new ApiError(0, {
         error: { type: "network_error", message: "server unreachable", details: {} },
@@ -146,7 +152,8 @@ export const api = {
       throw new ApiError(res.status, payload);
     }
     const key = res.headers.get("X-Mesh-Key") || "";
+    const servedLod = res.headers.get("X-Mesh-Lod") || "full";
     const buffer = await res.arrayBuffer();
-    return { buffer, key };
+    return { buffer, key, lod: servedLod };
   },
 };

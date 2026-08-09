@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import queue
+import re
 import sys
 import threading
 from pathlib import Path
@@ -27,6 +28,17 @@ from .templates import CHEATSHEET, DEFAULT_PART_SCRIPT
 MESH_TOLERANCE = 0.1
 EXPORT_TOLERANCE = 0.05
 EXPORT_FORMATS = ("step", "stl", "3mf")
+
+# Coarse preview tier for progressive mesh loading. Every kernel build is
+# asked for the tier; the WORKER writes it only when the full mesh's triangle
+# count exceeds the threshold, so small parts never pay for it. Tiers live as
+# <key>.lod1.acm sidecars next to the full <key>.acm (same ACM1 format).
+MESH_LOD_TOLERANCE = 0.8
+LOD_TRIANGLE_THRESHOLD = 150_000
+
+# A tier suffix names a cache sidecar file, so it must stay a plain token
+# (never a path fragment) no matter what a URL query hands us.
+_LOD_SUFFIX_RE = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
 
 
 class EventBus:
@@ -322,15 +334,25 @@ class AgentCADService:
             raise KernelErrorFromResult(result)
         return result["metrics"]
 
-    def mesh_info(self, proj: str, part_id: str) -> dict:
+    def mesh_info(self, proj: str, part_id: str, lod: str | None = None) -> dict:
         """Built mesh path + cache key, from the build result (no racy re-read
-        of the shared status dict — a concurrent delete cannot KeyError us)."""
+        of the shared status dict — a concurrent delete cannot KeyError us).
+
+        When *lod* names an existing sidecar tier (``<key>.<lod>.acm``) that
+        tier's path is returned with ``lod`` set; otherwise the full-resolution
+        mesh with ``lod: None`` (small parts have no tier — that is the normal
+        fallback, not an error)."""
         self.store.get_part(proj, part_id)
         result = self._ensure_built(proj, part_id)
         if not result["ok"]:
             raise KernelErrorFromResult(result)
         key = result["cache_key"]
-        return {"path": self.store.cache_dir(proj) / f"{key}.acm", "key": key}
+        cache = self.store.cache_dir(proj)
+        if lod and _LOD_SUFFIX_RE.match(lod):
+            tier = cache / f"{key}.{lod}.acm"
+            if tier.is_file():
+                return {"path": tier, "key": key, "lod": lod}
+        return {"path": cache / f"{key}.acm", "key": key, "lod": None}
 
     def ensure_mesh(self, proj: str, part_id: str) -> Path:
         return self.mesh_info(proj, part_id)["path"]
@@ -548,6 +570,7 @@ class AgentCADService:
                 if mesh.is_file() and current == status["cache_key"]:
                     return {"ok": True, "metrics": status["metrics"],
                             "warnings": status.get("warnings", []),
+                            "lods": status.get("lods", []),
                             "cache_key": status["cache_key"]}
             elif current == status["cache_key"]:
                 return {"ok": False, "error": status["error"]}
@@ -582,6 +605,7 @@ class AgentCADService:
                     "cache_key": key,
                     "metrics": cached_metrics,
                     "warnings": stored.get("warnings", []),
+                    "lods": stored.get("lods", []),
                     "error": None,
                 }
                 self.bus.publish(
@@ -595,6 +619,7 @@ class AgentCADService:
                 )
                 return {"ok": True, "metrics": cached_metrics,
                         "warnings": stored.get("warnings", []),
+                        "lods": stored.get("lods", []),
                         "cache_key": key}
 
         if record.kind == "reference":
@@ -619,6 +644,10 @@ class AgentCADService:
             solid_densities = self._solid_densities(proj, record)
             if solid_densities:
                 build_params["densities"] = solid_densities
+        # Always request the preview tier; the worker writes it only when the
+        # full mesh exceeds the threshold (one round-trip, no service state).
+        build_params["lod_tolerances"] = {"lod1": MESH_LOD_TOLERANCE}
+        build_params["lod_min_triangles"] = LOD_TRIANGLE_THRESHOLD
         try:
             result = self.kernel.request(
                 method, build_params, timeout_s=300.0, affinity=part_id
@@ -644,15 +673,19 @@ class AgentCADService:
 
         metrics = result["metrics"]
         warnings = result.get("warnings", [])
+        lods = result.get("lods", [])
         ProjectStore._atomic_write(
             metrics_path,
-            json.dumps({"metrics": metrics, "warnings": warnings}).encode(),
+            json.dumps(
+                {"metrics": metrics, "warnings": warnings, "lods": lods}
+            ).encode(),
         )
         self._status[(proj, part_id)] = {
             "state": "ok",
             "cache_key": key,
             "metrics": metrics,
             "warnings": warnings,
+            "lods": lods,
             "error": None,
         }
         self.bus.publish(
@@ -665,7 +698,7 @@ class AgentCADService:
             }
         )
         return {"ok": True, "metrics": metrics, "warnings": warnings,
-                "cache_key": key}
+                "lods": lods, "cache_key": key}
 
     def _params_spec(self, script: str) -> dict | None:
         key = hashlib.sha256(script.encode()).hexdigest()

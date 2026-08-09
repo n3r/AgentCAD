@@ -126,6 +126,22 @@ tool executor, and the MCP proxy sends `AGENTCAD_AGENT_ID`/`mcp`. Project
 creation and derived-data writes (cache, exports, metrics sidecars) are
 intentionally unguarded.
 
+**LOD tiers.** A kernel build request may carry `lod_tolerances`
+(`{suffix: tolerance}`) and `lod_min_triangles`; after writing the
+full-resolution `<key>.acm` the worker re-tessellates and atomically writes
+one `<key>.<suffix>.acm` sidecar per entry — but only when the full mesh's
+triangle count (word 2 of the ACM1 header) exceeds the threshold, so small
+parts never pay for the extra pass. The service requests a single `lod1`
+tier at tolerance 0.8 above 150 000 triangles (`MESH_LOD_TOLERANCE` /
+`LOD_TRIANGLE_THRESHOLD`) on every build; the result's `triangles` and
+`lods` round-trip through the `<key>.metrics.json` sidecar. Tiers use the
+same frozen ACM1 format and leave the full-resolution bytes pinned. The mesh
+route serves a tier for `?lod=lod1` with `X-Mesh-Lod: lod1`, falling back to
+the full buffer (`X-Mesh-Lod: full`) when none exists, which lets the
+browser show a coarse preview instantly and swap in the full mesh in the
+background. STL reference imports never get tiers — their triangulation is
+their geometry.
+
 Two cross-cutting pieces ride these seams. The **Error Doctor**
 (`error_doctor.py`) is invoked from one hook in the worker's `_dispatch`: it
 matches a failure's type + message + traceback against a catalog of real OCCT

@@ -13,7 +13,7 @@ import * as drawings from "./drawings.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 
-const meshBuffers = new Map(); // partId -> {buffer, key}
+const meshBuffers = new Map(); // partId -> {buffer, key, lod} from api.getMesh
 let selectSeq = 0;
 let lastFittedTarget = null; // part id or "__assembly__"
 let localPatchUntil = 0; // suppress our own project_changed echo until this ts
@@ -229,6 +229,13 @@ async function loadAssembly() {
   updateHUD();
 }
 
+// Viewport geometry-cache key for a mesh entry. The lod qualifier keeps the
+// coarse tier and the full-resolution mesh of the same build apart in the
+// viewport's `${partId}:${key}` cache (same ACM1 format, different geometry).
+function geomKey(entry) {
+  return `${entry.key}:${entry.lod || "full"}`;
+}
+
 function renderAssemblyFromCache() {
   if (state.mode !== "assembly" || !state.assembly) return;
   const items = [];
@@ -239,7 +246,7 @@ function renderAssemblyFromCache() {
       instanceId: inst.id,
       partId: inst.part,
       buffer: entry.buffer,
-      key: entry.key,
+      key: geomKey(entry),
       position: inst.position,
       rotationDeg: inst.rotation_deg,
       color: tree.instanceColor(inst, i),
@@ -264,10 +271,14 @@ async function reloadMesh(partId) {
   if (state.mode === "part") {
     if (state.selectedPart !== partId) return;
     try {
-      const entry = await api.getMesh(state.projectName, partId);
+      // Progressive load: ask for the coarse tier first. Small parts have no
+      // tier — the server serves the full mesh in this same response
+      // (lod === "full") and no second request is made.
+      const entry = await api.getMesh(state.projectName, partId, "lod1");
       if (state.selectedPart !== partId || state.mode !== "part") return;
       meshBuffers.set(partId, entry);
-      viewport.showPart(partId, entry.buffer, entry.key);
+      viewport.showPart(partId, entry.buffer, geomKey(entry));
+      if (entry.lod === "lod1") upgradeMeshToFull(partId);
     } catch (err) {
       if (err instanceof ApiError && err.status !== 0 && err.error) {
         markPartState(partId, "error");
@@ -276,7 +287,7 @@ async function reloadMesh(partId) {
       // or clear the stage so another part's geometry can't mislead.
       const lastGood = meshBuffers.get(partId);
       if (lastGood) {
-        viewport.showPart(partId, lastGood.buffer, lastGood.key);
+        viewport.showPart(partId, lastGood.buffer, geomKey(lastGood));
       } else {
         viewport.clear();
       }
@@ -292,6 +303,26 @@ async function reloadMesh(partId) {
     }
     renderAssemblyFromCache();
   }
+  updateHUD();
+}
+
+// The coarse tier is already on screen; fetch the full-resolution mesh in the
+// background and swap it in. Guarded like selectPart's async loads: bail if
+// the selection, mode, or project changed while the fetch was in flight — a
+// fresh reloadMesh will run its own upgrade then.
+async function upgradeMeshToFull(partId) {
+  const seq = selectSeq;
+  const proj = state.projectName;
+  let entry;
+  try {
+    entry = await api.getMesh(proj, partId);
+  } catch {
+    return; // keep the coarse tier; the next rebuild event retries
+  }
+  if (seq !== selectSeq || proj !== state.projectName) return;
+  if (state.mode !== "part" || state.selectedPart !== partId) return;
+  meshBuffers.set(partId, entry);
+  viewport.showPart(partId, entry.buffer, geomKey(entry));
   updateHUD();
 }
 

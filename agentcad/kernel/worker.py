@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import json
 import os
+import struct
 import sys
 import traceback
 import types
@@ -404,6 +405,40 @@ def _atomic_write(path: str, data: bytes) -> None:
     os.replace(tmp, target)
 
 
+def _write_lod_tiers(ocp_shape, params: dict, buffer: bytes) -> tuple[int, list[str]]:
+    """Write coarse LOD sidecar meshes next to the already-written full mesh.
+
+    ``params["lod_tolerances"]`` maps a filename suffix (e.g. ``"lod1"``) to a
+    tessellation tolerance; each requested tier is written as
+    ``<mesh_path minus .acm>.<suffix>.acm`` in the same ACM1 format — but only
+    when the full mesh's triangle count exceeds ``params["lod_min_triangles"]``
+    (default 0), so small parts never pay for an extra tessellation. The full
+    mesh buffer already written is never touched (its bytes stay pinned).
+
+    Returns ``(full-mesh triangle count, list of tier suffixes written)``.
+    """
+    # ACM1 header: magic(4) | nv u32 | nt u32 | ... — triangle count at byte 8.
+    triangles = struct.unpack_from("<I", buffer, 8)[0]
+    lod_tolerances = params.get("lod_tolerances") or {}
+    min_triangles = int(params.get("lod_min_triangles") or 0)
+    lods: list[str] = []
+    if not lod_tolerances or triangles <= min_triangles:
+        return triangles, lods
+    # OCCT keeps an existing (finer) triangulation that already satisfies a
+    # coarser deflection, so the cached full-resolution mesh must be dropped
+    # or the tier would silently duplicate the full mesh.
+    from OCP.BRepTools import BRepTools  # kernel process only
+
+    mesh_path = str(params["mesh_path"])
+    base = mesh_path[: -len(".acm")] if mesh_path.endswith(".acm") else mesh_path
+    for suffix in sorted(lod_tolerances):
+        BRepTools.Clean_s(ocp_shape)
+        lod_buffer = tessellate(ocp_shape, float(lod_tolerances[suffix]))
+        _atomic_write(f"{base}.{suffix}.acm", lod_buffer)
+        lods.append(suffix)
+    return triangles, lods
+
+
 def _export_shape(shape, fmt: str, out_path: str, tolerance: float) -> dict:
     target = Path(out_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -488,6 +523,7 @@ def handle_build(params: dict) -> dict:
     tolerance = float(params.get("tolerance", 0.1))
     buffer = tessellate(shape.wrapped, tolerance)
     _atomic_write(params["mesh_path"], buffer)
+    triangles, lods = _write_lod_tiers(shape.wrapped, params, buffer)
     densities = params.get("densities") or {}
     metrics = _metrics(
         shape,
@@ -506,7 +542,12 @@ def handle_build(params: dict) -> dict:
     for key in sorted(densities):
         if key not in matchable:
             warnings.append(f"solid_materials: no solid matches {key}")
-    return {"metrics": metrics, "warnings": warnings}
+    return {
+        "metrics": metrics,
+        "warnings": warnings,
+        "triangles": triangles,
+        "lods": lods,
+    }
 
 
 def handle_export(params: dict) -> dict:
@@ -608,6 +649,7 @@ WORKER_TOOLBOX = {
     "export_shape": _export_shape,
     "atomic_write": _atomic_write,
     "tessellate": tessellate,
+    "write_lod_tiers": _write_lod_tiers,
     "WorkerError": WorkerError,
     "ERROR_SCRIPT": ERROR_SCRIPT,
     "ERROR_CONTRACT": ERROR_CONTRACT,

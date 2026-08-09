@@ -328,6 +328,10 @@ silhouette area, or the full inertia tensor. Linear-static FEM is available
 only if the optional `agentcad[fem]` extra is installed (otherwise the tool
 and its route are absent).
 
+**Huge meshes.** Heavy parts (over ~150k triangles) appear almost instantly
+as a coarse preview while the full-resolution mesh streams in behind it;
+small parts load in a single request exactly as before.
+
 **Undo & project history.** Every change you or an agent makes — scripts,
 parameters, assembly, mates, materials, PMI — is snapshotted into a
 per-project git history (`.history/` inside the project folder; derived

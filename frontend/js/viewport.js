@@ -19,7 +19,9 @@ let contentGroup = null; // holds current part or assembly groups
 let gridHelper = null;
 let onPickCallback = null;
 
-// geometry cache: `${partId}:${meshKey}` -> {geometry, edges}
+// geometry cache: `${partId}:${meshKey}` -> {geometry, edges}. main.js passes
+// meshKey as `${cacheKey}:${lod}` so a coarse LOD tier and the full-resolution
+// mesh of the same build never collide in the cache.
 const geomCache = new Map();
 const GEOM_CACHE_MAX = 32;
 
