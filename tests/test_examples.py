@@ -51,6 +51,8 @@ def test_all_parts_build_valid_at_defaults(example):
             f"{name}/{part['id']}: {detail['status']['error']}"
         )
         assert detail["metrics"]["volume_mm3"] > 0
+        if detail.get("kind") == "reference":
+            continue  # imported mesh/B-rep: no script, no param spec
         assert detail["metrics"]["is_valid"] is True
         assert detail["params_spec"], f"{name}/{part['id']} has no PARAMS"
         for pname, spec in detail["params_spec"].items():
@@ -65,6 +67,8 @@ def test_parts_build_at_param_extremes(example):
     project = service.get_project(name)
     for part in project["parts"]:
         detail = service.get_part(name, part["id"])
+        if detail.get("kind") == "reference":
+            continue  # no params to sweep
         baseline = dict(part["params"])
         for pname, spec in detail["params_spec"].items():
             for value in (spec["min"], spec["max"]):

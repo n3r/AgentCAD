@@ -1,14 +1,26 @@
 """Worker-side tessellation: OCCT shape -> ACM1 buffer.
 
 Faces are triangulated independently (vertices are not shared across faces),
-which preserves hard edges without normal splitting. Within a face, normals
-are per-vertex averages of adjacent triangle normals, giving smooth curved
-surfaces. Edges are discretized with tangential deflection for crisp outlines.
+which preserves hard edges without normal splitting. Within a B-rep face,
+normals are per-vertex averages of adjacent triangle normals, giving smooth
+curved surfaces.
+
+A mesh face (an imported STL: one welded triangulation, no underlying
+geometric surface) covers the WHOLE part, so averaging normals across it would
+smooth over every crease and hole rim — the "melted" look with dark halos.
+Such faces instead get crease-angle-limited normals: adjacent triangles are
+averaged only when their normals are within CREASE_ANGLE, and vertices on a
+sharp edge are split so each side keeps its own normal. This matches how other
+CAD tools display meshes (smooth on curved regions, crisp at edges/holes).
+
+Edges are discretized with tangential deflection for crisp outlines.
 
 Imports OCP — only the kernel worker process may import this module.
 """
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 from OCP.BRep import BRep_Tool
@@ -24,6 +36,7 @@ from OCP.TopoDS import TopoDS
 from . import acm
 
 ANGULAR_DEFLECTION = 0.35  # radians, for both meshing and edge discretization
+CREASE_ANGLE = math.radians(35.0)  # mesh faces: smooth within, split beyond
 
 
 def _triangle_indices(tri) -> tuple[int, int, int]:
@@ -31,6 +44,65 @@ def _triangle_indices(tri) -> tuple[int, int, int]:
         return tri.Get()
     except TypeError:
         return (tri.Value(1), tri.Value(2), tri.Value(3))
+
+
+def _smooth_face_normals(pts, idx):
+    """B-rep face: per-vertex area-weighted average over the whole (smooth)
+    face, keeping shared vertices. Returns (pts, normals, idx) unchanged in
+    topology."""
+    v0, v1, v2 = pts[idx[:, 0]], pts[idx[:, 1]], pts[idx[:, 2]]
+    tri_n = np.cross(v1 - v0, v2 - v0)
+    normals = np.zeros_like(pts)
+    for corner in range(3):
+        np.add.at(normals, idx[:, corner], tri_n)
+    lengths = np.linalg.norm(normals, axis=1)
+    lengths[lengths == 0] = 1.0
+    normals /= lengths[:, None]
+    return pts, normals, idx
+
+
+def _crease_mesh_normals(pts, idx, crease_angle=CREASE_ANGLE):
+    """Imported mesh face: crease-angle-limited normals with vertex splitting.
+
+    Each triangle corner becomes its own output vertex; its normal is the
+    area-weighted average of the triangles sharing that original vertex whose
+    unit normal is within ``crease_angle`` of this triangle's normal. Curved
+    regions stay smooth; hole rims and sharp edges stay crisp.
+    """
+    n_tris = len(idx)
+    v0, v1, v2 = pts[idx[:, 0]], pts[idx[:, 1]], pts[idx[:, 2]]
+    tri_area_n = np.cross(v1 - v0, v2 - v0)  # length == 2*area
+    tri_len = np.linalg.norm(tri_area_n, axis=1)
+    safe = np.where(tri_len == 0, 1.0, tri_len)
+    tri_unit = tri_area_n / safe[:, None]
+    cos_thresh = math.cos(crease_angle)
+
+    # original vertex -> list of incident triangle indices
+    incident: list[list[int]] = [[] for _ in range(len(pts))]
+    for t in range(n_tris):
+        a, b, c = idx[t]
+        incident[a].append(t)
+        incident[b].append(t)
+        incident[c].append(t)
+    incident_arr = [np.asarray(lst, dtype=np.int64) for lst in incident]
+
+    out_pos = np.empty((n_tris * 3, 3), dtype=np.float64)
+    out_nrm = np.empty((n_tris * 3, 3), dtype=np.float64)
+    for t in range(n_tris):
+        un = tri_unit[t]
+        for corner in range(3):
+            v = idx[t, corner]
+            cand = incident_arr[v]
+            dots = tri_unit[cand] @ un
+            keep = cand[dots >= cos_thresh]
+            acc = tri_area_n[keep].sum(axis=0)
+            mag = np.linalg.norm(acc)
+            out = acc / mag if mag > 1e-12 else un
+            o = t * 3 + corner
+            out_pos[o] = pts[v]
+            out_nrm[o] = out
+    out_idx = np.arange(n_tris * 3, dtype=np.int64).reshape(-1, 3)
+    return out_pos, out_nrm, out_idx
 
 
 def tessellate(ocp_shape, tolerance: float = 0.1) -> bytes:
@@ -70,21 +142,19 @@ def tessellate(ocp_shape, tolerance: float = 0.1) -> bytes:
         if reversed_face:
             idx = idx[:, ::-1]
 
-        # Per-triangle geometric normals accumulated onto vertices.
-        v0, v1, v2 = pts[idx[:, 0]], pts[idx[:, 1]], pts[idx[:, 2]]
-        tri_n = np.cross(v1 - v0, v2 - v0)
-        normals = np.zeros_like(pts)
-        for corner in range(3):
-            np.add.at(normals, idx[:, corner], tri_n)
-        lengths = np.linalg.norm(normals, axis=1)
-        lengths[lengths == 0] = 1.0
-        normals /= lengths[:, None]
+        # A face with no underlying geometric surface is an imported mesh (STL):
+        # smooth-averaging across it would melt every crease, so use crease-angle
+        # normals with vertex splitting. B-rep faces keep the smooth average.
+        is_mesh_face = BRep_Tool.Surface_s(face) is None
+        if is_mesh_face:
+            f_pos, f_nrm, f_idx = _crease_mesh_normals(pts, idx)
+        else:
+            f_pos, f_nrm, f_idx = _smooth_face_normals(pts, idx)
 
-        # Drop degenerate triangles (zero-area slivers confuse nothing, keep all).
-        all_positions.append(pts)
-        all_normals.append(normals)
-        all_indices.append(idx + base)
-        base += n_nodes
+        all_positions.append(f_pos)
+        all_normals.append(f_nrm)
+        all_indices.append(f_idx + base)
+        base += len(f_pos)
 
     if base == 0:
         positions = np.zeros((0, 3))

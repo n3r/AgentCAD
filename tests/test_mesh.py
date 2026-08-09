@@ -60,3 +60,52 @@ def test_acm_roundtrip():
     assert np.array_equal(parsed["positions"], positions)
     assert np.array_equal(parsed["indices"], indices)
     assert np.array_equal(parsed["edge_points"], edge_points)
+
+
+def test_imported_mesh_uses_crease_normals(kernel, tmp_path):
+    """An STL box re-imported must render with flat per-face normals (every
+    normal axis-aligned), not the diagonal averages the old smooth path
+    produced at each shared corner — that averaging was the source of the
+    'melted' shading artifacts on imported meshes."""
+    import numpy as np
+
+    from agentcad.kernel import acm
+
+    stl = tmp_path / "box.stl"
+    kernel.request("export", {
+        "script": 'from build123d import *\nPARAMS={"s":{"default":20.0}}\n'
+                  'def build(p):\n    return Solid.make_box(p.s,p.s,p.s)\n',
+        "params": {}, "format": "stl", "out_path": str(stl)})
+    # tessellate the imported mesh directly via the worker's mesh path
+    mesh_path = tmp_path / "box.acm"
+    res = kernel.request("build_reference", {
+        "source_path": str(stl), "density_g_cm3": 1.0,
+        "mesh_path": str(mesh_path), "tolerance": 0.1})
+    assert res["kind"] == "mesh"
+    m = acm.read(mesh_path)
+    normals = m["normals"]
+    # a box's faces are axis-aligned: each normal's largest |component| ~ 1.0
+    dominant = np.abs(normals).max(axis=1)
+    assert (dominant > 0.999).all(), (
+        "imported box normals are not flat/axis-aligned — crease normals "
+        f"not applied (min dominant {dominant.min():.3f})")
+
+
+def test_brep_face_stays_smooth(kernel, tmp_path):
+    """A B-rep cylinder must keep smoothly-varying normals on its curved wall
+    (the fix must not turn B-rep shading flat)."""
+    import numpy as np
+
+    from agentcad.kernel import acm
+
+    mesh_path = tmp_path / "cyl.acm"
+    kernel.request("build", {
+        "script": 'from build123d import *\nPARAMS={"r":{"default":10.0}}\n'
+                  'def build(p):\n    return Solid.make_cylinder(p.r, 30)\n',
+        "params": {}, "density_g_cm3": 1.0, "mesh_path": str(mesh_path)})
+    m = acm.read(mesh_path)
+    # the curved wall produces many distinct normal directions (smooth), far
+    # more than the handful a faceted render would give
+    normals = np.round(m["normals"], 2)
+    unique = np.unique(normals, axis=0)
+    assert len(unique) > 30, f"cylinder wall not smooth ({len(unique)} unique normals)"
