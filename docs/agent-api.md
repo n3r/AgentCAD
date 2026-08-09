@@ -1,8 +1,9 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 25 tools, assembled
-once in `agentcad/core/tools.py` (the 17 core tools) plus the v2 feature
-packs in `agentcad/core/tools_*.py` — and exposed two ways:
+Agents drive AgentCAD through a single tool surface — 39 tools (42 with the
+`[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
+tools) plus the v2/v3 feature packs in `agentcad/core/tools_*.py` — and
+exposed two ways:
 
 1. **MCP** (any MCP client, e.g. Claude Code): a stdio server that proxies
    the running HTTP API — and auto-starts the server if it isn't running.

@@ -56,8 +56,15 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   helpers add ISO threads and fasteners — all importable from part scripts.
   An **Error Doctor** rewrites raw OCCT errors into plain-language fixes.
 
-The agent tool surface is now **25 tools** (was 17), and multi-part rebuilds
-fan out across a small pool of warm kernel workers.
+The agent tool surface is now **39 tools** (was 17; 42 with the `[fem]`
+extra), and multi-part rebuilds fan out across a small pool of warm kernel
+workers. v3 added typed parameters, per-solid semantics, sheet metal with
+flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,
+class-A surfacing with curvature analysis, modal/thermal FEM, a GUI sketcher
+and face push/pull, agent vision (`render_view`), per-project turn locks and
+multi-agent chat sessions, git-backed undo/history, mesh LOD streaming,
+sandboxed kernel workers on macOS, a three-OS CI matrix, and a
+single-binary distribution.
 
 ## Quickstart
 
@@ -148,10 +155,10 @@ def build(p):
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — processes, components, data flow
-- [docs/agent-api.md](docs/agent-api.md) — the 25-tool agent surface, MCP setup
+- [docs/agent-api.md](docs/agent-api.md) — the 39-tool agent surface, MCP setup
 - [docs/part-authoring.md](docs/part-authoring.md) — the script contract and toolkit
 - [docs/user-guide.md](docs/user-guide.md) — the UI, surface by surface
-- [docs/roadmap.md](docs/roadmap.md) — Windows/Linux, GUI editing, sandboxing
+- [docs/roadmap.md](docs/roadmap.md) — what shipped in v2/v3, and the honest residuals
 
 ## Trust model
 
