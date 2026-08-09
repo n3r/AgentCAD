@@ -18,11 +18,11 @@ from fastapi.testclient import TestClient
 
 from agentcad.core import locks
 from agentcad.core.locks import set_client_id
-from agentcad.core.service import AgentCADService, EventBus
+from agentcad.core.service import EventBus
 from agentcad.core.tools import build_registry
 from agentcad.server.app import create_app
 
-from .conftest import BOX_SCRIPT
+from .conftest import BOX_SCRIPT, make_test_service
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +37,7 @@ def _reset_identity():
 @pytest.fixture
 def stack(kernel, tmp_path):
     bus = EventBus()
-    service = AgentCADService(tmp_path / "projects", kernel, bus)
+    service = make_test_service(tmp_path / "projects", kernel, bus)
     registry = build_registry(service)
     return service, registry, bus
 
@@ -221,7 +221,7 @@ def test_lock_changed_events_on_acquire_and_release(demo):
 
 
 def test_http_identity_header_and_conflict_shapes(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    service = make_test_service(tmp_path / "projects", kernel)
     app = create_app(
         service, build_registry(service), extra_allowed_hosts={"testserver"}
     )

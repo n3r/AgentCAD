@@ -16,9 +16,10 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
 from agentcad.server.app import create_app
+
+from .conftest import make_test_service
 
 BOX = '''\
 from build123d import *
@@ -41,7 +42,7 @@ BACKGROUND = np.array([0x14, 0x17, 0x1C], np.uint8)
 
 @pytest.fixture
 def demo(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    service = make_test_service(tmp_path / "projects", kernel)
     service.create_project("demo")
     service.create_part("demo", "box", script=BOX)
     service.create_part("demo", "plate", script=PLATE)

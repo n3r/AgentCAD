@@ -4,10 +4,9 @@ import pytest
 
 from agentcad.core.materials import MATERIALS, MaterialLibrary, get_material
 from agentcad.core.model import ValidationError
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
 
-from .conftest import BOX_SCRIPT
+from .conftest import BOX_SCRIPT, make_test_service
 
 V1_DENSITIES = {
     "al6061": 2.70, "steel_a36": 7.85, "stainless_316": 8.00, "ti6al4v": 4.43,
@@ -54,7 +53,7 @@ def test_entry_validation_rejects_bad():
 
 @pytest.fixture
 def service(kernel, tmp_path):
-    return AgentCADService(tmp_path / "projects", kernel, EventBus())
+    return make_test_service(tmp_path / "projects", kernel)
 
 
 def test_tool_pack_activates_resolver_and_custom_material(service):

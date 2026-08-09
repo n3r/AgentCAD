@@ -4,8 +4,9 @@ import math
 
 import pytest
 
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
+
+from .conftest import clone_test_service, make_test_service
 
 SHELLED_BOX = '''\
 from build123d import *
@@ -43,13 +44,36 @@ def _require_fem():
     pytest.importorskip("meshio")
 
 
-@pytest.fixture
-def demo(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+def _populate_demo(service):
     service.create_project("demo")
     service.create_part("demo", "shell", script=SHELLED_BOX)
     service.create_part("demo", "box", script=BOX)
     return service
+
+
+@pytest.fixture(scope="module")
+def demo_projects(kernel, tmp_path_factory):
+    projects = tmp_path_factory.mktemp("analysis_projects")
+    _populate_demo(make_test_service(projects, kernel))
+    return projects
+
+
+@pytest.fixture
+def demo(kernel, tmp_path, demo_projects):
+    return clone_test_service(demo_projects, tmp_path / "projects", kernel)
+
+
+@pytest.fixture(scope="module")
+def fem_projects(kernel, tmp_path_factory):
+    _require_fem()
+    projects = tmp_path_factory.mktemp("fem_projects")
+    _populate_demo(make_test_service(projects, kernel))
+    return projects
+
+
+@pytest.fixture
+def fem_demo(kernel, tmp_path, fem_projects):
+    return clone_test_service(fem_projects, tmp_path / "projects", kernel)
 
 
 def test_wall_thickness_probe(demo):
@@ -85,9 +109,8 @@ def test_projected_area(demo):
     assert result["area_mm2"] == pytest.approx(40 * 30, rel=0.02)
 
 
-def test_fem_static_if_available(demo):
-    _require_fem()
-    registry = build_registry(demo)
+def test_fem_static_if_available(fem_demo):
+    registry = build_registry(fem_demo)
     # cantilever: fix x-min, load x-max downward
     result = registry.call("fem_static", {
         "project": "demo", "part_id": "box",
@@ -145,7 +168,7 @@ def test_fem_routes_501_without_extra(kernel, tmp_path):
 
     from agentcad.server.app import create_app
 
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    service = make_test_service(tmp_path / "projects", kernel)
     app = create_app(
         service, build_registry(service), extra_allowed_hosts={"testserver"}
     )
@@ -156,10 +179,9 @@ def test_fem_routes_501_without_extra(kernel, tmp_path):
         assert response.json()["error"]["type"] == "FEMUnavailable"
 
 
-def test_fem_modal_cantilever_vs_euler_bernoulli(demo):
-    _require_fem()
-    demo.create_part("demo", "beam", script=BEAM)  # al6061
-    registry = build_registry(demo)
+def test_fem_modal_cantilever_vs_euler_bernoulli(fem_demo):
+    fem_demo.create_part("demo", "beam", script=BEAM)  # al6061
+    registry = build_registry(fem_demo)
     result = registry.call("fem_modal", {
         "project": "demo", "part_id": "beam", "n_modes": 4,
         "fixed_face": {"axis": "x", "side": "min"},
@@ -184,10 +206,9 @@ def test_fem_modal_cantilever_vs_euler_bernoulli(demo):
     assert freqs[1] == pytest.approx(freqs[0], rel=0.02)
 
 
-def test_fem_modal_free_free_omits_rigid_modes(demo):
-    _require_fem()
-    demo.create_part("demo", "beam", script=BEAM)
-    registry = build_registry(demo)
+def test_fem_modal_free_free_omits_rigid_modes(fem_demo):
+    fem_demo.create_part("demo", "beam", script=BEAM)
+    registry = build_registry(fem_demo)
     result = registry.call("fem_modal", {
         "project": "demo", "part_id": "beam", "n_modes": 6,
     })
@@ -202,10 +223,9 @@ def test_fem_modal_free_free_omits_rigid_modes(demo):
     assert freqs == sorted(freqs)
 
 
-def test_fem_thermal_bar_vs_analytic(demo):
-    _require_fem()
-    demo.create_part("demo", "beam", script=BEAM)  # al6061: k = 167 W/(m*K)
-    registry = build_registry(demo)
+def test_fem_thermal_bar_vs_analytic(fem_demo):
+    fem_demo.create_part("demo", "beam", script=BEAM)  # al6061: k = 167 W/(m*K)
+    registry = build_registry(fem_demo)
     result = registry.call("fem_thermal", {
         "project": "demo", "part_id": "beam",
         "hot_face": {"axis": "x", "side": "min"},
@@ -220,12 +240,11 @@ def test_fem_thermal_bar_vs_analytic(demo):
     assert result["flux_w"] == pytest.approx(167.0 * 1e-4 * 100.0 / 0.1, rel=0.02)
 
 
-def test_fem_thermal_requires_conductivity(demo):
-    _require_fem()
-    registry = build_registry(demo)
+def test_fem_thermal_requires_conductivity(fem_demo):
+    registry = build_registry(fem_demo)
     registry.call("set_project_materials", {
         "project": "demo", "materials": {"mystery": {"density_g_cm3": 1.0}}})
-    demo.create_part("demo", "blob", script=BOX, material="mystery")
+    fem_demo.create_part("demo", "blob", script=BOX, material="mystery")
     result = registry.call("fem_thermal", {
         "project": "demo", "part_id": "blob",
         "hot_face": {"axis": "x", "side": "min"},

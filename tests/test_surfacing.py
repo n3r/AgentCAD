@@ -2,9 +2,10 @@
 
 import pytest
 
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
 from agentcad.kernel.client import KernelError
+
+from .conftest import make_test_service
 
 CYL = '''\
 from build123d import *
@@ -30,7 +31,7 @@ def build(p):
 
 @pytest.fixture
 def demo(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    service = make_test_service(tmp_path / "projects", kernel)
     service.create_project("demo")
     service.create_part("demo", "cyl", script=CYL)
     service.create_part("demo", "sphere", script=SPHERE)

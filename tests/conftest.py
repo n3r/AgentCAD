@@ -1,5 +1,8 @@
+import shutil
+
 import pytest
 
+from agentcad.core.service import AgentCADService, EventBus
 from agentcad.kernel.client import KernelClient
 
 PLATE_SCRIPT = '''\
@@ -74,6 +77,20 @@ def build(p):
     assert isinstance(p.label, str)
     return part
 '''
+
+
+def make_test_service(projects_dir, kernel, bus=None):
+    """Build a service without synchronous git snapshots for unrelated tests."""
+    bus = bus if bus is not None else EventBus()
+    service = AgentCADService(projects_dir, kernel, bus)
+    bus.on_publish = None
+    return service
+
+
+def clone_test_service(source_projects, dest_projects, kernel, bus=None):
+    """Copy a prepared project tree so mutating tests retain isolation."""
+    shutil.copytree(source_projects, dest_projects)
+    return make_test_service(dest_projects, kernel, bus)
 
 
 @pytest.fixture(scope="session")

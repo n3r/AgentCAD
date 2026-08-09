@@ -25,9 +25,10 @@ import math
 import pytest
 
 from agentcad.core.model import ValidationError
-from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
 from agentcad.kernel.client import KernelError
+
+from .conftest import clone_test_service, make_test_service
 
 BASE = '''\
 from build123d import *
@@ -74,9 +75,10 @@ THETA_STAR = math.degrees(math.asin(22 / math.hypot(30, 2))) - math.degrees(
 )
 
 
-@pytest.fixture
-def demo(kernel, tmp_path):
-    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+@pytest.fixture(scope="module")
+def motion_projects(kernel, tmp_path_factory):
+    projects = tmp_path_factory.mktemp("motion_projects")
+    service = make_test_service(projects, kernel)
     service.create_project("motion")
     service.create_part("motion", "base", script=BASE)
     service.create_part("motion", "flap", script=FLAP)
@@ -88,7 +90,12 @@ def demo(kernel, tmp_path):
                   "to_connector": "hinge", "params": {"angle": 0.0}}},
         {"id": "wall1", "part": "wall", "position": [0, 27, 0]},
     ])
-    return service
+    return projects
+
+
+@pytest.fixture
+def demo(kernel, tmp_path, motion_projects):
+    return clone_test_service(motion_projects, tmp_path / "projects", kernel)
 
 
 @pytest.fixture
@@ -96,7 +103,7 @@ def registry(demo):
     return build_registry(demo)
 
 
-def test_theta_star_is_where_we_think(demo):
+def test_theta_star_is_where_we_think():
     # the sweep grid must bracket theta* with real margin on both sides
     assert 40 < THETA_STAR < 50
     assert min(THETA_STAR - 40, 50 - THETA_STAR) > 2.0

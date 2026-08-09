@@ -86,8 +86,9 @@ Five example projects are bundled and appear in the project switcher:
   main/rod caps, gaskets, dowels, rocker valvetrain, and all 72 fasteners —
   every joint modeled the way the real engine bolts together
 
-Other useful targets: `make test` (full suite), `make app` (builds
-`dist/AgentCAD.app`), `make serve` (headless).
+Other useful targets: `make test-fast` (quick feedback), `make test` (full
+two-worker suite), `make app` (builds `dist/AgentCAD.app`), and `make serve`
+(headless). Use `make test-sequential` when debugging process interactions.
 
 Optional heavier analysis (linear-static FEM) installs as an extra — it is
 kept out of the core because it pulls in gmsh + scikit-fem + meshio:

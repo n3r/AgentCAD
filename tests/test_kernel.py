@@ -99,6 +99,8 @@ def test_bad_return_type_is_contract_error(kernel, tmp_path):
     assert "int" in exc_info.value.message
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_timeout_kills_and_recovers():
     client = KernelClient()
     client.start()
