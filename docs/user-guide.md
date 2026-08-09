@@ -328,6 +328,16 @@ silhouette area, or the full inertia tensor. Linear-static FEM is available
 only if the optional `agentcad[fem]` extra is installed (otherwise the tool
 and its route are absent).
 
+**Undo & project history.** Every change you or an agent makes — scripts,
+parameters, assembly, mates, materials, PMI — is snapshotted into a
+per-project git history (`.history/` inside the project folder; derived
+`.cache/` and `exports/` are never tracked). Press Cmd/Ctrl+Z or the toolbar
+Undo button to roll back to the previous state; agents can jump to any
+snapshot with `project_restore`. Restores are themselves recorded as new
+snapshots, so history is linear and redo is just restoring the commit you
+were on before undoing. Requires git on the server's PATH; without it
+AgentCAD works normally, only history is disabled.
+
 **Working alongside agents.** When several agents (or an agent and you) edit
 one project at once, an agent can take the editing turn with `acquire_turn`.
 While the turn is held, everyone else's changes — including edits made from

@@ -913,10 +913,86 @@ function setupExportMenu() {
   });
 }
 
+// ------------------------------------------------------------------- undo
+// Project-level undo, backed by the server's git history: restore to
+// history[1] (the state before the latest snapshot — history[0] IS the
+// current state). Redo is intentionally not in the UI for v1; agents can
+// project_restore any commit id. The restore publishes project_changed, so
+// the view refreshes through the existing debounced WS path.
+
+let undoInFlight = false; // one restore at a time; ignore key/button spam
+
+async function undoLastChange() {
+  if (!state.projectName) {
+    toast("Open a project first", "error");
+    return;
+  }
+  if (undoInFlight) return;
+  undoInFlight = true;
+  try {
+    let payload;
+    try {
+      payload = await api.projectHistory(state.projectName);
+    } catch (err) {
+      toast(`Undo failed: ${err.message}`, "error");
+      return;
+    }
+    if (payload.error) {
+      toast(`Undo failed: ${payload.error.message || "error"}`, "error");
+      return;
+    }
+    if (!payload.available) {
+      toast("Undo unavailable — git is not installed on the server", "error");
+      return;
+    }
+    const history = payload.history || [];
+    if (history.length < 2) {
+      toast("Nothing to undo");
+      return;
+    }
+    let res;
+    try {
+      res = await api.projectRestore(state.projectName, history[1].id);
+    } catch (err) {
+      toast(`Undo failed: ${err.message}`, "error");
+      return;
+    }
+    if (res.error) {
+      toast(`Undo failed: ${res.error.message || "error"}`, "error");
+      return;
+    }
+    toast(`Undid: ${history[0].message || "last change"}`);
+  } finally {
+    undoInFlight = false;
+  }
+}
+
+// The toolbar Undo button is created here rather than in index.html so the
+// history feature stays self-contained in main.js/api.js.
+function setupUndo() {
+  const fit = document.getElementById("fit-btn");
+  if (!fit || !fit.parentNode) return;
+  const btn = document.createElement("button");
+  btn.id = "undo-btn";
+  btn.className = "tb-btn";
+  btn.title = "Undo (Cmd+Z)";
+  btn.textContent = "Undo";
+  btn.addEventListener("click", undoLastChange);
+  fit.parentNode.insertBefore(btn, fit);
+}
+
 function setupKeys() {
   document.addEventListener("keydown", (e) => {
     const target = e.target instanceof Element ? e.target : document.body;
     const inField = target.closest("input, textarea, .CodeMirror") != null;
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "z") {
+      // In a text field (or with Shift = redo) leave the browser's native
+      // undo alone; elsewhere Cmd/Ctrl+Z is project-level undo.
+      if (inField || e.shiftKey) return;
+      e.preventDefault();
+      undoLastChange();
+      return;
+    }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
       // CodeMirror handles its own Cmd+S; catch it everywhere else
       if (!target.closest(".CodeMirror")) {
@@ -1015,6 +1091,7 @@ async function boot() {
   setupProjectMenu();
   setupExportMenu();
   setupImport();
+  setupUndo();
   setupKeys();
   onKeys(["rebuilding", "connected"], renderIndicators);
   onKeys(["rebuilding", "part", "mode", "selectedPart", "selectedInstance"], updateHUD);

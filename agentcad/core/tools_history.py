@@ -1,0 +1,112 @@
+"""Tool pack: git-backed project history (undo/redo for agents and the UI).
+
+Every persistent mutation — service methods and pack tools alike, i.e.
+anything that publishes ``project_changed`` — commits a snapshot of the
+project directory into a per-project git repo at ``<project>/.history``
+(core/history.py, wired via ``AgentCADService._snapshot_on_event``). These
+tools expose that history: ``project_history`` lists snapshots newest-first;
+``project_restore`` overlays a snapshot's tracked content back onto the
+project and appends a fresh "restore" commit, keeping history linear — undo
+is "restore history[1]", redo is "restore the commit id you were on before
+the undo".
+
+Reentrancy: ``project_restore`` sets ``history.in_restore`` around the
+checkout AND its own ``project_changed`` publish, so the service's bus hook
+does not stack a second snapshot on top of the internal restore commit.
+"""
+
+from __future__ import annotations
+
+from .history import HistoryError
+from .model import ValidationError
+from .tools import Tool, schema
+
+_PROJ = {"type": "string", "description": "Project name"}
+_NO_GIT_NOTE = "git not found on PATH"
+
+
+def register(registry, service) -> None:
+    def project_history(project: str, limit: int = 20) -> dict:
+        service.store.manifest(project)  # existence check -> notfound_error
+        if not service.history.available():
+            return {"available": False, "history": [], "note": _NO_GIT_NOTE}
+        entries = service.history.log(service.store.path_of(project), limit)
+        return {"available": True, "history": entries}
+
+    def project_restore(project: str, commit: str) -> dict:
+        service.store.manifest(project)  # existence check -> notfound_error
+        if not service.history.available():
+            raise ValidationError(f"cannot restore: {_NO_GIT_NOTE}")
+        if service.store.write_guard is not None:
+            # Restore rewrites project files outside the store: honor the
+            # same turn lock every other persistent write is checked against.
+            service.store.write_guard(project)
+        path = service.store.path_of(project)
+        service.history.in_restore = True
+        try:
+            try:
+                service.history.restore(path, commit)
+            except HistoryError as exc:
+                raise ValidationError(str(exc)) from exc
+            service.bus.publish(
+                {"type": "project_changed", "project": project,
+                 "reason": "restore"}
+            )
+        finally:
+            service.history.in_restore = False
+        # No cache surgery needed: build cache keys re-derive from the
+        # restored content on the next read, so stale in-memory status
+        # self-heals into a rebuild (or a cache hit on the old key).
+        result = project_history(project)
+        result["restored"] = commit
+        return result
+
+    registry.register(Tool(
+        "project_history",
+        "List a project's history snapshots, newest first: {id, message, ts}. "
+        "A snapshot is committed automatically after every persistent "
+        "mutation (part/script/param/assembly edits, mates, materials, PMI, "
+        "imports), so entry [0] is the current state and entry [1] is the "
+        "state before the latest change. Pass an id to project_restore to "
+        "undo/redo. Derived data (.cache/, exports/) is never snapshotted. "
+        "When git is not installed on the server, returns available:false "
+        "with an empty list.",
+        schema(
+            {
+                "project": _PROJ,
+                "limit": {
+                    "type": "integer",
+                    "description": "Max snapshots to return "
+                                   "(default 20, clamped to 1..100)",
+                },
+            },
+            ["project"],
+        ),
+        project_history,
+    ))
+    registry.register(Tool(
+        "project_restore",
+        "Restore a project to a past snapshot (a commit id from "
+        "project_history), then append a new 'restore' commit so history "
+        "stays linear — to redo, restore the id you were on before undoing. "
+        "Restore OVERLAYS the snapshot's tracked content: files created "
+        "after that snapshot are not deleted, but a part added later "
+        "disappears from the manifest and its script survives only as an "
+        "invisible orphan file. Geometry rebuilds from the restored scripts "
+        "on the next read. Returns the refreshed history plus {restored}. "
+        "Fails with a validation_error for unknown commits or when git is "
+        "missing, and with a conflict_error while someone else holds the "
+        "editing turn.",
+        schema(
+            {
+                "project": _PROJ,
+                "commit": {
+                    "type": "string",
+                    "description": "Commit id from project_history "
+                                   "(full or abbreviated hex)",
+                },
+            },
+            ["project", "commit"],
+        ),
+        project_restore,
+    ))

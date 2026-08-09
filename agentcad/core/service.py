@@ -11,10 +11,13 @@ import hashlib
 import json
 import math
 import queue
+import sys
 import threading
 from pathlib import Path
+from typing import Callable
 
 from ..kernel.client import KernelClient, KernelError
+from .history import ProjectHistory
 from .locks import TurnLock, current_client_id
 from .materials import MATERIALS, get_material
 from .model import InstanceSpec, NotFoundError, ValidationError, validate_vec3
@@ -30,6 +33,11 @@ class EventBus:
     def __init__(self) -> None:
         self._subscribers: list[queue.Queue] = []
         self._lock = threading.Lock()
+        # Optional pre-fan-out hook, invoked synchronously with each event
+        # before it reaches subscribers. The service uses it to snapshot
+        # project history on every project_changed publish — the one seam
+        # that sees every mutation path (service methods AND pack tools).
+        self.on_publish: Callable[[dict], None] | None = None
 
     def subscribe(self) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=256)
@@ -43,6 +51,13 @@ class EventBus:
                 self._subscribers.remove(q)
 
     def publish(self, event: dict) -> None:
+        hook = self.on_publish
+        if hook is not None:
+            try:
+                hook(event)
+            except Exception as exc:  # noqa: BLE001 — a hook bug must never
+                # break event delivery (or the mutation that published).
+                print(f"[bus] on_publish hook failed: {exc}", file=sys.stderr)
         with self._lock:
             subscribers = list(self._subscribers)
         for q in subscribers:
@@ -78,6 +93,34 @@ class AgentCADService:
         self.store.write_guard = (
             lambda proj: self.turnlock.check(proj, current_client_id())
         )
+        # Git-backed project history: snapshot on every project_changed
+        # publish. Hooking the bus (not the mutating methods) means pack
+        # mutations — mates/materials/PMI/solids, which write through the
+        # store and publish themselves — are covered by the same seam.
+        self.history = ProjectHistory()
+        bus.on_publish = self._snapshot_on_event
+
+    def _snapshot_on_event(self, event: dict) -> None:
+        """EventBus pre-fan-out hook: commit a history snapshot for each
+        project_changed publish. Every mutation path publishes AFTER its
+        write is persisted, so the snapshot always sees the new state.
+        Suppressed while project_restore runs — it commits its own linear
+        'restore' entry (see tools_history)."""
+        if event.get("type") != "project_changed" or self.history.in_restore:
+            return
+        proj = event.get("project")
+        if not proj:
+            return
+        try:
+            path = self.store.path_of(proj)
+        except NotFoundError:
+            return
+        message = "project_changed"
+        if event.get("part"):
+            message += f" {event['part']}"
+        if event.get("reason"):
+            message += f" ({event['reason']})"
+        self.history.snapshot(path, message)
 
     def _resolved_instances(self, proj: str):
         """Assembly instances with any declarative mates resolved to concrete
@@ -169,7 +212,9 @@ class AgentCADService:
                 proj, part_id, label or part_id, material,
                 script or DEFAULT_PART_SCRIPT, kind=kind, source=source,
             )
-        self.bus.publish({"type": "project_changed", "project": proj})
+        self.bus.publish(
+            {"type": "project_changed", "project": proj, "part": part_id}
+        )
         return self.get_part(proj, part_id)
 
     def get_part(self, proj: str, part_id: str) -> dict:
@@ -213,7 +258,9 @@ class AgentCADService:
                 self.store.update_part_entry(
                     proj, part_id, label=label, material=material
                 )
-        self.bus.publish({"type": "project_changed", "project": proj})
+        self.bus.publish(
+            {"type": "project_changed", "project": proj, "part": part_id}
+        )
         return self._rebuild(proj, part_id)
 
     def set_params(self, proj: str, part_id: str, values: dict) -> dict:
@@ -253,13 +300,20 @@ class AgentCADService:
                 else:
                     merged[name] = _normalize_param(name, spec[name], value)
             self.store.update_part_entry(proj, part_id, params=merged)
+        # Param overrides are authored state persisted in the manifest, so
+        # they publish (and history-snapshot) like every other mutation.
+        self.bus.publish(
+            {"type": "project_changed", "project": proj, "part": part_id}
+        )
         return self._rebuild(proj, part_id)
 
     def delete_part(self, proj: str, part_id: str) -> None:
         with self._lock:
             self.store.remove_part(proj, part_id)
             self._status.pop((proj, part_id), None)
-        self.bus.publish({"type": "project_changed", "project": proj})
+        self.bus.publish(
+            {"type": "project_changed", "project": proj, "part": part_id}
+        )
 
     def get_metrics(self, proj: str, part_id: str) -> dict:
         self.store.get_part(proj, part_id)

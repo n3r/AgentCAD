@@ -84,6 +84,12 @@ export const api = {
   drawingSvgUrl: (proj, id) =>
     `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing.svg`,
 
+  // ---- project history (undo) ----
+  projectHistory: (proj) =>
+    request("GET", `/api/projects/${enc(proj)}/history`),
+  projectRestore: (proj, commit) =>
+    request("POST", `/api/projects/${enc(proj)}/restore`, { commit }),
+
   // ---- generic tool passthrough (used by import) ----
   callTool: (name, body) => request("POST", `/api/tools/${enc(name)}`, body),
 
