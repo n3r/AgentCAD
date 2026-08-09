@@ -1,4 +1,4 @@
-# 0034 — v3 roadmap execution plan
+# 0036 — v3 roadmap execution plan
 
 - **Commit:** pending
 - **Date:** 2026-08-09

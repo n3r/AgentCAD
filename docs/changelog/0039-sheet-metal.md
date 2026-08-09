@@ -1,4 +1,4 @@
-# 0037 — Sheet metal: SheetPart toolkit + flat-pattern export
+# 0039 — Sheet metal: SheetPart toolkit + flat-pattern export
 
 - **Commit:** pending
 - **Date:** 2026-08-09

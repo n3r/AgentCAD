@@ -1,4 +1,4 @@
-# 0041 — macOS sandbox-exec confinement of kernel workers
+# 0043 — macOS sandbox-exec confinement of kernel workers
 
 - **Commit:** pending
 - **Date:** 2026-08-09

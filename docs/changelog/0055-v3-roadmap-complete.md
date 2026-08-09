@@ -1,4 +1,4 @@
-# 0053 — v3 close-out: roadmap rewritten, docs reconciled
+# 0055 — v3 close-out: roadmap rewritten, docs reconciled
 
 - **Commit:** pending
 - **Date:** 2026-08-09
@@ -6,8 +6,8 @@
 
 ## Summary
 
-The close-out of the v3 wave (plan 0034): every remaining item from the old
-`docs/roadmap.md` has shipped across changelogs 0035–0052. The roadmap is
+The close-out of the v3 wave (plan 0036): every remaining item from the old
+`docs/roadmap.md` has shipped across changelogs 0037–0054. The roadmap is
 rewritten to record what shipped and the deliberately-kept residuals, and
 the stale tool-count prose is reconciled with reality.
 
@@ -35,5 +35,5 @@ the stale tool-count prose is reconciled with reality.
 ## Notes
 
 Full-suite verification for the wave is recorded in this commit's message;
-the browser pass is 0052. Wave total: 19 commits, ~180 new tests
+the browser pass is 0054. Wave total: 19 commits, ~180 new tests
 (138 → 320+ incl. FEM-extra runs), zero regressions.

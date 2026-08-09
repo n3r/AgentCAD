@@ -1,4 +1,4 @@
-# 0043 — Tolerance stack-ups over the mate graph (worst-case + RSS)
+# 0045 — Tolerance stack-ups over the mate graph (worst-case + RSS)
 
 - **Commit:** pending
 - **Date:** 2026-08-09

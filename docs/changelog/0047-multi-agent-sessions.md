@@ -1,4 +1,4 @@
-# 0045 — Multi-agent chat sessions
+# 0047 — Multi-agent chat sessions
 
 - **Commit:** pending
 - **Date:** 2026-08-09
@@ -7,7 +7,7 @@
 ## Summary
 
 Concurrent agents on one project (roadmap "Multi-agent sessions"), gated by
-the turn locks that landed in 0044: chat history and turn serialization are
+the turn locks that landed in 0046: chat history and turn serialization are
 now keyed by `(project, session)`, sessions interleave concurrently while
 same-session turns still queue, and every session's tool calls carry a
 distinct client identity (`chat:<session>`).
@@ -18,7 +18,7 @@ distinct client identity (`chat:<session>`).
   `session="main"` (ids `[a-z0-9_-]{1,32}`, validated at one choke point);
   per-(project, session) asyncio locks; all chat_* events (including
   error/limit/finally paths) carry `"session"`; tool identity is `chat` for
-  "main" (backward compat with 0044's lock tests) and `chat:<session>`
+  "main" (backward compat with 0046's lock tests) and `chat:<session>`
   otherwise. Image tool-result and executor-identity behavior preserved.
 - **Routes**: `POST /api/chat` takes optional `session` (explicit null →
   422); history GET/DELETE take `?session=`; payloads carry `"session"`.

@@ -1,4 +1,4 @@
-# 0035 — Typed PARAMS: bool, enum, string, and int parameters
+# 0037 — Typed PARAMS: bool, enum, string, and int parameters
 
 - **Commit:** pending
 - **Date:** 2026-08-09

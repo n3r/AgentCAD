@@ -1,4 +1,4 @@
-# 0051 — GUI sketching & push/pull (script-as-source-of-truth)
+# 0053 — GUI sketching & push/pull (script-as-source-of-truth)
 
 - **Commit:** pending
 - **Date:** 2026-08-09

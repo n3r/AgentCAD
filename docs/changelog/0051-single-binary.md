@@ -1,4 +1,4 @@
-# 0049 — Single-binary distribution (PyInstaller onedir bundle)
+# 0051 — Single-binary distribution (PyInstaller onedir bundle)
 
 - **Commit:** pending
 - **Date:** 2026-08-09

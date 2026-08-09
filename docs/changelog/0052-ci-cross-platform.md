@@ -1,4 +1,4 @@
-# 0050 — Cross-platform CI workflow + Windows spawn guard
+# 0052 — Cross-platform CI workflow + Windows spawn guard
 
 - **Commit:** pending
 - **Date:** 2026-08-09
@@ -31,7 +31,7 @@ the packaging/CI proof half; the suite itself is the compat harness.
 
 - `.github/workflows/ci.yml`
 - `agentcad/agent/mcp_server.py`
-- `docs/changelog/0050-ci-cross-platform.md`
+- `docs/changelog/0052-ci-cross-platform.md`
 
 ## Notes
 

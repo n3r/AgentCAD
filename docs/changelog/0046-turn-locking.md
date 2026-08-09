@@ -1,4 +1,4 @@
-# 0044 — Multi-user turn-locking at the store choke point
+# 0046 — Multi-user turn-locking at the store choke point
 
 - **Commit:** pending
 - **Date:** 2026-08-09

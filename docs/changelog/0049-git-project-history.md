@@ -1,4 +1,4 @@
-# 0047 — Git-backed project history: automatic snapshots + undo/restore
+# 0049 — Git-backed project history: automatic snapshots + undo/restore
 
 - **Commit:** pending
 - **Date:** 2026-08-09

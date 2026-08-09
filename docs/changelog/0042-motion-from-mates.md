@@ -1,4 +1,4 @@
-# 0040 — Motion from mates: DOF sweeps with moving-body interference
+# 0042 — Motion from mates: DOF sweeps with moving-body interference
 
 - **Commit:** pending
 - **Date:** 2026-08-09

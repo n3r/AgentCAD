@@ -5,7 +5,7 @@
 > Each slice is dispatched with its section below plus the relevant subsystem
 > maps. Subagents do NOT run git and do NOT install into the shared venv.
 > The orchestrator owns all commits; every commit stages a
-> `docs/changelog/NNNN-<slug>.md` entry (next: 0034).
+> `docs/changelog/NNNN-<slug>.md` entry (next: 0036 — 0034/0035 were taken by the light-ui branch).
 
 **Goal:** Build every remaining item in `docs/roadmap.md` (all sections below
 "Shipped since v0.1") as additive vertical slices behind the v2 extension

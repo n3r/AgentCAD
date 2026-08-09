@@ -1,4 +1,4 @@
-# 0046 — Class-A surfacing toolkit + curvature analysis
+# 0048 — Class-A surfacing toolkit + curvature analysis
 
 - **Commit:** pending
 - **Date:** 2026-08-09
@@ -52,4 +52,4 @@ roadmap called out.
 The G2 stability gate is an area-ratio proxy against the G1 reference — it
 cleanly separates the observed converged (1.00) vs ballooned (≥2.98) cases;
 a seam-curvature check would be stricter if ever needed. Add/add conflict in
-`toolkit/__init__.py` with 0037 resolved by keeping both submodules.
+`toolkit/__init__.py` with 0039 resolved by keeping both submodules.

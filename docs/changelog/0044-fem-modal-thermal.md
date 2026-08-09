@@ -1,4 +1,4 @@
-# 0042 — FEM tiers: modal and steady-state thermal analysis
+# 0044 — FEM tiers: modal and steady-state thermal analysis
 
 - **Commit:** pending
 - **Date:** 2026-08-09

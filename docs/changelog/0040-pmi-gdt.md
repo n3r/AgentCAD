@@ -1,4 +1,4 @@
-# 0038 — PMI / GD&T: tolerance model + drawing callouts
+# 0040 — PMI / GD&T: tolerance model + drawing callouts
 
 - **Commit:** pending
 - **Date:** 2026-08-09

@@ -1,4 +1,4 @@
-# 0039 — Vision feedback: render_view tool with real image content
+# 0041 — Vision feedback: render_view tool with real image content
 
 - **Commit:** pending
 - **Date:** 2026-08-09

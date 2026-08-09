@@ -1,4 +1,4 @@
-# 0036 — Per-solid part semantics: labels, metrics, and per-solid materials
+# 0038 — Per-solid part semantics: labels, metrics, and per-solid materials
 
 - **Commit:** pending
 - **Date:** 2026-08-09
@@ -56,5 +56,5 @@ Known asymmetry: the tool validates material ids against builtin + project
 layers only, while the density resolver also reads the user-global materials
 file — a global-only id is rejected at assignment despite being resolvable.
 Single-solid parts keep exactly the old math and emit no `solids` key.
-Implemented in an isolated worktree branched before 0035; cherry-picked with
+Implemented in an isolated worktree branched before 0037 (typed PARAMS); cherry-picked with
 one trivial add/add conflict in `worker.py` resolved by keeping both helpers.

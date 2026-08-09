@@ -1,4 +1,4 @@
-# 0048 — Mesh streaming: LOD tiers + progressive viewport loading
+# 0050 — Mesh streaming: LOD tiers + progressive viewport loading
 
 - **Commit:** pending
 - **Date:** 2026-08-09
