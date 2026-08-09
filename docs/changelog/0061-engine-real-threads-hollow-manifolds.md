@@ -65,3 +65,5 @@ modeled in contact with the male threads (see the fasteners example's
   as `worker.pairwise_interference` and the motion sweep's per-sample
   collision loop now uses it too — its raw compound-`&` had the same
   correctness bug, newly reachable via the engine's hardware compounds.
+- CI `timeout-minutes` 45 → 90: the engine's extremes sweep, interference,
+  and 210 MB STEP export legitimately need the headroom on slower runners.
