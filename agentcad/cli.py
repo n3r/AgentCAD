@@ -24,10 +24,13 @@ DEFAULT_PROJECTS_DIR = Path.home() / "AgentCAD" / "projects"
 
 
 def _build_service(projects_dir: Path):
+    from .config import get_kernel_pool_size
     from .core.service import AgentCADService, EventBus
     from .kernel.client import KernelClient
+    from .kernel.pool import KernelPool
 
-    kernel = KernelClient()
+    size = get_kernel_pool_size()
+    kernel = KernelClient() if size == 1 else KernelPool(size=size)
     kernel.start()
     service = AgentCADService(projects_dir, kernel, EventBus())
     _register_examples(service)

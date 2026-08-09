@@ -20,10 +20,15 @@ def registry(kernel, tmp_path):
     return build_registry(service)
 
 
-def test_seventeen_tools_with_valid_schemas(registry):
+def test_core_and_v2_tools_with_valid_schemas(registry):
     tools = registry.list()
-    assert {t.name for t in tools} == EXPECTED_TOOLS
-    assert len(tools) == 17
+    names = {t.name for t in tools}
+    # the 17 v1 core tools are always present
+    assert EXPECTED_TOOLS <= names
+    # v2 packs add import/sketch/mates/materials/drawing/analysis tools
+    assert {"import_cad_file", "solve_sketch", "set_mate", "list_materials",
+            "generate_drawing", "analyze_part"} <= names
+    assert len(tools) >= 25  # 25 without the optional [fem] extra
     for tool in tools:
         assert tool.description
         assert tool.input_schema["type"] == "object"

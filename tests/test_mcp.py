@@ -118,9 +118,10 @@ def test_mcp_stdio_end_to_end(live_server):
                 # Tool list mirrors the registry 1:1.
                 listed = await session.list_tools()
                 names = [t.name for t in listed.tools]
-                assert len(names) == 17, names
+                assert len(names) >= 25, names  # 17 core + v2 packs
                 for expected in ("list_projects", "create_part",
-                                 "update_part_script", "part_template"):
+                                 "update_part_script", "part_template",
+                                 "import_cad_file", "generate_drawing"):
                     assert expected in names
                 template = next(t for t in listed.tools if t.name == "part_template")
                 assert template.input_schema.get("type") == "object"

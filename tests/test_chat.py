@@ -138,7 +138,7 @@ def test_chat_turn_executes_tools_and_publishes_events(stack):
 
     # The API request carried the full registry tool surface and the contract.
     first_call = fake.messages.calls[0]
-    assert len(first_call["tools"]) == 17
+    assert len(first_call["tools"]) >= 25  # 17 core + v2 packs
     assert {"name", "description", "input_schema"} <= set(first_call["tools"][0])
     assert "part_template" in first_call["system"]
     assert first_call["model"] == "claude-sonnet-5"

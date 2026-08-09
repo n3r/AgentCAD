@@ -49,3 +49,17 @@ def get_port() -> int:
     cfg["port"] = DEFAULT_PORT
     save_config(cfg)
     return DEFAULT_PORT
+
+
+def get_kernel_pool_size() -> int:
+    """Number of kernel workers. Memory (~0.5 GB/worker), not cores, is the
+    limit, so default conservatively; override via config or env."""
+    override = os.environ.get("AGENTCAD_KERNEL_POOL_SIZE")
+    if override and override.isdigit():
+        return max(1, int(override))
+    cfg = load_config()
+    size = cfg.get("kernel_pool_size")
+    if isinstance(size, int) and size >= 1:
+        return size
+    cores = os.cpu_count() or 4
+    return max(1, min(3, cores // 3))

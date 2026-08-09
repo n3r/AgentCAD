@@ -106,7 +106,7 @@ def test_error_mapping(demo):
 
 def test_tools_endpoints(demo):
     tools = demo.get("/api/tools").json()["tools"]
-    assert len(tools) == 17
+    assert len(tools) >= 25  # 17 core + v2 packs
     assert all("input_schema" in t for t in tools)
 
     result = demo.post("/api/tools/list_projects").json()
