@@ -34,6 +34,9 @@
 
     <button id="fit-btn" class="tb-btn" title="Fit view (F)">Fit</button>
 
+    <button id="import-btn" class="tb-btn" title="Import a CAD file (.step / .stp / .brep / .stl)">Import</button>
+    <input id="import-input" type="file" accept=".step,.stp,.brep,.stl" hidden>
+
     <div class="menu-wrap">
       <button id="export-btn" class="tb-btn" aria-haspopup="menu" aria-expanded="false">
         Export<span class="chev">▾</span>
@@ -47,6 +50,10 @@
         <div class="menu-label">Assembly</div>
         <button class="menu-item" data-export="assembly:step">STEP <span class="meta">.step</span></button>
         <button class="menu-item" data-export="assembly:stl">STL <span class="meta">.stl</span></button>
+        <div class="menu-sep"></div>
+        <div class="menu-label">Drawing</div>
+        <button class="menu-item" data-drawing="svg">SVG preview <span class="meta">.svg</span></button>
+        <button class="menu-item" data-drawing="dxf">DXF <span class="meta">.dxf</span></button>
       </div>
     </div>
 
@@ -73,6 +80,9 @@
     <main id="viewport">
       <div id="hud" class="hidden"></div>
       <div id="viewport-empty" class="hidden"></div>
+      <div id="placement" class="hidden">
+        <div id="placement-body"></div>
+      </div>
     </main>
 
     <aside id="inspector">
@@ -118,6 +128,19 @@
       </form>
     </div>
   </section>
+
+  <div id="drawing-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <header class="modal-head">
+        <span id="drawing-title">Drawing</span>
+        <div class="modal-actions">
+          <a id="drawing-download" class="tb-btn hidden" download>Download SVG</a>
+          <button id="drawing-close" class="tb-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div id="drawing-view" class="drawing-view"></div>
+    </div>
+  </div>
 
   <div id="toasts"></div>
 

@@ -29,6 +29,19 @@ above the rim. Bolts and seals are not modeled. All stacked faces keep a
 deliberate 0.2-0.4 mm clearance so the interference check is exactly clean;
 in a fastened build those gaps would be gasket/seal allowances.
 
+**Mated, not hand-placed.** The nozzle is the assembly datum (a root
+instance at the origin). The flange and injector plate are positioned by
+*mates* instead of hardcoded transforms: each part declares named rigid
+connectors via `connectors(p, part)` — the nozzle exposes `flange_seat`
+(z = -0.2) and `injector_seat` (z = +0.2), the flange exposes `top`
+(its z = flange_t interface face), and the plate exposes `bottom` (z = 0).
+The manifest then mates `flange_1.top → nozzle_1.flange_seat` and
+`injector_plate_1.bottom → nozzle_1.injector_seat`; the service resolves
+those to concrete positions ([0, 0, -14.2] and [0, 0, 0.2]) at read time,
+so raising `flange_t` re-seats the flange automatically and the two
+gasket clearances live in one place (the seats) rather than being baked
+into every transform.
+
 ## How an agent iterates on this project
 
 A typical loop: call `set_params` on `nozzle` to raise `expansion_ratio`

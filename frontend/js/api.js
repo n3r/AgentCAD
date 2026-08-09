@@ -66,6 +66,55 @@ export const api = {
   exportAssembly: (proj, format) =>
     request("POST", `/api/projects/${enc(proj)}/export`, { format }),
 
+  /** Set one instance's transform/color. 409 (ConflictError) if mate-driven. */
+  patchInstance: (proj, id, body) =>
+    request("PATCH", `/api/projects/${enc(proj)}/assembly/instances/${enc(id)}`, body),
+
+  // ---- materials v2 ----
+  listMaterials: (proj) =>
+    request("GET", `/api/materials${proj ? `?project=${enc(proj)}` : ""}`),
+
+  // ---- analysis (tier 1) ----
+  analyzePart: (proj, id, body) =>
+    request("POST", `/api/projects/${enc(proj)}/parts/${enc(id)}/analyze`, body),
+
+  // ---- drawings ----
+  generateDrawing: (proj, id, body) =>
+    request("POST", `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing`, body),
+  drawingSvgUrl: (proj, id) =>
+    `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing.svg`,
+
+  // ---- generic tool passthrough (used by import) ----
+  callTool: (name, body) => request("POST", `/api/tools/${enc(name)}`, body),
+
+  /** Raw-body upload of an imported CAD file. Resolves {source, size_bytes};
+   *  throws ApiError on rejection (too large, bad extension, empty). */
+  async uploadImport(proj, filename, arrayBuffer) {
+    let res;
+    const url = `/api/projects/${enc(proj)}/imports?filename=${enc(filename)}`;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: arrayBuffer,
+      });
+    } catch {
+      throw new ApiError(0, {
+        error: { type: "network_error", message: "server unreachable", details: {} },
+      });
+    }
+    if (!res.ok) {
+      let payload = null;
+      try {
+        payload = await res.json();
+      } catch {
+        /* non-JSON error body */
+      }
+      throw new ApiError(res.status, payload);
+    }
+    return res.json();
+  },
+
   chat: (project, message) => request("POST", "/api/chat", { project, message }),
   chatHistory: (project) =>
     request("GET", `/api/chat/history?project=${enc(project)}`),

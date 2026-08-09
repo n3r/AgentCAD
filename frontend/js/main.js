@@ -8,6 +8,8 @@ import * as tree from "./tree.js";
 import * as inspector from "./inspector.js";
 import * as editor from "./editor.js";
 import * as chat from "./chat.js";
+import * as placement from "./placement.js";
+import * as drawings from "./drawings.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 
@@ -27,6 +29,7 @@ const actions = {
   reloadMesh,
   refreshPartDetail,
   markPartState,
+  patchInstanceTransform,
   toast,
 };
 
@@ -62,10 +65,13 @@ async function loadProject(name) {
     selectedInstance: null,
     mode: "part",
     rebuilding: new Set(),
+    partKinds: {},
+    materials: null,
   });
   localStorage.setItem("agentcad.project", name);
   document.getElementById("project-name").textContent = name;
   updateEmptyState();
+  loadMaterials(name);
 
   if (detail.parts.length) {
     await selectPart(detail.parts[0].id);
@@ -138,7 +144,10 @@ async function selectPart(partId) {
     toast(`Could not load ${partId}: ${err.message}`, "error");
   }
   if (seq !== selectSeq) return;
-  if (detail) setState({ part: detail });
+  if (detail) {
+    setState({ part: detail });
+    learnPartKind(detail);
+  }
   await reloadMesh(partId);
   if (seq !== selectSeq) return;
   if (lastFittedTarget !== partId && meshBuffers.has(partId)) {
@@ -168,6 +177,7 @@ async function selectAssembly(instanceId) {
       api.getPart(state.projectName, inst.part).then(
         (detail) => {
           if (state.selectedPart === inst.part) setState({ part: detail });
+          learnPartKind(detail);
         },
         () => {}
       );
@@ -232,6 +242,7 @@ function renderAssemblyFromCache() {
   });
   viewport.showAssembly(items);
   viewport.setSelectedInstance(state.selectedInstance);
+  updateGizmo();
 }
 
 function scheduleAssemblyRefresh() {
@@ -284,6 +295,7 @@ async function refreshPartDetail(partId) {
   try {
     const detail = await api.getPart(state.projectName, partId);
     if (state.selectedPart === partId) setState({ part: detail });
+    learnPartKind(detail);
   } catch {
     /* keep the current detail */
   }
@@ -356,6 +368,168 @@ async function runExport(kind, format) {
     const detail = err instanceof ApiError ? err.error.message : String(err);
     toast(`Export failed: ${detail}`, "error");
   }
+}
+
+// ----------------------------------------------------------- materials v2
+
+async function loadMaterials(name) {
+  try {
+    const payload = await api.listMaterials(name);
+    if (state.projectName === name) setState({ materials: payload });
+  } catch {
+    /* materials pane degrades to the bare id if the catalog can't load */
+  }
+}
+
+// Reference-vs-script isn't in the project list payload; learn it lazily from
+// part detail so the sidebar can badge imports without an extra fetch storm.
+function learnPartKind(detail) {
+  if (!detail || !detail.id) return;
+  const prev = state.partKinds[detail.id];
+  const next = { kind: detail.kind || "script", source: detail.source || null };
+  if (!prev || prev.kind !== next.kind || prev.source !== next.source) {
+    setState({ partKinds: { ...state.partKinds, [detail.id]: next } });
+  }
+}
+
+// ----------------------------------------------------- instance transform
+
+async function patchInstanceTransform(instanceId, patch) {
+  if (!state.projectName || !instanceId) return;
+  try {
+    const asm = await api.patchInstance(state.projectName, instanceId, patch);
+    setState({ assembly: asm });
+    // keep the project's raw instances roughly in sync (sidebar, mate flags)
+    if (state.project && state.project.assembly) {
+      const src = asm.instances.find((i) => i.id === instanceId);
+      const dst = state.project.assembly.instances.find((i) => i.id === instanceId);
+      if (src && dst) {
+        dst.position = src.position;
+        dst.rotation_deg = src.rotation_deg;
+      }
+    }
+    renderAssemblyFromCache();
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 409) {
+      toast("Positioned by a mate — clear its mate to move it by hand.", "error");
+    } else {
+      toast(`Move failed: ${err.message}`, "error");
+    }
+    scheduleAssemblyRefresh(); // resync panel + gizmo to the server truth
+  }
+}
+
+// Attach/detach the on-canvas move/rotate gizmo for the current selection.
+function updateGizmo() {
+  if (state.mode !== "assembly" || !state.selectedInstance) {
+    viewport.setGizmo(null);
+    return;
+  }
+  const inst =
+    state.assembly &&
+    state.assembly.instances.find((i) => i.id === state.selectedInstance);
+  // Mate-driven (or not yet loaded): the placement panel shows the note; no gizmo.
+  if (!inst || inst.mate) {
+    viewport.setGizmo(null);
+    return;
+  }
+  viewport.setGizmo(state.selectedInstance, {
+    mode: state.gizmoMode,
+    onLive: (t) => placement.updateLive(t),
+    onCommit: (t) =>
+      patchInstanceTransform(state.selectedInstance, {
+        position: t.position,
+        rotation_deg: t.rotationDeg,
+      }),
+  });
+}
+
+// ---------------------------------------------------------------- import
+
+function deriveImportId(filename) {
+  let id = (filename || "part")
+    .replace(/\.[^.]*$/, "") // drop extension
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (!/^[a-z]/.test(id)) id = `ref_${id}`;
+  return id.slice(0, 40) || "reference";
+}
+
+async function handleImportFile(file) {
+  if (!file) return;
+  if (!state.projectName) {
+    toast("Open a project first", "error");
+    return;
+  }
+  let upload;
+  try {
+    const buf = await file.arrayBuffer();
+    upload = await api.uploadImport(state.projectName, file.name, buf);
+  } catch (err) {
+    const detail = err instanceof ApiError ? err.error.message : String(err);
+    toast(`Upload failed: ${detail}`, "error");
+    return;
+  }
+  let id = prompt(
+    `Imported “${upload.source}”. Part id ([a-z][a-z0-9_]{0,39}):`,
+    deriveImportId(file.name)
+  );
+  if (!id) return; // file stays in imports/; user can retry with the same name
+  id = id.trim();
+  if (!ID_RE.test(id)) {
+    toast(`Invalid part id ${JSON.stringify(id)}`, "error");
+    return;
+  }
+  let res;
+  try {
+    res = await api.callTool("import_cad_file", {
+      project: state.projectName,
+      source: upload.source,
+      part_id: id,
+      label: id,
+    });
+  } catch (err) {
+    const detail = err instanceof ApiError ? err.error.message : String(err);
+    toast(`Import failed: ${detail}`, "error");
+    return;
+  }
+  // The tool passthrough returns {error:...} at HTTP 200 on tool failure
+  // (e.g. a duplicate part id or an unreadable file).
+  if (res && res.error) {
+    toast(`Import failed: ${res.error.message || "error"}`, "error");
+    return;
+  }
+  if (res && res.part) learnPartKind(res.part);
+  await refreshProject();
+  await selectPart(id);
+  const imp = (res && res.imported) || {};
+  const bits = [];
+  if (imp.mesh_only) bits.push("mesh-only");
+  if (imp.n_solids != null) {
+    bits.push(`${imp.n_solids} solid${imp.n_solids === 1 ? "" : "s"}`);
+  }
+  toast(`Imported ${id}${bits.length ? ` (${bits.join(", ")})` : ""}`);
+}
+
+function setupImport() {
+  const btn = document.getElementById("import-btn");
+  const input = document.getElementById("import-input");
+  if (!btn || !input) return;
+  btn.addEventListener("click", () => {
+    if (!state.projectName) {
+      toast("Open a project first", "error");
+      return;
+    }
+    input.value = "";
+    input.click();
+  });
+  input.addEventListener("change", () => {
+    const file = input.files && input.files[0];
+    if (file) handleImportFile(file);
+    input.value = "";
+  });
 }
 
 // --------------------------------------------------------------- websocket
@@ -690,9 +864,31 @@ function setupExportMenu() {
       const [kind] = item.dataset.export.split(":");
       item.disabled = kind === "part" ? !hasPart : !hasInstances;
     }
+    // Drawings are script-part only (the server rejects references).
+    const selInfo = state.selectedPart && state.partKinds[state.selectedPart];
+    const selKind = selInfo
+      ? selInfo.kind
+      : state.part && state.part.id === state.selectedPart
+        ? state.part.kind
+        : "script";
+    const canDraw = hasPart && selKind !== "reference";
+    for (const item of menu.querySelectorAll("[data-drawing]")) {
+      item.disabled = !canDraw;
+    }
     setMenuHidden(menu, false);
   });
   menu.addEventListener("click", (e) => {
+    const drawItem = e.target.closest("[data-drawing]");
+    if (drawItem && !drawItem.disabled) {
+      setMenuHidden(menu, true);
+      if (!state.selectedPart) return;
+      if (drawItem.dataset.drawing === "svg") {
+        drawings.previewSvg(state.projectName, state.selectedPart);
+      } else {
+        drawings.saveDxf(state.projectName, state.selectedPart);
+      }
+      return;
+    }
     const item = e.target.closest("[data-export]");
     if (!item || item.disabled) return;
     setMenuHidden(menu, true);
@@ -714,8 +910,14 @@ function setupKeys() {
       return;
     }
     if (inField || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.key === "f" || e.key === "F") {
+    const k = e.key.toLowerCase();
+    if (k === "f") {
       viewport.fit();
+      return;
+    }
+    // Gizmo mode — only meaningful with an editable instance selected.
+    if ((k === "g" || k === "r") && state.mode === "assembly" && state.selectedInstance) {
+      setState({ gizmoMode: k === "g" ? "translate" : "rotate" });
     }
   });
   document.getElementById("fit-btn").addEventListener("click", () => viewport.fit());
@@ -767,12 +969,16 @@ async function boot() {
   tree.init(actions);
   inspector.init(actions);
   chat.init(actions);
+  placement.init(actions);
+  drawings.init(actions);
   setupMenus();
   setupProjectMenu();
   setupExportMenu();
+  setupImport();
   setupKeys();
   onKeys(["rebuilding", "connected"], renderIndicators);
   onKeys(["rebuilding", "part", "mode", "selectedPart", "selectedInstance"], updateHUD);
+  onKeys(["gizmoMode"], () => viewport.setGizmoMode(state.gizmoMode));
   connectWS();
 
   try {

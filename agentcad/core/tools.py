@@ -74,9 +74,14 @@ class ToolRegistry:
         for key in schema.get("required", []):
             if key not in args:
                 return f"missing required argument {key!r}"
+        required = set(schema.get("required", []))
         for key, value in args.items():
             if key not in props:
                 return f"unexpected argument {key!r}"
+            # None on an optional argument means "omitted" — skip type-checking
+            # so callers can pass a uniform payload with null defaults.
+            if value is None and key not in required:
+                continue
             expected = props[key].get("type")
             check = _TYPE_CHECKS.get(expected)
             if check and not check(value):

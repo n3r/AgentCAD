@@ -18,21 +18,34 @@ the same service humans use through the browser UI.
 │ FastAPI server — 127.0.0.1:<port>   (agentcad serve)        │
 │                                                             │
 │   ToolRegistry ──► AgentCADService ──► ProjectStore (files) │
-│   (17 tools,       (cache, events,     ~/AgentCAD/projects  │
+│   (25 tools,       (cache, events,     ~/AgentCAD/projects  │
 │    single source    orchestration)     or --projects-dir    │
 │    of truth)             │                                  │
 │                          │ line-delimited JSON-RPC (stdio)  │
 │                          ▼                                  │
-│               Kernel worker subprocess                      │
-│               (warm build123d/OCCT, restartable)            │
+│            Kernel worker pool (N warm subprocesses)         │
+│        (build123d/OCCT, restartable, affinity-routed)       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Two processes: the **server** (FastAPI + service + store) and the **kernel
-worker** (`agentcad/kernel/worker.py`), which imports build123d once (~3 s)
-and then executes part scripts in ~10–100 ms per rebuild. The server never
-imports OCCT; if a script hangs or crashes the kernel, the worker is killed
-and respawned (`agentcad/kernel/client.py`) and the server keeps running.
+Two tiers of process: the **server** (FastAPI + service + store) and one or
+more **kernel workers** (`agentcad/kernel/worker.py`), each of which imports
+build123d once (~3 s) and then executes part scripts in ~10–100 ms per
+rebuild. The server never imports OCCT; if a script hangs or crashes a
+kernel, that worker is killed and respawned (`agentcad/kernel/client.py`) and
+the server keeps running.
+
+The service talks to a **`KernelPool`** (`agentcad/kernel/pool.py`) rather
+than a bare client: it fans requests across N warm workers so multi-part
+rebuilds run concurrently (measured 2.4–3.6× on batches). The pool is a
+drop-in for a single `KernelClient` — same `request(method, params,
+timeout_s=, affinity=)` surface — so nothing upstream changed. Requests carry
+an `affinity` (the part id) that hashes to a fixed worker, keeping a part on
+its warm shape-LRU; unkeyed work round-robins. Workers spawn lazily, and
+**pool size 1 is byte-for-byte identical to v1**. Size auto-picks
+`max(1, min(3, cores//3))` — memory (~0.5 GB/worker), not cores, is the
+constraint — and is overridable via `kernel_pool_size` in the config file or
+`AGENTCAD_KERNEL_POOL_SIZE`.
 
 ## Components
 
@@ -42,13 +55,79 @@ and respawned (`agentcad/kernel/client.py`) and the server keeps running.
 | `agentcad/kernel/mesh.py` | OCCT → ACM1 tessellation: per-face triangulation (hard edges preserved), per-vertex normals, tangential-deflection edge polylines. |
 | `agentcad/kernel/acm.py` | ACM1 binary mesh codec (no OCP dependency; the frontend has a JS parser). |
 | `agentcad/kernel/client.py` | Worker lifecycle: spawn, one-request-at-a-time, per-request timeout, kill-and-respawn, stderr tail capture for crash reports. |
-| `agentcad/core/project.py` | Filesystem project store: `project.json` manifest, `parts/<id>.py` scripts, atomic writes, validation. |
-| `agentcad/core/service.py` | The application service all clients share: rebuild orchestration, content-hash mesh/metrics cache, EventBus, assembly rollups. |
-| `agentcad/core/tools.py` | ToolRegistry — every agent-visible tool (name, description, JSON Schema, handler) defined once; MCP and chat render from it. |
-| `agentcad/server/app.py` | REST routes (thin), `/api/tools` generic passthrough, WebSocket event channel, static frontend hosting. |
+| `agentcad/kernel/pool.py` | `KernelPool`: N `KernelClient`s behind the same `request()` surface; affinity routing + round-robin, lazy spawn. Size 1 ≡ single client. |
+| `agentcad/kernel/handlers/` | Worker handler packs (reference, drawing, analysis, fem, connectors) merged into the worker at startup — see [extension points](#v2-extension-points). |
+| `agentcad/kernel/refload.py` | Reference-CAD loader (STEP/BREP → solid, STL → mesh-only Face) with an LRU keyed by (realpath, mtime, size). Kernel-side only (imports OCP). |
+| `agentcad/kernel/error_doctor.py` | Catalog of real OCCT/build123d failure signatures → plain-language diagnosis + fix; enriches every worker error's `details.hint`. |
+| `agentcad/kernel/_mates_resolver.py` | Connector evaluation + mate-graph ordering (cycle rejection) + Joint-based resolution to concrete transforms. |
+| `agentcad/toolkit/` | Part-authoring helpers importable from scripts: `safe_fillet`/`safe_shell`/`safe_bool`, the scipy sketch solver, `bd_warehouse` threads. |
+| `agentcad/core/project.py` | Filesystem project store: `project.json` manifest (schema v2, reads v1), `parts/<id>.py` scripts, `imports/` references, atomic writes, validation. |
+| `agentcad/core/service.py` | The application service all clients share: rebuild orchestration (script and reference parts), content-hash mesh/metrics cache, EventBus, assembly rollups, three v2 seams (material resolver, mate resolution, kernel pool). |
+| `agentcad/core/materials.py` | Materials v2: frozen `Material` schema + 30-entry builtin library + `MaterialLibrary` (builtin < global file < project overrides). |
+| `agentcad/core/mates.py` | Server-side seam that marshals instances to the worker's `resolve_mates` and writes concrete transforms back. |
+| `agentcad/core/imports.py` | Reference-file ingest helpers: safe basename, 100 MB cap, supported-extension gate. |
+| `agentcad/core/tools.py` | ToolRegistry — the 17 core tools defined once; discovers and loads `tools_*.py` packs. MCP and chat render from the merged registry. |
+| `agentcad/core/tools_*.py` | v2 tool packs (import, materials, mates, drawing, analysis, sketch), each exporting `register(registry, service)`. |
+| `agentcad/server/app.py` | Core REST routes (thin), `/api/tools` passthrough, WebSocket channel, static hosting; mounts `routes_*.py` packs under `/api`. |
+| `agentcad/server/routes_*.py` | v2 route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve). |
 | `agentcad/agent/mcp_server.py` | MCP stdio server proxying `/api/tools`; auto-starts the HTTP server when unreachable. |
 | `agentcad/agent/chat.py` | Server-side Anthropic tool-use loop streaming to the UI over the WebSocket. |
 | `frontend/` | Static ES modules (no bundler): Three.js viewport, tree, parameter inspector, CodeMirror editor, chat panel. |
+
+## v2 extension points
+
+The v1 spine above is untouched. Every v2 capability lands as a **vertical
+module** behind one of three pre-wired, auto-discovered extension points, so
+features compose without editing the core files:
+
+1. **Worker handler packs** — `agentcad/kernel/handlers/<feature>.py`. Each
+   exports either a `HANDLERS: dict[str, callable]` or a
+   `register(toolbox) -> dict`; `worker.py` discovers them with `pkgutil` at
+   startup and merges them into its method table (a pack may not shadow a
+   builtin). The **worker toolbox** (`WORKER_TOOLBOX`) hands packs the exact
+   `build_shape` / `metrics` / `place` / `export_shape` / `tessellate`
+   primitives the core uses, so reference imports, drawings, analysis, FEM,
+   and connector inspection reuse one build path instead of re-deriving it.
+2. **Tool packs** — `agentcad/core/tools_<feature>.py`, each exporting
+   `register(registry, service)`; `build_registry` calls every pack after
+   registering the 17 core tools. A pack may **decline** to register (the FEM
+   pack registers `fem_static` only when its extra imports) so agents never
+   see a tool that cannot run.
+3. **Route packs** — `agentcad/server/routes_<feature>.py`, each exporting
+   `build_router(service, registry) -> APIRouter`; `app.py` mounts them all
+   under `/api`. Most just call the matching tool through the registry, so the
+   REST and agent surfaces cannot drift.
+
+`AgentCADService` exposes exactly **three seams** the packs fill in; each
+defaults to v1 behavior, so the core runs unchanged if a pack is absent:
+
+- **Material resolution** — `service.materials` starts as a builtin-only
+  resolver; importing the materials pack swaps in the project-aware
+  `MaterialLibrary`, so mass metrics honor user-defined alloys. Density feeds
+  the rebuild cache key, so a material change re-keys the mesh cache.
+- **Mate resolution** — `get_assembly` / `check_interference` /
+  `export_assembly` route instances through `_resolved_instances`, which
+  no-ops unless some instance carries a `mate`; then `core/mates.py` calls the
+  worker's `resolve_mates` handler and substitutes concrete transforms. The
+  rest of the service and the whole frontend keep seeing plain
+  `position`/`rotation_deg`.
+- **Kernel pool** — the single `KernelClient` is replaced by a `KernelPool`
+  of the same shape (see [above](#process-model)).
+
+Two cross-cutting pieces ride these seams. The **Error Doctor**
+(`error_doctor.py`) is invoked from one hook in the worker's `_dispatch`: it
+matches a failure's type + message + traceback against a catalog of real OCCT
+signatures and attaches a plain-language `details.hint` — every kernel error,
+core or pack, gets diagnosed. The **reference loader** (`refload.py`) is the
+single place that turns an imported file into a shape, with the content-keyed
+LRU and the STL-is-mesh-only rule (STL Faces are tessellated and measured but
+blocked from booleans, which segfault OCCT) enforced once for every caller.
+
+Two upstream build123d bugs are corrected in this layer: nested-`Compound`
+`.volume` undercounts (worker metrics sum over `shape.solids()`), and the
+manifest is **schema_version 2** (adds `kind`/`source` per part, an optional
+per-instance `mate`, and a project `materials` section) while still reading v1
+files.
 
 ## Anatomy of one rebuild
 

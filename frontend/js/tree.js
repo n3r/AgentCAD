@@ -27,7 +27,7 @@ export function init(a) {
     actions.selectAssembly(null);
   });
   onKeys(
-    ["project", "assembly", "selectedPart", "selectedInstance", "mode", "rebuilding"],
+    ["project", "assembly", "selectedPart", "selectedInstance", "mode", "rebuilding", "partKinds"],
     render
   );
   render();
@@ -61,6 +61,17 @@ function renderParts() {
     label.textContent = part.label || part.id;
     label.title = `${part.id} · ${part.material || ""}`;
     li.appendChild(label);
+
+    const kindInfo = state.partKinds[part.id];
+    if (kindInfo && kindInfo.kind === "reference") {
+      const badge = document.createElement("span");
+      badge.className = "row-badge";
+      badge.textContent = "ref";
+      badge.title = kindInfo.source
+        ? `imported reference · ${kindInfo.source}`
+        : "imported reference";
+      li.appendChild(badge);
+    }
 
     if (state.rebuilding.has(part.id)) {
       li.appendChild(dot("building"));

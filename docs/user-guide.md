@@ -244,7 +244,7 @@ instead. Everything else in the app works normally.
 
 **With the key** (set in the environment before `make run` /
 `agentcad serve`) it becomes a full tool-using assistant with the same
-17-tool surface external agents get ([agent-api.md](agent-api.md)):
+25-tool surface external agents get ([agent-api.md](agent-api.md)):
 
 - The hint in the header reads `agent works on <project>` — each chat is
   scoped to the currently open project, with a separate in-memory history
@@ -261,6 +261,60 @@ instead. Everything else in the app works normally.
 Good first prompts: "make the nozzle wall 4 mm and tell me the new mass",
 "create a mounting bracket for a NEMA 17 motor", "run an interference check
 on the assembly".
+
+## The v2 capabilities
+
+AgentCAD v2 adds imports, richer materials, assembly mates, 2D drawings, and
+geometric analysis. **How you reach them today:** through the Agent panel
+(built-in chat), an external MCP client such as Claude Code, or the REST API
+directly. These are backend capabilities on the shared service — every change
+still flows through the same WebSocket, so the viewport, tree, and Metrics
+tab update live as the agent works, exactly as they do for a parameter edit.
+
+> **On-canvas controls are the next wave.** The browser UI's own widgets are
+> still the v1 set described above (viewport, parts/assembly tree, the
+> Parameters / Code / Metrics inspector, the Export menu). Dedicated
+> direct-manipulation surfaces for the features below — a transform gizmo on a
+> selected instance, a numeric transform panel, a material dropdown, an
+> Import button, an in-app drawing preview, analysis buttons in the Metrics
+> tab — are not in this build; drive these features via the agent or the API
+> for now.
+
+**Import existing CAD.** Upload a `.step`/`.stp`/`.brep`/`.stl` (≤100 MB) to
+the project's `imports/` directory (`POST /api/projects/<proj>/imports?filename=…`
+with the file as the raw body), then ask the agent to *import* it — it becomes
+a **reference part**: no script, but it shows in the tree, renders, measures,
+and (STEP/BREP) can be booleaned and placed in assemblies. STL is mesh-only
+(display/measure; excluded from interference checks). Its `get_part` shows
+`kind: reference` and the `source` file instead of a script.
+
+**Materials with properties.** The builtin catalog is now 30 engineering
+materials, each with density plus optional modulus, yield/ultimate strength,
+CTE, conductivity, service temperature, and cost. Ask the agent to "list
+materials" or "set this part to Ti-6Al-4V"; add your own alloys per-project or
+machine-wide (`~/.agentcad/materials.json`). Values are typical datasheet
+figures, **not design allowables** — the tool says so on every call. Density
+drives the Mass row in the Metrics tab as before.
+
+**Assembly mates.** If a part script declares connectors (see
+[part-authoring.md](part-authoring.md#declaring-connectors-for-mates)), you
+can constrain one instance to another (rigid / revolute / cylindrical) instead
+of typing transforms — "mate the bracket's seat to the plate's hole1 at 30°".
+The service resolves the mate to a concrete pose, so the instance moves in the
+viewport like any other. A mate is authoritative: a mated instance can't be
+posed by hand until you clear its mate.
+
+**2D drawings.** Ask for a drawing of a (script) part and AgentCAD projects
+front/top/right/iso views with overall dimensions and hole callouts detected
+from the geometry, writing `exports/<part>_drawing.svg` (or `.dxf`). A
+server-rendered SVG preview is available at
+`GET /api/projects/<proj>/parts/<part>/drawing.svg`.
+
+**Geometric analysis.** Ask the agent to measure a cross-section area, the
+minimum wall thickness (optionally against a requirement), the projected
+silhouette area, or the full inertia tensor. Linear-static FEM is available
+only if the optional `agentcad[fem]` extra is installed (otherwise the tool
+and its route are absent).
 
 ## Working with the bundled examples
 
@@ -287,10 +341,11 @@ suite, so the shipped defaults always build.
 | Path | Contents |
 |---|---|
 | `~/AgentCAD/projects/<name>/` | Your projects (override with `--projects-dir`). |
-| `<project>/project.json` | Manifest: parts, materials, parameter overrides, assembly instances. Human-readable, atomically written, diff-friendly. |
-| `<project>/parts/<id>.py` | One plain build123d script per part — the model itself. Edit with anything; the UI picks up saves via its own editor, agents via tools. |
+| `<project>/project.json` | Manifest (schema v2): parts (script or `reference`), a project `materials` section, parameter overrides, and assembly instances with optional `mate` specs. Human-readable, atomically written, diff-friendly; v1 files still load. |
+| `<project>/parts/<id>.py` | One plain build123d script per part — the model itself. Edit with anything; the UI picks up saves via its own editor, agents via tools. (Reference parts have no script here.) |
+| `<project>/imports/` | Uploaded reference CAD (STEP/BREP/STL) backing `reference` parts. |
 | `<project>/.cache/` | Derived data (ACM1 meshes + metrics JSON keyed by content hash). Safe to delete; rebuilt on demand. |
-| `<project>/exports/` | STEP/STL/3MF outputs from the Export menu, agent tools, or `agentcad export`. |
+| `<project>/exports/` | STEP/STL/3MF part & assembly exports, plus `<part>_drawing.svg`/`.dxf` drawings, from the Export menu, agent tools, or `agentcad export`. |
 | `examples/` (repo) | The bundled example projects, registered at startup. |
 | `~/.agentcad/config.json` | The persisted port (`AGENTCAD_CONFIG` overrides the path). |
 | `~/Library/Logs/AgentCAD.log` | Output of the `AgentCAD.app` wrapper. |
@@ -348,3 +403,15 @@ server starts anyway without it; restore the file to get it back.
 **Part won't delete** — it is referenced by assembly instances (the error
 lists them). Remove those instances first — ask the agent, or edit
 `project.json`'s `assembly.instances` — then delete the part.
+
+**FEM says it needs the extra (HTTP 501)** — linear-static FEM ships as the
+optional `agentcad[fem]` dependency group (gmsh + scikit-fem + meshio).
+Install it with `uv sync --extra fem` (or `pip install 'agentcad[fem]'`) and
+restart the server; the `fem_static` tool and `.../fem` route appear only
+then. All other analysis (section, wall, inertia, projected area) needs no
+extra.
+
+**Import rejected** — uploads must be `.step`/`.stp`/`.brep`/`.stl` and ≤100
+MB; anything else returns a validation error. STL comes in mesh-only: it
+renders and measures but is skipped by interference checks and cannot be
+booleaned.

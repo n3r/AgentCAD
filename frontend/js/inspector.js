@@ -9,6 +9,7 @@ let actions = null;
 
 let panes = {};
 let tabs = [];
+let codeTab = null;
 let activeTab = "params";
 
 let bannerEl, bannerTitle, bannerBody;
@@ -16,6 +17,12 @@ let paramsPane, metricsPane;
 
 let renderedPartId = null;
 let renderedSpecJson = null;
+
+// analysis results survive metric re-renders (a param edit shouldn't wipe them)
+let analysisPartId = null;
+let analysisResults = {}; // kind -> {loading} | {data} | {error}
+
+const CATEGORY_ORDER = ["metal", "polymer", "composite", "wood", "masonry"];
 
 // debounced param patching
 let pending = {};
@@ -38,6 +45,7 @@ export function init(a) {
     metrics: metricsPane,
   };
   tabs = [...document.querySelectorAll("#tabs .tab")];
+  codeTab = document.querySelector('#tabs .tab[data-tab="code"]');
   for (const tab of tabs) {
     tab.addEventListener("click", () => setTab(tab.dataset.tab));
   }
@@ -50,6 +58,10 @@ export function init(a) {
   editor.init(document.getElementById("editor-host"), { onSave: saveScript });
 
   onKeys(["part"], render);
+  // Materials can arrive after the part; refresh the material block when they do.
+  onKeys(["materials"], () => {
+    if (state.part) renderMetrics(state.part);
+  });
   render();
 }
 
@@ -106,6 +118,11 @@ function render() {
     return;
   }
 
+  const isReference = part.kind === "reference";
+  // References have no script: hide the Code tab and never leave it active.
+  if (codeTab) codeTab.classList.toggle("hidden", isReference);
+  if (isReference && activeTab === "code") setTab("params");
+
   const specJson = JSON.stringify(part.params_spec || null);
   if (part.id !== renderedPartId || specJson !== renderedSpecJson) {
     renderedPartId = part.id;
@@ -113,13 +130,14 @@ function render() {
     pending = {};
     inflight = {};
     pendingPartId = part.id;
-    buildParamControls(part);
-  } else {
+    if (isReference) buildReferencePane(part);
+    else buildParamControls(part);
+  } else if (!isReference) {
     syncParamValues(part);
   }
   renderWarnings(part);
   renderMetrics(part);
-  editor.setPart(part.id, part.script);
+  editor.setPart(isReference ? null : part.id, isReference ? "" : part.script);
 
   if (part.status && part.status.state === "error" && part.status.error) {
     if (JSON.stringify(part.status.error) !== dismissedError) {
@@ -231,6 +249,61 @@ function appendWarningsHost() {
   w.className = "param-warnings";
   w.id = "param-warnings";
   paramsPane.appendChild(w);
+}
+
+// Reference (imported) parts have no editable parameters; show provenance in
+// the Parameters pane instead so the pane is never blank.
+function buildReferencePane(part) {
+  paramsPane.textContent = "";
+  const block = document.createElement("div");
+  block.className = "ref-block";
+
+  const head = document.createElement("div");
+  head.className = "ref-head";
+  const badge = document.createElement("span");
+  badge.className = "ref-badge";
+  badge.textContent = "ref";
+  const kind = document.createElement("span");
+  kind.className = "ref-kind";
+  kind.textContent = "imported CAD";
+  head.append(badge, kind);
+  block.appendChild(head);
+
+  block.appendChild(kv("Source", part.source || "—"));
+  const ext = (part.source || "").split(".").pop().toLowerCase();
+  block.appendChild(kv("Format", ext ? `.${ext}` : "—"));
+
+  if (part.metrics && part.metrics.mesh) {
+    const flag = document.createElement("div");
+    flag.className = "ref-flag";
+    flag.textContent =
+      "Mesh-only (STL): measured and placeable, but it can't take part in booleans.";
+    block.appendChild(flag);
+  }
+
+  const note = document.createElement("div");
+  note.className = "pane-note";
+  note.style.padding = "12px 0 0";
+  note.textContent =
+    "Imported references have no script or parameters. Set the material and " +
+    "run analyses from the Metrics tab.";
+  block.appendChild(note);
+
+  paramsPane.appendChild(block);
+  appendWarningsHost();
+}
+
+function kv(key, value) {
+  const row = document.createElement("div");
+  row.className = "ref-row";
+  const k = document.createElement("span");
+  k.className = "ref-key";
+  k.textContent = key;
+  const v = document.createElement("span");
+  v.className = "ref-val";
+  v.textContent = value;
+  row.append(k, v);
+  return row;
 }
 
 function syncParamValues(part) {
@@ -368,15 +441,25 @@ function row(key, valueHtml) {
 }
 
 function renderMetrics(part) {
+  if (part.id !== analysisPartId) {
+    analysisPartId = part.id;
+    analysisResults = {};
+  }
+  metricsPane.textContent = "";
+  metricsPane.appendChild(materialBlock(part));
+  metricsPane.appendChild(metricsTable(part));
+  metricsPane.appendChild(analysisBlock(part));
+}
+
+function metricsTable(part) {
+  const host = document.createElement("div");
   const m = part.metrics;
   if (!m) {
-    metricsPane.innerHTML =
+    host.innerHTML =
       '<div class="pane-note">No metrics yet — the part has not built successfully.</div>';
-    return;
+    return host;
   }
-  const dims = m.bbox
-    ? [0, 1, 2].map((i) => m.bbox.max[i] - m.bbox.min[i])
-    : null;
+  const dims = m.bbox ? [0, 1, 2].map((i) => m.bbox.max[i] - m.bbox.min[i]) : null;
   const com = m.center_of_mass;
   const mass =
     m.mass_g >= 1000
@@ -384,7 +467,7 @@ function renderMetrics(part) {
       : `${fmt(m.mass_g)}<span class="unit">g</span>`;
   const stale = part.status && part.status.state === "error";
 
-  metricsPane.innerHTML = `
+  host.innerHTML = `
     <table class="metrics-table">
       ${stale ? row("Note", '<span class="bad">stale — last rebuild failed</span>') : ""}
       ${row("Volume", `${fmt(m.volume_mm3)}<span class="unit">mm³</span>`)}
@@ -397,4 +480,296 @@ function renderMetrics(part) {
       ${row("Edges", fmt(m.n_edges, 0))}
       ${row("Solids", fmt(m.n_solids, 0))}
     </table>`;
+  return host;
+}
+
+// ------------------------------------------------------------- material
+
+function materialBlock(part) {
+  const box = document.createElement("div");
+  box.className = "mat-block";
+
+  const head = document.createElement("div");
+  head.className = "mat-head";
+  head.textContent = "Material";
+  box.appendChild(head);
+
+  const catalog = (state.materials && state.materials.materials) || [];
+  const current = catalog.find((m) => m.id === part.material) || null;
+
+  const select = document.createElement("select");
+  select.className = "mat-select";
+  select.id = "material-select";
+  select.setAttribute("aria-label", "Part material");
+
+  if (!catalog.length) {
+    const opt = document.createElement("option");
+    opt.value = part.material || "";
+    opt.textContent = part.material || "—";
+    opt.selected = true;
+    select.appendChild(opt);
+    select.disabled = true;
+  } else {
+    // Surface an unknown current id so the control still shows the truth.
+    if (part.material && !current) {
+      const opt = document.createElement("option");
+      opt.value = part.material;
+      opt.textContent = `${part.material} (unknown)`;
+      opt.selected = true;
+      select.appendChild(opt);
+    }
+    const cats = [...new Set(catalog.map((m) => m.category))].sort(
+      (a, b) => catRank(a) - catRank(b)
+    );
+    for (const cat of cats) {
+      const og = document.createElement("optgroup");
+      og.label = cat;
+      for (const m of catalog.filter((x) => x.category === cat)) {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.label;
+        if (m.id === part.material) opt.selected = true;
+        og.appendChild(opt);
+      }
+      select.appendChild(og);
+    }
+  }
+  select.addEventListener("change", () => setMaterial(select.value));
+  box.appendChild(select);
+
+  if (current) {
+    const props = document.createElement("div");
+    props.className = "mat-props";
+    props.appendChild(prop("Density", current.density_g_cm3, "g/cm³"));
+    props.appendChild(prop("E", current.E_gpa, "GPa"));
+    props.appendChild(prop("Yield", current.yield_mpa, "MPa"));
+    props.appendChild(prop("Service", current.max_service_temp_c, "°C"));
+    box.appendChild(props);
+
+    const prov = document.createElement("div");
+    prov.className = "mat-prov";
+    prov.textContent = `source: ${current.source}`;
+    box.appendChild(prov);
+  }
+
+  const caveat = state.materials && state.materials.caveat;
+  if (caveat) {
+    const c = document.createElement("div");
+    c.className = "mat-caveat";
+    c.textContent = caveat;
+    box.appendChild(c);
+  }
+  return box;
+}
+
+function catRank(cat) {
+  const i = CATEGORY_ORDER.indexOf(cat);
+  return i < 0 ? CATEGORY_ORDER.length : i;
+}
+
+function prop(label, value, unit) {
+  const cell = document.createElement("div");
+  cell.className = "mat-prop";
+  const l = document.createElement("span");
+  l.className = "mat-prop-label";
+  l.textContent = label;
+  const v = document.createElement("span");
+  v.className = "mat-prop-val";
+  if (value == null || !Number.isFinite(value)) {
+    v.textContent = "—";
+  } else {
+    v.innerHTML = `${fmt(value)}<span class="unit">${unit}</span>`;
+  }
+  cell.append(l, v);
+  return cell;
+}
+
+async function setMaterial(id) {
+  const part = state.part;
+  if (!part || !id || id === part.material) return;
+  const partId = part.id;
+  try {
+    const result = await api.updatePart(state.projectName, partId, { material: id });
+    if (state.part && state.part.id === partId) {
+      state.part.material = id;
+      setState({ part: state.part });
+    }
+    // keep the sidebar's material tooltip in sync
+    if (state.project) {
+      const entry = state.project.parts.find((p) => p.id === partId);
+      if (entry) {
+        entry.material = id;
+        setState({ project: state.project });
+      }
+    }
+    applyRebuildResult(partId, result);
+    if (result.ok) actions.toast(`Material set to ${id}`);
+  } catch (err) {
+    showBanner(err instanceof ApiError ? err.error : { message: String(err) });
+  }
+}
+
+// ------------------------------------------------------------- analysis
+
+function analysisBlock(part) {
+  const isReference = part.kind === "reference";
+  const box = document.createElement("div");
+  box.className = "analysis-block";
+
+  const head = document.createElement("div");
+  head.className = "analysis-head";
+  head.textContent = "Analysis";
+  box.appendChild(head);
+
+  const btns = document.createElement("div");
+  btns.className = "analysis-btns";
+  for (const [kind, label] of [
+    ["section", "Section"],
+    ["wall", "Wall thickness"],
+    ["inertia", "Inertia"],
+  ]) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "analysis-btn";
+    b.textContent = label;
+    if (isReference) {
+      b.disabled = true;
+      b.title = "Analysis is available for script parts only";
+    } else {
+      b.addEventListener("click", () => runAnalysis(kind));
+    }
+    btns.appendChild(b);
+  }
+  box.appendChild(btns);
+
+  const results = document.createElement("div");
+  results.className = "analysis-results";
+  for (const kind of ["section", "wall", "inertia"]) {
+    if (analysisResults[kind]) {
+      results.appendChild(renderAnalysisResult(kind, analysisResults[kind]));
+    }
+  }
+  box.appendChild(results);
+
+  if (isReference) {
+    const note = document.createElement("div");
+    note.className = "analysis-note";
+    note.textContent = "Import references can't be analyzed (script parts only).";
+    box.appendChild(note);
+  }
+  return box;
+}
+
+async function runAnalysis(kind) {
+  const part = state.part;
+  if (!part) return;
+  const partId = part.id;
+  analysisResults[kind] = { loading: true };
+  renderMetrics(part);
+  // The /analyze route always forwards min_required, and the tool registry
+  // rejects a null number — so send 0 (ignored for section/inertia; treated as
+  // "no threshold" for wall, where we suppress the comparison row below).
+  const body = { kind, min_required: 0 };
+  if (kind === "section") body.plane = "XY";
+  try {
+    const data = await api.analyzePart(state.projectName, partId, body);
+    if (!state.part || state.part.id !== partId) return;
+    analysisResults[kind] =
+      data && data.error ? { error: data.error.message || "analysis failed" } : { data };
+  } catch (err) {
+    if (!state.part || state.part.id !== partId) return;
+    analysisResults[kind] = {
+      error: err instanceof ApiError ? err.error.message : String(err),
+    };
+  }
+  if (state.part && state.part.id === partId) renderMetrics(state.part);
+}
+
+const ANALYSIS_TITLES = {
+  section: "Cross-section",
+  wall: "Min wall thickness",
+  inertia: "Mass properties",
+};
+
+function renderAnalysisResult(kind, r) {
+  const card = document.createElement("div");
+  card.className = "analysis-card";
+
+  const title = document.createElement("div");
+  title.className = "analysis-card-title";
+  title.textContent = ANALYSIS_TITLES[kind] || kind;
+  card.appendChild(title);
+
+  const body = document.createElement("div");
+  body.className = "analysis-card-body";
+
+  if (r.loading) {
+    body.innerHTML = '<span class="analysis-run">running…</span>';
+  } else if (r.error) {
+    body.innerHTML = `<span class="bad">${escapeHtml(r.error)}</span>`;
+  } else {
+    body.innerHTML = analysisRows(kind, r.data);
+  }
+  card.appendChild(body);
+  return card;
+}
+
+function analysisRows(kind, d) {
+  if (!d) return "—";
+  if (kind === "section") {
+    return arow("Area", `${fmt(d.area_mm2)}<span class="unit">mm²</span>`) +
+      arow("Plane", d.plane) +
+      arow("Faces", fmt(d.n_faces, 0));
+  }
+  if (kind === "wall") {
+    if (d.min_thickness_mm == null) return arow("Result", "no wall detected");
+    let out = arow("Min wall", `${fmt(d.min_thickness_mm)}<span class="unit">mm</span>`);
+    if (d.location) {
+      out += arow(
+        "At",
+        `${fmt(d.location[0])}, ${fmt(d.location[1])}, ${fmt(d.location[2])}<span class="unit">mm</span>`
+      );
+    }
+    // Only show a comparison when a real threshold was requested (we send 0 to
+    // satisfy the route's mandatory arg; 0 means "just report the thickness").
+    if (d.ok != null && d.min_required_mm > 0) {
+      out += arow(
+        "vs required",
+        d.ok
+          ? '<span class="ok">meets ' + fmt(d.min_required_mm) + " mm</span>"
+          : '<span class="bad">below ' + fmt(d.min_required_mm) + " mm</span>"
+      );
+    }
+    return out;
+  }
+  if (kind === "inertia") {
+    const t = d.inertia_tensor_g_mm2;
+    const diag = t ? [t[0][0], t[1][1], t[2][2]] : null;
+    let out = arow("Volume", `${fmt(d.volume_mm3)}<span class="unit">mm³</span>`);
+    if (d.center_of_mass) {
+      out += arow(
+        "Center of mass",
+        `${fmt(d.center_of_mass[0])}, ${fmt(d.center_of_mass[1])}, ${fmt(d.center_of_mass[2])}<span class="unit">mm</span>`
+      );
+    }
+    if (diag) {
+      out += arow(
+        "Ixx, Iyy, Izz",
+        `${fmt(diag[0])}, ${fmt(diag[1])}, ${fmt(diag[2])}<span class="unit">g·mm²</span>`
+      );
+    }
+    return out;
+  }
+  return escapeHtml(JSON.stringify(d));
+}
+
+function arow(key, valueHtml) {
+  return `<div class="analysis-row"><span class="analysis-k">${key}</span>` +
+    `<span class="analysis-v">${valueHtml}</span></div>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
 }

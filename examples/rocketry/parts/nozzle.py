@@ -65,3 +65,20 @@ def build(p):
         lip = part.edges().filter_by(GeomType.CIRCLE).group_by(Axis.Z)[0]
         chamfer(lip, length=0.2 * wall)
     return part.part
+
+
+def connectors(p, part):
+    """Named rigid connectors for assembly mates. The engine axis is Z and the
+    injector-interface rim sits at z = 0 by construction, so the nozzle is the
+    assembly datum: the flange and injector plate are each rigid-mated to it.
+
+    A rigid connector is just a local frame (here a pure translation); mating
+    makes the moving part's connector frame coincide with this one, so these
+    two seats reproduce the deliberate stacked-face clearances exactly."""
+    return {
+        # flange slips over the barrel from just below the rim; its top face
+        # lands 0.2 mm below the rim (a seal/gasket allowance)
+        "flange_seat": {"type": "rigid", "location": (0, 0, -0.2)},
+        # injector plate caps the stack 0.2 mm above the rim
+        "injector_seat": {"type": "rigid", "location": (0, 0, 0.2)},
+    }

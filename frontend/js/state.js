@@ -14,6 +14,9 @@ export const state = {
   part: null,            // GET part detail for selectedPart
   rebuilding: new Set(), // part ids with a rebuild in flight
   connected: false,      // websocket state
+  materials: null,       // GET /api/materials?project= payload {materials,caveat,...}
+  partKinds: {},         // partId -> {kind, source} learned lazily from get_part
+  gizmoMode: "translate",// assembly gizmo: "translate" | "rotate"
 };
 
 const listeners = new Map();

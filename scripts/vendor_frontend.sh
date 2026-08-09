@@ -2,8 +2,12 @@
 # Vendor the frontend's third-party libraries into frontend/vendor/.
 #
 # The frontend is offline-only: no CDN references. This script npm-installs
-# three (latest) and codemirror@5 into a throwaway directory and copies the
+# three (pinned) and codemirror@5 into a throwaway directory and copies the
 # exact files the UI needs. The vendored files are committed.
+#
+# three is pinned to THREE_VERSION so the examples/jsm controls we copy share
+# the exact build lineage of the committed three.module.min.js (mismatched
+# controls against a different core is a subtle source of runtime breakage).
 #
 # Files produced under frontend/vendor/:
 #   three.module.min.js     ES module build of three.js (re-exports core)
@@ -11,12 +15,17 @@
 #   OrbitControls.js        examples/jsm controls; its `from 'three'` import
 #                           is resolved by the import map in index.html
 #                           ({"three": "/vendor/three.module.min.js"})
+#   TransformControls.js    examples/jsm controls; move/rotate gizmo for the
+#                           assembly editor (same `from 'three'` resolution)
 #   codemirror.js           CodeMirror 5 (UMD -> window.CodeMirror)
 #   codemirror.css
 #   python.js               CodeMirror 5 python mode
 #   VERSIONS.txt            record of vendored package versions
 
 set -euo pipefail
+
+# Pinned so the vendored examples/jsm controls match the committed three core.
+THREE_VERSION="0.185.1"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR_DIR="$REPO_ROOT/frontend/vendor"
@@ -26,7 +35,7 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 echo "vendoring into $VENDOR_DIR (workdir $WORK_DIR)"
 cd "$WORK_DIR"
 npm init -y >/dev/null 2>&1
-npm install --no-audit --no-fund three@latest codemirror@5 >/dev/null
+npm install --no-audit --no-fund "three@${THREE_VERSION}" codemirror@5 >/dev/null
 
 THREE_DIR="$WORK_DIR/node_modules/three"
 CM_DIR="$WORK_DIR/node_modules/codemirror"
@@ -34,6 +43,7 @@ CM_DIR="$WORK_DIR/node_modules/codemirror"
 # Sanity: the module build must exist, and if it re-exports from a core
 # chunk that chunk must be copied alongside so the import graph resolves.
 test -f "$THREE_DIR/build/three.module.min.js"
+test -f "$THREE_DIR/examples/jsm/controls/TransformControls.js"
 test -f "$CM_DIR/lib/codemirror.js"
 
 mkdir -p "$VENDOR_DIR"
@@ -42,6 +52,7 @@ if grep -q "three.core.min.js" "$VENDOR_DIR/three.module.min.js"; then
   cp "$THREE_DIR/build/three.core.min.js" "$VENDOR_DIR/three.core.min.js"
 fi
 cp "$THREE_DIR/examples/jsm/controls/OrbitControls.js" "$VENDOR_DIR/OrbitControls.js"
+cp "$THREE_DIR/examples/jsm/controls/TransformControls.js" "$VENDOR_DIR/TransformControls.js"
 cp "$CM_DIR/lib/codemirror.js" "$VENDOR_DIR/codemirror.js"
 cp "$CM_DIR/lib/codemirror.css" "$VENDOR_DIR/codemirror.css"
 cp "$CM_DIR/mode/python/python.js" "$VENDOR_DIR/python.js"

@@ -1,9 +1,19 @@
 # Authoring Parts
 
 A part is a plain Python script using [build123d](https://build123d.readthedocs.io).
-No AgentCAD imports, no framework — the script is portable and runs anywhere
-build123d does. AgentCAD executes it in the kernel worker and renders,
-measures, and exports what `build(p)` returns.
+The base contract needs no AgentCAD imports — such a script is portable and
+runs anywhere build123d does. AgentCAD executes it in the kernel worker and
+renders, measures, and exports what `build(p)` returns.
+
+Two *optional* extensions build on that contract: the
+[part-authoring toolkit](#the-part-authoring-toolkit) (`safe_fillet`,
+`safe_shell`, `safe_bool`, the sketch solver, threads) and the
+[`connectors(p, part)`](#declaring-connectors-for-mates) hook for assembly
+mates. Both are backward-compatible — a script that uses neither behaves
+exactly as before — but a script that imports the toolkit is **no longer
+plain-build123d portable**: `from agentcad.toolkit import …` requires the
+`agentcad` package on the path (it is present in the app venv, so scripts run
+fine in AgentCAD; they just won't run in a bare build123d environment).
 
 ## The contract
 
@@ -72,6 +82,122 @@ guards for constraints that couple two parameters.
 | Boolean produces zero-volume/invalid result | Tool doesn't actually intersect the base, or surfaces are exactly coincident. Offset by ≥0.01 mm or overlap tools slightly. |
 | `Hole` cuts nothing | `Hole` needs existing material at its location; check the active `Locations` context. |
 | Shell/`offset` fails | Wall thickness too large for the cavity, or the opening face selector matched nothing — pick the face with `part.faces().sort_by(Axis.Z)[-1]`. |
+
+## The part-authoring toolkit
+
+`agentcad.toolkit` collects the helpers that survive the failure modes above
+so a script keeps producing geometry instead of raising. Import only what you
+need:
+
+```python
+from agentcad.toolkit import safe_fillet, safe_shell, safe_bool  # robustness
+from agentcad.toolkit import sketch                              # constraint solver
+from agentcad.toolkit import threads                             # ISO threads / fasteners
+```
+
+Each robustness helper returns a **warning string** (or `None`) alongside its
+result — the warning is the honest record of any fallback it took, and you
+should let it reach the user rather than swallow it.
+
+| Helper | Signature → returns | What it does |
+|---|---|---|
+| `safe_fillet` | `safe_fillet(part, edges, radius) → (part, achieved_radius, warning?)` | Applies `radius`; on OCCT failure it consults `max_fillet` and binary-searches down to the largest radius that actually succeeds. The warning names the radius it fell back to. |
+| `safe_shell` | `safe_shell(part, thickness, opening_faces=None, kind=Kind.ARC) → (part, warning?)` | Tries `offset()` with `Kind.ARC`, then `Kind.INTERSECTION`, then fewer opened faces, then an **approximate** boolean-subtract shell. The fallback warning states plainly that wall thickness can be ~20% thin on curved/slanted faces — surface it. |
+| `safe_bool` | `safe_bool(a, b, op="fuse", fuzzy=1e-4) → (shape, warning?)` | The plain build123d operator first; on a raise, an invalid/empty result, or a `fuse` that leaves disjoint solids, it retries via OCCT `BRepAlgoAPI` with a fuzzy tolerance (`fuzzy`, then `10·fuzzy`) to close sub-tolerance gaps. `op` is `fuse`\|`cut`\|`common`. |
+
+```python
+from agentcad.toolkit import safe_fillet
+
+def build(p):
+    with BuildPart() as part:
+        Box(p.length, p.width, p.thickness)
+    solid, r, warn = safe_fillet(part.part, part.part.edges().filter_by(Axis.Z),
+                                 radius=p.corner_r)
+    if warn:
+        print(warn)            # redirected to stderr; shows in kernel logs
+    return solid
+```
+
+### Constraint-solved sketches
+
+`agentcad.toolkit.sketch.solve_sketch(spec)` runs a first-party scipy
+least-squares solver over points/lines/circles and a constraint list, and
+returns exact coordinates you can feed straight into a `BuildLine`/`BuildSketch`.
+The same solver is exposed to agents as the `solve_sketch` tool (see
+[agent-api.md](agent-api.md)); the spec shape and constraint vocabulary are
+identical.
+
+```python
+from agentcad.toolkit import sketch
+
+spec = {
+    "points": [{"name": "a", "x": 0, "y": 0, "fixed": True},
+               {"name": "b", "x": 40, "y": 0},
+               {"name": "c", "x": 40, "y": 25}],
+    "lines":  [{"name": "ab", "p1": "a", "p2": "b"}],
+    "circles": [],
+    "constraints": [
+        {"type": "horizontal", "line": "ab"},
+        {"type": "distance", "p1": "a", "p2": "b", "d": 40},
+        {"type": "distance_y", "p1": "b", "p2": "c", "d": 25},
+    ],
+}
+sol = sketch.solve_sketch(spec)      # {"ok": True, "points": {"c": [40, 25], ...}, ...}
+```
+
+The solver converges to the solution *nearest the initial guess*, so seed the
+rough shape you actually want — a mirrored guess yields a mirrored result.
+Constraint types: `fixed, coincident, distance, distance_x, distance_y,
+horizontal, vertical, parallel, perpendicular, angle, point_on_line,
+point_on_circle, radius, equal_radius, midpoint, tangent_line_circle,
+tangent_circles`.
+
+### Threads and fasteners
+
+`agentcad.toolkit.threads` wraps `bd_warehouse` (Apache-2.0) with real ISO
+thread geometry: `external_thread`, `internal_thread`, `threaded_rod`,
+`tapped_hole_thread`, plus `cap_screw` / `hex_bolt`. Real threads are exact
+but heavy (~9k triangles per M8 thread at mesh tolerance 0.1), so:
+
+- **Assembly previews / fit checks** — use cosmetic threads (`simple=True` on
+  `cap_screw`/`hex_bolt`): fast and light.
+- **Manufacturing drawings / real mating** — use real threads.
+- **To tap a hole** — bore a hole at `tapped_hole_thread(...).min_radius` (the
+  tap-drill size) then `add()` the returned thread solid. The wrappers exist
+  specifically to bypass `bd_warehouse`'s `ThreadedHole(simple=False)` trap
+  (~15 s and inserts no thread).
+
+## Declaring connectors for mates
+
+A part script may declare named **connectors** so its instances can be posed
+by [assembly mates](agent-api.md#assembly-and-mates) (`set_mate`) instead of
+explicit transforms. This is a single optional function alongside `PARAMS`
+and `build`:
+
+```python
+def connectors(p, part) -> dict:
+    top = part.faces().sort_by(Axis.Z)[-1]
+    return {
+        "seat": {"type": "rigid",
+                 "location": (top.center().to_tuple(), (0, 0, 0))},
+        "hinge": {"type": "revolute",
+                  "axis": ((0, 0, 0), (0, 0, 1)), "range": (0, 180)},
+        "bore":  {"type": "cylindrical",
+                  "axis": ((0, 0, 0), (0, 0, 1)), "linear_range": (0, 20)},
+    }
+```
+
+- `p` is the resolved-parameter namespace `build` received; `part` is the
+  built shape — so connectors can be *derived from topology*.
+- Locations are in the part's **local frame**. `location` accepts a build123d
+  `Location`, `((pos), (rot))`, or `(x, y, z)`; `axis` accepts an `Axis` or
+  `((point), (direction))`.
+- Connector `type` is `rigid` (needs `location`), `revolute`, or
+  `cylindrical` (both need `axis`; optional `range` / `linear_range`).
+- When mating, the **moving** instance's connector must be `rigid`; the
+  anchor connector carries the degree of freedom that `set_mate`'s
+  `angle_deg`/`offset_mm` drive. The service resolves mate chains to concrete
+  transforms at assembly read (topological order; cycles are rejected).
 
 ## Cheat-sheet
 

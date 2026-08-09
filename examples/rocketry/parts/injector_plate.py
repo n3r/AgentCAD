@@ -68,3 +68,10 @@ def build(p):
             length=1.0,
         )
     return part.part
+
+
+def connectors(p, part):
+    """The chamber-side interface is the bottom face (local z = 0, since the
+    plate is aligned MIN at z = 0). Rigid so it can be the moving side of a
+    mate to the nozzle's ``injector_seat``."""
+    return {"bottom": {"type": "rigid", "location": (0, 0, 0)}}

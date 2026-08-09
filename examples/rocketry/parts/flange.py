@@ -55,3 +55,10 @@ def build(p):
             length=min(0.6, p.flange_t / 4.0),
         )
     return part.part
+
+
+def connectors(p, part):
+    """The injector-side interface is the top face (local z = flange_t, since
+    the ring is aligned MIN at z = 0). Rigid so it can be the moving side of a
+    mate to the nozzle's ``flange_seat``."""
+    return {"top": {"type": "rigid", "location": (0, 0, p.flange_t)}}

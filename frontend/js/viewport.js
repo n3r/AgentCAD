@@ -4,9 +4,12 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "/vendor/OrbitControls.js";
+import { TransformControls } from "/vendor/TransformControls.js";
 
 const DEG = Math.PI / 180;
 const DEFAULT_PART_COLOR = "#98a2ad";
+const SNAP_TRANSLATE_MM = 1;
+const SNAP_ROTATE_DEG = 5;
 
 let renderer = null;
 let scene = null;
@@ -24,6 +27,14 @@ const GEOM_CACHE_MAX = 32;
 let current = { mode: null, partId: null, key: null, items: [] };
 let displayedKeys = new Set(); // geometry cache keys in the scene right now
 let selectedInstanceId = null;
+
+// transform gizmo (assembly mode). Created lazily; its helper lives in the
+// scene root (not contentGroup, which is cleared on every re-render).
+let gizmo = null;
+let gizmoCallbacks = {}; // { onCommit(transform), onLive(transform) }
+let gizmoInteracting = false; // a gizmo axis is being grabbed right now
+let gizmoDragged = false; // the grab actually moved the object
+let attachedInstanceId = null;
 
 const edgeMaterial = new THREE.LineBasicMaterial({
   color: 0x0d0e10,
@@ -167,10 +178,13 @@ export function init(container, { onPick } = {}) {
     downPos = [e.clientX, e.clientY];
   });
   renderer.domElement.addEventListener("pointerup", (e) => {
+    const wasGizmo = gizmoInteracting;
+    gizmoInteracting = false;
     if (!downPos) return;
     const moved = Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]);
     downPos = null;
-    if (moved > 4 || !onPickCallback) return;
+    // A press on a gizmo axis is not a selection click, even if it didn't move.
+    if (wasGizmo || moved > 4 || !onPickCallback) return;
     const hit = pick(e);
     onPickCallback(hit);
   });
@@ -222,6 +236,10 @@ function makeMaterial(color) {
 }
 
 function clearContent() {
+  // The gizmo points at a group we are about to destroy — release it first so
+  // it never renders against a detached object (main.js re-attaches after the
+  // new content is built).
+  detachGizmoInternal();
   for (const child of [...contentGroup.children]) {
     contentGroup.remove(child);
     child.traverse((obj) => {
@@ -287,6 +305,7 @@ export function showAssembly(items) {
     group.rotation.set(rx * DEG, ry * DEG, rz * DEG, "XYZ");
     const [x, y, z] = item.position || [0, 0, 0];
     group.position.set(x, y, z);
+    group.userData.instanceId = item.instanceId; // gizmo target lookup
     contentGroup.add(group);
   }
   current = { mode: "assembly", partId: null, key: null, items };
@@ -367,4 +386,98 @@ export function fit() {
   camera.far = dist * 100;
   camera.updateProjectionMatrix();
   controls.update();
+}
+
+// ---------------------------------------------------------------- gizmo
+
+function ensureGizmo() {
+  if (gizmo) return gizmo;
+  gizmo = new TransformControls(camera, renderer.domElement);
+  gizmo.setSize(0.9);
+  gizmo.setSpace("local");
+  scene.add(gizmo.getHelper()); // r169+ API: the helper is a separate object
+  // Orbiting must not fight a drag.
+  gizmo.addEventListener("dragging-changed", (e) => {
+    controls.enabled = !e.value;
+  });
+  gizmo.addEventListener("mouseDown", () => {
+    gizmoInteracting = true;
+    gizmoDragged = false;
+  });
+  gizmo.addEventListener("objectChange", () => {
+    gizmoDragged = true;
+    if (gizmoCallbacks.onLive) gizmoCallbacks.onLive(readTransform(gizmo.object));
+  });
+  gizmo.addEventListener("mouseUp", () => {
+    // A press without motion is not an edit — don't write back the same pose.
+    if (gizmoDragged && gizmoCallbacks.onCommit) {
+      gizmoCallbacks.onCommit(readTransform(gizmo.object));
+    }
+    gizmoDragged = false;
+  });
+  return gizmo;
+}
+
+/** Object transform -> {position:[x,y,z], rotationDeg:[rx,ry,rz]} in the same
+ *  intrinsic-XYZ-degrees convention the assembly PATCH expects. */
+function readTransform(obj) {
+  const p = obj.position;
+  const e = obj.rotation; // Euler, order "XYZ" (set when the group was built)
+  return {
+    position: [p.x, p.y, p.z],
+    rotationDeg: [e.x / DEG, e.y / DEG, e.z / DEG],
+  };
+}
+
+function groupForInstance(instanceId) {
+  for (const child of contentGroup.children) {
+    if (child.userData && child.userData.instanceId === instanceId) return child;
+  }
+  return null;
+}
+
+function detachGizmoInternal() {
+  if (gizmo) gizmo.detach();
+  attachedInstanceId = null;
+  gizmoInteracting = false;
+  gizmoDragged = false;
+}
+
+/** Attach the move/rotate gizmo to the group for `instanceId`. Pass a null id
+ *  (or an id with no group on stage) to detach. opts: {mode, snap, onCommit,
+ *  onLive}. Returns true when a gizmo is attached. */
+export function setGizmo(instanceId, opts = {}) {
+  if (!instanceId) {
+    if (gizmo) gizmo.detach();
+    attachedInstanceId = null;
+    gizmoCallbacks = {};
+    return false;
+  }
+  const group = groupForInstance(instanceId);
+  if (!group) {
+    if (gizmo) gizmo.detach();
+    attachedInstanceId = null;
+    return false;
+  }
+  ensureGizmo();
+  gizmoCallbacks = { onCommit: opts.onCommit, onLive: opts.onLive };
+  gizmo.setMode(opts.mode === "rotate" ? "rotate" : "translate");
+  setGizmoSnap(!!opts.snap);
+  gizmo.attach(group);
+  attachedInstanceId = instanceId;
+  return true;
+}
+
+export function setGizmoMode(mode) {
+  if (gizmo && attachedInstanceId) gizmo.setMode(mode === "rotate" ? "rotate" : "translate");
+}
+
+export function setGizmoSnap(on) {
+  if (!gizmo) return;
+  gizmo.setTranslationSnap(on ? SNAP_TRANSLATE_MM : null);
+  gizmo.setRotationSnap(on ? SNAP_ROTATE_DEG * DEG : null);
+}
+
+export function hasGizmo() {
+  return !!(gizmo && attachedInstanceId);
 }

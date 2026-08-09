@@ -27,6 +27,38 @@ for any MCP client (Claude Code, Claude Desktop, ...) and as a **built-in
 chat agent** in the UI. The browser UI, the chat agent, and external agents
 are peers — same service, same events, same files.
 
+## Capabilities
+
+On top of parametric script parts and validated assemblies, AgentCAD adds:
+
+- **Import existing CAD** as *reference* parts. STEP/BREP load as real
+  B-reps (measure, place in assemblies, boolean against script parts); STL
+  loads mesh-only (display/measure — booleans on a mesh segfault OCCT and
+  are blocked at the loader). Uploads are capped at 100 MB.
+- **Materials with engineering properties.** 30 curated materials carry
+  density plus optional modulus, yield/ultimate strength, CTE, conductivity,
+  service temperature, and cost. A three-layer resolver (builtin <
+  `~/.agentcad/materials.json` < a project's `materials` section) lets you
+  add alloys. Values are typical datasheet figures, **not design allowables**.
+- **Declarative assembly mates.** A part script can declare named connectors
+  (`connectors(p, part)`); an instance can be mated rigid / revolute /
+  cylindrical to another, and the service resolves the chain to concrete
+  transforms at read time (cycles rejected).
+- **2D engineering drawings.** Projected front/top/right/iso views with
+  overall dimensions and hole callouts *detected from the geometry*, as SVG
+  or DXF.
+- **Geometric analysis.** Cross-section area, minimum wall thickness,
+  projected (silhouette) area, and the full inertia tensor ship in the core;
+  linear-static FEM is an optional extra (`agentcad[fem]`).
+- **A part-authoring toolkit.** `safe_fillet` / `safe_shell` / `safe_bool`
+  survive the common OCCT failures, a scipy constraint solver turns a
+  dimensioned sketch into exact coordinates, and `bd_warehouse`-backed
+  helpers add ISO threads and fasteners — all importable from part scripts.
+  An **Error Doctor** rewrites raw OCCT errors into plain-language fixes.
+
+The agent tool surface is now **25 tools** (was 17), and multi-part rebuilds
+fan out across a small pool of warm kernel workers.
+
 ## Quickstart
 
 Prerequisites: macOS, [uv](https://docs.astral.sh/uv/), Python 3.12
@@ -45,6 +77,20 @@ Three example projects are bundled and appear in the project switcher:
 
 Other useful targets: `make test` (full suite), `make app` (builds
 `dist/AgentCAD.app`), `make serve` (headless).
+
+Optional heavier analysis (linear-static FEM) installs as an extra — it is
+kept out of the core because it pulls in gmsh + scikit-fem + meshio:
+
+```bash
+uv sync --extra fem          # or: pip install 'agentcad[fem]'
+```
+
+The `fem_static` tool and the `.../fem` route appear only once the extra is
+present; without it the suite stays green and agents never see a tool that
+cannot run. The kernel runs a small **pool** of warm worker processes for
+parallel rebuilds, auto-sized to your machine; override it with
+`kernel_pool_size` in `~/.agentcad/config.json` or the
+`AGENTCAD_KERNEL_POOL_SIZE` environment variable.
 
 ## Drive it from Claude Code
 
@@ -71,7 +117,9 @@ A part is a plain build123d script defining `PARAMS` (numeric specs with
 bounds and units) and `build(p)` returning a solid. The contract, common
 idioms, and OCCT failure modes are in
 [docs/part-authoring.md](docs/part-authoring.md) — or ask an agent to call
-the `part_template` tool.
+the `part_template` tool. For harder geometry, scripts may
+`from agentcad.toolkit import safe_fillet, safe_shell, safe_bool, sketch,
+threads` and declare `connectors(p, part)` for mates (see part-authoring).
 
 ```python
 from build123d import *
@@ -89,10 +137,10 @@ def build(p):
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — processes, components, data flow
-- [docs/agent-api.md](docs/agent-api.md) — the 17-tool agent surface, MCP setup
-- [docs/part-authoring.md](docs/part-authoring.md) — the script contract
+- [docs/agent-api.md](docs/agent-api.md) — the 25-tool agent surface, MCP setup
+- [docs/part-authoring.md](docs/part-authoring.md) — the script contract and toolkit
 - [docs/user-guide.md](docs/user-guide.md) — the UI, surface by surface
-- [docs/roadmap.md](docs/roadmap.md) — Windows/Linux, mates, drawings, sandboxing
+- [docs/roadmap.md](docs/roadmap.md) — Windows/Linux, GUI editing, sandboxing
 
 ## Trust model
 

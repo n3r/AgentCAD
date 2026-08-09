@@ -12,13 +12,17 @@ def build_router(service, registry) -> APIRouter:
     @router.post("/projects/{proj}/parts/{part_id}/analyze")
     async def analyze(proj: str, part_id: str, request: Request):
         body = await request.json()
-        return registry.call("analyze_part", {
+        args = {
             "project": proj, "part_id": part_id,
             "kind": body.get("kind", "inertia"),
             "plane": body.get("plane", "XY"),
             "axis": body.get("axis", "Z"),
-            "min_required": body.get("min_required"),
-        })
+        }
+        # Only forward min_required when set — the tool's number-typed arg
+        # rejects null.
+        if body.get("min_required") is not None:
+            args["min_required"] = body["min_required"]
+        return registry.call("analyze_part", args)
 
     @router.post("/projects/{proj}/parts/{part_id}/fem")
     async def fem(proj: str, part_id: str, request: Request):
