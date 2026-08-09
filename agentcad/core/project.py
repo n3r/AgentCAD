@@ -135,8 +135,8 @@ class ProjectStore:
         source: str | None = None,
     ) -> PartRecord:
         validate_id(part_id, "part id")
-        get_material(material)
         manifest = self.manifest(proj)
+        self._validate_material(manifest, material)
         if any(p["id"] == part_id for p in manifest["parts"]):
             raise ConflictError(f"part {part_id!r} already exists")
         record = PartRecord(
@@ -150,6 +150,20 @@ class ProjectStore:
             self._atomic_write(script_file, script.encode())
         self.save_manifest(proj, manifest)
         return record
+
+    @staticmethod
+    def _validate_material(manifest: dict, material: str) -> None:
+        """Accept any builtin material or one defined in this project's
+        ``materials`` section (full property validation happens when the
+        section is written via set_project_materials)."""
+        from .materials import MATERIALS
+
+        project_materials = manifest.get("materials") or {}
+        if material not in MATERIALS and material not in project_materials:
+            raise ValidationError(
+                f"unknown material {material!r}",
+                {"known_builtin": sorted(MATERIALS), "project": sorted(project_materials)},
+            )
 
     def remove_part(self, proj: str, part_id: str) -> None:
         manifest = self.manifest(proj)
@@ -186,7 +200,7 @@ class ProjectStore:
                 if label is not None:
                     entry["label"] = label
                 if material is not None:
-                    get_material(material)
+                    self._validate_material(manifest, material)
                     entry["material"] = material
                 if params is not None:
                     for name, value in params.items():
