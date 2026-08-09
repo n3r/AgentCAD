@@ -34,7 +34,7 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
 
 Required arguments are **bold**; the rest are optional. Discover the live set
 and exact JSON Schemas at runtime with `GET /api/tools` — that is the source
-of truth, and it omits `fem_static` unless the `[fem]` extra is installed.
+of truth, and it omits the FEM tools unless the `[fem]` extra is installed.
 
 ### Projects and parts
 
@@ -109,13 +109,19 @@ tangent_circles`.
 
 ### FEM — present only with the `[fem]` extra
 
-`fem_static` is registered **only** when `agentcad[fem]` is installed, so it
-never appears in `GET /api/tools` (or to agents) otherwise — the philosophy is
-that agents must not see a tool that cannot run.
+The FEM tools are registered **only** when `agentcad[fem]` is installed, so
+they never appear in `GET /api/tools` (or to agents) otherwise — the
+philosophy is that agents must not see a tool that cannot run. Without the
+extra, the routes answer 501 with an install hint.
 
 | Tool | Arguments | Returns |
 |---|---|---|
 | `fem_static` | **project, part_id, fixed_face, load_face**, load_N, load_dir, E_mpa, nu, mesh_size_mm | Linear-static FEM: clamp one axis-aligned face, load another, return max displacement and max von Mises. `fixed_face`/`load_face` = `{axis: x\|y\|z, side: min\|max}`. |
+| `fem_modal` | **project, part_id**, n_modes, fixed_face, E_mpa, nu | Modal FEM: natural `frequencies_hz` (ascending) from a consistent-mass eigensolve; E and density default from the part material. `fixed_face` = `{axis: x\|y\|z, side: min\|max}`; omit it for free-free (rigid-body modes are dropped and noted). |
+| `fem_thermal` | **project, part_id, hot_face, cold_face, t_hot_c, t_cold_c**, k_w_m_k | Thermal FEM: steady-state conduction with fixed temperatures on two faces; returns `t_min_c`/`t_max_c` and `flux_w` (total heat flow through the hot face, W). k defaults from the part material's `k_w_m_k`. |
+
+Routes: `POST /api/projects/{proj}/parts/{id}/fem`, `.../fem/modal`,
+`.../fem/thermal`.
 
 ## A worked loop
 
