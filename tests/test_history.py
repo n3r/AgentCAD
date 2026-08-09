@@ -246,3 +246,180 @@ def test_restore_unknown_commit_is_a_validation_error(demo):
         "project_restore", {"project": "demo", "commit": "--help"}
     )
     assert weird["error"]["type"] == "validation_error"
+
+
+# ---------------------------------------- 9. undo/redo cursor (tools_undo)
+
+
+def _volume(registry):
+    m = registry.call("get_metrics", {"project": "demo", "part_id": "box"})
+    assert "error" not in m, m
+    return m["volume_mm3"]
+
+
+def test_undo_redo_round_trip(demo):
+    _service, registry, _bus = demo
+    assert _volume(registry) == pytest.approx(1000.0)
+    registry.call(
+        "update_part_script",
+        {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT},
+    )
+    assert _volume(registry) == pytest.approx(2000.0)
+
+    undone = registry.call("undo", {"project": "demo"})
+    assert "error" not in undone, undone
+    assert "project_changed box" in undone["undone"]
+    assert _volume(registry) == pytest.approx(1000.0)
+    assert undone["history"]["redo"], undone
+
+    redone = registry.call("redo", {"project": "demo"})
+    assert "error" not in redone, redone
+    assert _volume(registry) == pytest.approx(2000.0)
+
+
+def test_multi_level_undo_steps_through_each_mutation(demo):
+    _service, registry, _bus = demo
+    registry.call(
+        "set_params", {"project": "demo", "part_id": "box",
+                       "values": {"size": 12.0}}
+    )
+    assert _volume(registry) == pytest.approx(12.0 ** 3)
+    registry.call(
+        "update_part_script",
+        {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT},
+    )
+    assert _volume(registry) == pytest.approx(2 * 12.0 ** 3)
+
+    registry.call("undo", {"project": "demo"})  # back before the script edit
+    assert _volume(registry) == pytest.approx(12.0 ** 3)
+    registry.call("undo", {"project": "demo"})  # back before the param change
+    assert _volume(registry) == pytest.approx(1000.0)
+
+    registry.call("redo", {"project": "demo"})
+    assert _volume(registry) == pytest.approx(12.0 ** 3)
+
+
+def test_redo_clears_on_new_mutation(demo):
+    _service, registry, _bus = demo
+    registry.call(
+        "update_part_script",
+        {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT},
+    )
+    registry.call("undo", {"project": "demo"})
+    # A fresh mutation forks away from the undone future.
+    registry.call(
+        "set_params", {"project": "demo", "part_id": "box",
+                       "values": {"size": 11.0}}
+    )
+    stale = registry.call("redo", {"project": "demo"})
+    assert stale["error"]["type"] == "conflict_error"
+
+
+def test_get_history_labels(demo):
+    _service, registry, _bus = demo
+    registry.call(
+        "update_part_script",
+        {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT},
+    )
+    status = registry.call("get_history", {"project": "demo"})
+    assert status["available"] is True
+    assert status["undo"], status
+    assert all("project_changed" in label for label in status["undo"])
+    assert status["redo"] == []
+
+    registry.call("undo", {"project": "demo"})
+    status = registry.call("get_history", {"project": "demo"})
+    assert len(status["redo"]) == 1
+
+
+def test_undo_past_the_root_is_a_conflict(demo):
+    _service, registry, _bus = demo
+    # The only snapshot is create_part (the root commit): nothing before it.
+    result = registry.call("undo", {"project": "demo"})
+    assert result["error"]["type"] == "conflict_error"
+    # The stack entry was not consumed by the refused step.
+    status = registry.call("get_history", {"project": "demo"})
+    assert len(status["undo"]) == 1
+
+
+def test_restart_fallback_gives_exactly_one_undo(demo, kernel, tmp_path):
+    service, registry, _bus = demo
+    registry.call(
+        "update_part_script",
+        {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT},
+    )
+    # A fresh service over the same store = a server restart: cursor empty.
+    bus2 = EventBus()
+    service2 = AgentCADService(tmp_path / "projects", kernel, bus2)
+    registry2 = build_registry(service2)
+    assert _volume(registry2) == pytest.approx(2000.0)
+
+    first = registry2.call("undo", {"project": "demo"})
+    assert "error" not in first, first
+    assert _volume(registry2) == pytest.approx(1000.0)
+
+    # The latest snapshot is now a restore commit: a second fallback undo
+    # would oscillate (act as a redo), so it must refuse instead.
+    second = registry2.call("undo", {"project": "demo"})
+    assert second["error"]["type"] == "conflict_error"
+
+
+def test_manual_restore_is_undoable(demo):
+    _service, registry, _bus = demo
+    registry.call(
+        "update_part_script",
+        {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT},
+    )
+    oldest = _history(registry)["history"][-1]["id"]
+    registry.call("project_restore", {"project": "demo", "commit": oldest})
+    assert _volume(registry) == pytest.approx(1000.0)
+
+    undone = registry.call("undo", {"project": "demo"})
+    assert "error" not in undone, undone
+    assert undone["undone"].startswith("restore ")
+    assert _volume(registry) == pytest.approx(2000.0)
+
+
+def test_undo_respects_turn_lock(demo):
+    from agentcad.core import locks
+
+    _service, registry, _bus = demo
+    registry.call(
+        "update_part_script",
+        {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT},
+    )
+    locks.set_client_id("agent_a")
+    assert "error" not in registry.call(
+        "acquire_turn", {"project": "demo"})
+    locks.set_client_id("agent_b")
+    try:
+        blocked = registry.call("undo", {"project": "demo"})
+        assert blocked["error"]["type"] == "conflict_error"
+        assert "agent_a" in blocked["error"]["message"]
+    finally:
+        locks.set_client_id("agent_a")
+        registry.call("release_turn", {"project": "demo"})
+        locks.set_client_id("local")
+
+
+def test_undo_redo_routes_return_project_payload(demo):
+    from fastapi.testclient import TestClient
+
+    from agentcad.server.app import create_app
+
+    service, registry, _bus = demo
+    app = create_app(service, registry, extra_allowed_hosts={"testserver"})
+    client = TestClient(app, base_url="http://127.0.0.1")
+    registry.call(
+        "update_part_script",
+        {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT},
+    )
+    r = client.post("/api/projects/demo/undo")
+    assert r.status_code == 200, r.text
+    payload = r.json()
+    assert "undone" in payload and "project" in payload
+    r = client.post("/api/projects/demo/redo")
+    assert r.status_code == 200
+    assert "redone" in r.json()
+    empty = client.post("/api/projects/demo/redo")
+    assert empty.status_code == 409

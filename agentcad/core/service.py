@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..kernel.client import KernelClient, KernelError
-from .history import ProjectHistory
+from .history import ProjectHistory, UndoCursor
 from .locks import TurnLock, current_client_id
 from .materials import MATERIALS, get_material
 from .model import InstanceSpec, NotFoundError, ValidationError, validate_vec3
@@ -110,6 +110,9 @@ class AgentCADService:
         # mutations — mates/materials/PMI/solids, which write through the
         # store and publish themselves — are covered by the same seam.
         self.history = ProjectHistory()
+        # One-keystroke undo/redo: an in-memory two-stack cursor over the
+        # durable git history (tools_undo / routes_undo / Cmd+Z in the UI).
+        self.undo_cursor = UndoCursor(self.history, self.store, bus)
         bus.on_publish = self._snapshot_on_event
 
     def _snapshot_on_event(self, event: dict) -> None:
@@ -132,7 +135,9 @@ class AgentCADService:
             message += f" {event['part']}"
         if event.get("reason"):
             message += f" ({event['reason']})"
-        self.history.snapshot(path, message)
+        commit = self.history.snapshot(path, message)
+        if commit:
+            self.undo_cursor.on_snapshot(proj, commit, message)
 
     def _resolved_instances(self, proj: str):
         """Assembly instances with any declarative mates resolved to concrete

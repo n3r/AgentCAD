@@ -18,7 +18,7 @@ the same service humans use through the browser UI.
 │ FastAPI server — 127.0.0.1:<port>   (agentcad serve)        │
 │                                                             │
 │   ToolRegistry ──► AgentCADService ──► ProjectStore (files) │
-│   (39 tools,       (cache, events,     ~/AgentCAD/projects  │
+│   (42 tools,       (cache, events,     ~/AgentCAD/projects  │
 │    single source    orchestration)     or --projects-dir    │
 │    of truth)             │                                  │
 │                          │ line-delimited JSON-RPC (stdio)  │

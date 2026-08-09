@@ -56,7 +56,7 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   helpers add ISO threads and fasteners — all importable from part scripts.
   An **Error Doctor** rewrites raw OCCT errors into plain-language fixes.
 
-The agent tool surface is now **39 tools** (was 17; 42 with the `[fem]`
+The agent tool surface is now **42 tools** (was 17; 45 with the `[fem]`
 extra), and multi-part rebuilds fan out across a small pool of warm kernel
 workers. v3 added typed parameters, per-solid semantics, sheet metal with
 flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,
@@ -155,7 +155,7 @@ def build(p):
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — processes, components, data flow
-- [docs/agent-api.md](docs/agent-api.md) — the 39-tool agent surface, MCP setup
+- [docs/agent-api.md](docs/agent-api.md) — the 42-tool agent surface, MCP setup
 - [docs/part-authoring.md](docs/part-authoring.md) — the script contract and toolkit
 - [docs/user-guide.md](docs/user-guide.md) — the UI, surface by surface
 - [docs/roadmap.md](docs/roadmap.md) — what shipped in v2/v3, and the honest residuals
