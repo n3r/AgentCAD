@@ -70,6 +70,10 @@ export const api = {
   patchInstance: (proj, id, body) =>
     request("PATCH", `/api/projects/${enc(proj)}/assembly/instances/${enc(id)}`, body),
 
+  /** Undo/redo the last project mutation. 409 (ConflictError) when empty. */
+  undo: (proj) => request("POST", `/api/projects/${enc(proj)}/undo`),
+  redo: (proj) => request("POST", `/api/projects/${enc(proj)}/redo`),
+
   // ---- materials v2 ----
   listMaterials: (proj) =>
     request("GET", `/api/materials${proj ? `?project=${enc(proj)}` : ""}`),

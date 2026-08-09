@@ -31,6 +31,8 @@ const actions = {
   refreshPartDetail,
   markPartState,
   patchInstanceTransform,
+  undo,
+  redo,
   toast,
 };
 
@@ -420,6 +422,39 @@ async function patchInstanceTransform(instanceId, patch) {
     }
     scheduleAssemblyRefresh(); // resync panel + gizmo to the server truth
   }
+}
+
+// ------------------------------------------------------------- undo/redo
+
+async function undoRedo(kind) {
+  if (!state.projectName) return;
+  let res;
+  try {
+    res =
+      kind === "undo"
+        ? await api.undo(state.projectName)
+        : await api.redo(state.projectName);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 409) {
+      toast(kind === "undo" ? "Nothing to undo" : "Nothing to redo");
+    } else {
+      toast(`${kind === "undo" ? "Undo" : "Redo"} failed: ${err.message}`, "error");
+    }
+    return;
+  }
+  // The restore must repaint even inside the post-commit echo window, and we
+  // don't wait for the WS project_changed round-trip.
+  localPatchUntil = 0;
+  toast(kind === "undo" ? `Undid: ${res.undone}` : `Redid: ${res.redone}`);
+  await refreshProject();
+}
+
+function undo() {
+  undoRedo("undo");
+}
+
+function redo() {
+  undoRedo("redo");
 }
 
 // Attach/detach the on-canvas move/rotate gizmo for the current selection.
@@ -908,6 +943,22 @@ function setupKeys() {
   document.addEventListener("keydown", (e) => {
     const target = e.target instanceof Element ? e.target : document.body;
     const inField = target.closest("input, textarea, .CodeMirror") != null;
+    // Undo/redo — global except where native text undo must win.
+    if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+      const key = e.key.toLowerCase();
+      if (key === "z" || key === "y") {
+        const editingText =
+          target.closest(".CodeMirror, textarea, [contenteditable]") != null ||
+          (target instanceof HTMLInputElement &&
+            !["range", "checkbox", "radio", "button", "file", "color"]
+              .includes(target.type));
+        if (!editingText) {
+          e.preventDefault();
+          undoRedo(key === "y" || e.shiftKey ? "redo" : "undo");
+        }
+        return;
+      }
+    }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
       // CodeMirror handles its own Cmd+S; catch it everywhere else
       if (!target.closest(".CodeMirror")) {
@@ -928,6 +979,8 @@ function setupKeys() {
     }
   });
   document.getElementById("fit-btn").addEventListener("click", () => viewport.fit());
+  document.getElementById("undo-btn").addEventListener("click", undo);
+  document.getElementById("redo-btn").addEventListener("click", redo);
 }
 
 // ------------------------------------------------------------------ toasts

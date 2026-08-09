@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 
 from ..kernel.client import KernelClient, KernelError
+from .history import HistoryManager
 from .materials import MATERIALS, get_material
 from .model import InstanceSpec, NotFoundError, ValidationError, validate_vec3
 from .project import ProjectStore
@@ -70,6 +71,9 @@ class AgentCADService:
         self._spec_cache: dict[str, dict] = {}
         # Seams the v2 feature packs replace; defaults preserve v1 behavior.
         self.materials = _DefaultMaterialResolver()
+        self.history = HistoryManager(
+            self.store, bus, self._lock, self._forget_status
+        )
 
     def _resolved_instances(self, proj: str):
         """Assembly instances with any declarative mates resolved to concrete
@@ -157,6 +161,7 @@ class AgentCADService:
         if kind == "reference" and not source:
             raise ValidationError("reference parts require a 'source' import path")
         with self._lock:
+            self.history.checkpoint(proj, f"Add part {part_id}")
             self.store.add_part(
                 proj, part_id, label or part_id, material,
                 script or DEFAULT_PART_SCRIPT, kind=kind, source=source,
@@ -199,6 +204,13 @@ class AgentCADService:
         with self._lock:
             self.store.get_part(proj, part_id)
             if script is not None:
+                label = f"Edit script of {part_id}"
+            elif material is not None:
+                label = f"Set material of {part_id}"
+            else:
+                label = f"Edit part {part_id}"
+            self.history.checkpoint(proj, label)
+            if script is not None:
                 self.store.write_script(proj, part_id, script)
             if label is not None or material is not None:
                 self.store.update_part_entry(
@@ -239,11 +251,13 @@ class AgentCADService:
                     merged.pop(name, None)
                 else:
                     merged[name] = float(value)
+            self.history.checkpoint(proj, f"Change params of {part_id}")
             self.store.update_part_entry(proj, part_id, params=merged)
         return self._rebuild(proj, part_id)
 
     def delete_part(self, proj: str, part_id: str) -> None:
         with self._lock:
+            self.history.checkpoint(proj, f"Delete part {part_id}")
             self.store.remove_part(proj, part_id)
             self._status.pop((proj, part_id), None)
         self.bus.publish({"type": "project_changed", "project": proj})
@@ -359,6 +373,7 @@ class AgentCADService:
                 )
             )
         with self._lock:
+            self.history.checkpoint(proj, "Edit assembly")
             self.store.set_instances(proj, specs)
         self.bus.publish({"type": "project_changed", "project": proj})
         return self.get_assembly(proj)
@@ -456,6 +471,12 @@ class AgentCADService:
             sort_keys=True,
         )
         return hashlib.sha256(payload.encode()).hexdigest()[:32]
+
+    def _forget_status(self, proj: str) -> None:
+        """Drop cached build state after a history restore; the next access
+        re-resolves via the content-hash cache (usually ``cached: true``)."""
+        for key in [k for k in self._status if k[0] == proj]:
+            self._status.pop(key, None)
 
     def _ensure_built(self, proj: str, part_id: str) -> dict:
         status = self._status.get((proj, part_id))

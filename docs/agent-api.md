@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 25 tools, assembled
+Agents drive AgentCAD through a single tool surface — 28 tools, assembled
 once in `agentcad/core/tools.py` (the 17 core tools) plus the v2 feature
 packs in `agentcad/core/tools_*.py` — and exposed two ways:
 
@@ -50,6 +50,20 @@ of truth, and it omits `fem_static` unless the `[fem]` extra is installed.
 | `update_part_script` | **project, part_id**, script, label, material | Rebuild result. On failure: traceback + failing line + hint; previous geometry kept. |
 | `set_params` | **project, part_id, values** | Rebuild result. Values merge with existing overrides and clamp to min/max with warnings; unknown names are rejected before anything is written, and a `null` value removes an override. |
 | `delete_part` | **project, part_id** | `{deleted}` — fails with a conflict while assembly instances reference the part. |
+
+### History (undo/redo)
+
+One shared per-project history covers every mutation path — these tools, the
+REST API, and the browser UI (Cmd+Z there) — so you can undo a change no
+matter which client made it. In-memory, bounded (50 steps), cleared on server
+restart. Undoing a state that was already built restores from the mesh cache
+with no kernel work.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `undo` | **project** | `{undone: <label>, history: {undo, redo}}` — reverts the last mutation (param change, move, script edit, part add/delete, mate, materials). Conflict error when there is nothing to undo. |
+| `redo` | **project** | `{redone: <label>, history: {undo, redo}}` — re-applies the most recently undone mutation. The redo stack clears when any new mutation happens. |
+| `get_history` | **project** | `{undo: [labels…], redo: [labels…]}`, newest first. |
 
 ### Metrics, mesh, and export
 

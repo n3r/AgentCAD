@@ -106,9 +106,11 @@ feature** — add packs:
    re-export the public name from `toolkit/__init__.py` if it's a top-level
    symbol.
 
-`AgentCADService` also exposes three seams you extend rather than fork:
-`self.materials` (density resolver), `mates.resolve` (assembly mates), and the
-kernel `affinity=` kwarg (pool routing).
+`AgentCADService` also exposes seams you extend rather than fork:
+`self.materials` (density resolver), `mates.resolve` (assembly mates), the
+kernel `affinity=` kwarg (pool routing), and `self.history` (undo/redo — a
+mutating pack must call `service.history.checkpoint(project, label)` after
+validation, right before its first store write).
 
 ## The part-script contract
 
@@ -196,7 +198,7 @@ Write the changelog from the real diff, not from memory.
 ## Where to read more
 
 - `docs/architecture.md` — processes, components, ACM1 format, rebuild flow
-- `docs/agent-api.md` — the 25/26 agent tools with schemas + a worked loop
+- `docs/agent-api.md` — the 28/29 agent tools with schemas + a worked loop
 - `docs/part-authoring.md` — the script contract, toolkit, mates, sketch solver
 - `docs/user-guide.md` — the UI surface by surface
 - `docs/roadmap.md` — what's intentionally not built yet, and why

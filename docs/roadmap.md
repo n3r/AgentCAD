@@ -90,8 +90,11 @@ The items below are the remaining non-goals, roughly ordered by expected value.
   today; on-canvas controls — a transform gizmo, a material picker, an Import
   button, an in-app drawing preview, analysis actions in the Metrics tab —
   are the planned browser-UI follow-up.
-- **Undo/redo & history.** The store does atomic writes; a git-backed project
-  history (every rebuild = commit) would give time travel nearly for free.
+- **Durable history.** Undo/redo shipped (service-layer snapshot two-stack,
+  Ctrl+Z/Cmd+Z in the UI plus `undo`/`redo` tools, shared across all
+  clients) but is in-memory and bounded. A git-backed project history
+  behind the same `service.history` seam would add persistence across
+  restarts and a browsable timeline.
 - **Mesh streaming for huge parts.** ACM1 is a single buffer today; chunking +
   LOD would help >1M-triangle models and large imports.
 - **Multi-user / collaboration.** The service layer is already shared-state; a

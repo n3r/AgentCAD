@@ -78,6 +78,16 @@ next visit.
 `rebuild_started`/`rebuild_finished` events — including rebuilds an agent
 triggered.
 
+**Undo / Redo** (↩ / ↪) — step backwards and forwards through the project's
+mutation history: parameter changes, instance moves, script saves, part
+add/delete, material and mate edits. The history is **shared with the
+agent** — one Cmd+Z can revert a change the chat agent (or an MCP client)
+just made. A toast names what was undone (`Undid: Move base_plate_1`).
+Keyboard: **Cmd+Z** / **Ctrl+Z** and **Shift+Cmd+Z** / **Ctrl+Y** — except
+inside the code editor or a text field, where the editor's own text undo
+keeps working. History is per project, in-memory (up to 50 steps), and
+cleared when the server restarts.
+
 **Fit** — reframes the camera on the current content, keeping the viewing
 direction. Keyboard: **F**.
 
@@ -358,6 +368,8 @@ written to any of these files.
 | Key | Action |
 |---|---|
 | **F** | Fit view (when not typing in a field). |
+| **Cmd+Z** / **Ctrl+Z** | Undo the last project change (any client's). In the code editor / a text field it stays the editor's own text undo. |
+| **Shift+Cmd+Z** / **Ctrl+Y** | Redo the last undone change. |
 | **Cmd+S** / **Ctrl+S** | Save & Rebuild the current part's script — works from anywhere, not just the editor. |
 | **Esc** | Close an open toolbar menu. |
 | **Enter** | Select the focused sidebar row (rows are Tab-reachable). |

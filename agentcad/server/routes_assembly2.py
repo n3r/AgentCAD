@@ -28,6 +28,7 @@ def build_router(service, registry) -> APIRouter:
             target.rotation_deg = validate_vec3(body["rotation_deg"], "rotation_deg")
         if "color" in body:
             target.color = body["color"]
+        service.history.checkpoint(proj, f"Move {instance_id}")
         service.store.set_instances(proj, instances)
         service.bus.publish({"type": "project_changed", "project": proj})
         return service.get_assembly(proj)
