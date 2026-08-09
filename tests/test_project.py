@@ -100,7 +100,7 @@ def test_remove_instanced_part_conflicts(store):
 def test_atomic_manifest_write_preserves_original(store, monkeypatch):
     store.create("demo")
     path = store.path_of("demo") / "project.json"
-    original = path.read_text()
+    original = path.read_text(encoding="utf-8")
 
     import os as os_module
 
@@ -111,14 +111,15 @@ def test_atomic_manifest_write_preserves_original(store, monkeypatch):
     with pytest.raises(OSError):
         store.add_part("demo", "plate", "Plate", "al6061", "x = 1")
     monkeypatch.undo()
-    assert json.loads(path.read_text()) == json.loads(original)
+    assert json.loads(path.read_text(encoding="utf-8")) == json.loads(original)
 
 
 def test_open_external_project(store, tmp_path):
     ext = tmp_path / "elsewhere" / "rocket"
     (ext / "parts").mkdir(parents=True)
     (ext / "project.json").write_text(
-        json.dumps({"schema_version": 1, "name": "rocket", "parts": []})
+        json.dumps({"schema_version": 1, "name": "rocket", "parts": []}),
+        encoding="utf-8",
     )
     name = store.open(ext)
     assert name == "rocket"
@@ -136,6 +137,6 @@ def test_open_name_collision_conflicts(store, tmp_path):
     store.create("demo")
     ext = tmp_path / "other-demo"
     ext.mkdir()
-    (ext / "project.json").write_text(json.dumps({"name": "demo", "parts": []}))
+    (ext / "project.json").write_text(json.dumps({"name": "demo", "parts": []}), encoding="utf-8")
     with pytest.raises(ConflictError):
         store.open(ext)

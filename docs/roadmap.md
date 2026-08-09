@@ -2,13 +2,14 @@
 
 v0.1 delivered the vertical slice: script-as-model parts on a real OCCT B-rep
 kernel, projects/assemblies, a browser UI, and the dual agent surface (MCP +
-built-in chat). **v2** built out the engineering depth on top of that spine —
-without a rewrite, behind auto-discovered extension points
-([architecture.md](architecture.md#v2-extension-points)).
+built-in chat). **v2** built out the engineering depth on top of that spine.
+**v3** closed out the remainder of this roadmap — every section below
+"Shipped" that used to list a gap now lists what shipped for it, with the
+honest residuals kept at the bottom.
 
 ## Shipped since v0.1
 
-These were roadmap items and are now in the product:
+v2:
 
 - **CAD import** — STEP/BREP as boolean-capable reference parts, STL as
   mesh-only (measure/display).
@@ -25,83 +26,67 @@ These were roadmap items and are now in the product:
   constraint sketch solver, `bd_warehouse` threads, and an Error Doctor.
 - **Performance** — a parallel kernel-worker pool for multi-part rebuilds.
 
-The items below are the remaining non-goals, roughly ordered by expected value.
+v3 (this wave):
 
-## Modeling and CAD depth
+- **Typed parameters** — PARAMS `type: number|int|bool|enum|string` with
+  choices/max_len, enforced in both layers, typed inspector controls.
+- **Per-solid part semantics** — `SOLID_LABELS`, per-solid metrics, per-solid
+  materials with correct mass roll-ups.
+- **Sheet metal** — the `SheetPart` toolkit (fold/unfold from one spec, bend
+  allowance) and the `flat_pattern` export with bend lines (SVG/DXF).
+- **PMI / GD&T** — a validated tolerance model on parts (dims/datums/FCFs)
+  rendered as drawing callouts, plus **tolerance stack-ups** (worst-case +
+  RSS) along the assembly mate graph.
+- **Motion from mates** — driven revolute/cylindrical DOF sweeps with
+  moving-body interference checking and viewport animation.
+- **Class-A surfacing** — `smooth_loft` + G0/G1/G2 `blend_surface` (plate
+  filling) and a `curvature` analysis kind to verify continuity numerically.
+- **FEM tiers** — modal (natural frequencies) and steady-state thermal
+  behind the same `[fem]` extra.
+- **GUI sketching & push/pull** — an interactive 2D sketcher over the
+  constraint solver that emits build123d code, and face push/pull recorded
+  as script edits (script stays the source of truth).
+- **Vision feedback** — `render_view`: server-side shaded renders returned
+  as real image content over MCP and chat.
+- **Turn-locking & multi-agent sessions** — per-project editing turns
+  enforced at the store choke point; concurrent chat sessions with scoped
+  identities.
+- **Undo / history** — every mutation snapshots into a per-project git repo;
+  Cmd+Z and `project_restore` time travel.
+- **Mesh streaming** — coarse LOD tiers for >150k-triangle parts with
+  progressive viewport loading (ACM1 unchanged).
+- **Sandboxed script execution** — macOS seatbelt confinement of kernel
+  workers (writes only in project roots, no network).
+- **Windows/Linux CI** — a three-OS GitHub Actions matrix over the full
+  suite (the architecture was already portable).
+- **Single-binary distribution** — a self-contained PyInstaller bundle
+  (`make dist`, ~390 MB) with the executable re-launching itself as the
+  kernel worker.
 
-- **GUI sketching & push/pull.** The kernel has a first-party constraint
-  solver (`solve_sketch`) and full parametric parts, but authoring is still
-  code-first. An interactive sketcher (draw, dimension, constrain) and
-  direct push/pull on faces would open the tool to users who don't write
-  build123d — the solver and rebuild loop it needs already exist.
-- **Sheet metal.** Flanges, bends, bend-relief, and a flat-pattern unfold are
-  their own feature family; build123d has primitives but no sheet-metal
-  semantics, and the flat pattern is what makes it worth doing.
-- **Class-A surfacing.** Continuity-controlled (G2/G3) freeform surfaces for
-  aesthetic/aero bodies. OCCT can represent them; the work is the modeling UX
-  and curvature analysis, well beyond the current solid-modeling scope.
-- **Non-numeric parameters.** `PARAMS` is numeric-only; boolean/enum/string
-  parameters (feature toggles, named configurations) need schema, UI controls,
-  and cache-key handling.
-- **Per-solid part semantics.** A part returning a `Compound` renders and
-  exports, but per-solid materials, metrics, and mass roll-ups are not tracked.
+## Remaining non-goals (deferred deliberately)
 
-## Documentation of intent (PMI)
-
-- **PMI / GD&T on drawings.** Datums, feature control frames, and tolerance
-  callouts on the generated drawings. Drawings today carry driven dimensions
-  only; GD&T needs a tolerance model on the geometry, not just annotation.
-- **Tolerance stack-ups.** Worst-case and statistical (RSS) stacks across an
-  assembly. This depends on both a tolerance model and the mate graph — mates
-  now exist, so the assembly-chain half is in place.
-
-## Kinematics
-
-- **Motion from mates.** Mates place parts today; the natural next step is
-  driving revolute/cylindrical DOFs through ranges to animate and to
-  sweep-check for collisions over motion (a moving-body extension of
-  `check_interference`). A full kinematic/DOF solver was explicitly deferred
-  when mates shipped.
-
-## Analysis
-
-- **Higher-fidelity FEM.** The optional `[fem]` tier is single-part
-  linear-static. Multi-body contact, modal, thermal, and a heavier solver
-  (CalculiX is documented but not shipped) are future tiers — kept optional so
-  the core install stays light.
-
-## Platform
-
-- **Windows / Linux.** The architecture is already portable (pure Python, OCP
-  wheels on all three OSes, browser UI). The work is packaging and CI to prove
-  it; the only mac-specific artifact is the `.app` wrapper.
-- **Single-binary distribution.** Today the install story is the repo + `uv`.
-  A bundled distribution (briefcase/PyInstaller or a Tauri shell) would remove
-  the toolchain prerequisite.
-- **OS-level script sandboxing.** Part scripts run with user privileges
-  (documented trust model). A macOS `sandbox-exec`/seatbelt profile around the
-  kernel workers would harden the boundary without changing the architecture,
-  since all script execution is already confined to those subprocesses.
-
-## Application
-
-- **Direct-manipulation UI for v2.** The v2 capabilities (import, materials,
-  mates, drawings, analysis) are driven through the agent and the REST API
-  today; on-canvas controls — a transform gizmo, a material picker, an Import
-  button, an in-app drawing preview, analysis actions in the Metrics tab —
-  are the planned browser-UI follow-up.
-- **Undo/redo & history.** The store does atomic writes; a git-backed project
-  history (every rebuild = commit) would give time travel nearly for free.
-- **Mesh streaming for huge parts.** ACM1 is a single buffer today; chunking +
-  LOD would help >1M-triangle models and large imports.
-- **Multi-user / collaboration.** The service layer is already shared-state; a
-  turn-locking scheme would let several agents (or agent + human) work one
-  project concurrently. Out of scope until there's a concrete need — the
-  localhost-only bind is a security stance, not a service-layer limitation.
-
-## Agents
-
-- **Vision feedback.** Screenshot-of-viewport as a tool result, so agents can
-  *see* what they built, not only measure it.
-- **Multi-agent sessions.** Concurrent agents on one project, gated by the
-  turn-locking above.
+- **Heavier FEM** — multi-body contact and a CalculiX tier stay documented
+  but unshipped; modal/thermal cover the common single-part questions, and
+  contact needs a solver investment out of proportion to current demand.
+- **Full kinematic/DOF solver** — mates place parts and sweep single driven
+  DOFs; simultaneous multi-joint kinematics (linkages, closed chains) remains
+  out of scope until there's a concrete need.
+- **Class-A modeling *UX*** — the surfacing toolkit and curvature analysis
+  shipped; interactive surface sculpting (control-point editing, live zebra
+  overlays in the viewport) is a product milestone of its own.
+- **Bend-relief & partial-width flanges** — the sheet-metal v1 does
+  full-edge flanges; relief cuts and flange segments are the natural next
+  iteration.
+- **Windows/Linux sandbox confinement** — the seatbelt profile is
+  macOS-only; Linux (Landlock/seccomp) and Windows (AppContainer)
+  equivalents are future work, and `/api/health` reports "unsupported"
+  there honestly.
+- **Signed/notarized distribution** — the bundle is ad-hoc signed and
+  arm64-only; notarization and multi-arch builds belong to a release
+  pipeline, not the repo.
+- **Real-time collaborative editing** — turn locks serialize writers; the
+  localhost-only bind remains a security stance. CRDT-style concurrent
+  editing is out of scope.
+- **Sketcher depth** — arcs/splines/ellipses in the sketch solver, drag-to-
+  solve warm starting (the `initial` hook is reserved), and rank-based DOF
+  reporting.

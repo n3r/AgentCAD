@@ -478,6 +478,26 @@ input, textarea { font: inherit; color: inherit; }
 }
 .param-num:focus { outline: none; border-color: var(--accent); }
 .param-num::-webkit-inner-spin-button { -webkit-appearance: none; }
+.param-select,
+.param-text {
+  flex: 1;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid var(--hairline);
+  background: var(--ink);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+}
+.param-select:focus,
+.param-text:focus { outline: none; border-color: var(--accent); }
+.param-check {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+}
 .param-desc { margin-top: 4px; font-size: 11px; color: var(--dim); }
 
 input[type="range"] {
@@ -921,6 +941,31 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   color: var(--text);
 }
 
+.placement-motion {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--hairline-soft);
+}
+.placement-motion-row {
+  margin-top: 5px;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.placement-motion-row .placement-num { width: 0; flex: 1; }
+.placement-sweep-btn {
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  color: var(--text);
+  font-size: 11.5px;
+}
+.placement-sweep-btn:hover { background: var(--raised-2); }
+.placement-sweep-btn:disabled { opacity: 0.55; }
+
 /* --------------------------------------------------- reference pane */
 
 .ref-block { padding: 2px 0 6px; }
@@ -1168,6 +1213,127 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   color: #4a4f57;
 }
 .drawing-status.error { color: var(--err); }
+
+/* ------------------------------------------------- face push/pull card */
+
+#facecard {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 236px;
+  max-width: calc(100% - 20px);
+  background: rgba(31, 33, 37, 0.92);
+  border: 1px solid var(--hairline-soft);
+  border-radius: 9px;
+  padding: 10px 11px 11px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.facecard-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  margin-bottom: 9px;
+}
+.facecard-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.facecard-row .placement-num { flex: 1; width: 0; }
+.facecard-row .tb-btn { flex: none; }
+
+/* ------------------------------------------------------ sketcher overlay */
+
+#sketcher {
+  position: absolute;
+  inset: 0;
+  z-index: 8; /* over the canvas + hud, under toasts */
+  display: flex;
+  flex-direction: column;
+  background: var(--ink);
+}
+.sk-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--hairline-soft);
+  flex-wrap: wrap;
+}
+.sk-btn {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  color: var(--dim);
+  font-size: 11.5px;
+  display: inline-flex;
+  align-items: center;
+}
+.sk-btn:hover { background: var(--raised-2); color: var(--text); }
+.sk-btn:disabled { opacity: 0.4; cursor: default; }
+.sk-btn:disabled:hover { background: var(--raised); color: var(--dim); }
+.sk-btn.active {
+  color: var(--text);
+  border-color: rgba(217, 154, 78, 0.5);
+  background: var(--accent-soft);
+}
+.sk-btn.sk-primary { color: var(--text); border-color: rgba(217, 154, 78, 0.5); }
+.sk-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--hairline-soft);
+  margin: 0 4px;
+  flex: none;
+}
+.sk-spacer { flex: 1; }
+.sk-status {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ok);
+  margin-left: 8px;
+  white-space: nowrap;
+}
+.sk-status.err { color: var(--err); }
+.sk-canvas {
+  flex: 1;
+  min-height: 0;
+  display: block;
+  cursor: crosshair;
+  touch-action: none;
+}
+.sk-chips {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  pointer-events: none;
+}
+.sk-chip {
+  pointer-events: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  padding: 2px 6px;
+  line-height: 1.4;
+}
+.sk-chip:hover { color: var(--err); border-color: rgba(224, 101, 92, 0.5); }
+
+/* sketch toolbar toggle mirrors the tool-active look */
+#sketch-btn.active {
+  border-color: rgba(217, 154, 78, 0.5);
+  background: var(--accent-soft);
+}
 
 @media (prefers-reduced-motion: reduce) {
   .row-dot.building, .msg.assistant.streaming::after { animation: none; }

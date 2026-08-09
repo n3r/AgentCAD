@@ -17,9 +17,10 @@ import webbrowser
 from pathlib import Path
 
 import agentcad
+from ._resources import resource_root
+from ._spawn import worker_argv  # noqa: F401 — re-exported; kernel spawn helper
 from .config import get_port
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PROJECTS_DIR = Path.home() / "AgentCAD" / "projects"
 
 
@@ -30,15 +31,39 @@ def _build_service(projects_dir: Path):
     from .kernel.pool import KernelPool
 
     size = get_kernel_pool_size()
-    kernel = KernelClient() if size == 1 else KernelPool(size=size)
+    writable = _writable_roots(projects_dir)
+    if size == 1:
+        kernel = KernelClient(writable_dirs=writable)
+    else:
+        kernel = KernelPool(size=size, writable_dirs=writable)
     kernel.start()
     service = AgentCADService(projects_dir, kernel, EventBus())
     _register_examples(service)
     return service
 
 
+def _writable_roots(projects_dir: Path) -> list[str]:
+    """Directories the sandboxed kernel workers may write to: the projects
+    dir (part .cache meshes, exports/), the user config dir, each registered
+    example project, and the system temp dir (added by the profile builder
+    too, listed here for status transparency)."""
+    import tempfile
+
+    roots = [
+        str(projects_dir),
+        str(Path.home() / ".agentcad"),
+        tempfile.gettempdir(),
+    ]
+    examples = resource_root() / "examples"
+    if examples.is_dir():
+        for child in sorted(examples.iterdir()):
+            if (child / "project.json").is_file():
+                roots.append(str(child))
+    return roots
+
+
 def _register_examples(service) -> None:
-    examples = REPO_ROOT / "examples"
+    examples = resource_root() / "examples"
     if not examples.is_dir():
         return
     for child in sorted(examples.iterdir()):
@@ -83,6 +108,17 @@ def cmd_mcp(args) -> None:
     run_mcp_server()
 
 
+def cmd_worker(args) -> None:
+    # Hidden subcommand: run the kernel worker loop in THIS process. It exists
+    # so a frozen (PyInstaller) bundle can re-exec its own executable as the
+    # worker (see agentcad._spawn.worker_argv). Imported lazily because the
+    # worker module imports build123d/OCP, which the server process must never
+    # load — this branch only ever runs in the dedicated worker subprocess.
+    from .kernel.worker import main as worker_main
+
+    worker_main()
+
+
 def cmd_new(args) -> None:
     from .core.project import ProjectStore
 
@@ -112,7 +148,8 @@ def cmd_export(args) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agentcad", description="Agentic-first CAD")
     parser.add_argument("--version", action="version", version=agentcad.__version__)
-    sub = parser.add_subparsers(dest="command")
+    # metavar hides the internal `worker` subcommand from usage/help.
+    sub = parser.add_subparsers(dest="command", metavar="{serve,open,mcp,new,export}")
 
     for name in ("serve", "open"):
         p = sub.add_parser(name, help=f"{name} the AgentCAD server")
@@ -121,6 +158,9 @@ def main() -> None:
         p.add_argument("--no-open", action="store_true")
 
     sub.add_parser("mcp", help="run the MCP stdio server")
+
+    # Hidden: kernel worker loop (used by frozen bundles to re-exec themselves).
+    sub.add_parser("worker")
 
     p = sub.add_parser("new", help="create a new project")
     p.add_argument("name")
@@ -138,6 +178,8 @@ def main() -> None:
         cmd_serve(args, open_browser=args.command == "open")
     elif args.command == "mcp":
         cmd_mcp(args)
+    elif args.command == "worker":
+        cmd_worker(args)
     elif args.command == "new":
         cmd_new(args)
     elif args.command == "export":

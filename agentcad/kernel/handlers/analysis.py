@@ -2,8 +2,9 @@
 
 section (cross-section area + SVG), wall (min wall thickness via inward ray
 casting), inertia (full tensor + principal via GProp), projected_area (ray
-grid). Uses only shipped deps (build123d + OCP). Validated to machine
-precision against analytic cases in the spike.
+grid), curvature (per-face gaussian/mean curvature on a UV sample grid).
+Uses only shipped deps (build123d + OCP). Validated to machine precision
+against analytic cases in the spike.
 """
 
 from __future__ import annotations
@@ -11,7 +12,9 @@ from __future__ import annotations
 import math
 
 import build123d as b3d
+from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.BRepGProp import BRepGProp, BRepGProp_Face
+from OCP.BRepLProp import BRepLProp_SLProps
 from OCP.BRepTools import BRepTools
 from OCP.gp import gp_Dir, gp_Lin, gp_Pnt, gp_Vec
 from OCP.GProp import GProp_GProps
@@ -104,6 +107,48 @@ def _projected_area(shape, axis: str = "Z", n: int = 200) -> dict:
     return {"kind": "projected_area", "axis": axis, "area_mm2": hits * cell}
 
 
+def _curvature(faces, samples: int = 8) -> dict:
+    """Per-face gaussian (K) and mean (H) curvature sampled on an n x n UV
+    grid. Faces follow the shape's face iteration order. K, H in 1/mm^2 and
+    1/mm; sign of H is orientation-dependent (compare magnitudes)."""
+    n = max(4, min(16, int(samples)))
+    out_faces = []
+    worst = 0.0
+    total = 0
+
+    def stats(vals):
+        if not vals:
+            return {"min": None, "max": None, "mean": None}
+        return {"min": min(vals), "max": max(vals),
+                "mean": sum(vals) / len(vals)}
+
+    for index, face in enumerate(faces):
+        surf = BRepAdaptor_Surface(face.wrapped)
+        props = BRepLProp_SLProps(surf, 2, 1e-6)
+        u0, u1 = surf.FirstUParameter(), surf.LastUParameter()
+        v0, v1 = surf.FirstVParameter(), surf.LastVParameter()
+        ks, hs = [], []
+        for i in range(n):
+            u = u0 + (u1 - u0) * (i + 0.5) / n
+            for j in range(n):
+                v = v0 + (v1 - v0) * (j + 0.5) / n
+                props.SetParameters(u, v)
+                if not props.IsCurvatureDefined():
+                    continue
+                ks.append(props.GaussianCurvature())
+                hs.append(props.MeanCurvature())
+        if ks:
+            worst = max(worst, max(abs(k) for k in ks))
+        total += len(ks)
+        out_faces.append({
+            "index": index, "area_mm2": float(face.area),
+            "gaussian": stats(ks), "mean_curvature": stats(hs),
+        })
+    return {"kind": "curvature", "faces": out_faces,
+            "worst_gaussian_abs": worst, "n_faces": len(out_faces),
+            "sampled_points": total}
+
+
 def _inertia(shape, density_g_cm3: float = 1.0) -> dict:
     props = GProp_GProps()
     BRepGProp.VolumeProperties_s(shape.wrapped, props)
@@ -139,6 +184,12 @@ def register(toolbox: dict):
                                    int(params.get("n", 200)))
         if kind == "inertia":
             return _inertia(shape, float(params.get("density_g_cm3", 1.0)))
+        if kind == "curvature":
+            faces = shape.faces()
+            if not faces:
+                raise WorkerError(
+                    ERROR_CONTRACT, "curvature: shape has no B-rep faces")
+            return _curvature(faces, int(params.get("samples", 8)))
         raise WorkerError(ERROR_CONTRACT, f"unknown analysis kind {kind!r}")
 
     return {"analyze": analyze}

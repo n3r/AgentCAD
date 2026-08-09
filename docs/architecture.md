@@ -18,7 +18,7 @@ the same service humans use through the browser UI.
 │ FastAPI server — 127.0.0.1:<port>   (agentcad serve)        │
 │                                                             │
 │   ToolRegistry ──► AgentCADService ──► ProjectStore (files) │
-│   (25 tools,       (cache, events,     ~/AgentCAD/projects  │
+│   (39 tools,       (cache, events,     ~/AgentCAD/projects  │
 │    single source    orchestration)     or --projects-dir    │
 │    of truth)             │                                  │
 │                          │ line-delimited JSON-RPC (stdio)  │
@@ -114,6 +114,34 @@ defaults to v1 behavior, so the core runs unchanged if a pack is absent:
 - **Kernel pool** — the single `KernelClient` is replaced by a `KernelPool`
   of the same shape (see [above](#process-model)).
 
+A fourth, v3 seam handles **turn locking**: `ProjectStore.write_guard` is a
+post-init hook invoked with the project name before every persistent mutation
+(`save_manifest` — which all pack mutations funnel through — and
+`write_script`). `AgentCADService` installs `TurnLock.check(proj,
+current_client_id())` there, so per-project advisory locks are enforced at
+one store choke point with zero per-pack edits. Client identity rides a
+ContextVar (`agentcad/core/locks.py`): HTTP middleware stamps it from
+`X-Agent-Id` (default `browser`), the chat engine stamps `chat` inside its
+tool executor, and the MCP proxy sends `AGENTCAD_AGENT_ID`/`mcp`. Project
+creation and derived-data writes (cache, exports, metrics sidecars) are
+intentionally unguarded.
+
+**LOD tiers.** A kernel build request may carry `lod_tolerances`
+(`{suffix: tolerance}`) and `lod_min_triangles`; after writing the
+full-resolution `<key>.acm` the worker re-tessellates and atomically writes
+one `<key>.<suffix>.acm` sidecar per entry — but only when the full mesh's
+triangle count (word 2 of the ACM1 header) exceeds the threshold, so small
+parts never pay for the extra pass. The service requests a single `lod1`
+tier at tolerance 0.8 above 150 000 triangles (`MESH_LOD_TOLERANCE` /
+`LOD_TRIANGLE_THRESHOLD`) on every build; the result's `triangles` and
+`lods` round-trip through the `<key>.metrics.json` sidecar. Tiers use the
+same frozen ACM1 format and leave the full-resolution bytes pinned. The mesh
+route serves a tier for `?lod=lod1` with `X-Mesh-Lod: lod1`, falling back to
+the full buffer (`X-Mesh-Lod: full`) when none exists, which lets the
+browser show a coarse preview instantly and swap in the full mesh in the
+background. STL reference imports never get tiers — their triangulation is
+their geometry.
+
 Two cross-cutting pieces ride these seams. The **Error Doctor**
 (`error_doctor.py`) is invoked from one hook in the worker's `_dispatch`: it
 matches a failure's type + message + traceback against a catalog of real OCCT
@@ -173,8 +201,17 @@ export.
 
 A local, single-user engineering tool. Part scripts execute with user
 privileges inside the worker subprocess — the same trust model as running any
-code an agent writes in your working directory. Mitigations: the server binds
-`127.0.0.1` only; kernel requests time out; the worker is isolated so kernel
-crashes never take down the app; scripts live in the project directory where
-humans review them; the Anthropic API key is read from the environment and
-never persisted. OS-level sandboxing is on the roadmap.
+code an agent writes in your working directory. On macOS the worker is
+additionally confined by a seatbelt profile (`agentcad/kernel/sandbox.py`,
+via `/usr/bin/sandbox-exec`): deny-by-default, global read, writes allowed
+only inside the project roots (projects dir, registered examples,
+`~/.agentcad`, the system temp dir), and no network. A script can still
+compute anything and read world-readable files, but it cannot modify files
+outside its projects and cannot reach the network from inside the worker.
+`/api/health` reports the effective state (`"sandbox": "active" | "off" |
+"unsupported"`); opt out with `AGENTCAD_NO_SANDBOX=1` or `{"sandbox": false}`
+in `~/.agentcad/config.json` (env wins). Unchanged mitigations: the server
+binds `127.0.0.1` only; kernel requests time out; the worker is isolated so
+kernel crashes never take down the app; scripts live in the project directory
+where humans review them; the Anthropic API key is read from the environment
+and never persisted. Windows/Linux confinement is on the roadmap.

@@ -61,6 +61,17 @@ export function getScript() {
   return cm.getValue();
 }
 
+/** Append text to the end of the buffer (used by the sketcher's insert).
+ *  Fires CodeMirror's change event, so dirty tracking updates itself. */
+export function insertText(text) {
+  if (!cm || !currentPartId) return false;
+  const last = cm.lineCount(); // position past the end clamps to doc end
+  cm.replaceRange(text, { line: last, ch: 0 });
+  cm.focus();
+  cm.setCursor({ line: cm.lineCount(), ch: 0 });
+  return true;
+}
+
 export function isDirty() {
   return cm.getValue() !== cleanText;
 }
