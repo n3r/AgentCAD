@@ -69,5 +69,6 @@ commit manifest-reformatting churn or the venv.
 ## Deeper docs
 
 `AGENTS.md` (contributor guide) · `docs/architecture.md` · `docs/agent-api.md`
-· `docs/part-authoring.md` · `docs/user-guide.md` · `docs/roadmap.md` ·
+· `docs/part-authoring.md` · `docs/user-guide.md` · `docs/roadmap.md` (PRD
+index) · `docs/prd/` (one PRD per feature) · `docs/market_research.md` ·
 `docs/superpowers/specs|plans/` (design specs and implementation plans).

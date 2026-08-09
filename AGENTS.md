@@ -210,5 +210,7 @@ Write the changelog from the real diff, not from memory.
 - `docs/agent-api.md` — the 42/45 agent tools with schemas + a worked loop
 - `docs/part-authoring.md` — the script contract, toolkit, mates, sketch solver
 - `docs/user-guide.md` — the UI surface by surface
-- `docs/roadmap.md` — what's intentionally not built yet, and why
+- `docs/roadmap.md` — the PRD index with statuses (what we're building and why)
+- `docs/prd/` — one detailed PRD per roadmap feature (see `docs/prd/README.md`)
+- `docs/market_research.md` — the competitive/market evidence behind the roadmap
 - `docs/superpowers/specs|plans/` — the design specs and implementation plans
