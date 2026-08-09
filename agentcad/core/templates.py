@@ -48,6 +48,10 @@ Optional: SOLID_LABELS = ["body", "lid"]  # names a multi-solid Compound's
 solids by index; metrics.solids and set_solid_materials address solids by
 these labels (fallback solid_0, solid_1, ...).
 
+Surfacing: agentcad.toolkit.surfacing.smooth_loft / blend_surface --
+continuity-controlled lofts + G0/G1/G2 face blends; always propagate the
+returned warning. Verify with analyze_part(kind="curvature").
+
 Units are millimeters; angles in degrees. Scripts run in a kernel worker
 with a 60 s timeout. Do not read files, loop forever, or print protocol
 noise — stdout is redirected. Raise exceptions freely: tracebacks are

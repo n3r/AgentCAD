@@ -758,6 +758,7 @@ function analysisBlock(part) {
     ["section", "Section"],
     ["wall", "Wall thickness"],
     ["inertia", "Inertia"],
+    ["curvature", "Curvature"],
   ]) {
     const b = document.createElement("button");
     b.type = "button";
@@ -775,7 +776,7 @@ function analysisBlock(part) {
 
   const results = document.createElement("div");
   results.className = "analysis-results";
-  for (const kind of ["section", "wall", "inertia"]) {
+  for (const kind of ["section", "wall", "inertia", "curvature"]) {
     if (analysisResults[kind]) {
       results.appendChild(renderAnalysisResult(kind, analysisResults[kind]));
     }
@@ -820,6 +821,7 @@ const ANALYSIS_TITLES = {
   section: "Cross-section",
   wall: "Min wall thickness",
   inertia: "Mass properties",
+  curvature: "Surface curvature",
 };
 
 function renderAnalysisResult(kind, r) {
@@ -873,6 +875,24 @@ function analysisRows(kind, d) {
     }
     return out;
   }
+  if (kind === "curvature") {
+    let out =
+      arow("Faces", fmt(d.n_faces, 0)) +
+      arow("Worst |K|", `${fmtCurv(d.worst_gaussian_abs)}<span class="unit">1/mm²</span>`) +
+      arow("Sampled", fmt(d.sampled_points, 0));
+    const faces = d.faces || [];
+    for (const f of faces.slice(0, 8)) {
+      out += arow(
+        `Face ${f.index}`,
+        `K ${fmtCurv(f.gaussian.min)}…${fmtCurv(f.gaussian.max)} · ` +
+          `H ${fmtCurv(f.mean_curvature.min)}…${fmtCurv(f.mean_curvature.max)}`
+      );
+    }
+    if (faces.length > 8) {
+      out += arow("", `+${faces.length - 8} more faces`);
+    }
+    return out;
+  }
   if (kind === "inertia") {
     const t = d.inertia_tensor_g_mm2;
     const diag = t ? [t[0][0], t[1][1], t[2][2]] : null;
@@ -893,6 +913,14 @@ function analysisRows(kind, d) {
   }
   return escapeHtml(JSON.stringify(d));
 }
+
+// Curvatures are tiny (1/mm, 1/mm²): exponent notation below fmt()'s
+// resolution, plain formatting above it, flat treated as exactly 0.
+const fmtCurv = (v) => {
+  if (v == null || !Number.isFinite(v)) return "—";
+  if (Math.abs(v) < 1e-9) return "0";
+  return Math.abs(v) < 0.01 ? v.toExponential(2) : fmt(v, 3);
+};
 
 function arow(key, valueHtml) {
   return `<div class="analysis-row"><span class="analysis-k">${key}</span>` +

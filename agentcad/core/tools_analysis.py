@@ -32,7 +32,7 @@ def register(registry, service) -> None:
             {
                 "project": {"type": "string"},
                 "part_id": {"type": "string"},
-                "kind": {"type": "string", "description": "section|wall|inertia|projected_area"},
+                "kind": {"type": "string", "description": "section|wall|inertia|projected_area|curvature"},
                 "plane": {"type": "string", "description": "section plane: XY|XZ|YZ"},
                 "axis": {"type": "string", "description": "projected_area axis: X|Y|Z"},
                 "min_required": {"type": "number", "description": "wall: min acceptable mm"},

@@ -209,6 +209,22 @@ but heavy (~9k triangles per M8 thread at mesh tolerance 0.1), so:
   specifically to bypass `bd_warehouse`'s `ThreadedHole(simple=False)` trap
   (~15 s and inserts no thread).
 
+### Surfacing (class-A)
+
+`from agentcad.toolkit import surfacing`:
+
+- `surfacing.smooth_loft(profiles, ruled=False) -> (part, warning|None)` —
+  loft one solid through 2+ planar profiles (Sketch/Face/Wire); falls back to
+  a ruled loft with a warning; RuntimeError when both fail.
+- `surfacing.blend_surface(face_a, face_b, continuity="G1") ->
+  (face, warning|None)` — transition surface between the two faces' nearest
+  edges with G0/G1/G2 continuity against the source faces (OCCT plate
+  filling). G2 is gated for numerical stability and degrades to G1 with a
+  warning when the plate balloons (an OCCT 7.x instability); surface the
+  warnings — they are honest. Verify blends with
+  `analyze_part(kind="curvature")`: a true G2 blend shows no jump in
+  curvature across the seam.
+
 ### Sheet metal
 
 `agentcad.toolkit.sheetmetal.SheetPart` is a declarative builder: one spec
