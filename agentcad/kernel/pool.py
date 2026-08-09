@@ -19,14 +19,22 @@ from .client import KernelClient
 
 class KernelPool:
     def __init__(self, size: int = 3, python_exe: str | None = None,
-                 timeout_s: float = 60.0):
+                 timeout_s: float = 60.0, *,
+                 writable_dirs: list[str] | None = None):
         self.size = max(1, int(size))
         self._workers: list[KernelClient] = [
-            KernelClient(python_exe=python_exe, timeout_s=timeout_s)
+            KernelClient(python_exe=python_exe, timeout_s=timeout_s,
+                         writable_dirs=writable_dirs)
             for _ in range(self.size)
         ]
         self._rr = 0
         self._rr_lock = threading.Lock()
+
+    @property
+    def sandboxed(self) -> bool:
+        # Every worker is constructed identically, so worker 0 speaks for all
+        # (workers spawn lazily; the decision is made at construction).
+        return self._workers[0].sandboxed
 
     # ------------------------------------------------------------- lifecycle
 

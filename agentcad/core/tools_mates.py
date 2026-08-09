@@ -16,7 +16,6 @@ def _set_instance_mate(service, project, instance_id, mate):
     if not found:
         raise NotFoundError(f"instance {instance_id!r} not found")
     verb = "Clear" if mate is None else "Set"
-    service.history.checkpoint(project, f"{verb} mate on {instance_id}")
     service.store.set_instances(project, instances)
     service.bus.publish({"type": "project_changed", "project": project})
     return service.get_assembly(project)

@@ -88,8 +88,18 @@ export const api = {
   drawingSvgUrl: (proj, id) =>
     `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing.svg`,
 
+  // ---- project history (undo) ----
+  projectHistory: (proj) =>
+    request("GET", `/api/projects/${enc(proj)}/history`),
+  projectRestore: (proj, commit) =>
+    request("POST", `/api/projects/${enc(proj)}/restore`, { commit }),
+
   // ---- generic tool passthrough (used by import) ----
   callTool: (name, body) => request("POST", `/api/tools/${enc(name)}`, body),
+
+  // ---- 2D sketch solve (constraint solver) ----
+  solveSketch: (entities, constraints) =>
+    request("POST", "/api/sketch/solve", { entities, constraints }),
 
   /** Raw-body upload of an imported CAD file. Resolves {source, size_bytes};
    *  throws ApiError on rejection (too large, bad extension, empty). */
@@ -123,12 +133,45 @@ export const api = {
   chatHistory: (project) =>
     request("GET", `/api/chat/history?project=${enc(project)}`),
 
-  /** Fetch the ACM1 binary mesh. Resolves {buffer, key}; throws ApiError
-   *  (502 with the build error) when the part's script is broken. */
-  async getMesh(proj, id) {
+  /** Fetch the ACM1 binary mesh. Resolves {buffer, key, lod}; throws ApiError
+   *  (502 with the build error) when the part's script is broken.
+   *  Pass lod ("lod1") to request a coarse preview tier — the server falls
+   *  back to the full mesh when no tier exists, and `lod` reports which
+   *  resolution actually arrived ("lod1" or "full"). */
+  async getMesh(proj, id, lod) {
+    let res;
+    const url =
+      `/api/projects/${enc(proj)}/parts/${enc(id)}/mesh` +
+      (lod ? `?lod=${enc(lod)}` : "");
+    try {
+      res = await fetch(url);
+    } catch {
+      throw new ApiError(0, {
+        error: { type: "network_error", message: "server unreachable", details: {} },
+      });
+    }
+    if (!res.ok) {
+      let payload = null;
+      try {
+        payload = await res.json();
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(res.status, payload);
+    }
+    const key = res.headers.get("X-Mesh-Key") || "";
+    const servedLod = res.headers.get("X-Mesh-Lod") || "full";
+    const buffer = await res.arrayBuffer();
+    return { buffer, key, lod: servedLod };
+  },
+
+  /** Fetch the mesh's triangle->B-rep-face sidecar (one u32 per triangle of
+   *  the FULL-resolution mesh). Resolves {buffer, key}; throws ApiError 404
+   *  when no sidecar exists (stale cache / reference part). */
+  async getMeshFaces(proj, id) {
     let res;
     try {
-      res = await fetch(`/api/projects/${enc(proj)}/parts/${enc(id)}/mesh`);
+      res = await fetch(`/api/projects/${enc(proj)}/parts/${enc(id)}/mesh/faces`);
     } catch {
       throw new ApiError(0, {
         error: { type: "network_error", message: "server unreachable", details: {} },

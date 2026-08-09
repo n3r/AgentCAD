@@ -108,9 +108,10 @@ feature** — add packs:
 
 `AgentCADService` also exposes seams you extend rather than fork:
 `self.materials` (density resolver), `mates.resolve` (assembly mates), the
-kernel `affinity=` kwarg (pool routing), and `self.history` (undo/redo — a
-mutating pack must call `service.history.checkpoint(project, label)` after
-validation, right before its first store write).
+kernel `affinity=` kwarg (pool routing), `ProjectStore.write_guard` (turn
+locking), and `self.history`/`self.undo_cursor` (git-backed snapshots +
+undo/redo — a mutating pack needs NO per-call hook: publishing
+`project_changed` after its write is what triggers the snapshot).
 
 ## The part-script contract
 
@@ -152,8 +153,11 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   meshes. Cache key = `sha256(content, params, density, tolerance)`.
 - **Security/trust**: server binds `127.0.0.1` only, with a Host-allowlist +
   same-origin guard (`server/app._browser_request_allowed`) on HTTP and WS.
-  Part scripts run with user privileges by design (local single-user tool) —
-  document, don't sandbox-theater. API key from env only, never persisted.
+  Part scripts run with user privileges by design (local single-user tool);
+  on macOS the kernel worker is additionally confined by a deny-by-default
+  `sandbox-exec` profile (`kernel/sandbox.py`: writes only in project roots,
+  no network; `AGENTCAD_NO_SANDBOX=1` opts out). API key from env only,
+  never persisted.
 - Comment density and style: match the surrounding file. Comments state
   constraints the code can't, not narration.
 
@@ -198,7 +202,7 @@ Write the changelog from the real diff, not from memory.
 ## Where to read more
 
 - `docs/architecture.md` — processes, components, ACM1 format, rebuild flow
-- `docs/agent-api.md` — the 28/29 agent tools with schemas + a worked loop
+- `docs/agent-api.md` — the 42/45 agent tools with schemas + a worked loop
 - `docs/part-authoring.md` — the script contract, toolkit, mates, sketch solver
 - `docs/user-guide.md` — the UI surface by surface
 - `docs/roadmap.md` — what's intentionally not built yet, and why

@@ -42,7 +42,7 @@ def test_generate_svg_drawing(demo):
         "project": "demo", "part_id": "flange", "format": "svg"})
     assert "error" not in result, result
     assert result["size_bytes"] > 1000
-    svg = (demo.store.exports_dir("demo") / "flange_drawing.svg").read_text()
+    svg = (demo.store.exports_dir("demo") / "flange_drawing.svg").read_text(encoding="utf-8")
     assert svg.startswith("<svg")
     # four view labels present
     for label in ("TOP", "FRONT", "RIGHT", "ISO"):
@@ -71,6 +71,6 @@ def test_views_subset(demo):
     registry = build_registry(demo)
     result = registry.call("generate_drawing", {
         "project": "demo", "part_id": "flange", "views": ["top", "front"]})
-    svg = (demo.store.exports_dir("demo") / "flange_drawing.svg").read_text()
+    svg = (demo.store.exports_dir("demo") / "flange_drawing.svg").read_text(encoding="utf-8")
     assert "TOP" in svg and "FRONT" in svg
     assert "RIGHT" not in svg

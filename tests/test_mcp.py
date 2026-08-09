@@ -11,6 +11,7 @@ update whose error comes back as tool-result content.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -145,6 +146,23 @@ def test_mcp_stdio_end_to_end(live_server):
                 )
                 payload = json.loads(result.content[0].text)
                 assert payload.get("id") == "widget"
+
+                # render_view: image content plus JSON text without the base64.
+                result = await session.call_tool(
+                    "render_view",
+                    {"project": "mcptest", "part_id": "widget",
+                     "width": 320, "height": 240},
+                    read_timeout_seconds=300,
+                )
+                kinds = [c.type for c in result.content]
+                assert kinds == ["image", "text"], kinds
+                image = result.content[0]
+                assert image.mime_type == "image/png"
+                assert base64.b64decode(image.data)[:8] == b"\x89PNG\r\n\x1a\n"
+                payload = json.loads(result.content[1].text)
+                assert "png_base64" not in payload
+                assert payload["view"] == "iso"
+                assert payload["width"] == 320
 
                 # Broken script: the error arrives as readable tool content.
                 result = await session.call_tool(

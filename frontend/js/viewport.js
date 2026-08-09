@@ -19,7 +19,11 @@ let contentGroup = null; // holds current part or assembly groups
 let gridHelper = null;
 let onPickCallback = null;
 
-// geometry cache: `${partId}:${meshKey}` -> {geometry, edges}
+// geometry cache: `${partId}:${meshKey}` -> {geometry, edges, faceMap?}.
+// main.js passes meshKey as `${cacheKey}:${lod}` so a coarse LOD tier and the
+// full-resolution mesh of the same build never collide in the cache. faceMap
+// is the optional triangle->B-rep-face Uint32Array (full-resolution mesh
+// only), set lazily via setFaceMap; pick() maps hit triangles through it.
 const geomCache = new Map();
 const GEOM_CACHE_MAX = 32;
 
@@ -36,8 +40,19 @@ let gizmoInteracting = false; // a gizmo axis is being grabbed right now
 let gizmoDragged = false; // the grab actually moved the object
 let attachedInstanceId = null;
 
+// 3D palette, swapped by theme.js (dark defaults). Grid size/divisions are
+// remembered so a theme change can rebuild the grid in place.
+let sceneTheme = {
+  background: 0x17181b,
+  gridMajor: 0x2c2f36,
+  gridMinor: 0x22242a,
+  edge: 0x0d0e10,
+};
+let gridSize = 400;
+let gridDivisions = 40;
+
 const edgeMaterial = new THREE.LineBasicMaterial({
-  color: 0x0d0e10,
+  color: sceneTheme.edge,
   transparent: true,
   opacity: 0.5,
 });
@@ -133,7 +148,7 @@ export function init(container, { onPick } = {}) {
   container.appendChild(renderer.domElement);
 
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x17181b);
+  scene.background = new THREE.Color(sceneTheme.background);
 
   camera = new THREE.PerspectiveCamera(
     45,
@@ -186,7 +201,7 @@ export function init(container, { onPick } = {}) {
     // A press on a gizmo axis is not a selection click, even if it didn't move.
     if (wasGizmo || moved > 4 || !onPickCallback) return;
     const hit = pick(e);
-    onPickCallback(hit);
+    onPickCallback(hit, e);
   });
 
   renderer.setAnimationLoop(() => {
@@ -196,14 +211,26 @@ export function init(container, { onPick } = {}) {
 }
 
 function setGrid(size, divisions) {
+  gridSize = size;
+  gridDivisions = divisions;
   if (gridHelper) {
     scene.remove(gridHelper);
     gridHelper.geometry.dispose();
     gridHelper.material.dispose();
   }
-  gridHelper = new THREE.GridHelper(size, divisions, 0x2c2f36, 0x22242a);
+  gridHelper = new THREE.GridHelper(size, divisions, sceneTheme.gridMajor, sceneTheme.gridMinor);
   gridHelper.rotation.x = Math.PI / 2; // lie in the XY plane (Z up)
   scene.add(gridHelper);
+}
+
+/** Swap the 3D palette: {background, gridMajor, gridMinor, edge}. Safe to
+ *  call before init() — the colors apply when the scene is created. */
+export function setTheme(colors) {
+  sceneTheme = colors;
+  edgeMaterial.color.set(colors.edge);
+  if (!scene) return;
+  scene.background.set(colors.background);
+  setGrid(gridSize, gridDivisions);
 }
 
 function pick(event) {
@@ -220,8 +247,30 @@ function pick(event) {
   });
   const hits = raycaster.intersectObjects(meshes, false);
   if (!hits.length) return null;
-  const ud = hits[0].object.userData;
-  return { instanceId: ud.instanceId ?? null, partId: ud.partId ?? null };
+  const hit = hits[0];
+  const ud = hit.object.userData;
+  // Part mode: map the hit triangle to its B-rep face via the cache entry's
+  // faceMap (set lazily from the mesh's .faces.u32 sidecar). null when the
+  // map isn't loaded (LOD tier on stage, reference part, stale cache).
+  let faceIndex = null;
+  if (ud.geomKey && hit.faceIndex != null) {
+    const entry = geomCache.get(ud.geomKey);
+    if (entry && entry.faceMap && hit.faceIndex < entry.faceMap.length) {
+      faceIndex = entry.faceMap[hit.faceIndex];
+    }
+  }
+  return {
+    instanceId: ud.instanceId ?? null,
+    partId: ud.partId ?? null,
+    faceIndex,
+  };
+}
+
+/** Attach the triangle->B-rep-face map (Uint32Array, one entry per triangle)
+ *  to a cached geometry. `key` is the same geometry key showPart received. */
+export function setFaceMap(partId, key, faceMap) {
+  const entry = geomCache.get(`${partId}:${key}`);
+  if (entry) entry.faceMap = faceMap;
 }
 
 function makeMaterial(color) {
@@ -240,6 +289,7 @@ function clearContent() {
   // it never renders against a detached object (main.js re-attaches after the
   // new content is built).
   detachGizmoInternal();
+  clearFaceHighlight(); // overlay indexes into geometry we may drop
   for (const child of [...contentGroup.children]) {
     contentGroup.remove(child);
     child.traverse((obj) => {
@@ -279,7 +329,7 @@ export function showPart(partId, buffer, key, color = DEFAULT_PART_COLOR) {
   clearContent();
   const group = new THREE.Group();
   const mesh = new THREE.Mesh(entry.geometry, makeMaterial(color));
-  mesh.userData = { partId, instanceId: null };
+  mesh.userData = { partId, instanceId: null, geomKey: `${partId}:${key}` };
   group.add(mesh);
   group.add(new THREE.LineSegments(entry.edges, edgeMaterial));
   contentGroup.add(group);
@@ -316,6 +366,58 @@ export function showAssembly(items) {
 export function setSelectedInstance(instanceId) {
   selectedInstanceId = instanceId;
   applySelection();
+}
+
+// -------------------------------------------------------- face highlight
+
+// Least-invasive overlay: a separate non-indexed mesh in the scene root
+// holding copies of just the picked face's triangles, tinted accent amber.
+// Cleared on null, on re-render (clearContent), and on part switches.
+let faceHighlightMesh = null;
+
+function clearFaceHighlight() {
+  if (!faceHighlightMesh) return;
+  scene.remove(faceHighlightMesh);
+  faceHighlightMesh.geometry.dispose();
+  faceHighlightMesh.material.dispose();
+  faceHighlightMesh = null;
+}
+
+/** Tint one B-rep face of the displayed part (part mode only). Pass a null
+ *  faceIndex to clear. No-op when the part/map isn't on stage. */
+export function highlightFace(partId, faceIndex) {
+  clearFaceHighlight();
+  if (faceIndex == null) return;
+  if (current.mode !== "part" || current.partId !== partId) return;
+  const entry = geomCache.get(`${partId}:${current.key}`);
+  if (!entry || !entry.faceMap || !entry.geometry.index) return;
+  const idx = entry.geometry.index.array;
+  const pos = entry.geometry.getAttribute("position").array;
+  const map = entry.faceMap;
+  const verts = [];
+  for (let t = 0; t < map.length; t++) {
+    if (map[t] !== faceIndex) continue;
+    for (let corner = 0; corner < 3; corner++) {
+      const v = idx[t * 3 + corner] * 3;
+      verts.push(pos[v], pos[v + 1], pos[v + 2]);
+    }
+  }
+  if (!verts.length) return;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(verts), 3));
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xe8b06a,
+    transparent: true,
+    opacity: 0.35,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  faceHighlightMesh = new THREE.Mesh(geo, mat);
+  faceHighlightMesh.renderOrder = 2;
+  scene.add(faceHighlightMesh);
 }
 
 function applySelection() {
@@ -434,6 +536,20 @@ function groupForInstance(instanceId) {
     if (child.userData && child.userData.instanceId === instanceId) return child;
   }
   return null;
+}
+
+/** Directly set one assembly instance group's transform (used by the motion
+ *  sweep animation). position [x,y,z] mm; rotationDeg intrinsic XYZ Euler
+ *  degrees — the same convention showAssembly applies. Returns false when the
+ *  instance has no group on stage (e.g. the assembly was re-rendered). */
+export function setInstanceTransform(instanceId, position, rotationDeg) {
+  const group = groupForInstance(instanceId);
+  if (!group) return false;
+  const [rx, ry, rz] = rotationDeg || [0, 0, 0];
+  group.rotation.set(rx * DEG, ry * DEG, rz * DEG, "XYZ");
+  const [x, y, z] = position || [0, 0, 0];
+  group.position.set(x, y, z);
+  return true;
 }
 
 function detachGizmoInternal() {

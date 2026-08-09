@@ -69,7 +69,6 @@ def register(registry, service) -> None:
         validate_materials_dict(materials, "project")
         manifest = service.store.manifest(project)
         manifest["materials"] = materials
-        service.history.checkpoint(project, "Edit project materials")
         service.store.save_manifest(project, manifest)
         service.bus.publish({"type": "project_changed", "project": project})
         return list_materials(project)

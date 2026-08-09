@@ -12,6 +12,10 @@ let dock, headEl, chevron, messagesEl, formEl, inputEl, sendBtn, emptyEl, hintEl
 let streamEl = null; // assistant bubble currently receiving deltas
 let sending = false;
 let historyProject = null;
+// The dock is a single-session UI pinned to session "main"; other agents'
+// sessions on the same project are acknowledged once per id, never rendered.
+const DOCK_SESSION = "main";
+const noticedSessions = new Set();
 
 export function init() {
   dock = document.getElementById("chat-dock");
@@ -41,6 +45,7 @@ export function init() {
       historyProject = state.projectName;
       messagesEl.textContent = "";
       streamEl = null;
+      noticedSessions.clear(); // notices were wiped with the messages
       // A turn from the previous project can no longer complete here; its
       // chat_done would be filtered out, so don't leave the input locked.
       setSending(false);
@@ -165,12 +170,27 @@ export function resetSending() {
 // ------------------------------------------------------------- ws events
 
 export function handleEvent(ev) {
-  if (ev.type === "chat_done") {
+  // Events without a session come from a pre-session backend: treat as ours.
+  const session = ev.session || DOCK_SESSION;
+  if (ev.type === "chat_done" && session === DOCK_SESSION) {
     // Always release the composer, even if the turn belongs to a project
     // we have since navigated away from — otherwise 'sending' sticks forever.
+    // Scoped to our own session: another agent's chat_done must not unlock
+    // a composer that is still waiting on its own turn.
     setSending(false);
   }
   if (ev.project && state.projectName && ev.project !== state.projectName) return;
+  if (session !== DOCK_SESSION) {
+    // Another agent's session on this project: surface a one-line notice the
+    // first time each session id shows up, but never render its stream.
+    if (!noticedSessions.has(session)) {
+      noticedSessions.add(session);
+      const div = addNotice(`another agent session is active: ${session}`);
+      div.classList.add("session-notice");
+      scrollDown();
+    }
+    return;
+  }
   switch (ev.type) {
     case "chat_delta": {
       if (!streamEl) {

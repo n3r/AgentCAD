@@ -40,6 +40,7 @@ def register(toolbox: dict) -> dict:
     metrics = toolbox["metrics"]
     tessellate = toolbox["tessellate"]
     atomic_write = toolbox["atomic_write"]
+    write_lod_tiers = toolbox["write_lod_tiers"]
 
     def build_reference(params: dict) -> dict:
         source = params["source_path"]
@@ -74,6 +75,17 @@ def register(toolbox: dict) -> dict:
 
         buffer = tessellate(shape.wrapped, tolerance)
         atomic_write(params["mesh_path"], buffer)
-        return {"metrics": m, "warnings": warnings, "kind": kind}
+        # An STL mesh face's triangulation IS its geometry — re-tessellating
+        # cannot coarsen it (and cleaning it would destroy the part), so LOD
+        # tiers are only produced for B-rep imports (STEP/BREP).
+        lod_params = params if kind != "mesh" else {**params, "lod_tolerances": None}
+        triangles, lods = write_lod_tiers(shape.wrapped, lod_params, buffer)
+        return {
+            "metrics": m,
+            "warnings": warnings,
+            "kind": kind,
+            "triangles": triangles,
+            "lods": lods,
+        }
 
     return {"build_reference": build_reference}

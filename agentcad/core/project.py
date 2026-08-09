@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Callable
 
 from .materials import DEFAULT_MATERIAL, get_material
 from .model import (
@@ -41,6 +42,11 @@ class ProjectStore:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._external: dict[str, Path] = {}
+        # Write guard (set post-init, e.g. by AgentCADService): called with
+        # the project name before every persistent mutation — save_manifest
+        # (which all pack mutations funnel through) and write_script — and may
+        # raise (ConflictError) to reject the write. None means unguarded.
+        self.write_guard: Callable[[str], None] | None = None
 
     # ------------------------------------------------------------- projects
 
@@ -103,9 +109,10 @@ class ProjectStore:
                     id=entry["id"],
                     label=entry.get("label", entry["id"]),
                     material=entry.get("material", DEFAULT_MATERIAL),
-                    params={k: float(v) for k, v in entry.get("params", {}).items()},
+                    params=dict(entry.get("params", {})),  # JSON scalars pass through
                     kind=entry.get("kind", "script"),
                     source=entry.get("source"),
+                    solid_materials=entry.get("solid_materials"),
                 )
         raise NotFoundError(f"part {part_id!r} not found in project {proj!r}")
 
@@ -120,6 +127,8 @@ class ProjectStore:
         return path.read_text(encoding="utf-8")
 
     def write_script(self, proj: str, part_id: str, text: str) -> None:
+        if self.write_guard is not None:
+            self.write_guard(proj)
         self.get_part(proj, part_id)
         self._atomic_write(self.script_path(proj, part_id), text.encode())
 
@@ -192,7 +201,7 @@ class ProjectStore:
         *,
         label: str | None = None,
         material: str | None = None,
-        params: dict[str, float] | None = None,
+        params: dict[str, float | int | bool | str] | None = None,
     ) -> PartRecord:
         manifest = self.manifest(proj)
         for entry in manifest["parts"]:
@@ -204,13 +213,12 @@ class ProjectStore:
                     entry["material"] = material
                 if params is not None:
                     for name, value in params.items():
-                        if isinstance(value, bool) or not isinstance(
-                            value, (int, float)
-                        ):
+                        if not isinstance(value, (int, float, bool, str)):
                             raise ValidationError(
-                                f"parameter {name!r} must be a number"
+                                f"parameter {name!r} must be a number, bool, "
+                                "or string"
                             )
-                    entry["params"] = {k: float(v) for k, v in params.items()}
+                    entry["params"] = dict(params)
                 self.save_manifest(proj, manifest)
                 return self.get_part(proj, part_id)
         raise NotFoundError(f"part {part_id!r} not found")
@@ -268,6 +276,8 @@ class ProjectStore:
         return self._read_manifest(self._resolve(proj))
 
     def save_manifest(self, proj: str, manifest: dict) -> None:
+        if self.write_guard is not None:
+            self.write_guard(proj)
         self._write_manifest(self._resolve(proj), manifest)
 
     def cache_dir(self, proj: str) -> Path:

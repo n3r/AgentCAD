@@ -4,6 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AgentCAD</title>
+  <script>
+    // Pre-paint theme restore so a stored light theme never flashes dark.
+    try {
+      if (localStorage.getItem("agentcad.theme") === "light") {
+        document.documentElement.dataset.theme = "light";
+      }
+    } catch (e) {}
+  </script>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='4' width='9' height='9' rx='1.5' fill='%23272930'/%3E%3Crect x='5' y='2' width='9' height='9' rx='1.5' fill='none' stroke='%23d99a4e' stroke-width='1.5'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/vendor/codemirror.css">
   <link rel="stylesheet" href="/css/app.css">
@@ -37,6 +45,8 @@
 
     <button id="fit-btn" class="tb-btn" title="Fit view (F)">Fit</button>
 
+    <button id="sketch-btn" class="tb-btn" title="2D sketch editor (part mode)">✏️ Sketch</button>
+
     <button id="import-btn" class="tb-btn" title="Import a CAD file (.step / .stp / .brep / .stl)">Import</button>
     <input id="import-input" type="file" accept=".step,.stp,.brep,.stl" hidden>
 
@@ -59,6 +69,9 @@
         <button class="menu-item" data-drawing="dxf">DXF <span class="meta">.dxf</span></button>
       </div>
     </div>
+
+    <button id="theme-btn" class="tb-btn" title="Switch to light theme"
+            aria-label="Switch to light theme">☀</button>
 
     <div id="conn-dot" title="Server connection"></div>
   </header>
@@ -86,6 +99,10 @@
       <div id="placement" class="hidden">
         <div id="placement-body"></div>
       </div>
+      <div id="facecard" class="hidden">
+        <div id="facecard-body"></div>
+      </div>
+      <div id="sketcher" class="hidden"></div>
     </main>
 
     <aside id="inspector">

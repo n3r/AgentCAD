@@ -56,10 +56,11 @@ def test_all_parts_build_valid_at_defaults(example):
         assert detail["metrics"]["is_valid"] is True
         assert detail["params_spec"], f"{name}/{part['id']} has no PARAMS"
         for pname, spec in detail["params_spec"].items():
-            assert spec["min"] is not None, f"{name}/{part['id']}.{pname} missing min"
-            assert spec["max"] is not None, f"{name}/{part['id']}.{pname} missing max"
-            assert spec["unit"], f"{name}/{part['id']}.{pname} missing unit"
             assert spec["description"], f"{name}/{part['id']}.{pname} missing description"
+            if spec.get("type") in (None, "number", "int"):
+                assert spec["min"] is not None, f"{name}/{part['id']}.{pname} missing min"
+                assert spec["max"] is not None, f"{name}/{part['id']}.{pname} missing max"
+                assert spec["unit"], f"{name}/{part['id']}.{pname} missing unit"
 
 
 def test_parts_build_at_param_extremes(example):
@@ -71,7 +72,16 @@ def test_parts_build_at_param_extremes(example):
             continue  # no params to sweep
         baseline = dict(part["params"])
         for pname, spec in detail["params_spec"].items():
-            for value in (spec["min"], spec["max"]):
+            ptype = spec.get("type") or "number"
+            if ptype in ("number", "int"):
+                sweep = (spec["min"], spec["max"])
+            elif ptype == "bool":
+                sweep = (True, False)
+            elif ptype == "enum":
+                sweep = tuple(spec["choices"])
+            else:  # string: only the default is guaranteed buildable
+                sweep = (spec["default"],)
+            for value in sweep:
                 result = service.set_params(name, part["id"], {pname: value})
                 assert result["ok"], (
                     f"{name}/{part['id']}.{pname}={value}: {result.get('error')}"

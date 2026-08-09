@@ -31,7 +31,7 @@ def test_layered_precedence(tmp_path):
     global_file = tmp_path / "materials.json"
     global_file.write_text(json.dumps({
         "materials": {"al6061": {"density_g_cm3": 9.99}, "custom_g": {"density_g_cm3": 1.5}}
-    }))
+    }), encoding="utf-8")
     lib = MaterialLibrary(global_path=global_file)
     # global overrides builtin
     assert lib.resolve("al6061").density_g_cm3 == pytest.approx(9.99)

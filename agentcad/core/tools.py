@@ -167,13 +167,15 @@ def build_registry(service: AgentCADService) -> ToolRegistry:
     reg(Tool(
         "set_params",
         "Set parameter values (merged with existing overrides) and rebuild. "
-        "Values are clamped to the spec's min/max with warnings. Unknown names "
-        "are rejected before anything is written; a null value removes an override.",
+        "Numeric values are clamped to the spec's min/max with warnings; typed "
+        "values (bool/enum/string) must match their spec. Unknown names are "
+        "rejected before anything is written; a null value removes an override.",
         _schema(
             {
                 "project": _PROJ,
                 "part_id": _PART,
-                "values": {"type": "object", "description": "Map of param name to numeric value"},
+                "values": {"type": "object", "description": "Map of param name to value: "
+                           "numbers, booleans, enum choices, or strings per the part's params_spec"},
             },
             ["project", "part_id", "values"],
         ),

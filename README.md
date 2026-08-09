@@ -56,8 +56,15 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   helpers add ISO threads and fasteners — all importable from part scripts.
   An **Error Doctor** rewrites raw OCCT errors into plain-language fixes.
 
-The agent tool surface is now **25 tools** (was 17), and multi-part rebuilds
-fan out across a small pool of warm kernel workers.
+The agent tool surface is now **42 tools** (was 17; 45 with the `[fem]`
+extra), and multi-part rebuilds fan out across a small pool of warm kernel
+workers. v3 added typed parameters, per-solid semantics, sheet metal with
+flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,
+class-A surfacing with curvature analysis, modal/thermal FEM, a GUI sketcher
+and face push/pull, agent vision (`render_view`), per-project turn locks and
+multi-agent chat sessions, git-backed undo/history, mesh LOD streaming,
+sandboxed kernel workers on macOS, a three-OS CI matrix, and a
+single-binary distribution.
 
 ## Quickstart
 
@@ -85,12 +92,23 @@ kept out of the core because it pulls in gmsh + scikit-fem + meshio:
 uv sync --extra fem          # or: pip install 'agentcad[fem]'
 ```
 
-The `fem_static` tool and the `.../fem` route appear only once the extra is
-present; without it the suite stays green and agents never see a tool that
-cannot run. The kernel runs a small **pool** of warm worker processes for
-parallel rebuilds, auto-sized to your machine; override it with
-`kernel_pool_size` in `~/.agentcad/config.json` or the
+The FEM tools (`fem_static`, `fem_modal`, `fem_thermal`) and their routes
+appear only once the extra is present; without it the suite stays green and
+agents never see a tool that cannot run. The kernel runs a small **pool** of
+warm worker processes for parallel rebuilds, auto-sized to your machine;
+override it with `kernel_pool_size` in `~/.agentcad/config.json` or the
 `AGENTCAD_KERNEL_POOL_SIZE` environment variable.
+
+**Run without a toolchain.** `make dist` builds `dist/agentcad` — a
+self-contained directory (~390 MB) whose `agentcad` executable is the whole
+app: web UI, bundled example projects, and the OCCT geometry kernel (the
+executable re-launches itself as the kernel worker). Copy the directory
+anywhere and run `agentcad serve` / `agentcad open`; no Python, uv, or repo
+required. Projects live in `~/AgentCAD/projects` as usual, and `agentcad
+mcp` works frozen too (it auto-starts the bundled server). The very first
+launch after a build takes a few minutes while macOS verifies the freshly
+written libraries; later launches take ~15–20 s. Verify a build with
+`make smoke`.
 
 ## Drive it from Claude Code
 
@@ -137,18 +155,22 @@ def build(p):
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — processes, components, data flow
-- [docs/agent-api.md](docs/agent-api.md) — the 25-tool agent surface, MCP setup
+- [docs/agent-api.md](docs/agent-api.md) — the 42-tool agent surface, MCP setup
 - [docs/part-authoring.md](docs/part-authoring.md) — the script contract and toolkit
 - [docs/user-guide.md](docs/user-guide.md) — the UI, surface by surface
-- [docs/roadmap.md](docs/roadmap.md) — Windows/Linux, GUI editing, sandboxing
+- [docs/roadmap.md](docs/roadmap.md) — what shipped in v2/v3, and the honest residuals
 
 ## Trust model
 
 AgentCAD is a local, single-user tool. Part scripts are Python and run with
 your privileges in an isolated kernel subprocess — review what agents write,
-the same way you review the code they write anywhere else. The server binds
-`127.0.0.1` only; kernel requests time out and the worker auto-respawns; the
-API key is read from the environment and never stored. Details in
+the same way you review the code they write anywhere else. On macOS the
+kernel worker additionally runs under a deny-by-default `sandbox-exec`
+profile: scripts can write only inside your project folders (+tmp) and have
+no network access — `GET /api/health` shows `"sandbox": "active"`; opt out
+with `AGENTCAD_NO_SANDBOX=1`. The server binds `127.0.0.1` only; kernel
+requests time out and the worker auto-respawns; the API key is read from the
+environment and never stored. Details in
 [docs/architecture.md](docs/architecture.md#trust-model).
 
 ## Project layout
