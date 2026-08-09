@@ -335,7 +335,10 @@ the browser UI — are rejected with a clear "project is locked by \<holder\>"
 message until the turn is released or its lock expires (default 120 s). The
 toolbar shows a lock chip naming the holder whenever an agent holds the turn.
 Reads are never blocked, and with no lock held everything behaves exactly as
-before.
+before. The chat dock is pinned to the default session: when another agent
+holds its own chat session on your project, the dock shows a one-line notice
+("another agent session is active: …") instead of mixing its stream into
+yours.
 
 **Seeing the model.** Agents can now look at what they build: the `render_view`
 tool rasterizes the built mesh to a shaded PNG entirely server-side (no GPU),

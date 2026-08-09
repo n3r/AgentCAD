@@ -44,6 +44,16 @@ of truth, and it omits the FEM tools unless the `[fem]` extra is installed.
 | `acquire_turn` | **project**, ttl_s | Take (or refresh) the per-project editing turn: `{holder, expires_at, you}`. While held, writes by every other client fail with `conflict_error` naming the holder. TTL default 120 s, clamped 5–3600; re-acquire to refresh. Identity = `X-Agent-Id` header (the MCP proxy sends `AGENTCAD_AGENT_ID` or `mcp`; built-in chat is `chat`; no header = `browser`). |
 | `release_turn` | **project** | Release your turn: `{released}` (`false` when nothing was held). Releasing a turn held by someone else is a `conflict_error`. |
 | `get_turn` | **project** | `{lock: {holder, expires_at} \| null, you}` — who holds the turn plus your own client identity. |
+
+**Chat sessions.** Chat history and turn serialization are keyed by
+`(project, session)`. `session` is an id matching `[a-z0-9_-]{1,32}`, default
+`"main"` (the browser dock's lane). `POST /api/chat` accepts an optional
+`"session"`; `GET`/`DELETE /api/chat/history` accept `?session=`; bad ids are
+422. All `chat_*` WebSocket events and history payloads carry `"session"`.
+Turns in the same session queue; turns in different sessions run concurrently
+— cross-session write consistency is the per-project turn lock's job. A
+session's tool calls run under client identity `chat:<session>` (`chat` for
+`"main"`), so `get_turn` names the lane holding a lock.
 | `list_projects` | — | `{projects: [{name, path, n_parts}]}` |
 | `create_project` | **name** | Project detail. Names match `[a-z][a-z0-9_]{0,39}`. |
 | `open_project` | **path** | Opens an existing project directory (e.g. a bundled example) by absolute path. |

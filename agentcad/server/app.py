@@ -267,18 +267,25 @@ def create_app(
         @app.post("/api/chat")
         async def chat(request: Request):
             body = await request.json()
+            # session defaults to "main" (the browser dock's lane); the engine
+            # validates the id ([a-z0-9_-]{1,32}) and raises 422 on a bad one.
             return await chat_engine.start_turn(
-                body.get("project", ""), body.get("message", "")
+                body.get("project", ""),
+                body.get("message", ""),
+                session=body.get("session", "main"),
             )
 
         @app.get("/api/chat/history")
-        def chat_history(project: str):
-            return {"messages": chat_engine.history(project)}
+        def chat_history(project: str, session: str = "main"):
+            return {
+                "messages": chat_engine.history(project, session),
+                "session": session,
+            }
 
         @app.delete("/api/chat/history")
-        def clear_chat_history(project: str):
-            chat_engine.clear_history(project)
-            return {"cleared": True}
+        def clear_chat_history(project: str, session: str = "main"):
+            chat_engine.clear_history(project, session)
+            return {"cleared": True, "session": session}
 
     # ------------------------------------------------------------------ ws
 
