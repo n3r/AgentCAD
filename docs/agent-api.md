@@ -69,6 +69,7 @@ of truth, and it omits `fem_static` unless the `[fem]` extra is installed.
 | `export_assembly` | **project, format** | Whole placed assembly as `step` or `stl`. |
 | `set_mate` | **project, instance, connector, to_instance, to_connector**, angle_deg, offset_mm | Constrain `instance` to `to_instance` via named connectors declared by a part's `connectors(p, part)`. The moving-side `connector` must be *rigid*; the anchor `to_connector` may be rigid/revolute/cylindrical, with `angle_deg`/`offset_mm` driving its DOF. Returns the updated assembly. |
 | `clear_mate` | **project, instance** | Removes the instance's mate; it reverts to its explicit position/rotation. Returns the updated assembly. |
+| `sweep_motion` | **project, instance**, angle_range, offset_range, samples, min_volume | Sweep a mated instance's driven DOF across `[start, end]` (exactly one of `angle_range` deg / `offset_range` mm; `samples` 2–60, default 12), re-resolving mates and boolean-checking every instance pair at each sample. Returns `{samples: [{value, pairs}], frames, clear, first_collision, skipped_mesh}` plus an `{instance, param, values}` echo — `frames[i]` maps every instance id to its resolved `{position, rotation_deg}` for animation; `first_collision` is the first swept value that overlaps (null when `clear`). STL references are skipped like `check_interference`. |
 
 ### Materials
 

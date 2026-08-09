@@ -304,6 +304,18 @@ The service resolves the mate to a concrete pose, so the instance moves in the
 viewport like any other. A mate is authoritative: a mated instance can't be
 posed by hand until you clear its mate.
 
+**Motion from mates.** A mate's free DOF can be driven, not just held. Select a
+mated instance and the placement card shows a compact *Motion* row: enter a
+from/to angle and press **Sweep** to watch the instance swing through its range
+in the viewport; the assembly snaps back to its real pose when the animation
+ends, and a toast reports either "Motion clear through range" or the first
+angle at which something collides. Agents get the same via the `sweep_motion`
+tool (angle in degrees for revolute/cylindrical mates, offset in mm for the
+cylindrical slide), which re-resolves the mate graph at each sampled value and
+boolean-checks every part pair — use it to prove a mechanism clears its housing
+before committing to a design. Imported STL instances cannot join the boolean
+check and are listed under `skipped_mesh`, exactly as in `check_interference`.
+
 **2D drawings.** Ask for a drawing of a (script) part and AgentCAD projects
 front/top/right/iso views with overall dimensions and hole callouts detected
 from the geometry, writing `exports/<part>_drawing.svg` (or `.dxf`). A

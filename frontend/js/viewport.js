@@ -436,6 +436,20 @@ function groupForInstance(instanceId) {
   return null;
 }
 
+/** Directly set one assembly instance group's transform (used by the motion
+ *  sweep animation). position [x,y,z] mm; rotationDeg intrinsic XYZ Euler
+ *  degrees — the same convention showAssembly applies. Returns false when the
+ *  instance has no group on stage (e.g. the assembly was re-rendered). */
+export function setInstanceTransform(instanceId, position, rotationDeg) {
+  const group = groupForInstance(instanceId);
+  if (!group) return false;
+  const [rx, ry, rz] = rotationDeg || [0, 0, 0];
+  group.rotation.set(rx * DEG, ry * DEG, rz * DEG, "XYZ");
+  const [x, y, z] = position || [0, 0, 0];
+  group.position.set(x, y, z);
+  return true;
+}
+
 function detachGizmoInternal() {
   if (gizmo) gizmo.detach();
   attachedInstanceId = null;
