@@ -5,6 +5,7 @@ from agentcad.kernel.client import KernelClient, KernelError
 from .conftest import BOX_SCRIPT, NUMERIC_ENUM_SCRIPT, PLATE_SCRIPT, TYPED_SCRIPT
 
 AL_DENSITY = 2.70
+pytestmark = pytest.mark.portability
 
 
 def build(kernel, tmp_path, script, params=None, **kwargs):

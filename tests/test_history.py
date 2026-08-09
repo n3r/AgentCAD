@@ -23,6 +23,7 @@ from .conftest import BOX_SCRIPT
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.portability,
     pytest.mark.skipif(shutil.which("git") is None, reason="git not found on PATH"),
 ]
 

@@ -63,7 +63,7 @@ flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,
 class-A surfacing with curvature analysis, modal/thermal FEM, a GUI sketcher
 and face push/pull, agent vision (`render_view`), per-project turn locks and
 multi-agent chat sessions, git-backed undo/history, mesh LOD streaming,
-sandboxed kernel workers on macOS, a three-OS CI matrix, and a
+sandboxed kernel workers on macOS, a three-OS portability CI matrix, and a
 single-binary distribution.
 
 ## Quickstart
@@ -86,9 +86,13 @@ Five example projects are bundled and appear in the project switcher:
   main/rod caps, gaskets, dowels, rocker valvetrain, and all 72 fasteners —
   every joint modeled the way the real engine bolts together
 
-Other useful targets: `make test-fast` (quick feedback), `make test` (full
-two-worker suite), `make app` (builds `dist/AgentCAD.app`), and `make serve`
-(headless). Use `make test-sequential` when debugging process interactions.
+Other useful targets: `make test-fast` (quick feedback), `make test-pr` (the
+required merge gate), `make test` (complete two-worker suite), `make
+test-portability` (OS-sensitive boundaries), `make app` (builds
+`dist/AgentCAD.app`), and `make serve` (headless). Use `make test-sequential`
+when debugging process interactions. PR CI runs the required suite on macOS
+and the focused portability group on Linux and Windows; scheduled macOS CI
+runs the complete suite including exhaustive bundled-engine coverage.
 
 Optional heavier analysis (linear-static FEM) installs as an extra — it is
 kept out of the core because it pulls in gmsh + scikit-fem + meshio:

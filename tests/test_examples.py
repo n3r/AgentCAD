@@ -1,8 +1,10 @@
 """Integration tests over every bundled example project.
 
-Parametrized over examples/*/project.json found on disk; each example must:
+Parametrized over examples/*/project.json found on disk; each example must
 rebuild all parts (valid, positive volume) at defaults and at every param's
-min and max, pass an interference check, and export the assembly as STEP.
+min and max, pass an interference check, and export the assembly as STEP. The
+large engine example is exhaustive scheduled coverage; smaller examples remain
+in the per-PR suite.
 """
 
 from pathlib import Path
@@ -17,6 +19,12 @@ EXAMPLE_DIRS = sorted(
     child for child in (EXAMPLES_DIR.iterdir() if EXAMPLES_DIR.is_dir() else [])
     if (child / "project.json").is_file()
 )
+EXAMPLE_PARAMS = [
+    pytest.param(path, id=path.name, marks=pytest.mark.exhaustive)
+    if path.name == "engine"
+    else pytest.param(path, id=path.name)
+    for path in EXAMPLE_DIRS
+]
 
 pytestmark = [
     pytest.mark.integration,
@@ -33,7 +41,7 @@ def service(kernel, tmp_path_factory):
     return make_test_service(tmp_path_factory.mktemp("projects"), kernel)
 
 
-@pytest.fixture(scope="module", params=EXAMPLE_DIRS, ids=lambda p: p.name)
+@pytest.fixture(scope="module", params=EXAMPLE_PARAMS)
 def example(request, service, tmp_path_factory):
     # Copy the example into a temp dir first: the tests mutate params and write
     # caches, and we must never touch the committed example on disk.

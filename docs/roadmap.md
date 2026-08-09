@@ -126,7 +126,8 @@ helpers with curvature verification; linear-static/modal/thermal FEM; a
 constraint sketcher and face push/pull that emit script edits; server-side
 renders for agent vision; git-backed undo/history; turn locks and
 concurrent multi-agent sessions; mesh LOD streaming; macOS-sandboxed
-execution; a three-OS CI matrix; single-binary packaging; a 42-tool agent
+execution; a fast macOS PR gate, focused Linux/Windows portability jobs, and
+scheduled exhaustive macOS coverage; single-binary packaging; a 42-tool agent
 surface (45 with `[fem]`) over MCP, chat, and REST.
 
 ## Deliberate non-goals

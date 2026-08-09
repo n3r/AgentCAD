@@ -30,7 +30,11 @@ FALLBACK_PORT = 8634
 PORTCTL_ARGS = ["-service", "mcp-test", "-instance", "test"]
 SERVER_STARTUP_TIMEOUT_S = 120
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.portability,
+    pytest.mark.slow,
+]
 
 
 def _allocate_port() -> tuple[int, bool]:

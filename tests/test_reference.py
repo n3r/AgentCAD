@@ -7,6 +7,8 @@ from agentcad.core.tools import build_registry
 
 from .conftest import BOX_SCRIPT, make_test_service
 
+pytestmark = pytest.mark.portability
+
 
 @pytest.fixture
 def service(kernel, tmp_path):

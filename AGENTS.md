@@ -26,7 +26,9 @@ Python + browser UI so Windows/Linux are reachable (packaging only).
 ```bash
 make setup        # uv sync  (installs build123d/OCCT wheels, ~2 GB, one time)
 make test-fast    # two-worker suite excluding broad/timeout-driven slow tests
+make test-pr      # required PR gate; defers exhaustive bundled-engine coverage
 make test         # full two-worker suite; needs the kernel
+make test-portability  # OS-sensitive filesystem/process/kernel smoke suite
 make run          # start the server AND open the browser UI (port 8630)
 make serve        # headless server only
 make app          # build dist/AgentCAD.app (macOS launcher)
@@ -169,7 +171,14 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
 - Ordinary service tests use `make_test_service`, which disables synchronous
   git snapshots; `tests/test_history.py` and MCP integration keep real history.
 - Mark broad/process-heavy coverage `slow`; `make test-fast` excludes it while
-  `make test` and CI always run it.
+  `make test-pr` can still include it when it is required for merge confidence.
+- Mark only unusually broad stress coverage `exhaustive`; PR CI excludes it,
+  while scheduled/manual exhaustive CI and local `make test` always run it.
+  The marker is not a shortcut for an ordinarily slow regression test.
+- Mark tests `portability` when they exercise behavior that can vary by host OS
+  (filesystem/encoding, Git, subprocesses, local sockets, OCCT wheels, or CAD
+  import/export). Linux and Windows CI run this focused group; do not mark pure
+  domain logic merely to increase the cross-platform test count.
 - **Examples tests run on a copy** — never mutate `examples/` in place.
 - FastAPI `TestClient` must pass `base_url="http://127.0.0.1"` and, for
   WebSocket tests, `create_app(..., extra_allowed_hosts={"testserver"})` (the

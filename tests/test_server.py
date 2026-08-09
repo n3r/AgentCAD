@@ -8,6 +8,8 @@ from agentcad.server.app import create_app
 
 from .conftest import BOX_SCRIPT, make_test_service
 
+pytestmark = pytest.mark.portability
+
 
 @pytest.fixture
 def client(kernel, tmp_path):
