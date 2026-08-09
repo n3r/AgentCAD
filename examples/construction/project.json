@@ -44,6 +44,14 @@
         "hole_d": 14.0,
         "fillet_r": 6.0
       }
+    },
+    {
+      "id": "ref_11",
+      "label": "ref_11",
+      "material": "al6061",
+      "params": {},
+      "kind": "reference",
+      "source": "11.stl"
     }
   ],
   "assembly": {
