@@ -7,6 +7,12 @@ git client — but the *content* merge is ours: part scripts go through
 granularity, whether or not git thought it merged cleanly. A line-wise merge of
 a JSON manifest is either garbage or, worse, a clean result nobody authored.
 
+Not everything tracked is text: ``imports/`` holds STL/STEP payloads. Those are
+read, staged and resolved as raw BYTES — a binary conflict carries sizes and
+digests instead of sides, takes ``ours``/``theirs``/``base`` and nothing else,
+and never sees a conflict marker. Taking a side that does not exist (the branch
+deleted the path) removes the path from the merged tree.
+
 ``ours`` is the TARGET branch (what you merge into) and ``theirs`` the SOURCE,
 matching ``git merge <source>``. Conflicts are *returned* as a
 ``{"error": {"type": "merge_conflict", …}}`` payload, never raised: the tool
@@ -32,6 +38,7 @@ clobbering it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -56,15 +63,24 @@ MERGE_INTERFERENCE_MAX_INSTANCES = 40
 # git 2.38 (2022). Branches and tags work on older git; only merging does not.
 _MIN_GIT = (2, 38)
 
-# Per side of a script conflict, in the returned payload only — the staged file
-# on disk always carries the full text.
+# Per side of a script conflict, and for the diff3 body, in the returned
+# payload only — the staged file on disk always carries the full text.
 _MAX_BODY_BYTES = 256 * 1024
+
+# git's own binary heuristic: a NUL in the first 8000 bytes. We add "does not
+# decode as UTF-8", because everything we merge textually is read as UTF-8.
+_BINARY_SNIFF_BYTES = 8000
+
+# A resolution whose chosen side does not exist: the path is REMOVED from the
+# merged tree. "Take the side that deleted it" means delete it.
+_DELETED = object()
 
 _HINT = (
     'Resolve with resolve_merge {choices: {"<path|key>": {"take": '
     '"ours"|"theirs"|"base"}}}; scripts also accept {"content": "…"} and '
-    "manifest keys {\"value\": …}. ours = the target branch, theirs = the "
-    "source. merge_abort discards the staged merge."
+    "manifest keys {\"value\": …}, while binary files take a side only. "
+    "Taking a side that deleted the file deletes it. ours = the target "
+    "branch, theirs = the source. merge_abort discards the staged merge."
 )
 
 
@@ -106,12 +122,21 @@ class MergeOrchestrator:
                          "target": state["target"]},
                     )
                 if self._heads_moved(canonical, state):
-                    # The staged tree is stale: throw it away and re-merge from
-                    # the current heads rather than resolving against the past.
-                    self._discard(canonical, state)
-                    state = None
-                else:
-                    resolved = dict(state.get("resolved") or {})
+                    # The staged tree is stale. Re-merging from the current
+                    # heads would silently drop the resolutions recorded
+                    # against the old ones, so say so and let the caller decide
+                    # (merge_abort, then merge again).
+                    recorded = len(state.get("resolved") or {})
+                    raise ConflictError(
+                        f"branch {state['target']!r} or {state['source']!r} "
+                        "moved since this merge was staged; its "
+                        f"{recorded} recorded resolution"
+                        f"{'' if recorded == 1 else 's'} no longer apply — "
+                        "discard it with merge_abort and merge again",
+                        {"merge_id": state["id"], "source": state["source"],
+                         "target": state["target"], "resolved": recorded},
+                    )
+                resolved = dict(state.get("resolved") or {})
             return self._merge(proj, canonical, source, target,
                                allow_invalid=allow_invalid, resolved=resolved,
                                state=state)
@@ -209,7 +234,9 @@ class MergeOrchestrator:
         # malformed resolution leaves the staged merge exactly as it was.
         for conflict in conflicts:
             if conflict["kind"] != "manifest" and conflict["path"] in resolved:
-                self._resolved_text(conflict, bodies, resolved[conflict["path"]])
+                self._resolved_content(
+                    conflict, bodies, resolved[conflict["path"]]
+                )
         merged, _outstanding_manifest = apply_choices(
             merged, manifest_conflicts,
             {k: v for k, v in resolved.items()
@@ -273,8 +300,12 @@ class MergeOrchestrator:
             )
         self._sync_tree(target_tree, source_head)
         with self.branches.pinned(proj, target_tree):
+            # source_head's first parent is the previous commit on the SOURCE
+            # branch — a state the target never had. Undo must return the
+            # target to where it was before the fast-forward.
             self.service.undo_cursor.on_snapshot(
-                proj, source_head, f"merge {source} into {target}"
+                proj, source_head, f"merge {source} into {target}",
+                undo_to=target_head,
             )
             project = self.service.get_project(proj)
         self._publish(proj, source, target, source_head, None)
@@ -376,37 +407,75 @@ class MergeOrchestrator:
                 continue
             path = staged / conflict["path"]
             choice = resolved.get(conflict["path"])
-            text = (self._resolved_text(conflict, bodies, choice)
-                    if choice is not None else conflict.get("merged"))
-            if text is None:
+            if choice is not None:
+                content = self._resolved_content(conflict, bodies, choice)
+            else:
+                # Unresolved: the full diff3 body for text, and whatever the
+                # tree merge produced for binary (which never gets markers).
+                content = (bodies.get(conflict["path"]) or {}).get("merged")
+            if content is _DELETED:
+                # 'git add -A' below turns the removal into a tree deletion.
+                path.unlink(missing_ok=True)
                 continue
-            ProjectStore._atomic_write(path, text.encode())
+            if content is None:
+                continue
+            ProjectStore._atomic_write(path, content)
 
         self._run(staged, "add", "-A")
         tree = self._run(staged, "write-tree").stdout.strip()
         return {"id": merge_id, "dir": staged, "tree": tree}
 
     @staticmethod
-    def _resolved_text(conflict, bodies, choice) -> str | None:
+    def _resolved_content(conflict, bodies, choice):
+        """Bytes to write for a resolved path, or ``_DELETED``.
+
+        Bytes, never text: a resolution may name a side of a binary file
+        (``imports/*.stl``), which must be copied through verbatim.
+        """
+        path = conflict["path"]
+        is_binary = conflict["kind"] == "binary"
         if not isinstance(choice, dict):
             raise ValidationError(
-                f"choice for {conflict['path']!r} must be an object "
+                f"choice for {path!r} must be an object "
                 "{'take': 'ours'|'theirs'|'base'} or {'content': '…'}"
             )
         if "content" in choice:
+            if is_binary:
+                raise ValidationError(
+                    f"{path!r} is a binary file; hand-written content is not "
+                    "accepted — resolve it with "
+                    "{'take': 'ours'|'theirs'|'base'}",
+                    {"path": path, "kind": "binary"},
+                )
             content = choice["content"]
             if not isinstance(content, str):
                 raise ValidationError(
-                    f"content for {conflict['path']!r} must be a string"
+                    f"content for {path!r} must be a string"
                 )
-            return content
+            return content.encode()
         side = choice.get("take")
         if side not in ("ours", "theirs", "base"):
             raise ValidationError(
-                f"choice for {conflict['path']!r} must be "
-                "{'take': 'ours'|'theirs'|'base'} or {'content': '…'}"
+                f"choice for {path!r} must be "
+                "{'take': 'ours'|'theirs'|'base'}"
+                + ("" if is_binary else " or {'content': '…'}")
             )
-        return bodies.get(conflict["path"], {}).get(side)
+        sides = (bodies.get(path) or {}).get("sides") or {}
+        data = sides.get(side)
+        if data is not None:
+            return data
+        if side == "base":
+            # No stage-1 blob: both branches ADDED this path, so there is no
+            # base to take. Taking it would leave the conflicted staged file.
+            valid = sorted(name for name, body in sides.items()
+                           if body is not None)
+            raise ValidationError(
+                f"conflict at {path!r} has no base version (both branches "
+                f"added it); choose one of {valid}",
+                {"path": path, "valid": valid},
+            )
+        # The chosen branch deleted this path: taking that side deletes it.
+        return _DELETED
 
     # ------------------------------------------------------------ validation
 
@@ -507,33 +576,51 @@ class MergeOrchestrator:
 
     def _file_conflicts(self, canonical, stages, target, source):
         """Conflicted non-manifest paths as payload entries, plus each side's
-        text (for resolution by ``take``)."""
+        raw bytes (for resolution by ``take``).
+
+        Sides are read as BYTES. A path any side of which is binary gets a
+        ``binary`` conflict: no diff3 body, no per-side text, and only
+        ``take`` resolves it — decoding an STL to build conflict markers would
+        commit UTF-8 replacement garbage as a "successful" merge.
+        """
         conflicts, bodies = [], {}
         for path in sorted(stages):
             if path == "project.json":
                 continue  # always re-merged by the manifest driver
             entry = stages[path]
             sides = {
-                "base": self._blob(canonical, entry.get(1)),
-                "ours": self._blob(canonical, entry.get(2)),
-                "theirs": self._blob(canonical, entry.get(3)),
+                "base": self._blob_bytes(canonical, entry.get(1)),
+                "ours": self._blob_bytes(canonical, entry.get(2)),
+                "theirs": self._blob_bytes(canonical, entry.get(3)),
             }
-            bodies[path] = sides
+            if any(_is_binary(body) for body in sides.values()):
+                bodies[path] = {"sides": sides, "merged": None}
+                conflicts.append(_binary_conflict(path, sides))
+                continue
+            text = {name: (None if body is None else body.decode("utf-8"))
+                    for name, body in sides.items()}
+            marked = self._marked(text, target, source)
+            bodies[path] = {"sides": sides, "merged": marked.encode()}
             is_script = path.startswith("parts/") and path.endswith(".py")
             conflict = {
                 "kind": "script" if is_script else "file",
                 "path": path,
-                "merged": self._marked(sides, target, source),
+                "merged": marked,
                 "truncated": False,
             }
             if is_script:
                 conflict["part"] = path[len("parts/"):-len(".py")]
+            if len(marked.encode()) > _MAX_BODY_BYTES:
+                # Elided from the payload only: the staged file on disk still
+                # carries the full diff3 text.
+                conflict["merged"] = None
+                conflict["truncated"] = True
             for side in ("base", "ours", "theirs"):
-                text = sides[side]
-                if text is not None and len(text.encode()) > _MAX_BODY_BYTES:
+                body = sides[side]
+                if body is not None and len(body) > _MAX_BODY_BYTES:
                     conflict["truncated"] = True
                 else:
-                    conflict[side] = text
+                    conflict[side] = text[side]
             conflicts.append(conflict)
         return conflicts, bodies
 
@@ -688,11 +775,28 @@ class MergeOrchestrator:
             )
         return _parse_merge_tree(result.stdout)
 
-    def _blob(self, canonical: Path, oid: str | None) -> str | None:
+    def _blob_bytes(self, canonical: Path, oid: str | None) -> bytes | None:
+        """A blob's exact bytes, or None when the stage is absent."""
         if not oid:
             return None
-        result = self._run(canonical, "cat-file", "blob", oid, check=False)
+        try:
+            result = self.history._run_bytes(
+                canonical, "cat-file", "blob", oid, check=False
+            )
+        except HistoryError as exc:
+            raise ValidationError(str(exc)) from exc
         return result.stdout if result.returncode == 0 else None
+
+    def _blob(self, canonical: Path, oid: str | None) -> str | None:
+        """A blob decoded as UTF-8; None for an absent stage or binary
+        content (which must never round-trip through ``str``)."""
+        data = self._blob_bytes(canonical, oid)
+        if data is None:
+            return None
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
 
     def _manifest_at(self, canonical: Path, commit: str) -> dict:
         result = self._run(canonical, "cat-file", "blob",
@@ -738,6 +842,38 @@ class MergeOrchestrator:
 
 
 # ----------------------------------------------------------------- helpers
+
+
+def _is_binary(data: bytes | None) -> bool:
+    """git's heuristic (a NUL in the first 8000 bytes) plus "not UTF-8"."""
+    if not data:
+        return False
+    if b"\0" in data[:_BINARY_SNIFF_BYTES]:
+        return True
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
+def _binary_conflict(path: str, sides: dict) -> dict:
+    """A conflict carrying no text at all: size and digest per side, so a
+    caller can tell the versions apart without ever seeing the bytes."""
+    return {
+        "kind": "binary",
+        "path": path,
+        "sides": {
+            name: (None if body is None else {
+                "bytes": len(body),
+                "sha256": hashlib.sha256(body).hexdigest(),
+            })
+            for name, body in sides.items()
+        },
+        "truncated": True,
+        "hint": ("binary file: resolve with {\"take\": \"ours\"|\"theirs\""
+                 "|\"base\"}; hand-written content is not accepted"),
+    }
 
 
 def _parse_merge_tree(stdout: str):

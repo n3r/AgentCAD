@@ -214,7 +214,9 @@ fall out for free while unbranched behavior stays bit-identical.
    the **target**.
 3. `project.json` is re-merged by `manifest_merge` **regardless** of what git
    thought — a line-wise merge of a manifest is either garbage or a clean
-   result nobody authored.
+   result nobody authored. Non-text content (`imports/*.stl|step`) is read and
+   staged as raw **bytes**: a binary conflict reports sizes and digests, takes
+   a side verbatim, and never becomes conflict-marked text.
 4. The result is staged in a detached worktree under `.history/agentcad/`.
    Nothing outside that directory is written while conflicts are outstanding,
    and no ref moves, so a conflicted merge is never partially applied.

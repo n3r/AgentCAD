@@ -740,6 +740,9 @@ function handleEvent(ev) {
     }
     case "lock_changed": {
       if (ev.project !== state.projectName) return;
+      // The turn lock is per branch: a lock taken on another branch says
+      // nothing about ours, and must not light the badge here.
+      if (ev.branch && state.branch && ev.branch !== state.branch) return;
       lockHolder = ev.holder || null;
       renderLockIndicator();
       return;

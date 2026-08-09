@@ -237,6 +237,10 @@ function handleFailure(err, source, target) {
     return;
   }
   actions.toast(`Merge failed: ${errorText(err)}`, "error");
+  // A staged merge the server refused (a branch moved under it, so its
+  // recorded resolutions no longer apply): re-read the staged state rather
+  // than leaving stale conflicts on screen.
+  if (details.merge_id) reopenStaged();
 }
 
 // ------------------------------------------------------------- conflicts
@@ -282,7 +286,9 @@ function renderConflicts() {
     kind.textContent =
       conflict.kind === "manifest"
         ? "project.json"
-        : `script${conflict.part ? ` · ${conflict.part}` : ""}`;
+        : conflict.kind === "binary"
+          ? "binary file"
+          : `script${conflict.part ? ` · ${conflict.part}` : ""}`;
     item.append(path, kind);
     item.addEventListener("click", () => {
       selectedKey = key;
@@ -327,7 +333,9 @@ function renderDetail(host) {
 
   const hasBase = conflict.kind === "manifest"
     ? Object.prototype.hasOwnProperty.call(conflict, "base")
-    : conflict.base != null;
+    : conflict.kind === "binary"
+      ? !!(conflict.sides && conflict.sides.base)
+      : conflict.base != null;
 
   buttons.appendChild(
     pickButton(`Use ours (${staged.target})`, conflict, { take: "ours" })
@@ -341,6 +349,13 @@ function renderDetail(host) {
 
   if (conflict.kind === "manifest") {
     host.appendChild(valueTable(conflict));
+    return;
+  }
+
+  // Binary (imports/*.stl, *.step): there is no text to show or edit, only a
+  // side to copy through byte for byte.
+  if (conflict.kind === "binary") {
+    host.appendChild(binaryTable(conflict));
     return;
   }
 
@@ -411,6 +426,43 @@ function valueTable(conflict) {
     table.appendChild(tr);
   }
   return table;
+}
+
+function binaryTable(conflict) {
+  const wrap = document.createElement("div");
+  const note = document.createElement("div");
+  note.className = "conflict-note";
+  note.textContent =
+    "Binary file — pick a side and its bytes are copied through unchanged. " +
+    "Hand-written content is not accepted here.";
+  wrap.appendChild(note);
+
+  const table = document.createElement("table");
+  table.className = "conflict-table";
+  const sides = conflict.sides || {};
+  for (const [label, info] of [
+    ["base", sides.base],
+    ["ours", sides.ours],
+    ["theirs", sides.theirs],
+  ]) {
+    const tr = document.createElement("tr");
+    const th = document.createElement("th");
+    th.textContent =
+      label === "ours"
+        ? `ours (${staged.target})`
+        : label === "theirs"
+          ? `theirs (${staged.source})`
+          : "base";
+    const td = document.createElement("td");
+    td.textContent = info
+      ? `${Number(info.bytes).toLocaleString("en-US")} bytes · ` +
+        `${String(info.sha256).slice(0, 12)}`
+      : "— absent —";
+    tr.append(th, td);
+    table.appendChild(tr);
+  }
+  wrap.appendChild(table);
+  return wrap;
 }
 
 async function applyChoice(conflict, choice) {

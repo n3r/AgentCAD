@@ -493,6 +493,70 @@ class TestMerge:
         assert blocked["error"]["type"] == "conflict_error"
         assert "agent_b" in blocked["error"]["message"]
 
+    def test_an_oversized_conflict_body_is_elided_from_the_payload(self, demo,
+                                                                   monkeypatch):
+        """truncated:true must cover the diff3 body too — it is roughly the
+        sum of the sides it already elides. The staged file keeps it all."""
+        from agentcad.core import merge as merge_mod
+
+        service, registry = demo
+        canonical = service.store.canonical_path_of("demo")
+        monkeypatch.setattr(merge_mod, "_MAX_BODY_BYTES", 256)
+        _on(service, "agent_a", "feat")
+        _script(registry, "box", BOX_V2_SCRIPT + "# feat\n" * 60)
+        _on(service, "agent_b", "master")
+        _script(registry, "box", BOX_V3_SCRIPT + "# master\n" * 60)
+
+        result = registry.call("merge_branch", {"project": "demo",
+                                                "source": "feat"})
+        conflict = result["error"]["details"]["conflicts"][0]
+        assert conflict["truncated"] is True
+        assert conflict["merged"] is None
+        assert "ours" not in conflict and "theirs" not in conflict
+
+        staged = next(
+            (canonical / ".history" / "agentcad").glob("merge-*")
+        ) / "parts" / "box.py"
+        body = staged.read_text()
+        assert "<<<<<<<" in body and len(body.encode()) > 256
+
+    def test_a_moved_target_invalidates_the_staged_merge_loudly(self, demo):
+        """Re-merging a staged merge whose branches moved must NOT silently
+        drop the resolutions recorded against the old heads."""
+        service, registry = demo
+        canonical = service.store.canonical_path_of("demo")
+        _on(service, "agent_a", "feat")
+        _script(registry, "box", BOX_V2_SCRIPT)
+        assert "error" not in registry.call(
+            "set_params", {"project": "demo", "part_id": "pin",
+                           "values": {"size": 12.0}})
+        _on(service, "agent_b", "master")
+        _script(registry, "box", BOX_V3_SCRIPT)
+        assert "error" not in registry.call(
+            "set_params", {"project": "demo", "part_id": "pin",
+                           "values": {"size": 15.0}})
+        assert registry.call(
+            "merge_branch", {"project": "demo", "source": "feat"}
+        )["error"]["type"] == "merge_conflict"
+        partial = registry.call("resolve_merge", {
+            "project": "demo", "choices": {"parts/box.py": {"take": "theirs"}}})
+        assert partial["error"]["type"] == "merge_conflict"
+
+        # The target moves behind the staged merge's back.
+        (canonical / "parts" / "pin.py").write_text(BOX_V2_SCRIPT,
+                                                    encoding="utf-8")
+        assert service.history.snapshot(canonical, "behind our back")
+
+        blocked = registry.call("merge_branch", {"project": "demo",
+                                                 "source": "feat"})
+        assert blocked["error"]["type"] == "conflict_error"
+        assert blocked["error"]["details"]["resolved"] == 1
+        assert "merge_abort" in blocked["error"]["message"]
+        # ...and the recorded resolution is still there to be discarded.
+        staged = registry.call("merge_status", {"project": "demo"})["merge"]
+        assert staged["resolved"] == ["parts/box.py"]
+        assert registry.call("merge_abort", {"project": "demo"})["aborted"]
+
     def test_unknown_branches_are_not_found(self, demo):
         service, registry = demo
         _on(service, "agent_b", "master")
@@ -500,6 +564,169 @@ class TestMerge:
         assert missing["error"]["type"] == "notfound_error"
         same = registry.call("merge_branch", {"project": "demo", "source": "master"})
         assert same["error"]["type"] == "validation_error"
+
+
+# --------------------------------------------- 2b. binary files, absent sides
+
+
+# Non-UTF-8 payloads with NUL bytes: what every tracked file under imports/
+# (STL/STEP) really is.
+OURS_STL = bytes(range(256)) * 4
+THEIRS_STL = bytes(range(255, -1, -1)) * 4
+BASE_STL = bytes([7, 0, 255, 128]) * 256
+assert len({OURS_STL, THEIRS_STL, BASE_STL}) == 3
+assert all(len(b) == 1024 for b in (OURS_STL, THEIRS_STL, BASE_STL))
+
+
+def _write_binary(service, branch: str, name: str, data: bytes) -> Path:
+    """Put raw bytes under imports/ on ``branch`` and snapshot them."""
+    tree = service.branches.tree_of("demo", branch)
+    path = tree / "imports" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    assert service.history.snapshot(tree, f"import {name} on {branch}")
+    return path
+
+
+class TestBinaryFiles:
+    """Binary content must never round-trip through str: the git plumbing
+    decodes text with errors='replace', which silently rewrites every
+    non-UTF-8 byte into U+FFFD and commits the result as a clean merge."""
+
+    pytestmark = _GIT
+
+    def _stage_conflict(self, service, registry) -> dict:
+        _on(service, "agent_a", "feat")
+        _write_binary(service, "feat", "model.stl", THEIRS_STL)
+        _on(service, "agent_b", "master")
+        _write_binary(service, "master", "model.stl", OURS_STL)
+        result = registry.call("merge_branch", {"project": "demo",
+                                                "source": "feat"})
+        assert result["error"]["type"] == "merge_conflict", result
+        conflicts = result["error"]["details"]["conflicts"]
+        assert [c["path"] for c in conflicts] == ["imports/model.stl"]
+        return conflicts[0]
+
+    def test_binary_conflict_carries_no_text_and_takes_a_side(self, demo):
+        service, registry = demo
+        canonical = service.store.canonical_path_of("demo")
+        conflict = self._stage_conflict(service, registry)
+
+        assert conflict["kind"] == "binary"
+        for key in ("merged", "ours", "theirs", "base"):
+            assert key not in conflict, key
+        assert conflict["sides"]["ours"]["bytes"] == len(OURS_STL)
+        assert conflict["sides"]["theirs"]["bytes"] == len(THEIRS_STL)
+        assert conflict["sides"]["base"] is None  # both branches added it
+        assert conflict["sides"]["ours"]["sha256"] != \
+            conflict["sides"]["theirs"]["sha256"]
+
+        # Hand-written content cannot describe bytes.
+        rejected = registry.call("resolve_merge", {
+            "project": "demo",
+            "choices": {"imports/model.stl": {"content": "solid\n"}}})
+        assert rejected["error"]["type"] == "validation_error"
+        assert "binary" in rejected["error"]["message"]
+
+        done = registry.call("resolve_merge", {
+            "project": "demo",
+            "choices": {"imports/model.stl": {"take": "theirs"}}})
+        assert "error" not in done, done
+        assert (canonical / "imports" / "model.stl").read_bytes() == THEIRS_STL
+
+    def test_taking_ours_keeps_the_target_bytes_exactly(self, demo):
+        service, registry = demo
+        canonical = service.store.canonical_path_of("demo")
+        self._stage_conflict(service, registry)
+
+        done = registry.call("resolve_merge", {
+            "project": "demo",
+            "choices": {"imports/model.stl": {"take": "ours"}}})
+        assert "error" not in done, done
+        assert (canonical / "imports" / "model.stl").read_bytes() == OURS_STL
+
+    def test_a_one_sided_binary_change_merges_byte_exact(self, demo):
+        service, registry = demo
+        canonical = service.store.canonical_path_of("demo")
+        _on(service, "agent_b", "master")
+        _write_binary(service, "master", "model.stl", BASE_STL)
+        service.branches.delete("demo", "feat")
+        service.branches.create("demo", "feat")  # forked with the STL in place
+
+        _on(service, "agent_a", "feat")
+        _write_binary(service, "feat", "model.stl", THEIRS_STL)
+        _on(service, "agent_b", "master")
+        _script(registry, "box", BOX_V3_SCRIPT)  # keep it a real merge
+
+        result = registry.call("merge_branch", {"project": "demo",
+                                                "source": "feat"})
+        assert "error" not in result, result
+        assert result["fast_forward"] is False
+        assert (canonical / "imports" / "model.stl").read_bytes() == THEIRS_STL
+
+
+class TestAbsentSides:
+    """Taking a side that does not exist: the file was deleted there (so the
+    merge must delete it), or there is no base at all (so 'base' is refused
+    instead of leaving conflict markers in the staged file)."""
+
+    pytestmark = _GIT
+
+    def test_taking_the_side_that_deleted_the_file_deletes_it(self, demo):
+        service, registry = demo
+        canonical = service.store.canonical_path_of("demo")
+        _on(service, "agent_a", "feat")
+        assert "error" not in registry.call(
+            "delete_part", {"project": "demo", "part_id": "box"})
+        _on(service, "agent_b", "master")
+        _script(registry, "box", BOX_V3_SCRIPT)
+
+        result = registry.call("merge_branch", {"project": "demo",
+                                                "source": "feat"})
+        assert result["error"]["type"] == "merge_conflict", result
+        conflict = result["error"]["details"]["conflicts"][0]
+        assert conflict["path"] == "parts/box.py"
+        assert conflict["theirs"] is None       # the source deleted it
+
+        done = registry.call("resolve_merge", {
+            "project": "demo", "choices": {"parts/box.py": {"take": "theirs"}}})
+        assert "error" not in done, done
+        assert not (canonical / "parts" / "box.py").exists()
+        manifest = json.loads((canonical / "project.json").read_text())
+        assert [p["id"] for p in manifest["parts"]] == ["pin"]
+
+    def test_taking_base_when_both_branches_added_the_file_is_refused(self, demo):
+        service, registry = demo
+        canonical = service.store.canonical_path_of("demo")
+        _on(service, "agent_a", "feat")
+        assert "error" not in registry.call(
+            "create_part", {"project": "demo", "part_id": "gizmo",
+                            "script": BOX_V2_SCRIPT})
+        _on(service, "agent_b", "master")
+        assert "error" not in registry.call(
+            "create_part", {"project": "demo", "part_id": "gizmo",
+                            "script": BOX_V3_SCRIPT})
+
+        result = registry.call("merge_branch", {"project": "demo",
+                                                "source": "feat"})
+        assert result["error"]["type"] == "merge_conflict", result
+        conflict = [c for c in result["error"]["details"]["conflicts"]
+                    if c.get("path") == "parts/gizmo.py"][0]
+        assert conflict["base"] is None
+
+        refused = registry.call("resolve_merge", {
+            "project": "demo", "choices": {"parts/gizmo.py": {"take": "base"}}})
+        assert refused["error"]["type"] == "validation_error"
+        assert "no base" in refused["error"]["message"]
+        assert refused["error"]["details"]["valid"] == ["ours", "theirs"]
+        assert registry.call("merge_status", {"project": "demo"})["merge"]
+
+        done = registry.call("resolve_merge", {
+            "project": "demo", "choices": {"parts/gizmo.py": {"take": "ours"}}})
+        assert "error" not in done, done
+        landed = (canonical / "parts" / "gizmo.py").read_text()
+        assert landed == BOX_V3_SCRIPT
+        assert "<<<<<<<" not in landed
 
 
 # -------------------------------------------------------- 3. validation pass

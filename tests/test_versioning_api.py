@@ -159,6 +159,26 @@ def test_branch_and_version_routes(client):
     assert deleted["deleted"] == "feat"
 
 
+def test_a_nested_branch_name_can_be_deleted_over_rest(client):
+    """Branch names may contain '/', so the DELETE route takes the rest of
+    the path — a single segment would 404 on 'feat/x'."""
+    _service, _registry, http = client
+    assert http.post("/api/projects", json={"name": "demo"}).status_code == 201
+    assert http.post("/api/projects/demo/parts",
+                     json={"id": "box", "script": BOX_SCRIPT}).status_code == 201
+    created = http.post("/api/projects/demo/branches", json={"name": "feat/x"})
+    assert created.json()["created"] == "feat/x"
+
+    response = http.delete("/api/projects/demo/branches/feat/x")
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted"] == "feat/x"
+    assert [b["name"] for b in
+            http.get("/api/projects/demo/branches").json()["branches"]] == ["master"]
+
+    # ...and the name is still whitelisted before it can reach git.
+    assert http.delete("/api/projects/demo/branches/--help").status_code == 422
+
+
 def test_unknown_body_keys_are_ignored_and_nulls_are_not_forwarded(client):
     _service, _registry, http = client
     assert http.post("/api/projects", json={"name": "demo"}).status_code == 201
@@ -249,6 +269,39 @@ def test_branch_changed_and_merge_completed_events(demo):
     assert event["source"] == "feat" and event["target"] == "master"
     assert event["commit"]
     assert "validation" in event
+
+
+def test_undo_after_a_fast_forward_restores_the_pre_merge_target(demo):
+    """A fast-forward moves the target onto the source's head, whose FIRST
+    PARENT is the previous commit on the SOURCE branch — a state the target
+    never had. Undo must return the target to where it was."""
+    service, registry = demo
+    canonical = service.store.canonical_path_of("demo")
+    service.branches.create("demo", "feat")
+    locks.set_client_id("agent_a")
+    service.branches.switch("demo", "feat")
+    registry.call("update_part_script",
+                  {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT})
+    registry.call("update_part_script",
+                  {"project": "demo", "part_id": "box", "script": BOX_V3_SCRIPT})
+
+    locks.set_client_id("local")
+    before = (canonical / "parts" / "box.py").read_bytes()
+    head_before = service.history.head(canonical)
+
+    merged = registry.call("merge_branch", {"project": "demo", "source": "feat"})
+    assert "error" not in merged, merged
+    assert merged["fast_forward"] is True
+    assert merged["previous"] == head_before
+    assert (canonical / "parts" / "box.py").read_text() == BOX_V3_SCRIPT
+
+    undone = registry.call("undo", {"project": "demo"})
+    assert "error" not in undone, undone
+    assert (canonical / "parts" / "box.py").read_bytes() == before
+
+    redone = registry.call("redo", {"project": "demo"})
+    assert "error" not in redone, redone
+    assert (canonical / "parts" / "box.py").read_text() == BOX_V3_SCRIPT
 
 
 def test_undo_after_a_merge_restores_the_pre_merge_target(demo):

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import time
 from types import SimpleNamespace
 
@@ -205,16 +206,56 @@ def test_expired_lock_frees_writes_and_steals(demo, monkeypatch):
 
 
 def test_lock_changed_events_on_acquire_and_release(demo):
-    _service, registry, bus = demo
+    service, registry, bus = demo
     q = bus.subscribe()
     set_client_id("agent_a")
     registry.call("acquire_turn", {"project": "demo"})
     registry.call("release_turn", {"project": "demo"})
     lock_events = [e for e in _drain(q) if e["type"] == "lock_changed"]
+    # The lock's own key travels with the event (see the branch-aware test
+    # below); on the default branch it is the project name.
+    branch = "master" if getattr(service, "branches", None) else None
     assert lock_events == [
-        {"type": "lock_changed", "project": "demo", "holder": "agent_a"},
-        {"type": "lock_changed", "project": "demo", "holder": None},
+        {"type": "lock_changed", "project": "demo", "key": "demo",
+         "branch": branch, "holder": "agent_a"},
+        {"type": "lock_changed", "project": "demo", "key": "demo",
+         "branch": branch, "holder": None},
     ]
+
+
+@pytest.mark.integration
+@pytest.mark.portability
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not found on PATH")
+def test_lock_changed_names_the_branch_whose_turn_moved(kernel, tmp_path):
+    """A turn is per branch (lock_key is the caller's working tree), so the
+    event must say which one — a client on master must not light its badge
+    because an agent took the turn on 'feat'."""
+    from agentcad.core.service import AgentCADService
+
+    bus = EventBus()
+    service = AgentCADService(tmp_path / "projects", kernel, bus)
+    registry = build_registry(service)
+    assert "error" not in registry.call("create_project", {"name": "demo"})
+    assert "error" not in registry.call(
+        "create_part", {"project": "demo", "part_id": "box", "script": BOX_SCRIPT})
+    service.branches.create("demo", "feat")
+
+    q = bus.subscribe()
+    set_client_id("agent_a")
+    service.branches.switch("demo", "feat")
+    assert "error" not in registry.call("acquire_turn", {"project": "demo"})
+    event = [e for e in _drain(q) if e["type"] == "lock_changed"][-1]
+
+    assert event["holder"] == "agent_a"
+    assert event["branch"] == "feat"
+    assert event["key"] == service.store.lock_key("demo") != "demo"
+
+    # ...while the same call on the default branch names master and keys on
+    # the project, so the two never look like one lock.
+    set_client_id("agent_b")
+    assert "error" not in registry.call("acquire_turn", {"project": "demo"})
+    other = [e for e in _drain(q) if e["type"] == "lock_changed"][-1]
+    assert other["branch"] == "master" and other["key"] == "demo"
 
 
 # --------------------------------------------------- 7. HTTP identity header

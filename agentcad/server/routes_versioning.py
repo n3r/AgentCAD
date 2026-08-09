@@ -3,7 +3,7 @@
     GET    /api/projects/{proj}/branches                 -> branch_list
     POST   /api/projects/{proj}/branches      {name, from}
     POST   /api/projects/{proj}/branches/switch {name}
-    DELETE /api/projects/{proj}/branches/{name}
+    DELETE /api/projects/{proj}/branches/{name}   (name may contain '/')
     GET    /api/projects/{proj}/versions                 -> list_versions
     POST   /api/projects/{proj}/versions      {name, message}
     GET    /api/projects/{proj}/merge                    -> merge_status
@@ -78,10 +78,13 @@ def build_router(service, registry) -> APIRouter:
             "branch_switch", {"project": proj, "name": body.get("name", "")}
         ))
 
-    @router.delete("/projects/{proj}/branches/{name}")
+    # ``{name:path}``: branch names may contain '/', so 'feat/x' is more than
+    # one path segment. The name is whitelisted against the branch pattern by
+    # BranchManager before it reaches git.
+    @router.delete("/projects/{proj}/branches/{name:path}")
     def delete_branch(proj: str, name: str):
         return _result(registry.call(
-            "branch_delete", {"project": proj, "name": name}
+            "branch_delete", {"project": proj, "name": name.strip("/")}
         ))
 
     @router.get("/projects/{proj}/versions")

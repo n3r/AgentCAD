@@ -41,7 +41,10 @@ import sys
 from pathlib import Path
 
 _GIT_TIMEOUT_S = 10.0
-_EXCLUDES = ".cache/\nexports/\n.history/\n*.tmp\n"
+# Managed exclude lines, appended to info/exclude when missing — never a
+# rewrite: the file is user-editable and may carry lines we know nothing about.
+_EXCLUDE_LINES = (".cache/", "exports/", ".history/", "*.tmp")
+_EXCLUDES = "".join(f"{line}\n" for line in _EXCLUDE_LINES)
 # Commit ids as handed out by log(): hex only, so an id can never be parsed
 # as a git option or a ref expression.
 _COMMIT_RE = re.compile(r"^[0-9a-fA-F]{4,40}$")
@@ -117,6 +120,23 @@ class ProjectHistory:
     def _run(
         self, project_path: Path, *args: str, check: bool = True
     ) -> subprocess.CompletedProcess:
+        return self._exec(project_path, args, check=check, binary=False)
+
+    def _run_bytes(
+        self, project_path: Path, *args: str, check: bool = True
+    ) -> subprocess.CompletedProcess:
+        """Same call, undecoded stdout/stderr.
+
+        Content that is not text — anything tracked under ``imports/`` — must
+        never round-trip through ``str``: the text path decodes with
+        ``errors="replace"``, which silently rewrites every non-UTF-8 byte.
+        """
+        return self._exec(project_path, args, check=check, binary=True)
+
+    def _exec(
+        self, project_path: Path, args: tuple[str, ...], *,
+        check: bool, binary: bool,
+    ) -> subprocess.CompletedProcess:
         git_dir = self._locate(project_path)
         cmd = [
             self._git or "git",
@@ -134,21 +154,34 @@ class ProjectHistory:
             "HOME": str(git_dir),
             "XDG_CONFIG_HOME": str(git_dir / "xdg"),
         }
+        text_kwargs = (
+            {}
+            if binary
+            else {
+                "text": True,
+                # git output is UTF-8; never the cp1252 locale
+                "encoding": "utf-8",
+                "errors": "replace",
+            }
+        )
         try:
             result = subprocess.run(
                 cmd,
                 cwd=str(project_path),
                 env=env,
                 capture_output=True,
-                text=True,
-                encoding="utf-8",  # git output is UTF-8; never the cp1252 locale
-                errors="replace",
                 timeout=_GIT_TIMEOUT_S,
+                **text_kwargs,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise HistoryError(f"git {args[0]}: {exc}") from exc
         if check and result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip()
+            stderr = result.stderr
+            stdout = result.stdout
+            if binary:
+                stderr = stderr.decode("utf-8", "replace")
+                stdout = stdout.decode("utf-8", "replace")
+            detail = stderr.strip() or stdout.strip()
             raise HistoryError(f"git {args[0]} failed: {detail}")
         return result
 
@@ -171,22 +204,35 @@ class ProjectHistory:
 
     @staticmethod
     def _refresh_excludes(project_path: Path) -> None:
-        """Keep ``info/exclude`` current, rewriting it whenever it differs.
+        """Keep ``info/exclude`` current by APPENDING the managed lines it is
+        missing — never by rewriting it.
 
         Projects created by earlier versions keep whatever list they were
         initialized with; new entries (branch worktrees live under
-        ``.history/``) would otherwise never reach them. Linked worktrees
-        share the main repo's copy, so only the main tree writes it.
+        ``.history/``) would otherwise never reach them. The file is also a
+        legitimate place for a user to add their own patterns, so anything
+        already there is preserved. Linked worktrees share the main repo's
+        copy, so only the main tree writes it.
         """
         git_dir = project_path / ".history"
         if not git_dir.is_dir():
             return
         exclude = git_dir / "info" / "exclude"
         try:
-            if exclude.is_file() and exclude.read_text(encoding="utf-8") == _EXCLUDES:
+            current = (
+                exclude.read_text(encoding="utf-8") if exclude.is_file() else ""
+            )
+            present = {line.strip() for line in current.splitlines()}
+            missing = [line for line in _EXCLUDE_LINES if line not in present]
+            if not missing:
                 return
+            if current and not current.endswith("\n"):
+                current += "\n"
             exclude.parent.mkdir(parents=True, exist_ok=True)
-            exclude.write_text(_EXCLUDES, encoding="utf-8")
+            exclude.write_text(
+                current + "".join(f"{line}\n" for line in missing),
+                encoding="utf-8",
+            )
         except OSError:  # a read-only project must not break the snapshot
             pass
 
@@ -411,13 +457,23 @@ class UndoCursor:
         lock_key = getattr(self.store, "lock_key", None)
         return lock_key(proj) if callable(lock_key) else proj
 
-    def on_snapshot(self, proj: str, commit_id: str, label: str) -> None:
+    def on_snapshot(self, proj: str, commit_id: str, label: str,
+                    undo_to: str | None = None) -> None:
         """Record a real mutation snapshot (called from the service's bus
-        hook). Clears the redo stack — a new edit forks away from it."""
+        hook). Clears the redo stack — a new edit forks away from it.
+
+        ``undo_to`` names the state to go back to when the entry's first
+        parent is NOT it: a fast-forward merge moves the target branch onto a
+        commit whose first parent belongs to the *source*, so undoing it would
+        land on a state the target never had.
+        """
         key = self._key(proj)
         with self._lock:
             stack = self._undo.setdefault(key, [])
-            stack.append({"id": commit_id, "label": label})
+            entry = {"id": commit_id, "label": label}
+            if undo_to:
+                entry["undo_to"] = undo_to
+            stack.append(entry)
             del stack[: -self.UNDO_LIMIT]
             self._redo.pop(key, None)
 
@@ -472,7 +528,9 @@ class UndoCursor:
                 # "undo the redo": restore its parent again later.
                 target = entry["id"]
             else:
-                target = self.history.parent_of(path, entry["id"])
+                target = entry.get("undo_to") or self.history.parent_of(
+                    path, entry["id"]
+                )
                 if target is None:
                     # The root snapshot has no parent: nothing before it to
                     # return to. Keep the stack entry — it wasn't consumed.

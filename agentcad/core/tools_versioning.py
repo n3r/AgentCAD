@@ -169,7 +169,10 @@ def register(registry, service) -> None:
         "revalidates it: changed parts rebuild, mates re-resolve and newly "
         "introduced interference is reported; failures block the merge unless "
         "allow_invalid is true, which lands it with the failures recorded in "
-        "the merge commit. The result is one merge commit with both parents.",
+        "the merge commit. The result is one merge commit with both parents. "
+        "Calling this again on a staged merge whose branches have moved is a "
+        "conflict_error: its recorded resolutions no longer apply, so discard "
+        "it with merge_abort and merge again.",
         schema(
             {
                 "project": _PROJ,
@@ -194,10 +197,14 @@ def register(registry, service) -> None:
         'path (scripts, e.g. "parts/flange.py") or key (manifest, e.g. '
         '"parts.flange.params.bolt_d") to {"take": "ours"|"theirs"|"base"}, or '
         'to {"content": "<full file text>"} for a script, or {"value": …} for '
-        "a manifest key. OURS = the target branch, THEIRS = the source. You "
-        "may resolve a few at a time; the reply lists what is still "
-        "outstanding, and the merge completes (validation pass included) as "
-        "soon as nothing is.",
+        "a manifest key. OURS = the target branch, THEIRS = the source. A "
+        "binary conflict (kind 'binary', anything under imports/) reports "
+        "sizes and digests per side and takes a side only — no 'content'. "
+        "Taking a side that does not have the file (that branch deleted it) "
+        "deletes it; taking 'base' when both branches added the file is a "
+        "validation_error. You may resolve a few at a time; the reply lists "
+        "what is still outstanding, and the merge completes (validation pass "
+        "included) as soon as nothing is.",
         schema(
             {
                 "project": _PROJ,

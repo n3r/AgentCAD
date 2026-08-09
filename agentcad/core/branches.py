@@ -54,6 +54,37 @@ pinned_tree_var: ContextVar[Path | None] = ContextVar(
 )
 
 
+def _resolved(path: Path) -> Path:
+    """``resolve()`` that survives a missing path (and macOS's /var symlink)."""
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _inside(path: Path, root: Path) -> bool:
+    root = _resolved(root)
+    return root == _resolved(path) or root in _resolved(path).parents
+
+
+def _registers(porcelain: str, target: Path, name: str) -> bool:
+    """True when ``git worktree list --porcelain`` names ``target`` as the
+    checkout of ``refs/heads/<name>``."""
+    want = _resolved(target)
+    for block in porcelain.split("\n\n"):
+        path = branch = None
+        for line in block.splitlines():
+            if line.startswith("worktree "):
+                path = line[len("worktree "):].strip()
+            elif line.startswith("branch "):
+                branch = line[len("branch "):].strip()
+        if branch != f"refs/heads/{name}" or not path:
+            continue
+        if _resolved(Path(path)) == want:
+            return True
+    return False
+
+
 def _read_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -311,6 +342,9 @@ class BranchManager:
         return name
 
     def delete(self, proj: str, name: str) -> dict:
+        # Whitelist before anything else: the name reaches here from a REST
+        # path segment as well as from a tool argument.
+        self._validate_branch_name(name)
         canonical = self._ensure_history(proj)
         if name == self.default_branch(proj):
             raise ValidationError(f"cannot delete the default branch {name!r}")
@@ -363,14 +397,24 @@ class BranchManager:
 
     def _materialize(self, canonical: Path, state: dict, name: str) -> str:
         """Ensure a linked worktree exists for ``name``; return its directory
-        name under ``.history/trees/``."""
+        name under ``.history/trees/``.
+
+        A directory that merely *looks* like a checkout is not adopted: a
+        copied project brings its predecessor's trees along, whose ``.git``
+        files still point at the ORIGINAL project's repo (so commits would
+        land there), and a tree that lost its ``.git`` would be ``git init``-ed
+        into an invisible throwaway repo. Either way the tree is discarded and
+        re-materialized from the branch ref.
+        """
         dirname = state["trees"].get(name) or self._tree_dirname(state, name)
         target = canonical / ".history" / "trees" / dirname
-        if (target / "project.json").is_file():
+        if (target / "project.json").is_file() \
+                and self._is_linked_worktree(canonical, target, name):
             return dirname
         # A tree deleted out from under git stays registered and 'prunable',
         # and blocks re-adding the same path — prune before every add.
         self._run(canonical, "worktree", "prune", check=False)
+        self._drop_foreign_registrations(canonical)
         if target.exists():
             shutil.rmtree(target, ignore_errors=True)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -382,6 +426,49 @@ class BranchManager:
                 f"{result.stderr.strip() or result.stdout.strip()}"
             )
         return dirname
+
+    def _is_linked_worktree(self, canonical: Path, target: Path,
+                            name: str) -> bool:
+        """True when ``target`` is THIS repo's registered linked worktree for
+        branch ``name`` — not a copy, not a bare directory."""
+        dotgit = target / ".git"
+        if not dotgit.is_file():
+            return False
+        try:
+            text = dotgit.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        if "gitdir:" not in text:
+            return False
+        admin = Path(text.split("gitdir:", 1)[1].strip())
+        if not _inside(admin, canonical / ".history" / "worktrees"):
+            return False  # points at another project's repo
+        listing = self._run(canonical, "worktree", "list", "--porcelain",
+                            check=False)
+        if listing.returncode != 0:
+            return False
+        return _registers(listing.stdout, target, name)
+
+    @staticmethod
+    def _drop_foreign_registrations(canonical: Path) -> None:
+        """Forget worktree registrations pointing outside this project.
+
+        A copied project inherits the original's ``.history/worktrees/*``
+        admin directories; git still considers those branches checked out (at
+        paths in the *other* project, which exist, so ``prune`` keeps them)
+        and refuses to add a worktree here. Registrations inside this project
+        — including the staged merge worktrees — are left alone.
+        """
+        admin_root = canonical / ".history" / "worktrees"
+        if not admin_root.is_dir():
+            return
+        for admin in sorted(admin_root.iterdir()):
+            try:
+                recorded = (admin / "gitdir").read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if not _inside(Path(recorded.strip()), canonical):
+                shutil.rmtree(admin, ignore_errors=True)
 
     @staticmethod
     def _tree_dirname(state: dict, name: str) -> str:

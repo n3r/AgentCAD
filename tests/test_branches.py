@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from agentcad.core import locks
-from agentcad.core.branches import BranchManager, pinned_tree_var
+from agentcad.core.branches import BranchManager, _inside, pinned_tree_var
 from agentcad.core.history import ProjectHistory
 from agentcad.core.model import PartRecord
 from agentcad.core.project import ProjectStore
@@ -79,6 +79,12 @@ def _manifest(name: str, parts: list[dict]) -> dict:
         "parts": parts,
         "assembly": {"instances": []},
     }
+
+
+def _state(registry, part_id: str) -> str:
+    """A part's badge as get_project reports it to the caller's branch."""
+    project = registry.call("get_project", {"project": "demo"})
+    return [p for p in project["parts"] if p["id"] == part_id][0]["state"]
 
 
 def _write_project(path: Path, name: str, parts: list[dict], script: str) -> Path:
@@ -522,6 +528,75 @@ class TestBranchLifecycle:
         assert "prunable" not in _git(canonical / ".history", canonical,
                                       "worktree", "list")
 
+    def test_a_tree_that_lost_its_git_link_is_rematerialized(self, demo):
+        """A directory that merely contains project.json is not a checkout:
+        adopting one without its .git link makes the next snapshot 'git init'
+        an invisible throwaway repo inside it."""
+        service, registry, branches = demo
+        branches.create("demo", "feat")
+        canonical = service.store.canonical_path_of("demo")
+        tree = canonical / ".history" / "trees" / "feat"
+        (tree / ".git").unlink()
+
+        locks.set_client_id("agent_a")
+        branches.switch("demo", "feat")
+
+        assert (tree / ".git").is_file()
+        assert "gitdir:" in (tree / ".git").read_text(encoding="utf-8")
+        assert "worktrees" in (tree / ".git").read_text(encoding="utf-8")
+        assert "error" not in registry.call(
+            "update_part_script",
+            {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT},
+        )
+        assert not (tree / ".history").exists()  # no throwaway repo
+        head = service.history.resolve_ref(canonical, "feat")
+        assert head == service.history.head(tree)
+        entry = [b for b in branches.list("demo")["branches"]
+                 if b["name"] == "feat"][0]
+        assert entry["head"] == head  # the commit is visible to branch_list
+
+    def test_a_copied_project_never_writes_into_the_original(self, demo, kernel,
+                                                             tmp_path):
+        """A copied project brings the original's branch trees along, whose
+        .git files still point at the ORIGINAL repo — following one commits
+        the copy's edits into the project it was copied from."""
+        service, registry, branches = demo
+        branches.create("demo", "feat")
+        locks.set_client_id("agent_a")
+        branches.switch("demo", "feat")
+        assert "error" not in registry.call(
+            "update_part_script",
+            {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT},
+        )
+        original = service.store.canonical_path_of("demo")
+        original_head = service.history.resolve_ref(original, "feat")
+        original_script = (original / ".history" / "trees" / "feat" / "parts"
+                           / "box.py").read_bytes()
+
+        copy_root = tmp_path / "copied"
+        shutil.copytree(tmp_path / "projects", copy_root, symlinks=True)
+        copied = AgentCADService(copy_root, kernel, EventBus())
+        copy_registry = build_registry(copied)
+        copy_canonical = copied.store.canonical_path_of("demo")
+
+        locks.set_client_id("agent_a")
+        copied.branches.switch("demo", "feat")
+        edited = BOX_V2_SCRIPT.replace("* 2", "* 7")
+        assert "error" not in copy_registry.call(
+            "update_part_script",
+            {"project": "demo", "part_id": "box", "script": edited},
+        )
+
+        # The copy's commit landed in the COPY's repo...
+        copy_head = copied.history.resolve_ref(copy_canonical, "feat")
+        assert copy_head != original_head
+        assert copied.store.read_script("demo", "box") == edited
+        assert _inside(Path(copied.store.path_of("demo")), copy_canonical)
+        # ...and the original is untouched, ref and working tree alike.
+        assert service.history.resolve_ref(original, "feat") == original_head
+        assert (original / ".history" / "trees" / "feat" / "parts"
+                / "box.py").read_bytes() == original_script
+
     def test_branch_worktrees_are_never_tracked(self, demo):
         """info/exclude's '.history/' keeps `git add -A` in the main tree from
         seeing .history/trees/** (verified empirically)."""
@@ -573,6 +648,31 @@ class TestPerBranchLocksAndUndo:
             "update_part_script",
             {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT},
         )
+
+    def test_build_state_badges_are_per_branch(self, demo):
+        """get_project reports each part's ok/error badge from the in-memory
+        status map; keyed by project alone it would show one branch's badges
+        on another branch's parts."""
+        service, registry, branches = demo
+        branches.create("demo", "feat")
+
+        locks.set_client_id("agent_b")            # master: build it green
+        assert registry.call("get_part", {"project": "demo", "part_id": "box"}
+                             )["status"]["state"] == "ok"
+        assert _state(registry, "box") == "ok"
+
+        locks.set_client_id("agent_a")
+        branches.switch("demo", "feat")
+        assert _state(registry, "box") == "unbuilt"   # master's badge is not ours
+        broken = BOX_SCRIPT.replace("return part.part", "return no_such_name")
+        assert registry.call(
+            "update_part_script",
+            {"project": "demo", "part_id": "box", "script": broken},
+        )["error"]
+        assert _state(registry, "box") == "error"
+
+        locks.set_client_id("agent_b")            # ...and master stayed green
+        assert _state(registry, "box") == "ok"
 
     def test_undo_stacks_are_per_branch(self, demo):
         service, registry, branches = demo

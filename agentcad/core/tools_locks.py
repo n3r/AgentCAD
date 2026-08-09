@@ -21,6 +21,20 @@ _PROJ = {"type": "string", "description": "Project name"}
 
 
 def register(registry, service) -> None:
+    def _scope(project: str) -> dict:
+        """Which lock the event is about: the turn is per-branch, so a client
+        on another branch must not reflect it. ``key`` is the lock's identity
+        (the project name on the default branch, the working tree elsewhere)
+        and ``branch`` names it the way a UI can compare."""
+        branches = getattr(service, "branches", None)
+        branch = None
+        if branches is not None:
+            try:
+                branch = branches.current(project)
+            except Exception:  # noqa: BLE001 — an event must never raise
+                branch = None
+        return {"key": service.store.lock_key(project), "branch": branch}
+
     def acquire_turn(project: str, ttl_s: float = locks.DEFAULT_TTL_S) -> dict:
         service.store.manifest(project)  # existence check -> notfound_error
         holder = locks.current_client_id()
@@ -30,7 +44,8 @@ def register(registry, service) -> None:
             service.store.lock_key(project), holder, ttl_s
         )
         service.bus.publish(
-            {"type": "lock_changed", "project": project, "holder": info["holder"]}
+            {"type": "lock_changed", "project": project,
+             **_scope(project), "holder": info["holder"]}
         )
         return {**info, "you": holder}
 
@@ -40,7 +55,8 @@ def register(registry, service) -> None:
             service.store.lock_key(project), holder
         )
         service.bus.publish(
-            {"type": "lock_changed", "project": project, "holder": None}
+            {"type": "lock_changed", "project": project,
+             **_scope(project), "holder": None}
         )
         return result
 
