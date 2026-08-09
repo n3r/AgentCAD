@@ -277,6 +277,25 @@ def connectors(p, part) -> dict:
   `angle_deg`/`offset_mm` drive. The service resolves mate chains to concrete
   transforms at assembly read (topological order; cycles are rejected).
 
+## Tolerances and GD&T (PMI)
+
+Parts can carry a PMI section — annotation, not geometry — rendered by
+`generate_drawing` (SVG) as toleranced dimensions, datum flags, and feature
+control frames:
+
+```json
+{"dims":   [{"id": "d1", "kind": "linear",   "target": "width", "plus": 0.1, "minus": 0.1},
+            {"id": "d2", "kind": "diameter", "target": 9.0,     "plus": 0.05, "minus": 0.1}],
+ "datums": [{"id": "A", "face": "bottom"}],
+ "fcf":    [{"id": "f1", "type": "flatness", "tol_mm": 0.05, "datums": [], "note": "mounting face"}]}
+```
+
+Linear targets tolerance the overall extents (`width` = X, `height` = Z,
+`depth` = Y); diameter targets attach to circles detected in the top view
+within 0.05 mm of the nominal. Set with `set_part_pmi` (an empty object
+clears), read with `get_part_pmi`. Applies to script and reference parts;
+DXF drawings ignore PMI (v1).
+
 ## Cheat-sheet
 
 Agents get the full contract plus common build123d idioms (builder contexts,

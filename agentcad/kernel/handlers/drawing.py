@@ -6,6 +6,14 @@ hand-rolled SVG, and overlays an annotation layer: per-view overall
 dimensions plus diameter callouts for circles detected in the top view. Also
 emits DXF (visible edges) via ezdxf. Values are measured from the projected
 geometry, not copied from parameters.
+
+Optional ``params["pmi"]`` (the part's normalized PMI section, see
+agentcad/core/pmi.py) adds a GD&T callout layer to the SVG: tolerance
+suffixes on the overall/diameter dimensions, boxed datum flags with leaders,
+and a column of feature control frames above the title block.
+``detected["pmi_rendered"]`` counts what was actually drawn and
+``detected["pmi_warnings"]`` names PMI entries that could not be placed.
+DXF output ignores PMI (v1).
 """
 
 from __future__ import annotations
@@ -70,6 +78,72 @@ def _linear_dim(pa, pb, offset, text):
     return els
 
 
+# ---- PMI callout primitives (sheet coords, mm, y-down) ---------------------
+
+_NOTE_TXT = 'font-family="Helvetica, Arial, sans-serif" font-size="2.5" fill="#777"'
+_BOX = 'fill="white" stroke="#1a56db" stroke-width="0.3"'
+
+# Standard Unicode GD&T characteristic symbols (rendered as SVG text).
+_FCF_SYMBOLS = {
+    "flatness": "⏥",
+    "position": "⌖",
+    "perpendicularity": "⟂",
+    "parallelism": "∥",
+    "cylindricity": "⌭",
+}
+
+
+def _esc(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _tol_suffix(plus, minus):
+    if abs(plus - minus) < 1e-9:
+        return f" ±{plus:.2f}"
+    return f" +{plus:.2f}/-{minus:.2f}"
+
+
+def _fmt_tol(v):
+    s = f"{v:.3f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def _datum_flag(letter, box_center, anchor):
+    """Boxed datum letter, leader to the anchor, filled anchor triangle.
+
+    Paint order matters: the leader runs to the box center and the white
+    box rect then covers the segment inside it.
+    """
+    x, y = box_center
+    els = [_line(anchor, (x, y)),
+           _arrow(anchor, (anchor[0] - x, anchor[1] - y)),
+           f'<rect x="{x - 3:.3f}" y="{y - 3:.3f}" width="6" height="6" {_BOX}/>',
+           _text((x, y + 1.3), letter)]
+    return els
+
+
+def _fcf_frame(x, y_top, frame, h):
+    """One feature control frame: [symbol][tol][datum letters...] + gray note.
+
+    Returns the SVG elements; cell widths are fixed so positions stay
+    deterministic.
+    """
+    tol = _fmt_tol(frame["tol_mm"])
+    cells = [(8.0, _FCF_SYMBOLS[frame["type"]]),
+             (max(12.0, 2.2 * len(tol) + 4.0), tol)]
+    cells += [(7.0, d) for d in frame.get("datums", [])]
+    els, cx = [], x
+    for w, label in cells:
+        els.append(f'<rect x="{cx:.3f}" y="{y_top:.3f}" width="{w:.3f}" '
+                   f'height="{h:.3f}" {_BOX}/>')
+        els.append(_text((cx + w / 2, y_top + h / 2 + 1.3), label))
+        cx += w
+    if frame.get("note"):
+        els.append(f'<text x="{cx + 2:.3f}" y="{y_top + h / 2 + 1:.3f}" '
+                   f'text-anchor="start" {_NOTE_TXT}>{_esc(frame["note"])}</text>')
+    return els
+
+
 # ---- edge rendering --------------------------------------------------------
 
 def _edge_svg(e, ox, oy, scale, style):
@@ -108,10 +182,26 @@ def _detect_circles(vis_edges):
             if e.geom_type.name == "CIRCLE" and e.is_closed]
 
 
-def _build_svg(part, views, detected_out):
+def _build_svg(part, views, detected_out, pmi=None):
     proj = {name: part.project_to_viewport(look_at=(0, 0, 0), **_VIEW_DIRS[name])
             for name in views}
     W, H = 420, 297
+
+    # PMI callout state. `pmi` is the normalized section from core/pmi.py.
+    pmi = pmi or {}
+    pmi_dims = pmi.get("dims") or []
+    pmi_datums = pmi.get("datums") or []
+    pmi_fcf = pmi.get("fcf") or []
+    pmi_active = bool(pmi_dims or pmi_datums or pmi_fcf)
+    pmi_warnings: list[str] = []
+    rendered_linear: set[str] = set()  # dim ids drawn on >= 1 rendered view
+    n_dia_rendered = 0
+    # First linear dim per target wins the suffix slot on that dimension.
+    linear_by_target: dict = {}
+    for d in pmi_dims:
+        if d.get("kind") == "linear":
+            linear_by_target.setdefault(d["target"], d)
+    placements: dict = {}  # view name -> (ox, oy, scale, bounds)
     svg = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}mm" height="{H}mm" '
            f'viewBox="0 0 {W} {H}" font-family="Helvetica, Arial, sans-serif">',
            f'<rect x="0" y="0" width="{W}" height="{H}" fill="white"/>',
@@ -132,23 +222,36 @@ def _build_svg(part, views, detected_out):
         # center the view's bbox on the cell
         ox = cx - scale * (bx0 + bx1) / 2
         oy = cy + scale * (by0 + by1) / 2
+        placements[name] = (ox, oy, scale, (bx0, by0, bx1, by1))
         if name != "iso":
             for e in hid:
                 svg.append(_edge_svg(e, ox, oy, scale, _HID))
         for e in vis:
             svg.append(_edge_svg(e, ox, oy, scale, _VIS))
-        # overall dimensions on front/top (width along X, height along Y)
+        # overall dimensions on front/top (width along X, height along Y).
+        # PMI linear dims tolerance the overall extents: "width" = X in both
+        # views, "height" = front-view Y (world Z), "depth" = top-view Y.
         if name in ("front", "top"):
+            x_dim = linear_by_target.get("width")
+            y_dim = linear_by_target.get("height" if name == "front" else "depth")
+            x_text, y_text = f"{w:.2f}", f"{h:.2f}"
+            if x_dim is not None:
+                x_text += _tol_suffix(x_dim["plus"], x_dim["minus"])
+                rendered_linear.add(x_dim["id"])
+            if y_dim is not None:
+                y_text += _tol_suffix(y_dim["plus"], y_dim["minus"])
+                rendered_linear.add(y_dim["id"])
             svg += _linear_dim((ox + scale * bx0, oy - scale * by0),
                                (ox + scale * bx1, oy - scale * by0),
-                               offset=14, text=f"{w:.2f}")
+                               offset=14, text=x_text)
             svg += _linear_dim((ox + scale * bx0, oy - scale * by0),
                                (ox + scale * bx0, oy - scale * by1),
-                               offset=-14, text=f"{h:.2f}")
+                               offset=-14, text=y_text)
         svg.append(f'<text x="{cx}" y="{cy - 78}" font-size="4" fill="#111" '
                    f'text-anchor="middle">{name.upper()}</text>')
 
     # diameter callouts from top-view circles (distinct radii)
+    dia_dims = [d for d in pmi_dims if d.get("kind") == "diameter"]
     if "top" in views:
         vis_top, _ = proj["top"]
         circles = _detect_circles(vis_top)
@@ -160,6 +263,39 @@ def _build_svg(part, views, detected_out):
             {"diameter_mm": round(2 * r, 2), "count": len(cs)}
             for r, cs in sorted(by_r.items()) if len(cs) >= 3
         ]
+        # PMI diameter dims: attach a toleranced callout to the detected
+        # circle group whose diameter is within 0.05 mm of the target.
+        groups = [(round(2 * r, 2), cs) for r, cs in sorted(by_r.items())]
+        ox_t, oy_t, sc_t, _bounds = placements["top"]
+        slot = 0
+        for d in dia_dims:
+            best = None
+            for dia, cs in groups:
+                err = abs(dia - d["target"])
+                if err <= 0.05 and (best is None or err < best[0]):
+                    best = (err, dia, cs)
+            if best is None:
+                pmi_warnings.append(
+                    f"pmi dim {d['id']!r}: no detected diameter within "
+                    f"0.05 mm of {d['target']:g}")
+                continue
+            _err, dia, cs = best
+            prefix = f"{len(cs)}x " if len(cs) > 1 else ""
+            callout = f"{prefix}⌀{dia:.2f}{_tol_suffix(d['plus'], d['minus'])}"
+            tx, ty = 196.0, 40.0 + 8.0 * slot  # column right of the top view
+            c = max(cs, key=lambda c: (c.X, c.Y))  # deterministic leader target
+            tip = (ox_t + sc_t * c.X, oy_t - sc_t * c.Y)
+            tail = (tx - 1.5, ty - 1.2)
+            svg.append(_line(tail, tip))
+            svg.append(_arrow(tip, (tip[0] - tail[0], tip[1] - tail[1])))
+            svg.append(_text((tx, ty), callout, anchor="start"))
+            n_dia_rendered += 1
+            slot += 1
+    else:
+        for d in dia_dims:
+            pmi_warnings.append(
+                f"pmi dim {d['id']!r}: no detected diameter for target "
+                f"{d['target']:g} (top view not rendered)")
 
     # title block
     tb_x, tb_y, tb_w, tb_h = W - 6 - 150, H - 6 - 28, 150, 28
@@ -169,6 +305,56 @@ def _build_svg(part, views, detected_out):
                f'{detected_out.get("label", "part")}</text>')
     svg.append(f'<text x="{tb_x+4}" y="{tb_y+18}" font-size="3" fill="#111">'
                f'AgentCAD · mm · third angle</text>')
+
+    # PMI datum flags: boxed letter + leader anchored to a side of the FRONT
+    # view's bbox (top/bottom/left/right); "front"/"back" anchor to the TOP
+    # view's bottom/top edge. Standoff 20 clears the 14 mm dimension lines on
+    # the bottom/left sides; repeats on a face shift 10 mm along the edge.
+    n_datums = 0
+    face_counts = defaultdict(int)
+    for datum in pmi_datums:
+        face = datum["face"]
+        view_name = "front" if face in ("top", "bottom", "left", "right") else "top"
+        if view_name not in placements:
+            continue  # anchoring view not rendered — counts 0
+        ox_v, oy_v, sc, (bx0, by0, bx1, by1) = placements[view_name]
+        x0, x1 = ox_v + sc * bx0, ox_v + sc * bx1
+        y0, y1 = oy_v - sc * by1, oy_v - sc * by0  # sheet y-down: y0 above y1
+        shift = 10.0 * face_counts[face]
+        face_counts[face] += 1
+        if face in ("bottom", "front"):
+            anchor = ((x0 + x1) / 2 + shift, y1)
+            box = (anchor[0], y1 + 20.0)
+        elif face in ("top", "back"):
+            anchor = ((x0 + x1) / 2 + shift, y0)
+            box = (anchor[0], y0 - 9.0)
+        elif face == "left":
+            anchor = (x0, (y0 + y1) / 2 + shift)
+            box = (x0 - 20.0, anchor[1])
+        else:  # right
+            anchor = (x1, (y0 + y1) / 2 + shift)
+            box = (x1 + 9.0, anchor[1])
+        svg += _datum_flag(datum["id"], box, anchor)
+        n_datums += 1
+
+    # PMI feature control frames: a column left-aligned with the title block,
+    # first frame just above it, stacking upward.
+    n_fcf = 0
+    fcf_h, fcf_bottom = 7.0, tb_y - 4.0
+    for frame in pmi_fcf:
+        fcf_top = fcf_bottom - fcf_h
+        svg += _fcf_frame(tb_x, fcf_top, frame, fcf_h)
+        n_fcf += 1
+        fcf_bottom = fcf_top - 2.0
+
+    if pmi_active:
+        detected_out["pmi_rendered"] = {
+            "dims": len(rendered_linear) + n_dia_rendered,
+            "datums": n_datums,
+            "fcf": n_fcf,
+        }
+        detected_out["pmi_warnings"] = pmi_warnings
+
     svg.append("</svg>")
     return "\n".join(svg)
 
@@ -203,10 +389,10 @@ def register(toolbox: dict):
         shape, _values, _warnings = build_shape(params["script"], params.get("params", {}))
         detected: dict = {"label": params.get("label", "part")}
         if fmt == "svg":
-            svg = _build_svg(shape, views, detected)
+            svg = _build_svg(shape, views, detected, pmi=params.get("pmi"))
             atomic_write(out_path, svg.encode())
         elif fmt == "dxf":
-            _build_dxf(shape, out_path)
+            _build_dxf(shape, out_path)  # DXF ignores PMI (v1)
         else:
             raise WorkerError(ERROR_CONTRACT, f"unknown drawing format {fmt!r}")
         import os
