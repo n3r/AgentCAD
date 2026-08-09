@@ -76,11 +76,15 @@ make setup     # uv sync — installs build123d/OCCT (~2 GB of wheels, one time)
 make run       # starts the server and opens the UI at http://127.0.0.1:8630
 ```
 
-Three example projects are bundled and appear in the project switcher:
+Five example projects are bundled and appear in the project switcher:
 
 - **rocketry** — a liquid-engine thrust chamber (nozzle, injector plate, flange)
 - **construction** — a steel truss gusset node with bolt patterns
 - **prototyping** — a snap-fit electronics enclosure
+- **fasteners** — an M8 bolted joint with real ISO threads
+- **engine** — an assemblable SOHC 90° V4 (33 parts, 65 instances): split
+  main/rod caps, gaskets, dowels, rocker valvetrain, and all 72 fasteners —
+  every joint modeled the way the real engine bolts together
 
 Other useful targets: `make test` (full suite), `make app` (builds
 `dist/AgentCAD.app`), `make serve` (headless).

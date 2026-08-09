@@ -35,9 +35,10 @@ First launch is slower than the rest: the kernel worker imports
 build123d/OCCT once (~3 s, up to 180 s allowed) before the first build.
 After that, rebuilds are typically 10–100 ms.
 
-The three bundled examples (`rocketry`, `construction`, `prototyping`) are
-registered automatically from the repo's `examples/` directory and appear in
-the project switcher alongside your own projects.
+The five bundled examples (`rocketry`, `construction`, `prototyping`,
+`fasteners`, `engine`) are registered automatically from the repo's
+`examples/` directory and appear in the project switcher alongside your own
+projects.
 
 ## The workbench
 

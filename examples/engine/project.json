@@ -1,0 +1,1355 @@
+{
+  "schema_version": 2,
+  "name": "engine",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "engine_block",
+      "label": "Engine Block (90\u00b0 V4)",
+      "material": "al6061",
+      "params": {
+        "bore": 66.0,
+        "stroke": 60.0,
+        "rod_length": 110.0,
+        "bank_angle": 90.0
+      }
+    },
+    {
+      "id": "main_cap",
+      "label": "Main Bearing Cap",
+      "material": "steel_4340",
+      "params": {
+        "bore_d": 45.6,
+        "width": 75.5,
+        "height": 40.0,
+        "thickness": 13.5
+      }
+    },
+    {
+      "id": "main_bolt_set",
+      "label": "Main Cap Bolts (6\u00d7 M8)",
+      "material": "steel_4340",
+      "params": {
+        "length": 40.0,
+        "head_gap": 0.2
+      }
+    },
+    {
+      "id": "crankshaft",
+      "label": "Crankshaft",
+      "material": "steel_4340",
+      "params": {
+        "stroke": 60.0,
+        "pin_d": 40.0,
+        "journal_d": 45.0,
+        "web_t": 12.0
+      }
+    },
+    {
+      "id": "flywheel",
+      "label": "Flywheel",
+      "material": "steel_4130",
+      "params": {
+        "diameter": 200.0,
+        "thickness": 22.0,
+        "bolt_circle_d": 56.0,
+        "n_bolts": 6.0
+      }
+    },
+    {
+      "id": "flywheel_bolt_set",
+      "label": "Flywheel Bolts (6\u00d7 M8)",
+      "material": "steel_4340",
+      "params": {
+        "length": 16.0,
+        "head_gap": 0.1
+      }
+    },
+    {
+      "id": "crank_pulley",
+      "label": "Harmonic Damper Pulley",
+      "material": "steel_4130",
+      "params": {
+        "diameter": 96.0,
+        "ring_w": 10.0,
+        "hub_d": 44.0,
+        "bore_d": 28.6
+      }
+    },
+    {
+      "id": "piston",
+      "label": "Piston",
+      "material": "al7075",
+      "params": {
+        "diameter": 65.4,
+        "comp_height": 28.0,
+        "pin_d": 18.0,
+        "skirt": 22.0
+      }
+    },
+    {
+      "id": "wrist_pin",
+      "label": "Wrist Pin",
+      "material": "steel_4340",
+      "params": {
+        "diameter": 18.0,
+        "length": 48.0,
+        "bore": 10.0
+      }
+    },
+    {
+      "id": "rod_body",
+      "label": "Connecting Rod Body",
+      "material": "ti6al4v",
+      "params": {
+        "length": 110.0,
+        "big_end_bore": 40.5,
+        "small_end_bore": 18.25,
+        "width": 16.0
+      }
+    },
+    {
+      "id": "rod_cap",
+      "label": "Connecting Rod Cap",
+      "material": "ti6al4v",
+      "params": {
+        "big_end_bore": 40.5,
+        "width": 16.0
+      }
+    },
+    {
+      "id": "rod_bolt_pair",
+      "label": "Rod Bolts (2\u00d7 M5)",
+      "material": "steel_4340",
+      "params": {
+        "length": 22.0,
+        "spacing": 22.8
+      }
+    },
+    {
+      "id": "cylinder_head",
+      "label": "Cylinder Head (SOHC, per bank)",
+      "material": "al6061",
+      "params": {
+        "bore": 66.0,
+        "chamber_depth": 10.0,
+        "valve_d": 19.0,
+        "port_d": 24.0
+      }
+    },
+    {
+      "id": "stud_set",
+      "label": "Manifold Studs (16\u00d7 M8)",
+      "material": "steel_4340",
+      "params": {
+        "exhaust_len": 30.0,
+        "intake_len": 26.0
+      }
+    },
+    {
+      "id": "head_gasket",
+      "label": "Head Gasket",
+      "material": "copper_c110",
+      "params": {
+        "bore": 66.0,
+        "thickness": 0.8
+      }
+    },
+    {
+      "id": "head_bolt_set",
+      "label": "Head Bolts (4\u00d7 M10)",
+      "material": "steel_4340",
+      "params": {
+        "length": 55.0,
+        "head_gap": 0.1
+      }
+    },
+    {
+      "id": "camshaft",
+      "label": "Camshaft (SOHC)",
+      "material": "steel_4130",
+      "params": {
+        "journal_d": 22.0,
+        "shaft_d": 18.0,
+        "lift": 3.5,
+        "lobe_w": 7.0
+      }
+    },
+    {
+      "id": "cam_cap_set",
+      "label": "Cam Caps + Screws",
+      "material": "al6061",
+      "params": {
+        "bore_d": 22.2,
+        "height": 14.0
+      }
+    },
+    {
+      "id": "rocker_set",
+      "label": "Rocker Shaft & Followers",
+      "material": "steel_4130",
+      "params": {
+        "shaft_d": 10.0,
+        "beam_w": 6.0,
+        "lift": 3.5,
+        "boss_d": 14.0
+      }
+    },
+    {
+      "id": "valve_set",
+      "label": "Valves, Springs & Retainers",
+      "material": "stainless_304",
+      "params": {
+        "valve_d": 19.0,
+        "stem_d": 5.4,
+        "lift": 3.5,
+        "spring_d": 15.0
+      }
+    },
+    {
+      "id": "cam_cover",
+      "label": "Cam Cover",
+      "material": "al6061",
+      "params": {
+        "height": 42.0,
+        "wall": 4.5,
+        "tube_d": 16.0,
+        "rib_h": 3.0
+      }
+    },
+    {
+      "id": "cover_bolt_set",
+      "label": "Cover Bolts (6\u00d7 M5)",
+      "material": "steel_4340",
+      "params": {
+        "length": 14.0,
+        "head_gap": 0.1
+      }
+    },
+    {
+      "id": "intake_manifold",
+      "label": "Intake Manifold",
+      "material": "alsi10mg",
+      "params": {
+        "runner_d": 30.0,
+        "plenum_d": 60.0,
+        "plenum_height": 192.0,
+        "port_bore": 24.0
+      }
+    },
+    {
+      "id": "throttle_body",
+      "label": "Throttle Body",
+      "material": "al6061",
+      "params": {
+        "bore": 38.0,
+        "body_l": 28.0,
+        "flange_d": 82.0,
+        "butterfly_deg": 25.0
+      }
+    },
+    {
+      "id": "intake_nut_set",
+      "label": "Intake Nuts (8\u00d7 M8)",
+      "material": "steel_4340",
+      "params": {
+        "across_corners": 14.4,
+        "height": 6.5
+      }
+    },
+    {
+      "id": "exhaust_manifold",
+      "label": "Exhaust Manifold (per bank)",
+      "material": "stainless_304",
+      "params": {
+        "primary_d": 34.0,
+        "collector_d": 60.0,
+        "drop": -10.0,
+        "tail_d": 42.0
+      }
+    },
+    {
+      "id": "exhaust_nut_set",
+      "label": "Exhaust Nuts (8\u00d7 M8)",
+      "material": "stainless_304",
+      "params": {
+        "across_corners": 14.4,
+        "height": 6.5
+      }
+    },
+    {
+      "id": "timing_cover",
+      "label": "Timing Cover & Water Pump",
+      "material": "al6061",
+      "params": {
+        "thickness": 10.0,
+        "pump_d": 60.0,
+        "snout_hole": 34.0,
+        "boss_d": 56.0
+      }
+    },
+    {
+      "id": "timing_bolt_set",
+      "label": "Timing Cover Bolts (8\u00d7 M5)",
+      "material": "steel_4340",
+      "params": {
+        "length": 22.0,
+        "head_gap": 0.1
+      }
+    },
+    {
+      "id": "oil_pan",
+      "label": "Oil Pan",
+      "material": "al6061",
+      "params": {
+        "length": 160.0,
+        "width": 150.0,
+        "depth": 45.0,
+        "wall": 3.0
+      }
+    },
+    {
+      "id": "pan_bolt_set",
+      "label": "Pan Bolts (8\u00d7 M6)",
+      "material": "steel_4340",
+      "params": {
+        "length": 16.0,
+        "head_gap": 0.1
+      }
+    },
+    {
+      "id": "oil_filter",
+      "label": "Oil Filter",
+      "material": "steel_4130",
+      "params": {
+        "diameter": 62.0,
+        "length": 70.0,
+        "base_d": 66.0,
+        "dome": 10.0
+      }
+    },
+    {
+      "id": "ignition_coil",
+      "label": "Ignition Coil",
+      "material": "abs",
+      "params": {
+        "body_d": 30.0,
+        "cap_d": 34.0,
+        "height": 22.0,
+        "connector_l": 20.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": [
+      {
+        "id": "block_1",
+        "part": "engine_block",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#8b93a3"
+      },
+      {
+        "id": "main_bolt_set_1",
+        "part": "main_bolt_set",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#26282c"
+      },
+      {
+        "id": "pan_bolt_set_1",
+        "part": "pan_bolt_set",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#26282c"
+      },
+      {
+        "id": "timing_bolt_set_1",
+        "part": "timing_bolt_set",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#26282c"
+      },
+      {
+        "id": "crankshaft_1",
+        "part": "crankshaft",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#4a4f57",
+        "mate": {
+          "connector": "hub",
+          "to_instance": "block_1",
+          "to_connector": "crank_axis",
+          "params": {
+            "angle": 110.0
+          }
+        }
+      },
+      {
+        "id": "flywheel_1",
+        "part": "flywheel",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#3a3f47",
+        "mate": {
+          "connector": "hub",
+          "to_instance": "crankshaft_1",
+          "to_connector": "flange"
+        }
+      },
+      {
+        "id": "flywheel_bolt_set_1",
+        "part": "flywheel_bolt_set",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#26282c",
+        "mate": {
+          "connector": "hub",
+          "to_instance": "crankshaft_1",
+          "to_connector": "flange"
+        }
+      },
+      {
+        "id": "crank_pulley_1",
+        "part": "crank_pulley",
+        "position": [
+          0,
+          -104,
+          0
+        ],
+        "rotation_deg": [
+          90,
+          0,
+          0
+        ],
+        "color": "#3f444c"
+      },
+      {
+        "id": "oil_pan_1",
+        "part": "oil_pan",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#5f6672",
+        "mate": {
+          "connector": "rail",
+          "to_instance": "block_1",
+          "to_connector": "pan_rail"
+        }
+      },
+      {
+        "id": "timing_cover_1",
+        "part": "timing_cover",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#9aa2ae"
+      },
+      {
+        "id": "intake_1",
+        "part": "intake_manifold",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#b8bfc9"
+      },
+      {
+        "id": "throttle_body_1",
+        "part": "throttle_body",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#9aa2ae"
+      },
+      {
+        "id": "intake_nut_set_1",
+        "part": "intake_nut_set",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#3a3d42"
+      },
+      {
+        "id": "exhaust_a",
+        "part": "exhaust_manifold",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#8a7f74"
+      },
+      {
+        "id": "exhaust_b",
+        "part": "exhaust_manifold",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          180
+        ],
+        "color": "#8a7f74"
+      },
+      {
+        "id": "exhaust_nut_a",
+        "part": "exhaust_nut_set",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#3a3d42"
+      },
+      {
+        "id": "exhaust_nut_b",
+        "part": "exhaust_nut_set",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          180
+        ],
+        "color": "#3a3d42"
+      },
+      {
+        "id": "oil_filter_1",
+        "part": "oil_filter",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#2f5d8a"
+      },
+      {
+        "id": "main_cap_1",
+        "part": "main_cap",
+        "position": [
+          0,
+          -81.0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#565b63"
+      },
+      {
+        "id": "main_cap_2",
+        "part": "main_cap",
+        "position": [
+          0,
+          0.0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#565b63"
+      },
+      {
+        "id": "main_cap_3",
+        "part": "main_cap",
+        "position": [
+          0,
+          81.0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#565b63"
+      },
+      {
+        "id": "piston_a1",
+        "part": "piston",
+        "position": [
+          96.4891,
+          -49.0,
+          96.4891
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#c8ccd2"
+      },
+      {
+        "id": "wrist_pin_a1",
+        "part": "wrist_pin",
+        "position": [
+          96.4891,
+          -49.0,
+          96.4891
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#c0c5cc"
+      },
+      {
+        "id": "rod_a1",
+        "part": "rod_body",
+        "position": [
+          10.2606,
+          -49.0,
+          28.1908
+        ],
+        "rotation_deg": [
+          0.0,
+          51.6186,
+          0.0
+        ],
+        "color": "#7d8590"
+      },
+      {
+        "id": "rod_cap_a1",
+        "part": "rod_cap",
+        "position": [
+          10.2214,
+          -49.0,
+          28.1597
+        ],
+        "rotation_deg": [
+          0.0,
+          51.6186,
+          0.0
+        ],
+        "color": "#7d8590"
+      },
+      {
+        "id": "rod_bolts_a1",
+        "part": "rod_bolt_pair",
+        "position": [
+          10.2606,
+          -49.0,
+          28.1908
+        ],
+        "rotation_deg": [
+          0.0,
+          51.6186,
+          0.0
+        ],
+        "color": "#26282c"
+      },
+      {
+        "id": "piston_b1",
+        "part": "piston",
+        "position": [
+          -84.3333,
+          -31.0,
+          84.3333
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          0.0
+        ],
+        "color": "#c8ccd2"
+      },
+      {
+        "id": "wrist_pin_b1",
+        "part": "wrist_pin",
+        "position": [
+          -84.3333,
+          -31.0,
+          84.3333
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          0.0
+        ],
+        "color": "#c0c5cc"
+      },
+      {
+        "id": "rod_b1",
+        "part": "rod_body",
+        "position": [
+          10.2606,
+          -31.0,
+          28.1908
+        ],
+        "rotation_deg": [
+          0.0,
+          -59.3104,
+          0.0
+        ],
+        "color": "#7d8590"
+      },
+      {
+        "id": "rod_cap_b1",
+        "part": "rod_cap",
+        "position": [
+          10.3036,
+          -31.0,
+          28.1653
+        ],
+        "rotation_deg": [
+          0.0,
+          -59.3104,
+          0.0
+        ],
+        "color": "#7d8590"
+      },
+      {
+        "id": "rod_bolts_b1",
+        "part": "rod_bolt_pair",
+        "position": [
+          10.2606,
+          -31.0,
+          28.1908
+        ],
+        "rotation_deg": [
+          0.0,
+          -59.3104,
+          0.0
+        ],
+        "color": "#26282c"
+      },
+      {
+        "id": "piston_a2",
+        "part": "piston",
+        "position": [
+          58.0377,
+          31.0,
+          58.0377
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#c8ccd2"
+      },
+      {
+        "id": "wrist_pin_a2",
+        "part": "wrist_pin",
+        "position": [
+          58.0377,
+          31.0,
+          58.0377
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#c0c5cc"
+      },
+      {
+        "id": "rod_a2",
+        "part": "rod_body",
+        "position": [
+          -10.2606,
+          31.0,
+          -28.1908
+        ],
+        "rotation_deg": [
+          0.0,
+          38.3814,
+          0.0
+        ],
+        "color": "#7d8590"
+      },
+      {
+        "id": "rod_cap_a2",
+        "part": "rod_cap",
+        "position": [
+          -10.2916,
+          31.0,
+          -28.23
+        ],
+        "rotation_deg": [
+          0.0,
+          38.3814,
+          0.0
+        ],
+        "color": "#7d8590"
+      },
+      {
+        "id": "rod_bolts_a2",
+        "part": "rod_bolt_pair",
+        "position": [
+          -10.2606,
+          31.0,
+          -28.1908
+        ],
+        "rotation_deg": [
+          0.0,
+          38.3814,
+          0.0
+        ],
+        "color": "#26282c"
+      },
+      {
+        "id": "piston_b2",
+        "part": "piston",
+        "position": [
+          -66.4032,
+          49.0,
+          66.4032
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          0.0
+        ],
+        "color": "#c8ccd2"
+      },
+      {
+        "id": "wrist_pin_b2",
+        "part": "wrist_pin",
+        "position": [
+          -66.4032,
+          49.0,
+          66.4032
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          0.0
+        ],
+        "color": "#c0c5cc"
+      },
+      {
+        "id": "rod_b2",
+        "part": "rod_body",
+        "position": [
+          -10.2606,
+          49.0,
+          -28.1908
+        ],
+        "rotation_deg": [
+          0.0,
+          -30.6896,
+          0.0
+        ],
+        "color": "#7d8590"
+      },
+      {
+        "id": "rod_cap_b2",
+        "part": "rod_cap",
+        "position": [
+          -10.2351,
+          49.0,
+          -28.2338
+        ],
+        "rotation_deg": [
+          0.0,
+          -30.6896,
+          0.0
+        ],
+        "color": "#7d8590"
+      },
+      {
+        "id": "rod_bolts_b2",
+        "part": "rod_bolt_pair",
+        "position": [
+          -10.2606,
+          49.0,
+          -28.1908
+        ],
+        "rotation_deg": [
+          0.0,
+          -30.6896,
+          0.0
+        ],
+        "color": "#26282c"
+      },
+      {
+        "id": "head_a",
+        "part": "cylinder_head",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#a8b0bd",
+        "mate": {
+          "connector": "deck",
+          "to_instance": "block_1",
+          "to_connector": "head_a_seat"
+        }
+      },
+      {
+        "id": "gasket_a",
+        "part": "head_gasket",
+        "position": [
+          119.4303,
+          -9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#b87333"
+      },
+      {
+        "id": "studs_a",
+        "part": "stud_set",
+        "position": [
+          119.4303,
+          -9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#41454c"
+      },
+      {
+        "id": "head_bolts_a",
+        "part": "head_bolt_set",
+        "position": [
+          119.4303,
+          -9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#26282c"
+      },
+      {
+        "id": "cam_a",
+        "part": "camshaft",
+        "position": [
+          119.4303,
+          -9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#9aa1ab"
+      },
+      {
+        "id": "cam_caps_a",
+        "part": "cam_cap_set",
+        "position": [
+          119.4303,
+          -9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#a7aeb8"
+      },
+      {
+        "id": "rockers_a",
+        "part": "rocker_set",
+        "position": [
+          119.4303,
+          -9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#8f979f"
+      },
+      {
+        "id": "valves_a",
+        "part": "valve_set",
+        "position": [
+          119.4303,
+          -9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#d5d9de"
+      },
+      {
+        "id": "cam_cover_a",
+        "part": "cam_cover",
+        "position": [
+          119.4303,
+          -9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#7e3040"
+      },
+      {
+        "id": "cover_bolts_a",
+        "part": "cover_bolt_set",
+        "position": [
+          119.4303,
+          -9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#26282c"
+      },
+      {
+        "id": "coil_a1",
+        "part": "ignition_coil",
+        "position": [
+          179.1809,
+          -49.0,
+          179.1809
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#2e3238"
+      },
+      {
+        "id": "coil_a2",
+        "part": "ignition_coil",
+        "position": [
+          179.1809,
+          31.0,
+          179.1809
+        ],
+        "rotation_deg": [
+          0.0,
+          45.0,
+          0.0
+        ],
+        "color": "#2e3238"
+      },
+      {
+        "id": "head_b",
+        "part": "cylinder_head",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_deg": [
+          0,
+          0,
+          0
+        ],
+        "color": "#a8b0bd",
+        "mate": {
+          "connector": "deck",
+          "to_instance": "block_1",
+          "to_connector": "head_b_seat"
+        }
+      },
+      {
+        "id": "gasket_b",
+        "part": "head_gasket",
+        "position": [
+          -119.4303,
+          9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          180.0
+        ],
+        "color": "#b87333"
+      },
+      {
+        "id": "studs_b",
+        "part": "stud_set",
+        "position": [
+          -119.4303,
+          9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          180.0
+        ],
+        "color": "#41454c"
+      },
+      {
+        "id": "head_bolts_b",
+        "part": "head_bolt_set",
+        "position": [
+          -119.4303,
+          9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          180.0
+        ],
+        "color": "#26282c"
+      },
+      {
+        "id": "cam_b",
+        "part": "camshaft",
+        "position": [
+          -119.4303,
+          9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          180.0
+        ],
+        "color": "#9aa1ab"
+      },
+      {
+        "id": "cam_caps_b",
+        "part": "cam_cap_set",
+        "position": [
+          -119.4303,
+          9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          180.0
+        ],
+        "color": "#a7aeb8"
+      },
+      {
+        "id": "rockers_b",
+        "part": "rocker_set",
+        "position": [
+          -119.4303,
+          9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          180.0
+        ],
+        "color": "#8f979f"
+      },
+      {
+        "id": "valves_b",
+        "part": "valve_set",
+        "position": [
+          -119.4303,
+          9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          180.0
+        ],
+        "color": "#d5d9de"
+      },
+      {
+        "id": "cam_cover_b",
+        "part": "cam_cover",
+        "position": [
+          -119.4303,
+          9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          180.0
+        ],
+        "color": "#7e3040"
+      },
+      {
+        "id": "cover_bolts_b",
+        "part": "cover_bolt_set",
+        "position": [
+          -119.4303,
+          9.0,
+          119.4303
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          180.0
+        ],
+        "color": "#26282c"
+      },
+      {
+        "id": "coil_b1",
+        "part": "ignition_coil",
+        "position": [
+          -179.1809,
+          49.0,
+          179.1809
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          0.0
+        ],
+        "color": "#2e3238"
+      },
+      {
+        "id": "coil_b2",
+        "part": "ignition_coil",
+        "position": [
+          -179.1809,
+          -31.0,
+          179.1809
+        ],
+        "rotation_deg": [
+          0.0,
+          -45.0,
+          0.0
+        ],
+        "color": "#2e3238"
+      }
+    ]
+  }
+}

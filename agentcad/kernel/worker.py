@@ -565,18 +565,41 @@ def handle_export(params: dict) -> dict:
     )
 
 
-def _item_shape(item: dict) -> tuple[object, str]:
+def _item_shape(item: dict, analysis: bool = False) -> tuple[object, str]:
     """Resolve an assembly/interference item to (shape, kind).
 
     Script items carry ``script`` (+ ``params``); reference items carry
     ``source`` (a path). ``kind`` is "script"/"solid" (booleanable) or "mesh"
-    (STL — placeable and exportable, but not booleanable)."""
+    (STL — placeable and exportable, but not booleanable).
+
+    With ``analysis=True``, a script that defines the optional contract
+    function ``analysis(p)`` gets that shape instead — a simplified,
+    CONSERVATIVE stand-in for interference checking (the canonical case:
+    real ISO thread geometry replaced by its nominal-diameter envelope,
+    which strictly contains the thread — clear envelope implies clear
+    thread). Display, export, and metrics always use ``build(p)``."""
     if item.get("source"):
         from .refload import load_reference
 
         shape, ref_kind = load_reference(item["source"])
         return shape, ref_kind
-    shape, _values, _warnings = build_shape(item["script"], item.get("params", {}))
+    shape, values, _warnings, ns = build_shape_ns(
+        item["script"], item.get("params", {}))
+    fn = ns.get("analysis")
+    if analysis and callable(fn):
+        import types
+
+        key = _shape_key(item["script"], values) + ":analysis"
+        if key in _SHAPE_CACHE:
+            _SHAPE_CACHE.move_to_end(key)
+            return _SHAPE_CACHE[key], "script"
+        result = fn(types.SimpleNamespace(**values))
+        if hasattr(result, "part") and result.part is not None:
+            result = result.part
+        _SHAPE_CACHE[key] = result
+        if len(_SHAPE_CACHE) > _SHAPE_CACHE_MAX:
+            _SHAPE_CACHE.popitem(last=False)
+        return result, "script"
     return shape, "script"
 
 
@@ -593,13 +616,92 @@ def handle_export_assembly(params: dict) -> dict:
     )
 
 
+def pairwise_interference(placed, min_volume: float = 0.001) -> list[dict]:
+    """Exact pairwise intersection volumes for ``[(name, shape), ...]``.
+
+    Decomposes every shape into its solids up front, for two reasons:
+    1. build123d 0.9's ``&`` silently misbehaves when an operand is a
+       multi-solid Compound (bolt sets etc.) — Solid-vs-Solid is reliable;
+    2. per-solid AABB prefiltering skips almost all of the N*M work for
+       hardware compounds, where only one screw is near any given part.
+    When a solid pair's AABB overlap is small relative to the larger solid,
+    the larger one is cropped to the overlap box first (a cheap prismatic
+    boolean), so a small detailed solid — a threaded stud — is never
+    intersected against a whole casting. Shared by ``handle_interference``
+    and the motion sweep's per-sample collision check.
+    """
+    decomposed = []
+    for name, shape in placed:
+        solids = shape.solids() or [shape]
+        decomposed.append((name, [(s, s.bounding_box()) for s in solids],
+                           shape.bounding_box()))
+
+    def _boxes_touch(a, b, tol=0.05):
+        return not (
+            a.max.X < b.min.X - tol or b.max.X < a.min.X - tol
+            or a.max.Y < b.min.Y - tol or b.max.Y < a.min.Y - tol
+            or a.max.Z < b.min.Z - tol or b.max.Z < a.min.Z - tol
+        )
+
+    def _box_volume(bb):
+        return max(bb.max.X - bb.min.X, 0) * max(bb.max.Y - bb.min.Y, 0) * \
+            max(bb.max.Z - bb.min.Z, 0)
+
+    def _crop_box(a, b, tol=0.05):
+        lo = (max(a.min.X, b.min.X) - tol, max(a.min.Y, b.min.Y) - tol,
+              max(a.min.Z, b.min.Z) - tol)
+        hi = (min(a.max.X, b.max.X) + tol, min(a.max.Y, b.max.Y) + tol,
+              min(a.max.Z, b.max.Z) + tol)
+        size = [hi[k] - lo[k] for k in range(3)]
+        center = [(hi[k] + lo[k]) / 2 for k in range(3)]
+        return b3d.Pos(*center) * b3d.Box(*size), \
+            size[0] * size[1] * size[2]
+
+    def _common_vol(a, b):
+        c = a & b
+        return float(c.volume) if c is not None else 0.0
+
+    def _solid_common(sa, ba, sb, bb):
+        box, ov = _crop_box(ba, bb)
+        big, big_bb = (sa, ba) if _box_volume(ba) >= _box_volume(bb) \
+            else (sb, bb)
+        small = sb if big is sa else sa
+        if ov < 0.4 * _box_volume(big_bb):
+            cropped = big & box
+            if cropped is None:
+                return 0.0
+            # the crop may split into pieces (or vanish) — keep every
+            # boolean strictly Solid-vs-Solid
+            return sum(_common_vol(piece, small)
+                       for piece in cropped.solids())
+        return _common_vol(big, small)
+
+    pairs = []
+    for i in range(len(decomposed)):
+        for j in range(i + 1, len(decomposed)):
+            name_a, sols_a, box_a = decomposed[i]
+            name_b, sols_b, box_b = decomposed[j]
+            if not _boxes_touch(box_a, box_b):
+                continue
+            volume = 0.0
+            with contextlib.redirect_stdout(sys.stderr):
+                for sa, ba in sols_a:
+                    for sb, bb in sols_b:
+                        if _boxes_touch(ba, bb):
+                            volume += _solid_common(sa, ba, sb, bb)
+            if volume > min_volume:
+                pairs.append({"a": name_a, "b": name_b,
+                              "volume_mm3": volume})
+    return pairs
+
+
 def handle_interference(params: dict) -> dict:
     items = params["items"]
     min_volume = float(params.get("min_volume", 0.001))
     placed = []
     skipped_mesh = []
     for item in items:
-        shape, kind = _item_shape(item)
+        shape, kind = _item_shape(item, analysis=True)
         if kind == "mesh":
             # Booleans on an STL mesh Face segfault OCCT — exclude it from the
             # pairwise check and report it so the caller can surface the gap.
@@ -611,18 +713,7 @@ def handle_interference(params: dict) -> dict:
                 _place(shape, item.get("position", [0, 0, 0]), item.get("rotation_deg", [0, 0, 0])),
             )
         )
-    pairs = []
-    for i in range(len(placed)):
-        for j in range(i + 1, len(placed)):
-            name_a, shape_a = placed[i]
-            name_b, shape_b = placed[j]
-            # Note: Shape.intersect() returns a ShapeList in build123d 0.9+;
-            # the & operator returns a single Part (empty Compound when disjoint).
-            with contextlib.redirect_stdout(sys.stderr):
-                common = shape_a & shape_b
-            volume = float(common.volume)
-            if volume > min_volume:
-                pairs.append({"a": name_a, "b": name_b, "volume_mm3": volume})
+    pairs = pairwise_interference(placed, min_volume)
     result = {"pairs": pairs}
     if skipped_mesh:
         result["skipped_mesh"] = skipped_mesh
