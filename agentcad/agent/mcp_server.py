@@ -100,7 +100,14 @@ def _tool_result(payload) -> types.CallToolResult:
 
 
 async def _serve(base: str) -> None:
-    http = httpx.AsyncClient(base_url=base, timeout=REQUEST_TIMEOUT)
+    # Identity for the server's turn locking (acquire_turn/release_turn):
+    # every proxied call carries X-Agent-Id so concurrent MCP agents can be
+    # told apart. Set AGENTCAD_AGENT_ID to give each agent a stable name.
+    http = httpx.AsyncClient(
+        base_url=base,
+        timeout=REQUEST_TIMEOUT,
+        headers={"X-Agent-Id": os.environ.get("AGENTCAD_AGENT_ID", "mcp")},
+    )
 
     async def on_list_tools(ctx, params) -> types.ListToolsResult:
         try:

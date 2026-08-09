@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 
 from ..kernel.client import KernelClient, KernelError
+from .locks import TurnLock, current_client_id
 from .materials import MATERIALS, get_material
 from .model import InstanceSpec, NotFoundError, ValidationError, validate_vec3
 from .project import ProjectStore
@@ -70,6 +71,13 @@ class AgentCADService:
         self._spec_cache: dict[str, dict] = {}
         # Seams the v2 feature packs replace; defaults preserve v1 behavior.
         self.materials = _DefaultMaterialResolver()
+        # Multi-user turn locking: every persistent store write is checked
+        # against the per-project turn lock under the caller's identity.
+        # With no lock held the guard is a no-op (full backward compat).
+        self.turnlock = TurnLock()
+        self.store.write_guard = (
+            lambda proj: self.turnlock.check(proj, current_client_id())
+        )
 
     def _resolved_instances(self, proj: str):
         """Assembly instances with any declarative mates resolved to concrete

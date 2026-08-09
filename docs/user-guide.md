@@ -328,6 +328,15 @@ silhouette area, or the full inertia tensor. Linear-static FEM is available
 only if the optional `agentcad[fem]` extra is installed (otherwise the tool
 and its route are absent).
 
+**Working alongside agents.** When several agents (or an agent and you) edit
+one project at once, an agent can take the editing turn with `acquire_turn`.
+While the turn is held, everyone else's changes — including edits made from
+the browser UI — are rejected with a clear "project is locked by \<holder\>"
+message until the turn is released or its lock expires (default 120 s). The
+toolbar shows a lock chip naming the holder whenever an agent holds the turn.
+Reads are never blocked, and with no lock held everything behaves exactly as
+before.
+
 **Seeing the model.** Agents can now look at what they build: the `render_view`
 tool rasterizes the built mesh to a shaded PNG entirely server-side (no GPU),
 either a single part or the whole placed assembly with instance colors. Views

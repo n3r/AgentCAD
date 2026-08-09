@@ -28,6 +28,7 @@ import sys
 import uuid
 from typing import Any, Callable
 
+from ..core import locks
 from ..core.model import ValidationError
 from ..core.service import EventBus
 from ..core.tools import ToolRegistry
@@ -235,7 +236,7 @@ class ChatEngine:
                         }
                     )
                     result = await loop.run_in_executor(
-                        None, self.registry.call, name, args
+                        None, self._call_tool, name, args
                     )
                     ok = not (
                         isinstance(result, dict)
@@ -285,6 +286,17 @@ class ChatEngine:
             self.bus.publish(
                 {"type": "chat_done", "project": project, "turn_id": turn_id}
             )
+
+    def _call_tool(self, name: str, args: dict):
+        """Run one registry call under the "chat" identity (turn locking).
+
+        Executor threads do not inherit the event-loop task's contextvars, and
+        a reused worker thread keeps whatever its ambient context last held —
+        so the identity is set explicitly at the start of every call rather
+        than relying on per-work-item context isolation.
+        """
+        locks.set_client_id("chat")
+        return self.registry.call(name, args)
 
     @staticmethod
     def _repair_history(history: list[dict]) -> None:

@@ -19,6 +19,7 @@ let lastFittedTarget = null; // part id or "__assembly__"
 let localPatchUntil = 0; // suppress our own project_changed echo until this ts
 let assemblyRefreshTimer = null;
 let projectRefreshTimer = null;
+let lockHolder = null; // current turn-lock holder for this project (or null)
 
 // ------------------------------------------------------------------ actions
 
@@ -57,6 +58,8 @@ async function loadProject(name) {
   meshBuffers.clear();
   viewport.clear();
   lastFittedTarget = null;
+  lockHolder = null; // lock state is per project; resync via lock_changed
+  renderLockIndicator();
   setState({
     projectName: name,
     project: detail,
@@ -639,6 +642,12 @@ function handleEvent(ev) {
       scheduleProjectRefresh();
       return;
     }
+    case "lock_changed": {
+      if (ev.project !== state.projectName) return;
+      lockHolder = ev.holder || null;
+      renderLockIndicator();
+      return;
+    }
     case "chat_delta":
     case "chat_tool_call":
     case "chat_tool_result":
@@ -967,6 +976,30 @@ function renderIndicators() {
   document.getElementById("conn-dot").title = state.connected
     ? "Connected"
     : "Reconnecting…";
+}
+
+let lockEl = null; // lazily created toolbar chip (no markup/CSS changes)
+
+function renderLockIndicator() {
+  if (!lockEl) {
+    const connDot = document.getElementById("conn-dot");
+    if (!connDot || !connDot.parentNode) return;
+    lockEl = document.createElement("span");
+    lockEl.id = "lock-indicator";
+    lockEl.style.cssText =
+      "display:none;align-items:center;gap:4px;font-size:12px;" +
+      "opacity:0.85;margin-right:8px;white-space:nowrap;";
+    connDot.parentNode.insertBefore(lockEl, connDot);
+  }
+  if (lockHolder && lockHolder !== "browser") {
+    lockEl.textContent = `🔒 ${lockHolder}`;
+    lockEl.title =
+      `${lockHolder} holds the editing turn — ` +
+      "changes by others are rejected until release or expiry";
+    lockEl.style.display = "inline-flex";
+  } else {
+    lockEl.style.display = "none";
+  }
 }
 
 // -------------------------------------------------------------------- boot

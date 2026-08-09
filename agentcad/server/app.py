@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import agentcad
+from ..core.locks import set_client_id
 from ..core.model import (
     AppError,
     ConflictError,
@@ -100,6 +101,11 @@ def create_app(
                 content={"error": {"type": "ForbiddenOrigin", "message": reason,
                                    "details": {}}},
             )
+        # Client identity for turn locking: agents send X-Agent-Id; anything
+        # without the header (the browser UI, plain curl) is "browser". The
+        # ContextVar set here reaches async endpoints via the task context and
+        # sync endpoints via anyio's to_thread.run_sync context copy.
+        set_client_id(request.headers.get("x-agent-id") or "browser")
         return await call_next(request)
 
     @app.exception_handler(AppError)

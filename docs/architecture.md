@@ -114,6 +114,18 @@ defaults to v1 behavior, so the core runs unchanged if a pack is absent:
 - **Kernel pool** — the single `KernelClient` is replaced by a `KernelPool`
   of the same shape (see [above](#process-model)).
 
+A fourth, v3 seam handles **turn locking**: `ProjectStore.write_guard` is a
+post-init hook invoked with the project name before every persistent mutation
+(`save_manifest` — which all pack mutations funnel through — and
+`write_script`). `AgentCADService` installs `TurnLock.check(proj,
+current_client_id())` there, so per-project advisory locks are enforced at
+one store choke point with zero per-pack edits. Client identity rides a
+ContextVar (`agentcad/core/locks.py`): HTTP middleware stamps it from
+`X-Agent-Id` (default `browser`), the chat engine stamps `chat` inside its
+tool executor, and the MCP proxy sends `AGENTCAD_AGENT_ID`/`mcp`. Project
+creation and derived-data writes (cache, exports, metrics sidecars) are
+intentionally unguarded.
+
 Two cross-cutting pieces ride these seams. The **Error Doctor**
 (`error_doctor.py`) is invoked from one hook in the worker's `_dispatch`: it
 matches a failure's type + message + traceback against a catalog of real OCCT

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Callable
 
 from .materials import DEFAULT_MATERIAL, get_material
 from .model import (
@@ -41,6 +42,11 @@ class ProjectStore:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._external: dict[str, Path] = {}
+        # Write guard (set post-init, e.g. by AgentCADService): called with
+        # the project name before every persistent mutation — save_manifest
+        # (which all pack mutations funnel through) and write_script — and may
+        # raise (ConflictError) to reject the write. None means unguarded.
+        self.write_guard: Callable[[str], None] | None = None
 
     # ------------------------------------------------------------- projects
 
@@ -121,6 +127,8 @@ class ProjectStore:
         return path.read_text(encoding="utf-8")
 
     def write_script(self, proj: str, part_id: str, text: str) -> None:
+        if self.write_guard is not None:
+            self.write_guard(proj)
         self.get_part(proj, part_id)
         self._atomic_write(self.script_path(proj, part_id), text.encode())
 
@@ -268,6 +276,8 @@ class ProjectStore:
         return self._read_manifest(self._resolve(proj))
 
     def save_manifest(self, proj: str, manifest: dict) -> None:
+        if self.write_guard is not None:
+            self.write_guard(proj)
         self._write_manifest(self._resolve(proj), manifest)
 
     def cache_dir(self, proj: str) -> Path:
