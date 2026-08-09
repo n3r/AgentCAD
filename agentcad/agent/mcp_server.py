@@ -52,19 +52,33 @@ def _health_ok(base: str) -> bool:
         return False
 
 
+def _server_spawn_argv() -> list[str]:
+    """Command that starts the AgentCAD server in the background.
+
+    A frozen (PyInstaller) bundle has no repo and no uv — it re-execs its own
+    executable, whose entry point is the same `agentcad` CLI.
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "serve", "--no-open"]
+    return ["uv", "run", "agentcad", "serve", "--no-open"]
+
+
 def _ensure_server(base: str) -> bool:
     """Return True once /api/health answers, auto-starting the server if needed."""
     if _health_ok(base):
         return True
+    argv = _server_spawn_argv()
     print(
         f"agentcad-mcp: no server at {base}; "
-        "starting 'uv run agentcad serve --no-open' in the background",
+        f"starting {' '.join(argv)!r} in the background",
         file=sys.stderr,
     )
     try:
         subprocess.Popen(
-            ["uv", "run", "agentcad", "serve", "--no-open"],
-            cwd=REPO_ROOT,
+            argv,
+            # `uv run` needs the repo as cwd; the frozen executable is
+            # location-independent (REPO_ROOT is meaningless inside a bundle).
+            cwd=None if getattr(sys, "frozen", False) else REPO_ROOT,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -165,7 +179,7 @@ def run_mcp_server() -> None:
         print(
             f"agentcad-mcp: AgentCAD server unreachable at {base} after "
             f"{STARTUP_TIMEOUT_S:.0f}s. Start it manually with "
-            "'uv run agentcad serve --no-open' (or set AGENTCAD_URL) and retry.",
+            f"{' '.join(_server_spawn_argv())!r} (or set AGENTCAD_URL) and retry.",
             file=sys.stderr,
         )
         raise SystemExit(1)

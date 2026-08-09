@@ -15,6 +15,7 @@ import sys
 import threading
 from collections import deque
 
+from .._spawn import worker_argv
 from . import sandbox
 from .protocol import ERROR_CRASH, ERROR_TIMEOUT
 
@@ -51,7 +52,8 @@ class KernelClient:
         # timed-out/crashed worker gets the identical confinement. With
         # writable_dirs=None (the default) the argv is exactly the historical
         # one — no sandbox module behavior can affect existing callers.
-        argv = [self._python, "-u", "-m", "agentcad.kernel.worker"]
+        # worker_argv resolves to the frozen self-exec form under PyInstaller.
+        argv = worker_argv(self._python)
         if writable_dirs is not None:
             argv = sandbox.wrap_argv(argv, list(writable_dirs))
         self.sandboxed: bool = argv[0:1] == [sandbox.SANDBOX_EXEC]

@@ -85,12 +85,23 @@ kept out of the core because it pulls in gmsh + scikit-fem + meshio:
 uv sync --extra fem          # or: pip install 'agentcad[fem]'
 ```
 
-The `fem_static` tool and the `.../fem` route appear only once the extra is
-present; without it the suite stays green and agents never see a tool that
-cannot run. The kernel runs a small **pool** of warm worker processes for
-parallel rebuilds, auto-sized to your machine; override it with
-`kernel_pool_size` in `~/.agentcad/config.json` or the
+The FEM tools (`fem_static`, `fem_modal`, `fem_thermal`) and their routes
+appear only once the extra is present; without it the suite stays green and
+agents never see a tool that cannot run. The kernel runs a small **pool** of
+warm worker processes for parallel rebuilds, auto-sized to your machine;
+override it with `kernel_pool_size` in `~/.agentcad/config.json` or the
 `AGENTCAD_KERNEL_POOL_SIZE` environment variable.
+
+**Run without a toolchain.** `make dist` builds `dist/agentcad` — a
+self-contained directory (~390 MB) whose `agentcad` executable is the whole
+app: web UI, bundled example projects, and the OCCT geometry kernel (the
+executable re-launches itself as the kernel worker). Copy the directory
+anywhere and run `agentcad serve` / `agentcad open`; no Python, uv, or repo
+required. Projects live in `~/AgentCAD/projects` as usual, and `agentcad
+mcp` works frozen too (it auto-starts the bundled server). The very first
+launch after a build takes a few minutes while macOS verifies the freshly
+written libraries; later launches take ~15–20 s. Verify a build with
+`make smoke`.
 
 ## Drive it from Claude Code
 

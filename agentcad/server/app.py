@@ -10,13 +10,13 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
-from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import agentcad
+from .._resources import resource_root
 from ..core.locks import set_client_id
 from ..core.model import (
     AppError,
@@ -29,7 +29,7 @@ from ..core.tools import ToolRegistry
 from ..kernel import sandbox
 from ..kernel.client import KernelError
 
-FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+FRONTEND_DIR = resource_root() / "frontend"
 
 _ERROR_STATUS = {
     NotFoundError: 404,
