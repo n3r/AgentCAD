@@ -316,6 +316,15 @@ silhouette area, or the full inertia tensor. Linear-static FEM is available
 only if the optional `agentcad[fem]` extra is installed (otherwise the tool
 and its route are absent).
 
+**Seeing the model.** Agents can now look at what they build: the `render_view`
+tool rasterizes the built mesh to a shaded PNG entirely server-side (no GPU),
+either a single part or the whole placed assembly with instance colors. Views
+match the drawing pack (iso, front, top, right). The image is written to
+`exports/renders/` and returned as real image content over MCP and in the
+built-in chat, so a vision-capable model can check proportions, hole placement,
+and assembly layout instead of reasoning from numbers alone. The same render is
+available over HTTP via `POST /api/projects/<proj>/render`.
+
 ## Working with the bundled examples
 
 Pick them from the project switcher:

@@ -80,6 +80,25 @@ def _ensure_server(base: str) -> bool:
     return False
 
 
+def _tool_result(payload) -> types.CallToolResult:
+    """Wrap a tool payload as MCP content. Plain-JSON tools stay a single
+    TextContent blob; a result carrying ``png_base64`` (render_view) becomes
+    an ImageContent plus the JSON without the base64, so agents actually see
+    the image."""
+    content: list = []
+    if isinstance(payload, dict) and isinstance(payload.get("png_base64"), str):
+        content.append(
+            types.ImageContent(
+                type="image", data=payload["png_base64"], mimeType="image/png"
+            )
+        )
+        payload = {k: v for k, v in payload.items() if k != "png_base64"}
+    content.append(
+        types.TextContent(type="text", text=json.dumps(payload, indent=2, default=str))
+    )
+    return types.CallToolResult(content=content)
+
+
 async def _serve(base: str) -> None:
     http = httpx.AsyncClient(base_url=base, timeout=REQUEST_TIMEOUT)
 
@@ -114,13 +133,7 @@ async def _serve(base: str) -> None:
                     "message": f"could not reach the AgentCAD server at {base}: {exc}",
                 }
             }
-        return types.CallToolResult(
-            content=[
-                types.TextContent(
-                    type="text", text=json.dumps(payload, indent=2, default=str)
-                )
-            ]
-        )
+        return _tool_result(payload)
 
     server = Server(
         "agentcad",

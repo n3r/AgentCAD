@@ -9,6 +9,7 @@ history growth, and the ChatUnavailable error when no key is configured.
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -16,7 +17,7 @@ import pytest
 from agentcad.agent.chat import ChatEngine, ChatUnavailable
 from agentcad.core.model import ValidationError
 from agentcad.core.service import AgentCADService, EventBus
-from agentcad.core.tools import build_registry
+from agentcad.core.tools import Tool, build_registry, schema
 
 PROJECT = "chatproj"
 
@@ -220,6 +221,55 @@ def test_concurrent_turns_serialize_and_history_stays_paired(stack):
     user_texts = [m["content"] for m in history if m["role"] == "user"
                   and isinstance(m["content"], str)]
     assert user_texts == ["first message", "second message"]
+
+
+def test_tool_result_with_png_becomes_image_content(stack):
+    _service, registry, bus = stack
+    registry.register(Tool(
+        "fake_render", "returns a png_base64 payload", schema({}, []),
+        lambda: {"path": "renders/box_iso.png", "view": "iso",
+                 "png_base64": "QUJDRA=="},
+    ))
+    fake = FakeAnthropic([
+        _response([_tool_use("tu_img", "fake_render", {})], "tool_use"),
+        _response([_text("here is the render")], "end_turn"),
+    ])
+    engine = ChatEngine(
+        registry, bus, api_key="test-key", client_factory=lambda: fake
+    )
+    queue = bus.subscribe()
+
+    async def main():
+        info = await engine.start_turn(PROJECT, "show me the part")
+        await asyncio.wait_for(engine._tasks[info["turn_id"]], timeout=10)
+
+    asyncio.run(main())
+
+    # History: the tool_result content is a two-block list — image, then text.
+    history = engine.history(PROJECT)
+    tool_result = history[2]["content"][0]
+    assert tool_result["type"] == "tool_result"
+    assert tool_result["tool_use_id"] == "tu_img"
+    blocks = tool_result["content"]
+    assert isinstance(blocks, list) and len(blocks) == 2
+    image, text = blocks
+    assert image["type"] == "image"
+    assert image["source"] == {
+        "type": "base64", "media_type": "image/png", "data": "QUJDRA==",
+    }
+    assert text["type"] == "text"
+    text_payload = json.loads(text["text"])
+    assert "png_base64" not in text_payload
+    assert text_payload["view"] == "iso"
+
+    # The bus event must not carry the base64 payload.
+    events = _drain(queue)
+    result_event = next(e for e in events if e["type"] == "chat_tool_result")
+    assert result_event["ok"] is True
+    assert "QUJDRA" not in result_event["result"]
+    event_payload = json.loads(result_event["result"])
+    assert event_payload["png_base64"] == "<image omitted>"
+    assert event_payload["view"] == "iso"
 
 
 def test_failed_turn_repairs_dangling_tool_use(stack):

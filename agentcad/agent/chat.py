@@ -7,7 +7,8 @@ publishes progress on the EventBus so the UI can stream it over the WebSocket:
     {"type": "chat_delta",       "project": ..., "text": ...}
     {"type": "chat_tool_call",   "project": ..., "name": ..., "args": ...}
     {"type": "chat_tool_result", "project": ..., "name": ..., "ok": bool,
-     "result": <JSON string, truncated to 2000 chars>}
+     "result": <JSON string, truncated to 2000 chars; any png_base64 is
+                replaced with "<image omitted>">}
     {"type": "chat_done",        "project": ..., "turn_id": ...}
 
 History is kept in memory per project for the server's lifetime. Turns are
@@ -70,6 +71,37 @@ Working rules:
 
 class ChatUnavailable(ValidationError):
     """Raised when no Anthropic API key is configured (maps to HTTP 422)."""
+
+
+def _render_tool_result(result: Any) -> tuple[str, str | list[dict]]:
+    """(bus event JSON, tool_result content) for a tool result.
+
+    Plain results stay a JSON string. A result carrying ``png_base64``
+    (render_view) becomes a two-block content list — an image block plus the
+    JSON without the base64 — so the model actually sees the render; the bus
+    event replaces the base64 with a placeholder so the WebSocket stream never
+    carries megabytes of image data.
+    """
+    if isinstance(result, dict) and isinstance(result.get("png_base64"), str):
+        png_b64 = result["png_base64"]
+        rest = {k: v for k, v in result.items() if k != "png_base64"}
+        event_json = json.dumps(
+            {**rest, "png_base64": "<image omitted>"}, default=str
+        )
+        content = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": png_b64,
+                },
+            },
+            {"type": "text", "text": json.dumps(rest, default=str)},
+        ]
+        return event_json, content
+    result_json = json.dumps(result, default=str)
+    return result_json, result_json
 
 
 def _block_to_dict(block: Any) -> dict:
@@ -209,21 +241,21 @@ class ChatEngine:
                         isinstance(result, dict)
                         and (result.get("error") or result.get("ok") is False)
                     )
-                    result_json = json.dumps(result, default=str)
+                    event_json, content = _render_tool_result(result)
                     self.bus.publish(
                         {
                             "type": "chat_tool_result",
                             "project": project,
                             "name": name,
                             "ok": ok,
-                            "result": result_json[:2000],
+                            "result": event_json[:2000],
                         }
                     )
                     results.append(
                         {
                             "type": "tool_result",
                             "tool_use_id": block.get("id", ""),
-                            "content": result_json,
+                            "content": content,
                         }
                     )
                     calls += 1
