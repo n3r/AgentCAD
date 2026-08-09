@@ -51,6 +51,11 @@ def build(p):
         cover -= Pos(bx, y0 - t / 2, bz) * Rot(X=-90) * Cylinder(
             radius=2.8, height=t + 12)
 
+    # dowel holes over the block's front pins
+    for dx, dz in ((50.0, -20.0), (-50.0, -20.0)):
+        cover -= Pos(dx, y0 - t / 2, dz) * Rot(X=-90) * Cylinder(
+            radius=3.15, height=t + 4)
+
     # crank seal boss + snout clearance bore
     cover += Pos(0, y0 - t - 2, 0) * Rot(X=-90) * Cylinder(
         radius=p.boss_d / 2, height=6)

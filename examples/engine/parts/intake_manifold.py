@@ -1,97 +1,114 @@
-"""Intake manifold: a valley log plenum with four swept runners.
+"""Intake manifold: log plenum, four swept runners, one bolted flange per bank.
 
-Built in the ENGINE frame (instance sits at the origin, unrotated): the
-plenum log runs along Y above the V, one curved runner sweeps down to each
-head's intake flange, and a throttle body hangs off the front of the log.
-Each runner ends in a flange plate whose stud holes match the head's
-17 mm-pitch stud pattern (the plate slides over the studs with clearance and
-floats 0.5 mm off the head's boss face — the gasket).
+Built in the ENGINE frame (instance at the origin). What makes it a
+manifold rather than stacked primitives:
 
-Geometry couples to the head/block defaults through the constants below;
-see the README coupling table before re-dimensioning the engine.
+- one full-length flange PLATE per bank (not a floating pad per runner),
+  drilled with all eight stud clearance holes, seated 0.5 mm off the head
+  bosses over the heads' real studs — the ``intake_nut_set`` clamps it;
+- port bores drilled through the flange into each runner, so the casting
+  is open where a gas path belongs;
+- runners that leave the flange along the port normal and sweep tangent
+  into the plenum through cast socket collars;
+- the throttle body is a separate part bolted to the plenum's front flange
+  (4 tapped holes + spigot register), like the real article.
+
+Geometry couples to the head/block defaults through the constants below.
 """
 
 import math
 
 from build123d import *
 
-C45 = math.cos(math.radians(45.0))    # default bank half-angle
-SEAT_S = 168.4                        # deck + head gasket (block defaults)
+C45 = math.cos(math.radians(45.0))
+SEAT_S = 168.9                        # deck + 0.9 head-gasket stack
 HEAD_W = 100.0
-PORT_Z = 21.0                         # port center above the gasket face
-BOSS_LEN = 10.0                       # head intake boss protrusion
-ROD_OFFSET = 9.0
+PORT_Z = 21.0
+BOSS_LEN = 10.0
 STUD_PITCH = 17.0
-STUD_HOLE_R = 4.75                    # slides over the heads' 8 mm studs
-PLENUM_L = 140.0                      # log length along Y
+STUD_HOLE_R = 4.75
+PLENUM_L = 140.0
 FLANGE_T = 8.0
+PORT_YS_A = (-49.0, 31.0)             # bank A ports; bank B mirrors in x, y
+TB_BOLT_BC = 33.0                     # throttle flange bolt circle radius
 
 PARAMS = {
     "runner_d": {"default": 30.0, "min": 24.0, "max": 34.0, "unit": "mm",
                  "description": "Runner tube outer diameter"},
-    "plenum_d": {"default": 56.0, "min": 48.0, "max": 64.0, "unit": "mm",
+    "plenum_d": {"default": 60.0, "min": 50.0, "max": 66.0, "unit": "mm",
                  "description": "Plenum log outer diameter"},
-    "plenum_height": {"default": 195.0, "min": 188.0, "max": 215.0, "unit": "mm",
+    "plenum_height": {"default": 192.0, "min": 188.0, "max": 212.0, "unit": "mm",
                       "description": "Plenum axis height above the crank axis"},
-    "tb_d": {"default": 48.0, "min": 40.0, "max": 56.0, "unit": "mm",
-             "description": "Throttle body bore housing diameter"},
+    "port_bore": {"default": 24.0, "min": 18.0, "max": 28.0, "unit": "mm",
+                  "description": "Gas-path bore drilled through flange and runner"},
 }
-
-# runners: (bank sign, world y). Bank A ports at y=-49/+31, bank B mirrored.
-RUNNERS = [(+1, -49.0), (-1, -31.0), (+1, 31.0), (-1, 49.0)]
 
 
 def build(p):
-    # world XZ of the bank-A intake boss tip: seat + R_y(45) . (-60, 0, PORT_Z)
+    # world XZ of a bank-A intake boss tip and the port normal / bank axis
     tip_x = (SEAT_S - (HEAD_W / 2 + BOSS_LEN) + PORT_Z) * C45
     tip_z = (SEAT_S + (HEAD_W / 2 + BOSS_LEN) + PORT_Z) * C45
-    n = (-C45, C45)                    # outward normal of the bank-A port
-    d = (C45, C45)                     # bank-A axis direction in XZ
+    n = (-C45, C45)
+    d = (C45, C45)
 
     manifold = Pos(0, 0, p.plenum_height) * Rot(X=-90) * Cylinder(
         radius=p.plenum_d / 2, height=PLENUM_L)
 
-    for sgn, ry in RUNNERS:
-        sx = sgn  # mirror bank B in X
-        face = ((tip_x + 0.5 * n[0]) * sx, ry, tip_z + 0.5 * n[1])
-        p0 = ((tip_x + FLANGE_T * n[0]) * sx, ry, tip_z + FLANGE_T * n[1])
-        p1 = ((tip_x + (FLANGE_T + 10) * n[0]) * sx, ry,
-              tip_z + (FLANGE_T + 10) * n[1])
-        p2 = (sx * (p.plenum_d / 2 + 2), ry, p.plenum_height)
-        p3 = (sx * (p.plenum_d / 2 - 14), ry, p.plenum_height)
-        tan1 = (sx * n[0], 0, n[1])
-        with BuildPart() as runner:
-            with BuildLine():
-                Line(face, p1)
-                TangentArc(p1, p2, tangent=tan1)
-                Line(p2, p3)
-            with BuildSketch(Plane(origin=face, z_dir=tan1)):
-                Circle(p.runner_d / 2)
-            sweep()
-        manifold += runner.part
+    for sx in (+1, -1):
+        # one flange plate per bank, over both ports and all eight studs
+        fc = (sx * (tip_x + (FLANGE_T / 2 + 0.5) * n[0]), -sx * 9.0,
+              tip_z + (FLANGE_T / 2 + 0.5) * n[1])
+        manifold += Pos(*fc) * Rot(Y=sx * 45) * Box(FLANGE_T, 132, 52)
 
-        # flange plate over the head studs, with its clearance holes
-        fc = (face[0] + 4 * sx * n[0], ry, face[2] + 4 * n[1])
-        manifold += Pos(*fc) * Rot(Y=sx * 45) * Box(FLANGE_T, 50, 50)
-        for oy in (-STUD_PITCH, STUD_PITCH):
-            for od in (-STUD_PITCH, STUD_PITCH):
-                hc = (fc[0] + od * sx * d[0], ry + oy, fc[2] + od * d[1])
-                manifold -= Pos(*hc) * Rot(Y=sx * 45) * Rot(Y=90) * Cylinder(
-                    radius=STUD_HOLE_R, height=FLANGE_T + 2)
+        for ry_a in PORT_YS_A:
+            ry = sx * ry_a if sx > 0 else -ry_a
+            face = (sx * (tip_x + 0.5 * n[0]), ry, tip_z + 0.5 * n[1])
+            p1 = (sx * (tip_x + (FLANGE_T + 10) * n[0]), ry,
+                  tip_z + (FLANGE_T + 10) * n[1])
+            p2 = (sx * (p.plenum_d / 2 + 2), ry, p.plenum_height)
+            p3 = (sx * (p.plenum_d / 2 - 16), ry, p.plenum_height)
+            tan1 = (sx * n[0], 0, n[1])
+            with BuildPart() as runner:
+                with BuildLine():
+                    Line(face, p1)
+                    TangentArc(p1, p2, tangent=tan1)
+                    Line(p2, p3)
+                with BuildSketch(Plane(origin=face, z_dir=tan1)):
+                    Circle(p.runner_d / 2)
+                sweep()
+            manifold += runner.part
 
-    # throttle body on the front of the log: housing, inlet flange, shaft
-    tb_y0 = -PLENUM_L / 2
-    manifold += Pos(0, tb_y0 - 14, p.plenum_height) * Rot(X=-90) * Cylinder(
-        radius=p.tb_d / 2, height=36)
-    manifold += Pos(0, tb_y0 - 33, p.plenum_height) * Rot(X=-90) * Cylinder(
-        radius=p.tb_d / 2 + 6, height=6)
-    manifold -= Pos(0, tb_y0 - 24, p.plenum_height) * Rot(X=-90) * Cylinder(
-        radius=p.tb_d / 2 - 5, height=40)
-    manifold += Pos(0, tb_y0 - 20, p.plenum_height) * Rot(Y=90) * Cylinder(
-        radius=4, height=p.tb_d + 16)  # butterfly shaft stubs
+            # cast socket collar where the runner meets the plenum
+            collar_at = (sx * (p.plenum_d / 2 + 4), ry, p.plenum_height)
+            manifold += Pos(*collar_at) * Rot(Y=sx * 90) * Cylinder(
+                radius=p.runner_d / 2 + 4, height=8)
 
-    # stepped end caps close the log
-    for ey, edir in ((PLENUM_L / 2, 1), (-PLENUM_L / 2, -1)):
-        manifold += Pos(0, ey + edir * 2, p.plenum_height) * Rot(X=-90) * \
-            Cylinder(radius=p.plenum_d / 2 - 5, height=4)
+            # stud clearance holes, then the gas-path bore into the runner
+            for oy in (-STUD_PITCH, STUD_PITCH):
+                for od in (-STUD_PITCH, STUD_PITCH):
+                    hc = (face[0] + 4 * sx * n[0] + od * sx * d[0], ry + oy,
+                          face[2] + 4 * n[1] + od * d[1])
+                    manifold -= Pos(*hc) * Rot(Y=sx * 45) * Rot(Y=90) * \
+                        Cylinder(radius=STUD_HOLE_R, height=FLANGE_T + 2)
+            bore_c = (face[0] + 14 * sx * n[0], ry, face[2] + 14 * n[1])
+            manifold -= Pos(*bore_c) * Rot(Y=sx * 45) * Rot(Y=90) * Cylinder(
+                radius=p.port_bore / 2, height=30)
+
+    # front flange for the separate throttle body: disc, spigot bore,
+    # four tapped holes on the bolt circle
+    tb_y = -PLENUM_L / 2
+    manifold += Pos(0, tb_y - 2, p.plenum_height) * Rot(X=-90) * Cylinder(
+        radius=41.0, height=8)
+    manifold -= Pos(0, tb_y - 4, p.plenum_height) * Rot(X=-90) * Cylinder(
+        radius=17.0, height=40)
+    for k in range(4):
+        a = math.radians(45 + k * 90)
+        hx = TB_BOLT_BC * math.cos(a)
+        hz = p.plenum_height + TB_BOLT_BC * math.sin(a)
+        manifold -= Pos(hx, tb_y - 3, hz) * Rot(X=-90) * Cylinder(
+            radius=2.7, height=14)
+
+    # stepped end cap closes the rear of the log
+    manifold += Pos(0, PLENUM_L / 2 + 2, p.plenum_height) * Rot(X=-90) * \
+        Cylinder(radius=p.plenum_d / 2 - 5, height=4)
     return manifold

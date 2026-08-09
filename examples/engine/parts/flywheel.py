@@ -37,6 +37,14 @@ def build(p):
                 - Cylinder(radius=hub_r, height=5.0))
         wheel -= Pos(0, 0, p.thickness - 2.0) * ring
 
+    # counterbores so the crank-bolt heads seat below the rear face
+    with BuildPart() as cbs:
+        with BuildSketch(Plane.XY.offset(p.thickness + 1)):
+            with PolarLocations(p.bolt_circle_d / 2, n):
+                Circle(7.0)
+        extrude(amount=-(p.thickness - 8.0))
+    wheel -= cbs.part
+
     # pilot bore and crank-bolt pattern
     wheel -= Cylinder(radius=PILOT_BORE / 2, height=3 * p.thickness)
     with BuildPart() as bolts:

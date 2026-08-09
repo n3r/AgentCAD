@@ -9,7 +9,7 @@ from build123d import *
 
 from agentcad.toolkit import safe_fillet
 
-BOSS_FACE_X = -81.0
+BOSS_FACE_X = -86.0
 CENTER = (50.0, -18.75)  # (y, z) of the filter axis: centered in the pocket
                          # between the bank-B slab corner and the pan flange
 

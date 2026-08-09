@@ -1,89 +1,101 @@
-# Engine example — a fully dressed 90° V4
+# Engine example — an assemblable 90° V4
 
-A complete, dressed V4 engine: block, crank train, heads, intake with swept
-runners, tubular exhaust manifolds, timing cover with water pump, harmonic
-damper, flywheel, oil pan, oil filter, and coil-on-plug ignition — **13
-parametric parts, 24 instances, interference-free** at a 20° crank angle.
-It is the showcase for **declarative mates** (the heads, pan, crank, and
-flywheel carry no hand-placed transforms) and for casting-level detail from
-plain build123d: ribs, bosses, freeze plugs, stud patterns, bolt circles.
+A complete SOHC V4 engine built **assembly-first**: 32 parametric parts, 63
+instances, and every joint modeled the way a real engine bolts together —
+mating faces, alignment dowels, gaskets, matched hole patterns, and the
+fasteners themselves (72 screws and nuts, grouped into per-joint compound
+parts). Print the set and it goes together in the order below; nothing is
+fused that a wrench would need to separate. Zero interference at the posed
+20° crank angle across all 1953 instance pairs.
 
-## Layout — one crankshaft of numbers
+## The layout
 
-Global frame: the crank axis is **Y** through the origin, the V opens upward
-in XZ, each bank tilts `bank_angle / 2` (default 45°) off Z. The two crank
-pins sit at y = ∓40 (80 mm pin spacing), 180° apart, each carrying two rods
-side by side — bank A's rod 9 mm ahead of the pin center, bank B's 9 mm
-behind — so the banks are offset 18 mm and the cylinders land at y = −49
-(A1), −31 (B1), +31 (A2), +49 (B2).
+Crank axis = **Y**, 90° V opening up in XZ, bore 66 / stroke 60 / rod 110,
+pins at y = ∓40 (180° apart), rods offset ∓9 per bank, cylinders at y =
+−49, −31, +31, +49. Deck at `stroke/2 + rod_length + 28`; heads sit on a
+real 0.8 mm gasket part (deck + 0.9). The layout is exactly symmetric under
+a 180° turn about Z: one head, one exhaust manifold, and one nut-set script
+each serve both banks.
 
-**The layout is exactly symmetric under a 180° turn about Z.** That single
-fact dresses the whole engine: one `cylinder_head` script serves both banks
-(bank B's seat connector carries the extra 180° so both intakes face the
-valley), and one `exhaust_manifold` script serves both sides (instance B is
-just `rotation_deg: [0, 0, 180]`).
+Running fits are engineered throughout: 0.3 mm piston/bore, 0.25 mm
+big-end/pin, 0.1 mm wrist-pin/piston and 0.25 wrist-pin/rod, 0.3 mm
+main-journal/bore, 0.2 mm cam-journal/saddle, 0.05–0.5 mm on every static
+seat, and "tapped" holes run fastener-nominal + 0.4 (the cosmetic threads
+convention — see `examples/fasteners` for real ISO threads).
 
-Deck height is `stroke/2 + rod_length + 28` (28 mm = piston compression
-height), so crowns sweep flush with the decks at TDC. Fits are engineered,
-not decorative: 0.3 mm piston/bore, 0.25 mm big-end/pin, 0.3 mm
-small-end/wrist-pin and main-journal/bulkhead, 0.4 mm on every gasket
-(heads, pan, timing cover), 0.5 mm on every dress-part seat, and the
-manifold flanges slide over the heads' real 17 mm-pitch stud patterns with
-0.75 mm hole clearance.
+## The SOHC head — why the cam is offset
 
-## Mates do the assembly
+A cam directly over the chamber centers is geometrically impossible with
+central spark plugs: the plug tubes would pass through the shaft. The
+example uses the textbook SOHC answer — the cam sits **offset over the
+exhaust side** (x = +24) in three saddles closed by bolted **cam caps**
+(main-bearing style: an enclosed tunnel could never swallow the lobes), and
+**finger-follower rockers** on a shaft at x = −16 carry the motion back to
+the vertical valves at ratio 16/40. The valvetrain is posed mid-cycle,
+consistently: crank 20° → cam 10°; each lobe's phase decides its rocker's
+tilt and its valve's lift (two valves per head are caught open, springs
+compressed), with running gaps preserved lobe→beam→valve-tip. The heads
+even carry the machined reliefs real castings need where the open-valve
+rocker tips dip below the deck line.
 
-- **`crankshaft_1`** mates its rigid `hub` into the block's **revolute**
-  `crank_axis`. The mate's `angle` parameter *is* the crank pose: pin 1
-  points `angle − 90` degrees past the vertical toward bank A, so
-  `angle = 110` is a 20° crank angle — every piston mid-bore.
-- **`flywheel_1`** rigid-mates to the *crankshaft's* `flange` connector — a
-  mate chain, so driving the crank angle spins the flywheel (watch the ring
-  gear).
-- **`head_a` / `head_b`** rigid-mate onto seats the block derives from
-  `bank_angle`/`stroke`/`rod_length`; re-angle or de-stroke the block and
-  both heads follow. Bank B's seat encodes the 180° symmetry turn.
-- **`oil_pan_1`** rigid-mates under the block's `pan_rail`.
+## Assembly order (the README is the build manual)
 
-The pistons and rods are the honest exception: their poses follow
-slider-crank kinematics (a *function* of crank angle no rigid mate can
-express) and are placed explicitly at the same 20°. For a bank whose axis
-makes angle α with the pin direction, the pin-center distance along the
-bore is `a + sqrt(L² − b²)` with `a = r·cos α`, `b = r·sin α`,
-`r = stroke/2`, `L = rod_length`. The dress parts (intake, exhausts, timing
-cover, damper, filter, coils) are modeled in the engine frame and sit at
-identity — their scripts derive the mounting geometry from the same shared
-constants (see each header).
+1. **Short block** — block inverted: lay the crankshaft into the three open
+   saddles from below; fit the three `main_cap`s into their register
+   windows (75.5 in 76); run the six M8 `main_bolt_set` screws up into the
+   tapped bulkheads.
+2. **Rotating assembly** — per cylinder: slide `rod_body` over a `piston`'s
+   boss gap, push the `wrist_pin` through boss–rod–boss; feed the assembly
+   down its bore from the deck; hang the big end on the crank pin; fit
+   `rod_cap` (split faces meet, 0.05 modeled gap) and its two M5
+   `rod_bolt_pair` screws from below.
+3. **Top end** — per bank: drop the `head_gasket` over the two deck dowels;
+   the head follows onto the same dowels; four M10 `head_bolt_set` screws
+   through head + gasket into the tapped deck bosses. Lay the `camshaft`
+   into its saddles, bolt the `cam_cap_set` over the journals; slide the
+   `rocker_set` shaft through its pedestals; the `valve_set` stands in its
+   guides and pockets.
+4. **Closures** — `oil_pan` under the drilled rail (eight M6 up through the
+   flange); `timing_cover` onto the two front dowels (eight M5 into the
+   tapped front pattern); `cam_cover`s onto their tapped rails (six M5
+   each), plug tubes landing over the wells; coils onto the tubes.
+5. **Induction & exhaust** — `intake_manifold` flange plates slide over the
+   heads' 17 mm-pitch studs (eight `intake_nut_set` nuts); each
+   `exhaust_manifold` likewise (eight nuts per bank); `throttle_body` spigot
+   into the plenum bore, four M6 into the tapped flange circle.
+6. **Flywheel end** — flywheel over the crank's 30 mm pilot, six M8 through
+   its counterbores into the flange circle (`flywheel_bolt_set` rides the
+   same mate as the flywheel, so both spin with the crank); keyed
+   `crank_pulley` onto the snout, washer and center bolt.
 
-## Parts
+## Mates do the posing
 
-Core: **`engine_block`** (ribbed crankcase, three line-bored bulkheads,
-freeze plugs, head-bolt holes, mount pads, bellhousing flange, drilled pan
-rail), **`crankshaft`** (counterweighted webs, keyed snout, flanged rear
-with pilot), **`piston`** ×4 (three ring grooves, valve pockets, integral
-wrist pin), **`connecting_rod`** ×4 (I-beam blade, cap split line, rod
-bolts kept inside the bay swing envelope), **`cylinder_head`** ×2 (port
-pads with studs, plug tubes, ribbed cam cover, cam-drive humps),
-**`flywheel`** (36-tooth ring gear, relief ring), **`oil_pan`**.
+`crankshaft_1` sits in a **revolute** mate on the block's `crank_axis`
+(`angle = 90 + crank angle`; 110 → 20°). The flywheel *and its bolt set*
+chain-mate to the crank's `flange` connector — drive the crank angle and
+both rotate. Heads mate onto seats the block computes from its own
+parameters (bank B's seat carries the 180° symmetry turn); pan on the rail
+seat. Pistons, rods, caps, and pins are posed by slider-crank kinematics at
+20° (`a + sqrt(L² − b²)` along the bank axis; the caps ride each rod's
+frame). The valvetrain's poses are baked into the part scripts from the
+shared cam-phase table.
 
-Dress: **`intake_manifold`** (four planar-swept runners into a log plenum,
-throttle body), **`exhaust_manifold`** ×2 (swept primaries into a
-collector + tail), **`timing_cover`** (silhouette-matched plate, seal boss,
-water pump + pulley, cast bolt bosses), **`crank_pulley`** (damper with
-V-grooves on the keyed snout), **`oil_filter`** (spin-on can on the block
-boss, sized to the pocket between the bank-B slab and the pan rail),
-**`ignition_coil`** ×4 (on the plug tubes).
+## What's deliberately deferred
+
+Timing drive (chain/sprockets, enclosed by the cover), oil pump and pickup,
+water passages, bearing shells, fuel rail and injectors, piston rings as
+separate parts. Each is listed in the plan
+(`docs/superpowers/plans/2026-08-09-engine-assembly-first.md`) — none is
+silently faked.
 
 ## How an agent iterates on this project
 
-Drive the crank: `set_mate` on `crankshaft_1` with a new `angle_deg` turns
-the crank *and* the flywheel; re-pose the four pistons/rods via
-`set_assembly` with the formula above, then `check_interference` — the
-running clearances hold through the full revolution. Re-angle the V:
-`set_params` on `engine_block` (`bank_angle`) carries both heads along
-automatically (the manifolds are dimensioned for the 90° default — expect
-`check_interference` to referee your redesign, that is its job).
-Displacement study: sweep `bore`/`stroke` on the block, mirror them on
-piston/crank (couplings: bore ↔ piston diameter + 0.6, pin_d ↔
-big_end_bore − 0.5, stroke shared by block and crank), read `mass_g` from
-`get_part`, and `export_assembly` STEP snapshots as you go.
+`set_mate` on `crankshaft_1` turns the crank, flywheel, and flywheel bolts;
+re-pose pistons/rods/caps/pins via `set_assembly` with the slider-crank
+formula, then `check_interference` (an AABB prefilter keeps 63 instances
+fast). Unbolt visually by hiding instances — hide a `cam_cover` and the
+whole valvetrain is on display. Couplings to keep in step when
+re-dimensioning: bore ↔ piston diameter + 0.6 ↔ gasket rings; stroke shared
+by block and crank; pin_d ↔ big_end_bore − 0.5; wrist pin ↔ piston/rod
+bores; camshaft lift/phases ↔ valve_set ↔ rocker_set (the three scripts
+share a constants table).

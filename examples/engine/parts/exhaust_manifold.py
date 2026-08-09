@@ -17,7 +17,7 @@ import math
 from build123d import *
 
 C45 = math.cos(math.radians(45.0))
-SEAT_S = 168.4
+SEAT_S = 168.9          # deck + 0.9 head-gasket stack
 HEAD_W = 100.0
 PORT_Z = 21.0
 BOSS_LEN = 18.0                       # head exhaust boss protrusion
@@ -71,13 +71,18 @@ def build(p):
                 hc = (fc[0] + od * d[0], ry + oy, fc[2] + od * d[1])
                 tube -= Pos(*hc) * Rot(Y=45) * Rot(Y=90) * Cylinder(
                     radius=STUD_HOLE_R, height=FLANGE_T + 2)
+        # gas-path bore through the flange into the primary
+        bc = (face[0] + 12 * n[0], ry, face[2] + 12 * n[1])
+        tube -= Pos(*bc) * Rot(Y=45) * Rot(Y=90) * Cylinder(
+            radius=p.primary_d / 2 - 4, height=26)
         manifold = tube if manifold is None else manifold + tube
 
     # collector barrel swallowing both primary ends, plus the tail stub
     manifold += Pos(COLLECT_X, -6.0, p.drop) * Rot(X=-90) * Cylinder(
         radius=p.collector_d / 2, height=100)
-    manifold += Pos(COLLECT_X, 58.0, p.drop) * Rot(X=-90) * Cylinder(
-        radius=p.tail_d / 2, height=36)
+    manifold += Pos(COLLECT_X, 58.0, p.drop) * Rot(X=-90) * Cone(
+        bottom_radius=p.collector_d / 2 - 2, top_radius=p.tail_d / 2,
+        height=36)
     manifold -= Pos(COLLECT_X, 70.0, p.drop) * Rot(X=-90) * Cylinder(
         radius=p.tail_d / 2 - 3, height=20)
 

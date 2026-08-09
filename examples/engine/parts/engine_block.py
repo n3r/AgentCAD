@@ -24,18 +24,26 @@ PIN_SPACING = 80.0     # crank pin centers at y = -40, +40
 ROD_OFFSET = 9.0       # each rod sits this far from its pin center along Y
 COMP_HEIGHT = 28.0     # piston pin center -> crown top (piston default)
 CRANKCASE_R = 76.0     # crankcase barrel outer radius
-CAVITY_R = 62.0        # crankcase bay (inner) radius
+CAVITY_R = 64.0        # crankcase bay (inner) radius (clears rod-bolt sweep)
 PAN_RAIL_Z = -55.0     # pan-rail plane (block bottom face)
 MAIN_BORE_D = 45.6     # main-bearing bore (crank journal 45.0 + 0.6 clearance)
 BAY_SPAN = (8.0, 74.0)  # each crankcase bay spans this |y| range
+BULKHEAD_YS = (-81.0, 0.0, 81.0)   # bulkhead centers (main_cap instances too)
+CAP_WINDOW_W = 76.0    # saddle window width; main caps are 75.5 (0.25/side)
+CAP_BOLT_X = 28.0      # main-cap bolt columns (tapped up into the bulkheads)
 BORE_FLOOR = 56.0      # cylinder bores are cut from this far off the crank axis
 DECK_WALL = 6.0        # end wall beyond the outermost bore edge
-HEAD_BOLT_X = 38.0     # head-bolt pattern half-spacing across the bank
-HEAD_BOLT_YS = (-55.0, 0.0, 55.0)  # pattern along the bank (head-local)
+HEAD_BOLT_X = 36.0     # head-bolt pattern half-spacing across the bank
+HEAD_BOLT_YS = (-15.5, 15.5)       # pattern along the bank (head-local)
+DOWEL_PTS = ((30.0, 65.0), (-30.0, -65.0))  # deck dowels, head-local (x, y)
+GASKET_T = 0.9         # head sits deck + 0.9: 0.8 gasket + 0.05 per face
 BELL_OD = 240.0        # bellhousing flange
 BELL_ID = 170.0
-PAN_BOLT_X = 72.0      # pan-rail bolt columns
+PAN_BOLT_X = 80.5      # pan-rail bolt columns
 PAN_BOLT_YS = (-70.0, -25.0, 25.0, 70.0)
+FRONT_BOLT_PTS = ((-68, -40), (0, -44), (68, -40), (68, 0), (-68, 0),
+                  (-52, 52), (-26, 90), (24, 90))  # = timing cover BOSS_PTS
+FRONT_DOWEL_PTS = ((50.0, -20.0), (-50.0, -20.0))
 
 PARAMS = {
     "bore": {"default": 66.0, "min": 50.0, "max": 78.0, "unit": "mm",
@@ -65,7 +73,7 @@ def build(p):
 
     # crankcase barrel (axis = Y) + pan-rail flange
     block = Rot(X=-90) * Cylinder(radius=CRANKCASE_R, height=block_l)
-    block += Pos(0, 0, PAN_RAIL_Z + 3.0) * Box(160, block_l, 6)
+    block += Pos(0, 0, PAN_RAIL_Z + 3.0) * Box(170, block_l, 6)
 
     # bank slabs, from just above the crank bays up to the deck faces
     slab_s0 = 60.0
@@ -89,7 +97,7 @@ def build(p):
 
     # oil-filter boss: a round pad on the -X barrel face (filter part mates
     # its canister 0.5 mm off this face)
-    block += Pos(-77, 50, -18.75) * Rot(Y=-90) * Cylinder(radius=40, height=8)
+    block += Pos(-79.5, 50, -18.75) * Rot(Y=-90) * Cylinder(radius=29, height=13)
 
     # bellhousing flange on the rear face, trimmed at the pan rail line
     ring = Cylinder(radius=BELL_OD / 2, height=8)
@@ -121,6 +129,31 @@ def build(p):
     # line-bore the main bearings through all three bulkheads
     block -= Rot(X=-90) * Cylinder(radius=MAIN_BORE_D / 2, height=block_l + 60)
 
+    # open the saddles: cut a cap window below the crank centerline in each
+    # bulkhead so the crankshaft drops in from underneath and the main caps
+    # (separate parts) bolt up into the tapped holes left beside each saddle
+    for yc, bw in zip(BULKHEAD_YS, (15.0, 17.0, 15.0)):
+        block -= Pos(0, yc, -30) * Box(CAP_WINDOW_W, bw, 60)
+        for bx in (-CAP_BOLT_X, CAP_BOLT_X):
+            block -= Pos(bx, yc, 9) * Cylinder(radius=4.2, height=20)
+
+    # deck dowel pins (the head gasket and head locate on these) — bank B's
+    # head is R_z(180)-turned, so its dowels mirror through the deck center
+    for sgn in (+1, -1):
+        for hx, hy in DOWEL_PTS:
+            t, y = sgn * hx, sgn * (hy - ROD_OFFSET)
+            pin = Pos(t, y, deck_s + 1.0) * Cylinder(radius=3.0, height=10.0)
+            block += Rot(Y=sgn * half) * pin
+
+    # front face: tapped holes matching the timing cover's bolt bosses, and
+    # two dowel pins the cover slides onto
+    for bx, bz in FRONT_BOLT_PTS:
+        block -= Pos(bx, -y_face + 6, bz) * Rot(X=-90) * Cylinder(
+            radius=2.7, height=16)
+    for dx, dz in FRONT_DOWEL_PTS:
+        block += Pos(dx, -y_face - 2.5, dz) * Rot(X=-90) * Cylinder(
+            radius=3.0, height=7.0)
+
     # cylinder bores, cut deep enough that piston skirts and rods run free
     for sgn, cy in _cylinders():
         bore_cut = Pos(0, cy, (BORE_FLOOR + deck_s + 1) / 2) * Cylinder(
@@ -134,11 +167,11 @@ def build(p):
         for bx in (-bolt_x, bolt_x):
             for by in HEAD_BOLT_YS:
                 hole = Pos(bx, by + off, deck_s - 17) * Cylinder(
-                    radius=4.5, height=38)
+                    radius=5.2, height=38)
                 block -= Rot(Y=sgn * half) * hole
 
     # pan-rail bolt holes through the flange
-    bolt_px = min(PAN_BOLT_X, 74.0)
+    bolt_px = PAN_BOLT_X
     for bx in (-bolt_px, bolt_px):
         for by in PAN_BOLT_YS:
             block -= Pos(bx, by, PAN_RAIL_Z + 3) * Cylinder(radius=3.5,
@@ -163,7 +196,7 @@ def connectors(p, part):
     a revolute connector that ``set_mate``'s angle_deg drives."""
     half = p.bank_angle / 2.0
     th = math.radians(half)
-    seat_s = p.stroke / 2.0 + p.rod_length + COMP_HEIGHT + 0.4  # deck + gasket
+    seat_s = p.stroke / 2.0 + p.rod_length + COMP_HEIGHT + GASKET_T
     return {
         "head_a_seat": {"type": "rigid",
                         "location": ((seat_s * math.sin(th), -ROD_OFFSET,

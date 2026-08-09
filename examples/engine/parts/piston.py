@@ -43,12 +43,15 @@ def build(p):
     piston -= Pos(0, 0, (ceiling - p.skirt - 2) / 2) * Cylinder(
         radius=inner_r, height=ceiling + p.skirt + 2)
 
-    # pin bosses flanking the rod gap, and the pressed wrist pin through them
+    # pin bosses flanking the rod gap, bored for the floating wrist pin
+    # (a separate part — an integral pin could never accept the rod's
+    # one-piece small end)
     boss_len = pin_half - BOSS_GAP / 2
     for sgn in (+1, -1):
         piston += Pos(0, sgn * (BOSS_GAP / 2 + boss_len / 2), 0) * Rot(
             X=-90) * Cylinder(radius=boss_r, height=boss_len)
-    piston += Rot(X=-90) * Cylinder(radius=p.pin_d / 2, height=2 * pin_half)
+    piston -= Rot(X=-90) * Cylinder(radius=p.pin_d / 2 + 0.1,
+                                    height=2 * pin_half + 2)
 
     # two compression-ring grooves and a wider oil-ring groove below them
     for drop, gw in ((8.0, GROOVE_W), (12.0, GROOVE_W), (16.0, 2.8)):

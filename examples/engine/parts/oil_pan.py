@@ -37,6 +37,12 @@ def build(p):
     pan -= inner
     pan -= Pos(20, -30, -p.depth - 3) * Cylinder(radius=2.5, height=8)
 
+    # flange bolt holes matching the block's drilled pan rail
+    bolt_x = min(80.5, p.width / 2 + 6.0)
+    for bx in (-bolt_x, bolt_x):
+        for by in (-70.0, -25.0, 25.0, 70.0):
+            pan -= Pos(bx, by, -3) * Cylinder(radius=3.25, height=8)
+
     # round every vertical corner (tub, flange, and interior)
     pan, _r, _warn = safe_fillet(pan, pan.edges().filter_by(Axis.Z),
                                  radius=8.0)

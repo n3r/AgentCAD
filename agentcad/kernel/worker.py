@@ -334,9 +334,23 @@ def handle_interference(params: dict) -> dict:
                 _place(shape, item.get("position", [0, 0, 0]), item.get("rotation_deg", [0, 0, 0])),
             )
         )
+    # AABB prefilter: bbox-disjoint solids cannot intersect, and the boolean
+    # is by far the dominant cost — an assembly of N instances is N*(N-1)/2
+    # pairs, most of them nowhere near each other.
+    boxes = [shape.bounding_box() for _name, shape in placed]
+
+    def _boxes_touch(a, b, tol=0.05):
+        return not (
+            a.max.X < b.min.X - tol or b.max.X < a.min.X - tol
+            or a.max.Y < b.min.Y - tol or b.max.Y < a.min.Y - tol
+            or a.max.Z < b.min.Z - tol or b.max.Z < a.min.Z - tol
+        )
+
     pairs = []
     for i in range(len(placed)):
         for j in range(i + 1, len(placed)):
+            if not _boxes_touch(boxes[i], boxes[j]):
+                continue
             name_a, shape_a = placed[i]
             name_b, shape_b = placed[j]
             # Note: Shape.intersect() returns a ShapeList in build123d 0.9+;

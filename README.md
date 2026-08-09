@@ -75,9 +75,9 @@ Five example projects are bundled and appear in the project switcher:
 - **construction** — a steel truss gusset node with bolt patterns
 - **prototyping** — a snap-fit electronics enclosure
 - **fasteners** — an M8 bolted joint with real ISO threads
-- **engine** — a fully dressed 90° V4 engine (13 parts, 24 instances):
-  ribbed block, crank train, swept-runner intake, headers, timing cover,
-  assembled with declarative mates and posed slider-crank kinematics
+- **engine** — an assemblable SOHC 90° V4 (32 parts, 63 instances): split
+  main/rod caps, gaskets, dowels, rocker valvetrain, and all 72 fasteners —
+  every joint modeled the way the real engine bolts together
 
 Other useful targets: `make test` (full suite), `make app` (builds
 `dist/AgentCAD.app`), `make serve` (headless).
