@@ -162,7 +162,11 @@ Five rules govern every payload here:
   parse or resolve them. A requirement with zero checks does not exist.
 - **Results are cached under the same content hash as the mesh** (`SPECS` lives
   in the script, so editing a spec invalidates it for free), so re-running
-  after no change costs no kernel work.
+  after no change costs no kernel work. **A failed evaluation is cached too** —
+  a `SPECS` that will not declare, a script that will not build and a predicate
+  that hangs are properties of that script and those params, and every
+  `get_part` would otherwise re-pay them. `run_specs` is the one surface that
+  ignores a cached failure and measures again.
 
 | Tool | Arguments | Returns |
 |---|---|---|
@@ -190,8 +194,27 @@ verdict on geometry and nothing else. The gate's `details` carries
 `{status, summary, failures, skips, errors, ref, source_head,
 specs_py_changed, reason}` — `specs_py_changed` flags a proposal that edits the
 *spec* rather than the geometry, which the review packet's part rows cannot
-show. Run `run_specs {project, ref: "<source>"}` to see and fix what the gate
-is red about.
+show (measured from the merge base, so a target that moved never sets it). Run
+`run_specs {project, ref: "<source>"}` to see and fix what the gate is red
+about.
+
+Two divergences between the gate and a `run_specs` report, both deliberate and
+both fail-closed:
+
+- **A `mesh_only` clearance is a `skip` in a report and a `fail` in the gate.**
+  An STL side has no B-rep to measure against, so the distance was never taken;
+  a report says so with its reason and hint, but letting a merge pass on it
+  would mean swapping a STEP reference for an STL silently satisfies a declared
+  clearance. The gate's failure keeps `details.reason: "mesh_only"` and
+  `details.skipped_in_report: true`.
+- **The 30 s budget is a deadline, and its verdict is remembered.** Every kernel
+  call under the gate asks for what the budget has left rather than its own
+  300 s/600 s ceiling, and the deadline is re-checked between checks. A
+  `budget_exceeded` verdict is memoized for that source head — it is red with a
+  stable reason, and re-paying an exhausted budget on every `proposal_get` is
+  worse than answering from the memo — so the gate stays red until the head
+  moves or `run_specs` (unbounded by design) warms the caches, which also drops
+  the memoized verdict.
 
 **Routes** (all under `/api`): `GET /projects/{proj}/specs?part_id=` →
 `list_specs`, `POST /projects/{proj}/specs/run` → `run_specs`,

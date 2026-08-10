@@ -204,16 +204,25 @@ def register(registry, service) -> None:
         "green when nothing did (skips are allowed and named), skip when "
         "nothing was declared at all. Results are cached under the same "
         "content hash as the mesh, so re-running after no change costs no "
-        "kernel work. 'ref' evaluates another BRANCH's state without "
+        "kernel work — FAILURES are cached under that key too (a SPECS that "
+        "will not declare, a script that will not build, a predicate that "
+        "hangs), and run_specs is the surface that ignores a cached failure "
+        "and measures again. 'ref' evaluates another BRANCH's state without "
         "switching yours (a tag is a validation_error — a tag must never "
         "answer for a branch; a ref on a project with no git is a "
         "validation_error naming git). A proposal's 'specs' GATE is this same "
         "evaluation over its source branch, and it is FAIL-CLOSED: a red gate "
         "blocks proposal_merge, and so does a declared check that could not "
         "be evaluated at all — allow_invalid does NOT waive it (that flag is "
-        "about the kernel's verdict on geometry and nothing else). Run this "
-        "tool on the source branch to see, and to fix, what the gate is red "
-        "about.",
+        "about the kernel's verdict on geometry and nothing else). The gate "
+        "diverges from this report in exactly two ways, both fail-closed: a "
+        "clearance skipped because a side is an imported MESH is a skip here "
+        "and a FAIL there (an unmeasured clearance must not pass a merge), and "
+        "the gate runs under a 30 s deadline whose exhaustion is red and is "
+        "remembered for that head. Run this tool on the source branch to see, "
+        "and to fix, what the gate is red about — it is unbounded, it "
+        "re-measures cached failures, and it clears a remembered "
+        "budget_exceeded verdict.",
         schema({"project": _PROJ, "part_id": _PART,
                 "ref": {"type": "string",
                         "description": "Branch to evaluate instead of yours"}},

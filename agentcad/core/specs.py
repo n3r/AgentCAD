@@ -31,7 +31,12 @@ Four rules this file is written around:
   which is what ``service._cache_key_for`` hashes, so
   ``.cache/<cache_key>.specs.json`` sits beside ``.metrics.json`` and is
   invalidated for free. A corrupt sidecar is discarded and recomputed, never
-  raised (the ``metrics.json`` precedent).
+  raised (the ``metrics.json`` precedent). **A failed evaluation is cached
+  too** — see :meth:`SpecRunner._shape_tier`: the same script and params
+  produce the same ``contract_error``, and the UI re-reads a part on every
+  ``rebuild_finished``, so caching only the successes made every read pay a
+  fresh ``spec_eval``. ``run_specs`` is the one surface that ignores a cached
+  failure.
 * **The report degrades, it never raises.** A failing check, a broken
   predicate, an unknown instance id, a ``specs.py`` that will not execute and a
   ``KernelError`` mid-measurement are all *payload*. The only things that raise
@@ -42,10 +47,11 @@ Four rules this file is written around:
   the tool pack that constructs the runner sorts before the versioning pack, so
   the seam does not exist yet at construction time.
 * **The proposal gate is fail-closed** (:meth:`SpecRunner.gate_provider`). A
-  declared check that failed, errored, or was never evaluated is RED, and
-  ``allow_invalid`` does not waive it. That is the deliberate divergence from
-  PRD-002's default — where a provider outage degrades to ``pending`` — and it
-  is the divergence PRD-002's as-built note reserved for this PRD.
+  declared check that failed, errored, was never evaluated, or was *skipped
+  because it could not be measured at all* (a ``mesh_only`` clearance) is RED,
+  and ``allow_invalid`` does not waive it. That is the deliberate divergence
+  from PRD-002's default — where a provider outage degrades to ``pending`` —
+  and it is the divergence PRD-002's as-built note reserved for this PRD.
 """
 
 from __future__ import annotations
@@ -65,9 +71,29 @@ from .tools_stackup import compute_stackup
 #: Sidecar format version. A stored document at any other version is discarded.
 SPEC_RESULT_VERSION = 1
 
-#: Wall-clock budget for the proposal gate. On exhaustion the remaining parts
-#: are reported as ``unevaluated`` — which is RED, never a silent green.
+#: Wall-clock budget for the proposal gate. It is a **deadline**, not a
+#: between-parts courtesy: every kernel call made under it asks for the time
+#: the budget has left rather than its own (300 s / 600 s) ceiling, and the
+#: deadline is re-read between checks. On exhaustion the scopes and checks that
+#: were not reached are reported as ``unevaluated`` — which is RED, never a
+#: silent green.
 GATE_BUDGET_S = 30.0
+
+#: Floor for a budgeted kernel timeout. A request is never issued with a
+#: non-positive timeout (the caller raises :data:`_ERROR_BUDGET` first); this
+#: only keeps a call that starts with milliseconds left from being a timeout by
+#: construction.
+_MIN_KERNEL_TIMEOUT_S = 0.5
+
+#: ``KernelError.type`` for a call the gate budget refused to start. It travels
+#: as a kernel error because that is what every caller of a measurement already
+#: degrades honestly (``_residue``), and its ``details.reason`` is what
+#: :meth:`SpecRunner.evaluate_specs` reads back to say *why* the gate is red.
+_ERROR_BUDGET = "budget_exceeded"
+
+#: Marker for a *cached declaration failure* in ``_declaration_cache``. A
+#: leading dunder-ish name no ``spec_declare`` payload can collide with.
+_DECLARE_ERROR = "__declare_error__"
 
 #: How many entries the gate memo keeps (verdicts, plus the advisory
 #: specs.py-changed flags, under commit-shaped keys). Small on purpose: an
@@ -367,6 +393,17 @@ def _read_sidecar(path: Path) -> dict | None:
     return stored
 
 
+def _cached_error(payload: dict) -> KernelError:
+    """A stored ``KernelError.to_payload()`` back as the exception.
+
+    Reads only the three fields it wrote: a sidecar is a file on disk, and a
+    hand-edited one must not reach ``KernelError(**anything)``.
+    """
+    return KernelError(str(payload.get("type") or "kernel_error"),
+                       str(payload.get("message") or "spec evaluation failed"),
+                       dict(payload.get("details") or {}))
+
+
 def _write_sidecar(path: Path, payload: dict) -> None:
     try:
         ProjectStore._atomic_write(path, json.dumps(payload).encode())
@@ -481,30 +518,86 @@ class SpecRunner:
             try:
                 path.unlink()
             except FileNotFoundError:
-                pass
+                pass          # already gone is the post-state we were asked for
+            except OSError as exc:
+                # Anything else — a read-only checkout, a permission, a
+                # directory in its place — must be a structured refusal naming
+                # the path, never a post-state claiming the file is gone.
+                raise ValidationError(
+                    f"specs.py could not be deleted ({exc.strerror or exc})",
+                    {"path": "specs.py", "project": proj}) from exc
             state = self._project_state(proj, None)
         self.service.bus.publish(
             {"type": "project_changed", "project": proj, "reason": "specs"})
         return state
 
+    # -------------------------------------------------- budgeted kernel calls
+
+    def _kernel(self, method: str, params: dict, *, normal: float,
+                affinity: str | None, deadline: float | None) -> dict:
+        """One ``kernel.request`` under the gate budget.
+
+        The budget is worthless if the call it wraps may run for ten times its
+        length, so every request made under a *deadline* asks for what the
+        deadline has left instead of its own ceiling (``spec_eval``'s 300 s,
+        ``fem_static``'s 600 s). With nothing left the request is not issued at
+        all: a :data:`_ERROR_BUDGET` ``KernelError`` is raised, which every
+        measurement path already degrades into an honest ``error`` record.
+        """
+        timeout = normal
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise KernelError(
+                    _ERROR_BUDGET,
+                    f"the {GATE_BUDGET_S:.0f} s spec gate budget was exhausted "
+                    f"before {method} could run; run run_specs on this branch "
+                    "to populate the caches, then read the gate again",
+                    {"reason": "budget_exceeded", "budget_s": GATE_BUDGET_S,
+                     "method": method})
+            timeout = max(_MIN_KERNEL_TIMEOUT_S, min(normal, remaining))
+        return self.service.kernel.request(method, params, timeout_s=timeout,
+                                           affinity=affinity)
+
     # ----------------------------------------------------- declarations
 
-    def _declare(self, script: str, scope: str, affinity: str) -> dict:
+    def _declare(self, script: str, scope: str, affinity: str,
+                 deadline: float | None = None) -> dict:
         """``spec_declare``, memoized by ``sha256(scope, script)``.
 
         The handler never builds, so this is safe on a part that does not
         build at all (AC6) — and cheap enough to call per report.
+
+        The **failure** is memoized on the same key, for the same reason the
+        sidecar caches one: a ``SPECS`` that will not declare is a property of
+        the text, ``_residue`` asks for the declarations of exactly the script
+        that just failed to evaluate, and the browser re-reads a part on every
+        rebuild. A failure that a deadline may have caused is never cached (it
+        is a property of the budget, not of the script), and ``run_specs``
+        drops the cached ones before it re-evaluates.
         """
         key = hashlib.sha256(f"{scope}\0{script}".encode()).hexdigest()
         hit = self._declaration_cache.get(key)
         if hit is None:
-            hit = self.service.kernel.request(
-                "spec_declare", {"script": script, "scope": scope},
-                timeout_s=300.0, affinity=affinity)
-            if len(self._declaration_cache) > 256:
-                self._declaration_cache.clear()
-            self._declaration_cache[key] = hit
+            try:
+                hit = self._kernel("spec_declare",
+                                   {"script": script, "scope": scope},
+                                   normal=300.0, affinity=affinity,
+                                   deadline=deadline)
+            except KernelError as exc:
+                if deadline is None:
+                    self._remember_declaration(key, {_DECLARE_ERROR:
+                                                     exc.to_payload()})
+                raise
+            self._remember_declaration(key, hit)
+        if _DECLARE_ERROR in hit:
+            raise _cached_error(hit[_DECLARE_ERROR])
         return hit
+
+    def _remember_declaration(self, key: str, value: dict) -> None:
+        if len(self._declaration_cache) > 256:
+            self._declaration_cache.clear()
+        self._declaration_cache[key] = value
 
     def _declaring_parts(self, proj: str, part_id: str | None):
         """(part id, script) for every scripted part that binds ``SPECS``.
@@ -579,11 +672,26 @@ class SpecRunner:
     # -------------------------------------------------------- tier 1
 
     def _shape_tier(self, proj: str, part_id: str,
-                    cache_key: str | None = None):
+                    cache_key: str | None = None,
+                    deadline: float | None = None, refresh: bool = False):
         """``(payload, cached, sidecar_path)`` for one part's shape tier.
 
         ``(None, False, None)`` means the part declares nothing — which is not
         the same as "not evaluated" and must never be reported as green.
+
+        **The sidecar caches the failure as well as the result.** A
+        ``contract_error`` (``SPECS = "hello"``), a script that will not build
+        and a predicate that hangs are all deterministic in the one thing this
+        key hashes — the script and its params — and every ``get_part``
+        re-issues this call, so caching only the successes meant a broken part
+        paid a fresh ``spec_eval`` (and, for a hang, a 300 s timeout plus a
+        worker respawn) on *every read*. A cached failure re-raises the stored
+        ``KernelError``, so the caller's ``_residue`` path is unchanged.
+
+        Two escapes keep that honest: a failure measured under a *deadline* is
+        never cached (the budget, not the script, may have caused it), and
+        *refresh* — which is ``run_specs``, the unbounded surface — ignores a
+        cached failure and measures again.
         """
         store = self.service.store
         record = store.get_part(proj, part_id)
@@ -598,17 +706,28 @@ class SpecRunner:
         stored = _read_sidecar(sidecar)
         if stored is not None and isinstance(stored.get("checks"), list):
             return stored, True, sidecar
+        if stored is not None and not refresh \
+                and isinstance(stored.get("error"), dict):
+            raise _cached_error(stored["error"])
 
-        result = self.service.kernel.request(
-            "spec_eval",
-            {"script": script, "params": record.params,
-             "density_g_cm3": self.service.material_density(
-                 proj, record.material),
-             "densities": self.service._solid_densities(proj, record) or None,
-             # null = every declaration, so nothing is dropped: the tiers this
-             # call cannot measure come back as named skips.
-             "indices": None},
-            timeout_s=300.0, affinity=part_id)
+        try:
+            result = self._kernel(
+                "spec_eval",
+                {"script": script, "params": record.params,
+                 "density_g_cm3": self.service.material_density(
+                     proj, record.material),
+                 "densities": self.service._solid_densities(proj, record)
+                 or None,
+                 # null = every declaration, so nothing is dropped: the tiers
+                 # this call cannot measure come back as named skips.
+                 "indices": None},
+                normal=300.0, affinity=part_id, deadline=deadline)
+        except KernelError as exc:
+            if deadline is None:
+                _write_sidecar(sidecar, {"version": SPEC_RESULT_VERSION,
+                                         "cache_key": key,
+                                         "error": exc.to_payload()})
+            raise
         payload = {"version": SPEC_RESULT_VERSION, "cache_key": key,
                    "checks": result.get("checks", []),
                    "declared": result.get("declared", []),
@@ -624,7 +743,7 @@ class SpecRunner:
         return assign_ids(rows, part_id, seen, warnings)
 
     def _residue(self, proj: str, part_id: str, exc: KernelError, seen: set,
-                 warnings: list[str]) -> dict:
+                 warnings: list[str], deadline: float | None = None) -> dict:
         """A ``KernelError`` from ``spec_eval`` as *data*.
 
         Structural ``SPECS`` problems (``SPECS = "hello"``) raise
@@ -637,7 +756,8 @@ class SpecRunner:
         details = dict(payload.get("details") or {})
         try:
             script = self.service.store.read_script(proj, part_id)
-            declared = self._declare(script, "part", part_id)["declared"]
+            declared = self._declare(script, "part", part_id,
+                                     deadline)["declared"]
         except (KernelError, NotFoundError, OSError, KeyError):
             declared = []
         records = [
@@ -686,8 +806,14 @@ class SpecRunner:
 
     # -------------------------------------------------------- tier 3
 
-    def _eval_fem(self, proj: str, part_id: str, declaration: dict) -> dict:
-        """``check_fem_static``: one 600 s request, or an honest skip (FR8)."""
+    def _eval_fem(self, proj: str, part_id: str, declaration: dict,
+                  deadline: float | None = None) -> dict:
+        """``check_fem_static``: one 600 s request, or an honest skip (FR8).
+
+        Under the gate budget the request gets what the budget has left, not
+        600 s: a cold FEM source must not make ``proposal_get`` block for ten
+        minutes while ``proposal_merge`` holds the source's turn lock.
+        """
         if not _fem_available():
             return _skip_row(
                 "fem_extra_missing", _FEM_HINT,
@@ -712,8 +838,8 @@ class SpecRunner:
         if modulus is not None:
             args["E_mpa"] = modulus      # otherwise the kernel's steel default
         try:
-            result = self.service.kernel.request(
-                "fem_static", args, timeout_s=600.0, affinity=part_id)
+            result = self._kernel("fem_static", args, normal=600.0,
+                                  affinity=part_id, deadline=deadline)
         except KernelError as exc:
             payload = exc.to_payload()
             return _error_row(payload["message"],
@@ -786,10 +912,20 @@ class SpecRunner:
         item["name"] = instance.id
         return item
 
-    def _eval_interference(self, proj: str, declaration: dict) -> dict:
+    def _eval_interference(self, proj: str, declaration: dict,
+                           deadline: float | None = None) -> dict:
         minimum = (declaration.get("limit") or {}).get("min_volume_mm3", 0.001)
+        timeout = None
+        if deadline is not None:
+            # ``check_interference`` asks for 600 s (pairs grow quadratically);
+            # under the gate it gets what the budget has left instead.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self._budget_row()
+            timeout = max(_MIN_KERNEL_TIMEOUT_S, min(600.0, remaining))
         try:
-            result = self.service.check_interference(proj, min_volume=minimum)
+            result = self.service.check_interference(proj, min_volume=minimum,
+                                                     timeout_s=timeout)
         except KernelError as exc:
             payload = exc.to_payload()
             return _error_row(payload["message"], payload.get("details"))
@@ -810,7 +946,8 @@ class SpecRunner:
         return {"status": "pass", "measured": measured, "details": details,
                 "message": f"no two of {result['checked']} instances overlap"}
 
-    def _eval_clearance(self, proj: str, declaration: dict) -> dict:
+    def _eval_clearance(self, proj: str, declaration: dict,
+                        deadline: float | None = None) -> dict:
         options = declaration.get("options") or {}
         minimum = (declaration.get("limit") or {}).get("min_mm")
         resolved = {i.id: i for i in self.service._resolved_instances(proj)}
@@ -827,10 +964,10 @@ class SpecRunner:
             except NotFoundError as exc:
                 return _error_row(str(exc), {"instance": name})
         try:
-            result = self.service.kernel.request(
+            result = self._kernel(
                 "clearance",
                 {"a": items["a"], "b": items["b"], "min_mm": minimum},
-                timeout_s=300.0, affinity=proj)
+                normal=300.0, affinity=proj, deadline=deadline)
         except KernelError as exc:
             payload = exc.to_payload()
             return _error_row(payload["message"], payload.get("details"))
@@ -855,7 +992,10 @@ class SpecRunner:
                            f"{_fmt(distance)} mm, below the "
                            f"{_fmt(minimum)} mm minimum"}
 
-    def _eval_stackup(self, proj: str, declaration: dict) -> dict:
+    def _eval_stackup(self, proj: str, declaration: dict,
+                      deadline: float | None = None) -> dict:
+        # No kernel call at all (the mate chain is manifest arithmetic), so the
+        # deadline is accepted for one uniform evaluator signature and unused.
         options = declaration.get("options") or {}
         within = (declaration.get("limit") or {}).get("within_mm")
         try:
@@ -880,7 +1020,8 @@ class SpecRunner:
                 "message": f"worst-case stack-up {_fmt(measured)} mm is "
                            f"within {_fmt(within)} mm"}
 
-    def _eval_project_check(self, proj: str, declaration: dict) -> dict:
+    def _eval_project_check(self, proj: str, declaration: dict,
+                            deadline: float | None = None) -> dict:
         if declaration.get("scope") != "project":
             return _skip_row(
                 "unsupported_scope", _SCOPE_HINT,
@@ -894,17 +1035,18 @@ class SpecRunner:
                 "unsupported_scope", _SCOPE_HINT,
                 f"{declaration['kind']} has no project-scope measurement")
         try:
-            return evaluator(proj, declaration)
+            return evaluator(proj, declaration, deadline)
         except Exception as exc:  # noqa: BLE001 — the report degrades, never raises
             return _error_row(f"{type(exc).__name__}: {exc}")
 
     def _project_block(self, proj: str, seen: set, warnings: list[str],
-                       errors: list[dict]) -> list[dict]:
+                       errors: list[dict],
+                       deadline: float | None = None) -> list[dict]:
         script = self.project_script(proj)
         if script is None:
             return []
         try:
-            declared = self._declare(script, "project", proj)
+            declared = self._declare(script, "project", proj, deadline)
         except KernelError as exc:
             errors.append({"scope": "project", "path": "specs.py",
                            "error": exc.to_payload()})
@@ -928,7 +1070,10 @@ class SpecRunner:
         for index, (declaration, record) in enumerate(zip(rows, records)):
             row = cached.get(str(index))
             if row is None:
-                row = self._eval_project_check(proj, declaration)
+                # Between checks, not only between scopes: one clearance over a
+                # large assembly can outlast the whole budget on its own.
+                row = self._budget_row() if self._out_of_budget(deadline) \
+                    else self._eval_project_check(proj, declaration, deadline)
                 # Only a real verdict is cached: a skip can be machine-specific
                 # (a missing extra) and an error is usually transient.
                 if row["status"] in ("pass", "fail"):
@@ -975,16 +1120,47 @@ class SpecRunner:
 
         Unlike a rebuild this evaluates the assembly and expensive tiers too —
         that is the whole difference between the two surfaces.
+
+        It is also **the exit from every cached refusal** this module keeps,
+        which is what makes those caches safe: it is unbounded (no deadline),
+        it re-measures a cached failure rather than re-raising it, and
+        afterwards it drops the memoized ``budget_exceeded`` verdicts for this
+        project so the next gate read is measured against the sidecars this run
+        just warmed. Every "run run_specs on that branch" in a gate summary is
+        this sentence.
         """
+        self._forget_declaration_failures()
         with self._pinned(proj, ref):
-            return self._report(proj, part_id, ref)
+            report = self._report(proj, part_id, ref, refresh=True)
+        self._forget_budget_verdicts(proj)
+        return report
+
+    def _forget_declaration_failures(self) -> None:
+        """Drop the cached ``spec_declare`` failures, so this run re-measures
+        them. Successes stay: they are keyed by the script text."""
+        for key, value in list(self._declaration_cache.items()):
+            if _DECLARE_ERROR in value:
+                self._declaration_cache.pop(key, None)
+
+    def _forget_budget_verdicts(self, proj: str) -> None:
+        """Drop *proj*'s memoized ``budget_exceeded`` verdicts, after the run
+        that supersedes them. Only three-part (verdict) keys: the
+        ``specs.py``-changed flags are git facts and keep theirs."""
+        for key, verdict in list(self._gate_memo.items()):
+            if len(key) == 3 and key[0] == proj \
+                    and verdict.get("reason") == "budget_exceeded":
+                self._gate_memo.pop(key, None)
 
     def _part_block(self, proj: str, part_id: str, seen: set,
-                    warnings: list[str], errors: list[dict]) -> dict | None:
+                    warnings: list[str], errors: list[dict],
+                    deadline: float | None = None,
+                    refresh: bool = False) -> dict | None:
         try:
-            payload, cached, sidecar = self._shape_tier(proj, part_id)
+            payload, cached, sidecar = self._shape_tier(
+                proj, part_id, deadline=deadline, refresh=refresh)
         except KernelError as exc:
-            residue = self._residue(proj, part_id, exc, seen, warnings)
+            residue = self._residue(proj, part_id, exc, seen, warnings,
+                                    deadline)
             errors.append({"scope": "part", "part": part_id,
                            "error": residue["error"]})
             return residue
@@ -1006,7 +1182,8 @@ class SpecRunner:
             if row is None:
                 declaration = declarations[index] \
                     if isinstance(index, int) and index < len(declarations) else {}
-                row = self._eval_fem(proj, part_id, declaration)
+                row = self._budget_row() if self._out_of_budget(deadline) \
+                    else self._eval_fem(proj, part_id, declaration, deadline)
                 if row["status"] in ("pass", "fail"):
                     fem_cache[str(index)] = row
                     dirty = True
@@ -1020,14 +1197,25 @@ class SpecRunner:
             _write_sidecar(sidecar, payload)
 
         summary = summarize(checks)
+        # list(warnings): the caller's accumulator keeps growing as later parts
+        # are read, and a block must report the warnings it was built with.
         return {"status": report_status(summary), "summary": summary,
                 "checks": checks, "requirements": group_requirements(checks),
-                "cached": cached, "warnings": warnings}
+                "cached": cached, "warnings": list(warnings)}
 
     def _out_of_budget(self, deadline: float | None) -> bool:
         """``time.monotonic``, never wall-clock: a budget must not be moved by
         an NTP step in the middle of a merge."""
         return deadline is not None and time.monotonic() > deadline
+
+    def _budget_row(self) -> dict:
+        """One check the budget did not reach. ``error``, never ``skip``: a
+        declared check we did not measure is 'we do not know'."""
+        return _error_row(
+            f"not evaluated: the {GATE_BUDGET_S:.0f} s spec gate budget was "
+            "exhausted before this check was measured. Run run_specs on this "
+            "branch to populate the caches, then read the gate again.",
+            {"reason": "budget_exceeded", "budget_s": GATE_BUDGET_S})
 
     def _unevaluated(self, prefix: str, part_id: str | None, seen: set,
                      warnings: list[str], errors: list[dict]) -> list[dict]:
@@ -1074,13 +1262,17 @@ class SpecRunner:
         rows = self._unevaluated(part_id, part_id, seen, warnings, errors)
         return {"status": "red", "summary": summarize(rows), "checks": rows,
                 "requirements": group_requirements(rows), "cached": False,
-                "warnings": warnings}
+                "warnings": list(warnings)}
 
     def _report(self, proj: str, part_id: str | None, ref: str | None,
-                deadline: float | None = None) -> dict:
+                deadline: float | None = None,
+                refresh: bool = False) -> dict:
         """*deadline* is :meth:`evaluate_specs`'s wall-clock budget (and only
         its: ``run`` passes ``None`` and is unbounded by design — an engineer
-        asking for a full report has asked for the cost)."""
+        asking for a full report has asked for the cost).
+
+        *refresh* is ``run``'s: the one surface that re-measures a cached
+        failure instead of re-raising it."""
         store = self.service.store
         manifest = store.manifest(proj)            # NotFoundError: bad project
         if part_id is not None:
@@ -1097,7 +1289,8 @@ class SpecRunner:
                 continue
             block = self._unevaluated_part(proj, pid, seen, warnings, errors) \
                 if self._out_of_budget(deadline) \
-                else self._part_block(proj, pid, seen, warnings, errors)
+                else self._part_block(proj, pid, seen, warnings, errors,
+                                      deadline, refresh)
             if block is None:
                 continue                    # declares nothing: not in the report
             parts[pid] = {
@@ -1113,7 +1306,8 @@ class SpecRunner:
             project_checks = self._unevaluated("project", None, seen, warnings,
                                                errors)
         else:
-            project_checks = self._project_block(proj, seen, warnings, errors)
+            project_checks = self._project_block(proj, seen, warnings, errors,
+                                                 deadline)
         flat.extend(project_checks)
 
         summary = summarize(flat)
@@ -1161,7 +1355,36 @@ class SpecRunner:
     def _memo_put(self, key: tuple, value: dict) -> None:
         self._gate_memo[key] = value
         while len(self._gate_memo) > _GATE_MEMO_LIMIT:
-            self._gate_memo.pop(next(iter(self._gate_memo)))
+            oldest = next(iter(self._gate_memo), None)
+            if oldest is None:            # emptied under us: nothing to evict
+                return
+            self._gate_memo.pop(oldest, None)
+
+    def _verdict_branch(self, proj: str, ref: str | None) -> tuple:
+        """``(branch, memoizable)`` — the ref a verdict is actually *about*.
+
+        ``ref=None`` means "the caller's tree", which is what the report is
+        read from (it runs unpinned, through the store's branch resolver). The
+        head it is stamped with, and the key it is filed under, must therefore
+        be the CALLER's branch — not the canonical repo head, which is the
+        default branch's and would file one client's verdict under a commit it
+        never measured, then hand it to every other client on every branch.
+
+        Without the branch layer there is one tree per project and the
+        canonical head *is* the caller's, so ``None`` is both the branch and a
+        memoizable answer. When the layer exists but cannot say which branch
+        this client is on, the verdict is produced and returned — and simply
+        not memoized, because there is no key it would be honest under.
+        """
+        if ref is not None:
+            return ref, True
+        branches = getattr(self.service, "branches", None)
+        if branches is None:
+            return None, True
+        try:
+            return branches.current(proj), True
+        except Exception:  # noqa: BLE001 — an unreadable checkout is not a raise
+            return None, False
 
     def evaluate_specs(self, proj: str, ref: str | None = None) -> dict:
         """Gate-shaped status for any ref (FR11). ``ref=None`` is the caller's.
@@ -1173,7 +1396,9 @@ class SpecRunner:
         ``False`` only for ``pending``, where the head moved out from under the
         measurement and the honest answer is "ask again", not a verdict wearing
         a commit it did not measure. The head is read **before and after**, as
-        the review packet does one layer up.
+        the review packet does one layer up — both times for the branch
+        :meth:`_verdict_branch` resolved, which for ``ref=None`` is the
+        caller's own.
 
         Bounded three ways, in order of how much they save: the shared
         canonical ``.cache/`` (an unchanged part is a disk read on both sides
@@ -1182,18 +1407,27 @@ class SpecRunner:
         summary naming ``run_specs``, because a spec that was not measured is
         not evidence of green.
 
-        The memo key is ``(project, ref, head)``. The design named
+        The memo key is ``(project, branch, head)``. The design named
         ``(project, source_head, declaration_hash)``; for a branch the head
         **is** the declaration hash — PRD-001 snapshots every write, so an
         edited ``SPECS`` moves it — and computing a separate one would mean
         materializing the ref's tree first, which is exactly the work the memo
-        exists to skip. Nothing is memoized without a head (no git, no key) or
-        for a ``pending``/budget-exhausted result (neither is a verdict worth
-        keeping).
+        exists to skip. Nothing is memoized without a head (no git, no key),
+        without a branch we can name, or for a ``pending`` result.
+
+        A **budget_exceeded verdict IS memoized**, deliberately: it is red with
+        a stable reason for that head, and re-paying an exhausted 30 s budget
+        on every ``proposal_get`` is the outcome the memo exists to prevent.
+        The gate therefore stays red-with-the-budget-reason until the head
+        moves or ``run_specs`` — unbounded, and named in the summary — warms
+        the sidecars and drops the verdict (:meth:`_forget_budget_verdicts`).
+        Fail-closed either way: the memo can only keep a red, never make one
+        green.
         """
-        head = self._head_of(proj, ref)
-        key = (proj, ref, head)
-        if head is not None:
+        branch, memoizable = self._verdict_branch(proj, ref)
+        head = self._head_of(proj, branch)
+        key = (proj, branch, head)
+        if head is not None and memoizable:
             hit = self._memo_get(key)
             if hit is not None:
                 return dict(hit)
@@ -1202,24 +1436,52 @@ class SpecRunner:
         with self._pinned(proj, ref):
             report = self._report(proj, None, ref, deadline=deadline)
 
-        checks = report["checks"]
+        checks = [self._gate_row(check) for check in report["checks"]]
+        summary = summarize(checks)
         by_status = {status: [c for c in checks if c.get("status") == status]
                      for status in ("fail", "skip", "error")}
         reason = "budget_exceeded" if any(
-            c.get("kind") == _UNEVALUATED for c in checks) else None
+            c.get("kind") == _UNEVALUATED
+            or (c.get("details") or {}).get("reason") == "budget_exceeded"
+            for c in checks) else None
         verdict = {
-            "available": True, "status": report["status"], "ref": ref,
-            "head": head, "checked_at": _now(), "summary": report["summary"],
+            "available": True, "status": report_status(summary), "ref": ref,
+            "head": head, "checked_at": _now(), "summary": summary,
             "failures": by_status["fail"], "skips": by_status["skip"],
             "errors": by_status["error"], "reason": reason,
         }
-        after = self._head_of(proj, ref)
+        after = self._head_of(proj, branch)
         if head is not None and after != head:
             return {**verdict, "available": False, "status": "pending",
                     "reason": "head_moved", "moved_to": after}
-        if head is not None and reason is None:
+        if head is not None and memoizable:
             self._memo_put(key, verdict)
         return dict(verdict)
+
+    def _gate_row(self, check: dict) -> dict:
+        """One report record as the **gate** sees it.
+
+        The only divergence: a ``clearance`` that was skipped because a side is
+        an imported mesh becomes a ``fail``. The measurement genuinely did not
+        happen (an STL is one welded face; ``BRepExtrema`` has no solution on
+        it), so in a report — which an engineer reads — it stays a named skip
+        with its hint. But the gate's contract is fail-closed, and swapping a
+        STEP reference for an STL would otherwise make a declared clearance
+        *silently pass a merge*: exactly the "declared but unmeasured" hole
+        this gate exists to close. The reason and hint ride along in
+        ``details`` so the proposals UI can still say why.
+        """
+        if check.get("status") != "skip" or check.get("kind") != "clearance" \
+                or check.get("reason") != "mesh_only":
+            return check
+        details = dict(check.get("details") or {})
+        details.update({"reason": check.get("reason"),
+                        "hint": check.get("hint"),
+                        "skipped_in_report": True})
+        return {**check, "status": "fail", "details": details,
+                "message": f"{check.get('message') or 'mesh part'} — an "
+                           "unmeasured clearance cannot pass this gate; import "
+                           "the part as STEP, or drop the check"}
 
     def _specs_py_changed(self, proj: str, target: str | None,
                           source: str | None,
@@ -1251,8 +1513,13 @@ class SpecRunner:
             hit = self._memo_get(key)
             if hit is not None:
                 return bool(hit["changed"])
-            result = history._run(canonical, "diff", "--name-only", head_t,
-                                  head_s, "--", "specs.py", check=False)
+            # Three dots: merge-base(target, source)..source. The question is
+            # "did THIS PROPOSAL touch specs.py", and a plain two-dot diff also
+            # reports every change the TARGET made since the branch point —
+            # a target that adds a specs.py would flag every open proposal.
+            result = history._run(canonical, "diff", "--name-only",
+                                  f"{head_t}...{head_s}", "--", "specs.py",
+                                  check=False)
             changed = bool((result.stdout or "").strip())
             self._memo_put(key, {"changed": changed})
             return changed

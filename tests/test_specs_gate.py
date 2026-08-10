@@ -26,6 +26,7 @@ Sections: 1. ``evaluate_specs`` · 2. the gate provider · 3. the gated merge ·
 from __future__ import annotations
 
 import shutil
+import time
 
 import pytest
 
@@ -73,6 +74,12 @@ PROJECT_SPECS = '''\
 from agentcad.toolkit.specs import check_interference_free
 
 SPECS = [check_interference_free(requirement="INT-003")]
+'''
+
+CLEARANCE_SPECS = '''\
+from agentcad.toolkit.specs import check_clearance
+
+SPECS = [check_clearance("box_1", "box_2", min_mm=1.0, requirement="INT-009")]
 '''
 
 
@@ -166,10 +173,11 @@ def _move_head(service, text: str = "note\n") -> str:
 def _cold(service) -> None:
     """Drop everything that could answer a spec question without the kernel:
     the per-head memo, the declaration cache and the shared ``.cache/``
-    sidecars. What is left is the cold path a fresh process would take."""
+    sidecars — the part ones AND the assembly one. What is left is the cold
+    path a fresh process would take."""
     service.specs._gate_memo.clear()
     service.specs._declaration_cache.clear()
-    for sidecar in service.store.cache_dir("demo").glob("*.specs.json"):
+    for sidecar in service.store.cache_dir("demo").glob("*specs.json"):
         sidecar.unlink()
 
 
@@ -219,6 +227,35 @@ def test_evaluate_specs_is_red_for_a_branch_with_a_broken_budget(spec_demo):
     assert on_branch["failures"][0]["measured"] == pytest.approx(1.0, abs=0.15)
     assert on_branch["failures"][0]["requirement"] == "ENG-014"
     assert service.specs.evaluate_specs("demo", "master")["status"] == "green"
+
+
+def test_evaluate_specs_without_a_ref_measures_the_callers_own_branch(
+        spec_demo):
+    """``ref=None`` is the CALLER's branch, all the way through.
+
+    The report runs unpinned — on whatever tree the caller's client id resolves
+    to — so the head it is stamped with, and the memo key it is filed under,
+    must be that same branch's. Reading the canonical (default-branch) head
+    instead hands one client another branch's verdict."""
+    service, registry, _manager = spec_demo
+    canonical = service.store.canonical_path_of("demo")
+    _wall(service, registry, 1.0)               # feat is red, master is green
+    service.specs._gate_memo.clear()
+
+    _on(service, "agent_a", "feat")
+    on_feat = service.specs.evaluate_specs("demo")
+    _on(service, "browser", "master")
+    on_master = service.specs.evaluate_specs("demo")
+
+    assert on_feat["status"] == "red"
+    assert [c["id"] for c in on_feat["failures"]] == ["box:wall_min"]
+    assert on_master["status"] == "green"
+    assert on_feat["head"] == service.history.resolve_branch(canonical, "feat")
+    assert on_master["head"] == service.history.resolve_branch(canonical,
+                                                               "master")
+    # Two branches, two verdicts, two memo keys — never one shared entry.
+    verdicts = [k for k in service.specs._gate_memo if len(k) == 3]
+    assert len(verdicts) == 2 and len(set(verdicts)) == 2
 
 
 def test_evaluate_specs_is_skip_when_the_ref_declares_nothing(bare_demo):
@@ -298,6 +335,51 @@ def test_a_skip_is_data_and_the_gate_still_passes(spec_demo):
     assert [c["id"] for c in specs["details"]["skips"]] == [
         "project:no_interference"]
     assert "skip" in specs["summary"]
+
+
+def test_a_mesh_only_clearance_skip_is_red_in_the_gate_and_a_skip_in_a_report(
+        spec_demo, monkeypatch):
+    """The one skip the gate refuses to accept (S7).
+
+    Swapping a STEP reference for an STL turns a declared clearance into a
+    ``mesh_only`` skip — the distance is simply not measured. A report says so
+    and stays a skip (an engineer reading it can see the reason); the GATE's
+    contract is fail-closed, so an unmeasured clearance blocks the merge rather
+    than passing it."""
+    service, registry, manager = spec_demo
+    _on(service, "agent_a", "feat")
+    assert "error" not in registry.call("set_assembly", {
+        "project": "demo",
+        "instances": [{"id": "box_1", "part": "box"},
+                      {"id": "box_2", "part": "box",
+                       "position": [40.0, 0.0, 0.0]}]})
+    assert "error" not in registry.call(
+        "set_project_specs", {"project": "demo", "script": CLEARANCE_SPECS})
+    _on(service, "browser", "master")
+    pid = _create(manager)["id"]
+    original = service.kernel.request
+
+    def meshy(method, params, timeout_s=None, affinity=None):
+        if method == "clearance":
+            return {"distance_mm": None, "point_a": None, "point_b": None,
+                    "skipped_mesh": ["b"]}
+        return original(method, params, timeout_s=timeout_s, affinity=affinity)
+
+    monkeypatch.setattr(service.kernel, "request", meshy)
+    _cold(service)
+    specs = _gate(manager.get("demo", pid)["gates"], "specs")
+
+    assert specs["state"] == "fail"
+    assert [c["id"] for c in specs["details"]["failures"]] == [
+        "project:clearance_box_1_box_2"]
+    assert "not measured" in specs["details"]["failures"][0]["message"]
+    assert specs["details"]["failures"][0]["details"]["reason"] == "mesh_only"
+    assert "clearance_box_1_box_2" in specs["summary"]
+
+    # The same evaluation through run_specs keeps it a named skip.
+    report = service.specs.run("demo", ref="feat")
+    row = next(c for c in report["checks"] if c["kind"] == "clearance")
+    assert row["status"] == "skip" and row["reason"] == "mesh_only"
 
 
 def test_a_provider_that_raises_internally_is_still_one_specs_gate(
@@ -410,6 +492,24 @@ def test_specs_py_changed_says_a_proposal_touched_the_spec_file(spec_demo):
                  "specs")["details"]["specs_py_changed"] is True
 
 
+def test_specs_py_changed_ignores_a_target_that_moved_after_the_branch(
+        spec_demo):
+    """The flag is about the PROPOSAL, so it is measured from the merge base.
+
+    A plain ``target..source`` diff reports every file the target gained since
+    the branch point as if the source had removed it — here master writes a
+    ``specs.py`` the proposal never saw."""
+    service, registry, manager = spec_demo
+    pid = _create(manager)["id"]
+    _on(service, "browser", "master")
+    assert "error" not in registry.call(
+        "set_project_specs", {"project": "demo", "script": PROJECT_SPECS})
+
+    specs = _gate(manager.get("demo", pid)["gates"], "specs")
+
+    assert specs["details"]["specs_py_changed"] is False
+
+
 def test_the_run_specs_description_states_the_gate_rule(spec_demo):
     """The tool description is the agent's only documentation at call time, so
     the decision most likely to be 'fixed' wrongly later is written into it."""
@@ -487,6 +587,63 @@ def test_a_second_read_at_the_same_head_costs_no_kernel_call(spec_demo,
     assert _gate(manager.get("demo", pid)["gates"], "specs")["state"] == "pass"
 
     assert calls == {}
+
+
+def test_a_kernel_call_under_the_gate_is_bounded_by_the_remaining_budget(
+        spec_demo, monkeypatch):
+    """The budget is a DEADLINE, not a suggestion between parts.
+
+    ``spec_eval`` asks for 300 s and ``fem_static`` for 600; under the gate
+    every one of them gets the time the budget has left, so a cold source
+    cannot make ``proposal_get`` block for minutes while ``proposal_merge``
+    holds the turn lock."""
+    service, _registry, _manager = spec_demo
+    _cold(service)
+    monkeypatch.setattr("agentcad.core.specs.GATE_BUDGET_S", 2.0)
+    timeouts: list[float] = []
+
+    def slow(method, params, timeout_s=None, affinity=None):
+        timeouts.append(timeout_s)
+        time.sleep(min(timeout_s or 0.0, 20.0))
+        raise KernelError("timeout", f"{method} timed out", {})
+
+    monkeypatch.setattr(service.kernel, "request", slow)
+    started = time.monotonic()
+    verdict = service.specs.evaluate_specs("demo", "feat")
+    elapsed = time.monotonic() - started
+
+    assert timeouts, "no kernel call was made"
+    assert max(timeouts) <= 2.0                # never the 300 s spec_eval one
+    assert elapsed < 10.0                      # near the budget, not the call
+    assert verdict["status"] == "red"
+
+
+def test_a_budget_exceeded_verdict_is_memoized_and_run_specs_is_its_exit(
+        spec_demo, monkeypatch):
+    """Fail-closed AND cheap: a red-with-a-reason verdict is stable for a head.
+
+    Re-paying an exhausted budget on every ``proposal_get`` is the worst of
+    both worlds, so the verdict is memoized and stays red until the head moves
+    or ``run_specs`` — which is unbounded by design — warms the sidecars."""
+    service, registry, manager = spec_demo
+    pid = _create(manager)["id"]
+    _cold(service)
+    monkeypatch.setattr("agentcad.core.specs.GATE_BUDGET_S", -1.0)
+    first = _gate(manager.get("demo", pid)["gates"], "specs")
+    assert first["state"] == "fail"
+    assert first["details"]["reason"] == "budget_exceeded"
+
+    monkeypatch.setattr("agentcad.core.specs.GATE_BUDGET_S", 30.0)
+    calls = _counting(service, monkeypatch)
+    again = _gate(manager.get("demo", pid)["gates"], "specs")
+
+    assert again["state"] == "fail"                     # the memo answers
+    assert again["details"]["reason"] == "budget_exceeded"
+    assert calls == {}
+
+    report = registry.call("run_specs", {"project": "demo", "ref": "feat"})
+    assert report["status"] == "green", report
+    assert _gate(manager.get("demo", pid)["gates"], "specs")["state"] == "pass"
 
 
 def test_a_head_move_invalidates_the_memo(spec_demo):

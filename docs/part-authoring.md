@@ -402,6 +402,15 @@ evaluates to `skip`/`fem_extra_missing` there; skips are data, never hidden.
   `{"axis": "x"|"y"|"z", "side": "min"|"max"}`, the same shape `fem_static`
   takes. At least one of `max_vm_mpa` / `max_disp_mm` is required — a check
   with no limit can neither pass nor fail.
+- **A `check_that` predicate must not write to the `metrics` dict it is
+  handed** (it gets a copy, and predicates are evaluated after the built-in
+  checks precisely so a mutating one cannot change their verdicts) and must not
+  depend on evaluation order.
+- **`check_clearance` against an imported STL is not measured.** An STL is one
+  welded mesh face with no B-rep to measure a distance against, so the check is
+  a `skip`/`mesh_only` in a report — and a **fail** in a proposal's `specs`
+  gate, because an unmeasured clearance must not pass a merge. Import the part
+  as STEP if a clearance depends on it.
 
 `"spec": 1` is the declaration marker *and* the format version: a dict without
 it is not a spec, and a future format bump is a version change, not a new key.

@@ -696,6 +696,7 @@ function handleEvent(ev) {
       markPartState(ev.part, "error");
       if (state.part && state.part.id === ev.part) {
         state.part.status = { state: "error", error: ev.error, warnings: [] };
+        state.part.specs = null;   // stale green chips beside a red banner
         setState({ part: state.part });
         inspector.showBanner(ev.error);
       }

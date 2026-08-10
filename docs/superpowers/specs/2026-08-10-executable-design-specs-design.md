@@ -309,6 +309,17 @@ It executes the module and reads `SPECS`; it never calls `build`. A
 `"predicate": true` — every declaration crossing the boundary is JSON-safe by
 construction, and the callable never leaves the worker.
 
+**As-built (review fix S4, changelog 0094): a predicate cannot reach another
+check's verdict.** The metrics dict is computed once and was handed to every
+evaluator by reference, so a predicate writing `metrics["mass_g"] = 0` changed
+what a later `check_mass` measured — script code silently editing the evidence.
+Each check is now handed a `copy.deepcopy` of the metrics (plain JSON-safe
+numbers; the copy is nothing next to a ray cast) and every `that` check is
+evaluated **after** the built-in kinds, with records still emitted in declared
+order. Evaluation order is therefore explicitly not a contract a predicate may
+rely on. The built *shape* is shared and cannot be copied — a predicate that
+mutates the B-rep is out of scope, exactly as a `build` that does is.
+
 ### Caching: the existing content-hash discipline, extended by one sidecar (FR10)
 
 Tier-1 results depend on exactly `(script text, resolved params, density,
@@ -341,6 +352,24 @@ project_key = sha256(specs.py text · sorted[(instance id, part cache_key,
 **Determinism is the precondition, not a bonus.** The same script and params
 produce identical geometry, so identical measurements, so a cached spec result
 is as trustworthy as a cached mesh. PRD-004's speed rests on this file.
+
+**As-built (review fix S3, changelog 0094): the sidecar caches FAILURE too.**
+As shipped in slice 3 the sidecar was written only on success, so a
+`contract_error` (`SPECS = "hello"`), a script that would not build and a
+predicate that hung were re-measured on *every* read — and the browser
+re-reads a part on every `rebuild_finished`, which made a hung predicate cost
+300 s plus a worker respawn per read. The same determinism argument that
+justifies caching the result justifies caching the refusal, so a failed
+`spec_eval` now writes `{version, cache_key, error: <kernel payload>}` under
+the same key and a later read re-raises that `KernelError` (the `_residue`
+path is unchanged). `spec_declare` failures are memoized the same way in the
+in-process declaration cache. Two escapes keep it honest: a failure measured
+under the gate deadline is never cached (the budget, not the script, may have
+caused it), and `run_specs` — unbounded — ignores a cached failure and drops
+the cached declaration failures before it runs. The trade-off, taken
+deliberately: a genuinely transient worker crash keeps a part red until its
+script/params change or `run_specs` is called, which is the fail-closed
+direction and is named in the tool description.
 
 ### Zero added work for a spec-less part (FR5, AC9)
 
@@ -689,6 +718,45 @@ PRD-002's packet builds part rows only for `parts/*.py`, so a changed root
 so it triggers no validation either. A full `specs` section in the packet is a
 `packet.py` change and therefore out of scope here (Risks); the flag costs one
 git call and closes the hole that matters.
+
+### As-built (review fixes S1/S2/S6/S7, changelog 0094)
+
+Four corrections to the text above, all of them in the fail-closed direction:
+
+1. **`ref=None` is the CALLER's branch, for the head and the memo key too.**
+   The report runs unpinned — the store's branch resolver puts it on the
+   caller's tree — but the head was read from the canonical repo (the *default*
+   branch's) and the memo key was `(project, None, canonical_head)`, shared by
+   every client on every branch. A green `master` therefore received `feat`'s
+   memoized red verdict. `_verdict_branch` now resolves `branches.current(proj)`
+   for `ref=None` and stamps, keys and re-reads *that* branch's head; when the
+   branch layer exists but cannot say, the verdict is returned unmemoized.
+   The memo key is `(project, branch, head)`.
+2. **The budget is a deadline, not a between-parts check.** Every kernel call
+   made under it (`spec_eval`, `spec_declare`, `clearance`, `fem_static`,
+   `interference`) asks for `min(its ceiling, remaining)` instead of 300 s /
+   600 s, the deadline is re-checked *between checks* inside a part block and
+   the project block, and a call with nothing left is not issued at all
+   (`KernelError("budget_exceeded")`). **And the `budget_exceeded` verdict is
+   memoized**, which the original text refused: it is red with a stable reason
+   for that head, and re-paying an exhausted 30 s budget on every
+   `proposal_get` is exactly the cost the memo exists to prevent. The gate
+   therefore stays red-with-the-budget-reason until the head moves or
+   `run_specs` (unbounded) warms the sidecars — `run_specs` drops the memoized
+   budget verdicts for the project afterwards, which is what makes the "run
+   run_specs on that branch" in the summary true. The memo can only keep a red,
+   never make one green.
+3. **`specs_py_changed` is measured from the merge base**
+   (`git diff --name-only <target>...<source>`). Two dots also reported every
+   change the *target* made since the branch point, so a target that gained a
+   `specs.py` flagged every open proposal as editing the spec.
+4. **A `mesh_only` clearance is a `skip` in a report and a `fail` in the gate**
+   (`_gate_row`). The distance genuinely was not measured — an STL is one
+   welded face — and an engineer reading a report should see that with its
+   reason and hint. But a *gate* that passes it means swapping a STEP reference
+   for an STL silently satisfies a declared clearance: the "declared but
+   unmeasured" hole this gate exists to close. The failure carries
+   `details.reason: "mesh_only"`, its hint, and `details.skipped_in_report`.
 
 ## Decision 8 — writing project specs needs a tool
 

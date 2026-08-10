@@ -367,6 +367,40 @@ def test_get_part_carries_specs_beside_metrics_without_rebuilding(
 
 
 @pytest.mark.slow
+def test_a_failing_spec_eval_is_cached_and_re_read_for_free(demo, monkeypatch):
+    """The sidecar caches the FAILURE too (S3).
+
+    ``SPECS = "hello"`` is a contract_error the worker will raise identically
+    for this script and these params every time, and the UI re-reads the part
+    on every ``rebuild_finished``. Caching only the successes made each read
+    pay a fresh ``spec_eval`` + ``spec_declare`` — a hung predicate would be
+    300 s and a worker respawn *per read*."""
+    service, registry = demo
+    assert registry.call("update_part_script", {
+        "project": "demo", "part_id": "box",
+        "script": SPEC_BOX.replace("SPECS = [", "SPECS = 'hello'\n_UNUSED = [")
+    })["ok"] is True
+    # The write's own rebuild already evaluated: measure the cold path.
+    service.specs._declaration_cache.clear()
+    for sidecar in service.store.cache_dir("demo").glob("*.specs.json"):
+        sidecar.unlink()
+    calls = _counting(service, monkeypatch)
+
+    for _ in range(5):
+        detail = registry.call("get_part", {"project": "demo",
+                                            "part_id": "box"})
+        assert detail["specs"]["status"] == "error"
+        assert detail["specs"]["error"]["type"] == "contract_error"
+
+    assert calls.get("spec_eval") == 1
+    assert calls.get("spec_declare") == 1
+
+    # run_specs is the re-evaluation surface: it never trusts a cached failure.
+    assert registry.call("run_specs", {"project": "demo"})["status"] == "red"
+    assert calls.get("spec_eval") == 2
+
+
+@pytest.mark.slow
 def test_an_exception_in_the_runner_never_escapes_a_rebuild(demo, monkeypatch):
     """A broken spec layer must never break a rebuild — the whole point of a
     wrapper that is strictly best-effort."""

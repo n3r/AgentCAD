@@ -496,7 +496,9 @@ function renderSpecs(part) {
       specChip({ name: "specs", status: "error", message: specError(specs) })
     );
   }
-  host.appendChild(chips);
+  // `SPECS = []` declares nothing to show: an empty row is a 12px strip of
+  // margin that reads as "something is here", which is worse than nothing.
+  if (chips.childElementCount) host.appendChild(chips);
 }
 
 // Only a red strip gets a summary line — a green one is just chips (the
@@ -655,6 +657,10 @@ function applyRebuildResult(partId, result, values) {
         error: result.error,
         warnings: [],
       };
+      // A failed rebuild carries no `specs` key — there is no shape to assert
+      // over — so the chips from the LAST good build would sit, green, beside
+      // a red build banner. Clear them: nothing evaluated is not "all fine".
+      state.part.specs = null;
       if (values) Object.assign(state.part.params, values);
       setState({ part: state.part });
       showBanner(result.error);

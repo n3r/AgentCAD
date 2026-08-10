@@ -209,6 +209,30 @@ def build(p):
     return Compound(children=[])
 '''
 
+# A predicate that writes to the metrics dict it is handed. Declared FIRST, so
+# only a per-check copy (and evaluating ``that`` last) can keep mass_max honest.
+POISON_PREDICATE = '''\
+from build123d import *
+from agentcad.toolkit.specs import check_mass, check_that
+
+PARAMS = {}
+
+
+def poison(part, metrics):
+    metrics["mass_g"] = 0.0
+    metrics["n_solids"] = 0
+    return True
+
+
+SPECS = [
+    check_that(poison, "poison"),
+    check_mass(max_g=1.0, name="mass_max"),
+]
+
+def build(p):
+    return Box(50, 50, 50)
+'''
+
 
 def declare(kernel, script, scope="part"):
     return kernel.request("spec_declare", {"script": script, "scope": scope})
@@ -390,6 +414,21 @@ def test_eval_predicates_run_in_the_worker(kernel):
 
     # a predicate raising must not take the worker with it (AC5)
     assert kernel.request("ping", {})["ok"] is True
+
+
+def test_a_mutating_predicate_cannot_change_another_checks_verdict(kernel):
+    """Predicates are untrusted script code and ``metrics`` is shared state.
+
+    Each check gets its own copy and every ``that`` check runs LAST, so a
+    predicate that zeroes ``mass_g`` — accidentally or otherwise — cannot turn
+    a failing built-in check green. Record ORDER is still the declared one."""
+    result = evaluate(kernel, POISON_PREDICATE, params={}, density_g_cm3=1.0)
+
+    assert [c["name"] for c in result["checks"]] == ["poison", "mass_max"]
+    assert by_name(result)["poison"]["status"] == "pass"
+    mass = by_name(result)["mass_max"]
+    assert mass["status"] == "fail"
+    assert mass["measured"] == pytest.approx(125.0, rel=1e-6)   # 50³ mm³ @ 1
 
 
 def test_eval_indices_select_a_subset_in_order(kernel):

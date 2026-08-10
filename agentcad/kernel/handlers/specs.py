@@ -21,6 +21,16 @@ The rules this file is written around:
   ``(part, metrics)``, and replaced by ``"predicate": true`` on the way out.
   Predicates are untrusted script code and the server process must never run
   them.
+* **A predicate must not be able to change another check's verdict.** It is
+  script code holding a reference to shared state, so each check is handed its
+  own ``deepcopy`` of the metrics dict and every ``that`` check is evaluated
+  **last** — a predicate that writes ``metrics["mass_g"] = 0`` then cannot turn
+  a failing ``check_mass`` green. Records are still emitted in declared order.
+  Evaluation order is therefore not a contract a predicate may rely on: the
+  built-in kinds run first, ``that`` predicates run afterwards in declared
+  order among themselves. The built *shape* is shared and cannot be copied —
+  a predicate that mutates the B-rep is out of scope, exactly as a ``build``
+  that does is.
 * **``_min_wall`` is imported from the sibling analysis pack, never
   re-implemented.** Two implementations of wall thickness is the worst outcome
   available. The same reasoning is why ``_exec_script``, ``_item_shape`` and
@@ -51,6 +61,8 @@ know which part it is building. ``SpecRunner`` joins them on ``index`` and adds
 """
 
 from __future__ import annotations
+
+import copy
 
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 
@@ -238,7 +250,13 @@ def register(toolbox: dict) -> dict:
                     "message": f"{decl['kind']} is not evaluated with the "
                                "shape tier"}
         try:
-            return {**record, **_EVALUATORS[decl["kind"]](decl, shape, metrics())}
+            # deepcopy, not the shared dict: a check_that predicate is script
+            # code, and one that writes to metrics must not be able to change
+            # what any other check measured (the metrics are plain JSON-safe
+            # numbers, lists and dicts, so the copy is cheap).
+            return {**record,
+                    **_EVALUATORS[decl["kind"]](decl, shape,
+                                                copy.deepcopy(metrics()))}
         except Exception as exc:  # noqa: BLE001 — a broken check is payload
             # _script_error_from_exc gives the traceback and, when a frame
             # belongs to the script, the line the predicate lives on.
@@ -288,9 +306,16 @@ def register(toolbox: dict) -> dict:
                     params.get("densities") or None, _solid_labels(ns))
             return cached["metrics"]
 
+        # Predicates last, records in declared order: a mutating predicate
+        # cannot reach a built-in check that has already been measured, and the
+        # report a caller joins on ``index`` is unaffected by the reordering.
+        evaluated = {
+            i: _evaluate(declarations[i], i, shape, metrics)
+            for i in sorted(selected,
+                            key=lambda i: declarations[i]["kind"] == "that")
+        }
         return {
-            "checks": [_evaluate(declarations[i], i, shape, metrics)
-                       for i in selected],
+            "checks": [evaluated[i] for i in selected],
             "declared": [json_safe(d) for d in declarations],
             "warnings": list(warnings) + decl_warnings,
         }

@@ -266,7 +266,33 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   is red, and `allow_invalid` does not waive it (that flag means "override the
   *kernel's* verdict on geometry", nothing else). Its verdict is about the
   proposal's SOURCE branch, and the head is re-read afterwards — a moved head
-  is `pending`, never a verdict wearing a commit it did not measure.
+  is `pending`, never a verdict wearing a commit it did not measure. Two
+  gate-only divergences from a `run_specs` report, both fail-closed: a
+  `mesh_only` clearance skip is a **fail** in the gate (an unmeasured clearance
+  must not pass a merge — an STL swap would otherwise satisfy it silently), and
+  a `budget_exceeded` verdict **is memoized** for that head, so the gate stays
+  red with that reason until the head moves or `run_specs` warms the caches
+  (which drops the memoized verdict). The memo can only keep a red, never make
+  one green.
+- **`evaluate_specs(proj, ref=None)` means the CALLER's branch** — resolve it
+  with `branches.current`, and stamp/key the verdict with *that* branch's head.
+  The canonical repo head is the default branch's; using it hands one client
+  another branch's verdict through the shared memo. The memo key is
+  `(project, branch, head)`.
+- **The gate budget is a deadline, not a between-parts check.** Every kernel
+  call made under it takes `min(its own ceiling, remaining)` — a 300 s
+  `spec_eval` or a 600 s `fem_static` inside a 30 s budget is not a budget —
+  and a call with nothing left is refused as a `budget_exceeded` `KernelError`.
+- **The `.specs.json` sidecar caches failures too**, keyed like the result: the
+  same script and params produce the same `contract_error`, and the UI re-reads
+  a part on every rebuild. `run_specs` is the only surface that re-measures a
+  cached failure (and the only exit from a cached `spec_declare` failure or a
+  memoized budget verdict) — say so in any message that tells a user to retry.
+- **A `check_that` predicate gets a COPY of the metrics and runs after the
+  built-in kinds.** Predicates are untrusted script code; one that writes to
+  the shared metrics dict must not be able to change what another check
+  measured. Records stay in declared order, and evaluation order is not a
+  contract a predicate may rely on.
 - **Three live name collisions:** `service._spec_cache` already means the
   PARAMS spec cache, `inspector.js`'s `renderedSpecJson` already means the
   PARAMS spec JSON, and `packet.py`'s `params_diff` rows already use

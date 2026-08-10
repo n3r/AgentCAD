@@ -979,6 +979,23 @@ class TestProjectSpecsWriter:
             "declared": 0, "specs": [], "declaration_error": None,
             "warnings": []}
 
+    def test_a_delete_that_the_filesystem_refuses_is_a_validation_error(
+            self, git_demo):
+        """Only 'it was already gone' is silence. Any other OSError — a
+        read-only checkout, a permission — must be a structured refusal naming
+        the path, not a post-state claiming the file no longer exists."""
+        service, registry, _runner = git_demo
+        path = service.store.path_of("demo") / "specs.py"
+        path.mkdir()                    # unlink() on a directory is an OSError
+
+        refused = registry.call("set_project_specs",
+                                {"project": "demo", "script": ""})
+
+        assert refused["error"]["type"] == "validation_error"
+        assert "specs.py" in refused["error"]["message"]
+        assert refused["error"]["details"]["path"] == "specs.py"
+        path.rmdir()
+
     def test_an_unknown_project_is_a_notfound_error(self, git_demo):
         _service, registry, _runner = git_demo
         assert registry.call("set_project_specs",

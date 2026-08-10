@@ -496,7 +496,10 @@ class AgentCADService:
             item["params"] = record.params
         return item
 
-    def check_interference(self, proj: str, min_volume: float = 0.001) -> dict:
+    def check_interference(self, proj: str, min_volume: float = 0.001,
+                           timeout_s: float | None = None) -> dict:
+        # timeout_s overrides the default ceiling for a caller working under a
+        # deadline (PRD-003's spec gate budget); None keeps the historical 600 s.
         resolved = self._resolved_instances(proj)
         items = []
         for inst in resolved:
@@ -508,7 +511,8 @@ class AgentCADService:
             return {"pairs": [], "checked": len(items)}
         result = self.kernel.request(
             "interference", {"items": items, "min_volume": min_volume},
-            timeout_s=600.0,  # large assemblies: pairs grow quadratically
+            # large assemblies: pairs grow quadratically
+            timeout_s=600.0 if timeout_s is None else timeout_s,
         )
         out = {"pairs": result["pairs"], "checked": len(items)}
         if result.get("skipped_mesh"):
