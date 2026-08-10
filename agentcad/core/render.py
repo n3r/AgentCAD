@@ -91,13 +91,43 @@ def _parse_color(color: str | None) -> np.ndarray:
     return np.asarray(rgb, dtype=np.float64)
 
 
+def _frame_extents(frame: dict, view: str) -> tuple[np.ndarray, np.ndarray]:
+    """2-D camera-space center and span of a world-space bbox's eight corners.
+
+    Same basis the auto-fit uses, so a frame equal to the scene's world bbox
+    reproduces the auto-fit's framing."""
+    try:
+        lo = np.asarray(frame["min"], dtype=np.float64).reshape(3)
+        hi = np.asarray(frame["max"], dtype=np.float64).reshape(3)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValidationError(
+            'frame must be {"min": [x, y, z], "max": [x, y, z]}'
+        ) from exc
+    corners = np.array(
+        [[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1])
+         for z in (lo[2], hi[2])],
+        dtype=np.float64,
+    )
+    right, up, _forward = _camera_basis(view)
+    cam = np.stack([corners @ right, corners @ up], axis=1)
+    mins, maxs = cam.min(axis=0), cam.max(axis=0)
+    return (mins + maxs) / 2.0, np.maximum(maxs - mins, 1e-9)
+
+
 def render_acm(
-    meshes: list[dict], view: str = "iso", width: int = 800, height: int = 600
+    meshes: list[dict], view: str = "iso", width: int = 800, height: int = 600,
+    frame: dict | None = None,
 ) -> bytes:
     """Render mesh dicts ({positions, normals, indices, transform, color}) to
     PNG bytes. ``transform`` is ``(position, rotation_deg)`` or None; shading
     is flat per-triangle (geometric normals), so ``normals`` is accepted but
-    unused in v1."""
+    unused in v1.
+
+    ``frame`` is a world-space bounding box ``{"min": [x, y, z], "max": [x, y,
+    z]}``; its eight corners are projected through the camera basis and their
+    2-D extents replace the auto-fit, so two renders of different geometry
+    share one camera and superimpose. Geometry outside the frame is clipped by
+    the viewport. Omit it (the default) for the per-mesh auto-fit."""
     if view not in VIEWS:
         raise ValidationError(f"view must be one of: {', '.join(VIEWS)}")
     if width < 1 or height < 1:
@@ -125,11 +155,15 @@ def render_acm(
             "render a single part_id or reduce mesh detail"
         )
 
-    # Fit the combined projected bbox with a margin, preserving aspect.
-    mins = np.min([cam[:, :2].min(axis=0) for cam, _i, _c in prepared], axis=0)
-    maxs = np.max([cam[:, :2].max(axis=0) for cam, _i, _c in prepared], axis=0)
-    center = (mins + maxs) / 2.0
-    span = np.maximum(maxs - mins, 1e-9)
+    # Fit the combined projected bbox with a margin, preserving aspect — or
+    # the caller's explicit frame, so a pair of renders shares one camera.
+    if frame is not None:
+        center, span = _frame_extents(frame, view)
+    else:
+        mins = np.min([cam[:, :2].min(axis=0) for cam, _i, _c in prepared], axis=0)
+        maxs = np.max([cam[:, :2].max(axis=0) for cam, _i, _c in prepared], axis=0)
+        center = (mins + maxs) / 2.0
+        span = np.maximum(maxs - mins, 1e-9)
     scale = min(
         width * (1.0 - 2.0 * _MARGIN) / span[0],
         height * (1.0 - 2.0 * _MARGIN) / span[1],
