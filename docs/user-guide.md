@@ -455,7 +455,11 @@ by default), then **Merge**. Three outcomes:
    ours (target)**, **Use theirs (source)**, **Use base**, or **Edit…** to
    author the merged text by hand and **Save edit**. Each pick posts
    immediately, so partial resolution is real — the footer counts "N of M
-   resolved" and **Complete merge** enables at zero outstanding. **Abort
+   resolved" and **Complete merge** enables at zero outstanding — unless the
+   merge was staged by a *proposal*, which holds it: the footer then says
+   "held by proposal:N" and the button reads **Complete in the proposal**,
+   because completing it here would land the change without re-checking that
+   proposal's gates. **Abort
    merge** throws the staged merge away. Until the merge completes, *nothing*
    on either branch has changed: the merge is staged, and reloading the page
    (or restarting the server) reopens the conflict view where you left it.
@@ -552,12 +556,15 @@ approvals policy — and is recorded in the audit log and the merge commit
 message.
 
 **Conflicts.** If the merge conflicts, the proposals modal hands off to the
-usual conflict view on a staged merge; resolve it there. Resolving is what
-lands the merge, so the proposal recognises its own staged merge in the commit
-and marks itself **merged** the next time it is read — with the real commit,
-its parents and the override it actually ran under. Merging the proposal again
-simply reports that merge; aborting the staged merge instead leaves the
-proposal exactly where it was.
+usual conflict view on a staged merge; resolve it there. That merge is **held
+by the proposal**: resolving the last conflict records your choices but lands
+nothing, and the conflict view says so — its Complete button reads *Complete in
+the proposal*. Go back to the proposal and merge it again. That is not
+ceremony: landing the merge from the conflict view would skip the gates
+entirely, so a proposal someone set back to *changes requested* while you were
+resolving would merge anyway. Merging the proposal re-checks the gates first
+and then finishes the staged merge, keeping the override it was staged with.
+Aborting the staged merge instead leaves the proposal exactly where it was.
 
 **If you decline "Merge anyway", finish the staged merge.** A merge the kernel
 blocks leaves the staged merge in place (ordinary `merge_branch` behaviour), so

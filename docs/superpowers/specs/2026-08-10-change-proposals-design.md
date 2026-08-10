@@ -1097,6 +1097,107 @@ active proposal names this branch" and then called through to the delete, and
 between the two, a proposal could be opened against a branch that was about to
 vanish. Both halves now run under the manager's `RLock`.
 
+## As built — the second review fold-back (the held merge)
+
+A second independent review found that the first fold-back had fixed the
+*bookkeeping* of a conflicted proposal merge without fixing the **gate bypass
+underneath it**. Eight more contract changes, all of them about evidence and
+who is allowed to act on it.
+
+**A merge a proposal staged cannot be landed by anything else.** The
+reconciler recorded the truth *after* `resolve_merge` finalized a proposal's
+merge — but finalizing it was itself the defect: the last resolution landed the
+branch with nobody re-checking the gates, so a proposal set to
+`changes_requested` (or one whose CI gate had gone red) merged anyway. So a
+staged merge now carries **`held_by`**, the one thing PRD-002 adds to
+`merge.py`: `MergeOrchestrator.merge` takes an optional `held_by`,
+`resolve` inherits it across re-stagings, and at zero outstanding a held merge
+returns `{merged: false, held: true, held_by, outstanding: 0, hint}` instead of
+validating and committing. `finalize_held(project, allow_invalid=None)` is the
+only way one lands, and it is `_merge` with the hold ignored — the same
+validation, the same CAS, the same `_finalize`, no duplicate path.
+`proposal_merge` re-evaluates its gates against the branches as they are *now*
+and then calls it, keeping the override the staged merge ran under unless this
+call asks for a stronger one. The conflict-modal UI reads `held_by` off
+`merge_status` and says so: the Complete button becomes *Complete in the
+proposal*. Nothing changes for a merge nobody holds — PRD-001's suite is
+untouched and green. The reconciler stays as a safety net for merges staged
+before the hold existed; the one thing it had to learn is that `resolve_merge`
+re-stages under a **new merge id** every time, so the hold, not the id, is the
+stable identity of "this proposal's merge".
+
+**Gate evaluation and the merge hold the source branch's turn.** Gates ran,
+then `MergeOrchestrator` resolved the source ref: another client could commit
+in between and land content no gate had seen. `ProposalManager._holding_source`
+mirrors `_holding_target` one branch over. The lock order is fixed (proposal
+takes the source, the orchestrator takes the target) and cannot deadlock,
+because `TurnLock.acquire` raises rather than blocking — two proposals merging
+in opposite directions produce an immediate `conflict_error`. The head the
+gates saw is recorded as `merge.gates_source_head`, and a merge that somehow
+consumed a different one is audited `gate_head_mismatch`.
+
+**A packet is pinned to heads it re-reads.** Both heads were read up front and
+the metrics, renders and booleans taken from the live worktrees afterwards, so
+a mid-build commit produced numbers from one revision under a label naming
+another. `build` now re-reads both heads when the measuring finishes: a moved
+head discards the build and takes it again, and a head that moves a second time
+persists the packet marked `stale`, with a warning. Each side's `_checkpoint`
+also runs under that branch's turn, best-effort — a turn someone else holds is
+not a reason to refuse a review packet, and the head re-read is the guarantee.
+
+**Freezing records staleness instead of erasing it.** Freezing sets
+`stale: false` (a pinned packet cannot be stale against today's heads), which
+silently swallowed the one staleness that mattered. The frozen packet now
+carries **`stale_at_merge`**: the merge record keeps `heads` (the two commits
+the merge really consumed — a fast-forward's `previous`/`commit` included), and
+a packet whose pinned heads differ says so, in `proposal_get`'s packet summary
+and as a UI chip.
+
+**`params_diff` covers the scripts' `PARAMS` declarations.** It compared
+manifest *overrides* only, so changing a `default`, a `min`, a `max` or a
+`type` in the script — which changes no override at all — produced an empty
+structured diff beside a full script diff (FR4). `packet.params_spec` reads the
+declaration out of the script text with `ast.literal_eval` — never `exec`; the
+kernel is the only thing that runs a script — and its rows carry
+`"source": "spec"` with a `"spec.<field>"` field name, beside the override rows,
+which are unchanged.
+
+**A failed git read is an error, not empty evidence.** A `cat-file` that
+returned non-zero became `{}` (which the delta reads as "this side removed
+every part") and both `git diff` callers ignored their return codes, while the
+packet still said `ok: true`. Failed evidence reads are `errors[]` entries with
+`fatal: true`, the command and the ref, and they force `ok: false`. The per-part
+FR8 degradation is untouched and still keeps `ok: true`.
+
+**A generation owns the whole diff directory**, not only the parts it wrote, so
+a part a later packet no longer contains stops serving the previous
+generation's mesh from its predictable URL; and the asset route maps a read
+that fails to 404 rather than 500, because a concurrent regeneration can unlink
+the file between the check and the read.
+
+**The id high-water mark is its own file.** "Ids are never reused" rested on
+`index.json`, which is explicitly a rebuildable cache: delete the newest
+proposal's directory, lose the index, and the highest id came round again.
+`proposals/next_id` is written **before** the directory it names exists — a
+crash between the two costs an id, it never reuses one — and every rebuild
+takes the max of the scan and that mark.
+
+### The two open questions, decided
+
+- **A gate provider that errors degrades to `pending`, and only `fail` blocks
+  — deliberately, for now.** PRD-002 owns the *shape* of a gate, not the
+  policy of what installed infrastructure being down should mean; PRD-003
+  (specs) and PRD-004 (checks) own their own blocking semantics and can return
+  `fail` for their own outages when they land. Until then a proposal is not
+  held hostage by a pack that crashed, and the gate says `pending` with the
+  error in its summary rather than passing silently.
+- **A stale approval still counts in v1**, and the review carries
+  `stale: true` so every surface can say so. Auto-invalidating approvals on a
+  new commit is the `re-request review` workflow, which is PRD-008's (review
+  threads and their resolution lifecycle) — doing half of it here would refuse
+  merges that today's policy allows with no way to re-approve except a second
+  round trip.
+
 ## PRD divergences to fold back
 
 1. **Proposal state lives at `<project>/.history/agentcad/proposals/`**, not
@@ -1142,3 +1243,20 @@ vanish. Both halves now run under the manager's `RLock`.
     proposal carries `staged_merge` while a merge it started is outstanding.
 15. **Only `approve`/`request_changes` count towards the approvals gate.** The
     PRD's "latest verdict per actor" means the latest *counted* verdict.
+16. **A conflicted proposal merge is *held*, and `merge.py` gains the seam for
+    it** (`held_by`, `finalize_held`). The PRD assumed the ordinary resolve
+    path would finish the merge; it would, and it would skip every gate doing
+    so. This is the one PRD-001 behavior change PRD-002 makes, and it is
+    inert for callers that do not pass `held_by`.
+17. **`params_diff` also diffs the scripts' `PARAMS` declarations**, as rows
+    carrying `"source": "spec"` and a `"spec.<field>"` field name. FR4 is about
+    parameter changes, and most of them are declarations, not overrides.
+18. **The packet's `ok` distinguishes failed EVIDENCE from degraded
+    measurement.** `ok: false` now means a git read failed (`errors[]` entry
+    with `fatal: true`, its command and its ref); FR8's per-part degradation
+    still keeps `ok: true`.
+19. **A frozen packet carries `stale_at_merge`**, and `proposal.merge` carries
+    `heads` (the commits the merge consumed) and `gates_source_head` (the one
+    its gates were evaluated against).
+20. **The id high-water mark is a file** (`proposals/next_id`), not only the
+    rebuildable index — "never reused" cannot rest on a cache.

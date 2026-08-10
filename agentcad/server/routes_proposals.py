@@ -147,8 +147,17 @@ def build_router(service, registry) -> APIRouter:
     @router.get("/projects/{proj}/proposals/{pid}/diff/{part}/{kind}.acm")
     def get_diff_mesh(proj: str, pid: str, part: str, kind: str):
         path = service.packets.diff_mesh_path(proj, pid, part, kind)
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            # A regeneration unlinked it between the check and the read: the
+            # asset is gone, which is a 404 — never a 500.
+            raise NotFoundError(
+                f"proposal {pid} has no {kind} geometry for part {part!r}",
+                {"id": pid, "part": part, "kind": kind},
+            ) from exc
         return Response(
-            content=path.read_bytes(),
+            content=content,
             media_type="application/octet-stream",
             headers={"Cache-Control": "no-store"},
         )

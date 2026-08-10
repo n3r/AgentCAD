@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import pkgutil
 import shutil
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -381,7 +382,8 @@ def test_the_packet_route_regenerates_only_when_asked(reviewable):
 
     detail = http.get(f"/api/projects/demo/proposals/{pid}").json()
     assert detail["packet"] == {"generated": regenerated.json()["generated"],
-                                "stale": False, "ok": True, "frozen": False}
+                                "stale": False, "stale_at_merge": False,
+                                "ok": True, "frozen": False}
 
 
 @pytest.mark.slow
@@ -413,6 +415,31 @@ def test_the_render_and_diff_asset_routes_serve_bytes(reviewable):
     assert http.get(
         f"/api/projects/demo/proposals/{pid}/render/new/ghost"
     ).status_code == 404
+
+
+@pytest.mark.slow
+def test_an_asset_unlinked_between_the_check_and_the_read_is_a_404(
+        reviewable, monkeypatch):
+    """A regeneration clears the whole diff directory, so the file a request
+    just found can be gone by the time it is read: that is a 404, never a 500
+    with a traceback in the browser console."""
+    _service, _registry, http, pid = reviewable
+    assert http.get(
+        f"/api/projects/demo/proposals/{pid}/packet").status_code == 200
+    url = f"/api/projects/demo/proposals/{pid}/diff/box/added.acm"
+    assert http.get(url).status_code == 200
+
+    inner = Path.read_bytes
+
+    def racing(self):
+        if self.suffix == ".acm":
+            raise FileNotFoundError(str(self))
+        return inner(self)
+
+    monkeypatch.setattr(Path, "read_bytes", racing)
+    lost = http.get(url)
+    assert lost.status_code == 404, lost.text
+    assert "added geometry for part 'box'" in lost.json()["error"]["message"]
 
 
 # --------------------------------------------------------------- 3. events

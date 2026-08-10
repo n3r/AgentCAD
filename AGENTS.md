@@ -213,10 +213,29 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   overtaken by one is discarded, not published.
 - **Only `approve`/`request_changes` count towards the approvals gate.** A
   `comment` changes no state, so it must not change the count either.
-- **A conflicted `proposal_merge` records `staged_merge`** and the proposal
-  reconciles itself on the next read when that merge lands through
-  `resolve_merge` (which knows nothing about proposals). The reconciler lives
-  in `proposals.py`; `merge.py` stays untouched.
+- **A merge staged by a proposal is HELD** (`merge.json`'s `held_by:
+  "proposal:<id>"`, the one thing PRD-002 adds to `merge.py`). `resolve_merge`
+  records resolutions and, at zero outstanding, answers `{held: true}` without
+  finalizing; only `MergeOrchestrator.finalize_held` lands it, and only
+  `proposal_merge` calls it — after re-evaluating the gates. Never "fix" that
+  by finalizing at zero outstanding: the gate would become something you can
+  walk past by conflicting. `proposal_merge` also records `staged_merge`, and
+  the proposal still reconciles itself on the next read if such a merge lands
+  behind its back — a safety net for merges staged before the hold existed.
+- **`proposal_merge` holds the SOURCE branch's turn** across gate evaluation
+  and the merge (`_holding_source`), because a gate result is a statement about
+  one source head. The orchestrator takes the TARGET's turn inside. That order
+  is fixed, and `TurnLock` raises instead of blocking, so it cannot deadlock.
+- **A packet re-reads both heads when it finishes measuring.** The heads are
+  read up front and the metrics/renders/booleans come off the live worktrees
+  after: a head that moved discards the build and takes it again, and one that
+  moves twice persists the packet marked `stale`. Never label evidence with a
+  head you have not re-checked.
+- **A git read that FAILS is not empty evidence.** A `cat-file` that returns
+  non-zero is not "this side deleted `project.json`" and a failed `git diff` is
+  not "no script changed": both are `errors[]` entries with `fatal: true` that
+  force `ok: false` (the per-part FR8 degradation is separate and keeps
+  `ok: true`).
 
 ## Conventions (match these)
 

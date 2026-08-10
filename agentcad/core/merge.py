@@ -21,6 +21,14 @@ type string. Nothing outside ``.history/agentcad/`` is touched while conflicts
 are outstanding — the merge is staged in a detached worktree until it is
 resolved (``resolve_merge``) or discarded (``merge_abort``).
 
+A staged merge may be **held** (``held_by``), which is the one thing a caller
+can add to it: ``resolve_merge`` then records resolutions but stops short of
+finalizing even at zero outstanding, and only the holder lands it, through
+``finalize_held``. PRD-002 is the holder — a proposal's gates would otherwise
+be something you could walk past by conflicting, since the last resolution
+would land the branch with nobody re-checking them. A merge nobody holds is
+untouched by any of this.
+
 Before a merge lands — fast-forward included, FR9 has no exemption — the merged
 tree is validated by the real kernel: changed parts rebuild, mates re-resolve,
 and interference is re-checked. Validation runs through the *ordinary* service
@@ -104,7 +112,10 @@ class MergeOrchestrator:
     # ------------------------------------------------------------ public api
 
     def merge(self, proj: str, source: str, target: str | None = None,
-              allow_invalid: bool = False) -> dict:
+              allow_invalid: bool = False, held_by: str | None = None) -> dict:
+        """``held_by`` marks the staged merge as belonging to a higher-level
+        workflow (PRD-002's proposals): see :meth:`finalize_held`. Callers that
+        pass nothing get exactly the behavior they always had."""
         with self._lock:
             canonical = self.branches._ensure_history(proj)
             self._require_merge_tree(canonical)
@@ -145,7 +156,7 @@ class MergeOrchestrator:
                 resolved = dict(state.get("resolved") or {})
             return self._merge(proj, canonical, source, target,
                                allow_invalid=allow_invalid, resolved=resolved,
-                               state=state)
+                               state=state, held_by=held_by)
 
     def resolve(self, proj: str, choices: dict) -> dict:
         with self._lock:
@@ -182,6 +193,49 @@ class MergeOrchestrator:
                 resolved=merged_choices, state=state,
             )
 
+    def finalize_held(self, proj: str, allow_invalid: bool | None = None) -> dict:
+        """Complete a staged merge that is HELD — the only way one lands.
+
+        A merge staged on behalf of a proposal must not be finalized by
+        ``resolve_merge``: the last resolution would land the branch without
+        anyone re-checking the proposal's gates, so the gate would be a thing
+        you could walk past by conflicting. ``resolve`` therefore records
+        resolutions and stops (see :meth:`_held_payload`), and the holder
+        re-evaluates its own gates and calls this. Nothing is re-implemented
+        here: it is ``_merge`` with the hold ignored, so validation,
+        finalization and the CAS are the same code the ordinary path runs.
+        """
+        with self._lock:
+            canonical = self.branches._ensure_history(proj)
+            state = self._load_state(canonical)
+            if state is None or not state.get("held_by"):
+                raise ConflictError(
+                    "no held merge is staged for this project",
+                    {"merge_id": (state or {}).get("id")},
+                )
+            if state["conflicts"]:
+                raise ConflictError(
+                    f"the staged merge still has {len(state['conflicts'])} "
+                    "outstanding conflict"
+                    f"{'' if len(state['conflicts']) == 1 else 's'}; resolve "
+                    "them with resolve_merge first",
+                    {"merge_id": state["id"],
+                     "outstanding": len(state["conflicts"])},
+                )
+            if self._heads_moved(canonical, state):
+                raise ConflictError(
+                    f"branch {state['target']!r} or {state['source']!r} moved "
+                    "since this merge was staged; abort and merge again",
+                    {"merge_id": state["id"]},
+                )
+            return self._merge(
+                proj, canonical, state["source"], state["target"],
+                allow_invalid=bool(state.get("allow_invalid"))
+                if allow_invalid is None else bool(allow_invalid),
+                resolved=dict(state.get("resolved") or {}), state=state,
+                honor_hold=False,
+            )
+
     def abort(self, proj: str) -> dict:
         with self._lock:
             canonical = self.store.canonical_path_of(proj)
@@ -200,7 +254,10 @@ class MergeOrchestrator:
     # ------------------------------------------------------------ the merge
 
     def _merge(self, proj, canonical, source, target, *, allow_invalid,
-               resolved, state) -> dict:
+               resolved, state, held_by=None, honor_hold=True) -> dict:
+        # A hold only ever stops a merge that was already STAGED: the call that
+        # stages it (conflicts, or a validation block) is the holder's own.
+        was_staged = state is not None
         target_tree = self.branches.tree_of(proj, target)
         source_tree = self.branches.tree_of(proj, source)
         self._check_turn(proj, target_tree)
@@ -274,10 +331,16 @@ class MergeOrchestrator:
             "allow_invalid": bool(allow_invalid),
             "conflicts": outstanding,
             "resolved": resolved,
+            # Sticky across re-stagings: resolve() rebuilds the state dict from
+            # scratch, and a hold that a resolution could drop is no hold.
+            "held_by": held_by if held_by is not None
+            else (state or {}).get("held_by"),
         }
         self._save_state(canonical, state)
         if outstanding:
             return self._conflict_payload(state)
+        if was_staged and state["held_by"] and honor_hold:
+            return self._held_payload(state)
 
         with self._holding_target(proj, target_tree):
             report = self._validate(
@@ -709,9 +772,34 @@ class MergeOrchestrator:
                 "base": state["base"],
                 "outstanding": len(conflicts),
                 "conflicts": conflicts,
+                "held_by": state.get("held_by"),
                 "hint": _HINT,
             },
         }}
+
+    @staticmethod
+    def _held_payload(state) -> dict:
+        """Every conflict is resolved and the merge STILL does not land: it
+        belongs to ``held_by``, whose own gates have to be re-checked against
+        the branches as they are now. Not an error — the resolutions were
+        recorded — so it comes back as an ordinary result saying who finishes
+        it."""
+        return {
+            "merged": False,
+            "held": True,
+            "held_by": state["held_by"],
+            "merge_id": state["id"],
+            "source": state["source"],
+            "target": state["target"],
+            "outstanding": 0,
+            "resolved": sorted(state.get("resolved") or {}),
+            "hint": (
+                f"every conflict is resolved, but this merge belongs to "
+                f"{state['held_by']}: complete it with proposal_merge (which "
+                "re-checks that proposal's gates first) or discard it with "
+                "merge_abort."
+            ),
+        }
 
     @staticmethod
     def _conflict_key(conflict) -> str:
@@ -729,6 +817,9 @@ class MergeOrchestrator:
             "outstanding": len(state["conflicts"]),
             "conflicts": state["conflicts"],
             "resolved": sorted(state.get("resolved") or {}),
+            # The UI's Complete button belongs to the holder, not to it.
+            "held": bool(state.get("held_by")),
+            "held_by": state.get("held_by"),
             "hint": _HINT,
         }
 

@@ -176,6 +176,25 @@ def test_ids_are_decimal_strings_from_one_and_are_never_reused(demo):
     assert _create(manager, title="p3")["id"] == "4"
 
 
+def test_an_id_is_never_reused_even_when_the_index_is_lost(demo):
+    """C10: the never-reuse contract used to rest on ``index.json``, which is
+    explicitly a rebuildable cache — rebuild it from the directories after the
+    newest proposal's directory was deleted and the highest id came round
+    again. The high-water mark is its own file, written before the directory
+    it names."""
+    _service, _registry, manager = demo
+    for index in range(10):
+        proposal = _create(manager, title=f"p{index}")
+        manager.update("demo", proposal["id"], state="closed")
+    assert (manager.store.dir_of("demo") / "next_id").read_text().strip() == "11"
+
+    shutil.rmtree(manager.store.dir_of("demo") / "10")
+    (manager.store.dir_of("demo") / "index.json").write_text(
+        "{not json", encoding="utf-8")
+
+    assert _create(manager, title="after")["id"] == "11"
+
+
 def test_the_index_is_a_cache_rebuilt_from_the_directories(demo):
     _service, _registry, manager = demo
     first = _create(manager)
@@ -906,16 +925,126 @@ def test_a_merge_with_no_packet_freezes_the_absence(demo):
     assert stored["ok"] is False and stored["parts"] == []
     assert "no review packet was generated" in stored["note"]
     assert manager.get("demo", pid)["packet"] == {
-        "generated": None, "stale": False, "ok": False, "frozen": True}
+        "generated": None, "stale": False, "stale_at_merge": False,
+        "ok": False, "frozen": True}
+
+
+def _unhold(service, proj: str = "demo") -> None:
+    """Strip ``held_by`` from the staged merge — a merge staged by a proposal
+    BEFORE the hold existed, which is the only case the reconciler still
+    answers for."""
+    path = (service.store.canonical_path_of(proj) / ".history" / "agentcad"
+            / "merge.json")
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state.pop("held_by", None)
+    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+@pytest.mark.slow
+def test_a_merge_a_proposal_staged_is_not_landed_by_resolve_merge(parts):
+    """C1: the legacy resolver used to finalize the moment the last conflict
+    was resolved — landing the branch with nobody re-checking the proposal's
+    gates, which makes the gate something you can walk past by conflicting. A
+    merge a proposal HOLDS records resolutions and stops there."""
+    service, registry, manager = parts
+    canonical = service.store.canonical_path_of("demo")
+    _on(service, "agent_a", "feat")
+    _script(registry, "box", BOX_V2_SCRIPT)
+    _on(service, "browser", "master")
+    _script(registry, "box", BOX_V3_SCRIPT)
+    pid = _propose_and_approve(service, manager)
+    before = service.history.resolve_branch(canonical, "master")
+
+    conflict = manager.merge("demo", pid)
+    assert conflict["error"]["details"]["held_by"] == f"proposal:{pid}"
+
+    resolved = registry.call("resolve_merge", {
+        "project": "demo", "choices": {"parts/box.py": {"take": "theirs"}}})
+
+    assert "error" not in resolved, resolved
+    assert resolved["held"] is True and resolved["merged"] is False
+    assert resolved["outstanding"] == 0
+    assert resolved["held_by"] == f"proposal:{pid}"
+    assert "proposal_merge" in resolved["hint"]
+    # nothing landed: the target is where it was and the merge is still staged
+    assert service.history.resolve_branch(canonical, "master") == before
+    status = registry.call("merge_status", {"project": "demo"})["merge"]
+    assert status["outstanding"] == 0 and status["held"] is True
+    assert manager.get("demo", pid)["proposal"]["state"] == "approved"
+
+
+@pytest.mark.slow
+def test_a_held_merge_refuses_when_a_gate_turned_red_while_it_waited(parts):
+    """The whole point of the hold: between staging and completion someone
+    requested changes, so the merge that the last resolution would have landed
+    must not land."""
+    service, registry, manager = parts
+    canonical = service.store.canonical_path_of("demo")
+    _on(service, "agent_a", "feat")
+    _script(registry, "box", BOX_V2_SCRIPT)
+    _on(service, "browser", "master")
+    _script(registry, "box", BOX_V3_SCRIPT)
+    pid = _propose_and_approve(service, manager)
+    before = service.history.resolve_branch(canonical, "master")
+
+    assert manager.merge("demo", pid)["error"]["type"] == "merge_conflict"
+    assert "error" not in registry.call("resolve_merge", {
+        "project": "demo", "choices": {"parts/box.py": {"take": "theirs"}}})
+    locks.set_client_id("browser")
+    manager.review("demo", pid, "request_changes")
+
+    with pytest.raises(ConflictError) as excinfo:
+        manager.merge("demo", pid)
+
+    assert excinfo.value.details["failing"] == "state"
+    assert [g["name"] for g in excinfo.value.details["gates"]]
+    assert service.history.resolve_branch(canonical, "master") == before
+    assert manager.get("demo", pid)["proposal"]["state"] == "changes_requested"
+    assert registry.call("merge_status", {"project": "demo"})["merge"]["held"]
+
+
+@pytest.mark.slow
+def test_a_held_merge_is_landed_by_proposal_merge_with_its_own_override(parts):
+    """The other side of the hold: gates still green, so ``proposal_merge``
+    finishes the merge the resolver left staged — through PRD-001's own
+    validation and finalization — and records the override it really ran
+    under."""
+    service, registry, manager = parts
+    canonical = service.store.canonical_path_of("demo")
+    _on(service, "agent_a", "feat")
+    _script(registry, "box", BROKEN_SCRIPT, builds=False)
+    _on(service, "browser", "master")
+    _script(registry, "box", BOX_V3_SCRIPT)
+    pid = _propose_and_approve(service, manager)
+    heads = [service.history.resolve_branch(canonical, "master"),
+             service.history.resolve_branch(canonical, "feat")]
+
+    assert manager.merge("demo", pid, allow_invalid=True)["error"]["type"] \
+        == "merge_conflict"
+    assert "error" not in registry.call("resolve_merge", {
+        "project": "demo", "choices": {"parts/box.py": {"take": "theirs"}}})
+
+    landed = manager.merge("demo", pid)  # no override passed: the staged one holds
+
+    assert "error" not in landed, landed
+    assert landed["merged"] is True and landed["parents"] == heads
+    assert landed["validation"]["ok"] is False  # it landed under the override
+    merge = manager.get("demo", pid)["proposal"]["merge"]
+    assert merge["allow_invalid"] is True and merge["commit"] == landed["commit"]
+    assert merge.get("reconciled") is None  # first-hand, not reconstructed
+    actions = [e["action"] for e in manager.get("demo", pid)["audit"]]
+    assert "override" in actions and actions[-1] in ("merged", "override")
+    assert registry.call("merge_status", {"project": "demo"})["merge"] is None
 
 
 @pytest.mark.slow
 def test_a_conflicted_merge_finished_by_resolve_merge_is_reconciled(parts):
-    """FR10/AC5 across the conflict path: ``resolve_merge`` completes the merge
-    knowing nothing about proposals, so the proposal recognises its OWN staged
-    merge in the commit that landed and records the truth — the real commit,
-    its real parents, and the ``allow_invalid`` the staged merge really ran
-    under (which a second ``proposal_merge`` used to overwrite with false)."""
+    """FR10/AC5 across the conflict path, for a merge staged BEFORE the hold
+    existed (the reconciler is now a safety net for that history, not the
+    primary path): ``resolve_merge`` completes the merge knowing nothing about
+    proposals, so the proposal recognises its OWN staged merge in the commit
+    that landed and records the truth — the real commit, its real parents, and
+    the ``allow_invalid`` the staged merge really ran under."""
     service, registry, manager = parts
     canonical = service.store.canonical_path_of("demo")
     _on(service, "agent_a", "feat")
@@ -928,6 +1057,7 @@ def test_a_conflicted_merge_finished_by_resolve_merge_is_reconciled(parts):
 
     conflict = manager.merge("demo", pid, allow_invalid=True)
     assert conflict["error"]["type"] == "merge_conflict"
+    _unhold(service)
     staged = manager.get("demo", pid)["proposal"]["staged_merge"]
     assert staged["merge_id"] == conflict["error"]["details"]["merge_id"]
     assert staged["allow_invalid"] is True
@@ -954,6 +1084,75 @@ def test_a_conflicted_merge_finished_by_resolve_merge_is_reconciled(parts):
     assert detail["packet"]["frozen"] is True
     assert [g["state"] for g in detail["gates"] if g["name"] == "validation"] \
         == ["fail"]
+
+
+@pytest.mark.slow
+def test_a_source_commit_between_the_gates_and_the_merge_is_refused(
+        parts, monkeypatch):
+    """C4/FR11: a gate result is a statement about a specific source head. The
+    source branch's turn is held across gate evaluation and the merge, so a
+    second client cannot slip a commit in between and have it land under
+    somebody else's green gates."""
+    service, registry, manager = parts
+    canonical = service.store.canonical_path_of("demo")
+    _on(service, "agent_b", "feat")
+    _script(registry, "box", BOX_V2_SCRIPT)
+    _on(service, "browser", "master")
+    _script(registry, "pin", BOX_V3_SCRIPT)
+    pid = _propose_and_approve(service, manager)
+    head = service.history.resolve_branch(canonical, "feat")
+
+    refused = []
+    inner = service.merges.merge
+
+    def racing(*args, **kwargs):
+        # Another client commits on the source between the gates and the merge
+        # — the interleaving that used to land content no gate ever saw.
+        locks.set_client_id("agent_b")
+        try:
+            refused.append(registry.call(
+                "update_part_script",
+                {"project": "demo", "part_id": "box",
+                 "script": BOX_V3_SCRIPT}))
+        finally:
+            locks.set_client_id("browser")
+        return inner(*args, **kwargs)
+
+    monkeypatch.setattr(service.merges, "merge", racing)
+    result = manager.merge("demo", pid)
+
+    assert refused and refused[0].get("error"), refused
+    assert refused[0]["error"]["type"] == "conflict_error"
+    assert "locked by browser" in refused[0]["error"]["message"]
+    assert service.history.resolve_branch(canonical, "feat") == head
+    assert "error" not in result, result
+    assert result["parents"][1] == head
+    assert result["proposal"]["merge"]["gates_source_head"] == head
+    assert [e["action"] for e in manager.get("demo", pid)["audit"]
+            if e["action"] == "gate_head_mismatch"] == []
+
+
+@pytest.mark.slow
+def test_a_source_turn_held_by_someone_else_is_a_clean_conflict_error(parts):
+    """The deadlock question, answered by ``TurnLock``: it never blocks, it
+    raises. The proposal takes the SOURCE turn and the orchestrator takes the
+    TARGET's, so two proposals merging in opposite directions cannot wait on
+    each other — the loser gets an ordinary ``conflict_error``, at once."""
+    service, _registry, manager = parts
+    pid = _propose_and_approve(service, manager)
+    tree = service.branches.tree_of("demo", "feat")
+    with service.branches.pinned("demo", tree):
+        key = service.store.lock_key("demo")
+    service.turnlock.acquire(key, "agent_b")
+
+    started = time.monotonic()
+    with pytest.raises(ConflictError) as excinfo:
+        manager.merge("demo", pid)
+
+    assert time.monotonic() - started < 5.0  # it raised, it did not wait
+    assert excinfo.value.details["holder"] == "agent_b"
+    assert manager.get("demo", pid)["proposal"]["state"] == "approved"
+    assert service.merges.status("demo")["merge"] is None
 
 
 @pytest.mark.slow

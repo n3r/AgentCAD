@@ -146,9 +146,9 @@ agents get backwards: **`ours` = the target branch** (what you merge into),
 | `version_tag` | **project, name**, message | Names the current state of your branch as an immutable version (an annotated git tag): `{tag, commit, versions}`. Re-using a name is a `conflict_error` — versions never move, and there is deliberately no delete tool. Restore one with `project_restore {commit: "<name>"}`. |
 | `list_versions` | **project** | `{versions: [{name, commit, ts, author, message, referrers}]}`, newest first. `referrers` is the forward-compatibility hook for releases (PRD-015). |
 | `merge_branch` | **project, source**, target, allow_invalid | Merges `source` (theirs) into `target` (ours; default: your current branch). Fast-forwards when the target has nothing of its own (`{fast_forward: true}`) — **still validated**, because an edit persists before its rebuild fails, so a branch can carry a script that does not build; merging an ancestor returns `{already_up_to_date: true}` with `validation: null`. Otherwise a real three-way merge: part scripts via git's textual merge, `project.json` **always** re-merged key-wise (per part, param, instance, material, PMI section). Conflicts come back as `merge_conflict` with the merge **staged** — nothing outside `.history/agentcad/` is written and no ref moves until you resolve or abort. On success: one merge commit with **two parents**, plus `{commit, parents, conflicts_resolved, validation, project}`. Re-running it on a staged merge whose branches have moved is a `conflict_error` — the recorded resolutions no longer apply, so discard it with `merge_abort` and merge again rather than losing them silently. |
-| `resolve_merge` | **project, choices** | Resolves the staged merge. `choices` maps a conflict's `path` (scripts, e.g. `"parts/flange.py"`) or `key` (manifest, e.g. `"parts.flange.params.bolt_d"`) to `{"take": "ours"\|"theirs"\|"base"}`, or `{"content": "<full file text>"}` for a script, or `{"value": …}` for a manifest key. In a manifest conflict a side that has **no value** (it deleted the key, or both branches added it so there is no base) is **omitted** from the payload — `"ours": null` means that side authored a JSON `null`, and taking it writes that null rather than deleting the key. Each manifest conflict also carries `path`, the exact key segments, because an id may contain a `.` (`parts.body.solid_materials.wall.inner`); `key` remains the dotted string you address the choice by. A `kind: "binary"` conflict (anything under `imports/`) carries `sides: {base\|ours\|theirs: {bytes, sha256} \| null}` instead of text and takes a side only — `content` is a `validation_error`. Taking a side where the file is absent (that branch deleted it) **deletes** it; taking `base` when there is none (both branches added the file) is a `validation_error` naming the valid choices. Partial resolution is fine — the reply lists what is still outstanding — and the merge completes (validation pass included) as soon as nothing is. Unknown path/key → `validation_error`, staged merge untouched. |
+| `resolve_merge` | **project, choices** | Resolves the staged merge. `choices` maps a conflict's `path` (scripts, e.g. `"parts/flange.py"`) or `key` (manifest, e.g. `"parts.flange.params.bolt_d"`) to `{"take": "ours"\|"theirs"\|"base"}`, or `{"content": "<full file text>"}` for a script, or `{"value": …}` for a manifest key. In a manifest conflict a side that has **no value** (it deleted the key, or both branches added it so there is no base) is **omitted** from the payload — `"ours": null` means that side authored a JSON `null`, and taking it writes that null rather than deleting the key. Each manifest conflict also carries `path`, the exact key segments, because an id may contain a `.` (`parts.body.solid_materials.wall.inner`); `key` remains the dotted string you address the choice by. A `kind: "binary"` conflict (anything under `imports/`) carries `sides: {base\|ours\|theirs: {bytes, sha256} \| null}` instead of text and takes a side only — `content` is a `validation_error`. Taking a side where the file is absent (that branch deleted it) **deletes** it; taking `base` when there is none (both branches added the file) is a `validation_error` naming the valid choices. Partial resolution is fine — the reply lists what is still outstanding — and the merge completes (validation pass included) as soon as nothing is, **unless the staged merge is held**: a merge staged by `proposal_merge` carries `held_by: "proposal:<id>"`, and at zero outstanding this returns `{held: true, merged: false, outstanding: 0, held_by, hint}` having landed nothing — completing it is `proposal_merge`'s, which re-checks that proposal's gates first. `merge_abort` still discards it. Unknown path/key → `validation_error`, staged merge untouched. |
 | `merge_abort` | **project** | Discards the staged merge (its worktree and state); no branch moves. `{aborted: false}` when nothing was staged. |
-| `merge_status` | **project** | `{merge: {id, source, target, base, by, created, outstanding, conflicts, resolved} \| null}` — re-enter a merge you or another client staged earlier (e.g. after a reload or a server restart). |
+| `merge_status` | **project** | `{merge: {id, source, target, base, by, created, outstanding, conflicts, resolved, held, held_by} \| null}` — re-enter a merge you or another client staged earlier (e.g. after a reload or a server restart). |
 
 **The validation pass (FR9).** Before **any** merge lands — fast-forward
 included — the merged tree is rebuilt by the real kernel: changed parts build,
@@ -219,7 +219,10 @@ summary, parts, assembly, manifest, binary, warnings, errors}` — pinned to bot
 branch heads. Per changed part: `script_diff` (unified text plus `hunks`
 anchors), `params_diff` (`added`/`removed`/`changed` rows; a scalar override is
 one row with `"field": "value"`, a full parameter spec one row per changed
-field), `build` per side, `metrics` (`{old, new, delta, pct}` for
+field — and the scripts' own `PARAMS` **declarations** are diffed too, as rows
+carrying `"source": "spec"` and a `"spec.<field>"` field name, because changing
+a `default`, a `max` or a `type` in the script changes no override at all),
+`build` per side, `metrics` (`{old, new, delta, pct}` for
 `volume_mm3`/`mass_g`/`area_mm2`, a per-axis `center_of_mass` delta, both
 bounding boxes plus `size_delta_mm`), `geom_diff` (`added_mm3`/`removed_mm3`
 computed by kernel booleans, with ACM1 overlay meshes), and `renders` — before
@@ -238,14 +241,22 @@ Four things to know before you consume it:
   and `metrics.<x>.<side>: null`; a failed or impossible boolean is
   `geom_diff.available: false` with a reason (`skipped: "mesh"` for an imported
   reference part — the `check_interference` rule); anything unexpected lands in
-  `warnings`/`errors`. `ok` is `false` only when no packet could be produced at
-  all.
+  `warnings`/`errors`. `ok` is `false` only when a piece of **evidence** could
+  not be read: a git command that failed (`cat-file` on a manifest, a `diff`)
+  is an `errors[]` entry carrying `fatal: true`, the `command` and the `ref`,
+  and it forces `ok: false` rather than passing an empty result off as "nothing
+  changed" or "the whole project was deleted".
 - **Unchanged parts cost nothing.** A part whose content hash matches on both
   sides short-circuits to `geom_diff: {available: true, unchanged: true}` with
   zero kernel work — packet cost scales with the change, not the project.
 - **`stale` is honest, not fatal.** A moved head marks the packet stale and it
   regenerates on the next view; reviews made against an older source head stay
-  counted but are marked `stale`.
+  counted but are marked `stale`. A head that moves *during* a build discards
+  that build and takes it again; a head that moves twice persists the packet
+  marked `stale` rather than labelling mixed evidence with a head it no longer
+  describes. A **frozen** packet is never `stale` (it is pinned) but carries
+  `stale_at_merge: true` when the commits it describes are not the commits the
+  merge landed.
 
 **Gating and policy.** `proposal_merge` checks gates **first**: a red one is a
 `conflict_error` naming it in `details.failing` with the full `details.gates`,
@@ -255,7 +266,12 @@ and nothing is merged. Policy v1 is two per-project fields in
 does not count). Then PRD-001's merge runs: a `merge_conflict` comes back at
 HTTP 200 with the merge staged and the proposal still open (resolve with
 `resolve_merge`, or discard with `merge_abort`, then call `proposal_merge`
-again), and a failing kernel validation pass is a `validation_error` carrying
+again). That staged merge is **held** by the proposal: `resolve_merge` records
+the resolutions and answers `{held: true, held_by: "proposal:<id>",
+outstanding: 0}` **without landing anything**, because landing it there would
+walk straight past the gates — only `proposal_merge` completes it, after
+re-evaluating them. A failing kernel validation pass is a `validation_error`
+carrying
 `details.validation`. **`allow_invalid: true` overrides the kernel validation
 gate only** — it never waives the approvals policy — and it is recorded in the
 audit log, on the proposal and in the merge commit message.

@@ -199,7 +199,15 @@ def register(registry, service) -> None:
         "proposal is never measured again — a packet built then would "
         "describe the branches as they are NOW: merging freezes the packet, "
         "or, when none was ever generated, freezes that absence as "
-        "{frozen: true, generated: null, ok: false, note: '…'}.",
+        "{frozen: true, generated: null, ok: false, note: '…'}. A frozen "
+        "packet also carries stale_at_merge: true when the commits it "
+        "describes are not the commits the merge landed. params_diff covers "
+        "manifest overrides AND the scripts' own PARAMS declarations — the "
+        "latter as rows with source: 'spec' and a 'spec.<field>' field name. "
+        "ok is false only when a piece of EVIDENCE could not be read: such a "
+        "git failure lands in errors[] naming the command and the ref, while "
+        "an ordinary per-part failure keeps ok true and reports itself in its "
+        "own section.",
         schema(
             {
                 "project": _PROJ,
@@ -279,12 +287,13 @@ def register(registry, service) -> None:
         "packet frozen. Conflicts come back as {error: {type: "
         "'merge_conflict'}} with the merge staged and the proposal still "
         "open — resolve it with resolve_merge (or discard it with "
-        "merge_abort) and call proposal_merge again. resolve_merge lands that "
-        "merge itself, so the proposal recognises its own staged merge in the "
-        "commit that appears and records the truth (real commit, real "
-        "parents, the allow_invalid the staged merge ran under) on the next "
-        "read; calling proposal_merge again then reports that merge instead "
-        "of merging an ancestor. A merge whose geometry fails the kernel "
+        "merge_abort) and call proposal_merge again. That staged merge is "
+        "HELD by this proposal: resolve_merge records the resolutions but "
+        "will NOT land it (it answers {held: true, outstanding: 0}), because "
+        "landing it there would skip the gates entirely. proposal_merge "
+        "re-evaluates the gates against the branches as they are then and "
+        "finishes it, keeping the allow_invalid the staged merge ran under. A "
+        "merge whose geometry fails the kernel "
         "validation pass is a validation_error carrying details.validation; "
         "re-run with allow_invalid: true to land it anyway, which is recorded "
         "in the audit log, on the proposal and in the merge commit message. "

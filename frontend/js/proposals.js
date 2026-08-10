@@ -734,6 +734,15 @@ function packetHeader() {
   );
   if (packet.frozen) {
     wrap.appendChild(span("prop-flag", "frozen"));
+    if (packet.stale_at_merge) {
+      // It was frozen, but it was already behind: the commits it describes
+      // are not the commits that merged.
+      const chip = span("prop-flag stale", "stale at merge");
+      chip.title =
+        "This packet was generated against earlier commits than the ones the " +
+        "merge landed — the source moved after it was measured";
+      wrap.appendChild(chip);
+    }
   } else if (packet.stale) {
     wrap.appendChild(span("prop-flag stale", "stale"));
   }

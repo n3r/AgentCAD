@@ -17,6 +17,7 @@ import json
 import re
 import shutil
 import struct
+import subprocess
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -26,13 +27,14 @@ import pytest
 
 from agentcad.core import locks
 from agentcad.core.branches import pinned_tree_var
-from agentcad.core.model import ConflictError, ValidationError
+from agentcad.core.model import ConflictError, NotFoundError, ValidationError
 from agentcad.core.packet import (
     PacketBuilder,
     assembly_delta,
     changed_parts,
     metric_delta,
     params_delta,
+    params_spec,
 )
 from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
@@ -153,6 +155,53 @@ def test_params_delta_reports_spec_fields_one_row_each():
         {"name": "wall", "field": "unit", "old": "mm", "new": "in"},
         {"name": "wall", "field": "description", "old": None, "new": "wall"},
     ]
+
+
+def test_params_delta_reports_script_declaration_changes():
+    """FR4: a default or a max edited in the script changes no manifest
+    override at all, so the structured diff used to be empty while the script
+    diff was full."""
+    old = 'PARAMS = {"wall": {"default": 2.0, "min": 1.0, "max": 5.0}}\n'
+    new = 'PARAMS = {"wall": {"default": 1.6, "min": 1.0, "max": 8.0},\n' \
+          '          "fresh": {"default": 1.0}}\n'
+
+    delta = params_delta(_entry("b"), _entry("b"),
+                         params_spec(old), params_spec(new))
+
+    assert delta["changed"] == [
+        {"name": "wall", "field": "spec.default", "old": 2.0, "new": 1.6,
+         "source": "spec"},
+        {"name": "wall", "field": "spec.max", "old": 5.0, "new": 8.0,
+         "source": "spec"},
+    ]
+    assert delta["added"] == [
+        {"name": "fresh", "value": {"default": 1.0}, "source": "spec"}]
+    assert delta["removed"] == []
+
+
+def test_params_delta_still_reports_overrides_beside_the_declaration():
+    delta = params_delta(
+        _entry("b", params={"wall": 2.0}), _entry("b", params={"wall": 3.0}),
+        params_spec('PARAMS = {"wall": {"default": 2.0}}\n'),
+        params_spec('PARAMS = {"wall": {"default": 2.0}}\n'),
+    )
+    assert delta["changed"] == [
+        {"name": "wall", "field": "value", "old": 2.0, "new": 3.0}]
+
+
+def test_params_spec_reads_a_declaration_without_executing_the_script():
+    """The kernel is the only thing that runs a script; a review packet must
+    never become a reason to."""
+    spec = params_spec(
+        'raise SystemExit("this script must not run")\n'
+        'PARAMS = {"s": {"default": 3.0, "type": "number"}}\n'
+    )
+    assert spec == {"s": {"default": 3.0, "type": "number"}}
+    # not a literal, so it is not guessed at
+    assert params_spec('SIZE = 3.0\nPARAMS = {"s": {"default": SIZE}}\n') == {}
+    assert params_spec("def build(p):\n    return None\n") == {}
+    assert params_spec("this is not python") == {}
+    assert params_spec(None) == {}
 
 
 def _instance(iid: str, part: str = "box", pos=(0.0, 0.0, 0.0),
@@ -383,7 +432,12 @@ class TestPacketBuilder:
         assert "+    return Box(p.s, p.s, p.s)" in section["script_diff"]["unified"]
         assert section["script_diff"]["added_lines"] > 0
         assert section["script_diff"]["hunks"][0]["header"].startswith("@@")
-        assert section["params_diff"]["added"] == [{"name": "s", "value": 24.0}]
+        added = section["params_diff"]["added"]
+        assert added[0] == {"name": "s", "value": 24.0}  # the override
+        # …and the script's own PARAMS declaration, which renamed size -> s
+        assert [r["name"] for r in added if r.get("source") == "spec"] == ["s"]
+        assert [(r["name"], r.get("source"))
+                for r in section["params_diff"]["removed"]] == [("size", "spec")]
         assert section["build"] == {"old": {"ok": True}, "new": {"ok": True}}
         assert section["metrics"]["volume_mm3"]["new"] == pytest.approx(24.0 ** 3)
         assert section["geom_diff"]["available"] is True
@@ -614,6 +668,175 @@ class TestPacketBuilder:
         assert regenerated["source_head"] == service.history.resolve_branch(
             service.store.canonical_path_of("demo"), "feat")
 
+    @pytest.mark.slow
+    def test_a_script_only_params_change_reaches_the_structured_diff(self, demo):
+        """FR4 end to end: both sides declare the same parameter, the source
+        moves its default and its max, and no manifest override changes."""
+        service, registry = demo
+        tweaked = CUBE.replace('"default": 20.0', '"default": 16.0') \
+                      .replace('"max": 50.0', '"max": 60.0')
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", tweaked)
+        _on(service, "browser", "master")
+        assert "error" not in _script(registry, "box", CUBE)
+        pid = self._propose(registry)
+
+        packet = PacketBuilder(service).packet("demo", pid)
+
+        section = packet["parts"][0]
+        assert section["changed_by"] == ["script"]  # no override moved
+        assert section["params_diff"]["changed"] == [
+            {"name": "s", "field": "spec.default", "old": 20.0, "new": 16.0,
+             "source": "spec"},
+            {"name": "s", "field": "spec.max", "old": 50.0, "new": 60.0,
+             "source": "spec"},
+        ]
+
+    @pytest.mark.slow
+    def test_a_source_commit_mid_build_forces_a_rebuild(self, demo, monkeypatch):
+        """C4: the heads are read up front and the metrics, renders and
+        booleans afterwards, off the live worktrees. A commit that lands in
+        between used to produce a packet whose numbers came from one revision
+        and whose label named another."""
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE)
+        pid = self._propose(registry)
+        canonical = service.store.canonical_path_of("demo")
+        tree = service.branches.tree_of("demo", "feat")
+
+        commits = []
+        inner = PacketBuilder._renders
+
+        def committing(self, *args, **kwargs):
+            result = inner(self, *args, **kwargs)
+            if not commits:  # once: the second pass must see a still head
+                (tree / "notes.txt").write_text("note\n", encoding="utf-8")
+                service.history.snapshot(tree, "note")
+                commits.append(service.history.resolve_branch(canonical, "feat"))
+            return result
+
+        monkeypatch.setattr(PacketBuilder, "_renders", committing)
+        packet = PacketBuilder(service).packet("demo", pid)
+
+        assert commits, "the hook never fired"
+        assert packet["source_head"] == commits[0]  # rebuilt against the new head
+        assert packet["stale"] is False
+
+    @pytest.mark.slow
+    def test_a_source_that_keeps_moving_is_marked_stale_not_mislabelled(
+            self, demo, monkeypatch):
+        """The honest fallback when one rebuild is not enough: the packet says
+        it is already out of date rather than labelling mixed evidence with a
+        head it no longer describes."""
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE)
+        pid = self._propose(registry)
+        tree = service.branches.tree_of("demo", "feat")
+
+        commits = []
+        inner = PacketBuilder._renders
+
+        def committing(self, *args, **kwargs):
+            result = inner(self, *args, **kwargs)
+            commits.append(len(commits))
+            (tree / "notes.txt").write_text(f"note {len(commits)}\n",
+                                            encoding="utf-8")
+            service.history.snapshot(tree, "note")
+            return result
+
+        monkeypatch.setattr(PacketBuilder, "_renders", committing)
+        packet = PacketBuilder(service).packet("demo", pid)
+
+        assert len(commits) == 2  # measured twice, then persisted honestly
+        assert packet["stale"] is True
+        assert any("moved while this packet" in w for w in packet["warnings"])
+
+    @pytest.mark.slow
+    def test_a_failed_git_read_is_a_named_error_not_empty_evidence(
+            self, demo, monkeypatch):
+        """C8: a `git diff` whose return code nobody checked became "no script
+        changed", and the packet still said ok."""
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE)
+        pid = self._propose(registry)
+        inner = service.history._run
+
+        def failing(path, *args, **kwargs):
+            if args[:2] == ("diff", "--no-color"):
+                return subprocess.CompletedProcess(
+                    ["git", *args], 128, "", "fatal: bad object HEAD")
+            return inner(path, *args, **kwargs)
+
+        monkeypatch.setattr(service.history, "_run", failing)
+        packet = PacketBuilder(service).packet("demo", pid)
+
+        assert packet["ok"] is False
+        fatal = [e for e in packet["errors"] if e.get("fatal")]
+        assert [e["stage"] for e in fatal] == ["script_diffs"]
+        assert fatal[0]["command"].startswith("git diff --unified=3")
+        assert "bad object" in fatal[0]["error"]["message"]
+        assert packet["parts"][0]["script_diff"] is None
+
+    @pytest.mark.slow
+    def test_a_manifest_that_cannot_be_read_is_not_a_deleted_project(
+            self, demo, monkeypatch):
+        """The same lie one step out: a ``cat-file`` that failed — the ref is
+        gone, the object is corrupt, the side deleted ``project.json`` — came
+        back as ``{}``, which the delta reads as "this side removed every
+        part"."""
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE)
+        pid = self._propose(registry)
+        canonical = service.store.canonical_path_of("demo")
+        head = service.history.resolve_branch(canonical, "feat")
+        inner = service.history._run
+
+        def failing(path, *args, **kwargs):
+            if args[:2] == ("cat-file", "blob") \
+                    and args[2] == f"{head}:project.json":
+                return subprocess.CompletedProcess(
+                    ["git", *args], 128,
+                    "", f"fatal: path 'project.json' does not exist in {head}")
+            return inner(path, *args, **kwargs)
+
+        monkeypatch.setattr(service.history, "_run", failing)
+        packet = PacketBuilder(service).packet("demo", pid)
+
+        assert packet["ok"] is False
+        fatal = [e for e in packet["errors"] if e.get("fatal")]
+        assert [e["stage"] for e in fatal] == ["manifest"]
+        assert "project.json" in fatal[0]["command"]
+        assert fatal[0]["ref"] == "feat"
+        assert any("could not be read" in w for w in packet["warnings"])
+
+    @pytest.mark.slow
+    def test_a_regeneration_owns_the_whole_diff_directory(self, demo):
+        """C9: regeneration only removed the meshes of the parts it processed,
+        so a part a later packet no longer has kept serving the previous
+        generation's geometry from its predictable URL."""
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE_HOLE)
+        pid = self._propose(registry)
+        builder = PacketBuilder(service)
+        assert builder.packet("demo", pid)["parts"][0]["geom_diff"]["available"]
+        diff_dir = service.proposals.store.asset_dir("demo", pid, "diff")
+        assert list(diff_dir.glob("box.*.acm"))
+
+        # the source goes back to what the target has: the proposal now
+        # changes nothing, so the packet has no part rows at all
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", BOX_SCRIPT)
+        assert builder.packet("demo", pid)["parts"] == []
+
+        assert list(diff_dir.glob("*")) == []
+        with pytest.raises(NotFoundError):
+            service.packets.diff_mesh_path("demo", pid, "box", "removed")
+
     def test_a_frozen_packet_refuses_to_regenerate(self, demo):
         """FR12: the evidence a decision was made on is never regenerated."""
         service, registry = demo
@@ -661,6 +884,47 @@ class TestPacketBuilder:
         actions = [e["action"]
                    for e in service.proposals.store.audit("demo", pid)]
         assert "packet_generated" not in actions
+
+    @pytest.mark.slow
+    def test_a_packet_frozen_behind_the_commits_that_merged_says_so(self, demo):
+        """C2: freezing sets ``stale: false`` (a pinned packet cannot be stale
+        against today's heads) and that used to swallow the one staleness that
+        matters — the evidence describes older commits than the ones that
+        landed."""
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE)
+        pid = self._propose(registry)
+        builder = PacketBuilder(service)
+        generated = builder.packet("demo", pid)
+        tree = service.branches.tree_of("demo", "feat")
+        (tree / "notes.txt").write_text("note\n", encoding="utf-8")
+        service.history.snapshot(tree, "note")  # the source moves on
+
+        self._approve_and_merge(registry, pid)
+
+        frozen = builder.packet("demo", pid)
+        assert frozen["frozen"] is True and frozen["stale"] is False
+        assert frozen["stale_at_merge"] is True
+        assert frozen["source_head"] == generated["source_head"]
+        assert service.proposals.get("demo", pid)["packet"] == {
+            "generated": generated["generated"], "stale": False,
+            "stale_at_merge": True, "ok": True, "frozen": True}
+
+    @pytest.mark.slow
+    def test_a_packet_that_described_what_merged_is_not_stale_at_merge(self, demo):
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE)
+        pid = self._propose(registry)
+        builder = PacketBuilder(service)
+        builder.packet("demo", pid)
+
+        self._approve_and_merge(registry, pid)
+
+        assert builder.packet("demo", pid)["stale_at_merge"] is False
+        assert service.proposals.get(
+            "demo", pid)["packet"]["stale_at_merge"] is False
 
     @pytest.mark.slow
     def test_a_terminal_proposal_is_never_measured_again(self, demo):

@@ -18,6 +18,7 @@ which follows the caller's branch.
 ```
 .history/agentcad/proposals/
   index.json     {"next_id": 4, "proposals": [summary, …]}   (a CACHE)
+  next_id        4        (the id high-water mark — NOT a cache)
   policy.json    {"approvals_required": 1, "self_approve": false}  (optional)
   3/proposal.json · audit.jsonl · packet.json · renders/ · diff/
 ```
@@ -29,7 +30,10 @@ both lose that property and risk truncating the log on a crash). ``index.json``
 is rebuilt from the per-proposal directories whenever it is missing or
 unparseable, so it is never the source of truth; ids are decimal strings
 allocated from ``next_id``, which only ever increments — a directory deleted by
-hand does not hand its id to the next proposal.
+hand does not hand its id to the next proposal. The high-water mark therefore
+lives in its own one-line ``next_id`` file, not only in the rebuildable index:
+rebuilding from the directories alone would forget the id of a proposal that
+was deleted, and hand it out again.
 
 **Attribution.** The actor is ``locks.current_client_id()`` — the identity turn
 locks and branch checkouts already key on — and :func:`actor_kind` derives
@@ -49,6 +53,7 @@ import json
 import re
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import locks
@@ -208,6 +213,10 @@ class ProposalStore:
                 "next_id": max(
                     index["next_id"],
                     max((int(p["id"]) for p in proposals), default=0) + 1,
+                    # The high-water mark outlives both the index and the
+                    # directories: it is the only thing that remembers an id
+                    # whose proposal was deleted by hand.
+                    self._high_water(proj),
                 ),
                 "proposals": _sorted([_summary(p) for p in proposals]),
             }
@@ -217,16 +226,39 @@ class ProposalStore:
 
     def allocate_id(self, proj: str) -> str:
         """The next never-used id. Monotonic even when a proposal directory
-        was removed by hand: ``next_id`` only increments."""
+        was removed by hand AND the index was then lost: the id counter is
+        persisted separately, and written BEFORE the directory it names
+        exists — a crash in between costs an id, it never reuses one."""
         with self._lock:
             self.list(proj)  # refreshes next_id past any hand-made directory
             index, _ok = self._read_index(proj)
-            pid = str(max(1, int(index["next_id"])))
+            pid = str(max(1, int(index["next_id"]), self._high_water(proj)))
+            self._write_high_water(proj, int(pid) + 1)
             index["next_id"] = int(pid) + 1
             self._write_index(proj, index)
             return pid
 
     # ---------------------------------------------------------------- index
+
+    def _high_water_path(self, proj: str) -> Path:
+        return self.dir_of(proj) / "next_id"
+
+    def _high_water(self, proj: str) -> int:
+        """The lowest id never handed out, from its own tiny file. 0 when
+        there is none (a store written before this file existed)."""
+        try:
+            value = int(
+                self._high_water_path(proj).read_text(encoding="utf-8").strip()
+            )
+        except (OSError, ValueError):
+            return 0
+        return value if value >= 1 else 0
+
+    def _write_high_water(self, proj: str, value: int) -> None:
+        if value > self._high_water(proj):
+            ProjectStore._atomic_write(
+                self._high_water_path(proj), f"{value}\n".encode()
+            )
 
     def _read_index(self, proj: str) -> tuple[dict, bool]:
         """(index, parsed_cleanly). A missing or corrupt index is not an
@@ -538,18 +570,33 @@ class ProposalManager:
         packet frozen, audit ``merged`` plus ``override`` when the kernel
         gate was overridden); a returned ``merge_conflict`` is passed through
         **verbatim** with only ``details.proposal`` added, leaving the state
-        alone so ``resolve_merge`` and a second call finish the job; a raised
-        blocked-validation ``validation_error`` propagates with the same one
-        addition.
+        alone; a raised blocked-validation ``validation_error`` propagates with
+        the same one addition.
+
+        The staged merge left behind by either of the last two is **held** by
+        this proposal (``held_by``): ``resolve_merge`` records resolutions
+        against it but cannot land it, because landing it there would skip
+        every gate above. The second ``proposal_merge`` re-evaluates them
+        against the branches as they are then and finishes it
+        (:meth:`_orchestrate`).
 
         ``allow_invalid`` reaches PRD-001's kernel gate and nothing else — it
         is the caller's statement about the kernel's verdict on geometry, and
         letting it also waive the approvals policy would make one field mean
-        two unrelated things (FR11). Locking is PRD-001's too:
-        ``_holding_target`` already holds the target's turn across validation
-        and finalization, so this adds nothing beyond the proposal RLock.
+        two unrelated things (FR11).
+
+        **Locking.** PRD-001 holds the TARGET branch's turn across validation
+        and finalization (``MergeOrchestrator._holding_target``). This layer
+        holds the SOURCE branch's turn across gate evaluation and the merge
+        call, because a gate result is a statement about a specific source
+        head: without it another client could commit between "specs pass" and
+        the orchestrator resolving the ref, and the merge would land content no
+        gate ever saw. The order is fixed — proposal takes the source, the
+        orchestrator takes the target — and cannot deadlock in any case:
+        ``TurnLock.acquire`` never blocks, it raises, so two proposals merging
+        in opposite directions produce a clean ``conflict_error``.
         """
-        merges = self._merges()
+        self._merges()  # refuse early with no git, and install the guard
         with self._lock:
             proposal = self.store.load(proj, pid)
             landed = self._reconcile(proj, proposal)
@@ -574,30 +621,25 @@ class ProposalManager:
                     f"proposal {pid} is already {state}",
                     {"id": pid, "state": state},
                 )
-            gates = self.gates(proj, proposal)
-            failing = next((g for g in gates if g.get("state") == "fail"), None)
-            if failing is not None:
-                raise ConflictError(
-                    f"proposal {pid} cannot merge: {failing.get('summary')}",
-                    {"id": pid, "failing": failing.get("name"), "gates": gates},
-                )
             source, target = proposal.get("source"), proposal.get("target")
+            with self._holding_source(proj, source):
+                gates = self.gates(proj, proposal)
+                failing = next((g for g in gates if g.get("state") == "fail"),
+                               None)
+                if failing is not None:
+                    raise ConflictError(
+                        f"proposal {pid} cannot merge: {failing.get('summary')}",
+                        {"id": pid, "failing": failing.get("name"),
+                         "gates": gates},
+                    )
+                # The head the gates were evaluated against, read INSIDE the
+                # hold: no in-process writer can move it before the
+                # orchestrator resolves the same ref (FR11 TOCTOU).
+                gates_head = self._resolve(proj, source)
+                result, allow_invalid = self._orchestrate(
+                    proj, proposal, allow_invalid)
             attempt = {"source": source, "target": target,
-                       "allow_invalid": bool(allow_invalid)}
-            try:
-                result = merges.merge(proj, source, target,
-                                      allow_invalid=bool(allow_invalid))
-            except ValidationError as exc:
-                report = (exc.details or {}).get("validation")
-                if not isinstance(report, dict):
-                    raise  # not the kernel gate: PRD-001's error, untouched
-                self.store.append_audit(proj, pid, {
-                    "action": "merge_attempted",
-                    "details": {**attempt, "outcome": "blocked"},
-                })
-                raise ValidationError(
-                    exc.message, {**(exc.details or {}), "proposal": pid}
-                ) from exc
+                       "allow_invalid": allow_invalid}
             error = result.get("error") if isinstance(result, dict) else None
             if isinstance(error, dict):
                 details = error.setdefault("details", {})
@@ -627,18 +669,48 @@ class ProposalManager:
                 # resolve_merge keep working unchanged.
                 details["proposal"] = pid
                 return result
+            if result.get("held"):
+                # A staged merge for this same pair that ANOTHER proposal
+                # holds: its gates are the ones that must be re-checked, not
+                # ours, and nothing here may finish it.
+                raise ConflictError(
+                    f"the staged merge of {source!r} into {target!r} belongs "
+                    f"to {result.get('held_by')}, not to proposal {pid}; "
+                    "complete or discard it there first",
+                    {"id": pid, "held_by": result.get("held_by"),
+                     "merge_id": result.get("merge_id")},
+                )
 
             report = result.get("validation")
             report = report if isinstance(report, dict) else None
             proposal.pop("staged_merge", None)  # this call finished it
+            parents = result.get("parents") or (
+                [result.get("previous"), result.get("commit")]
+                if result.get("fast_forward") else [])
             proposal["merge"] = {
                 "commit": result.get("commit"),
                 "parents": result.get("parents") or [],
+                # The two commits the merge really consumed — a fast-forward
+                # has one git parent, but it still moved a target from one
+                # commit to another, and the frozen packet is checked against
+                # both (``stale_at_merge``).
+                "heads": parents if len(parents) == 2 and all(parents) else [],
+                "gates_source_head": gates_head,
                 "ts": _now(),
                 "allow_invalid": bool(allow_invalid),
                 "fast_forward": bool(result.get("fast_forward")),
                 "validation": report,
             }
+            if gates_head and len(parents) == 2 and parents[1] != gates_head:
+                # The source turn hold is what PREVENTS this; a landed merge
+                # cannot be un-landed, so if it ever happens it is recorded
+                # rather than smoothed over.
+                self.store.append_audit(proj, pid, {
+                    "action": "gate_head_mismatch",
+                    "details": {"gates_source_head": gates_head,
+                                "merged_source_head": parents[1],
+                                "commit": result.get("commit")},
+                })
             self.transition(proposal, "merged", action="merged",
                             details={"commit": result.get("commit"),
                                      **attempt})
@@ -657,6 +729,84 @@ class ProposalManager:
         self._publish(proj, proposal, "merged")
         return {**result, "proposal": self._view(proj, proposal),
                 "gates": gates}
+
+    def _orchestrate(self, proj: str, proposal: dict,
+                     allow_invalid: bool) -> tuple[dict, bool]:
+        """PRD-001's merge for this proposal — or the completion of the staged
+        merge this proposal already HOLDS. Returns ``(result, allow_invalid)``.
+
+        A conflicted (or validation-blocked) proposal merge is staged with
+        ``held_by``, which stops ``resolve_merge`` from finalizing it: at zero
+        outstanding the orchestrator answers ``held: true`` and lands nothing.
+        The caller has just re-evaluated the gates against the branches as they
+        are NOW, so this call is the one allowed to finish it —
+        ``finalize_held`` runs the orchestrator's own validation and
+        finalization, and the override the staged merge carried survives unless
+        this call asks for a stronger one.
+        """
+        merges = self._merges()
+        pid = proposal["id"]
+        source, target = proposal["source"], proposal["target"]
+        hold = _hold_key(pid)
+        current = merges.status(proj).get("merge") or {}
+        resume = (current.get("held_by") == hold
+                  and (current.get("source"), current.get("target"))
+                  == (source, target)
+                  and not current.get("outstanding"))
+        allow_invalid = bool(allow_invalid) or (
+            bool((proposal.get("staged_merge") or {}).get("allow_invalid"))
+            if resume else False)
+        try:
+            if resume:
+                result = merges.finalize_held(proj, allow_invalid=allow_invalid)
+            else:
+                result = merges.merge(proj, source, target,
+                                      allow_invalid=allow_invalid,
+                                      held_by=hold)
+        except ValidationError as exc:
+            report = (exc.details or {}).get("validation")
+            if not isinstance(report, dict):
+                raise  # not the kernel gate: PRD-001's error, untouched
+            self.store.append_audit(proj, pid, {
+                "action": "merge_attempted",
+                "details": {"source": source, "target": target,
+                            "allow_invalid": allow_invalid,
+                            "outcome": "blocked"},
+            })
+            raise ValidationError(
+                exc.message, {**(exc.details or {}), "proposal": pid}
+            ) from exc
+        return result, allow_invalid
+
+    @contextmanager
+    def _holding_source(self, proj: str, source: str | None):
+        """Hold the SOURCE branch's turn across gate evaluation and the merge.
+
+        ``MergeOrchestrator._holding_target``'s pattern, one branch over: a
+        gate result is about a specific source head, so the head must not move
+        between the gate and the merge that consumes it. A caller that already
+        holds the turn keeps it; releasing a hold that expired and was taken by
+        someone else raises, over a body that has already merged — so that
+        release is swallowed (PRD-001's D1 lesson).
+        """
+        turnlock = getattr(self.service, "turnlock", None)
+        branches = getattr(self.service, "branches", None)
+        if turnlock is None or branches is None or not source:
+            yield
+            return
+        with branches.pinned(proj, branches.tree_of(proj, source)):
+            key = self.service.store.lock_key(proj)
+        holder = locks.current_client_id()
+        existing = turnlock.get(key)
+        turnlock.acquire(key, holder)  # ConflictError when someone else has it
+        try:
+            yield
+        finally:
+            if existing is None or existing.get("holder") != holder:
+                try:
+                    turnlock.release(key, holder)
+                except ConflictError:
+                    pass  # our hold expired and another client took the turn
 
     def reconcile(self, proj: str, pid: str) -> dict:
         """Load a proposal, first finalizing it if a merge it staged has since
@@ -918,8 +1068,13 @@ class ProposalManager:
             return None
         pid = proposal["id"]
         current = (merges.status(proj).get("merge") or {})
-        if current.get("id") and current["id"] == staged.get("merge_id"):
-            return None  # still staged: nothing has landed yet
+        if current.get("id") and (current["id"] == staged.get("merge_id")
+                                  or current.get("held_by") == _hold_key(pid)):
+            # Still staged: nothing has landed yet. The hold is the stable
+            # identity of "this proposal's merge" — ``resolve_merge`` re-stages
+            # under a NEW merge id every time it records a resolution, so the
+            # id alone would read a resolved conflict as a discarded merge.
+            return None
         commit = self._landed_commit(proj, staged)
         if commit is None:
             # Aborted, or re-staged from moved heads: either way this proposal
@@ -966,6 +1121,7 @@ class ProposalManager:
         proposal["merge"] = {
             "commit": commit,
             "parents": parents,
+            "heads": parents,
             "ts": _now(),
             "allow_invalid": allow_invalid,
             "fast_forward": False,
@@ -1010,6 +1166,12 @@ class ProposalManager:
         would measure the post-merge branches and pass that off as the change
         that was reviewed. So the absence is recorded durably, as a frozen
         packet that says so.
+
+        A packet that was already STALE when the merge landed is frozen with
+        ``stale_at_merge: true``. Freezing sets ``stale: false`` (a frozen
+        packet is pinned, so "stale against today's heads" is meaningless), and
+        that used to swallow the one thing a reader most needs to know: the
+        evidence describes older commits than the ones that merged.
         """
         pid = proposal["id"]
         path = self.store.packet_path(proj, pid)
@@ -1024,8 +1186,24 @@ class ProposalManager:
             data = _absent_packet(proposal)
         data["frozen"] = True
         data["stale"] = False
+        data["stale_at_merge"] = self._stale_at_merge(proposal, data)
         path.parent.mkdir(parents=True, exist_ok=True)
         ProjectStore._atomic_write(path, json.dumps(data, indent=2).encode())
+
+    @staticmethod
+    def _stale_at_merge(proposal: dict, packet: dict) -> bool:
+        """Did the packet being frozen describe the commits that merged?
+
+        The merge record carries ``heads`` = ``[target, source]`` — the merge
+        commit's two parents, or a fast-forward's ``previous``/``commit``. A
+        packet whose pinned heads differ was generated against something else,
+        and a frozen packet cannot say so any other way.
+        """
+        heads = (proposal.get("merge") or {}).get("heads") or []
+        if packet.get("generated") is None or len(heads) != 2:
+            return False
+        return (packet.get("target_head") != heads[0]
+                or packet.get("source_head") != heads[1])
 
     def _resolve(self, proj: str, branch: str | None) -> str | None:
         if not isinstance(branch, str) or not branch:
@@ -1092,6 +1270,10 @@ class ProposalManager:
         return {
             "generated": data.get("generated"),
             "stale": False if data.get("frozen") else stale,
+            # A frozen packet is pinned, so it is never "stale" — but it may
+            # have been stale when it was frozen, which is the one staleness
+            # that mattered: it describes commits other than the ones merged.
+            "stale_at_merge": bool(data.get("stale_at_merge")),
             "ok": bool(data.get("ok")),
             "frozen": bool(data.get("frozen")),
         }
@@ -1146,6 +1328,7 @@ def _absent_packet(proposal: dict) -> dict:
         "proposal": proposal.get("id"),
         "ok": False,
         "stale": False,
+        "stale_at_merge": False,
         "frozen": True,
         "generated": None,
         "generated_by": None,
@@ -1167,6 +1350,12 @@ def _absent_packet(proposal: dict) -> dict:
         "warnings": [],
         "errors": [],
     }
+
+
+def _hold_key(pid: str) -> str:
+    """What a staged merge records as its ``held_by``: the proposal that may
+    complete it, and nothing else may."""
+    return f"proposal:{pid}"
 
 
 def _is_stale(review: dict, head: str | None) -> bool:

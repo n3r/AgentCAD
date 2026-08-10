@@ -41,12 +41,14 @@ frozen one that says so.
 
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import json
 import threading
 import time
 import urllib.parse
+from contextlib import contextmanager
 from pathlib import Path
 
 from ..kernel import acm
@@ -145,13 +147,56 @@ def changed_parts(old_manifest: dict, new_manifest: dict,
     return rows
 
 
-def params_delta(old_entry: dict, new_entry: dict) -> dict:
+def params_spec(script: str | None) -> dict:
+    """A part script's ``PARAMS`` declaration, read WITHOUT executing it.
+
+    The kernel is the only thing that ever evaluates a script, and generating a
+    review packet must not become a reason to run one — so the assignment's
+    value node is read with ``ast.literal_eval``. ``PARAMS`` is a literal by
+    contract (``worker._validate_params_spec`` rejects anything else), and a
+    declaration this cannot read literally yields ``{}``: no spec diff at all
+    is honest, a guessed one is not.
+    """
+    if not script:
+        return {}
+    try:
+        tree = ast.parse(script)
+    except (SyntaxError, ValueError):
+        return {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "PARAMS"
+                   for t in targets):
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except (ValueError, SyntaxError, TypeError, MemoryError):
+            return {}
+        return {key: spec for key, spec in value.items()
+                if isinstance(key, str)} if isinstance(value, dict) else {}
+    return {}
+
+
+def params_delta(old_entry: dict, new_entry: dict, old_spec: dict | None = None,
+                 new_spec: dict | None = None) -> dict:
     """``{added, removed, changed}`` for one part's parameters.
 
     A manifest stores parameter *overrides* (name -> scalar), so the usual
     ``changed`` row is ``{"name", "field": "value", "old", "new"}``. An entry
     whose parameter is a spec dict is compared field by field instead, one row
     per differing field, in the declaration order of ``_PARAM_FIELDS``.
+
+    The scripts' own ``PARAMS`` declarations (``old_spec``/``new_spec``) are
+    compared the same way and their rows carry ``"source": "spec"`` with a
+    ``spec.``-prefixed field name. Overrides alone answered FR4 for only half
+    of what a proposal can do to a parameter: changing a ``default``, a
+    ``max`` or a ``type`` in the script changes no override at all, so the
+    structured diff used to be empty while the script diff was not.
     """
     old = (old_entry or {}).get("params") or {}
     new = (new_entry or {}).get("params") or {}
@@ -178,7 +223,38 @@ def params_delta(old_entry: dict, new_entry: dict) -> dict:
         else:
             changed.append({"name": name, "field": "value",
                             "old": before, "new": after})
+    _spec_rows(old_spec, new_spec, added, removed, changed)
     return {"added": added, "removed": removed, "changed": changed}
+
+
+def _spec_rows(old_spec, new_spec, added: list, removed: list,
+               changed: list) -> None:
+    """The script-declaration half of a params diff, appended in place."""
+    old = old_spec if isinstance(old_spec, dict) else {}
+    new = new_spec if isinstance(new_spec, dict) else {}
+    for name in sorted(set(new) - set(old)):
+        added.append({"name": name, "value": new[name], "source": "spec"})
+    for name in sorted(set(old) - set(new)):
+        removed.append({"name": name, "value": old[name], "source": "spec"})
+    for name in sorted(set(old) & set(new)):
+        before, after = old[name], new[name]
+        if _norm(before) == _norm(after):
+            continue
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            changed.append({"name": name, "field": "spec", "old": before,
+                            "new": after, "source": "spec"})
+            continue
+        for field in _PARAM_FIELDS:
+            lhs = before.get(field, _MISSING)
+            rhs = after.get(field, _MISSING)
+            if _norm(lhs) == _norm(rhs):
+                continue
+            changed.append({
+                "name": name, "field": f"spec.{field}",
+                "old": None if lhs is _MISSING else lhs,
+                "new": None if rhs is _MISSING else rhs,
+                "source": "spec",
+            })
 
 
 def assembly_delta(old_asm: dict, new_asm: dict) -> dict:
@@ -340,6 +416,25 @@ def _is_binary(data: bytes | None) -> bool:
     return False
 
 
+def _git_error(stage: str, command: str, ref: str, result) -> dict:
+    """A git read that failed, named: which command, against which ref, and
+    what git said. ``fatal`` is what makes the packet ``ok: false`` — an
+    evidence read that did not run is not a measurement of anything."""
+    message = (getattr(result, "stderr", "") or "").strip() \
+        or (getattr(result, "stdout", "") or "").strip() \
+        or f"git exited {getattr(result, 'returncode', '?')}"
+    return {
+        "part": None,
+        "stage": stage,
+        "fatal": True,
+        "command": command,
+        "ref": ref,
+        "error": {"type": "git_error", "message": message,
+                  "details": {"command": command, "ref": ref,
+                              "returncode": getattr(result, "returncode", None)}},
+    }
+
+
 def _error_payload(exc: Exception) -> dict:
     """The structured error shape every surface uses, from an exception."""
     if isinstance(exc, KernelError):
@@ -443,7 +538,45 @@ class PacketBuilder:
 
     def build(self, proj: str, proposal: dict) -> dict:
         """Measure both sides and persist the packet, its renders and its diff
-        meshes."""
+        meshes — against heads that still held when the measuring finished.
+
+        The heads are read up front, but metrics, renders and the geometric
+        diff are read from the live branch worktrees afterwards: a commit that
+        lands mid-build would leave a packet whose numbers came from one
+        revision and whose label named another. So both heads are re-read at
+        the end; if either moved the whole build is discarded and taken again,
+        and if it moves a *second* time the packet is persisted marked
+        ``stale`` rather than pretending. Mixed evidence labelled ``stale:
+        false`` is the one outcome that is not allowed.
+        """
+        pid = proposal["id"]
+        canonical = self.service.store.canonical_path_of(proj)
+        packet, heads = self._measure(proj, proposal)
+        if self._heads_now(canonical, proposal) != heads:
+            packet, heads = self._measure(proj, proposal)
+            if self._heads_now(canonical, proposal) != heads:
+                packet["stale"] = True
+                packet["warnings"].append(
+                    "a branch moved while this packet was being generated: it "
+                    "describes the heads it names and is already out of date")
+        if not self._persist(proj, pid, packet):
+            # The proposal reached a terminal state while we measured: this
+            # build describes a decision that has already been made on other
+            # evidence, so it is thrown away rather than published over it.
+            frozen = self.load(proj, self._store().load(proj, pid))
+            if frozen is not None:
+                return frozen
+            raise ConflictError(
+                f"proposal {pid} was closed out while its review packet was "
+                "being generated; the packet was discarded rather than "
+                "published after the decision",
+                {"id": pid},
+            )
+        return packet
+
+    def _measure(self, proj: str, proposal: dict) -> tuple[dict, dict]:
+        """One measuring pass: ``(packet, heads)``. Called again from
+        :meth:`build` when a head moved underneath it."""
         started = time.monotonic()
         branches = self._branches()
         pid = proposal["id"]
@@ -454,33 +587,53 @@ class PacketBuilder:
                  "new": branches.tree_of(proj, source)}
         # Checkpoint first, THEN read the heads: a packet whose pinned heads do
         # not describe the bytes it measured is worse than no packet.
-        self._checkpoint(trees["old"], target)
-        self._checkpoint(trees["new"], source)
+        for tree, name in ((trees["old"], target), (trees["new"], source)):
+            # …and hold that branch's turn while it is snapshotted, so an
+            # in-process writer cannot land between the snapshot and the read.
+            with self._holding(proj, tree):
+                self._checkpoint(tree, name)
         heads = {"old": self._head(canonical, target, "target"),
                  "new": self._head(canonical, source, "source")}
-        manifests = {
-            side: self._manifest_at(canonical, heads[side], name)
-            for side, name in (("old", target), ("new", source))
-        }
-
-        paths = self._changed_paths(canonical, heads["old"], heads["new"])
-        diffs = self._script_diffs(canonical, heads["old"], heads["new"])
-        scripts = {path[len("parts/"):-len(".py")] for path in paths
-                   if path.startswith("parts/") and path.endswith(".py")}
 
         warnings: list[str] = []
         errors: list[dict] = []
+        manifests = {
+            side: self._manifest_at(canonical, heads[side], name, errors)
+            for side, name in (("old", target), ("new", source))
+        }
+
+        for error in errors:
+            if error.get("stage") == "manifest":
+                warnings.append(
+                    f"the {error['ref']!r} side's project.json could not be "
+                    "read; the part rows below describe what could be read, "
+                    "not what the proposal changes")
+
+        paths = self._changed_paths(canonical, heads["old"], heads["new"],
+                                    errors)
+        diffs = self._script_diffs(canonical, heads["old"], heads["new"],
+                                   errors)
+        scripts = {path[len("parts/"):-len(".py")] for path in paths
+                   if path.startswith("parts/") and path.endswith(".py")}
+
+        # Every generation owns the whole diff directory, not only the parts it
+        # writes: a part this packet no longer has must not keep serving the
+        # previous generation's mesh from its predictable URL.
+        self._clear_diff_assets(proj, pid)
         rows = changed_parts(manifests["old"], manifests["new"], scripts)
         parts = [
             self._part_section(proj, pid, row, manifests, trees, diffs,
-                               warnings, errors)
+                               canonical, heads, warnings, errors)
             for row in rows
         ]
         assembly = self._assembly_section(proj, trees, errors)
         actor = locks.current_client_id()
         packet = {
             "proposal": pid,
-            "ok": True,
+            # False only when the evidence itself could not be READ (a git
+            # command that failed): a per-part stage that degrades is still a
+            # packet, and says so in its own section (FR8).
+            "ok": not any(error.get("fatal") for error in errors),
             "stale": False,
             "frozen": False,
             # Zone-aware UTC, the one stamp format the feature uses (FR13's
@@ -502,20 +655,53 @@ class PacketBuilder:
             "errors": errors,
         }
         packet["elapsed_ms"] = int((time.monotonic() - started) * 1000)
-        if not self._persist(proj, pid, packet):
-            # The proposal reached a terminal state while we measured: this
-            # build describes a decision that has already been made on other
-            # evidence, so it is thrown away rather than published over it.
-            frozen = self.load(proj, self._store().load(proj, pid))
-            if frozen is not None:
-                return frozen
-            raise ConflictError(
-                f"proposal {pid} was closed out while its review packet was "
-                "being generated; the packet was discarded rather than "
-                "published after the decision",
-                {"id": pid},
-            )
-        return packet
+        return packet, heads
+
+    def _heads_now(self, canonical: Path, proposal: dict) -> dict:
+        return {
+            "old": self.service.history.resolve_branch(
+                canonical, proposal.get("target") or ""),
+            "new": self.service.history.resolve_branch(
+                canonical, proposal.get("source") or ""),
+        }
+
+    @contextmanager
+    def _holding(self, proj: str, tree: Path):
+        """Hold one branch's turn while its tree is snapshotted.
+
+        Closes the window between "snapshot the tree" and "read the head" for
+        in-process writers, the way ``MergeOrchestrator._holding_target`` does
+        for the merge. It is an optimization, not the guarantee: a turn already
+        held by someone else is not a reason to refuse a review packet, so the
+        measurement goes ahead without it and :meth:`build`'s head re-read is
+        what actually keeps the packet honest.
+        """
+        turnlock = getattr(self.service, "turnlock", None)
+        if turnlock is None:
+            yield
+            return
+        with self._branches().pinned(proj, tree):
+            key = self.service.store.lock_key(proj)
+        holder = locks.current_client_id()
+        existing = turnlock.get(key)
+        try:
+            turnlock.acquire(key, holder)
+        except ConflictError:
+            yield  # someone else's turn: measure anyway, verify afterwards
+            return
+        try:
+            yield
+        finally:
+            if existing is None or existing.get("holder") != holder:
+                try:
+                    turnlock.release(key, holder)
+                except ConflictError:
+                    pass  # our hold expired and another client took the turn
+
+    def _clear_diff_assets(self, proj: str, pid: str) -> None:
+        for path in self._asset_dir(proj, pid, "diff").glob("*"):
+            if path.is_file():
+                path.unlink(missing_ok=True)
 
     def render(self, proj: str, pid: str, side: str, part: str | None = None,
                view: str = RENDER_VIEW) -> dict:
@@ -592,17 +778,22 @@ class PacketBuilder:
     # --------------------------------------------------------- per-part work
 
     def _part_section(self, proj: str, pid: str, row: dict, manifests: dict,
-                      trees: dict, diffs: dict, warnings: list,
-                      errors: list) -> dict:
+                      trees: dict, diffs: dict, canonical: Path, heads: dict,
+                      warnings: list, errors: list) -> dict:
         part_id = row["part"]
         entries = {side: _parts_by_id(manifests[side]).get(part_id) or {}
                    for side in _SIDES}
+        specs = {
+            side: params_spec(self._script_at(canonical, heads[side], part_id))
+            for side in _SIDES
+        }
         section = {
             "part": part_id,
             "change": row["change"],
             "changed_by": row["changed_by"],
             "script_diff": diffs.get(f"parts/{part_id}.py"),
-            "params_diff": params_delta(entries["old"], entries["new"]),
+            "params_diff": params_delta(entries["old"], entries["new"],
+                                        specs["old"], specs["new"]),
             "build": {},
             "metrics": None,
             "geom_diff": None,
@@ -854,13 +1045,23 @@ class PacketBuilder:
         base = result.stdout.strip()
         return base if result.returncode == 0 and base else None
 
-    def _manifest_at(self, canonical: Path, commit: str, ref: str) -> dict:
+    def _manifest_at(self, canonical: Path, commit: str, ref: str,
+                     errors: list) -> dict:
         """The manifest at a ref, with ``merge._manifest_at``'s strictness: a
         ``project.json`` that exists but does not parse is a refusal, never
-        ``{}`` — reading it as empty would report the whole project deleted."""
+        ``{}`` — reading it as empty would report the whole project deleted.
+
+        A read that FAILS is the same lie one step further out: ``{}`` made a
+        deleted (or unreadable) ``project.json`` come back as "this side
+        removed every part". It is recorded as a fatal evidence error instead,
+        and the packet is ``ok: false``.
+        """
         result = self.service.history._run(
             canonical, "cat-file", "blob", f"{commit}:project.json", check=False)
         if result.returncode != 0:
+            errors.append(_git_error(
+                "manifest", f"git cat-file blob {commit}:project.json", ref,
+                result))
             return {}
         try:
             data = json.loads(result.stdout)
@@ -876,12 +1077,21 @@ class PacketBuilder:
             {"ref": ref, "commit": commit, "file": "project.json"},
         )
 
-    def _changed_paths(self, canonical: Path, old: str, new: str) -> list[str]:
+    def _changed_paths(self, canonical: Path, old: str, new: str,
+                       errors: list) -> list[str]:
         result = self.service.history._run(
             canonical, "diff", "--name-only", old, new, check=False)
+        if result.returncode != 0:
+            # "no paths changed" and "the diff did not run" are not the same
+            # answer, and only one of them is evidence.
+            errors.append(_git_error(
+                "changed_paths", f"git diff --name-only {old} {new}",
+                f"{old}..{new}", result))
+            return []
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
-    def _script_diffs(self, canonical: Path, old: str, new: str) -> dict:
+    def _script_diffs(self, canonical: Path, old: str, new: str,
+                      errors: list) -> dict:
         """``{path: {path, unified, added_lines, removed_lines, truncated,
         hunks}}`` for ``parts/``.
 
@@ -892,6 +1102,12 @@ class PacketBuilder:
         result = self.service.history._run(
             canonical, "diff", "--no-color", "--unified=3", old, new, "--",
             "parts/", check=False)
+        if result.returncode != 0:
+            errors.append(_git_error(
+                "script_diffs",
+                f"git diff --unified=3 {old} {new} -- parts/",
+                f"{old}..{new}", result))
+            return {}
         diffs: dict[str, dict] = {}
         current: dict | None = None
         in_body = False  # a body line may itself start with '+++ '/'--- '
@@ -952,6 +1168,18 @@ class PacketBuilder:
                 },
             })
         return entries
+
+    def _script_at(self, canonical: Path, commit: str,
+                   part_id: str) -> str | None:
+        """A part's script text at a pinned head — the same bytes the diff was
+        taken from, never the live worktree."""
+        data = self._blob(canonical, commit, f"parts/{part_id}.py")
+        if data is None:
+            return None
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
 
     def _blob(self, canonical: Path, commit: str, path: str) -> bytes | None:
         result = self.service.history._run_bytes(
