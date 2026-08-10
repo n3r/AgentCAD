@@ -41,6 +41,11 @@ Four rules this file is written around:
 * **``service.branches`` is read inside the methods, never in ``__init__``** —
   the tool pack that constructs the runner sorts before the versioning pack, so
   the seam does not exist yet at construction time.
+* **The proposal gate is fail-closed** (:meth:`SpecRunner.gate_provider`). A
+  declared check that failed, errored, or was never evaluated is RED, and
+  ``allow_invalid`` does not waive it. That is the deliberate divergence from
+  PRD-002's default — where a provider outage degrades to ``pending`` — and it
+  is the divergence PRD-002's as-built note reserved for this PRD.
 """
 
 from __future__ import annotations
@@ -60,8 +65,20 @@ from .tools_stackup import compute_stackup
 #: Sidecar format version. A stored document at any other version is discarded.
 SPEC_RESULT_VERSION = 1
 
-#: Wall-clock budget for the proposal gate (Slice 5 applies it).
+#: Wall-clock budget for the proposal gate. On exhaustion the remaining parts
+#: are reported as ``unevaluated`` — which is RED, never a silent green.
 GATE_BUDGET_S = 30.0
+
+#: How many entries the gate memo keeps (verdicts, plus the advisory
+#: specs.py-changed flags, under commit-shaped keys). Small on purpose: an
+#: entry is a whole report, and a handful covers every proposal a reviewer has
+#: open. Bounded because a long-lived server would otherwise hold one report
+#: per commit it ever gated.
+_GATE_MEMO_LIMIT = 32
+
+#: The synthetic kind stamped on a check the gate budget never reached. It is
+#: deliberately not one of the declared kinds: nothing was measured.
+_UNEVALUATED = "unevaluated"
 
 #: Kinds the kernel measures from one built shape.
 SHAPE_TIER = ("valid", "mass", "volume", "bbox", "wall", "that")
@@ -268,6 +285,52 @@ def _skip_row(reason: str, hint: str, message: str) -> dict:
             "measured": None, "message": message}
 
 
+def _named(records: list[dict], limit: int = 3) -> str:
+    """The first few check ids, so a one-line gate summary says *which*."""
+    names = [str(record.get("id") or record.get("name"))
+             for record in records[:limit]]
+    more = len(records) - len(names)
+    return ", ".join(names) + (f" (+{more} more)" if more > 0 else "")
+
+
+def _gate_wording(source: str | None, verdict: dict,
+                  counts: dict) -> tuple[str, str]:
+    """``(state, summary)`` for the ``specs`` gate — the *only* place the
+    fail-closed policy is turned into words.
+
+    Every red summary names its exit, because the gate is a hard block: a
+    measurement failure names the failing checks and says that ``allow_invalid``
+    does not waive this gate, and an unmeasured one names ``run_specs``.
+    """
+    status = verdict["status"]
+    if status == "pending":
+        return "pending", (
+            f"{source!r} moved while its design specs were being evaluated; "
+            "read the proposal again for a verdict")
+    if status == "skip":
+        return "skipped", f"{source!r} declares no design specs"
+    named_skips = f" ({_named(verdict['skips'])})" if counts["skipped"] else ""
+    skipped = f", {counts['skipped']} skipped" if counts["skipped"] else ""
+    if status != "red":
+        return "pass", (f"{counts['passed']} of {counts['total']} design "
+                        f"specs met on {source!r}{skipped}{named_skips}")
+    if verdict["reason"] == "budget_exceeded":
+        return "fail", (
+            f"the design specs on {source!r} were not fully evaluated within "
+            f"{GATE_BUDGET_S:.0f} s, so this gate is red: run run_specs on "
+            "that branch to populate the caches, then read it again")
+    if verdict["errors"] and not verdict["failures"]:
+        return "fail", (
+            f"{counts['errors']} design spec(s) on {source!r} could not be "
+            f"measured ({_named(verdict['errors'])}); an unmeasured spec is "
+            "not evidence of green — run run_specs on that branch")
+    return "fail", (
+        f"{counts['failed']} of {counts['total']} design specs fail on "
+        f"{source!r}: {_named(verdict['failures'] + verdict['errors'])}"
+        f"{skipped}. allow_invalid does not waive this gate — fix the "
+        "geometry or the spec on the source branch")
+
+
 def _fem_available() -> bool:
     """Whether the optional FEM extra can run here.
 
@@ -326,6 +389,10 @@ class SpecRunner:
         # every branch and every project. Named _declaration_cache because
         # service._spec_cache already means the PARAMS spec cache.
         self._declaration_cache: dict[str, dict] = {}
+        # (project, ref, head) -> verdict. The gate runs on EVERY proposal_get
+        # (PRD-002 caches none), so a repeated read at an unmoved head must
+        # cost nothing. Insertion-ordered, so the oldest key is the LRU victim.
+        self._gate_memo: dict[tuple, dict] = {}
 
     # ------------------------------------------------------------ paths
 
@@ -957,7 +1024,63 @@ class SpecRunner:
                 "checks": checks, "requirements": group_requirements(checks),
                 "cached": cached, "warnings": warnings}
 
-    def _report(self, proj: str, part_id: str | None, ref: str | None) -> dict:
+    def _out_of_budget(self, deadline: float | None) -> bool:
+        """``time.monotonic``, never wall-clock: a budget must not be moved by
+        an NTP step in the middle of a merge."""
+        return deadline is not None and time.monotonic() > deadline
+
+    def _unevaluated(self, prefix: str, part_id: str | None, seen: set,
+                     warnings: list[str], errors: list[dict]) -> list[dict]:
+        """One synthetic ``error`` record for a scope the budget never reached.
+
+        Fail-closed (design Decision 7): a declared-but-unmeasured spec is not
+        evidence of green, so this is an ``error`` — 'we do not know', which is
+        not 'it is fine'. It is one record rather than one per declaration
+        because naming them individually costs the very kernel round trip the
+        budget just ran out of.
+        """
+        message = (
+            f"not evaluated: the {GATE_BUDGET_S:.0f} s spec gate budget was "
+            "exhausted before this scope was reached. Run run_specs on this "
+            "branch to populate the caches, then read the gate again.")
+        row = {**_record({"name": "specs", "kind": _UNEVALUATED,
+                          "scope": "part" if part_id else "project",
+                          "requirement": None, "limit": {}}, 0, part_id),
+               **_error_row(message, {"reason": "budget_exceeded",
+                                      "budget_s": GATE_BUDGET_S})}
+        assign_ids([row], prefix, seen, warnings)
+        errors.append({"scope": row["scope"], "part": part_id,
+                       "reason": "budget_exceeded",
+                       "error": {"type": "budget_exceeded", "message": message,
+                                 "details": {"budget_s": GATE_BUDGET_S}}})
+        return [row]
+
+    def _unevaluated_part(self, proj: str, part_id: str, seen: set,
+                          warnings: list[str],
+                          errors: list[dict]) -> dict | None:
+        """The budget's stand-in for :meth:`_part_block`.
+
+        Still ``None`` for a part that declares nothing: the presence scan is
+        free, and a spec-less part is not 'unmeasured', it is silent.
+        """
+        store = self.service.store
+        try:
+            record = store.get_part(proj, part_id)
+            if record.kind != "script" or not declares_specs(
+                    store.read_script(proj, part_id)):
+                return None
+        except (NotFoundError, OSError):
+            return None
+        rows = self._unevaluated(part_id, part_id, seen, warnings, errors)
+        return {"status": "red", "summary": summarize(rows), "checks": rows,
+                "requirements": group_requirements(rows), "cached": False,
+                "warnings": warnings}
+
+    def _report(self, proj: str, part_id: str | None, ref: str | None,
+                deadline: float | None = None) -> dict:
+        """*deadline* is :meth:`evaluate_specs`'s wall-clock budget (and only
+        its: ``run`` passes ``None`` and is unbounded by design — an engineer
+        asking for a full report has asked for the cost)."""
         store = self.service.store
         manifest = store.manifest(proj)            # NotFoundError: bad project
         if part_id is not None:
@@ -972,7 +1095,9 @@ class SpecRunner:
             pid = entry["id"]
             if part_id is not None and pid != part_id:
                 continue
-            block = self._part_block(proj, pid, seen, warnings, errors)
+            block = self._unevaluated_part(proj, pid, seen, warnings, errors) \
+                if self._out_of_budget(deadline) \
+                else self._part_block(proj, pid, seen, warnings, errors)
             if block is None:
                 continue                    # declares nothing: not in the report
             parts[pid] = {
@@ -982,8 +1107,13 @@ class SpecRunner:
             flat.extend(block["checks"])
 
         # Project scope is the assembly's, so a per-part report never runs it.
-        project_checks = [] if part_id is not None else \
-            self._project_block(proj, seen, warnings, errors)
+        if part_id is not None:
+            project_checks: list[dict] = []
+        elif self._out_of_budget(deadline) and self.project_script(proj):
+            project_checks = self._unevaluated("project", None, seen, warnings,
+                                               errors)
+        else:
+            project_checks = self._project_block(proj, seen, warnings, errors)
         flat.extend(project_checks)
 
         summary = summarize(flat)
@@ -999,3 +1129,214 @@ class SpecRunner:
             "requirements": group_requirements(flat),
             "declared": len(flat), "warnings": warnings, "errors": errors,
         }
+
+    # ------------------------------------------ the proposal gate (FR11)
+
+    def _head_of(self, proj: str, ref: str | None) -> str | None:
+        """The commit a verdict would be about, or None when git cannot say.
+
+        Deliberately quiet: this is read twice around an evaluation purely to
+        detect movement, and a git hiccup there must degrade the *verdict*
+        (through :meth:`evaluate_specs`), not raise from inside it.
+        """
+        history = getattr(self.service, "history", None)
+        if history is None or not history.available():
+            return None
+        try:
+            canonical = self.service.store.canonical_path_of(proj)
+            if ref is None:
+                return history.head(canonical)
+            return history.resolve_branch(canonical, ref)
+        except Exception:  # noqa: BLE001 — "no head we can name" is the answer
+            return None
+
+    def _memo_get(self, key: tuple) -> dict | None:
+        """Both memos are one dict: the keys are commit-shaped and disjoint,
+        and one bound is easier to reason about than two."""
+        hit = self._gate_memo.pop(key, None)
+        if hit is not None:
+            self._gate_memo[key] = hit         # re-insert: LRU touch
+        return hit
+
+    def _memo_put(self, key: tuple, value: dict) -> None:
+        self._gate_memo[key] = value
+        while len(self._gate_memo) > _GATE_MEMO_LIMIT:
+            self._gate_memo.pop(next(iter(self._gate_memo)))
+
+    def evaluate_specs(self, proj: str, ref: str | None = None) -> dict:
+        """Gate-shaped status for any ref (FR11). ``ref=None`` is the caller's.
+
+        ``{"available", "status": green|red|skip|pending, "ref", "head",
+        "checked_at", "summary", "failures", "skips", "errors", "reason"}``.
+
+        ``available`` says whether a verdict for ``head`` was produced:
+        ``False`` only for ``pending``, where the head moved out from under the
+        measurement and the honest answer is "ask again", not a verdict wearing
+        a commit it did not measure. The head is read **before and after**, as
+        the review packet does one layer up.
+
+        Bounded three ways, in order of how much they save: the shared
+        canonical ``.cache/`` (an unchanged part is a disk read on both sides
+        of a branch), the per-head memo below, and :data:`GATE_BUDGET_S` —
+        whose exhaustion is *red*, with ``reason == "budget_exceeded"`` and a
+        summary naming ``run_specs``, because a spec that was not measured is
+        not evidence of green.
+
+        The memo key is ``(project, ref, head)``. The design named
+        ``(project, source_head, declaration_hash)``; for a branch the head
+        **is** the declaration hash — PRD-001 snapshots every write, so an
+        edited ``SPECS`` moves it — and computing a separate one would mean
+        materializing the ref's tree first, which is exactly the work the memo
+        exists to skip. Nothing is memoized without a head (no git, no key) or
+        for a ``pending``/budget-exhausted result (neither is a verdict worth
+        keeping).
+        """
+        head = self._head_of(proj, ref)
+        key = (proj, ref, head)
+        if head is not None:
+            hit = self._memo_get(key)
+            if hit is not None:
+                return dict(hit)
+
+        deadline = time.monotonic() + GATE_BUDGET_S
+        with self._pinned(proj, ref):
+            report = self._report(proj, None, ref, deadline=deadline)
+
+        checks = report["checks"]
+        by_status = {status: [c for c in checks if c.get("status") == status]
+                     for status in ("fail", "skip", "error")}
+        reason = "budget_exceeded" if any(
+            c.get("kind") == _UNEVALUATED for c in checks) else None
+        verdict = {
+            "available": True, "status": report["status"], "ref": ref,
+            "head": head, "checked_at": _now(), "summary": report["summary"],
+            "failures": by_status["fail"], "skips": by_status["skip"],
+            "errors": by_status["error"], "reason": reason,
+        }
+        after = self._head_of(proj, ref)
+        if head is not None and after != head:
+            return {**verdict, "available": False, "status": "pending",
+                    "reason": "head_moved", "moved_to": after}
+        if head is not None and reason is None:
+            self._memo_put(key, verdict)
+        return dict(verdict)
+
+    def _specs_py_changed(self, proj: str, target: str | None,
+                          source: str | None,
+                          source_head: str | None = None) -> bool:
+        """Does this branch pair differ in the root ``specs.py``?
+
+        One ``git diff --name-only``, through ``history._run`` — never a raw
+        ``subprocess``, which would miss the hermetic environment. It closes a
+        review hole nothing else covers: ``packet.py`` builds diff rows only
+        for ``parts/*.py`` and ``merge._validate`` only revalidates changed
+        parts, so a proposal that **weakens a spec** would otherwise be
+        invisible. A full ``specs`` packet section is a ``packet.py`` change
+        and out of scope; this flag costs one git call.
+
+        Memoized on the commit **pair**, and given the source head the verdict
+        already resolved: the gate runs on every ``proposal_get``, so a warm
+        read must not pay three git round trips for an advisory flag.
+        """
+        history = getattr(self.service, "history", None)
+        if history is None or not target or not source:
+            return False
+        try:
+            canonical = self.service.store.canonical_path_of(proj)
+            head_t = history.resolve_branch(canonical, target)
+            head_s = source_head or history.resolve_branch(canonical, source)
+            if not head_t or not head_s:
+                return False
+            key = (proj, head_t, head_s, "specs.py")
+            hit = self._memo_get(key)
+            if hit is not None:
+                return bool(hit["changed"])
+            result = history._run(canonical, "diff", "--name-only", head_t,
+                                  head_s, "--", "specs.py", check=False)
+            changed = bool((result.stdout or "").strip())
+            self._memo_put(key, {"changed": changed})
+            return changed
+        except Exception:  # noqa: BLE001 — an advisory flag never raises
+            return False
+
+    def gate_provider(self):
+        """PRD-002's ``service.gate_providers`` entry — **fail-closed**.
+
+        The closure is named ``specs`` on purpose, twice over: the manager
+        replaces the built-in gate of the same name (so there is one ``specs``
+        gate, not two), and its own except-branch names a gate after the
+        provider function, so even a bug in here cannot produce a differently
+        named gate.
+
+        It is evaluated against the proposal's **source branch**, not a merge
+        preview: "will the merged result be green" needs a staged merge tree
+        that does not exist yet and is PRD-004's question, while "is the
+        proposed state green" is the one a reviewer actually asks.
+
+        State mapping (PRD-003 owns these):
+
+        ==========  =====================================================
+        ``skipped`` the source ref declares no specs at all
+        ``pass``    everything declared was evaluated; nothing failed or
+                    errored (skips are allowed, and are named in the summary)
+        ``fail``    anything failed, errored, or could not be evaluated —
+                    including a kernel error, a source branch that will not
+                    build, and an exhausted gate budget
+        ``pending`` the source head moved mid-evaluation: the one condition a
+                    retry resolves
+        ==========  =====================================================
+
+        PRD-002 refuses a merge on any ``fail`` and ``allow_invalid`` cannot
+        waive a provider gate — it is the caller's statement about the
+        *kernel's* verdict on geometry and must not come to mean two things.
+        A declared-but-unmeasured spec is therefore a hard block whose only
+        exit is a commit on the source branch a reviewer can see.
+        """
+        runner = self
+
+        def specs(project: str, proposal: dict) -> dict:
+            source = proposal.get("source")
+            target = proposal.get("target")
+            details = {"status": None, "summary": None, "failures": [],
+                       "skips": [], "errors": [], "ref": source,
+                       "source_head": None, "specs_py_changed": False,
+                       "reason": None}
+            if not source:
+                # ``evaluate_specs(project, None)`` would measure the CALLER's
+                # tree, which is not what this proposal is about. Red, because
+                # a proposal we cannot locate is not one we measured.
+                details["reason"] = "no_source"
+                return {"name": "specs", "state": "fail",
+                        "summary": "this proposal names no source branch, so "
+                                   "its design specs could not be evaluated",
+                        "details": details}
+            try:
+                verdict = runner.evaluate_specs(project, source)
+            except Exception as exc:  # noqa: BLE001 — the provider always
+                # answers: ProposalManager's fallback degrades to ``pending``,
+                # which is precisely the not-fail-closed outcome this gate
+                # exists to prevent.
+                payload = exc.to_payload() if hasattr(exc, "to_payload") else {
+                    "type": type(exc).__name__, "message": str(exc),
+                    "details": dict(getattr(exc, "details", None) or {})}
+                details.update({"status": "red", "reason": "evaluation_failed",
+                                "error": payload})
+                return {"name": "specs", "state": "fail",
+                        "summary": f"the design specs on {source!r} could not "
+                                   f"be evaluated ({payload['message']}); run "
+                                   "run_specs on that branch and try again",
+                        "details": details}
+
+            counts = verdict["summary"]
+            details.update({
+                "status": verdict["status"], "summary": counts,
+                "failures": verdict["failures"], "skips": verdict["skips"],
+                "errors": verdict["errors"], "ref": source,
+                "source_head": verdict["head"], "reason": verdict["reason"],
+                "specs_py_changed": runner._specs_py_changed(
+                    project, target, source, verdict["head"])})
+            state, summary = _gate_wording(source, verdict, counts)
+            return {"name": "specs", "state": state, "summary": summary,
+                    "details": details}
+
+        return specs

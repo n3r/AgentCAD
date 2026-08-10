@@ -139,11 +139,37 @@ def install_rebuild_specs(service) -> None:
         service.get_part = _get_part
 
 
+def install_specs_gate(service) -> None:
+    """Append the fail-closed ``specs`` gate to PRD-002's provider list.
+
+    The whole of PRD-003's enforcement surface is this one ``append``:
+    ``proposals.py`` is finished and reviewed, and a provider returning
+    ``state: "fail"`` is already a hard block that ``allow_invalid`` cannot
+    waive. Reverting the feature's enforcement is deleting this call.
+
+    ``service.gate_providers`` is absent when git is (``tools_proposals``
+    self-disables), which is not an error here: specs still work on a project
+    with no history, there is simply nothing to gate.
+
+    Idempotent by name. ``build_registry`` may run twice over one service — the
+    versioning pack's ``install_write_guard`` precedent — and two providers
+    named ``specs`` would evaluate the gate twice and then have one silently
+    overwrite the other in ``ProposalManager.gates``.
+    """
+    providers = getattr(service, "gate_providers", None)
+    if providers is None:
+        return
+    providers[:] = [p for p in providers
+                    if getattr(p, "__name__", None) != "specs"]
+    providers.append(service.specs.gate_provider())
+
+
 def register(registry, service) -> None:
     # Always constructed: specs need no git, and the runner reads every seam it
     # does not own (branches, history) inside its methods.
     service.specs = SpecRunner(service)
     install_rebuild_specs(service)
+    install_specs_gate(service)
 
     def run_specs(project: str, part_id: str | None = None,
                   ref: str | None = None) -> dict:
@@ -181,7 +207,13 @@ def register(registry, service) -> None:
         "kernel work. 'ref' evaluates another BRANCH's state without "
         "switching yours (a tag is a validation_error — a tag must never "
         "answer for a branch; a ref on a project with no git is a "
-        "validation_error naming git).",
+        "validation_error naming git). A proposal's 'specs' GATE is this same "
+        "evaluation over its source branch, and it is FAIL-CLOSED: a red gate "
+        "blocks proposal_merge, and so does a declared check that could not "
+        "be evaluated at all — allow_invalid does NOT waive it (that flag is "
+        "about the kernel's verdict on geometry and nothing else). Run this "
+        "tool on the source branch to see, and to fix, what the gate is red "
+        "about.",
         schema({"project": _PROJ, "part_id": _PART,
                 "ref": {"type": "string",
                         "description": "Branch to evaluate instead of yours"}},
