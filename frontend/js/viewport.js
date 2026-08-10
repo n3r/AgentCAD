@@ -47,6 +47,8 @@ let sceneTheme = {
   gridMajor: 0x2c2f36,
   gridMinor: 0x22242a,
   edge: 0x0d0e10,
+  diffAdded: 0x6fbf8f,
+  diffRemoved: 0xe0655c,
 };
 let gridSize = 400;
 let gridDivisions = 40;
@@ -228,6 +230,9 @@ function setGrid(size, divisions) {
 export function setTheme(colors) {
   sceneTheme = colors;
   edgeMaterial.color.set(colors.edge);
+  for (const [kind, mesh] of diffOverlays) {
+    mesh.material.color.set(diffColor(kind));
+  }
   if (!scene) return;
   scene.background.set(colors.background);
   setGrid(gridSize, gridDivisions);
@@ -290,6 +295,7 @@ function clearContent() {
   // new content is built).
   detachGizmoInternal();
   clearFaceHighlight(); // overlay indexes into geometry we may drop
+  clearDiffOverlay(); // a diff volume describes the part that is leaving
   for (const child of [...contentGroup.children]) {
     contentGroup.remove(child);
     child.traverse((obj) => {
@@ -418,6 +424,66 @@ export function highlightFace(partId, faceIndex) {
   faceHighlightMesh = new THREE.Mesh(geo, mat);
   faceHighlightMesh.renderOrder = 2;
   scene.add(faceHighlightMesh);
+}
+
+// ---------------------------------------------------- proposal diff overlay
+
+// PRD-002's geometry diff: the added/removed volumes a proposal computes,
+// drawn translucent OVER the part that is already on stage. Built exactly like
+// the face highlight above — a separate mesh parented to the scene ROOT, not
+// contentGroup, so it never joins the pick set, never inherits a material and
+// has its own dispose path. clearContent() drops it, so a part switch or a
+// rebuild clears it for free.
+const diffOverlays = new Map(); // "added" | "removed" -> THREE.Mesh
+
+function diffColor(kind) {
+  return kind === "added"
+    ? sceneTheme.diffAdded ?? 0x6fbf8f
+    : sceneTheme.diffRemoved ?? 0xe0655c;
+}
+
+/** Drop every diff overlay (or just one `kind`). */
+export function clearDiffOverlay(kind) {
+  for (const [name, mesh] of [...diffOverlays]) {
+    if (kind && name !== kind) continue;
+    if (scene) scene.remove(mesh);
+    mesh.geometry.dispose();
+    mesh.material.dispose();
+    diffOverlays.delete(name);
+  }
+}
+
+/** Overlay one ACM1 diff volume on the displayed part. `kind` is "added"
+ *  (green) or "removed" (red); `key` identifies the buffer so a repeat call
+ *  with the same geometry is a no-op. Returns false when that part is not the
+ *  one on stage (part mode only) — the caller selects it first. */
+export function showDiffOverlay(partId, buffer, key, kind) {
+  if (current.mode !== "part" || current.partId !== partId) return false;
+  const stamp = `${partId}:${key}:${kind}`;
+  const existing = diffOverlays.get(kind);
+  if (existing && existing.userData.diffStamp === stamp) return true;
+  clearDiffOverlay(kind);
+  const parsed = parseACM(buffer);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(parsed.positions, 3));
+  geo.setAttribute("normal", new THREE.BufferAttribute(parsed.normals, 3));
+  geo.setIndex(new THREE.BufferAttribute(parsed.indices, 1));
+  const mat = new THREE.MeshBasicMaterial({
+    color: diffColor(kind),
+    transparent: true,
+    opacity: 0.45,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.userData = { diffStamp: stamp };
+  mesh.renderOrder = 3;
+  diffOverlays.set(kind, mesh);
+  scene.add(mesh);
+  return true;
 }
 
 function applySelection() {

@@ -44,6 +44,11 @@
       <div id="branch-menu" class="menu left hidden" role="menu"></div>
     </div>
 
+    <button id="proposals-btn" class="tb-btn hidden" title="Change proposals">
+      <span class="branch-glyph" aria-hidden="true">⇄</span>
+      <span>Proposals</span><span id="proposals-count" class="tb-badge hidden"></span>
+    </button>
+
     <div class="toolbar-spacer"></div>
 
     <div id="rebuild-indicator" class="hidden">
@@ -114,6 +119,15 @@
         <div id="facecard-body"></div>
       </div>
       <div id="sketcher" class="hidden"></div>
+      <!-- Legend for a proposal's geometry-diff overlay. The overlay itself
+           lives in the THREE scene root (viewport.showDiffOverlay); this is
+           its only chrome, so it must be dismissible with the modal closed. -->
+      <div id="diff-legend" class="hidden">
+        <span id="diff-legend-part"></span>
+        <span class="diff-key"><i class="diff-sw removed"></i>removed</span>
+        <span class="diff-key"><i class="diff-sw added"></i>added</span>
+        <button id="diff-legend-clear" class="tb-btn" type="button">Clear</button>
+      </div>
     </main>
 
     <aside id="inspector">
@@ -202,6 +216,22 @@
           <button id="merge-complete" class="tb-btn" type="button">Complete merge</button>
         </div>
       </footer>
+    </div>
+  </div>
+
+  <div id="proposals-modal" class="modal-overlay hidden">
+    <div class="modal wide">
+      <header class="modal-head">
+        <span id="proposals-title" class="modal-title">Proposals</span>
+        <div class="modal-actions">
+          <button id="proposals-new" class="tb-btn" type="button">New proposal…</button>
+          <button id="proposals-close" class="tb-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div class="prop-body">
+        <div id="proposals-list" class="prop-list"></div>
+        <div id="proposals-detail" class="prop-detail"></div>
+      </div>
     </div>
   </div>
 

@@ -65,7 +65,7 @@ part incumbents structurally cannot copy.
 | PRD | Feature | Status | Origin | Depends on |
 |---|---|---|---|---|
 | [001](prd/completed/PRD-001-branching-version-control.md) | Branching version control — branches, immutable versions, semantic merge with real conflicts, kernel-validated merge gates | completed (PR #8, AC1–AC7 verified) | analysis | — |
-| [002](prd/pending/PRD-002-change-proposals-geometric-diff.md) | Change proposals & geometric diff — CAD pull requests with review packets (diffs, metric deltas, renders, 3D add/remove volumes) | pending | analysis | 001 |
+| [002](prd/in-progress/PRD-002-change-proposals-geometric-diff.md) | Change proposals & geometric diff — CAD pull requests with review packets (diffs, metric deltas, renders, 3D add/remove volumes) | in progress | analysis | 001 |
 | [003](prd/pending/PRD-003-design-specs-executable.md) | Executable design specs — machine-checkable intent (`check_wall`, `check_mass`, clearances, stack-ups) with requirement traceability | pending | analysis | — |
 | [004](prd/pending/PRD-004-geometry-ci.md) | Geometry CI — `agentcad check` + GitHub Action: rebuild, specs, interference, drawings on every ref/proposal | pending | analysis | 001 · 003 |
 | [005](prd/pending/PRD-005-multi-tenant-cloud.md) | Multi-tenant cloud — auth, orgs, roles, audit principals, local-first git sync, one-compose self-host | pending | analysis | — |

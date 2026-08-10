@@ -171,6 +171,72 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   **git 2.38+**; branches and tags do not, and with no git at all the
   versioning pack registers nothing.
 
+## Proposal gotchas (PRD-002 — read before touching proposals or the packet)
+
+- **Proposals are canonical and branch-independent**, at
+  `.history/agentcad/proposals/<id>/` — they are workflow metadata, not model
+  state, so `project_restore` must never rewind them and every branch sees the
+  same list. Never write proposal state into a working tree.
+- **`audit.jsonl` is appended, never atomically replaced.** FR14 makes it
+  append-only; a read-modify-replace cycle breaks that and can truncate the log
+  on a crash. Everything else under the proposal directory is an atomic write.
+- **The packet degrades, it never raises.** A per-part stage that fails
+  (build, metrics, render, geometric diff) writes its structured error into the
+  payload — `build.<side>.ok: false`, `geom_diff.available: false`,
+  `warnings`/`errors` — and the packet still returns `ok: true`. `ok: false`
+  means *no* packet could be produced (unreadable manifest, unknown ref). A
+  packet is evidence; "the new side does not build" is evidence.
+- **`geom_diff` volumes come from the toolbox's `shape_volume`** (the solids
+  sum), not `.volume` — a boolean result is routinely a nested Compound — and a
+  **mesh-kind (imported STL) side is never booleaned** (it segfaults OCCT); it
+  comes back `skipped: "mesh"`.
+- **Matched renders need the explicit `frame=`.** `render_acm` auto-fits per
+  mesh, so two renders of different geometry do not superimpose; the packet
+  passes the union of both world bboxes to both sides.
+- **`allow_invalid` overrides the kernel validation gate only** — never the
+  approvals policy. One field must not mean two unrelated things.
+- **`actor_kind` is `human` only for the `browser` identity.** The chat dock is
+  a human asking an *agent*, so those actions are the agent's. It is
+  bookkeeping, not authentication, until PRD-005.
+- A packet is generated from the **branches' existing worktrees**
+  (`branches.tree_of` + `branches.pinned`) and refuses a dirty tree, so its
+  pinned head SHAs always describe the bytes it measured.
+- **A terminal proposal is never measured again.** Merged/closed means the
+  branches have moved on, so a packet built then would describe the merged
+  target under this proposal's name. The merge freezes the packet — or freezes
+  the *absence* of one (`{frozen: true, generated: null, ok: false, note}`) —
+  and `proposal_packet`/`proposal_render` refuse to produce anything new. A
+  frozen packet serves only the renders stored beside it.
+- **`packet.json` and `proposal.json` have ONE write order**:
+  `ProposalManager.record_packet`, under the manager's `RLock`. Never write
+  either from the builder directly — a build outlives a merge, and a build
+  overtaken by one is discarded, not published.
+- **Only `approve`/`request_changes` count towards the approvals gate.** A
+  `comment` changes no state, so it must not change the count either.
+- **A merge staged by a proposal is HELD** (`merge.json`'s `held_by:
+  "proposal:<id>"`, the one thing PRD-002 adds to `merge.py`). `resolve_merge`
+  records resolutions and, at zero outstanding, answers `{held: true}` without
+  finalizing; only `MergeOrchestrator.finalize_held` lands it, and only
+  `proposal_merge` calls it — after re-evaluating the gates. Never "fix" that
+  by finalizing at zero outstanding: the gate would become something you can
+  walk past by conflicting. `proposal_merge` also records `staged_merge`, and
+  the proposal still reconciles itself on the next read if such a merge lands
+  behind its back — a safety net for merges staged before the hold existed.
+- **`proposal_merge` holds the SOURCE branch's turn** across gate evaluation
+  and the merge (`_holding_source`), because a gate result is a statement about
+  one source head. The orchestrator takes the TARGET's turn inside. That order
+  is fixed, and `TurnLock` raises instead of blocking, so it cannot deadlock.
+- **A packet re-reads both heads when it finishes measuring.** The heads are
+  read up front and the metrics/renders/booleans come off the live worktrees
+  after: a head that moved discards the build and takes it again, and one that
+  moves twice persists the packet marked `stale`. Never label evidence with a
+  head you have not re-checked.
+- **A git read that FAILS is not empty evidence.** A `cat-file` that returns
+  non-zero is not "this side deleted `project.json`" and a failed `git diff` is
+  not "no script changed": both are `errors[]` entries with `fatal: true` that
+  force `ok: false` (the per-part FR8 degradation is separate and keeps
+  `ok: true`).
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script

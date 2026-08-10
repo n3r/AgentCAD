@@ -18,7 +18,7 @@ the same service humans use through the browser UI.
 │ FastAPI server — 127.0.0.1:<port>   (agentcad serve)        │
 │                                                             │
 │   ToolRegistry ──► AgentCADService ──► ProjectStore (files) │
-│   (52 tools,       (cache, events,     ~/AgentCAD/projects  │
+│   (60 tools,       (cache, events,     ~/AgentCAD/projects  │
 │    single source    orchestration)     or --projects-dir    │
 │    of truth)             │                                  │
 │                          │ line-delimited JSON-RPC (stdio)  │
@@ -56,7 +56,7 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/kernel/acm.py` | ACM1 binary mesh codec (no OCP dependency; the frontend has a JS parser). |
 | `agentcad/kernel/client.py` | Worker lifecycle: spawn, one-request-at-a-time, per-request timeout, kill-and-respawn, stderr tail capture for crash reports. |
 | `agentcad/kernel/pool.py` | `KernelPool`: N `KernelClient`s behind the same `request()` surface; affinity routing + round-robin, lazy spawn. Size 1 ≡ single client. |
-| `agentcad/kernel/handlers/` | Worker handler packs (reference, drawing, analysis, fem, connectors) merged into the worker at startup — see [extension points](#v2-extension-points). |
+| `agentcad/kernel/handlers/` | Worker handler packs (reference, drawing, analysis, fem, connectors, diff) merged into the worker at startup — see [extension points](#v2-extension-points). |
 | `agentcad/kernel/refload.py` | Reference-CAD loader (STEP/BREP → solid, STL → mesh-only Face) with an LRU keyed by (realpath, mtime, size). Kernel-side only (imports OCP). |
 | `agentcad/kernel/error_doctor.py` | Catalog of real OCCT/build123d failure signatures → plain-language diagnosis + fix; enriches every worker error's `details.hint`. |
 | `agentcad/kernel/_mates_resolver.py` | Connector evaluation + mate-graph ordering (cycle rejection) + Joint-based resolution to concrete transforms. |
@@ -70,10 +70,12 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/core/branches.py` | `BranchManager`: branch/tag operations and the per-client branch resolver installed into `ProjectStore.branch_resolver`. Owns `.history/trees/<branch>/` worktrees and the `.history/agentcad/` sidecars. |
 | `agentcad/core/manifest_merge.py` | Pure, I/O-free three-way merge of `project.json` at CAD key granularity: `merge_manifests(base, ours, theirs) -> (merged, conflicts)` and `apply_choices`. No git, no kernel, no service imports. |
 | `agentcad/core/merge.py` | `MergeOrchestrator`: `git merge-tree` for scripts, the manifest driver for the manifest, a staged detached worktree, the kernel validation pass, and the two-parent `commit-tree` + compare-and-swap `update-ref` that lands it. |
+| `agentcad/core/proposals.py` | `ProposalStore` (JSON documents + an append-only `audit.jsonl` in the `.history/agentcad/` sidecar, atomic writes, id allocation) and `ProposalManager`: the state machine, attribution, the approvals policy, the gate list, and the gated merge that delegates to `MergeOrchestrator` unchanged. No kernel, no packet work. |
+| `agentcad/core/packet.py` | `PacketBuilder`: the review packet. Four pure delta functions (changed parts, PARAMS, assembly, metrics) plus generation over the two branch worktrees — git diffs, per-part metrics through the ordinary service path, frame-matched renders, and `geom_diff` kernel calls — persisted with both branch heads. Talks to the kernel only through `service.kernel.request`. |
 | `agentcad/core/tools.py` | ToolRegistry — the 17 core tools defined once; discovers and loads `tools_*.py` packs. MCP and chat render from the merged registry. |
-| `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning), each exporting `register(registry, service)`. |
+| `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals), each exporting `register(registry, service)`. |
 | `agentcad/server/app.py` | Core REST routes (thin), `/api/tools` passthrough, WebSocket channel, static hosting; mounts `routes_*.py` packs under `/api`. |
-| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve, history, branches/versions/merge). |
+| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve, history, branches/versions/merge, proposals). |
 | `agentcad/agent/mcp_server.py` | MCP stdio server proxying `/api/tools`; auto-starts the HTTP server when unreachable. |
 | `agentcad/agent/chat.py` | Server-side Anthropic tool-use loop streaming to the UI over the WebSocket. |
 | `frontend/` | Static ES modules (no bundler): Three.js viewport, tree, parameter inspector, CodeMirror editor, chat panel. |
@@ -245,6 +247,92 @@ per-client, so the UI resets its context only for its own client id) and
 **Requirements.** Branches and tags work on any git; merging needs **git
 2.38+** for `merge-tree --write-tree` and says so by name in a
 `validation_error` on older versions.
+
+## Change proposals (CAD pull requests)
+
+A proposal is a durable, attributed object over a branch pair, with an
+auto-generated **review packet** and a merge that only happens through a gate.
+It adds no seam of its own to `ProjectStore` — it is a tool pack
+(`tools_proposals.py`) plus a route pack (`routes_proposals.py`) over PRD-001's
+ref layer, and it installs `service.proposals`, `service.packets` and
+`service.gate_providers` (the empty list PRD-003's specs and PRD-004's checks
+append to, so neither has to touch `proposals.py`). Like the branch tools, the
+whole pack **declines to register when `git` is absent**.
+
+**State lives in the sidecar, not in the project.** FR3 requires that
+`project_restore` never rewind workflow state, so proposals are written inside
+`GIT_DIR`, where no working tree and no snapshot can see them:
+
+```
+<project>/.history/agentcad/proposals/
+├── index.json                 # a rebuildable cache of the per-directory truth
+├── policy.json                # approvals_required, self_approve
+└── <id>/
+    ├── proposal.json          # the object (atomic write)
+    ├── audit.jsonl            # append-only: {seq, ts, actor, actor_kind, action, details}
+    ├── packet.json            # the generated evidence, pinned to both heads
+    ├── renders/<part>.<side>.<view>.png
+    └── diff/<generation>/<part>.<added|removed>.acm
+```
+
+Diff meshes are namespaced by the **build** that wrote them (`packet.generation`,
+which the asset URLs carry): a packet is published together with its assets, so
+a build the merge overtook is discarded *with its directory* and a frozen
+packet's URLs keep naming the geometry it was persisted with. A build that
+persists collects the older generations under its slot.
+
+`audit.jsonl` is the one file that is **appended**, never atomically replaced:
+FR14 makes it append-only, and a read-modify-replace cycle would both break
+that and risk truncating the log on a crash.
+
+**A packet, end to end** (`PacketBuilder.build`):
+
+1. Resolve `source`/`target` through `branches.tree_of`, checkpoint each tree
+   and **refuse a dirty one** (`conflict_error`), then pin both head SHAs — a
+   packet whose pinned heads do not describe the measured bytes is a lie.
+2. Changed parts = the union of part ids whose `parts/<id>.py` bytes differ
+   (`git diff --name-only`) and whose manifest entry differs, classified
+   `added`/`removed`/`modified` with `changed_by ∈ script | params | manifest`.
+3. Script diffs come from one `git diff --unified=3 <target> <source> --
+   parts/`, split per path, with hunk anchors PRD-008 will hang threads off.
+   PARAMS and assembly deltas come from the two manifests (read with merge's
+   *strict* loader) and from `get_assembly` at **resolved** transforms.
+4. Every measurement runs through the **ordinary service methods** under
+   `branches.pinned(proj, tree)` — the same mechanism the merge validation pass
+   uses — so the canonical, content-addressed `.cache/` makes unchanged parts
+   free on both sides. Packet cost scales with the change, not the project.
+5. Geometry: a part whose cache key matches on both sides short-circuits to
+   `unchanged` with **no kernel call at all**; otherwise one `geom_diff`
+   request per part returns `added_mm3`/`removed_mm3` and writes the two ACM1
+   diff solids for the viewport overlay.
+6. Renders: both sides at 640×480 through `render_acm(..., frame=…)` with
+   **one** frame — the union of both world bboxes, inflated 2 % — so the pair
+   is literally superimposable. They are written as PNG assets and published as
+   URLs, because MCP and chat lift only one `png_base64` per result.
+7. Every per-part stage is individually wrapped: a failure lands in
+   `warnings`/`errors` and the packet still returns `ok: true`. `ok: false`
+   means no packet could be produced at all.
+
+**The `geom_diff` handler** is a sibling handler pack
+(`agentcad/kernel/handlers/diff.py`), not a new `kind` on `analysis.py`:
+`analyze` takes one script, a diff takes two shapes and writes two meshes.
+It builds both sides through the worker toolbox, computes `new - old` (added)
+and `old - new` (removed) with the **`-` operator** — correct on multi-solid
+Compound operands, unlike the `&` interference uses — measures them with the
+toolbox's `shape_volume` (the solids sum; `Compound.volume` undercounts a
+nested result), and tessellates each to ACM. A mesh-only reference part is `skipped: "mesh"` rather than
+booleaned — the `check_interference` rule — and a boolean failure degrades to
+`available: false` with the metrics still present.
+
+**The merge is PRD-001's, unchanged.** `ProposalManager.merge` evaluates gates
+first (`state`, `approvals`, `validation`, plus any provider-supplied `specs`
+and `checks`) and refuses a red one with a `conflict_error` naming it; then it
+calls `MergeOrchestrator.merge` and forwards its payloads verbatim, including
+`merge_conflict`. `allow_invalid` is passed straight through to the kernel
+validation gate and never touches the approvals policy.
+
+**New event:** `proposal_changed {project, id, state, reason}` for every
+state or packet transition.
 
 ## Anatomy of one rebuild
 

@@ -223,7 +223,10 @@ def register(registry, service) -> None:
         "deletes it; taking 'base' when both branches added the file is a "
         "validation_error. You may resolve a few at a time; the reply lists "
         "what is still outstanding, and the merge completes (validation pass "
-        "included) as soon as nothing is.",
+        "included) as soon as nothing is — UNLESS the staged merge is held "
+        "('held_by', a proposal). Then the reply is {held: true, outstanding: "
+        "0} and nothing lands: complete it with proposal_merge, which "
+        "re-checks that proposal's gates first.",
         schema(
             {
                 "project": _PROJ,

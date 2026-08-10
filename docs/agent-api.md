@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 52 tools (55 with the
+Agents drive AgentCAD through a single tool surface — 60 tools (63 with the
 `[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -146,9 +146,9 @@ agents get backwards: **`ours` = the target branch** (what you merge into),
 | `version_tag` | **project, name**, message | Names the current state of your branch as an immutable version (an annotated git tag): `{tag, commit, versions}`. Re-using a name is a `conflict_error` — versions never move, and there is deliberately no delete tool. Restore one with `project_restore {commit: "<name>"}`. |
 | `list_versions` | **project** | `{versions: [{name, commit, ts, author, message, referrers}]}`, newest first. `referrers` is the forward-compatibility hook for releases (PRD-015). |
 | `merge_branch` | **project, source**, target, allow_invalid | Merges `source` (theirs) into `target` (ours; default: your current branch). Fast-forwards when the target has nothing of its own (`{fast_forward: true}`) — **still validated**, because an edit persists before its rebuild fails, so a branch can carry a script that does not build; merging an ancestor returns `{already_up_to_date: true}` with `validation: null`. Otherwise a real three-way merge: part scripts via git's textual merge, `project.json` **always** re-merged key-wise (per part, param, instance, material, PMI section). Conflicts come back as `merge_conflict` with the merge **staged** — nothing outside `.history/agentcad/` is written and no ref moves until you resolve or abort. On success: one merge commit with **two parents**, plus `{commit, parents, conflicts_resolved, validation, project}`. Re-running it on a staged merge whose branches have moved is a `conflict_error` — the recorded resolutions no longer apply, so discard it with `merge_abort` and merge again rather than losing them silently. |
-| `resolve_merge` | **project, choices** | Resolves the staged merge. `choices` maps a conflict's `path` (scripts, e.g. `"parts/flange.py"`) or `key` (manifest, e.g. `"parts.flange.params.bolt_d"`) to `{"take": "ours"\|"theirs"\|"base"}`, or `{"content": "<full file text>"}` for a script, or `{"value": …}` for a manifest key. In a manifest conflict a side that has **no value** (it deleted the key, or both branches added it so there is no base) is **omitted** from the payload — `"ours": null` means that side authored a JSON `null`, and taking it writes that null rather than deleting the key. Each manifest conflict also carries `path`, the exact key segments, because an id may contain a `.` (`parts.body.solid_materials.wall.inner`); `key` remains the dotted string you address the choice by. A `kind: "binary"` conflict (anything under `imports/`) carries `sides: {base\|ours\|theirs: {bytes, sha256} \| null}` instead of text and takes a side only — `content` is a `validation_error`. Taking a side where the file is absent (that branch deleted it) **deletes** it; taking `base` when there is none (both branches added the file) is a `validation_error` naming the valid choices. Partial resolution is fine — the reply lists what is still outstanding — and the merge completes (validation pass included) as soon as nothing is. Unknown path/key → `validation_error`, staged merge untouched. |
+| `resolve_merge` | **project, choices** | Resolves the staged merge. `choices` maps a conflict's `path` (scripts, e.g. `"parts/flange.py"`) or `key` (manifest, e.g. `"parts.flange.params.bolt_d"`) to `{"take": "ours"\|"theirs"\|"base"}`, or `{"content": "<full file text>"}` for a script, or `{"value": …}` for a manifest key. In a manifest conflict a side that has **no value** (it deleted the key, or both branches added it so there is no base) is **omitted** from the payload — `"ours": null` means that side authored a JSON `null`, and taking it writes that null rather than deleting the key. Each manifest conflict also carries `path`, the exact key segments, because an id may contain a `.` (`parts.body.solid_materials.wall.inner`); `key` remains the dotted string you address the choice by. A `kind: "binary"` conflict (anything under `imports/`) carries `sides: {base\|ours\|theirs: {bytes, sha256} \| null}` instead of text and takes a side only — `content` is a `validation_error`. Taking a side where the file is absent (that branch deleted it) **deletes** it; taking `base` when there is none (both branches added the file) is a `validation_error` naming the valid choices. Partial resolution is fine — the reply lists what is still outstanding — and the merge completes (validation pass included) as soon as nothing is, **unless the staged merge is held**: a merge staged by `proposal_merge` carries `held_by: "proposal:<id>"`, and at zero outstanding this returns `{held: true, merged: false, outstanding: 0, held_by, hint}` having landed nothing — completing it is `proposal_merge`'s, which re-checks that proposal's gates first. `merge_abort` still discards it. Unknown path/key → `validation_error`, staged merge untouched. |
 | `merge_abort` | **project** | Discards the staged merge (its worktree and state); no branch moves. `{aborted: false}` when nothing was staged. |
-| `merge_status` | **project** | `{merge: {id, source, target, base, by, created, outstanding, conflicts, resolved} \| null}` — re-enter a merge you or another client staged earlier (e.g. after a reload or a server restart). |
+| `merge_status` | **project** | `{merge: {id, source, target, base, by, created, outstanding, conflicts, resolved, held, held_by} \| null}` — re-enter a merge you or another client staged earlier (e.g. after a reload or a server restart). |
 
 **The validation pass (FR9).** Before **any** merge lands — fast-forward
 included — the merged tree is rebuilt by the real kernel: changed parts build,
@@ -189,6 +189,124 @@ usual `project_changed`.
 `GET|POST /projects/{proj}/versions`,
 `GET|POST /projects/{proj}/merge`, `POST /projects/{proj}/merge/resolve`,
 `POST /projects/{proj}/merge/abort`.
+
+### Change proposals
+
+A proposal is a CAD pull request: a durable, attributed object over a branch
+pair, with an auto-generated **review packet** of kernel-computed evidence and
+a merge that only happens through a gate. Registered under the same condition
+as the branch tools — **only when `git` is on the server's PATH**.
+
+Convention, repeated in every description because it is the one thing agents
+get backwards: read the pair like `git merge <source>` — the **target branch is
+`old`** (ours, what the change lands in) and the **source branch is `new`**
+(theirs, the proposed work).
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `proposal_create` | **project, source, title**, target, description, draft | `{proposal, gates, packet}`. `target` defaults to the project's **default** branch, not your current one (a proposal is read by other clients). A second *active* proposal for the same pair is a `conflict_error` naming the existing id; an unknown branch is a `notfound_error` (a version tag does not answer for a branch); `source == target` is a `validation_error`. `draft: true` opens it unreviewable until you update it to `open`. |
+| `proposal_list` | **project**, state | `{proposals: [{id, source, target, title, state, author, author_kind, created, updated, reviews, merge_commit}], counts: {<state>: n}}`, oldest id first. |
+| `proposal_get` | **project, id** | `{proposal, gates, audit, packet}`. `gates` is the merge checklist — `[{name, state: pass\|fail\|pending\|skipped, summary, details}]` over `state`, `approvals`, `validation` (pending until the merge runs it), `specs` and `checks` (skipped until PRD-003/PRD-004 install providers). `audit` is the append-only log. `packet` here is only a status summary (`{generated, stale, ok, frozen}`, or `null` before the first view). |
+| `proposal_update` | **project, id**, title, description, state | Edits the title/description, or moves state: `draft → open`, anything active → `closed`, `closed → open`, `changes_requested → open`. Approving is `proposal_review` and merging is `proposal_merge`; neither can be faked by writing a state — any other move is a `validation_error` carrying `{from, to, allowed}`. |
+| `proposal_packet` | **project, id**, regenerate | The review packet (below). Generated on first view, re-served while both branch heads hold, regenerated when either moved or on `regenerate: true`. A packet frozen by a merge refuses `regenerate` with a `conflict_error`. A **terminal** (merged/closed) proposal is never measured again — a packet built then would describe the branches as they are now, under this proposal's name. Merging freezes the packet, or, when none was ever generated, freezes the *absence* as `{frozen: true, generated: null, ok: false, parts: [], note: "…"}`; a closed proposal keeps whatever it had, and a terminal proposal with no packet at all is a `conflict_error`. |
+| `proposal_render` | **project, id, side**, part, view | One image you can actually look at: `{path, width, height, view, side, part, png_base64}`. `side` is `old` (target) or `new` (source); omit `part` for the whole assembly. Framed by the union of both sides' bounding boxes, so old and new superimpose. Views: `iso`, `front`, `top`, `right`. Every render is **written to `path`** and served from there afterwards, so the path names a file that exists. A **frozen** packet serves only the renders stored with it: any other view is a `conflict_error`, because drawing one now would draw today's branches under the decision's date. |
+| `proposal_review` | **project, id, verdict**, summary | `approve` → `approved`, `request_changes` → `changes_requested` (blocks the merge until the author reopens it), `comment` (recorded, state unchanged). The latest **approve/request_changes** *per actor* counts; a `comment` is recorded and audited but never changes the approvals count — it changes no state, so it retracts nothing. `summary` goes into the permanent audit log with your identity. |
+| `proposal_merge` | **project, id**, allow_invalid | Gates first, then PRD-001's `merge_branch` unchanged. Success returns that payload plus `{proposal, gates}` with the proposal `merged` and its packet frozen. A `merge_conflict` records the staged merge on the proposal, so a merge finished by `resolve_merge` is recognised and recorded on the next read (see below). |
+
+**The packet.** One JSON document — `{ok, stale, frozen, generated,
+generated_by, elapsed_ms, source, target, source_head, target_head, base,
+summary, parts, assembly, manifest, binary, warnings, errors}` — pinned to both
+branch heads. Per changed part: `script_diff` (unified text plus `hunks`
+anchors), `params_diff` (`added`/`removed`/`changed` rows; a scalar override is
+one row with `"field": "value"`, a full parameter spec one row per changed
+field — and the scripts' own `PARAMS` **declarations** are diffed too, as rows
+carrying `"source": "spec"` and a `"spec.<field>"` field name, because changing
+a `default`, a `max` or a `type` in the script changes no override at all),
+`build` per side, `metrics` (`{old, new, delta, pct}` for
+`volume_mm3`/`mass_g`/`area_mm2`, a per-axis `center_of_mass` delta, both
+bounding boxes plus `size_delta_mm`), `geom_diff` (`added_mm3`/`removed_mm3`
+computed by kernel booleans, with ACM1 overlay meshes), and `renders` — before
+and after **URLs** sharing one camera `frame`. `assembly` carries instances
+added/removed/moved (at *resolved* transforms), mate changes and the total-mass
+delta; its `renders` are `null` (assembly renders are the expensive kind — ask
+for one with `proposal_render`).
+
+Four things to know before you consume it:
+
+- **Renders are URLs, not images.** MCP and chat lift exactly one top-level
+  `png_base64` per tool result, so a packet with N pairs cannot carry them.
+  Call `proposal_render` to *see* a side.
+- **Packet-internal failures are payload fields, never errors** (FR8). An
+  unbuildable side is `build.<side>.ok: false` with the structured script error
+  and `metrics.<x>.<side>: null`; a failed or impossible boolean is
+  `geom_diff.available: false` with a reason (`skipped: "mesh"` for an imported
+  reference part — the `check_interference` rule); anything unexpected lands in
+  `warnings`/`errors`. `ok` is `false` only when a piece of **evidence** could
+  not be read: a git command that failed (`cat-file` on a manifest, a `diff`)
+  is an `errors[]` entry carrying `fatal: true`, the `command` and the `ref`,
+  and it forces `ok: false` rather than passing an empty result off as "nothing
+  changed" or "the whole project was deleted".
+- **Unchanged parts cost nothing.** A part whose content hash matches on both
+  sides short-circuits to `geom_diff: {available: true, unchanged: true}` with
+  zero kernel work — packet cost scales with the change, not the project.
+- **`stale` is honest, not fatal.** A moved head marks the packet stale and it
+  regenerates on the next view; reviews made against an older source head stay
+  counted but are marked `stale`. A head that moves *during* a build discards
+  that build and takes it again; a head that moves twice persists the packet
+  marked `stale` rather than labelling mixed evidence with a head it no longer
+  describes. A **frozen** packet is never `stale` (it is pinned) but carries
+  `stale_at_merge: true` when the commits it describes are not the commits the
+  merge landed.
+
+**Gating and policy.** `proposal_merge` checks gates **first**: a red one is a
+`conflict_error` naming it in `details.failing` with the full `details.gates`,
+and nothing is merged. Policy v1 is two per-project fields in
+`<project>/.history/agentcad/proposals/policy.json` — `approvals_required`
+(default 1) and `self_approve` (default false, so the author's own approval
+does not count). Then PRD-001's merge runs: a `merge_conflict` comes back at
+HTTP 200 with the merge staged and the proposal still open (resolve with
+`resolve_merge`, or discard with `merge_abort`, then call `proposal_merge`
+again). That staged merge is **held** by the proposal: `resolve_merge` records
+the resolutions and answers `{held: true, held_by: "proposal:<id>",
+outstanding: 0}` **without landing anything**, because landing it there would
+walk straight past the gates — only `proposal_merge` completes it, after
+re-evaluating them. A failing kernel validation pass is a `validation_error`
+carrying
+`details.validation`. **`allow_invalid: true` overrides the kernel validation
+gate only** — it never waives the approvals policy — and it is recorded in the
+audit log, on the proposal and in the merge commit message.
+
+**Attribution.** Every action is stamped `{seq, ts, actor, actor_kind, action,
+details}` in an append-only `audit.jsonl`. `actor` is the client identity the
+turn-lock plumbing already carries (`browser`, `chat:<session>`, an MCP agent
+id via `X-Agent-Id`); `actor_kind` is `human` **only** for the browser UI —
+the chat dock is a human asking an *agent*, so its actions are the agent's.
+This is honest bookkeeping, **not authentication**: the identity header is
+unvalidated until PRD-005 replaces it with an authenticated principal (no
+schema change). Timestamps are zone-aware UTC (`…Z`).
+
+Proposals are workflow metadata, not model state: they live in PRD-001's
+sidecar at `<project>/.history/agentcad/proposals/<id>/`, outside every working
+tree, so `project_restore` never rewinds them and every branch sees the same
+proposals.
+
+**Events.** `proposal_changed {project, id, state, reason}` for every
+state/packet transition — `reason` is one of `created`, `updated`, `review`,
+`packet`, `merged`.
+
+**Routes** (all under `/api`): `GET|POST /projects/{proj}/proposals`,
+`GET|PATCH /projects/{proj}/proposals/{id}`,
+`GET /projects/{proj}/proposals/{id}/packet?regenerate=1`,
+`POST /projects/{proj}/proposals/{id}/review`,
+`POST /projects/{proj}/proposals/{id}/merge`,
+`GET /projects/{proj}/proposals/{id}/render/{side}[/{part}]?view=iso`
+(`image/png`),
+`GET /projects/{proj}/proposals/{id}/diff/{gen}/{part}/{kind}.acm`
+(the overlay mesh, `application/octet-stream`). `{gen}` is the packet's
+`generation` — the build its assets were published with — so a packet only ever
+serves the geometry it was persisted with; a generation that has been collected
+(or discarded) is a 404. Read the URLs off the packet rather than composing
+them.
 
 ### Sketch solving
 
@@ -369,3 +487,84 @@ What keeps this loop cheap and safe:
   merge would break a build, strand an instance, or introduce interference.
   Fix the source branch and merge again; `allow_invalid: true` is for when you
   intend to land the failure (it is recorded in the commit message).
+
+## A v4 example: propose the change instead of landing it
+
+The loop above merges your own work. The **mandated end state of an agent
+task** is one step short of that: branch → edit → *propose*, and let a human
+(or a reviewer agent) decide. Same branch, same merge — with a reviewable
+argument and machine-gathered evidence in between:
+
+```
+→ branch_create {"project": "rig", "name": "nozzle-thinner"}
+→ branch_switch {"project": "rig", "name": "nozzle-thinner"}
+→ update_part_script {"project": "rig", "part_id": "nozzle", "script": "..."}
+→ set_params {"project": "rig", "part_id": "nozzle", "values": {"wall": 2.6}}
+
+→ proposal_create {"project": "rig", "source": "nozzle-thinner",
+                   "title": "Thin the nozzle wall to 2.6 mm",
+                   "description": "3.0 mm was a placeholder; 2.6 keeps the
+                                   hoop stress margin and saves 12 g."}
+← {"proposal": {"id": "3", "state": "open", "target": "master",
+                "author": "mcp", "author_kind": "agent"},
+   "gates": [{"name": "approvals", "state": "fail",
+              "summary": "1 approval required, 0 recorded …"}, …],
+   "packet": null}                       # generated lazily, on first view
+
+→ proposal_packet {"project": "rig", "id": "3"}
+← {"ok": true, "stale": false, "elapsed_ms": 970, "generation": "6f1c…",
+   "summary": {"parts_changed": 1, "mass_delta_g": -12.4},
+   "parts": [{"part": "nozzle", "changed_by": ["script", "params"],
+              "script_diff": {"unified": "@@ -12,6 +12,8 @@ …"},
+              "params_diff": {"changed": [{"name": "wall", "field": "value",
+                                           "old": 3.0, "new": 2.6}]},
+              "metrics": {"mass_g": {"old": 111.3, "new": 98.9,
+                                     "delta": -12.4, "pct": -11.1}, …},
+              "geom_diff": {"available": true, "added_mm3": 0.0,
+                            "removed_mm3": 4593.2,
+                            "removed_mesh":
+                                "/api/…/diff/6f1c…/nozzle/removed.acm"},
+              "renders": {"view": "iso", "frame": {…},
+                          "old": "/api/…/render/old/nozzle",
+                          "new": "/api/…/render/new/nozzle"}}],
+   "assembly": {"changed": false, …}, "warnings": [], "errors": []}
+
+# A reviewer — human in the browser, or another agent holding these tools —
+# looks at the evidence and rules on it:
+→ proposal_render {"project": "rig", "id": "3", "side": "new",
+                   "part": "nozzle"}     # the pair superimposes: same frame
+→ proposal_review {"project": "rig", "id": "3", "verdict": "approve",
+                   "summary": "margin checks out against the hoop-stress calc"}
+← {"proposal": {"state": "approved"}, "gates": [{"name": "approvals",
+                                                 "state": "pass"}, …]}
+
+→ proposal_merge {"project": "rig", "id": "3"}
+← {"merged": true, "commit": "5c31…", "parents": ["<master>", "<source>"],
+   "validation": {"ok": true, …},
+   "proposal": {"state": "merged", "merge": {"commit": "5c31…"}}}
+```
+
+What this buys, and the traps:
+
+- **Write the description for the reviewer, not for the log.** The packet
+  supplies *what* changed; you supply *why it is right*. That is the whole
+  argument a reviewer judges.
+- **Your own approval does not count.** Under the default policy a merge with
+  zero non-author approvals is a `conflict_error` naming the gate — an agent
+  cannot land its own work, which is the point.
+- **Never `proposal_update {state: …}` to fake a decision.** Only `open` and
+  `closed` are writable; approving and merging have their own tools.
+- **Address feedback on the branch, then reopen.** `request_changes` blocks the
+  merge; push new commits to the source branch (which marks the packet stale),
+  then `proposal_update {state: "open"}` to re-request review.
+- **A `merge_conflict` is the same object PRD-001 defines.** Resolve it with
+  `resolve_merge` and call `proposal_merge` again — the proposal stays open
+  until the merge actually lands. But `resolve_merge` *is* what lands it, and
+  it knows nothing about proposals: so the proposal remembers the merge it
+  staged and recognises it in the commit that appears, marking itself `merged`
+  on the next read with the real commit, its real parents and **the
+  `allow_invalid` the staged merge actually ran under** (with the `override`
+  audit entry that goes with it). Calling `proposal_merge` again then reports
+  that merge (`already_landed: true`) instead of merging an ancestor; a merge
+  you discarded with `merge_abort` is audited `merge_discarded` and the
+  proposal stays exactly where it was.

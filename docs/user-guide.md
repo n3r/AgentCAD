@@ -82,6 +82,12 @@ last change, marks the current one and the default, and ends with **New
 branch…**, **Merge into…** and **Versions…**. Details in
 [Branches, versions and merges](#branches-versions-and-merges) below.
 
+**Proposals** — the button after the branch switcher, with a badge counting
+the open proposals in this project. A proposal is a *CAD pull request*: a
+branch packaged as a reviewable change with an argument and kernel-computed
+evidence. Like the branch switcher, it appears only when the server has `git`.
+Details in [Change proposals](#change-proposals) below.
+
 **Rebuild indicator** — a spinner labeled `Rebuilding <part>…` (or
 `Rebuilding N parts…`) appears while any rebuild is in flight, driven by
 `rebuild_started`/`rebuild_finished` events — including rebuilds an agent
@@ -449,7 +455,11 @@ by default), then **Merge**. Three outcomes:
    ours (target)**, **Use theirs (source)**, **Use base**, or **Edit…** to
    author the merged text by hand and **Save edit**. Each pick posts
    immediately, so partial resolution is real — the footer counts "N of M
-   resolved" and **Complete merge** enables at zero outstanding. **Abort
+   resolved" and **Complete merge** enables at zero outstanding — unless the
+   merge was staged by a *proposal*, which holds it: the footer then says
+   "held by proposal:N" and the button reads **Complete in the proposal**,
+   because completing it here would land the change without re-checking that
+   proposal's gates. **Abort
    merge** throws the staged merge away. Until the merge completes, *nothing*
    on either branch has changed: the merge is staged, and reloading the page
    (or restarting the server) reopens the conflict view where you left it.
@@ -480,6 +490,92 @@ state.
 it, `git log`, `git diff master..flange-weld`, or check out a version tag with
 your own tools. Derived data (`.cache/`, `exports/`) is never committed.
 
+## Change proposals
+
+A merge lands a branch. A **proposal** is the decision point in front of it:
+"here is what I did, here is why, and here is what the geometry actually did —
+approve it or push back." It is the surface a human supervises an agent
+through, and the same object an agent uses to hand work over
+([agent-api.md](agent-api.md#change-proposals)). Open it with the **Proposals**
+toolbar button; the badge counts what is open.
+
+**The list** (left). Filter chips across the top — `all N`, then one per state
+in use (`open`, `approved`, `changes_requested`, `merged`, `closed`). Each row
+shows a state dot, `#id`, the title, `source → target`, the author with a
+**human/agent badge**, the age and the review count. **New proposal…** opens an
+inline form: source branch, target (defaulting to the project's *default*
+branch, not the one you are on — a proposal is read by other clients), title,
+description and a *draft* checkbox. Write the description for the reviewer: the
+packet says what changed, you say why it is right.
+
+**The header** (right). State chip, `source → target (new → old)`, the author,
+the merge commit once merged, and the actions: **Approve**, **Request
+changes**, **Comment**, **Merge**, **Close**/**Reopen**, **Edit…** and
+**Regenerate packet**. Merge is disabled while a gate is red, with the failing
+gate's reason in its tooltip — a hint only; the server refuses regardless, so
+nothing lands because a button was enabled.
+
+**The five tabs** are the review packet, generated on first view (the spinner
+says so; a cold packet builds both sides) and re-served until either branch
+moves.
+
+- **Overview** — the description, when the packet was generated, and per
+  changed part a metric-delta table (volume, mass, area with Δ and %, the
+  per-axis centre-of-mass shift, both bounding boxes) plus the **before/after
+  render pair**. The pair shares one camera frame, so the two images are
+  superimposed: **hover to cross-fade old → new**.
+- **Files** — the unified script diff, line by line with hunk headers, plus a
+  PARAMS diff table (parameters added, removed, and each changed value as
+  old → new).
+- **Geometry** — per part the kernel-computed **removed** and **added** mm³,
+  with **Show in viewport**: it closes the modal, selects the part and overlays
+  the diff solids on the real geometry — translucent **red for removed**,
+  **green for added** — with a legend in the viewport corner and a **Clear**
+  action. The overlay is drawn over the target build and disappears on a part
+  switch or a rebuild.
+- **Checks** — the merge gates (state, approvals, kernel validation, and the
+  spec/CI slots) with pass/fail/pending/skipped chips, the reviews with their
+  verdicts, and — after a merge the kernel blocked — the full validation report
+  with a **Merge anyway (allow_invalid)** button.
+- **Audit** — the append-only log: sequence, timestamp, actor and whether it
+  was a human or an agent, action, details. It cannot be edited from anywhere.
+
+**Failures are shown as evidence, not as errors.** A side that does not build
+prints its script error above that part's metrics with the rest of the packet
+intact; an impossible geometric diff prints its reason (an imported STL part
+reports `skipped: mesh`); a mesh part reports `n/a (mesh)` for centre of mass,
+because a bbox centre is not a mass property. That is the packet working
+correctly — "the new side does not build" is the most useful review comment
+there is.
+
+**Approvals.** By default a proposal needs **one approval that is not the
+author's**. Approving your own proposal never satisfies that, which is what
+makes the flow meaningful when the author is an agent. **Merge anyway
+(allow_invalid)** overrides the *kernel validation* gate only — never the
+approvals policy — and is recorded in the audit log and the merge commit
+message.
+
+**Conflicts.** If the merge conflicts, the proposals modal hands off to the
+usual conflict view on a staged merge; resolve it there. That merge is **held
+by the proposal**: resolving the last conflict records your choices but lands
+nothing, and the conflict view says so — its Complete button reads *Complete in
+the proposal*. Go back to the proposal and merge it again. That is not
+ceremony: landing the merge from the conflict view would skip the gates
+entirely, so a proposal someone set back to *changes requested* while you were
+resolving would merge anyway. Merging the proposal re-checks the gates first
+and then finishes the staged merge, keeping the override it was staged with.
+Aborting the staged merge instead leaves the proposal exactly where it was.
+
+**If you decline "Merge anyway", finish the staged merge.** A merge the kernel
+blocks leaves the staged merge in place (ordinary `merge_branch` behaviour), so
+the next page load reopens the *merge* modal over everything. Either complete
+it there or **Abort merge**, then fix the source branch and merge the proposal
+again.
+
+Proposals are workflow metadata, not model state: they live in
+`<project>/.history/agentcad/proposals/`, outside every working tree, so they
+are the same on every branch and **Undo / Restore never rewinds them**.
+
 ## Working with the bundled examples
 
 Pick them from the project switcher:
@@ -509,7 +605,8 @@ suite, so the shipped defaults always build.
 | `<project>/parts/<id>.py` | One plain build123d script per part — the model itself. Edit with anything; the UI picks up saves via its own editor, agents via tools. (Reference parts have no script here.) |
 | `<project>/imports/` | Uploaded reference CAD (STEP/BREP/STL) backing `reference` parts. |
 | `<project>/.cache/` | Derived data (ACM1 meshes + metrics JSON keyed by content hash). Safe to delete; rebuilt on demand — and **shared by every branch**, since the keys are content hashes. |
-| `<project>/.history/` | The project's git repository (snapshots, branches, tags). `git log`/`diff`/`clone` work on it directly. Inside it: `trees/<branch>/` — one working tree per non-default branch — and `agentcad/` — sidecar state (default branch, per-client checkouts, version referrers, any staged merge). None of it is ever committed. |
+| `<project>/.history/` | The project's git repository (snapshots, branches, tags). `git log`/`diff`/`clone` work on it directly. Inside it: `trees/<branch>/` — one working tree per non-default branch — and `agentcad/` — sidecar state (default branch, per-client checkouts, version referrers, any staged merge, and `proposals/`). None of it is ever committed. |
+| `<project>/.history/agentcad/proposals/<id>/` | One change proposal: `proposal.json`, the append-only `audit.jsonl`, the generated `packet.json` and its render PNGs / diff meshes. Shared by every branch and never rewound by a restore. `policy.json` beside them holds the project's merge policy (`approvals_required`, `self_approve`). |
 | `<project>/exports/` | STEP/STL/3MF part & assembly exports, plus `<part>_drawing.svg`/`.dxf` drawings, from the Export menu, agent tools, or `agentcad export`. |
 | `examples/` (repo) | The bundled example projects, registered at startup. |
 | `~/.agentcad/config.json` | The persisted port (`AGENTCAD_CONFIG` overrides the path). |

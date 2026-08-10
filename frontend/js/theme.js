@@ -9,17 +9,23 @@ import * as viewport from "./viewport.js";
 const STORAGE_KEY = "agentcad.theme";
 
 const SCENE_THEMES = {
+  // diffAdded/diffRemoved are the proposal geometry-diff overlay colors —
+  // --ok and --err from the CSS tokens, which THREE cannot read itself.
   dark: {
     background: 0x17181b,
     gridMajor: 0x2c2f36,
     gridMinor: 0x22242a,
     edge: 0x0d0e10,
+    diffAdded: 0x6fbf8f,
+    diffRemoved: 0xe0655c,
   },
   light: {
     background: 0xe9ebef,
     gridMajor: 0xc4cad2,
     gridMinor: 0xd9dde2,
     edge: 0x2f353c,
+    diffAdded: 0x2e8a57,
+    diffRemoved: 0xc2413a,
   },
 };
 

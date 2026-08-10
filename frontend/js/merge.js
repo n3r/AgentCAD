@@ -219,6 +219,15 @@ function handleResult(res, source, target) {
     actions.toast(`Merge failed: ${res.error.message || "error"}`, "error");
     return;
   }
+  if (res && res.held) {
+    // Every conflict is resolved and nothing landed: the merge belongs to a
+    // proposal, which is where it is completed.
+    actions.toast(
+      `Resolved — this merge belongs to ${res.held_by}; complete it there`
+    );
+    reopenStaged();
+    return;
+  }
   staged = null;
   resolvedKeys = new Set();
   setState({ merge: null });
@@ -263,9 +272,15 @@ function renderConflicts() {
   if (!staged.conflicts.length) {
     const done = document.createElement("div");
     done.className = "conflict-note";
-    done.textContent =
-      "Every conflict is resolved. Complete the merge to run the validation " +
-      "pass and land it.";
+    // A held merge does not complete here, so it must not be told to: the
+    // Complete button beside this note is disabled, and the merge lands in
+    // the proposal that holds it (where its gates are re-checked first).
+    done.textContent = staged.held_by
+      ? "Every conflict is resolved and recorded. This merge belongs to " +
+        `${staged.held_by}: it completes there, after that proposal's gates ` +
+        "are re-checked."
+      : "Every conflict is resolved. Complete the merge to run the validation " +
+        "pass and land it.";
     list.appendChild(done);
   }
 
@@ -484,13 +499,21 @@ async function applyChoice(conflict, choice) {
 function updateProgress() {
   const outstanding = staged ? staged.conflicts.length : 0;
   const total = outstanding + resolvedKeys.size;
-  progressEl.textContent = total
-    ? `${resolvedKeys.size} of ${total} resolved`
-    : "nothing outstanding";
-  completeBtn.disabled = outstanding > 0;
-  completeBtn.title = outstanding
-    ? "Resolve every conflict first"
-    : "Run the validation pass and land the merge";
+  // A merge staged by a proposal is HELD: resolving here records the choices,
+  // but only proposal_merge lands it — after re-checking that proposal's
+  // gates against the branches as they are now.
+  const heldBy = staged && staged.held_by;
+  progressEl.textContent =
+    (total ? `${resolvedKeys.size} of ${total} resolved` : "nothing outstanding") +
+    (heldBy ? ` · held by ${heldBy}` : "");
+  completeBtn.disabled = outstanding > 0 || !!heldBy;
+  completeBtn.textContent = heldBy ? "Complete in the proposal" : "Complete merge";
+  completeBtn.title = heldBy
+    ? `This merge belongs to ${heldBy}: resolve the conflicts here, then ` +
+      "merge that proposal — its gates are re-checked before anything lands"
+    : outstanding
+      ? "Resolve every conflict first"
+      : "Run the validation pass and land the merge";
 }
 
 // ------------------------------------------------------------- completion
@@ -613,7 +636,10 @@ function showResult(res, source, target) {
   bodyEl.appendChild(host);
 }
 
-function reportBlock(validation) {
+/** The kernel validation report, rendered. Exported so the proposals modal's
+ *  Checks tab shows the SAME block for the same report rather than growing a
+ *  second one that can drift (PRD-002 slice 5). */
+export function reportBlock(validation) {
   const el = document.createElement("div");
   el.className = "conflict-report";
 
