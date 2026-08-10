@@ -79,6 +79,21 @@ _UPDATABLE = ("open", "closed")
 _ID_RE = re.compile(r"^[1-9][0-9]{0,17}$")
 _ASSET_KINDS = ("renders", "diff")
 
+# Only these verdicts move the approvals count. A 'comment' is a note, not a
+# retraction: taking the latest verdict per actor *including* comments let one
+# nit silently un-approve an approved proposal (and left the gate lying about
+# it) — the verdict an actor has to change is changed by voting again.
+_COUNTED_VERDICTS = ("approve", "request_changes")
+
+# How far back the reconciler looks for the commit a staged merge landed as.
+# A conflicted merge is finished by resolve_merge within one sitting; anything
+# older than this many commits on the target is not this proposal's merge.
+_RECONCILE_SCAN = 200
+
+# ``MergeOrchestrator._commit_message``'s verdict line — the only surviving
+# record of the validation pass a merge completed by ``resolve_merge`` ran.
+_VALIDATION_RE = re.compile(r"^Validation:\s*(.+)$", re.M)
+
 
 def _now() -> str:
     """UTC, ISO-8601, *zone-aware*: the trailing ``Z`` is what makes a stamp
@@ -349,8 +364,11 @@ def _id_key(path: Path) -> tuple[int, str]:
 class ProposalManager:
     """The lifecycle: creation rules, transitions, reviews, policy and gates.
 
-    Owns one ``threading.RLock`` around every read-modify-write of a proposal.
-    ``service.branches`` is resolved per call (see the module docstring).
+    Owns one ``threading.RLock`` around every read-modify-write of a proposal
+    — the packet builder's included (:meth:`record_packet`), so
+    ``proposal.json`` and ``packet.json`` have exactly ONE serialization point
+    and a slow packet build can never resurrect a state the merge has moved
+    past. ``service.branches`` is resolved per call (see the module docstring).
     """
 
     def __init__(self, service) -> None:
@@ -373,13 +391,16 @@ class ProposalManager:
                 f"a proposal cannot merge branch {source!r} into itself",
                 {"source": source, "target": target},
             )
-        for role, name in (("source", source), ("target", target)):
-            if self.service.history.resolve_branch(canonical, name) is None:
-                raise NotFoundError(f"branch {name!r} not found",
-                                    {"role": role, "branch": name})
         state = "draft" if draft else "open"
         actor = locks.current_client_id()
         with self._lock:
+            # Under the lock, with the branch-delete guard: a branch that is
+            # here when the proposal is written cannot have been deleted
+            # between the check and the write.
+            for role, name in (("source", source), ("target", target)):
+                if self.service.history.resolve_branch(canonical, name) is None:
+                    raise NotFoundError(f"branch {name!r} not found",
+                                        {"role": role, "branch": name})
             for existing in self.store.list(proj):
                 if (existing.get("source"), existing.get("target")) \
                         == (source, target) \
@@ -424,6 +445,9 @@ class ProposalManager:
             raise ValidationError(f"unknown proposal state {state!r}",
                                   {"allowed": list(STATES)})
         proposals = self.store.list(proj)
+        for index, proposal in enumerate(proposals):
+            if proposal.get("staged_merge"):
+                proposals[index] = self.reconcile(proj, proposal["id"])
         counts = {name: 0 for name in STATES}
         for proposal in proposals:
             if proposal.get("state") in counts:
@@ -434,7 +458,7 @@ class ProposalManager:
 
     def get(self, proj: str, pid: str) -> dict:
         self.ensure_branch_guard()
-        proposal = self.store.load(proj, pid)
+        proposal = self.reconcile(proj, pid)
         return {
             **self._result(proj, proposal),
             "audit": self.store.audit(proj, proposal["id"]),
@@ -528,6 +552,16 @@ class ProposalManager:
         merges = self._merges()
         with self._lock:
             proposal = self.store.load(proj, pid)
+            landed = self._reconcile(proj, proposal)
+            if landed is not None:
+                # The merge this proposal staged was completed by
+                # ``resolve_merge`` while we were away: it is already merged,
+                # and the documented recovery ("resolve it, then call
+                # proposal_merge again") answers with the merge that landed
+                # rather than re-merging an ancestor into its own target.
+                gates = self.gates(proj, proposal)
+                return {**landed, "proposal": self._view(proj, proposal),
+                        "gates": gates}
             state = proposal.get("state")
             if state == "draft":
                 raise ConflictError(
@@ -566,17 +600,37 @@ class ProposalManager:
                 ) from exc
             error = result.get("error") if isinstance(result, dict) else None
             if isinstance(error, dict):
+                details = error.setdefault("details", {})
+                # Remember WHICH merge this proposal staged, and with which
+                # allow_invalid. resolve_merge finishes that merge without ever
+                # hearing about the proposal, so this record is the only way
+                # the proposal can later recognise its own merge as the one
+                # that landed — and the only surviving statement of the
+                # override the landed merge actually ran under (FR10).
+                staged = {
+                    "merge_id": details.get("merge_id"),
+                    "source": source,
+                    "target": target,
+                    "source_head": self._resolve(proj, source),
+                    "target_head": self._resolve(proj, target),
+                    "allow_invalid": bool(allow_invalid),
+                    "ts": _now(),
+                }
+                proposal["staged_merge"] = staged
+                self.store.save(proj, proposal)
                 self.store.append_audit(proj, pid, {
                     "action": "merge_attempted",
-                    "details": {**attempt, "outcome": "conflict"},
+                    "details": {**attempt, "outcome": "conflict",
+                                "merge_id": staged["merge_id"]},
                 })
                 # Verbatim, so the UI's existing conflict modal and
                 # resolve_merge keep working unchanged.
-                error.setdefault("details", {})["proposal"] = pid
+                details["proposal"] = pid
                 return result
 
             report = result.get("validation")
             report = report if isinstance(report, dict) else None
+            proposal.pop("staged_merge", None)  # this call finished it
             proposal["merge"] = {
                 "commit": result.get("commit"),
                 "parents": result.get("parents") or [],
@@ -598,11 +652,60 @@ class ProposalManager:
                                 "validation": report},
                 })
             self.store.save(proj, proposal)
-            self._freeze_packet(proj, pid)
+            self._freeze_packet(proj, proposal)
             gates = self.gates(proj, proposal)
         self._publish(proj, proposal, "merged")
         return {**result, "proposal": self._view(proj, proposal),
                 "gates": gates}
+
+    def reconcile(self, proj: str, pid: str) -> dict:
+        """Load a proposal, first finalizing it if a merge it staged has since
+        landed. Every read path goes through here (see :meth:`_reconcile`)."""
+        with self._lock:
+            proposal = self.store.load(proj, pid)
+            self._reconcile(proj, proposal)
+            return proposal
+
+    def record_packet(self, proj: str, pid: str, packet: dict) -> bool:
+        """Persist a freshly built packet — the ONE writer of ``packet.json``
+        besides the freeze, and serialized against the lifecycle.
+
+        ``PacketBuilder`` measures for seconds outside this lock, so by the
+        time it gets here the proposal may have merged: writing then would
+        publish post-decision evidence over the frozen packet and hand
+        ``proposal.json`` back a stale state. A build that lost that race is
+        DISCARDED — nothing is written, ``False`` says so, and the caller
+        serves the frozen packet instead.
+        """
+        with self._lock:
+            proposal = self.store.load(proj, pid)
+            self._reconcile(proj, proposal)
+            if proposal.get("state") in TERMINAL:
+                return False
+            ProjectStore._atomic_write(
+                self.store.packet_path(proj, pid),
+                json.dumps(packet, indent=2).encode(),
+            )
+            self.store.append_audit(proj, pid, {
+                "action": "packet_generated",
+                "details": {"source_head": packet["source_head"],
+                            "target_head": packet["target_head"],
+                            "elapsed_ms": packet["elapsed_ms"],
+                            "parts": [p["part"] for p in packet["parts"]]},
+            })
+            proposal["packet"] = {
+                "generated": packet["generated"],
+                "source_head": packet["source_head"],
+                "target_head": packet["target_head"],
+                "ok": packet["ok"],
+            }
+            self.store.save(proj, proposal)
+            state = proposal.get("state")
+        self.service.bus.publish({
+            "type": "proposal_changed", "project": proj, "id": pid,
+            "state": state, "reason": "packet",
+        })
+        return True
 
     def transition(self, proposal: dict, to: str, *, action: str,
                    details: dict | None = None) -> dict:
@@ -673,7 +776,11 @@ class ProposalManager:
         head = self._source_head(proj, proposal)
         latest: dict[str, dict] = {}
         for review in proposal.get("reviews") or []:
-            if review.get("actor"):
+            # The latest *counted* verdict per actor. A 'comment' is recorded
+            # and audited like any other review but is deliberately invisible
+            # here: it changes no state, so it must not silently retract the
+            # approval the same actor gave a minute earlier.
+            if review.get("actor") and review.get("verdict") in _COUNTED_VERDICTS:
                 latest[review["actor"]] = review
         approvals = [r for actor, r in latest.items()
                      if r.get("verdict") == "approve"
@@ -730,8 +837,13 @@ class ProposalManager:
         inner = branches.delete
 
         def delete(proj: str, name: str) -> dict:
-            self._check_branch_free(proj, name)
-            return inner(proj, name)
+            # The check and the deletion are ONE critical section: creating a
+            # proposal takes the same lock, so a proposal can never be opened
+            # against a branch between "no proposal names it" and the branch
+            # going away.
+            with self._lock:
+                self._check_branch_free(proj, name)
+                return inner(proj, name)
 
         delete._proposal_guard = True
         branches.delete = delete
@@ -773,17 +885,153 @@ class ProposalManager:
         self.ensure_branch_guard()
         return merges
 
-    def _freeze_packet(self, proj: str, pid: str) -> None:
-        """FR12: the evidence a decision was made on is never regenerated."""
+    # ------------------------------------------- the staged-merge reconciler
+
+    def _reconcile(self, proj: str, proposal: dict) -> dict | None:
+        """Finish a proposal whose staged merge landed behind its back.
+
+        ``proposal_merge`` hands a conflict straight to PRD-001's
+        ``resolve_merge``, which completes the merge knowing nothing about
+        proposals: the commit lands, the branch moves, and the proposal is
+        left sitting at ``approved`` with no merge record — while a later
+        ``proposal_merge`` "recovers" by merging an ancestor and recording
+        ``allow_invalid: false`` over a merge that really ran with the
+        override. So the proposal remembers the merge it staged
+        (``staged_merge``) and every read path checks, here, whether that
+        merge is still staged, was discarded, or has landed.
+
+        Landed is recognised by the commit itself: the finalizer commits with
+        exactly ``-p <target_head> -p <source_head>``, so the merge this
+        proposal staged is the commit on the target whose parents are the two
+        heads it recorded. Its ``allow_invalid`` is the one the STAGED merge
+        carried (``MergeOrchestrator.resolve`` reuses it verbatim) and its
+        verdict is read back out of the commit message.
+
+        Returns the merge payload when it finalized the proposal in this call,
+        else None. The caller holds ``_lock``.
+        """
+        staged = proposal.get("staged_merge")
+        if not isinstance(staged, dict) or proposal.get("state") in TERMINAL:
+            return None
+        merges = getattr(self.service, "merges", None)
+        if merges is None:
+            return None
+        pid = proposal["id"]
+        current = (merges.status(proj).get("merge") or {})
+        if current.get("id") and current["id"] == staged.get("merge_id"):
+            return None  # still staged: nothing has landed yet
+        commit = self._landed_commit(proj, staged)
+        if commit is None:
+            # Aborted, or re-staged from moved heads: either way this proposal
+            # no longer has a merge in flight, and must not claim a later one.
+            proposal.pop("staged_merge", None)
+            self.store.save(proj, proposal)
+            self.store.append_audit(proj, pid, {
+                "action": "merge_discarded",
+                "details": {"merge_id": staged.get("merge_id"),
+                            "source": staged.get("source"),
+                            "target": staged.get("target")},
+            })
+            return None
+        return self._finish_landed(proj, proposal, staged, commit)
+
+    def _landed_commit(self, proj: str, staged: dict) -> str | None:
+        """The commit the staged merge landed as, or None."""
+        target = staged.get("target")
+        heads = (staged.get("target_head"), staged.get("source_head"))
+        if not target or not all(heads):
+            return None
+        canonical = self.service.store.canonical_path_of(proj)
+        result = self.service.history._run(
+            canonical, "rev-list", "--parents", "-n", str(_RECONCILE_SCAN),
+            f"refs/heads/{target}", check=False)
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) == 3 and tuple(fields[1:]) == heads:
+                return fields[0]
+        return None
+
+    def _finish_landed(self, proj: str, proposal: dict, staged: dict,
+                       commit: str) -> dict:
+        pid = proposal["id"]
+        allow_invalid = bool(staged.get("allow_invalid"))
+        message = self.service.history._run(
+            self.service.store.canonical_path_of(proj), "log", "-1",
+            "--pretty=%B", commit, check=False).stdout
+        report = _recovered_validation(message)
+        parents = [staged["target_head"], staged["source_head"]]
+        proposal.pop("staged_merge", None)
+        proposal["merge"] = {
+            "commit": commit,
+            "parents": parents,
+            "ts": _now(),
+            "allow_invalid": allow_invalid,
+            "fast_forward": False,
+            "validation": report,
+            # This record was reconstructed from the commit, not written by
+            # the call that merged: say so rather than pass it off as first-
+            # hand evidence.
+            "reconciled": True,
+        }
+        self.transition(proposal, "merged", action="merged",
+                        details={"commit": commit,
+                                 "source": staged.get("source"),
+                                 "target": staged.get("target"),
+                                 "allow_invalid": allow_invalid,
+                                 "via": "resolve_merge",
+                                 "merge_id": staged.get("merge_id")})
+        if allow_invalid and report is not None and not report.get("ok"):
+            self.store.append_audit(proj, pid, {
+                "action": "override",
+                "details": {"gate": "validation", "commit": commit,
+                            "validation": report, "via": "resolve_merge"},
+            })
+        self.store.save(proj, proposal)
+        self._freeze_packet(proj, proposal)
+        self._publish(proj, proposal, "merged")
+        return {
+            "merged": True,
+            "fast_forward": False,
+            "already_landed": True,
+            "source": staged.get("source"),
+            "target": staged.get("target"),
+            "commit": commit,
+            "parents": parents,
+            "validation": report,
+        }
+
+    def _freeze_packet(self, proj: str, proposal: dict) -> None:
+        """FR12: the evidence a decision was made on is never regenerated.
+
+        The ABSENCE of a packet is frozen too. A proposal merged before anyone
+        opened its packet has nothing to show — and a packet built afterwards
+        would measure the post-merge branches and pass that off as the change
+        that was reviewed. So the absence is recorded durably, as a frozen
+        packet that says so.
+        """
+        pid = proposal["id"]
         path = self.store.packet_path(proj, pid)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return
-        if not isinstance(data, dict) or data.get("frozen"):
-            return
+            data = None
+        if isinstance(data, dict):
+            if data.get("frozen"):
+                return
+        else:
+            data = _absent_packet(proposal)
         data["frozen"] = True
+        data["stale"] = False
+        path.parent.mkdir(parents=True, exist_ok=True)
         ProjectStore._atomic_write(path, json.dumps(data, indent=2).encode())
+
+    def _resolve(self, proj: str, branch: str | None) -> str | None:
+        if not isinstance(branch, str) or not branch:
+            return None
+        return self.service.history.resolve_branch(
+            self.service.store.canonical_path_of(proj), branch)
 
     def _source_head(self, proj: str, proposal: dict) -> str | None:
         canonical = self.service.store.canonical_path_of(proj)
@@ -869,6 +1117,56 @@ class ProposalManager:
             "state": proposal["state"],
             "reason": reason,
         })
+
+
+def _recovered_validation(message: str) -> dict | None:
+    """The validation verdict of a merge nobody told us about, read back out
+    of ``MergeOrchestrator._commit_message``. ``recovered`` marks it as
+    reconstructed: the pass itself ran, its full report did not survive."""
+    match = _VALIDATION_RE.search(message or "")
+    if match is None:
+        return None
+    verdict = match.group(1).strip()
+    return {
+        "ok": verdict.lower().startswith("ok"),
+        "recovered": True,
+        "summary": verdict,
+        "blocked": False,
+        "built": [],
+        "failures": [],
+        "integrity": [],
+        "warnings": [],
+        "interference": {"checked": 0, "new_pairs": [], "skipped": None},
+    }
+
+
+def _absent_packet(proposal: dict) -> dict:
+    """The durable record that no packet existed when the decision was made."""
+    return {
+        "proposal": proposal.get("id"),
+        "ok": False,
+        "stale": False,
+        "frozen": True,
+        "generated": None,
+        "generated_by": None,
+        "note": "no review packet was generated before this proposal was "
+                "closed out; one is never generated afterwards, because it "
+                "would measure the branches as they are NOW and present that "
+                "as the change that was reviewed",
+        "source": proposal.get("source"),
+        "target": proposal.get("target"),
+        "source_head": None,
+        "target_head": None,
+        "base": None,
+        "summary": {"parts_changed": 0, "parts_added": 0, "parts_removed": 0,
+                    "instances_changed": 0, "mass_delta_g": None},
+        "parts": [],
+        "assembly": None,
+        "manifest": {"scalars_changed": [], "materials_changed": []},
+        "binary": [],
+        "warnings": [],
+        "errors": [],
+    }
 
 
 def _is_stale(review: dict, head: str | None) -> bool:

@@ -552,8 +552,12 @@ approvals policy — and is recorded in the audit log and the merge commit
 message.
 
 **Conflicts.** If the merge conflicts, the proposals modal hands off to the
-usual conflict view on a staged merge; resolve it there, then merge the
-proposal again so the proposal itself is marked merged.
+usual conflict view on a staged merge; resolve it there. Resolving is what
+lands the merge, so the proposal recognises its own staged merge in the commit
+and marks itself **merged** the next time it is read — with the real commit,
+its parents and the override it actually ran under. Merging the proposal again
+simply reports that merge; aborting the staged merge instead leaves the
+proposal exactly where it was.
 
 **If you decline "Merge anyway", finish the staged merge.** A merge the kernel
 blocks leaves the staged merge in place (ordinary `merge_branch` behaviour), so

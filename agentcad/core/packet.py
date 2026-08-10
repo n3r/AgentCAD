@@ -32,7 +32,11 @@ succeeded, the geometry did not.
 is served from disk while they hold. When either moves it is marked ``stale``
 and regenerated on view; once the proposal merges, ``ProposalManager`` freezes
 it and it is never regenerated again (FR12) — the evidence a decision was made
-on has to keep saying what it said.
+on has to keep saying what it said. That holds even when there was nothing to
+freeze: a **terminal** proposal is never measured again, because the packet a
+late viewer would get describes the merged target and whatever else has landed
+since, under this proposal's name. Merging records the absence of a packet as a
+frozen one that says so.
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -55,6 +60,7 @@ from .model import (
     validate_id,
 )
 from .project import ProjectStore
+from .proposals import TERMINAL
 from .proposals import _now as proposal_now
 from .render import VIEWS, render_acm
 
@@ -355,6 +361,12 @@ class PacketBuilder:
 
     def __init__(self, service) -> None:
         self.service = service
+        # One build slot per (project, proposal): concurrent builds of the
+        # same packet would race over the same render PNGs and diff meshes —
+        # the first builder's URLs pointing at the second's half-written
+        # files. A waiting caller returns the build it waited for.
+        self._slots: dict[tuple[str, str], dict] = {}
+        self._slots_lock = threading.Lock()
 
     # ----------------------------------------------------------- public api
 
@@ -365,21 +377,49 @@ class PacketBuilder:
         (``stale``) or when ``regenerate`` is passed. A **frozen** packet — the
         evidence a merge decision was made on — is served as it stands and
         refuses ``regenerate`` with a ``conflict_error`` (FR12).
+
+        A proposal in a TERMINAL state is never measured again, whether or not
+        a packet was frozen for it: the branches have moved on, so a packet
+        built now would describe the merged target and other people's commits
+        and present them as this proposal's change. Merging records the
+        absence of a packet as a frozen one that says so; anything else
+        terminal (a closed proposal, a hand-mangled directory) refuses.
         """
-        proposal = self._store().load(proj, pid)
+        proposal = self._reconcile(proj, pid)
         stored = self.load(proj, proposal)
+        state = proposal.get("state")
         if stored is not None and stored.get("frozen"):
             if regenerate:
                 raise ConflictError(
                     f"the review packet for proposal {pid} is frozen: it is "
                     "the evidence the merge decision was made on and is never "
                     "regenerated",
-                    {"id": pid, "state": proposal.get("state")},
+                    {"id": pid, "state": state},
+                )
+            return stored
+        if state in TERMINAL:
+            if stored is None or regenerate:
+                raise ConflictError(
+                    f"proposal {pid} is {state}: its review packet is frozen "
+                    "or was never generated, and one is never produced "
+                    "afterwards — it would measure the branches as they are "
+                    "now, not the change that was decided on",
+                    {"id": pid, "state": state, "packet": stored is not None},
                 )
             return stored
         if stored is not None and not stored.get("stale") and not regenerate:
             return stored
-        return self.build(proj, proposal)
+
+        slot = self._slot(proj, pid)
+        seen = slot["builds"]
+        with slot["lock"]:
+            if slot["builds"] != seen:
+                # Someone else built this packet while we queued: theirs is as
+                # fresh as ours would be, and its assets are the ones on disk.
+                fresh = self.load(proj, proposal)
+                if fresh is not None:
+                    return fresh
+            return self.build(proj, proposal)
 
     def load(self, proj: str, proposal: dict) -> dict | None:
         """The persisted packet with ``stale`` recomputed against the branches'
@@ -462,13 +502,33 @@ class PacketBuilder:
             "errors": errors,
         }
         packet["elapsed_ms"] = int((time.monotonic() - started) * 1000)
-        self._persist(proj, pid, packet)
+        if not self._persist(proj, pid, packet):
+            # The proposal reached a terminal state while we measured: this
+            # build describes a decision that has already been made on other
+            # evidence, so it is thrown away rather than published over it.
+            frozen = self.load(proj, self._store().load(proj, pid))
+            if frozen is not None:
+                return frozen
+            raise ConflictError(
+                f"proposal {pid} was closed out while its review packet was "
+                "being generated; the packet was discarded rather than "
+                "published after the decision",
+                {"id": pid},
+            )
         return packet
 
     def render(self, proj: str, pid: str, side: str, part: str | None = None,
                view: str = RENDER_VIEW) -> dict:
         """One render as image content (the MCP/chat path) — a packet carries
-        render URLs because the transports lift exactly one ``png_base64``."""
+        render URLs because the transports lift exactly one ``png_base64``.
+
+        Every render is WRITTEN to the ``path`` it reports, so that path names
+        a file that exists (an on-demand view is drawn once and then served
+        from disk like the packet's own). A **frozen** packet serves only the
+        renders stored with it: drawing a view it never had would draw today's
+        branches and label them with the decision's date, so an absent one is
+        a ``conflict_error``, exactly like regenerating it (FR12).
+        """
         if side not in _SIDES:
             raise ValidationError(f"side must be one of: {', '.join(_SIDES)}",
                                   {"allowed": list(_SIDES)})
@@ -476,9 +536,23 @@ class PacketBuilder:
             raise ValidationError(f"view must be one of: {', '.join(VIEWS)}")
         proposal = self._store().load(proj, pid)
         packet = self.packet(proj, pid)
+        stored = self._render_path(proj, pid, part or "assembly", side, view)
+
+        if packet.get("frozen"):
+            if not stored.is_file():
+                raise ConflictError(
+                    f"the review packet for proposal {pid} is frozen: only "
+                    "the renders taken with it can be served, and there is no "
+                    f"{view} render of "
+                    f"{'the assembly' if part is None else repr(part)} "
+                    f"({side} side)",
+                    {"id": pid, "part": part, "side": side, "view": view},
+                )
+            png = stored.read_bytes()
+            return _render_result(stored, view, side, part, png)
+
         branch = proposal["target"] if side == "old" else proposal["source"]
         tree = self._branches().tree_of(proj, branch)
-
         if part is None:
             frame = self._assembly_frame(proj, proposal)
             png = self._render_assembly(proj, tree, frame, view)
@@ -495,21 +569,12 @@ class PacketBuilder:
                     "has no render",
                     {"id": pid, "part": part, "side": side})
             frame = (section.get("renders") or {}).get("frame")
-            stored = self._render_path(proj, pid, part, side, view)
             if view == RENDER_VIEW and stored.is_file():
-                png = stored.read_bytes()
-            else:
-                png = self._render_part(proj, part, tree, frame, view)
-        return {
-            "path": str(self._render_path(proj, pid, part or "assembly", side,
-                                          view)),
-            "width": RENDER_WIDTH,
-            "height": RENDER_HEIGHT,
-            "view": view,
-            "side": side,
-            "part": part,
-            "png_base64": base64.b64encode(png).decode("ascii"),
-        }
+                return _render_result(stored, view, side, part,
+                                      stored.read_bytes())
+            png = self._render_part(proj, part, tree, frame, view)
+        ProjectStore._atomic_write(stored, png)
+        return _render_result(stored, view, side, part, png)
 
     def diff_mesh_path(self, proj: str, pid: str, part: str, kind: str) -> Path:
         """The ACM1 diff mesh a packet URL points at (the REST asset route)."""
@@ -548,7 +613,14 @@ class PacketBuilder:
             try:
                 states[side] = self._side_state(proj, part_id, trees[side])
             except Exception as exc:  # noqa: BLE001 — one part never aborts
-                states[side] = {"present": False}
+                # UNREADABLE, not absent. "The part is not on this side" is a
+                # measurement (and makes the geometric diff report the whole
+                # part as added or removed); a checkout that could not be read
+                # measures nothing at all, and saying otherwise invents the
+                # loudest number in the packet.
+                states[side] = {"present": True, "ok": False,
+                                "unreadable": True, "metrics": None,
+                                "error": _error_payload(exc)}
                 errors.append({"part": part_id, "stage": "build",
                                "error": _error_payload(exc)})
             section["build"][side] = _build_status(states[side])
@@ -598,6 +670,11 @@ class PacketBuilder:
 
     def _geom_diff(self, proj: str, pid: str, part_id: str, states: dict,
                    errors: list) -> dict:
+        for side in _SIDES:
+            if states[side].get("unreadable"):
+                return {"available": False, "unchanged": False,
+                        "reason": f"the {side} side is unreadable",
+                        "error": states[side].get("error"), "skipped": None}
         keys = {side: states[side].get("cache_key") for side in _SIDES}
         if keys["old"] and keys["old"] == keys["new"]:
             # The short circuit, in the SERVICE and not the kernel: identical
@@ -626,6 +703,10 @@ class PacketBuilder:
             "new": states["new"].get("item"),
             "added_path": str(paths["added"]),
             "removed_path": str(paths["removed"]),
+            # The tolerance the part's own meshes are built at, so an overlay
+            # of the difference has the same facet size as the shapes it is
+            # drawn over (the handler's default is the same 0.1).
+            "tolerance": _mesh_tolerance(),
         }
         try:
             result = self.service.kernel.request(
@@ -902,43 +983,62 @@ class PacketBuilder:
 
     # ------------------------------------------------------------ internals
 
-    def _persist(self, proj: str, pid: str, packet: dict) -> None:
-        store = self._store()
-        ProjectStore._atomic_write(store.packet_path(proj, pid),
-                                   json.dumps(packet, indent=2).encode())
-        store.append_audit(proj, pid, {
-            "action": "packet_generated",
-            "details": {"source_head": packet["source_head"],
-                        "target_head": packet["target_head"],
-                        "elapsed_ms": packet["elapsed_ms"],
-                        "parts": [p["part"] for p in packet["parts"]]},
-        })
-        # Re-read before writing the summary back: generation is slow and a
-        # review or a merge may have landed on the proposal meanwhile.
-        proposal = store.load(proj, pid)
-        proposal["packet"] = {
-            "generated": packet["generated"],
-            "source_head": packet["source_head"],
-            "target_head": packet["target_head"],
-            "ok": packet["ok"],
-        }
-        store.save(proj, proposal)
-        self.service.bus.publish({
-            "type": "proposal_changed", "project": proj, "id": pid,
-            "state": proposal.get("state"), "reason": "packet",
-        })
+    def _persist(self, proj: str, pid: str, packet: dict) -> bool:
+        """Hand the finished packet to the lifecycle, which owns the only lock
+        that orders ``packet.json`` and ``proposal.json`` against a merge.
+        False when the build lost that race and was discarded."""
+        recorded = self._proposals().record_packet(proj, pid, packet)
+        slot = self._slot(proj, pid)
+        with self._slots_lock:
+            slot["builds"] += 1
+        return recorded
 
-    def _store(self):
+    def _slot(self, proj: str, pid: str) -> dict:
+        with self._slots_lock:
+            return self._slots.setdefault(
+                (proj, pid), {"lock": threading.Lock(), "builds": 0})
+
+    def _reconcile(self, proj: str, pid: str) -> dict:
+        """The proposal, with a staged merge that has since landed finalized
+        first — so a packet view during that window sees a merged proposal
+        (and its frozen packet) rather than regenerating one."""
+        return self._proposals().reconcile(proj, pid)
+
+    def _proposals(self):
         proposals = getattr(self.service, "proposals", None)
         if proposals is None:
             raise ValidationError("proposals unavailable: git not found on PATH")
-        return proposals.store
+        return proposals
+
+    def _store(self):
+        return self._proposals().store
 
     def _branches(self):
         branches = getattr(self.service, "branches", None)
         if branches is None:
             raise ValidationError("proposals unavailable: git not found on PATH")
         return branches
+
+
+def _mesh_tolerance() -> float:
+    """The service's mesh tolerance, imported at call time: ``service`` loads
+    the tool packs, which load this module."""
+    from .service import MESH_TOLERANCE
+
+    return float(MESH_TOLERANCE)
+
+
+def _render_result(path: Path, view: str, side: str, part: str | None,
+                   png: bytes) -> dict:
+    return {
+        "path": str(path),
+        "width": RENDER_WIDTH,
+        "height": RENDER_HEIGHT,
+        "view": view,
+        "side": side,
+        "part": part,
+        "png_base64": base64.b64encode(png).decode("ascii"),
+    }
 
 
 def _build_status(state: dict) -> dict:

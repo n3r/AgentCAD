@@ -72,6 +72,20 @@ def register(toolbox: dict) -> dict:
                 {"stage": stage},
             ) from exc
 
+    def _volume(shape, stage) -> float:
+        """A per-side volume, guarded like the booleans are: ``shape_volume``
+        sums ``shape.solids()``, and OCCT can fail on a side that loaded."""
+        if shape is None:
+            return 0.0
+        try:
+            return shape_volume(shape)
+        except Exception as exc:  # noqa: BLE001 - degrade with a stage
+            raise WorkerError(
+                ERROR_KERNEL,
+                f"geometric diff unavailable: {exc}",
+                {"stage": stage},
+            ) from exc
+
     def handle_geom_diff(params: dict) -> dict:
         tolerance = float(params.get("tolerance", 0.1))
         old, old_kind = _side_shape(params.get("old"))
@@ -80,8 +94,8 @@ def register(toolbox: dict) -> dict:
         result = {
             "added_mm3": 0.0,
             "removed_mm3": 0.0,
-            "old_volume_mm3": shape_volume(old) if old is not None else 0.0,
-            "new_volume_mm3": shape_volume(new) if new is not None else 0.0,
+            "old_volume_mm3": _volume(old, "old_volume"),
+            "new_volume_mm3": _volume(new, "new_volume"),
             "added_triangles": 0,
             "removed_triangles": 0,
         }

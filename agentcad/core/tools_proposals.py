@@ -195,7 +195,11 @@ def register(registry, service) -> None:
         "payload fields, never errors: an unbuildable side is build.<side>.ok "
         "false with the script error, and a failed boolean is geom_diff."
         "available false with the metrics still there. A packet frozen by a "
-        "merge refuses regenerate with a conflict_error.",
+        "merge refuses regenerate with a conflict_error. A merged or closed "
+        "proposal is never measured again — a packet built then would "
+        "describe the branches as they are NOW: merging freezes the packet, "
+        "or, when none was ever generated, freezes that absence as "
+        "{frozen: true, generated: null, ok: false, note: '…'}.",
         schema(
             {
                 "project": _PROJ,
@@ -217,7 +221,11 @@ def register(registry, service) -> None:
         "boxes, so the old and new images of a part are superimposable. "
         "Views: iso, front, top, right. Returns {path, width, height, view, "
         "side, part, png_base64} — the packet itself carries render URLs "
-        "because a result can only carry one image.",
+        "because a result can only carry one image. Every render is written "
+        "to 'path' and served from there afterwards; a frozen (post-merge) "
+        "packet serves ONLY the renders stored with it and refuses any other "
+        "view with a conflict_error, because drawing one now would draw "
+        "today's branches under the decision's date.",
         schema(
             {
                 "project": _PROJ,
@@ -241,8 +249,10 @@ def register(registry, service) -> None:
         "it with proposal_update {state: 'open'}), or 'comment' (recorded, "
         "state unchanged). Put your reasoning in 'summary' — it is written to "
         "the permanent audit log with your identity and whether you are a "
-        "human or an agent. The latest verdict per actor is the one that "
-        "counts. Returns the updated proposal and gates.",
+        "human or an agent. The latest approve/request_changes per actor is "
+        "the one that counts; a 'comment' is recorded and audited but never "
+        "changes the approvals count — it changes no state, so it retracts "
+        "nothing. Returns the updated proposal and gates.",
         schema(
             {
                 "project": _PROJ,
@@ -267,9 +277,14 @@ def register(registry, service) -> None:
         "commit lands. Three outcomes. Success returns that payload plus "
         "{proposal, gates}, with the proposal moved to 'merged' and its review "
         "packet frozen. Conflicts come back as {error: {type: "
-        "'merge_conflict'}} with the merge staged and the proposal untouched — "
-        "resolve it with resolve_merge (or discard it with merge_abort) and "
-        "call proposal_merge again. A merge whose geometry fails the kernel "
+        "'merge_conflict'}} with the merge staged and the proposal still "
+        "open — resolve it with resolve_merge (or discard it with "
+        "merge_abort) and call proposal_merge again. resolve_merge lands that "
+        "merge itself, so the proposal recognises its own staged merge in the "
+        "commit that appears and records the truth (real commit, real "
+        "parents, the allow_invalid the staged merge ran under) on the next "
+        "read; calling proposal_merge again then reports that merge instead "
+        "of merging an ancestor. A merge whose geometry fails the kernel "
         "validation pass is a validation_error carrying details.validation; "
         "re-run with allow_invalid: true to land it anyway, which is recorded "
         "in the audit log, on the proposal and in the merge commit message. "

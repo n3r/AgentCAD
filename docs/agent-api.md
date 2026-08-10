@@ -208,10 +208,10 @@ get backwards: read the pair like `git merge <source>` — the **target branch i
 | `proposal_list` | **project**, state | `{proposals: [{id, source, target, title, state, author, author_kind, created, updated, reviews, merge_commit}], counts: {<state>: n}}`, oldest id first. |
 | `proposal_get` | **project, id** | `{proposal, gates, audit, packet}`. `gates` is the merge checklist — `[{name, state: pass\|fail\|pending\|skipped, summary, details}]` over `state`, `approvals`, `validation` (pending until the merge runs it), `specs` and `checks` (skipped until PRD-003/PRD-004 install providers). `audit` is the append-only log. `packet` here is only a status summary (`{generated, stale, ok, frozen}`, or `null` before the first view). |
 | `proposal_update` | **project, id**, title, description, state | Edits the title/description, or moves state: `draft → open`, anything active → `closed`, `closed → open`, `changes_requested → open`. Approving is `proposal_review` and merging is `proposal_merge`; neither can be faked by writing a state — any other move is a `validation_error` carrying `{from, to, allowed}`. |
-| `proposal_packet` | **project, id**, regenerate | The review packet (below). Generated on first view, re-served while both branch heads hold, regenerated when either moved or on `regenerate: true`. A packet frozen by a merge refuses `regenerate` with a `conflict_error`. |
-| `proposal_render` | **project, id, side**, part, view | One image you can actually look at: `{path, width, height, view, side, part, png_base64}`. `side` is `old` (target) or `new` (source); omit `part` for the whole assembly. Framed by the union of both sides' bounding boxes, so old and new superimpose. Views: `iso`, `front`, `top`, `right`. |
-| `proposal_review` | **project, id, verdict**, summary | `approve` → `approved`, `request_changes` → `changes_requested` (blocks the merge until the author reopens it), `comment` (recorded, state unchanged). The latest verdict *per actor* counts. `summary` goes into the permanent audit log with your identity. |
-| `proposal_merge` | **project, id**, allow_invalid | Gates first, then PRD-001's `merge_branch` unchanged. Success returns that payload plus `{proposal, gates}` with the proposal `merged` and its packet frozen. |
+| `proposal_packet` | **project, id**, regenerate | The review packet (below). Generated on first view, re-served while both branch heads hold, regenerated when either moved or on `regenerate: true`. A packet frozen by a merge refuses `regenerate` with a `conflict_error`. A **terminal** (merged/closed) proposal is never measured again — a packet built then would describe the branches as they are now, under this proposal's name. Merging freezes the packet, or, when none was ever generated, freezes the *absence* as `{frozen: true, generated: null, ok: false, parts: [], note: "…"}`; a closed proposal keeps whatever it had, and a terminal proposal with no packet at all is a `conflict_error`. |
+| `proposal_render` | **project, id, side**, part, view | One image you can actually look at: `{path, width, height, view, side, part, png_base64}`. `side` is `old` (target) or `new` (source); omit `part` for the whole assembly. Framed by the union of both sides' bounding boxes, so old and new superimpose. Views: `iso`, `front`, `top`, `right`. Every render is **written to `path`** and served from there afterwards, so the path names a file that exists. A **frozen** packet serves only the renders stored with it: any other view is a `conflict_error`, because drawing one now would draw today's branches under the decision's date. |
+| `proposal_review` | **project, id, verdict**, summary | `approve` → `approved`, `request_changes` → `changes_requested` (blocks the merge until the author reopens it), `comment` (recorded, state unchanged). The latest **approve/request_changes** *per actor* counts; a `comment` is recorded and audited but never changes the approvals count — it changes no state, so it retracts nothing. `summary` goes into the permanent audit log with your identity. |
+| `proposal_merge` | **project, id**, allow_invalid | Gates first, then PRD-001's `merge_branch` unchanged. Success returns that payload plus `{proposal, gates}` with the proposal `merged` and its packet frozen. A `merge_conflict` records the staged merge on the proposal, so a merge finished by `resolve_merge` is recognised and recorded on the next read (see below). |
 
 **The packet.** One JSON document — `{ok, stale, frozen, generated,
 generated_by, elapsed_ms, source, target, source_head, target_head, base,
@@ -253,7 +253,7 @@ and nothing is merged. Policy v1 is two per-project fields in
 `<project>/.history/agentcad/proposals/policy.json` — `approvals_required`
 (default 1) and `self_approve` (default false, so the author's own approval
 does not count). Then PRD-001's merge runs: a `merge_conflict` comes back at
-HTTP 200 with the merge staged and the proposal untouched (resolve with
+HTTP 200 with the merge staged and the proposal still open (resolve with
 `resolve_merge`, or discard with `merge_abort`, then call `proposal_merge`
 again), and a failing kernel validation pass is a `validation_error` carrying
 `details.validation`. **`allow_invalid: true` overrides the kernel validation
@@ -536,5 +536,13 @@ What this buys, and the traps:
   merge; push new commits to the source branch (which marks the packet stale),
   then `proposal_update {state: "open"}` to re-request review.
 - **A `merge_conflict` is the same object PRD-001 defines.** Resolve it with
-  `resolve_merge` and call `proposal_merge` again — the proposal stays open and
-  untouched until the merge actually lands.
+  `resolve_merge` and call `proposal_merge` again — the proposal stays open
+  until the merge actually lands. But `resolve_merge` *is* what lands it, and
+  it knows nothing about proposals: so the proposal remembers the merge it
+  staged and recognises it in the commit that appears, marking itself `merged`
+  on the next read with the real commit, its real parents and **the
+  `allow_invalid` the staged merge actually ran under** (with the `override`
+  audit entry that goes with it). Calling `proposal_merge` again then reports
+  that merge (`already_landed: true`) instead of merging an ancestor; a merge
+  you discarded with `merge_abort` is audited `merge_discarded` and the
+  proposal stays exactly where it was.

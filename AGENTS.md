@@ -201,6 +201,22 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
 - A packet is generated from the **branches' existing worktrees**
   (`branches.tree_of` + `branches.pinned`) and refuses a dirty tree, so its
   pinned head SHAs always describe the bytes it measured.
+- **A terminal proposal is never measured again.** Merged/closed means the
+  branches have moved on, so a packet built then would describe the merged
+  target under this proposal's name. The merge freezes the packet — or freezes
+  the *absence* of one (`{frozen: true, generated: null, ok: false, note}`) —
+  and `proposal_packet`/`proposal_render` refuse to produce anything new. A
+  frozen packet serves only the renders stored beside it.
+- **`packet.json` and `proposal.json` have ONE write order**:
+  `ProposalManager.record_packet`, under the manager's `RLock`. Never write
+  either from the builder directly — a build outlives a merge, and a build
+  overtaken by one is discarded, not published.
+- **Only `approve`/`request_changes` count towards the approvals gate.** A
+  `comment` changes no state, so it must not change the count either.
+- **A conflicted `proposal_merge` records `staged_merge`** and the proposal
+  reconciles itself on the next read when that merge lands through
+  `resolve_merge` (which knows nothing about proposals). The reconciler lives
+  in `proposals.py`; `merge.py` stays untouched.
 
 ## Conventions (match these)
 

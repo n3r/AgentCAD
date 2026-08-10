@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -602,6 +604,51 @@ def test_the_latest_verdict_per_actor_is_the_one_that_counts(demo):
     assert _gate(manager.get("demo", pid)["gates"], "state")["state"] == "pass"
 
 
+def test_a_comment_never_retracts_an_approval(demo):
+    """A 'comment' changes no state, so it must not change the count either.
+    Taking the latest verdict per actor *including* comments let one nit
+    silently un-approve an approved proposal — and the gate said so while the
+    state still read 'approved'."""
+    _service, _registry, manager = demo
+    locks.set_client_id("chat:main")
+    pid = _create(manager)["id"]
+
+    locks.set_client_id("browser")
+    manager.review("demo", pid, "approve")
+    after = manager.review("demo", pid, "comment", "one nit about the fillet")
+
+    assert after["proposal"]["state"] == "approved"
+    assert _gate(after["gates"], "approvals")["state"] == "pass"
+    assert _gate(after["gates"], "approvals")["details"]["approvals"] == 1
+    # the comment is still recorded, on the proposal and in the audit log
+    assert [r["verdict"] for r in after["proposal"]["reviews"]] == [
+        "approve", "comment"]
+    assert [e["details"]["verdict"] for e in manager.get("demo", pid)["audit"]
+            if e["action"] == "reviewed"] == ["approve", "comment"]
+
+    landed = manager.merge("demo", pid)
+    assert "error" not in landed, landed
+    assert landed["proposal"]["state"] == "merged"
+
+
+def test_a_comment_does_not_lift_a_request_for_changes(demo):
+    """The other direction: only a new verdict clears a verdict."""
+    _service, _registry, manager = demo
+    locks.set_client_id("chat:main")
+    pid = _create(manager)["id"]
+
+    locks.set_client_id("browser")
+    manager.review("demo", pid, "request_changes")
+    manager.review("demo", pid, "comment", "and one more thing")
+
+    gates = manager.get("demo", pid)["gates"]
+    assert _gate(gates, "approvals")["state"] == "fail"
+    assert _gate(gates, "state")["state"] == "fail"
+    assert manager.get("demo", pid)["proposal"]["state"] == "changes_requested"
+    with pytest.raises(ConflictError):
+        manager.merge("demo", pid)
+
+
 def test_specs_and_checks_are_skipped_with_no_providers(demo):
     service, _registry, manager = demo
     assert getattr(service, "gate_providers", None) in (None, [])
@@ -693,6 +740,50 @@ def test_deleting_a_branch_an_active_proposal_names_is_refused(demo):
     manager.update("demo", pid, state="closed")
     assert "error" not in registry.call(
         "branch_delete", {"project": "demo", "name": "feat"})
+
+
+def test_the_guard_and_proposal_creation_serialize(demo, monkeypatch):
+    """The guard's check and the deletion are ONE critical section, and so is
+    creation: otherwise a proposal opens against a branch in the window
+    between 'no proposal names it' and the branch going away, and the guard
+    protects a proposal that did not exist yet."""
+    service, registry, _manager = demo
+    manager = service.proposals  # the instance the installed guard calls
+    service.branches.create("demo", "spare")
+    manager.ensure_branch_guard()
+
+    checking = threading.Event()
+    inner = manager._check_branch_free
+
+    def slow_check(proj: str, name: str) -> None:
+        inner(proj, name)
+        checking.set()
+        time.sleep(0.3)  # the window a racing create used to slip through
+
+    monkeypatch.setattr(manager, "_check_branch_free", slow_check)
+
+    outcome: dict = {}
+
+    def create_against_spare() -> None:
+        assert checking.wait(30)
+        locks.set_client_id("chat:main")
+        try:
+            outcome["proposal"] = manager.create("demo", "spare", title="race")
+        except Exception as exc:  # noqa: BLE001 — the point of the test
+            outcome["error"] = exc
+
+    racer = threading.Thread(target=create_against_spare)
+    racer.start()
+    try:
+        assert "error" not in registry.call(
+            "branch_delete", {"project": "demo", "name": "spare"})
+    finally:
+        racer.join(60)
+
+    assert isinstance(outcome.get("error"), NotFoundError), outcome
+    assert {b["name"] for b in service.branches.list("demo")["branches"]} == {
+        "master", "feat"}
+    assert manager.list("demo")["proposals"] == []
 
 
 def test_the_guard_is_idempotent_and_leaves_free_branches_alone(demo):
@@ -793,6 +884,97 @@ def test_the_packet_is_frozen_by_the_merge(demo):
     assert stored["frozen"] is True
     summary = manager.get("demo", pid)["packet"]
     assert summary["frozen"] is True and summary["stale"] is False
+
+
+def test_a_merge_with_no_packet_freezes_the_absence(demo):
+    """FR12 covers the absence too. A proposal merged before anyone opened its
+    packet has nothing to show — and a packet built afterwards would measure
+    the merged target (and everyone else's commits) and present that as the
+    change that was reviewed. So the absence is recorded, durably."""
+    _service, _registry, manager = demo
+    locks.set_client_id("chat:main")
+    pid = _create(manager)["id"]
+    assert not manager.store.packet_path("demo", pid).exists()
+
+    locks.set_client_id("browser")
+    manager.review("demo", pid, "approve")
+    assert "error" not in manager.merge("demo", pid)
+
+    stored = json.loads(
+        manager.store.packet_path("demo", pid).read_text(encoding="utf-8"))
+    assert stored["frozen"] is True and stored["generated"] is None
+    assert stored["ok"] is False and stored["parts"] == []
+    assert "no review packet was generated" in stored["note"]
+    assert manager.get("demo", pid)["packet"] == {
+        "generated": None, "stale": False, "ok": False, "frozen": True}
+
+
+@pytest.mark.slow
+def test_a_conflicted_merge_finished_by_resolve_merge_is_reconciled(parts):
+    """FR10/AC5 across the conflict path: ``resolve_merge`` completes the merge
+    knowing nothing about proposals, so the proposal recognises its OWN staged
+    merge in the commit that landed and records the truth — the real commit,
+    its real parents, and the ``allow_invalid`` the staged merge really ran
+    under (which a second ``proposal_merge`` used to overwrite with false)."""
+    service, registry, manager = parts
+    canonical = service.store.canonical_path_of("demo")
+    _on(service, "agent_a", "feat")
+    _script(registry, "box", BROKEN_SCRIPT, builds=False)
+    _on(service, "browser", "master")
+    _script(registry, "box", BOX_V3_SCRIPT)
+    pid = _propose_and_approve(service, manager)
+    heads = [service.history.resolve_branch(canonical, "master"),
+             service.history.resolve_branch(canonical, "feat")]
+
+    conflict = manager.merge("demo", pid, allow_invalid=True)
+    assert conflict["error"]["type"] == "merge_conflict"
+    staged = manager.get("demo", pid)["proposal"]["staged_merge"]
+    assert staged["merge_id"] == conflict["error"]["details"]["merge_id"]
+    assert staged["allow_invalid"] is True
+    assert [staged["target_head"], staged["source_head"]] == heads
+
+    landed = registry.call("resolve_merge", {
+        "project": "demo", "choices": {"parts/box.py": {"take": "theirs"}}})
+    assert "error" not in landed, landed
+    assert landed["validation"]["ok"] is False  # it landed under the override
+
+    detail = manager.get("demo", pid)
+    merge = detail["proposal"]["merge"]
+    assert detail["proposal"]["state"] == "merged"
+    assert "staged_merge" not in detail["proposal"]
+    assert merge["commit"] == landed["commit"] and merge["parents"] == heads
+    assert merge["allow_invalid"] is True and merge["reconciled"] is True
+    assert merge["validation"] == {**merge["validation"], "ok": False,
+                                   "recovered": True}
+    actions = [e["action"] for e in detail["audit"]]
+    assert "merged" in actions and "override" in actions
+    override = [e for e in detail["audit"] if e["action"] == "override"][-1]
+    assert override["details"]["commit"] == landed["commit"]
+    assert override["details"]["via"] == "resolve_merge"
+    assert detail["packet"]["frozen"] is True
+    assert [g["state"] for g in detail["gates"] if g["name"] == "validation"] \
+        == ["fail"]
+
+
+@pytest.mark.slow
+def test_an_aborted_staged_merge_leaves_the_proposal_where_it_was(parts):
+    """The other end of the reconciler: a merge that never landed must not be
+    mistaken for one that did, and must not keep the proposal waiting on it."""
+    service, registry, manager = parts
+    _on(service, "agent_a", "feat")
+    _script(registry, "box", BOX_V2_SCRIPT)
+    _on(service, "browser", "master")
+    _script(registry, "box", BOX_V3_SCRIPT)
+    pid = _propose_and_approve(service, manager)
+
+    assert manager.merge("demo", pid)["error"]["type"] == "merge_conflict"
+    assert registry.call("merge_abort", {"project": "demo"})["aborted"] is True
+
+    detail = manager.get("demo", pid)
+    assert detail["proposal"]["state"] == "approved"
+    assert detail["proposal"]["merge"] is None
+    assert "staged_merge" not in detail["proposal"]
+    assert [e["action"] for e in detail["audit"]][-1] == "merge_discarded"
 
 
 @pytest.mark.slow

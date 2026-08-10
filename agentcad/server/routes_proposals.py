@@ -73,7 +73,13 @@ def _png(registry, args: dict) -> Response:
 
 
 async def _json(request: Request) -> dict:
-    if not int(request.headers.get("content-length") or 0):
+    """The body, or ``{}`` when there is none.
+
+    Read the BYTES, not the header: a chunked request carries no
+    ``content-length``, and trusting the header turned its body into "no
+    arguments at all" — a review with no verdict rather than a 422.
+    """
+    if not await request.body():
         return {}
     body = await request.json()
     return body if isinstance(body, dict) else {}

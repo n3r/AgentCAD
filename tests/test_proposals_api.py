@@ -240,6 +240,28 @@ def test_unknown_body_keys_are_ignored_and_nulls_are_not_forwarded(client):
     assert response.json()["proposal"]["description"] == ""
 
 
+def test_a_body_without_a_content_length_is_still_read(client):
+    """A chunked request carries no ``content-length``: reading the header
+    instead of the body turned a real body into "no arguments at all" — a
+    review with no verdict rather than a 422."""
+    _service, registry, http = client
+    pid = _create(registry)["proposal"]["id"]
+
+    def chunks():
+        yield b'{"verdict": "approve", '
+        yield b'"summary": "the wall thickness argument holds"}'
+
+    response = http.post(
+        f"/api/projects/demo/proposals/{pid}/review", content=chunks(),
+        headers={"Content-Type": "application/json"})
+
+    assert "content-length" not in response.request.headers
+    assert response.status_code == 200, response.text
+    assert response.json()["proposal"]["state"] == "approved"
+    assert response.json()["proposal"]["reviews"][-1]["summary"].startswith(
+        "the wall")
+
+
 def test_route_error_mapping(client):
     _service, _registry, http = client
     assert http.get("/api/projects/demo/proposals/9").status_code == 404

@@ -717,6 +717,13 @@ function renderAudit(pane) {
 
 function packetHeader() {
   const wrap = div("prop-packet-head");
+  if (!packet.generated) {
+    // The frozen record that no packet existed when the decision was made:
+    // there are no heads, no timing and no parts to describe, only the note.
+    wrap.appendChild(span("prop-dim", packet.note || "no review packet"));
+    wrap.appendChild(span("prop-flag", "frozen"));
+    return wrap;
+  }
   wrap.appendChild(
     span(
       "prop-dim",

@@ -1031,6 +1031,72 @@ kills the snapshot hook; `build_registry(service)`;
 | **A dirty branch tree at packet time.** | Checkpoint-then-refuse (`conflict_error`), mirroring `BranchManager._checkpoint`; never generate a packet whose pinned heads do not describe the measured bytes. |
 | **Reference (STL) parts.** `build_reference` reports `center_of_mass` as the **bbox center**, not a true CoM. | The packet must not present a CoM delta for a mesh-kind part as if it were a mass property; mark it `null` with a warning, and skip the geometric diff (`skipped: "mesh"`). |
 
+## As built — the review fold-back
+
+Five contract changes an independent review of the shipped feature forced.
+Each one is a rule about *evidence*, which is the whole point of the feature.
+
+**A terminal proposal is never measured again.** The packet was generated
+lazily on view with no regard for the proposal's state, so opening a merged
+proposal that nobody had opened before generated a packet *then*: it pinned
+the post-merge heads, attributed unrelated commits on the target to the
+proposal, and was not frozen (so it kept regenerating). Now `proposal_packet`
+refuses to build for any proposal in a TERMINAL state, and the merge freezes
+the **absence** of a packet as a durable one that says so — `{frozen: true,
+generated: null, ok: false, parts: [], note: "…"}`. A frozen packet is served
+as it stands; a terminal proposal with no packet at all is a `conflict_error`.
+`proposal_render` follows: a frozen packet serves only the renders stored with
+it, and any other view is a `conflict_error` rather than a fresh drawing of
+today's branches under the decision's date. Every render it *does* draw is
+written to the `path` it reports.
+
+**`proposal.json` and `packet.json` have exactly one writer order.** The
+builder used to write both itself, outside the lifecycle lock, in a
+read-modify-write that a merge could land in the middle of: one interleaving
+put a merged proposal back to `approved` with `merge: null`, another wrote
+`frozen: false` over the packet the merge had just frozen. Persisting is now
+`ProposalManager.record_packet`, under the manager's `RLock`, and it re-reads
+the proposal's state at write time: a build overtaken by the merge is
+**discarded** — nothing is written — and the caller is served the frozen
+packet instead. Builds of one proposal are also serialized per
+`(project, id)`, because two of them shared the same render and diff-mesh
+paths; the second caller returns the build it waited for.
+
+**A `comment` counts for nothing.** The approvals gate took the latest verdict
+per actor including comments, so a reviewer who approved and then left a nit
+silently retracted their own approval — leaving a proposal in state
+`approved` that could not merge, with a gate that said "0 recorded". Only
+`approve`/`request_changes` reach the count now; comments are recorded and
+audited exactly as before.
+
+**A conflicted merge cannot escape the proposal record.** `proposal_merge`
+hands a conflict to PRD-001's `resolve_merge`, which completes the merge
+knowing nothing about proposals: the commit landed and the proposal sat at
+`approved`, while the documented recovery (call `proposal_merge` again) then
+"merged" an ancestor and recorded `allow_invalid: false` over a merge that had
+really run with the override. So a conflicted `proposal_merge` now records
+`staged_merge = {merge_id, source, target, source_head, target_head,
+allow_invalid, ts}` on the proposal, and every read path (`proposal_get`,
+`proposal_list`, `proposal_merge`, `proposal_packet`) reconciles: if that
+merge is still staged, nothing happens; if it landed — recognised as the
+commit on the target whose parents are exactly the two recorded heads, which
+is what `MergeOrchestrator._finalize` commits — the proposal transitions to
+`merged` with that commit, those parents, **the staged `allow_invalid`**, the
+verdict read back out of the commit message (`validation.recovered: true`) and
+the `override` audit entry when both apply; if it is gone without landing
+(`merge_abort`) the record is dropped and audited `merge_discarded`. The
+reconciler lives entirely in the proposal layer — `merge.py` is untouched.
+Subscribing to the `merge_completed` event was the alternative and was
+rejected: `EventBus.subscribe` hands out a `Queue` that only a consumer thread
+can drain, and the proposal layer has no thread (nor may it claim the
+single-slot `on_publish`, which the service holds).
+
+**The branch-delete guard is one critical section.** The guard checked "no
+active proposal names this branch" and then called through to the delete, and
+`proposal_create` checked "this branch exists" outside the manager's lock:
+between the two, a proposal could be opened against a branch that was about to
+vanish. Both halves now run under the manager's `RLock`.
+
 ## PRD divergences to fold back
 
 1. **Proposal state lives at `<project>/.history/agentcad/proposals/`**, not
@@ -1066,3 +1132,13 @@ kills the snapshot hook; `build_registry(service)`;
     expensive kind and are drawn on demand by `proposal_render`.
 12. **All timestamps are zone-aware UTC** (`…Z`): the proposal's
     `created`/`updated`, every audit `ts`, and the packet's `generated`.
+13. **A merged proposal with no packet carries a frozen "no packet" record**,
+    and a terminal proposal is never measured again (`proposal_packet` and
+    `proposal_render` refuse). The PRD says a packet is frozen at merge; the
+    absence of one has to be frozen for the same reason.
+14. **A conflicted merge is reconciled from the commit, not from a second
+    `proposal_merge`.** `proposal.merge` gains `reconciled: true` and
+    `validation.recovered: true` when it was reconstructed that way, and the
+    proposal carries `staged_merge` while a merge it started is outstanding.
+15. **Only `approve`/`request_changes` count towards the approvals gate.** The
+    PRD's "latest verdict per actor" means the latest *counted* verdict.

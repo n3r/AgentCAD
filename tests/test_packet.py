@@ -17,6 +17,7 @@ import json
 import re
 import shutil
 import struct
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -628,6 +629,317 @@ class TestPacketBuilder:
         with pytest.raises(ConflictError) as excinfo:
             builder.packet("demo", pid, regenerate=True)
         assert excinfo.value.details["id"] == pid
+
+    def _approve_and_merge(self, registry, pid: str, proj: str = "demo") -> dict:
+        locks.set_client_id("browser")
+        assert "error" not in registry.call(
+            "proposal_review",
+            {"project": proj, "id": pid, "verdict": "approve"})
+        merged = registry.call("proposal_merge", {"project": proj, "id": pid})
+        assert "error" not in merged, merged
+        return merged
+
+    def test_a_merged_proposal_serves_the_frozen_absence_of_a_packet(self, demo):
+        """FR12 for the packet that was never generated: a build started now
+        would measure the merged target and whatever else has landed on it and
+        publish that as this proposal's evidence. The absence is frozen
+        instead, and it says so."""
+        service, registry = demo
+        pid = self._propose(registry)
+        self._approve_and_merge(registry, pid)
+        builder = PacketBuilder(service)
+
+        packet = builder.packet("demo", pid)
+
+        assert packet["frozen"] is True and packet["stale"] is False
+        assert packet["generated"] is None and packet["ok"] is False
+        assert packet["parts"] == [] and packet["source_head"] is None
+        assert "no review packet was generated" in packet["note"]
+        with pytest.raises(ConflictError) as excinfo:
+            builder.packet("demo", pid, regenerate=True)
+        assert excinfo.value.details["id"] == pid
+        actions = [e["action"]
+                   for e in service.proposals.store.audit("demo", pid)]
+        assert "packet_generated" not in actions
+
+    @pytest.mark.slow
+    def test_a_terminal_proposal_is_never_measured_again(self, demo):
+        """A closed proposal keeps the packet it had — a moved head does not
+        regenerate it, and nothing re-checkpoints the branch worktrees on its
+        behalf."""
+        service, registry = demo
+        pid = self._propose(registry)
+        builder = PacketBuilder(service)
+        generated = builder.packet("demo", pid)["generated"]
+
+        locks.set_client_id("browser")
+        assert "error" not in registry.call(
+            "proposal_update", {"project": "demo", "id": pid, "state": "closed"})
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE)
+
+        assert builder.packet("demo", pid)["generated"] == generated
+        with pytest.raises(ConflictError) as excinfo:
+            builder.packet("demo", pid, regenerate=True)
+        assert excinfo.value.details["state"] == "closed"
+
+    @pytest.mark.slow
+    def test_a_build_that_loses_the_race_to_a_merge_is_discarded(
+            self, demo, monkeypatch):
+        """``packet.json`` and ``proposal.json`` have ONE writer order. A build
+        that was overtaken by the merge may neither unfreeze the evidence the
+        decision was made on nor hand ``proposal.json`` back its pre-merge
+        state — so it is thrown away and the frozen packet is served."""
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE)
+        pid = self._propose(registry)
+        builder = PacketBuilder(service)
+        builder.packet("demo", pid)  # the packet the merge will freeze
+
+        ready, release = threading.Event(), threading.Event()
+        inner = PacketBuilder._persist
+
+        def waiting(self, proj, pid_, packet):
+            ready.set()
+            release.wait(120)
+            return inner(self, proj, pid_, packet)
+
+        monkeypatch.setattr(PacketBuilder, "_persist", waiting)
+        out: dict = {}
+
+        def rebuild() -> None:
+            locks.set_client_id("chat:main")
+            try:
+                out["packet"] = builder.packet("demo", pid, regenerate=True)
+            except Exception as exc:  # noqa: BLE001 — reported by the test
+                out["error"] = exc
+
+        thread = threading.Thread(target=rebuild)
+        thread.start()
+        try:
+            assert ready.wait(300), "the build never reached its persist"
+            _on(service, "browser", "master")
+            merged = self._approve_and_merge(registry, pid)
+        finally:
+            release.set()
+            thread.join(300)
+
+        assert "error" not in out, out
+        stored = json.loads(
+            service.proposals.store.packet_path("demo", pid)
+            .read_text(encoding="utf-8"))
+        assert stored["frozen"] is True  # never unfrozen by the late writer
+        detail = service.proposals.get("demo", pid)
+        assert detail["proposal"]["state"] == "merged"  # never reverted
+        assert detail["proposal"]["merge"]["commit"] == merged["commit"]
+        assert detail["packet"]["frozen"] is True
+        assert out["packet"]["frozen"] is True  # the loser serves the evidence
+        assert [e["action"] for e in detail["audit"]].count(
+            "packet_generated") == 1
+
+    @pytest.mark.slow
+    def test_a_merge_cannot_interleave_a_packets_read_modify_write(
+            self, demo, monkeypatch):
+        """The other direction of the same race: while the packet's
+        read-modify-write of ``proposal.json`` is in flight, a merge waits for
+        it instead of landing between the read and the write (which used to
+        leave the merged proposal back at 'approved' with ``merge: null``)."""
+        service, registry = demo
+        pid = self._propose(registry)
+        builder = PacketBuilder(service)
+        builder.packet("demo", pid)
+        locks.set_client_id("browser")
+        assert "error" not in registry.call(
+            "proposal_review",
+            {"project": "demo", "id": pid, "verdict": "approve"})
+
+        writing, release = threading.Event(), threading.Event()
+        packet_thread: dict = {}
+        inner = type(service.proposals.store).save
+
+        def blocking(self, proj, proposal):
+            if threading.current_thread() is packet_thread.get("thread"):
+                writing.set()
+                release.wait(120)
+            return inner(self, proj, proposal)
+
+        monkeypatch.setattr(type(service.proposals.store), "save", blocking)
+        merged: dict = {}
+
+        def rebuild() -> None:
+            locks.set_client_id("chat:main")
+            builder.packet("demo", pid, regenerate=True)
+
+        def merge() -> None:
+            locks.set_client_id("browser")
+            merged["result"] = registry.call(
+                "proposal_merge", {"project": "demo", "id": pid})
+
+        thread = threading.Thread(target=rebuild)
+        packet_thread["thread"] = thread
+        thread.start()
+        assert writing.wait(300), "the build never reached its save"
+        merger = threading.Thread(target=merge)
+        merger.start()
+        try:
+            # The merge is behind the packet's write, not interleaved with it.
+            merger.join(1.5)
+            assert merger.is_alive(), "the merge did not wait for the packet"
+        finally:
+            release.set()
+            thread.join(300)
+            merger.join(300)
+
+        assert "error" not in merged["result"], merged
+        detail = service.proposals.get("demo", pid)
+        assert detail["proposal"]["state"] == "merged"
+        assert detail["packet"]["frozen"] is True
+
+    @pytest.mark.slow
+    def test_two_concurrent_builds_produce_one_packet_with_whole_assets(
+            self, demo, monkeypatch):
+        """Two builds of one proposal wrote over each other's renders and diff
+        meshes (and each other's fixed-name .tmp files), so a packet could
+        publish a URL for a file the other build had already unlinked. Builds
+        of the same proposal are serialized, and the second caller gets the
+        build it waited for."""
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE_HOLE)
+        pid = self._propose(registry)
+        builder = PacketBuilder(service)
+
+        rendering, release = threading.Event(), threading.Event()
+        inner = PacketBuilder._renders
+
+        def waiting(self, *args, **kwargs):
+            result = inner(self, *args, **kwargs)
+            rendering.set()
+            release.wait(120)
+            return result
+
+        monkeypatch.setattr(PacketBuilder, "_renders", waiting)
+        results: list[dict] = []
+        errors: list[Exception] = []
+
+        def build() -> None:
+            locks.set_client_id("chat:main")
+            try:
+                results.append(builder.packet("demo", pid, regenerate=True))
+            except Exception as exc:  # noqa: BLE001 — reported by the test
+                errors.append(exc)
+
+        first = threading.Thread(target=build)
+        first.start()
+        assert rendering.wait(300), "the first build never rendered"
+        second = threading.Thread(target=build)
+        second.start()
+        try:
+            release.set()
+        finally:
+            first.join(300)
+            second.join(300)
+
+        assert not errors, errors
+        assert len(results) == 2
+        assert results[0]["generated"] == results[1]["generated"]
+        assert builder._slot("demo", pid)["builds"] == 1  # one build, not two
+        for packet in results:
+            section = packet["parts"][0]
+            assert section["geom_diff"]["available"] is True
+            assert section["geom_diff"]["removed_mesh"]
+            assert service.packets.diff_mesh_path(
+                "demo", pid, "box", "removed").is_file()
+            for side in ("old", "new"):
+                assert section["renders"][side]
+                assert (service.proposals.store.asset_dir("demo", pid, "renders")
+                        / f"box.{side}.iso.png").is_file()
+
+    @pytest.mark.slow
+    def test_a_side_that_cannot_be_read_is_not_reported_as_an_absent_part(
+            self, demo, monkeypatch):
+        """FR8 degrades honestly, and 'honestly' rules out the loudest number
+        in the packet: a checkout that could not be READ is not a part that is
+        not THERE, and must never become a whole-part added/removed volume."""
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE)
+        pid = self._propose(registry)
+
+        reads: list[str] = []
+        inner = service.store.get_part
+
+        def failing(proj, part_id):
+            reads.append(part_id)
+            if len(reads) == 1:  # the old side, read first
+                raise OSError("the branch worktree went away")
+            return inner(proj, part_id)
+
+        monkeypatch.setattr(service.store, "get_part", failing)
+        packet = PacketBuilder(service).packet("demo", pid)
+
+        section = packet["parts"][0]
+        assert packet["ok"] is True
+        assert section["build"]["old"]["ok"] is False
+        assert "present" not in section["build"]["old"]
+        assert section["build"]["old"]["error"]["message"]
+        assert section["geom_diff"]["available"] is False
+        assert "unreadable" in section["geom_diff"]["reason"]
+        assert "added_mm3" not in section["geom_diff"]
+        # the readable side still reports its own numbers; the delta does not
+        # pretend the unreadable side measured zero
+        assert section["metrics"]["volume_mm3"]["old"] is None
+        assert section["metrics"]["volume_mm3"]["new"] == pytest.approx(20.0 ** 3)
+        assert section["metrics"]["volume_mm3"]["delta"] is None
+        assert [e["stage"] for e in packet["errors"]] == ["build"]
+
+    @pytest.mark.slow
+    def test_an_on_demand_render_is_written_to_the_path_it_reports(self, demo):
+        """``path`` named a file nobody had written for every view but the
+        packet's own iso pair. Draw it once, then serve it from there."""
+        service, registry = demo
+        assert "error" not in registry.call(
+            "set_assembly",
+            {"project": "demo",
+             "instances": [{"id": "box_1", "part": "box",
+                            "position": [0, 0, 0], "rotation_deg": [0, 0, 0]}]})
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE)
+        pid = self._propose(registry)
+        builder = PacketBuilder(service)
+
+        for image in (builder.render("demo", pid, "new", part="box",
+                                     view="front"),
+                      builder.render("demo", pid, "old", view="top")):
+            path = Path(image["path"])
+            assert path.is_file(), image["path"]
+            assert path.read_bytes() == base64.b64decode(image["png_base64"])
+            assert _png_size(path.read_bytes()) == (640, 480)
+
+    @pytest.mark.slow
+    def test_a_frozen_packet_only_serves_the_renders_taken_with_it(self, demo):
+        """FR12 again: a view the frozen packet never had would be drawn from
+        today's branches and shown as the evidence of a past decision. Refused
+        like a regeneration; the stored pair is still served."""
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE)
+        pid = self._propose(registry)
+        builder = PacketBuilder(service)
+        builder.packet("demo", pid)
+        _on(service, "browser", "master")
+        self._approve_and_merge(registry, pid)
+        assert builder.packet("demo", pid)["frozen"] is True
+
+        image = builder.render("demo", pid, "new", part="box")
+        assert _png_size(base64.b64decode(image["png_base64"])) == (640, 480)
+
+        with pytest.raises(ConflictError) as excinfo:
+            builder.render("demo", pid, "new", part="box", view="front")
+        assert excinfo.value.details["view"] == "front"
+        with pytest.raises(ConflictError):
+            builder.render("demo", pid, "old")  # no assembly render was taken
 
     def test_a_dirty_branch_tree_that_cannot_be_snapshotted_is_refused(
             self, demo, monkeypatch):
