@@ -1,10 +1,11 @@
 """Tool pack: change proposals — a CAD pull request over PRD-001's branches.
 
-Installs the two seams the feature needs — ``service.proposals``
-(:class:`~agentcad.core.proposals.ProposalManager`) and
-``service.gate_providers``, the empty list PRD-003 (specs) and PRD-004 (checks)
-append their own gates to — and exposes the lifecycle as tools. Handlers are
-thin delegations; every workflow rule lives in ``proposals.py``.
+Installs the seams the feature needs — ``service.proposals``
+(:class:`~agentcad.core.proposals.ProposalManager`), ``service.packets``
+(:class:`~agentcad.core.packet.PacketBuilder`) and ``service.gate_providers``,
+the empty list PRD-003 (specs) and PRD-004 (checks) append their own gates to —
+and exposes the lifecycle as tools. Handlers are thin delegations; every
+workflow rule lives in ``proposals.py`` and every measurement in ``packet.py``.
 
 The whole pack self-disables when git is not on PATH — no tools, no seams — so
 the product degrades to today's linear history rather than offering an agent a
@@ -25,6 +26,7 @@ Convention agents must not get backwards, repeated in the descriptions below:
 
 from __future__ import annotations
 
+from .packet import PacketBuilder
 from .proposals import ProposalManager
 from .tools import Tool, schema
 
@@ -42,6 +44,7 @@ def register(registry, service) -> None:
         return  # no git -> no branches -> no proposals
 
     service.proposals = ProposalManager(service)
+    service.packets = PacketBuilder(service)
     # The gate seam: a provider takes (project, proposal) and returns a gate
     # object or None. Empty here, appended to by PRD-003/PRD-004 from their
     # own register(), so neither has to touch proposals.py.
@@ -78,6 +81,15 @@ def register(registry, service) -> None:
                        allow_invalid: bool = False) -> dict:
         return service.proposals.merge(project, id,
                                        allow_invalid=bool(allow_invalid))
+
+    def proposal_packet(project: str, id: str,
+                        regenerate: bool = False) -> dict:
+        return service.packets.packet(project, id,
+                                      regenerate=bool(regenerate))
+
+    def proposal_render(project: str, id: str, side: str,
+                        part: str | None = None, view: str = "iso") -> dict:
+        return service.packets.render(project, id, side, part=part, view=view)
 
     registry.register(Tool(
         "proposal_create",
@@ -137,7 +149,9 @@ def register(registry, service) -> None:
         "merge runs it), and any spec/check providers installed. 'audit' is "
         "the append-only log of every action with its actor and human/agent "
         "kind. Each review is marked stale when it was made against an older "
-        "source head (it still counts).",
+        "source head (it still counts). 'packet' is only a status summary "
+        "({generated, stale, ok, frozen}, or null before the first view) — "
+        "call proposal_packet for the evidence itself.",
         schema({"project": _PROJ, "id": _ID}, ["project", "id"]),
         proposal_get,
     ))
@@ -162,6 +176,63 @@ def register(registry, service) -> None:
             ["project", "id"],
         ),
         proposal_update,
+    ))
+    registry.register(Tool(
+        "proposal_packet",
+        "Read the review packet: the auto-generated evidence for what this "
+        "change does. " + _SIDES + " Returns {ok, stale, frozen, generated, "
+        "source_head, target_head, summary, parts, assembly, manifest, binary, "
+        "warnings, errors}. Each changed part carries the unified script diff, "
+        "the PARAMS diff, the build status per side, metric deltas "
+        "({old, new, delta, pct} for volume/mass/area, a per-axis "
+        "center-of-mass delta, both bounding boxes), the kernel-computed "
+        "added/removed volumes with overlay meshes, and before/after render "
+        "URLs sharing ONE camera frame so the pair superimposes. Renders come "
+        "back as URLs, not images — call proposal_render to SEE one. The "
+        "packet is generated on first view and re-served while both branch "
+        "heads hold; a moved head marks it stale and it regenerates on the "
+        "next view. Pass regenerate to force one. Per-part failures are "
+        "payload fields, never errors: an unbuildable side is build.<side>.ok "
+        "false with the script error, and a failed boolean is geom_diff."
+        "available false with the metrics still there. A packet frozen by a "
+        "merge refuses regenerate with a conflict_error.",
+        schema(
+            {
+                "project": _PROJ,
+                "id": _ID,
+                "regenerate": {"type": "boolean",
+                               "description": "Rebuild the packet even if the "
+                                              "persisted one is current"},
+            },
+            ["project", "id"],
+        ),
+        proposal_packet,
+    ))
+    registry.register(Tool(
+        "proposal_render",
+        "Render ONE side of a proposal as an image you can actually look at. "
+        + _SIDES + " side is 'old' (the target branch) or 'new' (the source "
+        "branch); give 'part' for a changed part or omit it for the whole "
+        "assembly. The camera frame is the union of both sides' bounding "
+        "boxes, so the old and new images of a part are superimposable. "
+        "Views: iso, front, top, right. Returns {path, width, height, view, "
+        "side, part, png_base64} — the packet itself carries render URLs "
+        "because a result can only carry one image.",
+        schema(
+            {
+                "project": _PROJ,
+                "id": _ID,
+                "side": {"type": "string",
+                         "description": "old (target/ours) | new (source/theirs)"},
+                "part": {"type": "string",
+                         "description": "A part the proposal changes; omit for "
+                                        "the assembly"},
+                "view": {"type": "string",
+                         "description": "iso | front | top | right (default iso)"},
+            },
+            ["project", "id", "side"],
+        ),
+        proposal_render,
     ))
     registry.register(Tool(
         "proposal_review",

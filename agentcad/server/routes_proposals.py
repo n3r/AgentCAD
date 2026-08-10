@@ -5,8 +5,12 @@
                                                 description, draft}
     GET    /api/projects/{proj}/proposals/{pid}
     PATCH  /api/projects/{proj}/proposals/{pid}       {title, description, state}
+    GET    /api/projects/{proj}/proposals/{pid}/packet          ?regenerate=1
     POST   /api/projects/{proj}/proposals/{pid}/review {verdict, summary}
     POST   /api/projects/{proj}/proposals/{pid}/merge  {allow_invalid}
+    GET    /api/projects/{proj}/proposals/{pid}/render/{side}/{part}  ?view=iso
+    GET    /api/projects/{proj}/proposals/{pid}/render/{side}         ?view=iso
+    GET    /api/projects/{proj}/proposals/{pid}/diff/{part}/{kind}.acm
 
 Body keys are whitelisted per route (the registry rejects unknown arguments,
 and ``null`` must read as "omitted", not as an argument). Ordinary failures are
@@ -18,12 +22,19 @@ exception — it comes back as an ``{"error": …}`` body at HTTP 200, exactly a
 it does for ``POST …/merge``, so the UI can render the conflict list with its
 existing modal instead of an error page.
 
-The packet, render and diff routes are slice 4.
+The two asset routes are the exception to the passthrough rule: they answer
+with raw bytes rather than JSON — ``image/png`` decoded from the render tool's
+``png_base64`` (like ``routes_vision``) and the ``application/octet-stream``
+ACM1 diff mesh straight off disk (like the mesh route in ``app.py``), both
+``no-store`` because a packet regenerates in place.
 """
 
 from __future__ import annotations
 
+import base64
+
 from fastapi import APIRouter, Request
+from fastapi.responses import Response
 
 from ..core.model import ConflictError, NotFoundError, ValidationError
 
@@ -50,6 +61,15 @@ def _body_keys(body: dict, *keys: str) -> dict:
     """Whitelisted, null-stripped forwarding — never ``**body``."""
     return {key: body[key] for key in keys
             if isinstance(body, dict) and body.get(key) is not None}
+
+
+def _png(registry, args: dict) -> Response:
+    result = _result(registry.call("proposal_render", args))
+    return Response(
+        content=base64.b64decode(result["png_base64"]),
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 async def _json(request: Request) -> dict:
@@ -96,6 +116,36 @@ def build_router(service, registry) -> APIRouter:
         args = {"project": proj, "id": pid,
                 **_body_keys(body, "title", "description", "state")}
         return _result(registry.call("proposal_update", args))
+
+    @router.get("/projects/{proj}/proposals/{pid}/packet")
+    def get_packet(proj: str, pid: str, regenerate: bool = False):
+        return _result(registry.call(
+            "proposal_packet",
+            {"project": proj, "id": pid, "regenerate": regenerate},
+        ))
+
+    @router.get("/projects/{proj}/proposals/{pid}/render/{side}/{part}")
+    def render_part(proj: str, pid: str, side: str, part: str,
+                    view: str = "iso"):
+        return _png(registry, {"project": proj, "id": pid, "side": side,
+                               "part": part, "view": view})
+
+    @router.get("/projects/{proj}/proposals/{pid}/render/{side}")
+    def render_assembly(proj: str, pid: str, side: str, view: str = "iso"):
+        return _png(registry, {"project": proj, "id": pid, "side": side,
+                               "view": view})
+
+    # ``{kind}.acm``: the packet publishes the extension so the URL reads as a
+    # file, and the part/kind pair is whitelisted by the builder before it
+    # touches the filesystem.
+    @router.get("/projects/{proj}/proposals/{pid}/diff/{part}/{kind}.acm")
+    def get_diff_mesh(proj: str, pid: str, part: str, kind: str):
+        path = service.packets.diff_mesh_path(proj, pid, part, kind)
+        return Response(
+            content=path.read_bytes(),
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @router.post("/projects/{proj}/proposals/{pid}/review")
     async def review_proposal(proj: str, pid: str, request: Request):

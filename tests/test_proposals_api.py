@@ -10,6 +10,7 @@ is the single error type that arrives at HTTP 200) · 3. events
 
 from __future__ import annotations
 
+import base64
 import pkgutil
 import shutil
 
@@ -42,7 +43,7 @@ BOX_V3_SCRIPT = BOX_SCRIPT.replace(
 
 PROPOSAL_TOOLS = [
     "proposal_create", "proposal_list", "proposal_get", "proposal_update",
-    "proposal_review", "proposal_merge",
+    "proposal_review", "proposal_merge", "proposal_packet", "proposal_render",
 ]
 
 
@@ -300,6 +301,96 @@ def test_a_red_gate_is_a_409_and_a_merge_conflict_is_a_200_body(client):
     assert error["details"]["proposal"] == "1"
     assert http.get("/api/projects/demo/proposals/1").json()[
         "proposal"]["state"] == "approved"
+
+
+# --------------------------------------- 2b. the packet, render and asset routes
+
+
+@pytest.fixture
+def reviewable(client):
+    """A proposal whose source branch really changes the box, so the packet
+    has a script diff, metric deltas, renders and a geometric diff."""
+    service, registry, http = client
+    locks.set_client_id("agent_a")
+    service.branches.switch("demo", "feat")
+    assert "error" not in registry.call(
+        "update_part_script",
+        {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT})
+    locks.set_client_id("chat:main")
+    pid = _create(registry)["proposal"]["id"]
+    locks.set_client_id("browser")
+    return service, registry, http, pid
+
+
+@pytest.mark.slow
+def test_proposal_packet_and_render_tools(reviewable):
+    _service, registry, _http, pid = reviewable
+    packet = registry.call("proposal_packet", {"project": "demo", "id": pid})
+    assert "error" not in packet, packet
+    assert packet["parts"][0]["part"] == "box"
+    assert packet["parts"][0]["renders"]["new"].endswith("/render/new/box")
+
+    image = registry.call("proposal_render",
+                          {"project": "demo", "id": pid, "side": "new",
+                           "part": "box"})
+    assert "error" not in image, image
+    # top level, so mcp_server._tool_result / chat lift it into image content
+    assert base64.b64decode(image["png_base64"])[:4] == b"\x89PNG"
+    assert (image["width"], image["height"]) == (640, 480)
+    assert image["side"] == "new" and image["part"] == "box"
+
+    assert registry.call("proposal_render",
+                         {"project": "demo", "id": pid, "side": "sideways"}
+                         )["error"]["type"] == "validation_error"
+
+
+@pytest.mark.slow
+def test_the_packet_route_regenerates_only_when_asked(reviewable):
+    _service, _registry, http, pid = reviewable
+    first = http.get(f"/api/projects/demo/proposals/{pid}/packet")
+    assert first.status_code == 200, first.text
+    assert first.json()["stale"] is False
+    again = http.get(f"/api/projects/demo/proposals/{pid}/packet")
+    assert again.json()["generated"] == first.json()["generated"]
+    regenerated = http.get(f"/api/projects/demo/proposals/{pid}/packet",
+                           params={"regenerate": 1})
+    assert regenerated.status_code == 200
+    assert regenerated.json()["parts"][0]["geom_diff"]["available"] is True
+
+    detail = http.get(f"/api/projects/demo/proposals/{pid}").json()
+    assert detail["packet"] == {"generated": regenerated.json()["generated"],
+                                "stale": False, "ok": True, "frozen": False}
+
+
+@pytest.mark.slow
+def test_the_render_and_diff_asset_routes_serve_bytes(reviewable):
+    _service, _registry, http, pid = reviewable
+    packet = http.get(f"/api/projects/demo/proposals/{pid}/packet").json()
+
+    png = http.get(f"/api/projects/demo/proposals/{pid}/render/old/box")
+    assert png.status_code == 200, png.text
+    assert png.headers["content-type"] == "image/png"
+    assert png.headers["cache-control"] == "no-store"
+    assert png.content[:4] == b"\x89PNG"
+
+    assert packet["parts"][0]["geom_diff"]["added_mesh"] == (
+        f"/api/projects/demo/proposals/{pid}/diff/box/added.acm")
+    mesh = http.get(f"/api/projects/demo/proposals/{pid}/diff/box/added.acm")
+    assert mesh.status_code == 200, mesh.text
+    assert mesh.headers["content-type"] == "application/octet-stream"
+    assert mesh.content[:4] == b"ACM1"
+
+    # nothing was removed, so there is no removed mesh to serve
+    assert packet["parts"][0]["geom_diff"]["removed_mesh"] is None
+    assert http.get(
+        f"/api/projects/demo/proposals/{pid}/diff/box/removed.acm"
+    ).status_code == 404
+    assert http.get(
+        f"/api/projects/demo/proposals/{pid}/diff/box/sideways.acm"
+    ).status_code == 422
+    assert http.get(
+        f"/api/projects/demo/proposals/{pid}/render/new/ghost"
+    ).status_code == 404
 
 
 # --------------------------------------------------------------- 3. events
