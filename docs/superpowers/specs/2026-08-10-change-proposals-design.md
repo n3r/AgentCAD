@@ -333,8 +333,8 @@ it. Shape (abridged; every key below is normative):
 
 ```json
 {
-  "proposal": "3", "ok": true, "stale": false,
-  "generated": "2026-08-10T09:12:04", "generated_by": "chat:main",
+  "proposal": "3", "ok": true, "stale": false, "frozen": false,
+  "generated": "2026-08-10T09:12:04Z", "generated_by": "chat:main",
   "elapsed_ms": 4210,
   "source": "nozzle-thinner", "target": "master",
   "source_head": "<sha>", "target_head": "<sha>", "base": "<sha>",
@@ -342,13 +342,13 @@ it. Shape (abridged; every key below is normative):
               "instances_changed": 0, "mass_delta_g": -12.4},
   "parts": [{
     "part": "nozzle", "change": "modified",
-    "changed_by": ["script", "params"],
+    "changed_by": ["script", "params"],        // also "manifest" (label, …)
     "script_diff": {"path": "parts/nozzle.py", "unified": "@@ …",
                     "added_lines": 4, "removed_lines": 2, "truncated": false,
                     "hunks": [{"index": 0, "header": "@@ -12,6 +12,8 @@",
                                "old_start": 12, "new_start": 12}]},
     "params_diff": {"added": [], "removed": [],
-                    "changed": [{"name": "wall", "field": "default",
+                    "changed": [{"name": "wall", "field": "value",
                                  "old": 2.0, "new": 1.6}]},
     "build": {"old": {"ok": true}, "new": {"ok": true}},
     "metrics": {"volume_mm3": {"old": 41230.5, "new": 40418.1,
@@ -391,6 +391,20 @@ omitted with `"truncated": true`.
 path, hunk_index, old_start, new_start}` identifies a hunk without depending on
 line numbers surviving a regeneration. Nothing in MVP reads it besides the UI's
 `id` attributes.
+
+**As built (slice 4/6 fold-back).** Three details of the block above are worth
+stating exactly, because the UI and the AC tests depend on them:
+`params_diff` rows are `{name, field, old, new}` where **`field` is `"value"`**
+for the ordinary case — the manifest stores parameter *overrides*, so there is
+one row per changed override; a dict-valued (full spec) parameter is compared
+field by field over `default/min/max/type/unit/choices/description` and yields
+one row per changed field. `changed_by` has a **third** value, `"manifest"`
+(label, material, kind, … — anything in the entry that is neither the script
+nor the params). `assembly.renders` is **`null` by design**: assembly renders
+are the expensive kind, so `proposal_render` draws one on demand. And every
+timestamp (`generated`, the proposal's `created`/`updated`, every audit `ts`)
+is **zone-aware UTC with the `Z` designator** — a naive stamp is read as local
+time by `Date.parse`, which made "written a second ago" display as hours old.
 
 **PARAMS diffs (FR4).** From the two manifests, not from git. Manifests are
 read with the *strict* loader semantics `merge._manifest_at` established: a
@@ -701,7 +715,9 @@ markup in `index.html`; modals follow `#drawing-modal`'s
   `width: min(1100px, 100%)`) with a master/detail split: a left list (state
   chip, `#id`, title, author with a human/agent badge, relative age, gate dot)
   and a right detail pane with a header (title, source → target, state, actions)
-  and four tabs.
+  and — **as built** — *five* tabs: Overview, Files, Geometry, Checks and
+  **Audit**. Audit is the fifth because FR14's append-only log has no other
+  surface; metrics and renders stay inside Overview, as specified.
 - **Overview** — description, the metric-delta table (part, volume, mass, CoM,
   bbox: old → new, Δ, %), and the before/after render pair per changed part as
   two `<img>` elements at the same size (they are frame-matched, so a CSS
@@ -730,8 +746,13 @@ markup in `index.html`; modals follow `#drawing-modal`'s
   the existing `parseACM` path, like `showPart`/`showAssembly`.
 - **Checks** — the gate list with state chips and drill-in (the validation
   report renders with the same block `merge.js` already has for
-  `merge_completed`).
-- **Actions** — Approve · Request changes · Merge · Close. Merge is disabled
+  `merge_completed`; **as built**, reusing it meant exporting `reportBlock` —
+  a third additive change to an existing file, additive and with no existing
+  caller touched).
+- **Audit** (as built) — the append-only log as a table: seq, ts, actor with
+  its human/agent kind, action, details.
+- **Actions** — Approve · Request changes · Comment · Merge · Close/Reopen ·
+  Edit… · Regenerate packet. Merge is disabled
   while a gate is red, with the reason in its `title`; the disabled state is a
   hint, not the enforcement (FR11 says the service enforces, and a test asserts
   the service refuses even when the UI would have allowed it). An explicit
@@ -1035,3 +1056,13 @@ kills the snapshot hook; `build_registry(service)`;
    new kind on `analysis.py` — the PRD offered either.
 8. **`allow_invalid` overrides only the kernel validation gate**, never the
    approvals policy; v1 has no policy override.
+9. **Five tabs, not four** — Audit is a fifth tab because FR14's append-only
+   log has no other surface (the PRD's Experience section names four).
+10. **`params_diff` rows carry `"field": "value"`** for the ordinary case: the
+    manifest stores parameter *overrides*, not specs. A dict-valued parameter
+    still yields one row per changed spec field. `changed_by` has a third
+    value, `"manifest"`.
+11. **`assembly.renders` is `null` by design** — assembly renders are the
+    expensive kind and are drawn on demand by `proposal_render`.
+12. **All timestamps are zone-aware UTC** (`…Z`): the proposal's
+    `created`/`updated`, every audit `ts`, and the packet's `generated`.

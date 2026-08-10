@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import shutil
 import struct
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -400,6 +402,22 @@ class TestPacketBuilder:
         assert [e for e in events
                 if e["type"] == "proposal_changed"][-1]["reason"] == "packet"
         assert service.proposals.get("demo", pid)["packet"]["ok"] is True
+
+    def test_the_packet_stamp_is_zone_aware_utc(self, demo):
+        """Slice 6 fold-back: ``generated`` carries the ``Z`` designator, like
+        every proposal/audit stamp. Nothing else about the shape moves. An
+        unchanged branch pair is the cheapest packet there is — no part rows,
+        so no kernel work."""
+        _service, registry = demo
+        pid = self._propose(registry)
+
+        packet = PacketBuilder(_service).packet("demo", pid)
+
+        stamp = packet["generated"]
+        assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", stamp), stamp
+        parsed = datetime.fromisoformat(stamp)
+        assert parsed.utcoffset() == timedelta(0)
+        assert abs((datetime.now(timezone.utc) - parsed).total_seconds()) < 120
 
     @pytest.mark.slow
     def test_an_instance_move_does_no_per_part_kernel_work(self, demo, monkeypatch):

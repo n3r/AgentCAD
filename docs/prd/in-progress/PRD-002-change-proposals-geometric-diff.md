@@ -1,7 +1,9 @@
 # PRD-002 — Change proposals with geometric diff (CAD pull requests)
 
-- **Status:** in progress — design spec and implementation plan approved
-  (`docs/superpowers/specs|plans/2026-08-10-change-proposals*.md`)
+- **Status:** implemented — MVP shipped in six slices (changelog entries
+  `0077`–`0082`); every acceptance criterion has a named test in
+  `tests/test_prd002_acceptance.py`. Design spec and implementation plan:
+  `docs/superpowers/specs|plans/2026-08-10-change-proposals*.md`
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
@@ -81,7 +83,8 @@ decide, the kernel referees.
 
 **Human path.** The toolbar gains a Proposals entry with an open-count
 badge: a list (state chips, author with a human/agent badge, age, gate
-summary) and a detail view with four tabs. *Overview* — description, a
+summary) and a detail view with five tabs (Audit joined the four below — FR14's
+append-only log has no other surface). *Overview* — description, a
 metric-delta table (volume/mass/CoM/bbox per changed part, old → new, Δ and
 %), and before/after render pairs. *Files* — script diffs in a CodeMirror
 merge view plus a PARAMS diff table. *Geometry* — the viewport overlaying
@@ -170,7 +173,8 @@ an agent without reading a transcript.
 
 ## Agent surface
 
-New tools: `proposal_create {project, source, target?, title, description?,
+New tools (as built, eight — `proposal_render` was added; see "As built"):
+`proposal_create {project, source, target?, title, description?,
 draft?}` · `proposal_list {project, state?}` · `proposal_get {project, id}`
 (object + gates + audit) · `proposal_update {project, id, title?,
 description?, state?}` (draft↔open, close/reopen) · `proposal_packet
@@ -186,12 +190,16 @@ returns.
 ## Technical approach
 
 - **Core module** `agentcad/core/proposals.py`: proposal store (JSON docs
-  plus an append-only audit JSONL under `<project>/.proposals/`, atomic
-  writes, added to `.history/info/exclude` alongside `.cache/`), the state
-  machine, policy checks, and packet orchestration.
-- **Packet generation** in the service over PRD-001's ref layer:
-  materialize source and target states in temp worktrees (the
-  `core/history.py` plumbing), rebuild changed parts through the normal
+  plus an append-only audit JSONL under
+  `<project>/.history/agentcad/proposals/` — inside GIT_DIR, so FR3 holds
+  structurally and no `info/exclude` change is needed — atomic writes), the
+  state machine, policy checks, and gates. Packet orchestration is its own
+  module, `agentcad/core/packet.py`.
+- **Packet generation** in the service over PRD-001's ref layer: read both
+  sides from the **branch worktrees PRD-001 already maintains**
+  (`branches.tree_of` + `branches.pinned`; temp worktrees would only be needed
+  for a packet pinned to a non-head commit, which is Phase 2), rebuild changed
+  parts through the normal
   kernel-pool path — unchanged parts are content-hash cache hits, so packet
   cost scales with the change, not the project. Script diffs via `git diff`
   between refs; PARAMS and assembly deltas from the two manifests.
@@ -211,9 +219,10 @@ returns.
   `agentcad/server/routes_proposals.py` (list/detail/actions + packet
   download); cores untouched per the extension-point contract.
 - **Frontend**: proposals list + detail (`frontend/js/proposals.js`),
-  script diffs via the vendored CodeMirror merge addon, geometry overlay in
-  `viewport.js` (diff meshes as translucent color-coded groups over the
-  target build).
+  script diffs as **plain DOM** line nodes (no CodeMirror merge addon is
+  vendored, and a line node is exactly the anchor PRD-008 needs), geometry
+  overlay in `viewport.js` (diff meshes as translucent color-coded groups over
+  the target build).
 - No manifest schema change; one new kernel handler kind; identities stay
   opaque strings so PRD-005 slots in principals cleanly.
 
@@ -260,6 +269,56 @@ returns.
   with `extra_allowed_hosts={"testserver"}`).
 - AC9. `project_restore` to a pre-proposal snapshot leaves the proposal
   untouched (test); full suite green.
+
+### Verification (slice 6)
+
+Every criterion above has a named test in `tests/test_prd002_acceptance.py`,
+which walks it end to end through the real stack — tools, HTTP routes, git and
+the kernel — rather than through the unit seams:
+
+| AC | Proving test |
+|----|---|
+| AC1 | `test_ac1_roundtrip_agent_proposes_human_merges` (rocketry, on a copy: the agent half through tools, the human half through the routes; audit `actor_kind`s asserted) + `test_ac1_browser_half_evidence_is_recorded` |
+| AC2 | `test_ac2_packet_generates_warm_under_10s` (timed on a rocketry copy; measured **0.97 s** warm in slice 4) |
+| AC3 | `test_ac3_drilled_hole_reports_removed_volume` (within 1 %, parseable ACM1 solid, served by the asset route) + `test_ac3_browser_overlay_evidence_is_recorded` |
+| AC4 | `test_ac4_instance_move_does_no_per_part_kernel_work` |
+| AC5 | `test_ac5_failed_validation_blocks_then_overrides` |
+| AC6 | `test_ac6_self_approval_does_not_satisfy_policy` |
+| AC7 | `test_ac7_unbuildable_side_degrades_honestly` |
+| AC8 | `test_ac8_second_client_sees_proposal_changed_live` |
+| AC9 | `test_ac9_project_restore_does_not_rewind_proposals` + the full-suite run cited in `docs/changelog/0082-proposals-docs-and-acceptance.md` |
+
+The **browser halves of AC1 and AC3** ("merges it in the browser with zero
+terminal use", "the red overlay renders in the Geometry tab") were driven for
+real in a headless-Chrome session in slice 5 — screenshots and a clean console
+are recorded in `docs/changelog/0081-proposals-ui.md`, and the two evidence
+tests above fail if that record is removed. Re-driving a browser from the test
+suite is deliberately not done (the PRD-001 AC6 precedent).
+
+### As built — divergences from this document
+
+1. Proposal state lives at `<project>/.history/agentcad/proposals/`, not
+   `<project>/.proposals/`: inside GIT_DIR, so FR3 holds structurally.
+2. The packet reads the **branch worktrees PRD-001 already maintains**, not
+   temp worktrees (needed only for a non-head pin — Phase 2).
+3. **Eight tools, not seven:** `proposal_render` is additive, because MCP and
+   chat lift exactly one `png_base64` per result, so a multi-render packet
+   cannot carry its own images — `proposal_packet` returns render URLs.
+4. Head-pinning and on-view regeneration (the cheap half of FR9) are in MVP;
+   LRU/GC and surviving branch deletion stay Phase 2.
+5. Script diffs render as plain DOM line nodes, not a CodeMirror merge view.
+6. `proposal_changed` carries a `reason` alongside `{project, id, state}`.
+7. The geometric diff is a new handler pack, `kernel/handlers/diff.py`.
+8. `allow_invalid` overrides the kernel validation gate only, never the
+   approvals policy.
+9. **Five tabs, not four** — Audit is the fifth (FR14's log had no surface).
+10. `params_diff` rows are `{name, field, old, new}` with `field: "value"` for
+    an ordinary override (the manifest stores overrides, not specs); a
+    dict-valued parameter yields one row per changed spec field. `changed_by`
+    has a third value, `"manifest"`.
+11. `assembly.renders` is `null` by design — assembly renders are drawn on
+    demand by `proposal_render`.
+12. All timestamps are zone-aware UTC (`…Z`).
 
 ## Risks & open questions
 

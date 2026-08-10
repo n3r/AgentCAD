@@ -1304,12 +1304,10 @@ function json(value) {
   }
 }
 
-/** Proposal timestamps are naive UTC (``time.gmtime()`` server-side), so
- *  Date.parse would read them as local time and an entry written a second ago
- *  would show as hours old. Tag them before relTime sees them. */
+/** Proposal timestamps are zone-aware UTC server-side (``...Z``), so relTime
+ *  can parse them directly. */
 function ago(iso) {
-  if (!iso) return "";
-  return relTime(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`);
+  return iso ? relTime(iso) : "";
 }
 
 function errorText(err) {

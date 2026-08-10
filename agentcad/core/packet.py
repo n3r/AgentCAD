@@ -55,6 +55,7 @@ from .model import (
     validate_id,
 )
 from .project import ProjectStore
+from .proposals import _now as proposal_now
 from .render import VIEWS, render_acm
 
 # Renders are smaller than ``render_view``'s 800x600 default: the rasterizer is
@@ -442,7 +443,9 @@ class PacketBuilder:
             "ok": True,
             "stale": False,
             "frozen": False,
-            "generated": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+            # Zone-aware UTC, the one stamp format the feature uses (FR13's
+            # audit entries come from the same helper).
+            "generated": proposal_now(),
             "generated_by": actor,
             "elapsed_ms": 0,
             "source": source,

@@ -171,6 +171,37 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   **git 2.38+**; branches and tags do not, and with no git at all the
   versioning pack registers nothing.
 
+## Proposal gotchas (PRD-002 — read before touching proposals or the packet)
+
+- **Proposals are canonical and branch-independent**, at
+  `.history/agentcad/proposals/<id>/` — they are workflow metadata, not model
+  state, so `project_restore` must never rewind them and every branch sees the
+  same list. Never write proposal state into a working tree.
+- **`audit.jsonl` is appended, never atomically replaced.** FR14 makes it
+  append-only; a read-modify-replace cycle breaks that and can truncate the log
+  on a crash. Everything else under the proposal directory is an atomic write.
+- **The packet degrades, it never raises.** A per-part stage that fails
+  (build, metrics, render, geometric diff) writes its structured error into the
+  payload — `build.<side>.ok: false`, `geom_diff.available: false`,
+  `warnings`/`errors` — and the packet still returns `ok: true`. `ok: false`
+  means *no* packet could be produced (unreadable manifest, unknown ref). A
+  packet is evidence; "the new side does not build" is evidence.
+- **`geom_diff` volumes come from the toolbox's `shape_volume`** (the solids
+  sum), not `.volume` — a boolean result is routinely a nested Compound — and a
+  **mesh-kind (imported STL) side is never booleaned** (it segfaults OCCT); it
+  comes back `skipped: "mesh"`.
+- **Matched renders need the explicit `frame=`.** `render_acm` auto-fits per
+  mesh, so two renders of different geometry do not superimpose; the packet
+  passes the union of both world bboxes to both sides.
+- **`allow_invalid` overrides the kernel validation gate only** — never the
+  approvals policy. One field must not mean two unrelated things.
+- **`actor_kind` is `human` only for the `browser` identity.** The chat dock is
+  a human asking an *agent*, so those actions are the agent's. It is
+  bookkeeping, not authentication, until PRD-005.
+- A packet is generated from the **branches' existing worktrees**
+  (`branches.tree_of` + `branches.pinned`) and refuses a dirty tree, so its
+  pinned head SHAs always describe the bytes it measured.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script

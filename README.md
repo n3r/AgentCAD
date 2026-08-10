@@ -65,7 +65,17 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   strands an instance, or introduces interference is blocked unless you land it
   deliberately. Conflicts come back as structured data with base/ours/theirs.
 
-The agent tool surface is now **52 tools** (was 17; 55 with the `[fem]`
+- **Change proposals (CAD pull requests).** A branch can be packaged as a
+  reviewable change — title, argument, and an auto-generated **review packet**:
+  per-part script and PARAMS diffs, metric deltas, assembly deltas, before/after
+  renders sharing one camera frame, and a **kernel-computed geometric diff**
+  (added/removed mm³ plus translucent overlay solids in the viewport). The
+  lifecycle is governed (draft → open → approved / changes-requested → merged /
+  closed), every action is attributed as human or agent in an append-only audit
+  log, and merging only happens through the gate: one non-author approval by
+  default, plus PRD-001's kernel validation, with any override recorded.
+
+The agent tool surface is now **60 tools** (was 17; 63 with the `[fem]`
 extra), and multi-part rebuilds fan out across a small pool of warm kernel
 workers. v3 added typed parameters, per-solid semantics, sheet metal with
 flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,
@@ -173,7 +183,7 @@ def build(p):
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — processes, components, data flow
-- [docs/agent-api.md](docs/agent-api.md) — the 52-tool agent surface, MCP setup
+- [docs/agent-api.md](docs/agent-api.md) — the 60-tool agent surface, MCP setup
 - [docs/part-authoring.md](docs/part-authoring.md) — the script contract and toolkit
 - [docs/user-guide.md](docs/user-guide.md) — the UI, surface by surface
 - [docs/roadmap.md](docs/roadmap.md) — the forward roadmap: a PRD index with statuses

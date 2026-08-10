@@ -707,9 +707,12 @@ the module docstring)
 | AC8 | `test_ac8_second_client_sees_proposal_changed_live` | WS test with `extra_allowed_hosts={"testserver"}`; create → review → merge transitions all observed |
 | AC9 | `test_ac9_project_restore_does_not_rewind_proposals` | snapshot, create a proposal, mutate, restore the pre-proposal snapshot: `proposal.json` and `audit.jsonl` byte-identical; full suite green |
 
-- [ ] **Step 1:** write the AC tests (they are the last failing tests; they
-  should pass once Slices 1–5 are in).
-- [ ] **Step 2:** update the docs above, matching each file's existing style.
+- [x] **Step 1:** write the AC tests (they are the last failing tests; they
+  should pass once Slices 1–5 are in). Landed as
+  `tests/test_prd002_acceptance.py` — 11 tests: one per AC, plus the two
+  browser-half evidence checks for AC1 and AC3 (the PRD-001 AC6 pattern:
+  assert slice 5's recorded session, do not re-drive a browser).
+- [x] **Step 2:** update the docs above, matching each file's existing style.
   `docs/agent-api.md` needs a "Change proposals" section next to "Branches,
   versions and merges", stating: the old = target / new = source convention,
   that `actor_kind` is bookkeeping and not authentication until PRD-005, that
@@ -717,13 +720,22 @@ the module docstring)
   back as URLs from `proposal_packet` and as image content from
   `proposal_render`, and that packet-internal failures are payload fields, not
   errors.
-- [ ] **Step 3:** `make test` → green; **record the exact count** (510 passed,
+- [x] **Step 3:** `make test` → green; **record the exact count** (510 passed,
   1 skipped before this work).
-- [ ] **Step 4:** `make test-portability` → green (every new git-touching test
+- [x] **Step 4:** `make test-portability` → green (every new git-touching test
   carries the `portability` marker).
-- [ ] **Step 5:** write the changelog from `git diff`, move the PRD to
-  `docs/prd/completed/`, update the roadmap row, fold the divergences back into
-  the PRD, and commit.
+- [x] **Step 5:** write the changelog from `git diff`, fold the divergences
+  back into the PRD, and commit. **Deviation:** the PRD stays in
+  `docs/prd/in-progress/` with its `Status:` line updated to *implemented* and
+  an AC-verification paragraph; moving it to `docs/prd/completed/` and
+  updating the roadmap row happen when the branch merges, not on the branch
+  (the PRD-001 close-out did the same in its own commit, `0076`).
+
+**Also landed in slice 6 (fold-backs from slices 4 and 5):** timestamps are
+now zone-aware UTC (`proposals._now()` and the packet's `generated` end in
+`Z`; the UI's `ago()` no longer patches them up), and the design spec's packet
+and UI sections record the as-built shape (`params_diff` `"field": "value"`,
+`changed_by: "manifest"`, five tabs, `assembly.renders: null`).
 
 **Verification command:** `make test` and `make test-portability`, both green,
 with the counts cited; plus `git diff --name-status main -- tests/` showing only

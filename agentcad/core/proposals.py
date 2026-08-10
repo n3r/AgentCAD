@@ -81,7 +81,12 @@ _ASSET_KINDS = ("renders", "diff")
 
 
 def _now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+    """UTC, ISO-8601, *zone-aware*: the trailing ``Z`` is what makes a stamp
+    unambiguous to a reader. Without it ``Date.parse`` (and
+    ``datetime.fromisoformat``) read the stamp as local time, so an audit entry
+    written a second ago displays as hours old. Second resolution, no
+    microseconds — an audit line is a human-readable record."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def actor_kind(identity: str) -> str:

@@ -15,7 +15,9 @@ Sections: 1. store and identity · 2. the state machine · 3. creation rules ·
 from __future__ import annotations
 
 import json
+import re
 import shutil
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -421,6 +423,31 @@ def test_every_action_is_attributed_to_the_calling_client(demo):
         ("created", "chat:main", "agent"),
         ("reviewed", "browser", "human"),
     ]
+
+
+def test_every_timestamp_is_zone_aware_utc(demo):
+    """Slice 6 fold-back: stamps are ISO-8601 *with* the ``Z`` designator, so
+    any consumer (``Date.parse`` in the browser, ``datetime.fromisoformat``
+    here) reads them as UTC instead of as local time. Second resolution, no
+    microseconds — the shape is otherwise exactly what slices 1-4 wrote."""
+    _service, _registry, manager = demo
+    locks.set_client_id("chat:main")
+    proposal = _create(manager)
+    pid = proposal["id"]
+    manager.review("demo", pid, "approve", summary="ship it")
+
+    detail = manager.get("demo", pid)
+    stamps = [detail["proposal"]["created"], detail["proposal"]["updated"],
+              detail["proposal"]["reviews"][-1]["ts"],
+              *[entry["ts"] for entry in detail["audit"]]]
+    assert stamps
+    for stamp in stamps:
+        assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", stamp), stamp
+        parsed = datetime.fromisoformat(stamp)
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset() == timedelta(0)
+        # ...and it really is *now*, not a local time labelled as UTC.
+        assert abs((datetime.now(timezone.utc) - parsed).total_seconds()) < 120
 
 
 def test_the_audit_log_is_append_only_and_ordered(demo):
