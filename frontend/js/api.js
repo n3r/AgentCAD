@@ -88,6 +88,25 @@ export const api = {
   drawingSvgUrl: (proj, id) =>
     `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing.svg`,
 
+  // ---- design specs ----
+  // The inspector chips need none of these: `specs` rides the part payload
+  // that getPart/patchParams already return. They exist for the Phase-2
+  // requirement panel and for driving the feature by hand from the console.
+  // Everything about a check — fail, skip, a broken predicate — is payload, so
+  // a red project is an ordinary 200; only 404/422/409 throw.
+  listSpecs: (proj, partId) =>
+    request(
+      "GET",
+      `/api/projects/${enc(proj)}/specs${partId ? `?part_id=${enc(partId)}` : ""}`
+    ),
+  /** body: {part_id?, ref?} — ref evaluates another BRANCH without switching. */
+  runSpecs: (proj, body) =>
+    request("POST", `/api/projects/${enc(proj)}/specs/run`, body || {}),
+  getProjectSpecs: (proj) =>
+    request("GET", `/api/projects/${enc(proj)}/specs/file`),
+  setProjectSpecs: (proj, script) =>
+    request("PUT", `/api/projects/${enc(proj)}/specs/file`, { script }),
+
   // ---- project history (undo) ----
   projectHistory: (proj) =>
     request("GET", `/api/projects/${enc(proj)}/history`),

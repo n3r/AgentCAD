@@ -1103,6 +1103,44 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   color: var(--dim);
 }
 
+/* --------------------------------------------------------- design specs */
+
+/* The chip strip under the parameter warnings. Empty (nothing declared) it
+   must take no room at all — a part with no SPECS looks exactly as it did
+   before the feature existed. */
+.spec-block { margin: 2px 0 10px; }
+.spec-block:empty { display: none; }
+.spec-summary {
+  font-size: 11px;
+  color: var(--err-text);
+  line-height: 1.45;
+  margin-bottom: 6px;
+}
+.spec-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+/* .gate-chip's recipe (proposals), minus its fixed width: a spec chip is as
+   wide as its name. No new token, so light mode keeps working. */
+.spec-chip {
+  font-family: var(--mono);
+  font-size: 10px;
+  border-radius: 9px;
+  padding: 2px 7px;
+  border: 1px solid var(--hairline);
+  color: var(--dim);
+  cursor: default;
+}
+.spec-chip.spec-pass { color: var(--ok); border-color: var(--ok); }
+.spec-chip.spec-fail {
+  color: var(--err-text);
+  border-color: var(--err-ring);
+  background: var(--err-soft);
+}
+.spec-chip.spec-error {
+  color: var(--err);
+  border-color: var(--err-ring);
+  background: var(--err-soft);
+}
+.spec-chip.spec-skip { color: var(--dim); border-color: var(--hairline); }
+
 /* ------------------------------------------------------------- analysis */
 
 .analysis-block { padding: 12px 14px 16px; }
