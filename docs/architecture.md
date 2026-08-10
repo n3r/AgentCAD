@@ -18,7 +18,7 @@ the same service humans use through the browser UI.
 │ FastAPI server — 127.0.0.1:<port>   (agentcad serve)        │
 │                                                             │
 │   ToolRegistry ──► AgentCADService ──► ProjectStore (files) │
-│   (60 tools,       (cache, events,     ~/AgentCAD/projects  │
+│   (64 tools,       (cache, events,     ~/AgentCAD/projects  │
 │    single source    orchestration)     or --projects-dir    │
 │    of truth)             │                                  │
 │                          │ line-delimited JSON-RPC (stdio)  │
@@ -56,11 +56,11 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/kernel/acm.py` | ACM1 binary mesh codec (no OCP dependency; the frontend has a JS parser). |
 | `agentcad/kernel/client.py` | Worker lifecycle: spawn, one-request-at-a-time, per-request timeout, kill-and-respawn, stderr tail capture for crash reports. |
 | `agentcad/kernel/pool.py` | `KernelPool`: N `KernelClient`s behind the same `request()` surface; affinity routing + round-robin, lazy spawn. Size 1 ≡ single client. |
-| `agentcad/kernel/handlers/` | Worker handler packs (reference, drawing, analysis, fem, connectors, diff) merged into the worker at startup — see [extension points](#v2-extension-points). |
+| `agentcad/kernel/handlers/` | Worker handler packs (reference, drawing, analysis, fem, connectors, diff, specs) merged into the worker at startup — see [extension points](#v2-extension-points). |
 | `agentcad/kernel/refload.py` | Reference-CAD loader (STEP/BREP → solid, STL → mesh-only Face) with an LRU keyed by (realpath, mtime, size). Kernel-side only (imports OCP). |
 | `agentcad/kernel/error_doctor.py` | Catalog of real OCCT/build123d failure signatures → plain-language diagnosis + fix; enriches every worker error's `details.hint`. |
 | `agentcad/kernel/_mates_resolver.py` | Connector evaluation + mate-graph ordering (cycle rejection) + Joint-based resolution to concrete transforms. |
-| `agentcad/toolkit/` | Part-authoring helpers importable from scripts: `safe_fillet`/`safe_shell`/`safe_bool`, the scipy sketch solver, `bd_warehouse` threads. |
+| `agentcad/toolkit/` | Part-authoring helpers importable from scripts: `safe_fillet`/`safe_shell`/`safe_bool`, the scipy sketch solver, `bd_warehouse` threads, and `specs` — the ten pure-data `check_*` constructors a script's `SPECS` list is built from (zero kernel imports, so a `check_fem_static` declares without the `[fem]` extra). |
 | `agentcad/core/project.py` | Filesystem project store: `project.json` manifest (schema v2, reads v1), `parts/<id>.py` scripts, `imports/` references, atomic writes, validation. |
 | `agentcad/core/service.py` | The application service all clients share: rebuild orchestration (script and reference parts), content-hash mesh/metrics cache, EventBus, assembly rollups, three v2 seams (material resolver, mate resolution, kernel pool). |
 | `agentcad/core/materials.py` | Materials v2: frozen `Material` schema + 30-entry builtin library + `MaterialLibrary` (builtin < global file < project overrides). |
@@ -72,10 +72,11 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/core/merge.py` | `MergeOrchestrator`: `git merge-tree` for scripts, the manifest driver for the manifest, a staged detached worktree, the kernel validation pass, and the two-parent `commit-tree` + compare-and-swap `update-ref` that lands it. |
 | `agentcad/core/proposals.py` | `ProposalStore` (JSON documents + an append-only `audit.jsonl` in the `.history/agentcad/` sidecar, atomic writes, id allocation) and `ProposalManager`: the state machine, attribution, the approvals policy, the gate list, and the gated merge that delegates to `MergeOrchestrator` unchanged. No kernel, no packet work. |
 | `agentcad/core/packet.py` | `PacketBuilder`: the review packet. Four pure delta functions (changed parts, PARAMS, assembly, metrics) plus generation over the two branch worktrees — git diffs, per-part metrics through the ordinary service path, frame-matched renders, and `geom_diff` kernel calls — persisted with both branch heads. Talks to the kernel only through `service.kernel.request`. |
+| `agentcad/core/specs.py` | `SpecRunner`: design-spec orchestration — the `ast`-only `declares_specs` presence scan, the three evaluation tiers, the `.cache/*.specs.json` result sidecars, the report (flat check records, per-part blocks, per-requirement grouping), the `specs.py` reader/writer, and `evaluate_specs`/`gate_provider` for the proposal gate. Talks to the kernel only through `service.kernel.request`; imports no OCP. |
 | `agentcad/core/tools.py` | ToolRegistry — the 17 core tools defined once; discovers and loads `tools_*.py` packs. MCP and chat render from the merged registry. |
-| `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals), each exporting `register(registry, service)`. |
+| `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals, specs), each exporting `register(registry, service)`. `tools_specs` additionally *wraps* `service._rebuild` and `service.get_part` (the `install_write_guard` precedent) and appends the `specs` gate provider. |
 | `agentcad/server/app.py` | Core REST routes (thin), `/api/tools` passthrough, WebSocket channel, static hosting; mounts `routes_*.py` packs under `/api`. |
-| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve, history, branches/versions/merge, proposals). |
+| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve, history, branches/versions/merge, proposals, specs). |
 | `agentcad/agent/mcp_server.py` | MCP stdio server proxying `/api/tools`; auto-starts the HTTP server when unreachable. |
 | `agentcad/agent/chat.py` | Server-side Anthropic tool-use loop streaming to the UI over the WebSocket. |
 | `frontend/` | Static ES modules (no bundler): Three.js viewport, tree, parameter inspector, CodeMirror editor, chat panel. |
@@ -255,8 +256,8 @@ auto-generated **review packet** and a merge that only happens through a gate.
 It adds no seam of its own to `ProjectStore` — it is a tool pack
 (`tools_proposals.py`) plus a route pack (`routes_proposals.py`) over PRD-001's
 ref layer, and it installs `service.proposals`, `service.packets` and
-`service.gate_providers` (the empty list PRD-003's specs and PRD-004's checks
-append to, so neither has to touch `proposals.py`). Like the branch tools, the
+`service.gate_providers` (the list PRD-003's `specs` gate already appends to
+and PRD-004's `checks` will, so neither has to touch `proposals.py`). Like the branch tools, the
 whole pack **declines to register when `git` is absent**.
 
 **State lives in the sidecar, not in the project.** FR3 requires that
@@ -325,14 +326,80 @@ booleaned — the `check_interference` rule — and a boolean failure degrades t
 `available: false` with the metrics still present.
 
 **The merge is PRD-001's, unchanged.** `ProposalManager.merge` evaluates gates
-first (`state`, `approvals`, `validation`, plus any provider-supplied `specs`
-and `checks`) and refuses a red one with a `conflict_error` naming it; then it
+first (`state`, `approvals`, `validation`, the provider-supplied `specs` gate
+below, and `checks` once PRD-004 supplies it) and refuses a red one with a `conflict_error` naming it; then it
 calls `MergeOrchestrator.merge` and forwards its payloads verbatim, including
 `merge_conflict`. `allow_invalid` is passed straight through to the kernel
 validation gate and never touches the approvals policy.
 
 **New event:** `proposal_changed {project, id, state, reason}` for every
 state or packet transition.
+
+## Design specs (executable intent)
+
+Design intent lives in the tree as code: a `SPECS` list in `parts/<id>.py`
+(part scope) and in a root `specs.py` (project scope), built from
+`agentcad/toolkit/specs.py`'s pure-data constructors. **There is no storage
+layer** — specs are tracked files, so PRD-001 versions, branches, diffs,
+merges, restores and undoes them for free. Declaration is data; measurement is
+the kernel's.
+
+**Three components, one per process boundary.**
+
+- `agentcad/toolkit/specs.py` — the ten constructors. Stdlib only, no kernel
+  import at all, validating **eagerly** so a bad argument raises while the
+  script executes and arrives as an ordinary `script_error` with
+  `details.line`, exactly like a malformed `PARAMS`.
+- `agentcad/kernel/handlers/specs.py` — the worker pack: `spec_declare` (exec
+  the module, read `SPECS`, **never build**), `spec_eval` (build through the
+  shape LRU, then evaluate the shape tier against the built part and its
+  metrics, predicates included) and `clearance` — the one genuinely new
+  geometry op, `BRepExtrema_DistShapeShape` over two world-placed items,
+  measured through the conservative `analysis(p)` envelope so a reported gap
+  is never larger than the real one.
+- `agentcad/core/specs.py` — `SpecRunner`, the orchestration, `service.specs`.
+
+**Three tiers, so cost lands where it belongs.** Tier 1 (shape: `valid`,
+`mass`, `volume`, `bbox`, `wall`, `that`) runs on **every rebuild**, as one
+`spec_eval` with `affinity=part_id` onto the worker that just built the part.
+Tier 2 (assembly: `interference_free`, `clearance`, `stackup`) and tier 3
+(`fem_static`, 600 s budget) are **deferred** — reported at rebuild time as
+`skip` with `reason: "deferred"`, evaluated by `run_specs` and by the gate.
+A failing check never fails a rebuild: geometry lands, `ok` stays `true`.
+
+**Zero cost when nothing is declared.** `declares_specs(script)` is an
+`ast.parse` presence scan for a module-level `SPECS` binding, memoized by
+`sha256(script)` and **never executed** — a spec-less part reaches no kernel
+call at all, and its rebuild payload carries `specs: null` ("none declared",
+which is not "not evaluated").
+
+**Caching rides the existing content hash.** Tier-1 results are stored in
+`.cache/<cache_key>.specs.json` beside the existing `.metrics.json` (atomic
+write, versioned, a corrupt or stale sidecar is discarded and recomputed,
+never raised); the assembly tier gets `.cache/<project_key>.projspecs.json`
+keyed on the `specs.py` text plus every instance's id, part cache key and
+resolved transform. Because `SPECS` lives *in the script text*, the existing
+cache key already covers it — editing a spec invalidates the sidecar for free,
+at the cost of one kernel rebuild of geometry that did not change (deliberate:
+a second content signature that split geometry identity from spec identity
+could serve a stale mesh). Only `pass`/`fail` rows are cached — a `skip` can
+be machine-specific and an `error` is usually transient.
+
+**The proposal gate is one appended provider.** `tools_specs.install_specs_gate`
+appends a closure named `specs` to PRD-002's `service.gate_providers`; it
+evaluates the proposal's **source branch** under `branches.pinned(...)`,
+re-reads the head afterwards (a head that moved is `pending`, never a verdict
+wearing a commit it did not measure), and is bounded by `GATE_BUDGET_S = 30`.
+It is **fail-closed**: failed, errored *or unevaluated* is red, and
+`allow_invalid` does not waive it. Reverting the enforcement is deleting that
+one call — `proposals.py`, `merge.py` and `packet.py` are untouched by the
+feature.
+
+**Trust.** Both a part script's `SPECS` and a project's `specs.py` — including
+`check_that` predicates — execute **inside the confined kernel worker**, never
+in the server process, under exactly the same sandbox as any part script (see
+[Trust model](#trust-model)). A predicate's callable never crosses the JSON-RPC
+boundary: it is reported to the service as `"predicate": true`.
 
 ## Anatomy of one rebuild
 
@@ -378,7 +445,11 @@ export.
 
 A local, single-user engineering tool. Part scripts execute with user
 privileges inside the worker subprocess — the same trust model as running any
-code an agent writes in your working directory. On macOS the worker is
+code an agent writes in your working directory. **Design specs change nothing
+here**: a part's `SPECS`, a project's `specs.py` and every `check_that`
+predicate run in that same confined worker and never in the server process.
+What is new is only that a *project-level* file now executes too, under
+identical confinement. On macOS the worker is
 additionally confined by a seatbelt profile (`agentcad/kernel/sandbox.py`,
 via `/usr/bin/sandbox-exec`): deny-by-default, global read, writes allowed
 only inside the project roots (projects dir, registered examples,

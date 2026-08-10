@@ -42,6 +42,35 @@ so raising `flange_t` re-seats the flange automatically and the two
 gasket clearances live in one place (the seats) rather than being baked
 into every transform.
 
+## Design specs — the intent, in code
+
+The stated requirements are not in this README only; they are executable
+declarations the kernel re-checks on every rebuild:
+
+- `parts/nozzle.py` — `SPECS` carries `check_valid`, a `check_wall` minimum
+  (ENG-014), the chamber `check_mass` budget of 1200 g (SYS-042, against
+  1078 g as shipped) and a `check_that` fairing-envelope predicate.
+- `parts/flange.py` — a `check_wall` named `bolt_circle_ligament` (INT-003):
+  the bolt circle must keep real material to both the bore and the rim. The
+  build *clamps* `bolt_circle_d` between them; the spec *measures* the result.
+- `specs.py` — the assembly intent (INT-003): `check_interference_free`, plus
+  the two gasket gaps as `check_clearance` pairs (flange-to-barrel,
+  injector-plate-to-rim).
+- `parts/injector_plate.py` deliberately declares **nothing** — a spec-less
+  part costs zero extra kernel work and shows no chips.
+
+`run_specs {"project": "rocketry"}` is green as shipped. Drag `wall` from
+3.0 mm down to 2.0 mm and `nozzle:wall_min` goes red with its measured value
+and the thin point's location — while the geometry still rebuilds, because a
+failing spec is signal, not an error.
+
+**One honest caveat, and it is the reason both wall checks pin `grid=4`:**
+`check_wall` samples a UV grid per face and casts along the inward face
+normal, so it finds the chamfered exit lip (0.2 × `wall` here) rather than the
+barrel — at the shipped 3.0 mm wall it measures 1.02 mm. The limits above are
+therefore stated in *measured* terms, taken from a real measurement. A finer
+grid finds different (thinner) points; changing `grid` changes the number.
+
 ## How an agent iterates on this project
 
 A typical loop: call `set_params` on `nozzle` to raise `expansion_ratio`
@@ -53,3 +82,9 @@ the agent can bisect toward a target (e.g. "keep nozzle mass under 2 kg
 while maximizing expansion ratio, then thin `wall` until mass fits") in a
 handful of tool calls, letting the kernel's validity and interference
 checks referee each step.
+
+With the specs above, that loop gains a termination condition: every
+`set_params` result carries a `specs` block, so "thin `wall` until mass fits"
+stops being a judgement call — thin it until `mass_max` is green and
+`wall_min` still is, then cite the green `run_specs` report as the evidence
+that the change met the requirements it was asked to meet.

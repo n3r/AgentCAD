@@ -11,6 +11,8 @@ import math
 
 from build123d import *
 
+from agentcad.toolkit.specs import check_mass, check_that, check_valid, check_wall
+
 PARAMS = {
     "chamber_d": {"default": 80.0, "min": 40.0, "max": 200.0, "unit": "mm",
                   "description": "Combustion chamber inner diameter"},
@@ -25,6 +27,29 @@ PARAMS = {
 }
 
 DIV_HALF_ANGLE_DEG = 15.0  # conical diverging section half-angle
+
+# Design intent, executable: every rebuild evaluates these and reports
+# pass/fail beside the metrics (a failing spec never fails the rebuild).
+# ENG-014 is the wall requirement, SYS-042 the vehicle mass/envelope budget;
+# the strings are opaque ids we store and group by, never resolve.
+#
+# ``check_wall`` is a SAMPLED ray cast along the inward face normal, not a
+# medial-axis measurement, and the thinnest sampled point on this part is the
+# chamfered exit lip (``0.2 * wall`` by construction), not the barrel. So the
+# limit is stated in MEASURED terms: at the shipped ``wall = 3.0`` the grid-4
+# sampler reports 1.02 mm and the measurement tracks ``wall`` almost linearly,
+# so the 0.8 mm floor below is ENG-014's ~2.35 mm barrel wall. ``grid`` is
+# pinned deliberately — changing it changes the measurement, and the default
+# grid of 8 lands on the lip chamfer and jitters. See "Design specs" in
+# docs/part-authoring.md.
+SPECS = [
+    check_valid(requirement="ENG-014"),
+    check_wall(min_mm=0.8, grid=4, requirement="ENG-014"),
+    check_mass(max_g=1200.0, requirement="SYS-042"),
+    check_that(lambda part, metrics:
+               metrics["bbox"]["max"][2] - metrics["bbox"]["min"][2] <= 260.0,
+               name="fits_fairing", requirement="SYS-042"),
+]
 
 
 def build(p):

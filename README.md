@@ -75,7 +75,18 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   log, and merging only happens through the gate: one non-author approval by
   default, plus PRD-001's kernel validation, with any override recorded.
 
-The agent tool surface is now **60 tools** (was 17; 63 with the `[fem]`
+- **Executable design specs.** Design intent lives in the model as code: a
+  `SPECS` list in a part script (`check_wall(min_mm=2.5, requirement="ENG-014")`,
+  `check_mass(max_g=120)`, arbitrary predicates) and a project `specs.py` for
+  assembly intent (clearances, interference, tolerance stack-ups). Every
+  rebuild evaluates them and reports pass/fail/skip beside the metrics — a
+  failing spec never blocks the edit, it just turns the inspector chip red —
+  `run_specs` gives the full report grouped by requirement id, and a proposal
+  whose specs are red (or were never evaluated) **cannot be merged**. TDD for
+  hardware: state the budget once, and every later change is refereed against
+  it.
+
+The agent tool surface is now **64 tools** (was 17; 67 with the `[fem]`
 extra), and multi-part rebuilds fan out across a small pool of warm kernel
 workers. v3 added typed parameters, per-solid semantics, sheet metal with
 flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,
@@ -97,7 +108,9 @@ make run       # starts the server and opens the UI at http://127.0.0.1:8630
 
 Five example projects are bundled and appear in the project switcher:
 
-- **rocketry** — a liquid-engine thrust chamber (nozzle, injector plate, flange)
+- **rocketry** — a liquid-engine thrust chamber (nozzle, injector plate,
+  flange), shipping real design specs: a wall minimum, a mass budget, a
+  bolt-circle ligament and the assembly gaps
 - **construction** — a steel truss gusset node with bolt patterns
 - **prototyping** — a snap-fit electronics enclosure
 - **fasteners** — an M8 bolted joint with real ISO threads

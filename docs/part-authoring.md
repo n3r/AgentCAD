@@ -5,11 +5,12 @@ The base contract needs no AgentCAD imports — such a script is portable and
 runs anywhere build123d does. AgentCAD executes it in the kernel worker and
 renders, measures, and exports what `build(p)` returns.
 
-Two *optional* extensions build on that contract: the
+Three *optional* extensions build on that contract: the
 [part-authoring toolkit](#the-part-authoring-toolkit) (`safe_fillet`,
-`safe_shell`, `safe_bool`, the sketch solver, threads) and the
+`safe_shell`, `safe_bool`, the sketch solver, threads), the
 [`connectors(p, part)`](#declaring-connectors-for-mates) hook for assembly
-mates. Both are backward-compatible — a script that uses neither behaves
+mates, and a [`SPECS`](#design-specs-specs) list of executable design
+assertions. All are backward-compatible — a script that uses neither behaves
 exactly as before — but a script that imports the toolkit is **no longer
 plain-build123d portable**: `from agentcad.toolkit import …` requires the
 `agentcad` package on the path (it is present in the app venv, so scripts run
@@ -317,6 +318,97 @@ def connectors(p, part) -> dict:
   anchor connector carries the degree of freedom that `set_mate`'s
   `angle_deg`/`offset_mm` drive. The service resolves mate chains to concrete
   transforms at assembly read (topological order; cycles are rejected).
+
+## Design specs (SPECS)
+
+A part script may declare **design intent as executable assertions** — a
+module-level `SPECS` list beside `PARAMS`, built from pure-data constructors.
+Every rebuild evaluates them and reports pass/fail beside the metrics; a
+failing spec never fails the rebuild.
+
+```python
+from agentcad.toolkit.specs import check_mass, check_that, check_wall
+
+SPECS = [
+    check_wall(min_mm=2.5, requirement="ENG-014"),
+    check_mass(max_g=120.0, requirement="SYS-042"),
+    check_that(lambda part, metrics:
+               metrics["bbox"]["max"][2] - metrics["bbox"]["min"][2] <= 80.0,
+               name="fits_fairing", requirement="SYS-042"),
+]
+```
+
+**The vocabulary is ten constructors**, seven part-scope and three
+project-scope. Nine reuse a measurement the kernel already had; a constructor
+lands only when its measurement exists (`clearance` was the one new one).
+
+| Part scope (in `parts/<id>.py`) | Asserts |
+|---|---|
+| `check_valid()` | the part builds into at least one valid solid |
+| `check_mass(min_g=None, max_g=None)` | mass budget in grams (material-dependent by design) |
+| `check_volume(min_mm3=None, max_mm3=None)` | the solids-sum volume |
+| `check_bbox(within_mm)` | the bounding-box size fits — a scalar or `[x, y, z]` |
+| `check_wall(min_mm, grid=8)` | minimum wall thickness (see the caveat below) |
+| `check_that(fn, name)` | any predicate `fn(part, metrics) -> bool` over the built part |
+| `check_fem_static(fixed_face, load_face, load_N, max_vm_mpa=…, max_disp_mm=…)` | a linear-static FEM budget |
+
+| Project scope (in a root `specs.py`) | Asserts |
+|---|---|
+| `check_interference_free(min_volume_mm3=0.001)` | no two placed instances overlap |
+| `check_clearance(a, b, min_mm)` | minimum distance between two placed instances |
+| `check_stackup(from_instance, to_instance, axis, within)` | the 1-D worst-case tolerance stack-up (PMI dims) along a mate chain |
+
+Every constructor takes `name=` (a default is derived: `wall_min`, `mass_max`,
+`clearance_<a>_<b>`, …; a name may not contain `:`) and `requirement=` — an
+opaque id or URL (`"SYS-042"`, a link) that we store and group by and never
+parse or resolve.
+
+**Part scope vs project scope.** Anything measurable from one built part goes
+in that part's `SPECS`; anything that needs the *placed assembly* goes in the
+project's root `specs.py`, which is an ordinary module with its own `SPECS`
+list and no `PARAMS`/`build`. Both are tracked files, so branching, diffing,
+merging, restore and undo apply to intent exactly as they do to geometry —
+there is no spec database. Write `specs.py` with `set_project_specs` (or just
+edit the file). A project-scope check found in a part script (or vice versa)
+is reported as `skip`/`unsupported_scope` — visible, never silently dropped.
+
+**Constructors validate eagerly, and that is the error contract.** `SPECS` is
+built while the module executes, so `check_wall(min_mm="thick")` raises *there*
+and surfaces as a `script_error` with `details.line`, byte-identically to a
+malformed `PARAMS`. There is no new error type: bad arguments are script
+errors, and everything about a *check* — pass, fail, skip, error — is payload.
+
+**What a rebuild evaluates.** The shape tier only (`valid`, `mass`, `volume`,
+`bbox`, `wall`, `that`). Assembly-scope and FEM checks are reported there as
+`skip` with `reason: "deferred"` and are evaluated by `run_specs` and by the
+proposal gate — a 600 s solve inside a slider drag is not a design tool.
+`check_fem_static` declares cleanly on a machine with no `[fem]` extra and
+evaluates to `skip`/`fem_extra_missing` there; skips are data, never hidden.
+
+**Two gotchas worth the ink:**
+
+- **`check_wall` is a sampled ray cast, not a medial-axis measurement.** It
+  samples a `grid × grid` UV grid per face and casts along the inward face
+  normal, so it over-estimates on non-parallel walls, can miss a feature finer
+  than the sample spacing, and *will* find chamfered edges and fillet runouts
+  that are genuinely thinner than the nominal wall. The measured value
+  therefore is not the wall parameter: on `examples/rocketry`'s nozzle a 3.0 mm
+  wall measures 1.02 mm at `grid=4`, because the thinnest sampled point is the
+  chamfered exit lip. **Pick the limit from a measurement** (`analyze_part
+  {kind: "wall"}` or one `run_specs`), and **pin `grid`** — changing it changes
+  the measurement, and cost is quadratic in it (60 ms on that nozzle at the
+  default 8, 2.4 s on the heaviest lofted part in `examples/engine`).
+- **`check_fem_static`'s faces are selectors, not indices**:
+  `{"axis": "x"|"y"|"z", "side": "min"|"max"}`, the same shape `fem_static`
+  takes. At least one of `max_vm_mpa` / `max_disp_mm` is required — a check
+  with no limit can neither pass nor fail.
+
+`"spec": 1` is the declaration marker *and* the format version: a dict without
+it is not a spec, and a future format bump is a version change, not a new key.
+`examples/rocketry` ships the whole loop — a nozzle wall minimum and mass
+budget (`parts/nozzle.py`), a flange bolt-circle ligament (`parts/flange.py`)
+and the assembly gaps (`specs.py`), with `injector_plate.py` deliberately
+declaring nothing.
 
 ## Tolerances and GD&T (PMI)
 

@@ -223,6 +223,24 @@ Controls are generated from the script's `PARAMS` spec:
 - A part with no `PARAMS` shows a note telling you to define one in the
   script.
 
+**Design-spec chips.** Under the parameter warnings, one chip per design spec
+the script declares (`SPECS` — see
+[part-authoring.md](part-authoring.md#design-specs-specs)), coloured by status:
+green **pass**, red **fail**, red **error** (the check itself broke, e.g. a
+predicate that raised), grey **skip** (it could not be measured here — a
+deferred assembly check, a missing `[fem]` extra). Hover a chip for the
+measurement: `2 mm vs min 2.5 mm · ENG-014 · min wall 2 mm is below the 2.5 mm
+minimum`. They update live on every rebuild, so dragging the `wall` slider
+below its minimum turns the chip red as the geometry lands — **a failing spec
+never blocks the edit**; it is information until a proposal tries to merge.
+A red strip adds one summary line (`1 failing, 1 errored of 6 design specs`);
+a part that declares no specs shows nothing at all (no header, no empty note).
+
+Project-scope specs (clearances, interference, stack-ups) live in the
+project's root `specs.py`. There is no panel for them yet — edit the file
+directly, or through `set_project_specs`, and read the verdicts with
+`run_specs`; a proposal shows them in its `specs` gate.
+
 ### Code
 
 The part's script in a CodeMirror editor (Python highlighting, line
@@ -533,10 +551,11 @@ moves.
   **green for added** — with a legend in the viewport corner and a **Clear**
   action. The overlay is drawn over the target build and disappears on a part
   switch or a rebuild.
-- **Checks** — the merge gates (state, approvals, kernel validation, and the
-  spec/CI slots) with pass/fail/pending/skipped chips, the reviews with their
-  verdicts, and — after a merge the kernel blocked — the full validation report
-  with a **Merge anyway (allow_invalid)** button.
+- **Checks** — the merge gates (state, approvals, kernel validation, the
+  **design specs** of the source branch, and the CI slot) with
+  pass/fail/pending/skipped chips, the reviews with their verdicts, and —
+  after a merge the kernel blocked — the full validation report with a
+  **Merge anyway (allow_invalid)** button.
 - **Audit** — the append-only log: sequence, timestamp, actor and whether it
   was a human or an agent, action, details. It cannot be edited from anywhere.
 
@@ -552,8 +571,16 @@ there is.
 author's**. Approving your own proposal never satisfies that, which is what
 makes the flow meaningful when the author is an agent. **Merge anyway
 (allow_invalid)** overrides the *kernel validation* gate only — never the
-approvals policy — and is recorded in the audit log and the merge commit
-message.
+approvals policy and never the design-spec gate — and is recorded in the audit
+log and the merge commit message.
+
+**The design-spec gate is fail-closed.** It evaluates the source branch's
+declared specs, and it is red when any of them fails, errors, *or could not be
+evaluated at all* — an unmeasured spec is not evidence of green. The gate's
+summary names the failing checks (or, when nothing could be measured, tells you
+to run `run_specs` on that branch). A proposal that edits `specs.py` rather
+than the geometry is flagged there too, since the packet's part rows cannot
+show it.
 
 **Conflicts.** If the merge conflicts, the proposals modal hands off to the
 usual conflict view on a staged merge; resolve it there. That merge is **held
@@ -589,6 +616,14 @@ A five-minute tour: open **rocketry**, select `nozzle`, drag
 `expansion_ratio` and watch the bell and the mass respond; open the Code
 tab to see how the profile is a revolved sketch; click **Assembly** and
 pick bodies; Export → Assembly → STEP.
+
+**rocketry also ships design specs**, so it is the fastest way to see them
+work: the nozzle carries a wall minimum and a mass budget, the flange a
+bolt-circle ligament check, and the project's `specs.py` the assembly gaps.
+Select `nozzle` and drag `wall` from 3 mm down to 2 mm — the `wall_min` chip
+goes red with the measured value in its tooltip, and the geometry still
+rebuilds. Drag it back and it goes green. `injector_plate` declares nothing,
+so it shows no chips at all.
 
 The examples are working projects, not demos behind glass — they live in
 the repo's `examples/` directory and are registered by path, so parameter

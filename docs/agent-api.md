@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 60 tools (63 with the
+Agents drive AgentCAD through a single tool surface — 64 tools (67 with the
 `[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -26,9 +26,10 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
   carry `details.traceback` and `details.line`.
 - Mutating tools return the post-state you need next (metrics, warnings,
   status), so a create → inspect → fix loop converges in few turns.
-- Rebuild results have `{"ok": true, "metrics", "warnings"}` or
+- Rebuild results have `{"ok": true, "metrics", "warnings", "specs"}` or
   `{"ok": false, "error", "hint"}`. On failure the previous good geometry is
-  kept.
+  kept. `specs` is the design-spec verdict for that part (below) — `null` when
+  the part declares none, and absent entirely on a failed build.
 - Units: mm, grams, degrees. Instance rotations are intrinsic XYZ Euler.
 - One error type is **returned rather than raised**: `merge_conflict`
   (`merge_branch` / `resolve_merge`). It arrives as an ordinary
@@ -53,7 +54,7 @@ of truth, and it omits the FEM tools unless the `[fem]` extra is installed.
 | `open_project` | **path** | Opens an existing project directory (e.g. a bundled example) by absolute path. |
 | `get_project` | **project** | Manifest: parts (with build state), assembly instances, and a `materials` map (`id → {label, density_g_cm3}`). |
 | `create_part` | **project, part_id**, label, script, material | Part detail with metrics (default template if no `script`; `material` defaults to `al6061`). |
-| `get_part` | **project, part_id** | Script, `params_spec`, current params, status (state/error/warnings), metrics, plus `kind` (`script`\|`reference`) and `source`. For reference parts `script`/`params_spec` are `null` and `source` is the imported file. |
+| `get_part` | **project, part_id** | Script, `params_spec`, current params, status (state/error/warnings), metrics, `specs` (the part's design-spec verdict, from cache — `null` when it declares none, and absent when the part does not build), plus `kind` (`script`\|`reference`) and `source`. For reference parts `script`/`params_spec` are `null` and `source` is the imported file. |
 | `update_part_script` | **project, part_id**, script, label, material | Rebuild result. On failure: traceback + failing line + hint; previous geometry kept. |
 | `set_params` | **project, part_id, values** | Rebuild result. Values (numbers, booleans, enum choices, or strings, per each param's `type` in `params_spec`) merge with existing overrides; numeric values clamp to min/max with warnings, while a wrong-typed value or non-member enum choice is rejected. Unknown names are rejected before anything is written, and a `null` value removes an override. |
 | `delete_part` | **project, part_id** | `{deleted}` — fails with a conflict while assembly instances reference the part. |
@@ -128,6 +129,74 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 | `get_history` | **project** | Undoable/redoable action labels, newest first, plus `available` (false when git is missing). The full durable snapshot log with commit ids is `project_history`. |
 | `render_view` | **project**, part_id, view, width, height | Server-side shaded orthographic render of built geometry so the agent can *see* the shape. `part_id` renders one part; omit it to render the whole placed assembly (instance transforms and colors honored; unbuildable instances are listed in `skipped`). `view` is `iso` (default), `front`, `top` or `right`; `width`/`height` are 64..2048 px (default 800×600). Writes `exports/renders/<part|assembly>_<view>.png` and returns `{path, width, height, view, png_base64}`; over MCP and in chat the PNG arrives as actual image content. |
 | `analyze_part` | **project, part_id, kind**, plane, axis, min_required | `kind=section` (cross-section area on `plane` XY\|XZ\|YZ), `wall` (min wall thickness; with `min_required` it adds an `ok` flag), `inertia` (mass-properties tensor + centre of mass), `projected_area` (silhouette area along `axis` X\|Y\|Z), `curvature` (per-face gaussian K in 1/mm² and mean H in 1/mm sampled on an 8×8 UV grid: `faces[]` with min/max/mean per face, `worst_gaussian_abs`, `n_faces`, `sampled_points`; H's sign is orientation-dependent — compare magnitudes; a true G2 blend shows no jump in K/H across the seam). Script parts only. |
+
+### Design specs
+
+Design intent as executable assertions over built geometry: a module-level
+`SPECS` list in a part script (part scope) and in a root `specs.py` (project
+scope), built from `agentcad.toolkit.specs`'s ten `check_*` constructors. Specs
+are **code in the tree**, so branching, diffing, merging, restore and undo come
+from PRD-001 for free — there is no spec database. Authoring is documented in
+[part-authoring.md](part-authoring.md#design-specs-specs); this section is the
+tool surface.
+
+Five rules govern every payload here:
+
+- **A failing spec is data, never an error.** It never fails a rebuild: the
+  geometry lands, `ok` stays `true`, and the failure is signal. Nothing in this
+  section raises for a red check.
+- **Four statuses, and they are not interchangeable.** `pass`/`fail` were
+  *measured* and carry `measured`, `limit` (a dict, e.g. `{"min_mm": 2.5}`),
+  `unit` and a message; `skip` is a named structural inability to measure and
+  **always** carries a `reason` (`fem_extra_missing` | `mesh_only` | `deferred`
+  | `unsupported_scope` | `no_instances`) and a `hint` — a skip is not a
+  failure; `error` means the check itself broke (a predicate raised, an
+  instance id no longer exists), i.e. *we do not know*, which is not *it is
+  fine*.
+- **A rebuild evaluates the shape tier only** (`valid`, `mass`, `volume`,
+  `bbox`, `wall`, `that`). The assembly tier (`interference_free`,
+  `clearance`, `stackup`) and the expensive tier (`fem_static`) come back
+  `skip`/`deferred` there — a 600 s solve inside a slider drag is not "without
+  friction". `run_specs` evaluates all three.
+- **Requirement strings are opaque.** We store and group by them; we never
+  parse or resolve them. A requirement with zero checks does not exist.
+- **Results are cached under the same content hash as the mesh** (`SPECS` lives
+  in the script, so editing a spec invalidates it for free), so re-running
+  after no change costs no kernel work.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `run_specs` | **project**, part_id, ref | Evaluate and report — all three tiers (`part_id` narrows to one part and skips the project scope). `{project, ref, generated, status: green\|red\|skip, summary: {passed, failed, skipped, errors, total}, checks: [{id, name, kind, scope, part, status, measured, limit, unit, requirement, location, message, details, reason?, hint?}], parts: {<id>: {status, summary, cached, checks: [id]}}, project_checks, requirements: {<req>: {status, checks: [id]}}, declared, warnings, errors}`. `id` is `"<part>:<name>"` or `"project:<name>"` and every section joins to `checks` by it; `location` is a world point where the measurement yields one (the wall check's thin point, the clearance witness point). `status` is `red` when anything failed **or errored**, `green` when nothing did (skips are allowed and named), `skip` when nothing was declared at all. `ref` evaluates another **branch**'s state without switching yours — a tag is a `validation_error` (a tag must never answer for a branch), and a `ref` on a project with no git is a `validation_error` naming git. |
+| `list_specs` | **project**, part_id | Declared intent with **no evaluation and no build** — it works on a project whose parts have never been built and on a part whose script does not build at all. `{project, declared, parts: {<id>: {specs: [<declaration>]}}, project_specs: {path, exists, specs}, requirements: {<req>: [id]}, errors, warnings}`. A declaration is the constructor's own dict — `{spec, kind, scope, name, limit, requirement, options}` — with a `check_that` predicate reported as `"predicate": true` (the callable never leaves the kernel worker). A file that will not execute is an `errors[]` entry, so one broken `specs.py` never hides the part specs. |
+| `get_project_specs` | **project** | `{path, exists, script, declared, specs, declaration_error, warnings}`. A project with no `specs.py` answers `{"script": null, "specs": []}` — not a 404. `declaration_error` is the script error when the file will not execute: reported, not raised, so you can read a broken file in order to fix it. |
+| `set_project_specs` | **project, script** | Writes `specs.py` and returns the same shape as post-state. The file is written **unconditionally** and reported afterwards — a broken script is saved and its error returned, because you must be able to save one in order to fix it (the `update_part_script` rule). `""` deletes the file. Refused with a `conflict_error` under another client's turn lock; the write is snapshotted into git like any other edit. |
+
+**Part scope rides the rebuild.** `update_part_script`, `set_params` and
+`set_solid_materials` — and `get_part` — carry
+`specs: {status, summary: {passed, failed, skipped, errors, total}, checks,
+requirements, cached, warnings}` for that part, or `null` when the part
+declares none ("none declared" is not "not evaluated"). A failed build carries
+no `specs` key at all. This is the loop an agent iterates in: `set_params` →
+read `specs` → adjust → green.
+
+**The proposal gate (fail-closed).** A proposal's `specs` gate is this same
+evaluation over its **source branch**, and it is a hard block: `proposal_merge`
+raises a `conflict_error` naming `specs` when the gate is red, before anything
+is merged — and a declared check that could not be evaluated at all (a kernel
+error, a source branch that will not build, an evaluation that blew the 30 s
+gate budget) is *also* red, because an unmeasured spec is not evidence of
+green. **`allow_invalid` does not waive it**: that flag is about the kernel's
+verdict on geometry and nothing else. The gate's `details` carries
+`{status, summary, failures, skips, errors, ref, source_head,
+specs_py_changed, reason}` — `specs_py_changed` flags a proposal that edits the
+*spec* rather than the geometry, which the review packet's part rows cannot
+show. Run `run_specs {project, ref: "<source>"}` to see and fix what the gate
+is red about.
+
+**Routes** (all under `/api`): `GET /projects/{proj}/specs?part_id=` →
+`list_specs`, `POST /projects/{proj}/specs/run` → `run_specs`,
+`GET|PUT /projects/{proj}/specs/file` → `get_project_specs` /
+`set_project_specs`.
 
 ### Branches, versions and merges
 
@@ -206,7 +275,7 @@ get backwards: read the pair like `git merge <source>` — the **target branch i
 |---|---|---|
 | `proposal_create` | **project, source, title**, target, description, draft | `{proposal, gates, packet}`. `target` defaults to the project's **default** branch, not your current one (a proposal is read by other clients). A second *active* proposal for the same pair is a `conflict_error` naming the existing id; an unknown branch is a `notfound_error` (a version tag does not answer for a branch); `source == target` is a `validation_error`. `draft: true` opens it unreviewable until you update it to `open`. |
 | `proposal_list` | **project**, state | `{proposals: [{id, source, target, title, state, author, author_kind, created, updated, reviews, merge_commit}], counts: {<state>: n}}`, oldest id first. |
-| `proposal_get` | **project, id** | `{proposal, gates, audit, packet}`. `gates` is the merge checklist — `[{name, state: pass\|fail\|pending\|skipped, summary, details}]` over `state`, `approvals`, `validation` (pending until the merge runs it), `specs` and `checks` (skipped until PRD-003/PRD-004 install providers). `audit` is the append-only log. `packet` here is only a status summary (`{generated, stale, ok, frozen}`, or `null` before the first view). |
+| `proposal_get` | **project, id** | `{proposal, gates, audit, packet}`. `gates` is the merge checklist — `[{name, state: pass\|fail\|pending\|skipped, summary, details}]` over `state`, `approvals`, `validation` (pending until the merge runs it), `specs` (the fail-closed design-spec gate over the source branch — see [Design specs](#design-specs)) and `checks` (skipped until PRD-004 installs a provider). `audit` is the append-only log. `packet` here is only a status summary (`{generated, stale, ok, frozen}`, or `null` before the first view). |
 | `proposal_update` | **project, id**, title, description, state | Edits the title/description, or moves state: `draft → open`, anything active → `closed`, `closed → open`, `changes_requested → open`. Approving is `proposal_review` and merging is `proposal_merge`; neither can be faked by writing a state — any other move is a `validation_error` carrying `{from, to, allowed}`. |
 | `proposal_packet` | **project, id**, regenerate | The review packet (below). Generated on first view, re-served while both branch heads hold, regenerated when either moved or on `regenerate: true`. A packet frozen by a merge refuses `regenerate` with a `conflict_error`. A **terminal** (merged/closed) proposal is never measured again — a packet built then would describe the branches as they are now, under this proposal's name. Merging freezes the packet, or, when none was ever generated, freezes the *absence* as `{frozen: true, generated: null, ok: false, parts: [], note: "…"}`; a closed proposal keeps whatever it had, and a terminal proposal with no packet at all is a `conflict_error`. |
 | `proposal_render` | **project, id, side**, part, view | One image you can actually look at: `{path, width, height, view, side, part, png_base64}`. `side` is `old` (target) or `new` (source); omit `part` for the whole assembly. Framed by the union of both sides' bounding boxes, so old and new superimpose. Views: `iso`, `front`, `top`, `right`. Every render is **written to `path`** and served from there afterwards, so the path names a file that exists. A **frozen** packet serves only the renders stored with it: any other view is a `conflict_error`, because drawing one now would draw today's branches under the decision's date. |
@@ -273,7 +342,8 @@ walk straight past the gates — only `proposal_merge` completes it, after
 re-evaluating them. A failing kernel validation pass is a `validation_error`
 carrying
 `details.validation`. **`allow_invalid: true` overrides the kernel validation
-gate only** — it never waives the approvals policy — and it is recorded in the
+gate only** — it never waives the approvals policy, and it never waives the
+fail-closed `specs` gate — and it is recorded in the
 audit log, on the proposal and in the merge commit message.
 
 **Attribution.** Every action is stamped `{seq, ts, actor, actor_kind, action,
@@ -361,7 +431,38 @@ export:
 
 → set_params {"project": "bracket_study", "part_id": "bracket",
               "values": {"thickness": 8}}
-← {"ok": true, "metrics": {...}}   # kernel re-validates every change
+← {"ok": true, "metrics": {...}, "specs": null}   # kernel re-validates every
+                                                 # change; no SPECS declared yet
+
+# Write the intent down as code, so it is checked from now on (TDD for
+# hardware: the spec comes first, the geometry converges onto it).
+→ update_part_script {"project": "bracket_study", "part_id": "bracket",
+                      "script": "<same script + from agentcad.toolkit.specs
+                                 import check_mass, check_wall; SPECS = [
+                                 check_wall(min_mm=2.5, requirement='ENG-014'),
+                                 check_mass(max_g=120, requirement='SYS-042')]>"}
+← {"ok": true, "metrics": {...},
+   "specs": {"status": "red",
+             "summary": {"passed": 1, "failed": 1, "skipped": 0,
+                         "errors": 0, "total": 2},
+             "checks": [{"name": "wall_min", "status": "fail",
+                         "measured": 2.1, "limit": {"min_mm": 2.5},
+                         "unit": "mm", "requirement": "ENG-014",
+                         "location": [12.0, -8.0, 3.5],
+                         "message": "min wall 2.1 mm is below the 2.5 mm minimum"},
+                        {"name": "mass_max", "status": "pass",
+                         "measured": 22.7, "limit": {"max_g": 120.0}}]}}
+
+→ set_params {"project": "bracket_study", "part_id": "bracket",
+              "values": {"thickness": 10}}
+← {"ok": true, "metrics": {...},
+   "specs": {"status": "green", "summary": {"passed": 2, "failed": 0, ...}}}
+
+→ run_specs {"project": "bracket_study"}      # all three tiers, on demand
+← {"status": "green", "summary": {"passed": 2, "failed": 0, "skipped": 0,
+   "errors": 0, "total": 2},
+   "requirements": {"ENG-014": {"status": "pass", "checks": ["bracket:wall_min"]},
+                    "SYS-042": {"status": "pass", "checks": ["bracket:mass_max"]}}}
 
 → export_part {"project": "bracket_study", "part_id": "bracket",
                "format": "step"}
@@ -377,6 +478,11 @@ Guidance that makes agents effective here:
   against intent; use `check_interference` after assembly changes.
 - **Errors are data.** `details.line` points into your script;
   `details.traceback` usually names the failing OCCT operation.
+- **Write the budget down as a spec, not in prose.** A stated constraint
+  ("under 120 g", "walls never below 2.5 mm", "0.5 mm to the chamber") belongs
+  in `SPECS`, where every later rebuild re-checks it and the green `run_specs`
+  report is the evidence you cite as done. A red spec is not an error to work
+  around — it is the termination condition you have not reached yet.
 
 ## A v2 example: import a vendor part, measure it, mate it
 

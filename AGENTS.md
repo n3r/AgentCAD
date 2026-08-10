@@ -121,7 +121,9 @@ undo/redo — a mutating pack needs NO per-call hook: publishing
 A part is a plain build123d script defining `PARAMS` (numeric specs with
 `default`, optional `min`/`max`/`unit`/`description`) and `build(p)` returning
 a `Part`/`Solid`/`Compound`. Optional additions: `connectors(p, part)` for
-assembly mates, and `from agentcad.toolkit import …` for robust ops. Full
+assembly mates, `SPECS` for executable design intent
+(`from agentcad.toolkit.specs import check_wall, …`), and
+`from agentcad.toolkit import …` for robust ops. Full
 contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
 
 ## build123d / OCCT gotchas (hard-won — read before touching geometry)
@@ -236,6 +238,56 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   not "no script changed": both are `errors[]` entries with `fatal: true` that
   force `ok: false` (the per-part FR8 degradation is separate and keeps
   `ok: true`).
+
+## Spec gotchas (PRD-003 — read before touching specs, the runner or the gate)
+
+- **Specs are code in the tree, not manifest state** — part scope in
+  `parts/<id>.py`'s `SPECS`, project scope in a root `specs.py`. `git add -A`
+  tracks them, so branching, restore, undo and merge are free. Use
+  `store.path_of` (authored, branch-resolved), never `canonical_path_of`.
+- **A failing spec never fails a rebuild.** Geometry lands, `ok` stays `true`,
+  the failure is signal. `pass`/`fail` (measured), `skip` (a named structural
+  inability, always with a `reason` **and** a `hint`) and `error` (the check
+  itself broke — "we do not know", not "it is fine") are four different facts
+  and must not be collapsed. Nothing about a check is ever an exception.
+- **A rebuild evaluates the shape tier only.** Assembly checks and FEM are
+  deferred and say so (`skip`/`deferred`); `run_specs` evaluates all three
+  tiers. A 600 s solve inside a slider drag is not "without friction".
+- **`SPECS` is in the script, so it is in the cache key** — editing a spec
+  forces one kernel rebuild of a part whose geometry did not change. That is
+  deliberate: splitting geometry identity from spec identity risks serving a
+  stale mesh.
+- **A part that declares nothing is absent, not green.** `specs: null` on a
+  rebuild means "none declared", which is not "not evaluated"; a spec-less part
+  has no row in the report and a requirement with zero checks does not exist.
+  The presence scan is `ast.parse` and **never executes** the script — that is
+  what makes a spec-less project cost nothing.
+- **The `specs` gate is fail-closed.** A declared check that was not evaluated
+  is red, and `allow_invalid` does not waive it (that flag means "override the
+  *kernel's* verdict on geometry", nothing else). Its verdict is about the
+  proposal's SOURCE branch, and the head is re-read afterwards — a moved head
+  is `pending`, never a verdict wearing a commit it did not measure.
+- **Three live name collisions:** `service._spec_cache` already means the
+  PARAMS spec cache, `inspector.js`'s `renderedSpecJson` already means the
+  PARAMS spec JSON, and `packet.py`'s `params_diff` rows already use
+  `"source": "spec"` for the PARAMS declaration. Do not reuse any of them.
+- **`_min_wall` measures along the inward face normal from a UV sample grid** —
+  it over-estimates on non-parallel walls, can miss a feature finer than the
+  sample spacing, and finds chamfers and fillet runouts that are genuinely
+  thinner than the nominal wall (the rocketry nozzle's 3 mm wall measures
+  1.02 mm at `grid=4`). It is a sampled ray cast, not a medial-axis
+  measurement, and must never be described as one. `check_wall`'s `grid` is
+  the knob and is quadratic in cost; **pick a limit from a measurement and pin
+  the grid**, because changing it changes the number.
+- **The runner reads `service.branches` inside its methods, never in
+  `__init__`** — `tools_specs` loads before `tools_versioning` — and
+  `check_stackup` calls `tools_stackup.compute_stackup` directly rather than
+  through the registry, for the same reason.
+- **The rebuild seam is a wrapper, not a `service.py` edit**
+  (`install_rebuild_specs`, idempotent by attribute marker). It wraps
+  `_rebuild` and `get_part` rather than the three rebuild-returning tools,
+  because the browser's `PATCH .../params` route calls `service.set_params`
+  directly and a tool wrapper would miss the UI entirely.
 
 ## Conventions (match these)
 

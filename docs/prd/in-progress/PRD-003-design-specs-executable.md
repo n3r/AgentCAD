@@ -1,6 +1,7 @@
 # PRD-003 — Design specs as executable tests
 
-- **Status:** in progress — design spec and implementation plan approved
+- **Status:** implemented — AC1–AC9 verified (see Verification below); awaiting
+  merge
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
@@ -251,6 +252,113 @@ belongs to PRD-002/PRD-004.
 - AC9. Full suite green (count cited); rebuild latency for spec-less parts
   is unchanged — spec evaluation provably skipped when no `SPECS` exist
   (test).
+
+### Verification (slice 7)
+
+Every criterion above has a named test in `tests/test_prd003_acceptance.py`,
+which walks it end to end through the real stack — tools, the kernel, git and
+the shipped `examples/rocketry` (on a copy) — rather than through the unit
+seams (`tests/test_specs_toolkit.py`, `tests/test_specs_kernel.py`,
+`tests/test_specs.py`, `tests/test_specs_api.py`, `tests/test_specs_gate.py`,
+205 tests between them):
+
+| AC | Proving test |
+|----|---|
+| AC1 | `test_ac1_rocketry_ships_green_specs_and_thinning_turns_red` (rocketry, on a copy: green as shipped across `nozzle:mass_max`, `nozzle:wall_min`, `flange:bolt_circle_ligament` and the two assembly gaps; `set_params {"wall": 2.0}` turns the report red naming `nozzle:wall_min` with measured 0.707 mm vs `{"min_mm": 0.8}` and a non-null location) |
+| AC2 | `test_ac2_failing_spec_still_lands_geometry` (same edit: `ok: true`, the mesh on disk, the failure in `specs`, and the same verdict on `get_part`) |
+| AC3 | `test_ac3_fem_check_skips_without_extra_and_evaluates_with_it` (paired in one test: the skip half is forced on every machine, the evaluation half runs when the extra imports; the suite is green without it) |
+| AC4 | `test_ac4_project_specs_measure_clearance_and_name_interference` (a 0.4 mm gap measured against a 1.0 mm limit; the overlapping pair named in `details.pairs`) |
+| AC5 | `test_ac5_raising_predicate_is_an_error_not_a_crash` (`status: "error"` + traceback, `ok: true`, the sibling check still reported, the worker still answering) |
+| AC6 | `test_ac6_requirements_group_and_list_specs_does_not_build` (`list_specs` issues zero `build` calls; the declared and evaluated requirement maps are asserted equal) |
+| AC7 | `test_ac7_evaluate_specs_green_for_a_good_branch_red_for_a_broken_one` |
+| AC8 | `test_ac8_spec_chips_verified_in_browser` (evidence check over `docs/changelog/0092-spec-chips-ui.md`) |
+| AC9 | `test_ac9_specless_parts_add_no_kernel_work` + the full-suite run cited in `docs/changelog/0093-specs-docs-and-acceptance.md` |
+
+The **browser half of AC8** ("spec chips render and live-update in a real
+browser session on rebuild, zero console errors") was driven for real in a
+headless-Chrome session in slice 6 — a green → red → green `wall_min` chip in
+both themes, screenshots and a clean console recorded in
+`docs/changelog/0092-spec-chips-ui.md` — and the evidence test above fails if
+that record is removed. Re-driving a browser from the test suite is
+deliberately not done (the PRD-001 AC6 / PRD-002 precedent).
+
+**AC7 is verified in its reworded form.** "Green for a tagged good state" is
+not implementable as written: `git rev-parse` searches tags before branches,
+so PRD-001's X1 rule makes every spec ref resolve as a *branch* and a tag a
+`validation_error` — a tag must never answer for a branch. The test asserts
+green for a good branch, red for a branch with a broken budget, and that a tag
+ref raises, which is the decision the codebase actually makes.
+
+### As built — divergences from this document
+
+1. **A structurally malformed `SPECS` is reported as data, not as a failed
+   rebuild.** FR1 holds for the common case for free: constructors validate
+   eagerly, so a bad argument raises during module exec and is already a
+   `script_error` with `details.line`. The residue (`SPECS = "hello"`, a
+   non-constructor dict) is reported as `specs.error` on an
+   otherwise-successful rebuild — failing a build over a broken *assertion*
+   contradicts FR5 and would take away the geometry you need to fix it.
+2. **`metrics["bbox"]` has `min`/`max`, not `size`.** The `check_that` example
+   in Experience should read `max[2] - min[2]` (or use `check_bbox`).
+3. **A check record's `limit` is a dict**, and the record carries `id`,
+   `scope`, `part`, `unit` and `details` beyond FR6's list: two-sided checks
+   have two limits, and a flat list of records needs a join key
+   (`<part>:<name>` / `project:<name>`).
+4. **No new event.** FR13's "live on rebuild events" is met by the existing
+   `rebuild_finished` → `refreshPartDetail` → `get_part` path, which now
+   carries `specs`.
+5. **Four tools, not two:** `set_project_specs` and `get_project_specs` are
+   additive — FR2 gives `specs.py` no writer, and the agent path ("the agent
+   writes the spec first") is unreachable without one. There is **no
+   `evaluate_specs` tool**: FR11 is a service seam (`SpecRunner.evaluate_specs`)
+   consumed by the gate, exactly as written, and `run_specs {ref}` is its
+   agent-facing form.
+6. **Evaluation is tiered: a rebuild runs the shape tier only.** Assembly and
+   FEM tiers are deferred to `run_specs`/`evaluate_specs` and reported at
+   rebuild time as `skip`/`deferred` — a 600 s solve inside a slider drag is
+   not "without friction".
+7. **The proposal gate is fail-closed and evaluates the SOURCE branch.** A
+   declared check that was not evaluated is `fail`, not `pending`; the gate
+   answers "is the proposed state green", not "will the merge be green" (that
+   is PRD-004). `allow_invalid` does not waive it.
+8. **Project-scope `check_that` is not supported in v1** — there is no single
+   built shape to hand a predicate. Both directions of a scope mismatch (a
+   part-scope check in `specs.py`, a project-scope check in a part script) are
+   reported as `skip`/`unsupported_scope`: counted, named, never dropped.
+9. **`clearance` is a method on a new kernel pack**, not a `kind` on `analyze`:
+   `analyze` takes one script and applies no world transform, so a
+   two-placed-shapes measurement is a different signature.
+10. **The MVP UI is the chip strip only.** The requirement-grouped project
+    Specs panel and the viewport thin-point marker stay Phase 2 (as the MVP
+    section says); FR13's requirement grouping ships in the `run_specs` report.
+11. **The pack does not self-disable without git.** Unlike proposals and
+    versioning, specs are a property of the working tree; only `ref=` and the
+    gate need branches, and those raise a `validation_error` naming git.
+12. **A part that declares nothing is absent from the report**, and its rebuild
+    payload carries `specs: null` ("none declared", which is not "not
+    evaluated"); a *failed* build carries no `specs` key at all. Calling a part
+    with no stated intent "green" would assert something we did not measure.
+13. **The declaration-failure field is `declaration_error`, not `error`.** A
+    top-level `error` key is the tool-envelope failure marker everywhere in
+    this repo, and a *reported* failure must not wear that name.
+14. **`check_fem_static`'s faces are axis/side selectors**
+    (`{"axis": "z", "side": "max"}`, the shape `fem_static` already takes), and
+    at least one of `max_vm_mpa` / `max_disp_mm` is required — a check with no
+    limit can neither pass nor fail.
+15. **AC1's "nozzle wall minimum" ships in *measured* terms.** `check_wall` is
+    a sampled ray cast, so on the rocketry nozzle it finds the chamfered exit
+    lip (0.2 × `wall`) rather than the barrel: 1.02 mm measured at `grid=4` for
+    a 3.0 mm wall. The shipped limit (`min_mm=0.8`, `grid` pinned) is that
+    measurement's expression of ENG-014, not the nominal wall — and the same
+    caveat is why the flange's bolt-circle check is declared at `grid=4`, where
+    it measures the real 6.5 mm ligament. Documented in
+    `docs/part-authoring.md` and `AGENTS.md`; a medial-axis wall measurement
+    would be a new PRD.
+16. **A proposal that weakens a spec still has no packet row.** `packet.py`
+    builds rows only from `parts/*.py`, so the gate carries
+    `details.specs_py_changed` as the flag. A full `specs` section in the
+    packet is a `packet.py` change and remains a named PRD-002-Phase-2 /
+    PRD-008 gap.
 
 ## Risks & open questions
 

@@ -48,6 +48,10 @@ Optional: SOLID_LABELS = ["body", "lid"]  # names a multi-solid Compound's
 solids by index; metrics.solids and set_solid_materials address solids by
 these labels (fallback solid_0, solid_1, ...).
 
+Optional: SPECS = [...]  # executable design intent, checked on every rebuild
+(see DESIGN SPECS below). A failing spec NEVER fails the rebuild -- the
+geometry lands and the failure is reported beside the metrics.
+
 Surfacing: agentcad.toolkit.surfacing.smooth_loft / blend_surface --
 continuity-controlled lofts + G0/G1/G2 face blends; always propagate the
 returned warning. Verify with analyze_part(kind="curvature").
@@ -222,6 +226,43 @@ The flat_pattern tool renders the unfolded blank to SVG (outline + dashed
 bend lines with angle/radius callouts) or DXF (layers OUTLINE and BEND) at
 exports/<part>_flat.<ext>. Duplicate edges, angle 0/180, or flange() before
 base() raise ValueError; read sp.warnings after fold() if fusion fell back.
+
+DESIGN SPECS  (optional; from agentcad.toolkit.specs import ...)
+----------------------------------------------------------------
+Write the design intent down as code and the kernel checks it on every
+rebuild. Declarations are pure data -- no geometry, no measurement here.
+
+    from agentcad.toolkit.specs import check_mass, check_that, check_wall
+
+    SPECS = [
+        check_wall(min_mm=2.5, grid=8, requirement="ENG-014"),
+        check_mass(max_g=120.0, requirement="SYS-042"),
+        check_that(lambda part, metrics:
+                   metrics["bbox"]["max"][2] - metrics["bbox"]["min"][2] <= 80,
+                   name="fits_fairing"),
+    ]
+
+Part scope (in this script):  check_valid() | check_mass(min_g, max_g) |
+check_volume(min_mm3, max_mm3) | check_bbox(within_mm) | check_wall(min_mm,
+grid=8) | check_that(fn, name) | check_fem_static(fixed_face, load_face,
+load_N, max_vm_mpa=, max_disp_mm=)   # faces are {"axis": "z", "side": "max"}
+
+Project scope (in the project's root specs.py, over assembly instance ids):
+check_interference_free() | check_clearance(a, b, min_mm) |
+check_stackup(from_instance, to_instance, axis, within)
+
+Every constructor takes name= (a default is derived: wall_min, mass_max, ...)
+and requirement= -- an opaque id or URL ("SYS-042") that groups checks in the
+run_specs report. Arguments are validated EAGERLY, so a bad limit raises while
+this module executes and comes back as a script error with a line number.
+
+A rebuild evaluates the shape tier only (valid/mass/volume/bbox/wall/that);
+assembly and FEM checks report skip + "deferred" there and are measured by the
+run_specs tool. check_wall is a SAMPLED ray cast along the inward face normal
+-- it finds chamfers and fillet runouts, so the measured minimum is not the
+nominal wall: pick the limit from a measurement and pin grid (cost is
+quadratic in it). Skips carry a reason and a hint and are not failures; an
+"error" status means the check itself broke, which is not "it is fine".
 
 CONNECTORS & MATES  (optional; backward compatible)
 ---------------------------------------------------
