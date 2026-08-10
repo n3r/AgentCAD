@@ -11,7 +11,7 @@ conventions.
 
 **Status model.** A PRD's folder is its status: `prd/pending/` → not
 started · `prd/in-progress/` → in its design/spec/build cycle ·
-`prd/shipped/` → acceptance criteria verified. The index below mirrors the
+`prd/completed/` → acceptance criteria verified and merged. The index below mirrors the
 folders; both move in the same commit. When a feature is picked up it still
 runs the house process (brainstorming → design spec → implementation plan
 under `docs/superpowers/`); the PRD is that process's input.
@@ -64,7 +64,7 @@ part incumbents structurally cannot copy.
 
 | PRD | Feature | Status | Origin | Depends on |
 |---|---|---|---|---|
-| [001](prd/in-progress/PRD-001-branching-version-control.md) | Branching version control — branches, immutable versions, semantic merge with real conflicts, kernel-validated merge gates | in progress (MVP implemented, AC1–AC7 verified) | analysis | — |
+| [001](prd/completed/PRD-001-branching-version-control.md) | Branching version control — branches, immutable versions, semantic merge with real conflicts, kernel-validated merge gates | completed (PR #8, AC1–AC7 verified) | analysis | — |
 | [002](prd/pending/PRD-002-change-proposals-geometric-diff.md) | Change proposals & geometric diff — CAD pull requests with review packets (diffs, metric deltas, renders, 3D add/remove volumes) | pending | analysis | 001 |
 | [003](prd/pending/PRD-003-design-specs-executable.md) | Executable design specs — machine-checkable intent (`check_wall`, `check_mass`, clearances, stack-ups) with requirement traceability | pending | analysis | — |
 | [004](prd/pending/PRD-004-geometry-ci.md) | Geometry CI — `agentcad check` + GitHub Action: rebuild, specs, interference, drawings on every ref/proposal | pending | analysis | 001 · 003 |
@@ -166,5 +166,5 @@ Pick the lowest-numbered unblocked PRD in the active phase unless priorities
 say otherwise. Per feature: move the PRD to `in-progress/`, run
 brainstorming → design spec → implementation plan (`docs/superpowers/`),
 build in vertical slices behind the extension points, verify the PRD's
-acceptance criteria, move to `shipped/`, and update this index — same
+acceptance criteria, move to `completed/`, and update this index — same
 commit, with its changelog entry.

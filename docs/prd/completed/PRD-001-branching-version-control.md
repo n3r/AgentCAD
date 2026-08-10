@@ -1,6 +1,6 @@
 # PRD-001 — Branching version control for projects
 
-- **Status:** implemented — MVP complete, **AC1–AC7 verified** (2026-08-10,
+- **Status:** completed — merged to main in PR #8 (AC1–AC7 verified)
   branch `prd-001-branching-version-control`, slices 1–5). Moves to
   `docs/prd/shipped/` when the branch merges.
 - **Phase:** v4 — collaborative core
