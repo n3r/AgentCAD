@@ -22,6 +22,8 @@ export const state = {
   clientId: null,        // branch_list's `you` — our identity in branch events
   versions: null,        // list_versions payload's versions[]
   merge: null,           // staged merge summary from merge_status, or null
+  proposals: null,       // proposal_list payload {proposals, counts}, or null
+  proposal: null,        // proposal_get payload for the open detail, or null
 };
 
 const listeners = new Map();

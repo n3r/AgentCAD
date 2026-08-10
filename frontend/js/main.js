@@ -14,6 +14,7 @@ import * as sketcher from "./sketcher.js";
 import * as theme from "./theme.js";
 import * as versions from "./versions.js";
 import * as merge from "./merge.js";
+import * as proposals from "./proposals.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 const BRANCH_RE = /^[a-z0-9][a-z0-9_/-]{0,63}$/;
@@ -88,6 +89,7 @@ async function loadProject(name) {
   loadBranchState().then((available) => {
     if (available) merge.checkStaged(); // reopen a merge staged before the reload
   });
+  proposals.refreshCount(); // hides its own button when there are no routes
 
   if (detail.parts.length) {
     await selectPart(detail.parts[0].id);
@@ -624,6 +626,7 @@ function connectWS() {
       chat.resetSending();
       refreshProject();
       loadBranchState();
+      proposals.refreshCount();
     }
     hadConnection = true;
   };
@@ -736,6 +739,11 @@ function handleEvent(ev) {
         toast(`Merged ${where}`);
       }
       refreshProject();
+      return;
+    }
+    case "proposal_changed": {
+      if (ev.project !== state.projectName) return;
+      proposals.handleEvent(ev);
       return;
     }
     case "lock_changed": {
@@ -1000,6 +1008,14 @@ function setBranchLabel(name) {
   if (!label || !btn) return;
   label.textContent = name || "—";
   btn.title = name ? `Branch ${name} — click to switch, merge or tag` : "Current branch";
+}
+
+// The proposals button sits beside the branch switcher and shares its
+// precondition: no git means no branches, no proposal routes and no button
+// (proposals.refreshCount hides it when the list route 404s).
+function setupProposals() {
+  const btn = document.getElementById("proposals-btn");
+  if (btn) btn.addEventListener("click", () => proposals.open());
 }
 
 function setupBranchMenu() {
@@ -1571,9 +1587,11 @@ async function boot() {
   sketcher.init(actions);
   versions.init(actions);
   merge.init(actions);
+  proposals.init(actions);
   setupMenus();
   setupProjectMenu();
   setupBranchMenu();
+  setupProposals();
   setupExportMenu();
   setupImport();
   setupUndo();

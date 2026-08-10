@@ -613,7 +613,10 @@ function showResult(res, source, target) {
   bodyEl.appendChild(host);
 }
 
-function reportBlock(validation) {
+/** The kernel validation report, rendered. Exported so the proposals modal's
+ *  Checks tab shows the SAME block for the same report rather than growing a
+ *  second one that can drift (PRD-002 slice 5). */
+export function reportBlock(validation) {
   const el = document.createElement("div");
   el.className = "conflict-report";
 

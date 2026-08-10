@@ -1355,6 +1355,348 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   overflow-wrap: anywhere;
 }
 
+/* ------------------------------------------------------ proposals modal */
+/* PRD-002. Only existing tokens, so light mode keeps working unchanged. */
+
+#proposals-btn { max-width: 200px; }
+#proposals-btn .branch-glyph { color: var(--dim); font-size: 12px; }
+.tb-badge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-ring);
+  color: var(--accent-bright);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal.wide { width: min(1100px, 100%); }
+
+.prop-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 280px 1fr;
+}
+.prop-list {
+  overflow: auto;
+  border-right: 1px solid var(--hairline);
+  padding: 6px 0;
+}
+.prop-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 8px 8px;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.prop-filter {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  padding: 2px 7px;
+}
+.prop-filter:hover { background: var(--raised); }
+.prop-filter.active {
+  color: var(--accent-bright);
+  border-color: var(--accent-ring);
+  background: var(--accent-soft);
+}
+.prop-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--hairline-soft);
+  padding: 8px 10px;
+  color: var(--text);
+}
+.prop-item:hover { background: var(--raised); }
+.prop-item.active { background: var(--raised); border-left-color: var(--accent); }
+.prop-item-head { display: flex; align-items: center; gap: 6px; }
+.prop-item-title {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prop-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.prop-id { font-family: var(--mono); font-size: 11.5px; color: var(--accent-bright); }
+.prop-dim { font-size: 10.5px; color: var(--dim); font-family: var(--mono); }
+.prop-branches { font-size: 10.5px; color: var(--dim); font-family: var(--mono); }
+
+.prop-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--faint);
+}
+.prop-chip {
+  font-size: 10px;
+  font-family: var(--mono);
+  border-radius: 9px;
+  padding: 1px 7px;
+  border: 1px solid var(--hairline);
+  color: var(--dim);
+}
+.prop-dot.state-open, .prop-chip.state-open {
+  background: var(--accent-soft); border-color: var(--accent-ring); color: var(--accent-bright);
+}
+.prop-dot.state-open { background: var(--accent); }
+.prop-dot.state-approved { background: var(--ok); }
+.prop-chip.state-approved { color: var(--ok); border-color: var(--ok); }
+.prop-dot.state-changes_requested { background: var(--err); }
+.prop-chip.state-changes_requested { color: var(--err-text); border-color: var(--err-ring); }
+.prop-dot.state-merged, .prop-chip.state-merged { color: var(--text); }
+.prop-dot.state-merged { background: var(--dim); }
+.prop-kind {
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--dim);
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+  padding: 1px 6px;
+}
+.prop-kind.human { color: var(--accent-bright); border-color: var(--accent-ring); }
+
+.prop-detail {
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.prop-head { padding: 10px 12px; border-bottom: 1px solid var(--hairline-soft); }
+.prop-head-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.prop-title { font-size: 13px; color: var(--text); }
+.prop-head-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.prop-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 10px;
+}
+.prop-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--hairline);
+  flex: none;
+}
+.prop-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--dim);
+  font-size: 12px;
+  padding: 7px 9px;
+}
+.prop-tab:hover { color: var(--text); }
+.prop-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.prop-pane { padding: 10px 12px 16px; min-width: 0; }
+
+.prop-note { font-size: 11.5px; color: var(--dim); line-height: 1.5; margin: 6px 0; }
+.prop-note.err { color: var(--err-text); }
+.prop-loading { display: flex; align-items: center; gap: 8px; padding: 18px 0; }
+.prop-section { margin-top: 12px; }
+.prop-section h4 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  font-weight: 500;
+  margin: 10px 0 4px;
+}
+.prop-bullets { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.6; }
+.prop-bullets li { overflow-wrap: anywhere; }
+.prop-packet-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.prop-flag {
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--dim);
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+  padding: 1px 6px;
+}
+.prop-flag.stale { color: var(--accent-bright); border-color: var(--accent-ring); }
+
+.prop-part {
+  border: 1px solid var(--hairline-soft);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-top: 10px;
+}
+.prop-part-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.prop-part-name { font-family: var(--mono); font-size: 12px; color: var(--accent-bright); }
+
+.prop-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11.5px;
+  margin-top: 8px;
+  display: block;
+  overflow-x: auto;
+}
+.prop-table th, .prop-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 3px 8px 3px 0;
+  border-bottom: 1px solid var(--hairline-soft);
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+.prop-table th { color: var(--dim); font-weight: 500; }
+
+.prop-renders { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.prop-render {
+  position: relative;
+  width: 320px;
+  max-width: 100%;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--ink);
+}
+.prop-render img { display: block; width: 100%; }
+/* The pair is frame-matched (one camera, one size), so the fade is an exact
+   superimposition — the cheapest possible before/after proof. */
+.prop-render img.prop-render-top {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+.prop-render:hover img.prop-render-top { opacity: 1; }
+.prop-render-label {
+  position: absolute;
+  left: 6px;
+  bottom: 5px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text);
+  background: var(--overlay-strong);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.prop-geom-nums { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+.prop-geom { font-family: var(--mono); font-size: 12px; }
+.prop-geom.removed { color: var(--err-text); }
+.prop-geom.added { color: var(--ok); }
+
+.prop-gate {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.prop-gate-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.prop-gate-name { font-family: var(--mono); font-size: 12px; color: var(--text); }
+.gate-chip {
+  flex: none;
+  min-width: 62px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 10px;
+  border-radius: 9px;
+  padding: 2px 7px;
+  border: 1px solid var(--hairline);
+  color: var(--dim);
+}
+.gate-chip.gate-pass { color: var(--ok); border-color: var(--ok); }
+.gate-chip.gate-fail { color: var(--err-text); border-color: var(--err-ring); background: var(--err-soft); }
+.gate-chip.gate-pending { color: var(--accent-bright); border-color: var(--accent-ring); }
+.prop-blocked {
+  margin-top: 12px;
+  border: 1px solid var(--err-ring);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.prop-form { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.prop-form-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.prop-form-row > label { font-size: 12px; color: var(--dim); min-width: 110px; }
+.prop-form input[type="text"], .prop-form textarea, .prop-form select {
+  flex: 1;
+  min-width: 220px;
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12px;
+  padding: 5px 7px;
+}
+
+/* --- unified diff, plain DOM. One node per line: PRD-008's future anchor. */
+.diff-block {
+  margin-top: 8px;
+  border: 1px solid var(--hairline-soft);
+  border-radius: 6px;
+  background: var(--ink);
+  overflow-x: auto;
+  padding: 4px 0;
+}
+.diff-line {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre;
+  padding: 0 10px;
+  color: var(--code-text);
+}
+.diff-line.diff-add { background: rgba(111, 191, 143, 0.12); color: var(--ok); }
+.diff-line.diff-del { background: var(--err-soft); color: var(--err-text); }
+.diff-line.diff-hunk { color: var(--dim); background: var(--hairline-soft); }
+.diff-line.diff-meta { color: var(--faint); }
+
+/* --- viewport legend for an active geometry-diff overlay */
+#diff-legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--overlay-strong);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--shadow-pop);
+  font-size: 11.5px;
+  color: var(--text);
+}
+#diff-legend-part { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.diff-key { display: inline-flex; align-items: center; gap: 5px; }
+.diff-sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.diff-sw.added { background: var(--ok); }
+.diff-sw.removed { background: var(--err); }
+
 .drawing-view {
   flex: 1;
   min-height: 0;
