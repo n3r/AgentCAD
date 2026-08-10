@@ -142,27 +142,42 @@ agents get backwards: **`ours` = the target branch** (what you merge into),
 | `branch_create` | **project, name**, from | Creates a branch and materializes its working tree at `<project>/.history/trees/<name>/`. Names match `[a-z0-9][a-z0-9_/-]{0,63}`. `from` defaults to *your* current branch and also accepts a tag or commit id. Does **not** switch you. Returns the `branch_list` payload plus `{created}`. |
 | `branch_list` | **project** | `{branches: [{name, head, ts, message, is_default, is_current, checked_out_by: [client…]}], current, default, you}` (`head` is the branch's commit id, `message` its subject; `you` is your client identity). Branches are **per client identity**: two agents can sit on two branches of one project at once, each with its own turn lock and undo stack. |
 | `branch_switch` | **project, name** | Points *your* client at `name` (nobody else moves). O(1) — the tree already exists — and it snapshots the tree you are leaving first, so a switch is always a clean, restorable boundary. Returns `{branch, project}` (the post-switch project state). Publishes `branch_changed`. |
-| `branch_delete` | **project, name** | Deletes the branch and its working tree. `validation_error` for the default branch or a branch any client has checked out. Versions (tags) made on it survive. Returns the `branch_list` payload plus `{deleted}`. |
+| `branch_delete` | **project, name** | Deletes the branch and its working tree. `validation_error` for the default branch, for a branch any client has checked out, and for one whose working tree has uncommitted changes that cannot be snapshotted (the tree is committed first, then removed — `--force` never discards live work). Versions (tags) made on it survive. Returns the `branch_list` payload plus `{deleted}`. |
 | `version_tag` | **project, name**, message | Names the current state of your branch as an immutable version (an annotated git tag): `{tag, commit, versions}`. Re-using a name is a `conflict_error` — versions never move, and there is deliberately no delete tool. Restore one with `project_restore {commit: "<name>"}`. |
 | `list_versions` | **project** | `{versions: [{name, commit, ts, author, message, referrers}]}`, newest first. `referrers` is the forward-compatibility hook for releases (PRD-015). |
-| `merge_branch` | **project, source**, target, allow_invalid | Merges `source` (theirs) into `target` (ours; default: your current branch). Fast-forwards when the target has nothing of its own (`{fast_forward: true}`, no validation pass); merging an ancestor returns `{already_up_to_date: true}`. Otherwise a real three-way merge: part scripts via git's textual merge, `project.json` **always** re-merged key-wise (per part, param, instance, material, PMI section). Conflicts come back as `merge_conflict` with the merge **staged** — nothing outside `.history/agentcad/` is written and no ref moves until you resolve or abort. On success: one merge commit with **two parents**, plus `{commit, parents, conflicts_resolved, validation, project}`. Re-running it on a staged merge whose branches have moved is a `conflict_error` — the recorded resolutions no longer apply, so discard it with `merge_abort` and merge again rather than losing them silently. |
-| `resolve_merge` | **project, choices** | Resolves the staged merge. `choices` maps a conflict's `path` (scripts, e.g. `"parts/flange.py"`) or `key` (manifest, e.g. `"parts.flange.params.bolt_d"`) to `{"take": "ours"\|"theirs"\|"base"}`, or `{"content": "<full file text>"}` for a script, or `{"value": …}` for a manifest key. A `kind: "binary"` conflict (anything under `imports/`) carries `sides: {base\|ours\|theirs: {bytes, sha256} \| null}` instead of text and takes a side only — `content` is a `validation_error`. Taking a side where the file is absent (that branch deleted it) **deletes** it; taking `base` when there is none (both branches added the file) is a `validation_error` naming the valid choices. Partial resolution is fine — the reply lists what is still outstanding — and the merge completes (validation pass included) as soon as nothing is. Unknown path/key → `validation_error`, staged merge untouched. |
+| `merge_branch` | **project, source**, target, allow_invalid | Merges `source` (theirs) into `target` (ours; default: your current branch). Fast-forwards when the target has nothing of its own (`{fast_forward: true}`) — **still validated**, because an edit persists before its rebuild fails, so a branch can carry a script that does not build; merging an ancestor returns `{already_up_to_date: true}` with `validation: null`. Otherwise a real three-way merge: part scripts via git's textual merge, `project.json` **always** re-merged key-wise (per part, param, instance, material, PMI section). Conflicts come back as `merge_conflict` with the merge **staged** — nothing outside `.history/agentcad/` is written and no ref moves until you resolve or abort. On success: one merge commit with **two parents**, plus `{commit, parents, conflicts_resolved, validation, project}`. Re-running it on a staged merge whose branches have moved is a `conflict_error` — the recorded resolutions no longer apply, so discard it with `merge_abort` and merge again rather than losing them silently. |
+| `resolve_merge` | **project, choices** | Resolves the staged merge. `choices` maps a conflict's `path` (scripts, e.g. `"parts/flange.py"`) or `key` (manifest, e.g. `"parts.flange.params.bolt_d"`) to `{"take": "ours"\|"theirs"\|"base"}`, or `{"content": "<full file text>"}` for a script, or `{"value": …}` for a manifest key. In a manifest conflict a side that has **no value** (it deleted the key, or both branches added it so there is no base) is **omitted** from the payload — `"ours": null` means that side authored a JSON `null`, and taking it writes that null rather than deleting the key. Each manifest conflict also carries `path`, the exact key segments, because an id may contain a `.` (`parts.body.solid_materials.wall.inner`); `key` remains the dotted string you address the choice by. A `kind: "binary"` conflict (anything under `imports/`) carries `sides: {base\|ours\|theirs: {bytes, sha256} \| null}` instead of text and takes a side only — `content` is a `validation_error`. Taking a side where the file is absent (that branch deleted it) **deletes** it; taking `base` when there is none (both branches added the file) is a `validation_error` naming the valid choices. Partial resolution is fine — the reply lists what is still outstanding — and the merge completes (validation pass included) as soon as nothing is. Unknown path/key → `validation_error`, staged merge untouched. |
 | `merge_abort` | **project** | Discards the staged merge (its worktree and state); no branch moves. `{aborted: false}` when nothing was staged. |
 | `merge_status` | **project** | `{merge: {id, source, target, base, by, created, outstanding, conflicts, resolved} \| null}` — re-enter a merge you or another client staged earlier (e.g. after a reload or a server restart). |
 
-**The validation pass (FR9).** Before a non-fast-forward merge lands, the
-staged tree is rebuilt by the real kernel: changed parts build, mates
-re-resolve, referential integrity is checked, and interference is re-run.
+**The validation pass (FR9).** Before **any** merge lands — fast-forward
+included — the merged tree is rebuilt by the real kernel: changed parts build,
+mates re-resolve, referential integrity is checked, and interference is re-run.
 `validation` is
-`{ok, blocked, built: [{part, cached}], failures: [{part, error}], integrity: [{kind, instance, …}], interference: {checked, new_pairs: [{a, b, volume_mm3}], skipped}}`.
+`{ok, blocked, warnings: [str], built: [{part, cached}], failures: [{part, error}], integrity: [{kind, instance, …}], interference: {checked, new_pairs: [{a, b, volume_mm3}], skipped}}`.
 Only **newly introduced** interference pairs block, so a project that already
 overlaps stays mergeable; `skipped: "instances"` means the assembly was above
-the pair-check cap (40 instances) or had fewer than two. Failures block the
-merge with a `validation_error` carrying the same report under
-`details.validation`; `allow_invalid: true` lands it anyway, with the failures
-recorded in the merge commit message and returned to the caller. Parts already
-built on either branch are cache hits — the mesh cache is shared across
+the pair-check cap (40 instances) or had fewer than two — above the cap it also
+appears in `warnings`, so an `ok: true` report never hides a check it did not
+run. `integrity` also carries `kind: "manifest_invalid"` when the merged
+`project.json` would not load (no `name`, a malformed `parts` list, …).
+Failures block the merge with a `validation_error` carrying the same report
+under `details.validation`; `allow_invalid: true` lands it anyway, with the
+failures recorded in the merge commit message and returned to the caller. Parts
+already built on either branch are cache hits — the mesh cache is shared across
 branches (byte-determinism, FR13).
+
+A `project.json` that **exists but does not parse** on any of base/ours/theirs
+is a `validation_error` naming the ref and the file, refused before the merge
+starts: an unreadable manifest is not the same statement as a deleted one, and
+reading it as `{}` would merge as "this side deleted everything".
+
+**Branch names are resolved as branches.** `git rev-parse <name>` searches
+`refs/tags` before `refs/heads`, so a tag named like a branch can answer for
+it. Every branch operation (create-from-current, switch, delete, merge, tag)
+resolves `refs/heads/<name>` explicitly; only surfaces documented to take *any*
+ref — `project_history {ref}`, `project_restore {commit}` — keep git's
+precedence.
 
 **Events.** `branch_changed {project, client, branch}` and
 `merge_completed {project, source, target, commit, validation}`, alongside the

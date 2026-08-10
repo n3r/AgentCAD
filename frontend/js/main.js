@@ -1028,7 +1028,28 @@ function setupBranchMenu() {
         setMenuHidden(menu, true);
         if (!branch.is_current) switchToBranch(branch.name);
       });
-      menu.appendChild(item);
+      // FR1's delete, per row. Only where the server would allow it anyway —
+      // the default branch and the one you are on are refused — and never
+      // nested inside the switch button (a button inside a button).
+      if (branch.is_default || branch.is_current) {
+        menu.appendChild(item);
+        continue;
+      }
+      const row = document.createElement("div");
+      row.className = "menu-row";
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "menu-del";
+      del.textContent = "×";
+      del.title = `Delete branch ${branch.name}`;
+      del.setAttribute("aria-label", `Delete branch ${branch.name}`);
+      del.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        setMenuHidden(menu, true);
+        deleteBranch(branch.name);
+      });
+      row.append(item, del);
+      menu.appendChild(row);
     }
     const sep = document.createElement("div");
     sep.className = "menu-sep";
@@ -1106,6 +1127,30 @@ async function reloadBranchContext() {
     setState({ selectedPart: null, part: null });
     updateHUD();
   }
+}
+
+async function deleteBranch(name) {
+  if (!state.projectName) return;
+  // Same confirm affordance every other destructive action here uses
+  // (restore a version, discard a staged merge).
+  if (
+    !confirm(
+      `Delete branch “${name}” and its working tree?\n\n` +
+        "Versions (tags) made on it survive. This cannot be undone."
+    )
+  ) {
+    return;
+  }
+  try {
+    await api.deleteBranch(state.projectName, name);
+  } catch (err) {
+    // in use / current / default all come back as ordinary REST errors
+    toast(`Delete failed: ${err.message}`, "error");
+    await loadBranchState();
+    return;
+  }
+  toast(`Deleted ${name}`);
+  await loadBranchState();
 }
 
 async function newBranchPrompt() {

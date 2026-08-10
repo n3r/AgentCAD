@@ -29,6 +29,7 @@ from agentcad.core.model import PartRecord
 from agentcad.core.project import ProjectStore
 from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
+from agentcad.core.tools_versioning import install_write_guard
 
 from .conftest import BOX_SCRIPT
 
@@ -283,9 +284,7 @@ def stack(kernel, tmp_path):
     service = AgentCADService(tmp_path / "projects", kernel, bus)
     registry = build_registry(service)
     service.branches = BranchManager(service)
-    service.store.write_guard = lambda proj: service.turnlock.check(
-        service.store.lock_key(proj), locks.current_client_id()
-    )
+    install_write_guard(service)  # exactly what the slice-3 tool pack installs
     return service, registry, service.branches
 
 
@@ -829,3 +828,166 @@ class TestReferenceCacheSignature:
         assert service._content_signature("demo", record) != first
 
 
+
+
+# ------------------- second-review regressions (Codex, X1 / X4 / X5)
+
+
+class TestUnambiguousBranchRefs:
+    """X1 — ``git rev-parse <name>`` searches refs/tags BEFORE refs/heads, so a
+    tag can shadow a branch. Branch operations must name refs/heads/<name>."""
+
+    pytestmark = _GIT
+
+    def test_x1_a_tag_shadowing_a_branch_never_steers_branch_ops(self, demo):
+        service, registry, branches = demo
+        canonical = service.store.canonical_path_of("demo")
+        branches.create("demo", "feat")
+        branch_head = service.history.resolve_ref(canonical, "feat")
+
+        # master moves on, and a TAG called 'feat' is pinned to its head.
+        assert "error" not in registry.call(
+            "update_part_script",
+            {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT})
+        master_head = service.history.resolve_ref(canonical, "master")
+        assert master_head != branch_head
+        _git(canonical / ".history", canonical, "tag", "feat", master_head)
+
+        assert service.history.resolve_ref(canonical, "feat") == master_head
+        assert service.history.resolve_branch(canonical, "feat") == branch_head
+        assert service.history.resolve_tag(canonical, "feat") == master_head
+
+        # forking from the caller's current branch forks the BRANCH's head
+        locks.set_client_id("agent_a")
+        branches.switch("demo", "feat")
+        branches.create("demo", "feat-fork")
+        assert service.history.resolve_branch(canonical, "feat-fork") \
+            == branch_head
+        assert service.store.read_script("demo", "box") == BOX_SCRIPT
+
+        # ...and a worktree materialized for the branch carries the branch
+        shutil.rmtree(canonical / ".history" / "trees" / "feat")
+        tree = branches.tree_of("demo", "feat")
+        assert (tree / "parts" / "box.py").read_text() == BOX_SCRIPT
+
+
+class TestBrokenWorktreeFailsClosed:
+    """X4 — ``resolve_path`` is total by contract (a read of a project whose
+    tree vanished degrades to the canonical directory). A WRITE must not
+    degrade that way: it would land one branch's edits on the default one."""
+
+    pytestmark = _GIT
+
+    def test_x4_a_write_never_silently_lands_on_the_default_branch(self, demo):
+        service, registry, branches = demo
+        canonical = service.store.canonical_path_of("demo")
+        branches.create("demo", "feat")
+        locks.set_client_id("agent_a")
+        branches.switch("demo", "feat")
+        tree = canonical / ".history" / "trees" / "feat"
+        default_before = (canonical / "parts" / "box.py").read_bytes()
+        shutil.rmtree(tree)
+
+        result = registry.call(
+            "update_part_script",
+            {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT})
+
+        if "error" in result:
+            assert result["error"]["type"] == "conflict_error", result
+        else:
+            assert (tree / "parts" / "box.py").read_text() == BOX_V2_SCRIPT
+        assert (canonical / "parts" / "box.py").read_bytes() == default_before
+        assert branches.current("demo") == "feat"
+
+    def test_x4_a_tree_that_cannot_be_restored_refuses_the_write(
+            self, demo, monkeypatch, registry_error):
+        from agentcad.core.model import ValidationError
+
+        service, _registry, branches = demo
+        canonical = service.store.canonical_path_of("demo")
+        branches.create("demo", "feat")
+        locks.set_client_id("agent_a")
+        branches.switch("demo", "feat")
+        shutil.rmtree(canonical / ".history" / "trees" / "feat")
+        default_before = (canonical / "parts" / "box.py").read_bytes()
+
+        def refuse(*_args, **_kwargs):
+            raise ValidationError("no working tree for you")
+
+        monkeypatch.setattr(branches, "_materialize", refuse)
+
+        assert registry_error(
+            service.store.write_script, "demo", "box", BOX_V2_SCRIPT
+        ) == "conflict_error"
+        assert (canonical / "parts" / "box.py").read_bytes() == default_before
+
+
+class TestSnapshotFailuresAreLoud:
+    """X5 — ``snapshot`` returns None both for 'nothing to commit' (fine) and
+    for a git failure (not fine). Switching, tagging and deleting used to
+    ignore the difference and lose the tree's uncommitted state."""
+
+    pytestmark = _GIT
+
+    @staticmethod
+    def _break_snapshot(monkeypatch, service):
+        monkeypatch.setattr(service.history, "snapshot", lambda *a, **k: None)
+
+    def test_x5_switch_refuses_when_a_dirty_tree_cannot_be_snapshotted(
+            self, demo, monkeypatch, registry_error):
+        service, _registry, branches = demo
+        canonical = service.store.canonical_path_of("demo")
+        branches.create("demo", "feat")
+        (canonical / "parts" / "box.py").write_text(BOX_V2_SCRIPT,
+                                                    encoding="utf-8")
+        self._break_snapshot(monkeypatch, service)
+
+        assert registry_error(branches.switch, "demo", "feat") == "conflict_error"
+        assert branches.current("demo") == "master"
+        assert (canonical / "parts" / "box.py").read_text() == BOX_V2_SCRIPT
+
+    def test_x5_switch_of_a_clean_tree_is_unaffected(self, demo, monkeypatch):
+        service, _registry, branches = demo
+        branches.create("demo", "feat")
+        self._break_snapshot(monkeypatch, service)  # clean tree: nothing to do
+
+        locks.set_client_id("agent_a")
+        assert branches.switch("demo", "feat") == "feat"
+
+    def test_x5_tag_refuses_when_a_dirty_tree_cannot_be_snapshotted(
+            self, demo, monkeypatch, registry_error):
+        service, _registry, branches = demo
+        canonical = service.store.canonical_path_of("demo")
+        (canonical / "parts" / "box.py").write_text(BOX_V2_SCRIPT,
+                                                    encoding="utf-8")
+        self._break_snapshot(monkeypatch, service)
+
+        assert registry_error(branches.tag, "demo", "v1") == "conflict_error"
+        assert branches.versions("demo") == []
+
+    def test_x5_delete_refuses_a_dirty_tree_it_cannot_snapshot(
+            self, demo, monkeypatch, registry_error):
+        service, _registry, branches = demo
+        canonical = service.store.canonical_path_of("demo")
+        branches.create("demo", "feat")
+        tree = canonical / ".history" / "trees" / "feat"
+        (tree / "parts" / "box.py").write_text(BOX_V2_SCRIPT, encoding="utf-8")
+        self._break_snapshot(monkeypatch, service)
+
+        assert registry_error(
+            branches.delete, "demo", "feat") == "validation_error"
+        assert "feat" in {b["name"] for b in branches.list("demo")["branches"]}
+        assert (tree / "parts" / "box.py").read_text() == BOX_V2_SCRIPT
+
+    def test_x5_delete_snapshots_a_dirty_tree_before_removing_it(self, demo):
+        service, _registry, branches = demo
+        canonical = service.store.canonical_path_of("demo")
+        branches.create("demo", "feat")
+        tree = canonical / ".history" / "trees" / "feat"
+        (tree / "parts" / "box.py").write_text(BOX_V2_SCRIPT, encoding="utf-8")
+
+        payload = branches.delete("demo", "feat")
+
+        assert payload["deleted"] == "feat"
+        assert not tree.exists()
+        assert "feat" not in {b["name"] for b in payload["branches"]}

@@ -194,6 +194,7 @@ def test_both_sides_differ_conflicts_at_that_key(key, write, read, values):
     assert conflicts[0] == {
         "kind": "manifest",
         "key": key,
+        "path": key.split("."),
         "base": values[0],
         "ours": values[1],
         "theirs": values[2],
@@ -374,7 +375,7 @@ def test_delete_modify_conflicts_on_the_whole_entry(
     conflict = conflicts[0]
     assert conflict["key"] == f"{prefix}.{eid}"
     assert conflict["base"] == get(base, eid)
-    assert conflict["ours"] is None  # the deleting side
+    assert "ours" not in conflict  # the deleting side: absent, never null
     assert conflict["theirs"] == get(theirs, eid)
     assert get(merged, eid) is None  # merged carries ours' value: deleted
 
@@ -392,7 +393,7 @@ def test_modify_delete_conflicts_with_theirs_null(prefix, eid, add, delete, edit
 
     assert len(conflicts) == 1
     assert conflicts[0]["key"] == f"{prefix}.{eid}"
-    assert conflicts[0]["theirs"] is None
+    assert "theirs" not in conflicts[0]  # the deleting side
     assert conflicts[0]["ours"] == get(ours, eid)
     assert get(merged, eid) == get(ours, eid)
 
@@ -637,7 +638,7 @@ def test_param_delete_versus_edit_conflicts_at_the_param_key():
     merged, conflicts = merge_manifests(base, ours, theirs)
 
     assert keys_of(conflicts) == ["parts.a.params.x"]
-    assert conflicts[0]["ours"] is None
+    assert "ours" not in conflicts[0]  # ours deleted it
     assert entry_of(merged["parts"], "a")["params"] == {}
 
 
@@ -755,3 +756,172 @@ def test_apply_choices_no_choices_is_identity():
 
     assert resolved == merged
     assert remaining == conflicts
+
+
+# ------------------------------- X12: an absent side is not an authored null
+#
+# ``None`` used to encode both "this side has no such key" and "this side
+# authored a JSON null", so ``take: ours`` on an authored null DELETED the key.
+# The encoding is now presence-based: an absent side OMITS its entry.
+
+
+def _param_conflict(ours_params, theirs_params, base_params=None):
+    base_params = {"x": 1.0} if base_params is None else base_params
+    base, ours, theirs = triple(
+        manifest(parts=[part("a", params=copy.deepcopy(base_params))])
+    )
+    entry_of(ours["parts"], "a")["params"] = copy.deepcopy(ours_params)
+    entry_of(theirs["parts"], "a")["params"] = copy.deepcopy(theirs_params)
+    return merge_manifests(base, ours, theirs)
+
+
+def _params(doc):
+    return entry_of(doc["parts"], "a")["params"]
+
+
+def test_x12_an_absent_side_is_omitted_from_the_conflict():
+    merged, conflicts = _param_conflict({}, {"x": 2.0})
+
+    assert keys_of(conflicts) == ["parts.a.params.x"]
+    assert "ours" not in conflicts[0]      # ours deleted it: absent, not null
+    assert conflicts[0]["theirs"] == 2.0
+    assert conflicts[0]["base"] == 1.0
+    assert _params(merged) == {}
+
+
+def test_x12_an_authored_null_is_reported_as_null():
+    merged, conflicts = _param_conflict({"x": None}, {"x": 2.0})
+
+    assert "ours" in conflicts[0]
+    assert conflicts[0]["ours"] is None
+    assert _params(merged) == {"x": None}
+
+
+def test_x12_taking_an_authored_null_keeps_the_key():
+    merged, conflicts = _param_conflict({"x": None}, {"x": 2.0})
+
+    resolved, remaining = apply_choices(
+        merged, conflicts, {"parts.a.params.x": {"take": "ours"}}
+    )
+
+    assert remaining == []
+    assert _params(resolved) == {"x": None}
+
+
+def test_x12_taking_an_absent_side_deletes_the_key():
+    merged, conflicts = _param_conflict({}, {"x": 2.0})
+
+    resolved, remaining = apply_choices(
+        merged, conflicts, {"parts.a.params.x": {"take": "ours"}}
+    )
+
+    assert remaining == []
+    assert _params(resolved) == {}
+
+
+def test_x12_take_variants_across_absent_and_null_sides():
+    # theirs authored a null: taking it writes the null, it does not delete.
+    merged, conflicts = _param_conflict(
+        {"x": 1.0}, {"x": None}, base_params={"x": 0.0}
+    )
+    got, _ = apply_choices(
+        merged, conflicts, {"parts.a.params.x": {"take": "theirs"}}
+    )
+    assert _params(got) == {"x": None}
+
+    # both sides ADDED the key: there is no base, so taking base deletes it.
+    merged, conflicts = _param_conflict({"x": 1.0}, {"x": 2.0}, base_params={})
+    assert "base" not in conflicts[0]
+    got, _ = apply_choices(
+        merged, conflicts, {"parts.a.params.x": {"take": "base"}}
+    )
+    assert _params(got) == {}
+
+    # a base that IS an authored null is takeable as that null.
+    merged, conflicts = _param_conflict(
+        {"x": 1.0}, {"x": 2.0}, base_params={"x": None}
+    )
+    assert conflicts[0]["base"] is None
+    got, _ = apply_choices(
+        merged, conflicts, {"parts.a.params.x": {"take": "base"}}
+    )
+    assert _params(got) == {"x": None}
+
+
+def test_x12_an_absent_whole_entry_is_omitted_too():
+    base, ours, theirs = triple(manifest(parts=[part("flange")]))
+    ours["parts"] = []
+    entry_of(theirs["parts"], "flange")["label"] = "kept"
+
+    _merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert keys_of(conflicts) == ["parts.flange"]
+    assert "ours" not in conflicts[0]
+    assert conflicts[0]["theirs"]["label"] == "kept"
+
+
+# --------------------- X13: dotted ids must not break conflict reversibility
+#
+# The public conflict key stays a dotted string (it addresses the choice), but
+# apply_choices must resolve it through the RECORDED path segments, never by
+# re-splitting on '.'.
+
+
+def test_x13_a_dotted_solid_material_key_resolves_to_the_real_mapping():
+    base, ours, theirs = triple(
+        manifest(parts=[part("body", solid_materials={"wall.inner": "stainless_316"})])
+    )
+    entry_of(ours["parts"], "body")["solid_materials"]["wall.inner"] = "inconel718"
+    entry_of(theirs["parts"], "body")["solid_materials"]["wall.inner"] = "alu6061"
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert keys_of(conflicts) == ["parts.body.solid_materials.wall.inner"]
+    assert conflicts[0]["path"] == [
+        "parts", "body", "solid_materials", "wall.inner"
+    ]
+
+    resolved, remaining = apply_choices(
+        merged,
+        conflicts,
+        {"parts.body.solid_materials.wall.inner": {"take": "theirs"}},
+    )
+
+    assert remaining == []
+    entry = entry_of(resolved["parts"], "body")
+    assert entry["solid_materials"] == {"wall.inner": "alu6061"}
+    assert "solid_materials.wall.inner" not in entry  # no bogus flat field
+
+
+def test_x13_a_dotted_part_id_resolves_to_the_real_entry():
+    base, ours, theirs = triple(manifest(parts=[part("a.b", params={"x": 1.0})]))
+    entry_of(ours["parts"], "a.b")["params"]["x"] = 2.0
+    entry_of(theirs["parts"], "a.b")["params"]["x"] = 3.0
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts[0]["path"] == ["parts", "a.b", "params", "x"]
+    resolved, remaining = apply_choices(
+        merged, conflicts, {conflicts[0]["key"]: {"take": "theirs"}}
+    )
+
+    assert remaining == []
+    assert entry_of(resolved["parts"], "a.b")["params"] == {"x": 3.0}
+
+
+def test_x13_a_dotted_instance_id_resolves_to_the_real_instance():
+    base, ours, theirs = triple(
+        manifest(parts=[part("a")], instances=[instance("a.1", "a")])
+    )
+    entry_of(ours["assembly"]["instances"], "a.1")["position"] = [1.0, 0.0, 0.0]
+    entry_of(theirs["assembly"]["instances"], "a.1")["position"] = [2.0, 0.0, 0.0]
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts[0]["path"] == ["assembly", "instances", "a.1", "position"]
+    resolved, _ = apply_choices(
+        merged, conflicts, {conflicts[0]["key"]: {"take": "theirs"}}
+    )
+    assert entry_of(resolved["assembly"]["instances"], "a.1")["position"] == [
+        2.0, 0.0, 0.0
+    ]

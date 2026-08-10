@@ -401,17 +401,15 @@ function pickButton(label, conflict, choice) {
   return btn;
 }
 
+// A side with no value OMITS its key (that side deleted it, or both branches
+// added the key so there is no base). An authored JSON null is a value like
+// any other, and must not read as "deleted".
 function valueTable(conflict) {
+  const has = (key) => Object.prototype.hasOwnProperty.call(conflict, key);
   const table = document.createElement("table");
   table.className = "conflict-table";
-  const rows = [
-    ["base", Object.prototype.hasOwnProperty.call(conflict, "base")
-      ? conflict.base : undefined],
-    ["ours", conflict.ours],
-    ["theirs", conflict.theirs],
-  ];
-  for (const [label, value] of rows) {
-    if (value === undefined) continue;
+  for (const label of ["base", "ours", "theirs"]) {
+    if (label === "base" && !has("base")) continue; // both branches added it
     const tr = document.createElement("tr");
     const th = document.createElement("th");
     th.textContent =
@@ -421,7 +419,9 @@ function valueTable(conflict) {
           ? `theirs (${staged.source})`
           : "base";
     const td = document.createElement("td");
-    td.textContent = value === null ? "— deleted —" : JSON.stringify(value, null, 2);
+    td.textContent = has(label)
+      ? JSON.stringify(conflict[label], null, 2)
+      : "— deleted —";
     tr.append(th, td);
     table.appendChild(tr);
   }
@@ -600,8 +600,8 @@ function showResult(res, source, target) {
     lead.textContent = `${dst} already contains ${src} — nothing to do.`;
   } else if (res.fast_forward) {
     lead.textContent =
-      `Fast-forwarded ${dst} to ${src} (${(res.commit || "").slice(0, 8)}). ` +
-      "No validation pass: the result is a state that already existed.";
+      `Fast-forwarded ${dst} to ${src} (${(res.commit || "").slice(0, 8)}) — ` +
+      "revalidated by the kernel like any other merge.";
   } else {
     lead.textContent =
       `Merged as ${(res.commit || "").slice(0, 8)} with two parents · ` +
@@ -623,6 +623,12 @@ function reportBlock(validation) {
     ? "Validation passed."
     : "Validation failed.";
   el.appendChild(verdict);
+
+  const warnings = validation.warnings || [];
+  if (warnings.length) {
+    el.appendChild(heading("Warnings"));
+    el.appendChild(bullets(warnings));
+  }
 
   const built = validation.built || [];
   if (built.length) {

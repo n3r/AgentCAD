@@ -418,9 +418,12 @@ prompt first, as everywhere else.
 
 - **New branch…** prompts for a name matching `[a-z0-9][a-z0-9_/-]{0,63}`,
   forks it from the branch you are on, and switches you to it.
-- Branch deletion is not in the UI yet (use `branch_delete` from an agent or
-  the REST API). The default branch and any branch someone has checked out
-  are refused.
+- **×** on a branch row deletes that branch and its working tree, after a
+  confirm. It appears only where the server would allow it — never on the
+  default branch or the one you are on — and a branch someone else has checked
+  out comes back as an error toast. Versions (tags) made on the branch survive
+  it, and its working tree is committed before removal, so nothing uncommitted
+  is silently thrown away.
 
 **Versions… (the versions dialog).** A version is an immutable named state —
 "the revision we sent to the machine shop" — stored as an annotated git tag.

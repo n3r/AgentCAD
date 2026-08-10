@@ -344,7 +344,13 @@ class ProjectHistory:
 
     def resolve_ref(self, project_path: Path | str, ref: str) -> str | None:
         """Commit id for a branch name, tag name or commit id; None when the
-        ref is unknown or malformed (never raises, never shells a bad name)."""
+        ref is unknown or malformed (never raises, never shells a bad name).
+
+        Deliberately ambiguous — git's own precedence (tags before branches)
+        applies. Only surfaces that genuinely accept *any* ref may use it
+        (``project_history {ref}``, ``project_restore``); anything that means
+        "a branch" must use :meth:`resolve_branch`.
+        """
         path = Path(project_path)
         if not self.available() or not self._has_repo(path):
             return None
@@ -355,11 +361,50 @@ class ProjectHistory:
         commit = result.stdout.strip()
         return commit if result.returncode == 0 and commit else None
 
+    def resolve_branch(self, project_path: Path | str, name: str) -> str | None:
+        """Commit id of the BRANCH ``name``, unambiguously.
+
+        ``git rev-parse <name>`` searches ``refs/tags`` BEFORE ``refs/heads``,
+        so a tag named like a branch answers for it — enough to make a merge
+        of branch 'feat' merge the tag's commit instead. Every operation that
+        means a branch resolves through here.
+        """
+        return self._resolve_in(project_path, "refs/heads", name)
+
+    def resolve_tag(self, project_path: Path | str, name: str) -> str | None:
+        """Commit id of the TAG ``name`` (the tagged commit for annotated
+        tags), unambiguously — the mirror of :meth:`resolve_branch`."""
+        return self._resolve_in(project_path, "refs/tags", name)
+
+    def _resolve_in(self, project_path: Path | str, namespace: str,
+                    name: str) -> str | None:
+        path = Path(project_path)
+        if not self.available() or not self._has_repo(path):
+            return None
+        if not valid_ref_name(name):
+            return None
+        result = self._run(path, "rev-parse", "--verify", "--quiet",
+                           f"{namespace}/{name}^{{commit}}", check=False)
+        commit = result.stdout.strip()
+        return commit if result.returncode == 0 and commit else None
+
+    @staticmethod
+    def branch_ref(name: str) -> str:
+        """``refs/heads/<name>`` — what to hand git when a bare branch name
+        would be ambiguous with a tag."""
+        return f"refs/heads/{name}"
+
     def branches(self, project_path: Path | str) -> list[dict]:
-        """[{"name", "head", "ts", "message"}] for every local branch."""
+        """[{"name", "head", "ts", "message"}] for every local branch.
+
+        ``refname:lstrip=2``, never ``refname:short``: the short form is the
+        shortest UNAMBIGUOUS name, so a tag called 'feat' renames the branch
+        'feat' to 'heads/feat' in this listing — and every name comparison
+        against it (is it checked out? does it exist?) then misses.
+        """
         return self._for_each_ref(
             project_path, "refs/heads",
-            "%(refname:short)%1f%(objectname)%1f%(committerdate:iso-strict)"
+            "%(refname:lstrip=2)%1f%(objectname)%1f%(committerdate:iso-strict)"
             "%1f%(contents:subject)",
             ("name", "head", "ts", "message"),
         )
@@ -372,7 +417,7 @@ class ProjectHistory:
         """
         rows = self._for_each_ref(
             project_path, "refs/tags",
-            "%(refname:short)%1f%(objectname)%1f%(*objectname)"
+            "%(refname:lstrip=2)%1f%(objectname)%1f%(*objectname)"
             "%1f%(creatordate:iso-strict)%1f%(taggername)%1f%(contents:subject)",
             ("name", "object", "peeled", "ts", "author", "message"),
         )
@@ -501,12 +546,14 @@ class UndoCursor:
         verb = "redo" if redo else "undo"
         if not self.history.available():
             raise ValidationError("undo/redo unavailable: git not found on PATH")
-        path = self.store.path_of(proj)
-        key = self._key(proj)
         # Turn-locking: undo/redo rewrites project files outside the store
-        # choke point, so it must invoke the same write guard explicitly.
+        # choke point, so it must invoke the same write guard explicitly —
+        # BEFORE resolving the path, because the guard is also what
+        # re-materializes a branch working tree that went missing.
         if getattr(self.store, "write_guard", None):
             self.store.write_guard(proj)
+        path = self.store.path_of(proj)
+        key = self._key(proj)
         with self._lock:
             source = (self._redo if redo else self._undo).setdefault(key, [])
             while source and not self.history.has_commit(path, source[-1]["id"]):

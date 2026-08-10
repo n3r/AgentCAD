@@ -114,7 +114,11 @@ class BranchManager:
     def resolve_path(self, proj: str, canonical: Path) -> Path:
         """Working tree for ``proj`` in the calling context. Never raises —
         an unreadable sidecar or a missing worktree degrades to the canonical
-        project directory, which is always a valid project."""
+        project directory, which is always a valid project.
+
+        That degradation is for READS only. A write that fell back this way
+        would land one branch's edits on the default branch, so the write path
+        goes through :meth:`ensure_checkout` first."""
         pinned = pinned_tree_var.get()
         if pinned is not None:
             return Path(pinned)
@@ -128,6 +132,55 @@ class BranchManager:
             return tree if (tree / "project.json").is_file() else canonical
         except Exception:  # noqa: BLE001 — resolution must never break a read
             return canonical
+
+    def ensure_checkout(self, proj: str) -> Path:
+        """Guarantee the calling client's branch tree exists — the WRITE-path
+        counterpart of :meth:`resolve_path`, called from the store's write
+        guard before any persistent mutation.
+
+        A client checked out on branch X whose tree is missing or unreadable
+        used to be redirected to the canonical directory silently, so its
+        writes landed on the DEFAULT branch. Here the tree is re-materialized
+        from the branch ref instead (the same content the branch always had),
+        and if that is impossible the write is refused rather than misfiled.
+
+        Cheap by construction: the fast path is the same ``project.json``
+        stat ``resolve_path`` already does, with no git call at all.
+        """
+        pinned = pinned_tree_var.get()
+        if pinned is not None:
+            return Path(pinned)
+        canonical = self.store.canonical_path_of(proj)
+        state = self._state_for(proj)
+        branch = state["clients"].get(locks.current_client_id())
+        if not branch or branch == self.default_branch(proj):
+            return canonical
+        dirname = state["trees"].get(branch)
+        if dirname:
+            tree = canonical / ".history" / "trees" / dirname
+            if (tree / "project.json").is_file():
+                return tree
+        with self._lock:
+            try:
+                dirname = self._materialize(canonical, state, branch)
+            except (ValidationError, ConflictError, OSError) as exc:
+                raise ConflictError(
+                    f"the working tree for branch {branch!r} is missing and "
+                    f"could not be restored ({exc}); switch branches or "
+                    "re-create it before writing — this write would otherwise "
+                    "land on another branch",
+                    {"project": proj, "branch": branch},
+                ) from exc
+            state["trees"][branch] = dirname
+            self._save(proj, state)
+        tree = canonical / ".history" / "trees" / dirname
+        if not (tree / "project.json").is_file():
+            raise ConflictError(
+                f"the working tree for branch {branch!r} is unreadable; "
+                "switch branches or re-create it before writing",
+                {"project": proj, "branch": branch},
+            )
+        return tree
 
     @contextmanager
     def pinned(self, proj: str, path: Path) -> Iterator[None]:
@@ -238,6 +291,26 @@ class BranchManager:
     def _branch_names(self, canonical: Path) -> set[str]:
         return {b["name"] for b in self.history.branches(canonical)}
 
+    def _checkpoint(self, tree: Path, message: str, what: str) -> None:
+        """Snapshot ``tree``, and REFUSE when a dirty tree could not be
+        committed.
+
+        ``ProjectHistory.snapshot`` is exception-free by contract and returns
+        None for two very different outcomes: "nothing to commit" (a clean
+        tree — fine) and "git failed" (not fine). The difference is whether
+        the tree is still dirty afterwards. Ignoring it let a branch switch,
+        a version tag or a delete walk away from uncommitted work.
+        """
+        self.history.snapshot(tree, message)
+        result = self._run(tree, "status", "--porcelain", check=False)
+        if result.returncode != 0 or result.stdout.strip():
+            raise ConflictError(
+                f"could not snapshot the working tree before {what}; its "
+                "uncommitted changes would be lost",
+                {"tree": str(tree),
+                 "status": result.stdout.strip()[:2000]},
+            )
+
     # -------------------------------------------------------------- branches
 
     def default_branch(self, proj: str) -> str:
@@ -300,7 +373,14 @@ class BranchManager:
             if name in self._branch_names(canonical):
                 raise ConflictError(f"branch {name!r} already exists")
             source = from_ref or self.current(proj)
-            commit = self.history.resolve_ref(canonical, source)
+            # An explicit 'from' documents itself as "branch, tag or commit"
+            # and keeps git's precedence; the DEFAULT is the caller's branch,
+            # which must resolve as a branch even if a tag shadows its name.
+            commit = (
+                self.history.resolve_ref(canonical, source)
+                if from_ref
+                else self.history.resolve_branch(canonical, source)
+            )
             if commit is None:
                 raise NotFoundError(f"unknown branch, tag or commit {source!r}")
             result = self._run(canonical, "branch", name, commit, check=False)
@@ -326,8 +406,10 @@ class BranchManager:
         client = locks.current_client_id()
         with self._lock:
             state = self._state_for(proj)
-            self.history.snapshot(
-                self.store.path_of(proj), f"checkpoint before switch to {name}"
+            self._checkpoint(
+                self.store.path_of(proj),
+                f"checkpoint before switch to {name}",
+                f"switching to {name!r}",
             )
             if name == self.default_branch(proj):
                 state["trees"].pop(name, None)
@@ -363,9 +445,25 @@ class BranchManager:
                 raise NotFoundError(f"branch {name!r} not found")
             dirname = state["trees"].get(name)
             if dirname:
+                tree = canonical / ".history" / "trees" / dirname
+                if (tree / "project.json").is_file():
+                    # '--force' below discards whatever is in the tree, so the
+                    # tree has to be committed FIRST. A dirty tree that will
+                    # not commit is a refusal, not a silent data loss.
+                    try:
+                        self._checkpoint(
+                            tree, f"checkpoint before deleting {name}",
+                            f"deleting branch {name!r}",
+                        )
+                    except ConflictError as exc:
+                        raise ValidationError(
+                            f"branch {name!r} has uncommitted changes that "
+                            "could not be snapshotted; it will not be deleted",
+                            {"branch": name,
+                             "status": (exc.details or {}).get("status")},
+                        ) from exc
                 self._run(canonical, "worktree", "remove", "--force",
-                          str(canonical / ".history" / "trees" / dirname),
-                          check=False)
+                          str(tree), check=False)
             self._run(canonical, "worktree", "prune", check=False)
             result = self._run(canonical, "branch", "-D", name, check=False)
             if result.returncode != 0:
@@ -500,7 +598,11 @@ class BranchManager:
                 f"version {name!r} already exists; versions are immutable"
             )
         tree = self.store.path_of(proj)
-        self.history.snapshot(tree, f"checkpoint before version {name}")
+        # A failed snapshot here would tag a STALE head — a version that does
+        # not describe the state the caller was looking at (FR5 is only worth
+        # anything if the name is pinned to the right commit).
+        self._checkpoint(tree, f"checkpoint before version {name}",
+                         f"tagging version {name!r}")
         result = self._run(tree, "tag", "-a", name, "-m", message or name,
                            check=False)
         if result.returncode != 0:
@@ -516,7 +618,7 @@ class BranchManager:
         )
         return {
             "tag": name,
-            "commit": self.history.resolve_ref(tree, name),
+            "commit": self.history.resolve_tag(tree, name),
             "versions": self.versions(proj),
         }
 

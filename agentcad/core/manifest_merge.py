@@ -26,6 +26,18 @@ Values compare by type *and* JSON shape, so ``6`` and ``6.0`` are different
 values — matching how params are stored and how a byte comparison of
 project.json would see them.
 
+Two encodings in the conflict payload are load-bearing:
+
+* **absence is not null.** A side that has no such key OMITS its entry
+  (``"ours"`` simply is not there); a side that authored a JSON ``null``
+  reports ``null``. Conflating them made ``take: "ours"`` on an authored null
+  delete the key.
+* **the key is a display string, the path is the truth.** ``key`` is the
+  dotted address a caller resolves against, but ids may contain dots
+  (``solid_materials.wall.inner``), so every conflict also carries ``path``:
+  the exact segments :func:`apply_choices` writes through. Nothing re-splits
+  a key on ``.``.
+
 Referential integrity is deliberately not this module's job: one side deleting
 a part while the other adds an instance of it touches no common key, so it
 merges clean. The kernel validation pass is the backstop.
@@ -38,7 +50,7 @@ import json
 
 from .model import ValidationError
 
-CONFLICT_KEYS = ("kind", "key", "base", "ours", "theirs")
+CONFLICT_KEYS = ("kind", "key", "path", "base", "ours", "theirs")
 
 _MISSING = object()
 
@@ -65,6 +77,18 @@ def merge_manifests(base: dict, ours: dict, theirs: dict) -> tuple[dict, list[di
     return merged, conflicts
 
 
+def conflict_path(conflict: dict) -> tuple:
+    """The exact segments a conflict addresses.
+
+    Recorded by the merge; the dotted ``key`` is only its display form, and an
+    id containing a dot makes the two disagree.
+    """
+    path = conflict.get("path")
+    if isinstance(path, (list, tuple)) and path:
+        return tuple(str(seg) for seg in path)
+    return tuple(str(conflict.get("key", "")).split("."))
+
+
 def apply_choices(
     merged: dict, conflicts: list[dict], choices: dict
 ) -> tuple[dict, list[dict]]:
@@ -74,6 +98,10 @@ def apply_choices(
     ``{"value": <any>}``. Returns ``(new manifest, still-outstanding
     conflicts)``; neither argument is mutated. An unknown key or choice shape
     raises ``ValidationError``.
+
+    ``take`` reads the chosen side off the recorded conflict entry: a side the
+    entry does not carry has no value there, so taking it REMOVES the key,
+    while a side carrying ``null`` writes that null.
     """
     if not isinstance(choices, dict):
         raise ValidationError("choices must be an object of {key: {take|value}}")
@@ -87,7 +115,9 @@ def apply_choices(
                 {"outstanding": sorted(outstanding)},
             )
         present, value = _choice_value(key, conflict, choice)
-        _write_key(result, key, value, present)
+        # Through the RECORDED segments, never by re-splitting the key: an id
+        # with a dot in it would otherwise land in a bogus flat field.
+        _write_path(result, conflict_path(conflict), value, present, key)
     return result, [c for c in conflicts if c["key"] not in choices]
 
 
@@ -96,13 +126,13 @@ def apply_choices(
 
 def _merge_section(key, base, ours, theirs, conflicts):
     if key == "parts" and _entry_list(base, ours, theirs):
-        return _merge_entry_list("parts", base, ours, theirs, conflicts,
+        return _merge_entry_list(("parts",), base, ours, theirs, conflicts,
                                  subdicts=_PART_SUBDICTS)
     if key == "assembly" and _keyed(base, ours, theirs):
         return _merge_assembly(base, ours, theirs, conflicts)
     if key == "materials" and _keyed(base, ours, theirs):
-        return _merge_entry_dict("materials", base, ours, theirs, conflicts)
-    return _merge_atomic(key, base, ours, theirs, conflicts)
+        return _merge_entry_dict(("materials",), base, ours, theirs, conflicts)
+    return _merge_atomic((key,), base, ours, theirs, conflicts)
 
 
 def _merge_assembly(base, ours, theirs, conflicts):
@@ -111,10 +141,10 @@ def _merge_assembly(base, ours, theirs, conflicts):
         b, o, t = _get(base, sub), _get(ours, sub), _get(theirs, sub)
         if sub == "instances" and _entry_list(b, o, t):
             value = _merge_entry_list(
-                "assembly.instances", b, o, t, conflicts, subdicts=()
+                ("assembly", "instances"), b, o, t, conflicts, subdicts=()
             )
         else:
-            value = _merge_atomic(f"assembly.{sub}", b, o, t, conflicts)
+            value = _merge_atomic(("assembly", sub), b, o, t, conflicts)
         if value is not _MISSING:
             result[sub] = value
     return result
@@ -125,7 +155,7 @@ def _merge_entry_list(prefix, base, ours, theirs, conflicts, *, subdicts):
     result = []
     for eid in _key_order(o, t):
         value = _merge_entry(
-            f"{prefix}.{eid}",
+            (*prefix, eid),
             _get(b, eid),
             _get(o, eid),
             _get(t, eid),
@@ -142,7 +172,7 @@ def _merge_entry_dict(prefix, base, ours, theirs, conflicts):
     result = {}
     for eid in _key_order(_as_dict(ours), _as_dict(theirs)):
         value = _merge_atomic(
-            f"{prefix}.{eid}", _get(base, eid), _get(ours, eid),
+            (*prefix, eid), _get(base, eid), _get(ours, eid),
             _get(theirs, eid), conflicts,
         )
         if value is not _MISSING:
@@ -150,19 +180,18 @@ def _merge_entry_dict(prefix, base, ours, theirs, conflicts):
     return result
 
 
-def _merge_entry(key, base, ours, theirs, conflicts, subdicts):
+def _merge_entry(segs, base, ours, theirs, conflicts, subdicts):
     """One list entry: field-wise when it exists on all three sides, whole-value
     otherwise (add/add, delete/modify — the entry is the conflict unit)."""
     if _MISSING in (base, ours, theirs):
-        return _merge_atomic(key, base, ours, theirs, conflicts)
+        return _merge_atomic(segs, base, ours, theirs, conflicts)
     result = {}
     for field in _key_order(_as_dict(ours), _as_dict(theirs)):
         b, o, t = _get(base, field), _get(ours, field), _get(theirs, field)
-        fkey = f"{key}.{field}"
         if field in subdicts and _keyed(b, o, t):
-            value = _merge_scalar_dict(fkey, b, o, t, conflicts)
+            value = _merge_scalar_dict((*segs, field), b, o, t, conflicts)
         else:
-            value = _merge_atomic(fkey, b, o, t, conflicts)
+            value = _merge_atomic((*segs, field), b, o, t, conflicts)
         if value is not _MISSING:
             result[field] = value
     return result
@@ -172,7 +201,7 @@ def _merge_scalar_dict(prefix, base, ours, theirs, conflicts):
     result = {}
     for name in _key_order(_as_dict(ours), _as_dict(theirs)):
         value = _merge_atomic(
-            f"{prefix}.{name}", _get(base, name), _get(ours, name),
+            (*prefix, name), _get(base, name), _get(ours, name),
             _get(theirs, name), conflicts,
         )
         if value is not _MISSING:
@@ -180,7 +209,7 @@ def _merge_scalar_dict(prefix, base, ours, theirs, conflicts):
     return result
 
 
-def _merge_atomic(key, base, ours, theirs, conflicts):
+def _merge_atomic(segs, base, ours, theirs, conflicts):
     """The classic three-way truth table over one whole value. ``_MISSING`` on a
     side means the key is absent there (never added, or deleted)."""
     if _same(ours, theirs):
@@ -189,16 +218,21 @@ def _merge_atomic(key, base, ours, theirs, conflicts):
         return _copy(theirs)
     if _same(base, theirs):  # only ours moved
         return _copy(ours)
-    conflicts.append(_conflict(key, base, ours, theirs))
+    conflicts.append(_conflict(segs, base, ours, theirs))
     return _copy(ours)
 
 
-def _conflict(key, base, ours, theirs) -> dict:
-    entry = {"kind": "manifest", "key": key}
-    if base is not _MISSING:  # omitted for add/add
-        entry["base"] = _copy(base)
-    entry["ours"] = None if ours is _MISSING else _copy(ours)
-    entry["theirs"] = None if theirs is _MISSING else _copy(theirs)
+def _conflict(segs, base, ours, theirs) -> dict:
+    """One conflict entry.
+
+    A side with no such key is OMITTED — absence and an authored ``null`` are
+    different answers, and ``take`` must be able to tell them apart. ``path``
+    carries the exact segments; ``key`` is their dotted display form.
+    """
+    entry = {"kind": "manifest", "key": ".".join(segs), "path": list(segs)}
+    for name, value in (("base", base), ("ours", ours), ("theirs", theirs)):
+        if value is not _MISSING:
+            entry[name] = _copy(value)
     return entry
 
 
@@ -290,14 +324,14 @@ def _choice_value(key, conflict, choice) -> tuple[bool, object]:
             f"choice for {key!r} must be {{'take': 'ours'|'theirs'|'base'}} "
             "or {'value': …}"
         )
-    value = conflict.get(side)
-    if value is None:  # that side deleted the key (or had no base)
+    if side not in conflict:
+        # That side has no such key — it deleted it, never had it, or (for
+        # "base") both branches added it. Taking that side removes the key.
         return False, None
-    return True, copy.deepcopy(value)
+    return True, copy.deepcopy(conflict[side])
 
 
-def _write_key(manifest, key, value, present) -> None:
-    segs = key.split(".")
+def _write_path(manifest, segs, value, present, key) -> None:
     head = segs[0]
     if head == "parts" and len(segs) >= 2:
         _write_entry(
@@ -315,7 +349,8 @@ def _write_key(manifest, key, value, present) -> None:
     if head in ("assembly", "materials") and len(segs) == 2:
         _write_slot(manifest.setdefault(head, {}), segs[1], value, present)
         return
-    _write_slot(manifest, key, value, present)
+    _write_slot(manifest, head if len(segs) == 1 else ".".join(segs),
+                value, present)
 
 
 def _write_entry(seq, eid, rest, value, present, subdicts, key) -> None:
@@ -338,7 +373,8 @@ def _write_entry(seq, eid, rest, value, present, subdicts, key) -> None:
     if len(rest) == 2 and rest[0] in subdicts:
         _write_slot(entry.setdefault(rest[0], {}), rest[1], value, present)
     else:
-        _write_slot(entry, ".".join(rest), value, present)
+        _write_slot(entry, rest[0] if len(rest) == 1 else ".".join(rest),
+                    value, present)
 
 
 def _write_slot(container, key, value, present) -> None:

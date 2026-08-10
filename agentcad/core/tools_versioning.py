@@ -4,7 +4,9 @@ Installs the two seams the feature needs and exposes them as tools:
 ``BranchManager`` (which registers ``ProjectStore.branch_resolver``, making
 every authored-state read and write follow the calling client's branch) and
 ``MergeOrchestrator``. Both live on the service so route packs and the chat
-agent reach the same objects.
+agent reach the same objects. A third, smaller seam — ``install_write_guard``
+— makes the store's write path branch-safe (see its docstring); it is exported
+so tests can wire exactly what the pack wires.
 
 The whole pack self-disables when git is not on PATH — no tools, no resolver,
 no seams — so the product degrades to today's linear history rather than
@@ -31,17 +33,34 @@ _RESOLVE_RECIPE = (
 )
 
 
+def install_write_guard(service) -> None:
+    """Make every persistent mutation branch-safe.
+
+    Two things, in this order, because the second depends on the first:
+
+    1. ``ensure_checkout`` — the calling client's branch tree must exist. A
+       tree that vanished makes the (deliberately total) read-path resolver
+       fall back to the project directory, and a *write* that followed that
+       fallback would land on the default branch.
+    2. the turn lock, keyed by the caller's resolved working tree, so turn
+       locks and undo stacks are per-branch.
+    """
+    def guard(proj: str) -> None:
+        service.branches.ensure_checkout(proj)
+        service.turnlock.check(
+            service.store.lock_key(proj), locks.current_client_id()
+        )
+
+    service.store.write_guard = guard
+
+
 def register(registry, service) -> None:
     if not service.history.available():
         return  # no git: branches, versions and merges cannot run at all
 
     service.branches = BranchManager(service)
     service.merges = MergeOrchestrator(service)
-    # Turn locks and undo stacks become per-branch: the key is the caller's
-    # resolved working tree (the project name while branching is inactive).
-    service.store.write_guard = lambda proj: service.turnlock.check(
-        service.store.lock_key(proj), locks.current_client_id()
-    )
+    install_write_guard(service)
 
     def branch_create(project: str, name: str, **kwargs) -> dict:
         return service.branches.create(project, name, kwargs.get("from"))

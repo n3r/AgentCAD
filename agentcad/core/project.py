@@ -46,6 +46,10 @@ class ProjectStore:
         # the project name before every persistent mutation — save_manifest
         # (which all pack mutations funnel through) and write_script — and may
         # raise (ConflictError) to reject the write. None means unguarded.
+        # It runs BEFORE _resolve() on purpose: the versioning pack's guard is
+        # also what re-materializes a branch working tree that went missing,
+        # so the path this write lands on is the one the guard just vouched
+        # for (see tools_versioning.install_write_guard).
         self.write_guard: Callable[[str], None] | None = None
         # Branch resolver (set post-init by the versioning pack's
         # BranchManager): maps (project, canonical path) to the working tree

@@ -14,10 +14,12 @@
 Body keys are whitelisted per route (the registry rejects unknown arguments,
 and ``null`` must read as "omitted", not as an argument). Ordinary failures
 are re-raised as ``NotFoundError``/``ValidationError``/``ConflictError`` so the
-app's handlers map them to 404/422/409 like every other REST route;
-``merge_conflict`` is deliberately NOT one of those — it comes back as an
-``{"error": …}`` body at HTTP 200, the way /api/tools/* passthroughs do, so a
-UI can render the conflict list instead of an error page.
+app's handlers map them to 404/422/409 like every other REST route, and any
+OTHER error type (``invalid_arguments``, a kernel error, …) is a 422 rather
+than a 200 body nobody inspects. ``merge_conflict`` is the single deliberate
+exception — it comes back as an ``{"error": …}`` body at HTTP 200, the way
+/api/tools/* passthroughs do, so a UI can render the conflict list instead of
+an error page.
 """
 
 from __future__ import annotations
@@ -32,13 +34,25 @@ _RAISE = {
     "conflict_error": ConflictError,
 }
 
+# The ONE error type that is a legitimate HTTP 200 body: a UI renders the
+# conflict list rather than an error page.
+_BODY_ERRORS = {"merge_conflict"}
+
 
 def _result(payload: dict) -> dict:
+    """Registry payload → response, mapping every error but ``merge_conflict``
+    to an HTTP error.
+
+    Whitelisting the three known types let everything else — ``invalid_arguments``
+    from the registry's own schema check, a kernel error, a type a future pack
+    introduces — leak as a 200 with an ``{"error": …}`` body that no caller
+    checks for. Unknown types are a 422: a request the server would not carry
+    out is not a success.
+    """
     error = payload.get("error") if isinstance(payload, dict) else None
-    if isinstance(error, dict):
-        cls = _RAISE.get(error.get("type"))
-        if cls is not None:
-            raise cls(error.get("message", ""), error.get("details"))
+    if isinstance(error, dict) and error.get("type") not in _BODY_ERRORS:
+        cls = _RAISE.get(error.get("type"), ValidationError)
+        raise cls(error.get("message", ""), error.get("details"))
     return payload
 
 

@@ -236,6 +236,19 @@ input, textarea { font: inherit; color: inherit; }
 .menu-item .meta { color: var(--dim); font-size: 11px; font-family: var(--mono); }
 .menu-item:disabled { color: var(--faint); cursor: default; }
 .menu-item:disabled:hover { background: none; }
+/* a menu entry with a trailing action (branch rows: switch + delete) —
+   two sibling buttons, never a button nested inside a button */
+.menu-row { display: flex; align-items: center; gap: 2px; }
+.menu-row .menu-item { flex: 1; min-width: 0; }
+.menu-del {
+  flex: none;
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--dim);
+}
+.menu-del:hover { background: var(--err-soft); color: var(--err); }
 .menu-sep { height: 1px; background: var(--hairline-soft); margin: 4px 6px; }
 .menu-label {
   padding: 6px 9px 3px;

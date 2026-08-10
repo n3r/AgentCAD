@@ -328,3 +328,38 @@ def test_undo_after_a_merge_restores_the_pre_merge_target(demo):
     assert "error" not in undone, undone
     assert (canonical / "parts" / "box.py").read_bytes() == before
     assert service.history.head(canonical) != head_before  # linear restore commit
+
+
+# ------------------------- X7: only merge_conflict is a 200 error body
+
+
+def test_x7_invalid_arguments_are_an_http_error_not_a_200_body(client):
+    """_result() mapped three error types; everything else — invalid_arguments
+    from the registry's own schema check included — leaked at HTTP 200."""
+    _service, _registry, http = client
+    assert http.post("/api/projects", json={"name": "demo"}).status_code == 201
+
+    resp = http.post("/api/projects/demo/versions", json={"name": 123})
+
+    assert resp.status_code == 422, resp.text
+    assert "name" in resp.json()["error"]["message"]
+
+
+def test_x7_a_merge_conflict_still_comes_back_at_http_200(client):
+    service, registry, http = client
+    assert http.post("/api/projects", json={"name": "demo"}).status_code == 201
+    assert "error" not in registry.call(
+        "create_part", {"project": "demo", "part_id": "box", "script": BOX_SCRIPT})
+    service.branches.create("demo", "feat")
+    locks.set_client_id("agent_a")
+    service.branches.switch("demo", "feat")
+    registry.call("update_part_script",
+                  {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT})
+    locks.set_client_id("local")
+    registry.call("update_part_script",
+                  {"project": "demo", "part_id": "box", "script": BOX_V3_SCRIPT})
+
+    resp = http.post("/api/projects/demo/merge", json={"source": "feat"})
+
+    assert resp.status_code == 200
+    assert resp.json()["error"]["type"] == "merge_conflict"

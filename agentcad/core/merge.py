@@ -21,19 +21,24 @@ type string. Nothing outside ``.history/agentcad/`` is touched while conflicts
 are outstanding — the merge is staged in a detached worktree until it is
 resolved (``resolve_merge``) or discarded (``merge_abort``).
 
-Before a merge lands, the staged tree is validated by the real kernel: changed
-parts rebuild, mates re-resolve, and interference is re-checked. Validation
-runs through the *ordinary* service methods with the branch resolver pinned to
-the staged worktree (``BranchManager.pinned``), so the mesh cache, the kernel
-pool and the mates resolver are reused verbatim — a part already built on
-either branch is a cache hit. Failures block by default; ``allow_invalid``
-lands the merge with the failures recorded in the commit message and returned
-to the caller.
+Before a merge lands — fast-forward included, FR9 has no exemption — the merged
+tree is validated by the real kernel: changed parts rebuild, mates re-resolve,
+and interference is re-checked. Validation runs through the *ordinary* service
+methods with the branch resolver pinned to the merged worktree
+(``BranchManager.pinned``), so the mesh cache, the kernel pool and the mates
+resolver are reused verbatim — a part already built on either branch is a cache
+hit. Failures block by default; ``allow_invalid`` lands the merge with the
+failures recorded in the commit message and returned to the caller.
 
 Finalization is a ``commit-tree`` with both parents plus a compare-and-swap
 ``update-ref``: a commit that landed on the target while the merge was staged
 fails the swap and surfaces as a ``conflict_error`` instead of silently
-clobbering it.
+clobbering it. The CAS guards the REF; the target branch's **turn lock is held
+across validation and finalization** to guard the BYTES, because the
+``reset --hard`` that syncs the tree would otherwise destroy a write that
+arrived while the kernel was busy. And because ``update-ref`` has to precede
+that sync, a failed sync rolls the ref back under its own CAS — a branch never
+ends up pointing at a commit its working tree never received.
 """
 
 from __future__ import annotations
@@ -46,6 +51,7 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from ..kernel.client import KernelError
@@ -201,25 +207,27 @@ class MergeOrchestrator:
         self._require_clean(target_tree, target)
         self._require_clean(source_tree, source)
 
-        target_head = self.history.resolve_ref(canonical, target)
-        source_head = self.history.resolve_ref(canonical, source)
+        target_head = self.history.resolve_branch(canonical, target)
+        source_head = self.history.resolve_branch(canonical, source)
         base = self._merge_base(canonical, target, source)
         if base == source_head:
             return {"already_up_to_date": True, "source": source,
                     "target": target, "commit": target_head,
                     "validation": None}
         if base == target_head:
-            return self._fast_forward(proj, canonical, source, target,
-                                      target_tree, target_head, source_head)
+            return self._fast_forward(
+                proj, canonical, source, target, target_tree, source_tree,
+                target_head, source_head, allow_invalid=allow_invalid,
+            )
 
         tree_oid, stages = self._merge_tree(canonical, target_head, source_head)
         conflicts, bodies = self._file_conflicts(
             canonical, stages, target, source
         )
         merged, manifest_conflicts = merge_manifests(
-            self._manifest_at(canonical, base),
-            self._manifest_at(canonical, target_head),
-            self._manifest_at(canonical, source_head),
+            self._manifest_at(canonical, base, f"merge base {base[:8]}"),
+            self._manifest_at(canonical, target_head, target),
+            self._manifest_at(canonical, source_head, source),
         )
         conflicts.extend(manifest_conflicts)
 
@@ -271,51 +279,79 @@ class MergeOrchestrator:
         if outstanding:
             return self._conflict_payload(state)
 
-        report = self._validate(
-            proj, canonical, staged["dir"], target_tree, target_head,
-            final_tree, merged,
-        )
-        if not report["ok"] and not allow_invalid:
-            report["blocked"] = True
-            raise ValidationError(
-                f"merge of {source!r} into {target!r} failed validation; "
-                "fix the source branch or re-run with allow_invalid: true",
-                {"merge_id": state["id"], "source": source, "target": target,
-                 "validation": report},
+        with self._holding_target(proj, target_tree):
+            report = self._validate(
+                proj, canonical, staged["dir"], target_tree, target_head,
+                final_tree, merged, target_ref=target,
             )
-        report["blocked"] = False
-        return self._finalize(proj, canonical, state, report, target_tree)
+            if not report["ok"] and not allow_invalid:
+                report["blocked"] = True
+                raise ValidationError(
+                    f"merge of {source!r} into {target!r} failed validation; "
+                    "fix the source branch or re-run with allow_invalid: true",
+                    {"merge_id": state["id"], "source": source,
+                     "target": target, "validation": report},
+                )
+            report["blocked"] = False
+            return self._finalize(proj, canonical, state, report, target_tree)
 
     def _fast_forward(self, proj, canonical, source, target, target_tree,
-                      target_head, source_head) -> dict:
-        """The target has nothing of its own: move the ref and the tree. No
-        validation pass — the result is a state that already existed and was
-        validated as it was built."""
-        cas = self._run(canonical, "update-ref", f"refs/heads/{target}",
-                        source_head, target_head, check=False)
-        if cas.returncode != 0:
-            raise ConflictError(
-                f"branch {target!r} moved while merging; try again",
-                {"expected": target_head},
+                      source_tree, target_head, source_head, *,
+                      allow_invalid) -> dict:
+        """The target has nothing of its own: move the ref and the tree.
+
+        Validated all the same — FR9 has no fast-forward exemption. "A state
+        that already existed" is not "a state that was validated": an edit
+        persists before its rebuild fails, so a branch can carry a script that
+        does not build, and a fast-forward used to land it with
+        ``validation: null``. Nothing is staged here — the source branch's own
+        worktree already *is* the merged tree.
+        """
+        merged = self._manifest_at(canonical, source_head, source)
+        with self._holding_target(proj, target_tree):
+            report = self._validate(
+                proj, canonical, source_tree, target_tree, target_head,
+                source_head, merged, target_ref=target,
             )
-        self._sync_tree(target_tree, source_head)
-        with self.branches.pinned(proj, target_tree):
-            # source_head's first parent is the previous commit on the SOURCE
-            # branch — a state the target never had. Undo must return the
-            # target to where it was before the fast-forward.
-            self.service.undo_cursor.on_snapshot(
-                proj, source_head, f"merge {source} into {target}",
-                undo_to=target_head,
-            )
-            project = self.service.get_project(proj)
-        self._publish(proj, source, target, source_head, None)
+            if not report["ok"] and not allow_invalid:
+                report["blocked"] = True
+                raise ValidationError(
+                    f"merge of {source!r} into {target!r} failed validation; "
+                    "fix the source branch or re-run with allow_invalid: true",
+                    {"source": source, "target": target, "fast_forward": True,
+                     "validation": report},
+                )
+            report["blocked"] = False
+            self._verify_clean(target_tree, target)
+            cas = self._run(canonical, "update-ref", f"refs/heads/{target}",
+                            source_head, target_head, check=False)
+            if cas.returncode != 0:
+                raise ConflictError(
+                    f"branch {target!r} moved while merging; try again",
+                    {"expected": target_head},
+                )
+            self._land(canonical, target, target_tree, source_head, target_head)
+            with self.branches.pinned(proj, target_tree):
+                # source_head's first parent is the previous commit on the
+                # SOURCE branch — a state the target never had. Undo must
+                # return the target to where it was before the fast-forward.
+                self.service.undo_cursor.on_snapshot(
+                    proj, source_head, f"merge {source} into {target}",
+                    undo_to=target_head,
+                )
+                project = self.service.get_project(proj)
+        self._publish(proj, source, target, source_head, report)
         return {"merged": True, "fast_forward": True, "source": source,
                 "target": target, "commit": source_head,
                 "previous": target_head, "conflicts_resolved": 0,
-                "validation": None, "project": project}
+                "validation": report, "project": project}
 
     def _finalize(self, proj, canonical, state, report, target_tree) -> dict:
         source, target = state["source"], state["target"]
+        # Immediately before the swap: the tree about to be 'reset --hard'
+        # must still be the one that was validated. The CAS below guards the
+        # REF; this guards the BYTES in the tree.
+        self._verify_clean(target_tree, target)
         message = self._commit_message(state, report)
         commit = self._run(
             canonical, "commit-tree", state["tree"],
@@ -330,7 +366,9 @@ class MergeOrchestrator:
                 "abort and merge again",
                 {"merge_id": state["id"], "expected": state["target_head"]},
             )
-        self._sync_tree(target_tree, commit)
+        self._land(canonical, target, target_tree, commit,
+                   state["target_head"])
+        # Only now: both the ref AND the tree are the merge result.
         self._discard(canonical, state)
         with self.branches.pinned(proj, target_tree):
             self.service.undo_cursor.on_snapshot(
@@ -480,13 +518,14 @@ class MergeOrchestrator:
     # ------------------------------------------------------------ validation
 
     def _validate(self, proj, canonical, staged, target_tree, target_head,
-                  final_tree, merged) -> dict:
+                  final_tree, merged, *, target_ref=None) -> dict:
         report = {
             "ok": True, "blocked": False, "built": [], "failures": [],
-            "integrity": [],
+            "integrity": [], "warnings": [],
             "interference": {"checked": 0, "new_pairs": [], "skipped": None},
         }
-        changed = self._changed_parts(canonical, target_head, final_tree, merged)
+        changed = self._changed_parts(canonical, target_head, final_tree,
+                                      merged, target_ref)
         with self.branches.pinned(proj, staged):
             for part_id in changed:
                 cached = self._is_cached(proj, part_id)
@@ -505,7 +544,10 @@ class MergeOrchestrator:
                     report["failures"].append(
                         {"part": part_id, "error": built["error"]}
                     )
-            report["integrity"] = _integrity(merged)
+            # Shape first: an instance of a missing part is meaningless if
+            # the document is not a project at all (FR9 backstop for a
+            # manifest that was hand-edited or half-deleted upstream).
+            report["integrity"] = _manifest_shape(merged) + _integrity(merged)
             if not report["integrity"] and not report["failures"]:
                 try:
                     self.service._resolved_instances(proj)
@@ -526,7 +568,17 @@ class MergeOrchestrator:
         if report["failures"] or report["integrity"]:
             info["skipped"] = "validation"
             return
-        if len(instances) < 2 or len(instances) > MERGE_INTERFERENCE_MAX_INSTANCES:
+        if len(instances) > MERGE_INTERFERENCE_MAX_INSTANCES:
+            # An accepted cap (pairs grow quadratically) — but never a silent
+            # one: an ok:true report that skipped a check has to say so.
+            info["skipped"] = "instances"
+            report["warnings"].append(
+                f"interference skipped: {len(instances)} instances > "
+                f"{MERGE_INTERFERENCE_MAX_INSTANCES}; check the merged "
+                "assembly by hand"
+            )
+            return
+        if len(instances) < 2:
             info["skipped"] = "instances"
             return
         after = self.service.check_interference(proj)
@@ -545,7 +597,8 @@ class MergeOrchestrator:
             p for p in after["pairs"] if frozenset((p["a"], p["b"])) not in seen
         ]
 
-    def _changed_parts(self, canonical, target_head, final_tree, merged) -> list[str]:
+    def _changed_parts(self, canonical, target_head, final_tree, merged,
+                       target_ref=None) -> list[str]:
         """Parts the merge changes relative to the target: script bytes from
         git, manifest entries (params, material, …) from the driver's output."""
         result = self._run(canonical, "diff", "--name-only", target_head,
@@ -556,7 +609,7 @@ class MergeOrchestrator:
             if path.startswith("parts/") and path.endswith(".py")
         }
         before = {e["id"]: e for e in self._manifest_at(
-            canonical, target_head).get("parts", [])}
+            canonical, target_head, target_ref).get("parts", [])}
         present = set()
         for entry in merged.get("parts", []):
             present.add(entry["id"])
@@ -715,9 +768,9 @@ class MergeOrchestrator:
 
     def _heads_moved(self, canonical: Path, state: dict) -> bool:
         return (
-            self.history.resolve_ref(canonical, state["target"])
+            self.history.resolve_branch(canonical, state["target"])
             != state["target_head"]
-            or self.history.resolve_ref(canonical, state["source"])
+            or self.history.resolve_branch(canonical, state["source"])
             != state["source_head"]
         )
 
@@ -753,7 +806,10 @@ class MergeOrchestrator:
         return name
 
     def _merge_base(self, canonical: Path, target: str, source: str) -> str:
-        result = self._run(canonical, "merge-base", target, source, check=False)
+        # refs/heads/…, not the bare names: a tag shadowing a branch would
+        # otherwise pick the tag's commit as one side of the base.
+        result = self._run(canonical, "merge-base", f"refs/heads/{target}",
+                           f"refs/heads/{source}", check=False)
         base = result.stdout.strip()
         if result.returncode != 0 or not base:
             raise ValidationError(
@@ -798,27 +854,123 @@ class MergeOrchestrator:
         except UnicodeDecodeError:
             return None
 
-    def _manifest_at(self, canonical: Path, commit: str) -> dict:
+    def _manifest_at(self, canonical: Path, commit: str,
+                     ref: str | None = None) -> dict:
+        """The manifest at a commit, or ``{}`` when the commit has none.
+
+        ``{}`` means "no project.json at all" — a legitimate orphan or empty
+        base — and NEVER "it did not parse". A manifest that exists but is
+        unreadable used to read as {} too, which the key-wise merge takes as
+        *this side deleted everything*: it merges clean, passes validation,
+        and blows up on the next get_project. So it is a refusal, naming the
+        ref and the file.
+        """
         result = self._run(canonical, "cat-file", "blob",
                            f"{commit}:project.json", check=False)
         if result.returncode != 0:
             return {}
         try:
             data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return {}
-        return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError as exc:
+            problem = str(exc)
+        else:
+            if isinstance(data, dict):
+                return data
+            problem = f"its top level is a {type(data).__name__}, not an object"
+        where = ref or commit[:8]
+        raise ValidationError(
+            f"project.json at {where!r} is not a readable manifest "
+            f"({problem}); a merge cannot tell an unreadable manifest from a "
+            "deleted one — fix or restore it before merging",
+            {"ref": where, "commit": commit, "file": "project.json"},
+        )
 
-    def _check_turn(self, proj: str, target_tree: Path) -> None:
+    def _turn_key(self, proj: str, target_tree: Path) -> str:
         """A merge writes the TARGET branch, so it answers to the target's turn
         lock — not the caller's branch. Pinning the resolver is how we ask the
         store for the target's key under its own rules."""
+        with self.branches.pinned(proj, target_tree):
+            return self.store.lock_key(proj)
+
+    def _check_turn(self, proj: str, target_tree: Path) -> None:
         turnlock = getattr(self.service, "turnlock", None)
         if turnlock is None:
             return
-        with self.branches.pinned(proj, target_tree):
-            key = self.store.lock_key(proj)
-        turnlock.check(key, locks.current_client_id())
+        turnlock.check(self._turn_key(proj, target_tree),
+                       locks.current_client_id())
+
+    @contextmanager
+    def _holding_target(self, proj: str, target_tree: Path):
+        """HOLD the target branch's turn across validation and finalization.
+
+        Checking the turn once, at the top of a merge, guarantees nothing: the
+        validation pass takes seconds, and any write that lands on the target
+        tree in the meantime is destroyed by the ``reset --hard`` that
+        finalizes the merge — the compare-and-swap only notices a moved REF,
+        not changed bytes. Holding the turn makes a competing writer fail with
+        the ordinary "project is locked by …" conflict instead.
+
+        A caller that already holds the turn keeps it afterwards; one that did
+        not gets it released again.
+        """
+        turnlock = getattr(self.service, "turnlock", None)
+        if turnlock is None:
+            yield
+            return
+        key = self._turn_key(proj, target_tree)
+        holder = locks.current_client_id()
+        existing = turnlock.get(key)
+        turnlock.acquire(key, holder)   # ConflictError when someone else has it
+        try:
+            yield
+        finally:
+            if existing is None or existing.get("holder") != holder:
+                turnlock.release(key, holder)
+
+    def _verify_clean(self, tree: Path, branch: str) -> None:
+        """Assert (never snapshot) that a tree is unmodified. Used at the very
+        end of a merge, where a snapshot would move the ref out from under the
+        compare-and-swap."""
+        result = self._run(tree, "status", "--porcelain", check=False)
+        if result.returncode != 0 or result.stdout.strip():
+            raise ConflictError(
+                f"branch {branch!r} was written while this merge was being "
+                "validated; nothing landed — merge again",
+                {"branch": branch, "status": result.stdout.strip()[:2000]},
+            )
+
+    def _land(self, canonical: Path, branch: str, tree: Path, commit: str,
+              previous: str) -> None:
+        """Bring ``tree`` to a ref that has already moved — and put the ref
+        back when it cannot.
+
+        ``update-ref`` has to precede ``reset --hard`` (the CAS is the whole
+        concurrency story), which means a failed reset leaves the branch
+        pointing at a commit its working tree never received: the caller sees
+        an error, but merge_abort can no longer restore anything. Roll the ref
+        back under its own CAS, keep the staged merge, and report the state
+        that really holds.
+        """
+        try:
+            self._sync_tree(tree, commit)
+        except AppError as exc:
+            rollback = self._run(canonical, "update-ref",
+                                 f"refs/heads/{branch}", previous, commit,
+                                 check=False)
+            restored = rollback.returncode == 0
+            tail = (
+                "; the branch was left where it was and the merge is still "
+                "staged — retry or abort it"
+                if restored else
+                f"; WARNING: {branch!r} now points at {commit[:8]} but its "
+                "working tree does not — restore it by hand"
+            )
+            raise ValidationError(
+                f"branch {branch!r} could not be moved to {commit[:8]}: "
+                f"{getattr(exc, 'message', exc)}{tail}",
+                {"branch": branch, "commit": commit, "previous": previous,
+                 "ref_restored": restored},
+            ) from exc
 
     def _require_clean(self, tree: Path, branch: str) -> None:
         """Every mutation snapshots itself, so a tree that is still dirty after
@@ -892,6 +1044,48 @@ def _parse_merge_tree(stdout: str):
     return tree, stages
 
 
+def _manifest_shape(manifest: dict) -> list[dict]:
+    """Is the merged document still a project?
+
+    ``get_project`` reads it seconds after the merge lands, so "loadable" is
+    part of what the validation pass promises. A key-wise merge cannot produce
+    most of this on its own — but a side whose manifest was hand-edited (or
+    whose required key one side deleted) can.
+    """
+    if not isinstance(manifest, dict) or not manifest:
+        return [{"kind": "manifest_invalid",
+                 "message": "the merged project.json is empty"}]
+    problems = []
+    if not isinstance(manifest.get("name"), str) or not manifest["name"]:
+        problems.append({"kind": "manifest_invalid",
+                         "message": "the merged project.json has no 'name'"})
+    parts = manifest.get("parts", [])
+    if not isinstance(parts, list):
+        problems.append({"kind": "manifest_invalid",
+                         "message": "'parts' is not a list"})
+    else:
+        seen = set()
+        for entry in parts:
+            if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+                problems.append({"kind": "manifest_invalid",
+                                 "message": "a part entry has no string 'id'"})
+                break
+            if entry["id"] in seen:
+                problems.append({
+                    "kind": "manifest_invalid",
+                    "message": f"duplicate part id {entry['id']!r}"})
+                break
+            seen.add(entry["id"])
+    assembly = manifest.get("assembly")
+    if assembly is not None and not isinstance(assembly, dict):
+        problems.append({"kind": "manifest_invalid",
+                         "message": "'assembly' is not an object"})
+    elif not isinstance((assembly or {}).get("instances", []), list):
+        problems.append({"kind": "manifest_invalid",
+                         "message": "'assembly.instances' is not a list"})
+    return problems
+
+
 def _integrity(manifest: dict) -> list[dict]:
     """Structural damage a clean key-wise merge can still do: an instance of a
     part the other side deleted, or a mate to an instance that is gone."""
@@ -919,7 +1113,8 @@ def _summarize(report: dict) -> str:
     for failure in report["failures"]:
         bits.append(f"build {failure['part']}")
     for problem in report["integrity"]:
-        bits.append(f"{problem['kind']} {problem.get('instance')}")
+        detail = problem.get("instance") or problem.get("message") or ""
+        bits.append(f"{problem['kind']} {detail}".strip())
     for pair in report["interference"]["new_pairs"]:
         bits.append(
             f"interference {pair['a']}<->{pair['b']} "
