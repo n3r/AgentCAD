@@ -300,8 +300,13 @@ state/packet transition — `reason` is one of `created`, `updated`, `review`,
 `POST /projects/{proj}/proposals/{id}/review`,
 `POST /projects/{proj}/proposals/{id}/merge`,
 `GET /projects/{proj}/proposals/{id}/render/{side}[/{part}]?view=iso`
-(`image/png`), `GET /projects/{proj}/proposals/{id}/diff/{part}/{kind}.acm`
-(the overlay mesh, `application/octet-stream`).
+(`image/png`),
+`GET /projects/{proj}/proposals/{id}/diff/{gen}/{part}/{kind}.acm`
+(the overlay mesh, `application/octet-stream`). `{gen}` is the packet's
+`generation` — the build its assets were published with — so a packet only ever
+serves the geometry it was persisted with; a generation that has been collected
+(or discarded) is a 404. Read the URLs off the packet rather than composing
+them.
 
 ### Sketch solving
 
@@ -507,7 +512,7 @@ argument and machine-gathered evidence in between:
    "packet": null}                       # generated lazily, on first view
 
 → proposal_packet {"project": "rig", "id": "3"}
-← {"ok": true, "stale": false, "elapsed_ms": 970,
+← {"ok": true, "stale": false, "elapsed_ms": 970, "generation": "6f1c…",
    "summary": {"parts_changed": 1, "mass_delta_g": -12.4},
    "parts": [{"part": "nozzle", "changed_by": ["script", "params"],
               "script_diff": {"unified": "@@ -12,6 +12,8 @@ …"},
@@ -517,7 +522,8 @@ argument and machine-gathered evidence in between:
                                      "delta": -12.4, "pct": -11.1}, …},
               "geom_diff": {"available": true, "added_mm3": 0.0,
                             "removed_mm3": 4593.2,
-                            "removed_mesh": "/api/…/diff/nozzle/removed.acm"},
+                            "removed_mesh":
+                                "/api/…/diff/6f1c…/nozzle/removed.acm"},
               "renders": {"view": "iso", "frame": {…},
                           "old": "/api/…/render/old/nozzle",
                           "new": "/api/…/render/new/nozzle"}}],

@@ -1176,6 +1176,118 @@ def test_an_aborted_staged_merge_leaves_the_proposal_where_it_was(parts):
     assert [e["action"] for e in detail["audit"]][-1] == "merge_discarded"
 
 
+def _rehold(service, holder: str, proj: str = "demo") -> None:
+    """Point the staged merge's ``held_by`` at another workflow — the shape a
+    merge held by a DIFFERENT proposal has on disk."""
+    path = (service.store.canonical_path_of(proj) / ".history" / "agentcad"
+            / "merge.json")
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["held_by"] = holder
+    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def _held_by(service, proj: str = "demo") -> str | None:
+    path = (service.store.canonical_path_of(proj) / ".history" / "agentcad"
+            / "merge.json")
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8")).get("held_by")
+
+
+def _stage_held_conflict(service, registry, manager) -> str:
+    """A proposal whose merge conflicted (so it holds the staged merge) with
+    one resolution recorded against it."""
+    _on(service, "agent_a", "feat")
+    _script(registry, "box", BOX_V2_SCRIPT)
+    _on(service, "browser", "master")
+    _script(registry, "box", BOX_V3_SCRIPT)
+    pid = _propose_and_approve(service, manager)
+    assert manager.merge("demo", pid)["error"]["type"] == "merge_conflict"
+    assert "error" not in registry.call("resolve_merge", {
+        "project": "demo", "choices": {"parts/box.py": {"take": "theirs"}}})
+    return pid
+
+
+@pytest.mark.slow
+def test_closing_a_proposal_aborts_the_merge_it_held(parts):
+    """D2: a hold outliving its proposal is unfinishable — nothing may complete
+    it, and the resolutions recorded against it sit there waiting to be
+    inherited by whoever merges the pair next. Closing takes it with it."""
+    service, registry, manager = parts
+    canonical = service.store.canonical_path_of("demo")
+    pid = _stage_held_conflict(service, registry, manager)
+    before = service.history.resolve_branch(canonical, "master")
+
+    locks.set_client_id("browser")
+    manager.update("demo", pid, state="closed")
+
+    assert registry.call("merge_status", {"project": "demo"})["merge"] is None
+    assert _held_by(service) is None
+    assert service.history.resolve_branch(canonical, "master") == before
+    detail = manager.get("demo", pid)
+    assert detail["proposal"]["state"] == "closed"
+    assert "staged_merge" not in detail["proposal"]
+    discarded = [e for e in detail["audit"] if e["action"] == "merge_discarded"]
+    assert len(discarded) == 1
+    assert discarded[0]["details"]["reason"] == "closed"
+    assert discarded[0]["details"]["source"] == "feat"
+
+
+@pytest.mark.slow
+def test_the_next_proposal_for_the_pair_starts_a_clean_merge(parts):
+    """H6, end to end: the second proposal for a pair whose first proposal was
+    closed must meet no hold and inherit none of its resolutions — its
+    approvers never saw them."""
+    service, registry, manager = parts
+    canonical = service.store.canonical_path_of("demo")
+    pid_a = _stage_held_conflict(service, registry, manager)
+    locks.set_client_id("browser")
+    manager.update("demo", pid_a, state="closed")
+    locks.set_client_id("chat:main")
+    pid_b = manager.create("demo", source="feat", title="B")["proposal"]["id"]
+    locks.set_client_id("browser")
+    manager.review("demo", pid_b, "approve")
+    before = service.history.resolve_branch(canonical, "master")
+
+    conflict = manager.merge("demo", pid_b)
+
+    details = conflict["error"]["details"]
+    assert conflict["error"]["type"] == "merge_conflict"
+    assert details["held_by"] == f"proposal:{pid_b}"
+    assert details["proposal"] == pid_b
+    assert details["outstanding"] == 1  # nothing was inherited from A
+    status = registry.call("merge_status", {"project": "demo"})["merge"]
+    assert status["resolved"] == [] and status["outstanding"] == 1
+    assert service.history.resolve_branch(canonical, "master") == before
+    assert manager.get("demo", pid_a)["proposal"]["state"] == "closed"
+
+
+@pytest.mark.slow
+def test_a_merge_held_by_another_proposal_is_refused_coherently(parts):
+    """The refusal names the holder and changes nothing. It used to claim the
+    merge belonged to the caller ("belongs to proposal:2, not to proposal 2")
+    while rewriting ``held_by`` to the caller — so the *second* call resumed
+    and landed another proposal's resolutions."""
+    service, registry, manager = parts
+    canonical = service.store.canonical_path_of("demo")
+    pid = _stage_held_conflict(service, registry, manager)
+    _rehold(service, "proposal:99")
+    before = service.history.resolve_branch(canonical, "master")
+
+    with pytest.raises(ConflictError) as excinfo:
+        manager.merge("demo", pid)
+
+    message = excinfo.value.message
+    assert "proposal:99" in message and "not to proposal" not in message
+    assert excinfo.value.details["held_by"] == "proposal:99"
+    assert _held_by(service) == "proposal:99"  # nothing was rewritten
+    # ...so the retry is the same refusal, not a landing
+    with pytest.raises(ConflictError):
+        manager.merge("demo", pid)
+    assert service.history.resolve_branch(canonical, "master") == before
+    assert manager.get("demo", pid)["proposal"]["state"] == "approved"
+
+
 @pytest.mark.slow
 def test_an_approved_proposal_merges_through_prd001(parts):
     service, registry, manager = parts

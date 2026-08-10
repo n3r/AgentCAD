@@ -397,21 +397,30 @@ def test_the_render_and_diff_asset_routes_serve_bytes(reviewable):
     assert png.headers["cache-control"] == "no-store"
     assert png.content[:4] == b"\x89PNG"
 
-    assert packet["parts"][0]["geom_diff"]["added_mesh"] == (
-        f"/api/projects/demo/proposals/{pid}/diff/box/added.acm")
-    mesh = http.get(f"/api/projects/demo/proposals/{pid}/diff/box/added.acm")
+    # the URL names the BUILD the packet was published with, so a packet can
+    # only ever serve the geometry it was persisted with
+    base = f"/api/projects/demo/proposals/{pid}/diff/{packet['generation']}"
+    assert packet["parts"][0]["geom_diff"]["added_mesh"] == \
+        f"{base}/box/added.acm"
+    mesh = http.get(f"{base}/box/added.acm")
     assert mesh.status_code == 200, mesh.text
     assert mesh.headers["content-type"] == "application/octet-stream"
     assert mesh.content[:4] == b"ACM1"
 
     # nothing was removed, so there is no removed mesh to serve
     assert packet["parts"][0]["geom_diff"]["removed_mesh"] is None
+    assert http.get(f"{base}/box/removed.acm").status_code == 404
+    assert http.get(f"{base}/box/sideways.acm").status_code == 422
+    # ...and neither is a generation that is not on disk, nor a segment that
+    # is not a generation at all (the builder whitelists it before it reaches
+    # the filesystem)
     assert http.get(
-        f"/api/projects/demo/proposals/{pid}/diff/box/removed.acm"
+        f"/api/projects/demo/proposals/{pid}/diff/{'0' * 16}/box/added.acm"
     ).status_code == 404
-    assert http.get(
-        f"/api/projects/demo/proposals/{pid}/diff/box/sideways.acm"
-    ).status_code == 422
+    for segment in ("notahexgeneration", "..%2f..", ".."):
+        assert http.get(
+            f"/api/projects/demo/proposals/{pid}/diff/{segment}/box/added.acm"
+        ).status_code == 404, segment
     assert http.get(
         f"/api/projects/demo/proposals/{pid}/render/new/ghost"
     ).status_code == 404
@@ -420,13 +429,14 @@ def test_the_render_and_diff_asset_routes_serve_bytes(reviewable):
 @pytest.mark.slow
 def test_an_asset_unlinked_between_the_check_and_the_read_is_a_404(
         reviewable, monkeypatch):
-    """A regeneration clears the whole diff directory, so the file a request
-    just found can be gone by the time it is read: that is a 404, never a 500
-    with a traceback in the browser console."""
+    """A regeneration collects the previous generation's directory, so the file
+    a request just found can be gone by the time it is read: that is a 404,
+    never a 500 with a traceback in the browser console."""
     _service, _registry, http, pid = reviewable
-    assert http.get(
-        f"/api/projects/demo/proposals/{pid}/packet").status_code == 200
-    url = f"/api/projects/demo/proposals/{pid}/diff/box/added.acm"
+    packet = http.get(f"/api/projects/demo/proposals/{pid}/packet")
+    assert packet.status_code == 200
+    url = (f"/api/projects/demo/proposals/{pid}/"
+           f"diff/{packet.json()['generation']}/box/added.acm")
     assert http.get(url).status_code == 200
 
     inner = Path.read_bytes

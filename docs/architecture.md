@@ -272,8 +272,14 @@ whole pack **declines to register when `git` is absent**.
     ├── audit.jsonl            # append-only: {seq, ts, actor, actor_kind, action, details}
     ├── packet.json            # the generated evidence, pinned to both heads
     ├── renders/<part>.<side>.<view>.png
-    └── diff/<part>.<added|removed>.acm
+    └── diff/<generation>/<part>.<added|removed>.acm
 ```
+
+Diff meshes are namespaced by the **build** that wrote them (`packet.generation`,
+which the asset URLs carry): a packet is published together with its assets, so
+a build the merge overtook is discarded *with its directory* and a frozen
+packet's URLs keep naming the geometry it was persisted with. A build that
+persists collects the older generations under its slot.
 
 `audit.jsonl` is the one file that is **appended**, never atomically replaced:
 FR14 makes it append-only, and a read-modify-replace cycle would both break

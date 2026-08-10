@@ -272,9 +272,15 @@ function renderConflicts() {
   if (!staged.conflicts.length) {
     const done = document.createElement("div");
     done.className = "conflict-note";
-    done.textContent =
-      "Every conflict is resolved. Complete the merge to run the validation " +
-      "pass and land it.";
+    // A held merge does not complete here, so it must not be told to: the
+    // Complete button beside this note is disabled, and the merge lands in
+    // the proposal that holds it (where its gates are re-checked first).
+    done.textContent = staged.held_by
+      ? "Every conflict is resolved and recorded. This merge belongs to " +
+        `${staged.held_by}: it completes there, after that proposal's gates ` +
+        "are re-checked."
+      : "Every conflict is resolved. Complete the merge to run the validation " +
+        "pass and land it.";
     list.appendChild(done);
   }
 

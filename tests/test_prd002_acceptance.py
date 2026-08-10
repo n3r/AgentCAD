@@ -352,11 +352,13 @@ def test_ac3_drilled_hole_reports_removed_volume(demo):
     assert diff["removed_mm3"] == pytest.approx(HOLE_MM3, rel=0.01)
     assert diff["added_mm3"] == 0.0
     assert diff["added_mesh"] is None
-    assert diff["removed_mesh"] == \
-        f"/api/projects/demo/proposals/{pid}/diff/box/removed.acm"
+    assert diff["removed_mesh"] == (
+        f"/api/projects/demo/proposals/{pid}/diff/{packet['generation']}"
+        "/box/removed.acm")
 
     # the overlay's payload: a real ACM1 mesh, served by the asset route
-    mesh = service.proposals.store.asset_dir("demo", pid, "diff") / "box.removed.acm"
+    mesh = (service.proposals.store.asset_dir("demo", pid, "diff")
+            / packet["generation"] / "box.removed.acm")
     assert mesh.read_bytes()[:4] == b"ACM1"
     assert len(acm.read(mesh)["indices"]) > 0
     app = create_app(service, registry, extra_allowed_hosts={"testserver"})

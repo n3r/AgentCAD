@@ -37,6 +37,13 @@ freeze: a **terminal** proposal is never measured again, because the packet a
 late viewer would get describes the merged target and whatever else has landed
 since, under this proposal's name. Merging records the absence of a packet as a
 frozen one that says so.
+
+**Assets belong to a generation, not to a path.** Every build writes its diff
+meshes under ``diff/<generation>/`` and its URLs carry that segment, and the
+packet is published together with them: a build the merge overtook is discarded
+*with its directory*, so a frozen packet's URLs keep naming the geometry it was
+persisted with. A build that persists deletes the older generations under its
+slot. Evidence that can be replaced behind the reader's back is not evidence.
 """
 
 from __future__ import annotations
@@ -45,9 +52,12 @@ import ast
 import base64
 import hashlib
 import json
+import re
+import shutil
 import threading
 import time
 import urllib.parse
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -89,6 +99,12 @@ _PARAM_FIELDS = ("default", "min", "max", "type", "unit", "choices",
                  "description")
 
 _MISSING = object()
+
+# A build's diff meshes live under ``diff/<generation>/`` and its URLs carry
+# that segment, so a build that is DISCARDED takes its own geometry with it
+# instead of having replaced the frozen packet's. Hex, and whitelisted before
+# it reaches the filesystem — it arrives from a URL path segment.
+_GENERATION_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 def _norm(value) -> str:
@@ -548,12 +564,18 @@ class PacketBuilder:
         and if it moves a *second* time the packet is persisted marked
         ``stale`` rather than pretending. Mixed evidence labelled ``stale:
         false`` is the one outcome that is not allowed.
+
+        A packet is published TOGETHER with its generation's diff meshes: the
+        packet.json and the assets its URLs name land (or are thrown away) as
+        one thing. Only a build that persists owns a directory.
         """
         pid = proposal["id"]
         canonical = self.service.store.canonical_path_of(proj)
         packet, heads = self._measure(proj, proposal)
+        generations = [packet["generation"]]
         if self._heads_now(canonical, proposal) != heads:
             packet, heads = self._measure(proj, proposal)
+            generations.append(packet["generation"])
             if self._heads_now(canonical, proposal) != heads:
                 packet["stale"] = True
                 packet["warnings"].append(
@@ -562,7 +584,10 @@ class PacketBuilder:
         if not self._persist(proj, pid, packet):
             # The proposal reached a terminal state while we measured: this
             # build describes a decision that has already been made on other
-            # evidence, so it is thrown away rather than published over it.
+            # evidence, so it is thrown away rather than published over it —
+            # its meshes with it, so the frozen packet's URLs keep naming the
+            # generation they were persisted with.
+            self._drop_generations(proj, pid, generations)
             frozen = self.load(proj, self._store().load(proj, pid))
             if frozen is not None:
                 return frozen
@@ -572,6 +597,7 @@ class PacketBuilder:
                 "published after the decision",
                 {"id": pid},
             )
+        self._publish_generation(proj, pid, packet["generation"])
         return packet
 
     def _measure(self, proj: str, proposal: dict) -> tuple[dict, dict]:
@@ -580,6 +606,8 @@ class PacketBuilder:
         started = time.monotonic()
         branches = self._branches()
         pid = proposal["id"]
+        # This pass's own asset namespace, decided before anything is written.
+        generation = uuid.uuid4().hex[:16]
         source, target = proposal["source"], proposal["target"]
         canonical = self.service.store.canonical_path_of(proj)
 
@@ -616,20 +644,19 @@ class PacketBuilder:
         scripts = {path[len("parts/"):-len(".py")] for path in paths
                    if path.startswith("parts/") and path.endswith(".py")}
 
-        # Every generation owns the whole diff directory, not only the parts it
-        # writes: a part this packet no longer has must not keep serving the
-        # previous generation's mesh from its predictable URL.
-        self._clear_diff_assets(proj, pid)
         rows = changed_parts(manifests["old"], manifests["new"], scripts)
         parts = [
-            self._part_section(proj, pid, row, manifests, trees, diffs,
-                               canonical, heads, warnings, errors)
+            self._part_section(proj, pid, generation, row, manifests, trees,
+                               diffs, canonical, heads, warnings, errors)
             for row in rows
         ]
         assembly = self._assembly_section(proj, trees, errors)
         actor = locks.current_client_id()
         packet = {
             "proposal": pid,
+            # Which build's diff meshes this packet's URLs name. A packet only
+            # ever advertises assets that were published with it.
+            "generation": generation,
             # False only when the evidence itself could not be READ (a git
             # command that failed): a per-part stage that degrades is still a
             # packet, and says so in its own section (FR8).
@@ -698,9 +725,26 @@ class PacketBuilder:
                 except ConflictError:
                     pass  # our hold expired and another client took the turn
 
-    def _clear_diff_assets(self, proj: str, pid: str) -> None:
-        for path in self._asset_dir(proj, pid, "diff").glob("*"):
-            if path.is_file():
+    def _drop_generations(self, proj: str, pid: str,
+                          generations: list[str]) -> None:
+        """Throw away the diff meshes of builds that were never published."""
+        for generation in generations:
+            shutil.rmtree(self._diff_dir(proj, pid, generation),
+                          ignore_errors=True)
+
+    def _publish_generation(self, proj: str, pid: str, generation: str) -> None:
+        """The persisted packet's generation is the only one worth keeping.
+
+        Everything else under the build slot belongs to a packet this one has
+        just replaced — including the flat ``<part>.<kind>.acm`` files a store
+        written before generations existed still has.
+        """
+        for path in self._asset_dir(proj, pid, "diff").iterdir():
+            if path.name == generation:
+                continue
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
                 path.unlink(missing_ok=True)
 
     def render(self, proj: str, pid: str, side: str, part: str | None = None,
@@ -762,24 +806,35 @@ class PacketBuilder:
         ProjectStore._atomic_write(stored, png)
         return _render_result(stored, view, side, part, png)
 
-    def diff_mesh_path(self, proj: str, pid: str, part: str, kind: str) -> Path:
-        """The ACM1 diff mesh a packet URL points at (the REST asset route)."""
+    def diff_mesh_path(self, proj: str, pid: str, generation: str, part: str,
+                       kind: str) -> Path:
+        """The ACM1 diff mesh a packet URL points at (the REST asset route).
+
+        A generation that is not on disk is a miss like any other: the packet
+        that owned it has been replaced (or discarded), and 404 is the honest
+        answer — never another generation's geometry under the same name.
+        """
         if kind not in _DIFF_KINDS:
             raise ValidationError(
                 f"kind must be one of: {', '.join(_DIFF_KINDS)}",
                 {"allowed": list(_DIFF_KINDS)})
-        path = self._diff_path(proj, pid, _part_name(part), kind)
-        if not path.is_file():
+        path = None
+        if _GENERATION_RE.match(generation or ""):
+            path = self._diff_path(proj, pid, generation, _part_name(part),
+                                   kind)
+        if path is None or not path.is_file():
             raise NotFoundError(
                 f"proposal {pid} has no {kind} geometry for part {part!r}",
-                {"id": pid, "part": part, "kind": kind})
+                {"id": pid, "part": part, "kind": kind,
+                 "generation": generation})
         return path
 
     # --------------------------------------------------------- per-part work
 
-    def _part_section(self, proj: str, pid: str, row: dict, manifests: dict,
-                      trees: dict, diffs: dict, canonical: Path, heads: dict,
-                      warnings: list, errors: list) -> dict:
+    def _part_section(self, proj: str, pid: str, generation: str, row: dict,
+                      manifests: dict, trees: dict, diffs: dict,
+                      canonical: Path, heads: dict, warnings: list,
+                      errors: list) -> dict:
         part_id = row["part"]
         entries = {side: _parts_by_id(manifests[side]).get(part_id) or {}
                    for side in _SIDES}
@@ -822,7 +877,8 @@ class PacketBuilder:
             warnings.append(
                 f"{part_id}: imported mesh (STL) — its 'center of mass' is the "
                 "bounding-box center, so no delta is reported")
-        section["geom_diff"] = self._geom_diff(proj, pid, part_id, states, errors)
+        section["geom_diff"] = self._geom_diff(proj, pid, generation, part_id,
+                                               states, errors)
         section["renders"] = self._renders(proj, pid, part_id, states, trees,
                                            warnings, errors)
         return section
@@ -859,8 +915,8 @@ class PacketBuilder:
         return {"script": self.service.store.read_script(proj, record.id),
                 "params": record.params}
 
-    def _geom_diff(self, proj: str, pid: str, part_id: str, states: dict,
-                   errors: list) -> dict:
+    def _geom_diff(self, proj: str, pid: str, generation: str, part_id: str,
+                   states: dict, errors: list) -> dict:
         for side in _SIDES:
             if states[side].get("unreadable"):
                 return {"available": False, "unchanged": False,
@@ -885,10 +941,9 @@ class PacketBuilder:
                     "reason": "imported mesh geometry cannot take part in "
                               "booleans", "skipped": "mesh"}
 
-        paths = {kind: self._diff_path(proj, pid, part_id, kind)
+        paths = {kind: self._diff_path(proj, pid, generation, part_id, kind)
                  for kind in _DIFF_KINDS}
-        for path in paths.values():
-            path.unlink(missing_ok=True)  # never serve a previous generation
+        self._diff_dir(proj, pid, generation).mkdir(parents=True, exist_ok=True)
         params = {
             "old": states["old"].get("item"),
             "new": states["new"].get("item"),
@@ -921,9 +976,11 @@ class PacketBuilder:
             "removed_mm3": float(result.get("removed_mm3") or 0.0),
             # A zero-volume side writes NO file: null tells the UI there is
             # nothing to overlay.
-            "added_mesh": self._diff_url(proj, pid, part_id, "added")
+            "added_mesh": self._diff_url(proj, pid, generation, part_id,
+                                         "added")
             if result.get("added_triangles") else None,
-            "removed_mesh": self._diff_url(proj, pid, part_id, "removed")
+            "removed_mesh": self._diff_url(proj, pid, generation, part_id,
+                                           "removed")
             if result.get("removed_triangles") else None,
             "skipped": None,
         }
@@ -1196,14 +1253,21 @@ class PacketBuilder:
         return self._asset_dir(proj, pid, "renders") \
             / f"{_part_name(part)}.{side}.{view}.png"
 
-    def _diff_path(self, proj: str, pid: str, part: str, kind: str) -> Path:
-        return self._asset_dir(proj, pid, "diff") / f"{_part_name(part)}.{kind}.acm"
+    def _diff_dir(self, proj: str, pid: str, generation: str) -> Path:
+        return self._asset_dir(proj, pid, "diff") / generation
+
+    def _diff_path(self, proj: str, pid: str, generation: str, part: str,
+                   kind: str) -> Path:
+        return self._diff_dir(proj, pid, generation) \
+            / f"{_part_name(part)}.{kind}.acm"
 
     def _render_url(self, proj: str, pid: str, part: str, side: str) -> str:
         return f"{self._base_url(proj, pid)}/render/{side}/{_quote(part)}"
 
-    def _diff_url(self, proj: str, pid: str, part: str, kind: str) -> str:
-        return f"{self._base_url(proj, pid)}/diff/{_quote(part)}/{kind}.acm"
+    def _diff_url(self, proj: str, pid: str, generation: str, part: str,
+                  kind: str) -> str:
+        return (f"{self._base_url(proj, pid)}/diff/{_quote(generation)}"
+                f"/{_quote(part)}/{kind}.acm")
 
     @staticmethod
     def _base_url(proj: str, pid: str) -> str:

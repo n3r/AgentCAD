@@ -13,6 +13,7 @@ The budget case (AC2) measures a *warm* regeneration on a copy of
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import shutil
@@ -61,6 +62,11 @@ def build(p):
 CUBE_HOLE = CUBE.replace(
     "    return Box(p.s, p.s, p.s)\n",
     "    return Box(p.s, p.s, p.s) - Cylinder(3.0, p.s * 2)\n",
+)
+
+CUBE_WIDER_HOLE = CUBE.replace(
+    "    return Box(p.s, p.s, p.s)\n",
+    "    return Box(p.s, p.s, p.s) - Cylinder(6.0, p.s * 2)\n",
 )
 
 BROKEN_SCRIPT = CUBE.replace("return Box(p.s, p.s, p.s)", "return no_such_name")
@@ -554,8 +560,10 @@ class TestPacketBuilder:
         assert diff["added_mm3"] == 0.0
         assert diff["added_mesh"] is None
         assert diff["removed_mesh"] == (
-            f"/api/projects/demo/proposals/{pid}/diff/box/removed.acm")
-        mesh = service.proposals.store.asset_dir("demo", pid, "diff") / "box.removed.acm"
+            f"/api/projects/demo/proposals/{pid}/diff/{packet['generation']}"
+            "/box/removed.acm")
+        mesh = (service.proposals.store.asset_dir("demo", pid, "diff")
+                / packet["generation"] / "box.removed.acm")
         assert mesh.read_bytes()[:4] == b"ACM1"
         assert len(acm.read(mesh)["indices"]) > 0
 
@@ -823,9 +831,10 @@ class TestPacketBuilder:
         assert "error" not in _script(registry, "box", CUBE_HOLE)
         pid = self._propose(registry)
         builder = PacketBuilder(service)
-        assert builder.packet("demo", pid)["parts"][0]["geom_diff"]["available"]
+        first = builder.packet("demo", pid)
+        assert first["parts"][0]["geom_diff"]["available"]
         diff_dir = service.proposals.store.asset_dir("demo", pid, "diff")
-        assert list(diff_dir.glob("box.*.acm"))
+        assert list(diff_dir.glob("*/box.*.acm"))
 
         # the source goes back to what the target has: the proposal now
         # changes nothing, so the packet has no part rows at all
@@ -835,7 +844,8 @@ class TestPacketBuilder:
 
         assert list(diff_dir.glob("*")) == []
         with pytest.raises(NotFoundError):
-            service.packets.diff_mesh_path("demo", pid, "box", "removed")
+            service.packets.diff_mesh_path(
+                "demo", pid, first["generation"], "box", "removed")
 
     def test_a_frozen_packet_refuses_to_regenerate(self, demo):
         """FR12: the evidence a decision was made on is never regenerated."""
@@ -1003,6 +1013,95 @@ class TestPacketBuilder:
             "packet_generated") == 1
 
     @pytest.mark.slow
+    def test_a_discarded_build_leaves_the_frozen_packets_meshes_alone(
+            self, demo, monkeypatch):
+        """D1: the packet.json of a build that lost the race to the merge was
+        correctly discarded — but its diff meshes had already been written over
+        the frozen packet's, at the same generation-less paths, so the frozen
+        packet's URLs served the discarded build's geometry. Each build's
+        meshes live under its own generation, and only a packet that persists
+        keeps its own."""
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE_HOLE)
+        pid = self._propose(registry)
+        builder = PacketBuilder(service)
+        first = builder.packet("demo", pid)  # the packet the merge will freeze
+        generation = first["generation"]
+        url = first["parts"][0]["geom_diff"]["removed_mesh"]
+        mesh = service.packets.diff_mesh_path(
+            "demo", pid, generation, "box", "removed")
+        digest = hashlib.sha256(mesh.read_bytes()).hexdigest()
+
+        # the source moves on, so the discarded build measures a DIFFERENT hole
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE_WIDER_HOLE)
+        ready, release = threading.Event(), threading.Event()
+        inner = PacketBuilder._persist
+
+        def waiting(self, proj, pid_, packet):
+            ready.set()
+            release.wait(120)
+            return inner(self, proj, pid_, packet)
+
+        monkeypatch.setattr(PacketBuilder, "_persist", waiting)
+        out: dict = {}
+
+        def rebuild() -> None:
+            locks.set_client_id("chat:main")
+            try:
+                out["packet"] = builder.packet("demo", pid, regenerate=True)
+            except Exception as exc:  # noqa: BLE001 — reported by the test
+                out["error"] = exc
+
+        thread = threading.Thread(target=rebuild)
+        thread.start()
+        try:
+            assert ready.wait(300), "the build never reached its persist"
+            _on(service, "browser", "master")
+            self._approve_and_merge(registry, pid)
+        finally:
+            release.set()
+            thread.join(300)
+
+        assert "error" not in out, out
+        frozen = out["packet"]
+        assert frozen["frozen"] is True
+        assert frozen["generation"] == generation
+        assert frozen["parts"][0]["geom_diff"]["removed_mesh"] == url
+        # the bytes the decision was made on, to the digest
+        assert hashlib.sha256(mesh.read_bytes()).hexdigest() == digest
+        assert service.packets.diff_mesh_path(
+            "demo", pid, generation, "box", "removed") == mesh
+        # ...and the discarded build left nothing behind
+        diff_dir = service.proposals.store.asset_dir("demo", pid, "diff")
+        assert [p.name for p in diff_dir.iterdir()] == [generation]
+
+    @pytest.mark.slow
+    def test_a_regeneration_garbage_collects_the_previous_generation(self, demo):
+        """The other half of D1: per-generation directories must not
+        accumulate. The packet that persisted owns the only one that survives."""
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE_HOLE)
+        pid = self._propose(registry)
+        builder = PacketBuilder(service)
+        first = builder.packet("demo", pid)
+        _on(service, "agent_a", "feat")
+        assert "error" not in _script(registry, "box", CUBE_WIDER_HOLE)
+
+        second = builder.packet("demo", pid, regenerate=True)
+
+        assert second["generation"] != first["generation"]
+        diff_dir = service.proposals.store.asset_dir("demo", pid, "diff")
+        assert [p.name for p in diff_dir.iterdir()] == [second["generation"]]
+        assert service.packets.diff_mesh_path(
+            "demo", pid, second["generation"], "box", "removed").is_file()
+        with pytest.raises(NotFoundError):
+            service.packets.diff_mesh_path(
+                "demo", pid, first["generation"], "box", "removed")
+
+    @pytest.mark.slow
     def test_a_merge_cannot_interleave_a_packets_read_modify_write(
             self, demo, monkeypatch):
         """The other direction of the same race: while the packet's
@@ -1114,7 +1213,7 @@ class TestPacketBuilder:
             assert section["geom_diff"]["available"] is True
             assert section["geom_diff"]["removed_mesh"]
             assert service.packets.diff_mesh_path(
-                "demo", pid, "box", "removed").is_file()
+                "demo", pid, packet["generation"], "box", "removed").is_file()
             for side in ("old", "new"):
                 assert section["renders"][side]
                 assert (service.proposals.store.asset_dir("demo", pid, "renders")

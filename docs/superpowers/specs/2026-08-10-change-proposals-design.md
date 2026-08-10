@@ -127,7 +127,7 @@ installs the store guard (Decision 7).
     audit.jsonl               append-only, one JSON object per line (FR14)
     packet.json               the generated packet (Decision 4)
     renders/<part>.<side>.<view>.png
-    diff/<part>.added.acm  ·  diff/<part>.removed.acm
+    diff/<generation>/<part>.added.acm  ·  diff/<generation>/<part>.removed.acm
 ```
 
 **Why not the PRD's `<project>/.proposals/`.** Three reasons, in order of
@@ -361,7 +361,7 @@ it. Shape (abridged; every key below is normative):
     "geom_diff": {"available": true, "unchanged": false,
                   "added_mm3": 0.0, "removed_mm3": 812.4,
                   "added_mesh": null,
-                  "removed_mesh": "/api/projects/rocketry/proposals/3/diff/nozzle/removed.acm",
+                  "removed_mesh": "/api/projects/rocketry/proposals/3/diff/6f1c…/nozzle/removed.acm",
                   "skipped": null},
     "renders": {"view": "iso", "width": 640, "height": 480,
                 "frame": {"min": […], "max": […]},
@@ -835,7 +835,7 @@ POST   /api/projects/{proj}/proposals/{id}/review  {verdict, summary}
 POST   /api/projects/{proj}/proposals/{id}/merge   {allow_invalid}
 GET    /api/projects/{proj}/proposals/{id}/render/{side}/{part}   ?view=iso   -> image/png
 GET    /api/projects/{proj}/proposals/{id}/render/{side}          ?view=iso   -> image/png (assembly)
-GET    /api/projects/{proj}/proposals/{id}/diff/{part}/{kind}.acm -> application/octet-stream
+GET    /api/projects/{proj}/proposals/{id}/diff/{gen}/{part}/{kind}.acm -> application/octet-stream
 ```
 
 All are `registry.call(...)` passthroughs with **explicitly whitelisted body
@@ -1173,7 +1173,9 @@ FR8 degradation is untouched and still keeps `ok: true`.
 a part a later packet no longer contains stops serving the previous
 generation's mesh from its predictable URL; and the asset route maps a read
 that fails to 404 rather than 500, because a concurrent regeneration can unlink
-the file between the check and the read.
+the file between the check and the read. (The third fold-back, below, takes the
+directory itself per generation — the URLs were still predictable, which was
+the rest of the same defect.)
 
 **The id high-water mark is its own file.** "Ids are never reused" rested on
 `index.json`, which is explicitly a rebuildable cache: delete the newest
@@ -1197,6 +1199,45 @@ takes the max of the scan and that mark.
   threads and their resolution lifecycle) — doing half of it here would refuse
   merges that today's policy allows with no way to re-approve except a second
   round trip.
+
+## As built — the third review fold-back (assets, holds, copy)
+
+**A packet is published together with its assets.** `_measure` wrote every
+build's diff meshes to generation-less paths (`diff/<part>.added.acm`) and
+cleared the directory on its way in — so a build the merge overtook, whose
+`packet.json` was correctly *discarded*, had already replaced the frozen
+packet's geometry: the frozen packet's URLs served the discarded build's shape,
+silently, with its own numbers beside them. Each build now writes into
+`diff/<generation>/` (a 16-hex id minted per measuring pass) and publishes that
+id as `packet.generation`, which the asset URLs carry. `PacketBuilder.build`
+persists the packet and its generation as one thing: a build that loses the race
+deletes its own directories, and a build that persists deletes the *other*
+generations under its slot. A frozen packet therefore always serves exactly the
+bytes it was persisted with, and a URL whose generation has been collected is a
+404 — never another build's geometry under the same name. The route gains one
+path segment (`…/diff/{gen}/{part}/{kind}.acm`); the UI already read its URLs
+off the packet, so nothing composes them.
+
+**Closing a proposal aborts the merge it held.** `held_by` outlived its
+proposal: `resolve_merge` cannot land a held merge (the whole point), so once
+the holder was closed the staged merge was unfinishable — and because a second
+proposal for the same pair is legal the moment the first is not ACTIVE, the next
+one met it. `proposal_merge` then passed *its* hold into `MergeOrchestrator`,
+which rewrote `held_by` on the way to refusing the call with a self-contradictory
+message ("belongs to proposal:2, not to proposal 2") — and the retry, now the
+holder, resumed and landed the first proposal's conflict resolutions, which the
+second proposal's approvers had never seen. Two fixes, both in the proposal
+layer: closing (`proposal_update` → `closed`) aborts a staged merge this
+proposal holds through PRD-001's own `merge_abort` and audits it as
+`merge_discarded` (`details.reason: "closed"`), so the next proposal starts
+clean; and `_orchestrate` refuses a pair whose staged merge is held by anyone
+else **before** the orchestrator is asked — `conflict_error`, naming the holder
+and what to do about it, mutating nothing. `merge.py` is untouched.
+
+**A held merge with every conflict resolved does not say "complete the merge".**
+The left pane of the conflict modal told the reviewer to complete a merge whose
+Complete button is disabled two inches away; it now names the proposal the merge
+belongs to and says it completes there.
 
 ## PRD divergences to fold back
 
@@ -1260,3 +1301,10 @@ takes the max of the scan and that mark.
     its gates were evaluated against).
 20. **The id high-water mark is a file** (`proposals/next_id`), not only the
     rebuildable index — "never reused" cannot rest on a cache.
+21. **The packet carries a `generation` and its diff assets live under it**
+    (`diff/<generation>/`, and one more segment in the asset URL). Frozen
+    evidence has to include the geometry it was frozen with, and a
+    generation-less path cannot promise that.
+22. **Closing a proposal aborts the staged merge it held.** A hold that
+    outlives its proposal is unfinishable, and the pair's next proposal must
+    not inherit resolutions its own approvers never saw.

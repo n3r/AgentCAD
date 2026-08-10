@@ -10,7 +10,7 @@
     POST   /api/projects/{proj}/proposals/{pid}/merge  {allow_invalid}
     GET    /api/projects/{proj}/proposals/{pid}/render/{side}/{part}  ?view=iso
     GET    /api/projects/{proj}/proposals/{pid}/render/{side}         ?view=iso
-    GET    /api/projects/{proj}/proposals/{pid}/diff/{part}/{kind}.acm
+    GET    /api/projects/{proj}/proposals/{pid}/diff/{gen}/{part}/{kind}.acm
 
 Body keys are whitelisted per route (the registry rejects unknown arguments,
 and ``null`` must read as "omitted", not as an argument). Ordinary failures are
@@ -142,11 +142,13 @@ def build_router(service, registry) -> APIRouter:
                                "view": view})
 
     # ``{kind}.acm``: the packet publishes the extension so the URL reads as a
-    # file, and the part/kind pair is whitelisted by the builder before it
-    # touches the filesystem.
-    @router.get("/projects/{proj}/proposals/{pid}/diff/{part}/{kind}.acm")
-    def get_diff_mesh(proj: str, pid: str, part: str, kind: str):
-        path = service.packets.diff_mesh_path(proj, pid, part, kind)
+    # file, and the generation/part/kind triple is whitelisted by the builder
+    # before it touches the filesystem. ``{gen}`` is the build the packet was
+    # published with: a URL from a packet whose assets are gone reads as a 404
+    # rather than as another build's geometry.
+    @router.get("/projects/{proj}/proposals/{pid}/diff/{gen}/{part}/{kind}.acm")
+    def get_diff_mesh(proj: str, pid: str, gen: str, part: str, kind: str):
+        path = service.packets.diff_mesh_path(proj, pid, gen, part, kind)
         try:
             content = path.read_bytes()
         except OSError as exc:

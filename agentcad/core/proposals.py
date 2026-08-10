@@ -521,6 +521,10 @@ class ProposalManager:
                 self.store.append_audit(proj, proposal["id"], {
                     "action": "updated", "details": {"fields": fields},
                 })
+            if state == "closed":
+                # Before the transition: a proposal that stops merging must
+                # not leave a merge staged in its name.
+                self._release_staged_merge(proj, proposal)
             if state is not None:
                 self.transition(proposal, state,
                                 action=_update_action(proposal["state"], state))
@@ -578,7 +582,10 @@ class ProposalManager:
         against it but cannot land it, because landing it there would skip
         every gate above. The second ``proposal_merge`` re-evaluates them
         against the branches as they are then and finishes it
-        (:meth:`_orchestrate`).
+        (:meth:`_orchestrate`); CLOSING the proposal aborts it instead
+        (:meth:`_release_staged_merge`), because a hold must not outlive the
+        gates that would have released it. A pair whose staged merge is held
+        by anyone else is refused before PRD-001 is asked anything.
 
         ``allow_invalid`` reaches PRD-001's kernel gate and nothing else — it
         is the caller's statement about the kernel's verdict on geometry, and
@@ -670,16 +677,12 @@ class ProposalManager:
                 details["proposal"] = pid
                 return result
             if result.get("held"):
-                # A staged merge for this same pair that ANOTHER proposal
-                # holds: its gates are the ones that must be re-checked, not
-                # ours, and nothing here may finish it.
-                raise ConflictError(
-                    f"the staged merge of {source!r} into {target!r} belongs "
-                    f"to {result.get('held_by')}, not to proposal {pid}; "
-                    "complete or discard it there first",
-                    {"id": pid, "held_by": result.get("held_by"),
-                     "merge_id": result.get("merge_id")},
-                )
+                # A staged merge for this same pair that ANOTHER holder owns:
+                # its gates are the ones that must be re-checked, not ours, and
+                # nothing here may finish it. ``_orchestrate`` refuses this
+                # before the orchestrator is asked; this is the belt.
+                raise _held_elsewhere(pid, result.get("held_by"), source,
+                                      target, result.get("merge_id"))
 
             report = result.get("validation")
             report = report if isinstance(report, dict) else None
@@ -749,9 +752,18 @@ class ProposalManager:
         source, target = proposal["source"], proposal["target"]
         hold = _hold_key(pid)
         current = merges.status(proj).get("merge") or {}
-        resume = (current.get("held_by") == hold
-                  and (current.get("source"), current.get("target"))
-                  == (source, target)
+        same_pair = (current.get("source"), current.get("target")) \
+            == (source, target)
+        holder = current.get("held_by")
+        if same_pair and holder and holder != hold:
+            # Someone else's staged merge, for our pair. Passing our own hold
+            # into PRD-001 would REWRITE ``held_by`` on the way to being
+            # refused — and the next call would then resume that merge and land
+            # another proposal's resolutions, which nobody here approved. So
+            # this is refused before anything is asked of the orchestrator.
+            raise _held_elsewhere(pid, holder, source, target,
+                                  current.get("id"))
+        resume = (holder == hold and same_pair
                   and not current.get("outstanding"))
         allow_invalid = bool(allow_invalid) or (
             bool((proposal.get("staged_merge") or {}).get("allow_invalid"))
@@ -807,6 +819,37 @@ class ProposalManager:
                     turnlock.release(key, holder)
                 except ConflictError:
                     pass  # our hold expired and another client took the turn
+
+    def _release_staged_merge(self, proj: str, proposal: dict) -> None:
+        """Abort the staged merge a closing proposal HOLDS (FR11's other end).
+
+        A hold outlives nothing useful: ``resolve_merge`` cannot land the merge
+        (that is the hold's whole purpose) and the proposal whose gates would
+        release it is closed, so the staged merge is unfinishable — and the
+        next proposal for the same pair used to meet it and could inherit the
+        resolutions recorded against it, unseen by its own approvers. So it is
+        discarded through PRD-001's own public ``abort``, and audited as the
+        reconciler audits any staged merge that went away.
+
+        Only a merge THIS proposal holds is touched. The caller holds
+        ``_lock`` and saves.
+        """
+        merges = getattr(self.service, "merges", None)
+        if merges is None:
+            return
+        pid = proposal["id"]
+        current = merges.status(proj).get("merge") or {}
+        if current.get("held_by") != _hold_key(pid):
+            return
+        aborted = merges.abort(proj)
+        proposal.pop("staged_merge", None)
+        self.store.append_audit(proj, pid, {
+            "action": "merge_discarded",
+            "details": {"merge_id": aborted.get("merge_id") or current.get("id"),
+                        "source": current.get("source"),
+                        "target": current.get("target"),
+                        "reason": "closed"},
+        })
 
     def reconcile(self, proj: str, pid: str) -> dict:
         """Load a proposal, first finalizing it if a merge it staged has since
@@ -1350,6 +1393,17 @@ def _absent_packet(proposal: dict) -> dict:
         "warnings": [],
         "errors": [],
     }
+
+
+def _held_elsewhere(pid: str, holder: str | None, source: str, target: str,
+                    merge_id: str | None) -> ConflictError:
+    """The refusal a caller meets when the pair's staged merge belongs to
+    someone else: who holds it, and what to do about it."""
+    return ConflictError(
+        f"a staged merge of {source!r} into {target!r} is held by {holder}; "
+        f"close or merge that proposal first, then merge proposal {pid}",
+        {"id": pid, "held_by": holder, "merge_id": merge_id},
+    )
 
 
 def _hold_key(pid: str) -> str:
