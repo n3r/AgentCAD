@@ -343,6 +343,83 @@ class SpecRunner:
         except OSError:
             return None
 
+    # --------------------------------------------------- the specs.py writer
+
+    def _project_state(self, proj: str, script: str | None) -> dict:
+        """Post-state for the project spec file: the text and what it declares.
+
+        A file that will not execute is reported, never raised — the same rule
+        ``declarations`` follows, so a broken ``specs.py`` is fixable through
+        the same surface that wrote it.
+
+        The field is ``declaration_error`` and **not** ``error``: a top-level
+        ``error`` key is the tool-envelope failure marker everywhere in this
+        repo (``ToolRegistry.call`` produces it, ``routes_*._result`` raises on
+        it, and callers test ``"error" not in result``), so a *reported*
+        declaration failure must not wear that name.
+        """
+        state = {"path": "specs.py", "exists": script is not None,
+                 "script": script, "declared": 0, "specs": [],
+                 "declaration_error": None, "warnings": []}
+        if script is None:
+            return state
+        try:
+            declared = self._declare(script, "project", proj)
+        except KernelError as exc:
+            state["declaration_error"] = exc.to_payload()
+            return state
+        rows = [dict(row) for row in declared.get("declared", [])]
+        state["specs"] = rows
+        state["declared"] = len(rows)
+        # A part-scope constructor found in specs.py is a warning, not an
+        # error: it is reported here rather than dropped.
+        state["warnings"] = list(declared.get("warnings") or [])
+        return state
+
+    def read_project_specs(self, proj: str) -> dict:
+        """``specs.py`` with its declarations, or an honest absence.
+
+        A project with no ``specs.py`` is ``{"script": None, "specs": []}`` —
+        not a 404: "this project declares no project-scope specs" is an answer,
+        not a missing resource.
+        """
+        self.service.store.manifest(proj)          # NotFoundError: bad project
+        return self._project_state(proj, self.project_script(proj))
+
+    def write_project_specs(self, proj: str, script: str) -> dict:
+        """Write ``specs.py`` and report what it declares (FR2, Decision 8).
+
+        Unconditional, like ``update_part_script``: a broken file is written
+        and reported, because you must be able to save one in order to fix it.
+        An empty script deletes the file — an empty module and no module mean
+        the same thing, and only one of them keeps ``exists`` honest.
+
+        The store's ``write_guard`` fires only for ``write_script`` /
+        ``save_manifest`` / ``imports_dir``, so a pack writing its own file
+        calls it explicitly: it materializes the caller's branch tree (so the
+        write cannot land on the default branch) and enforces the turn lock.
+        Publishing ``project_changed`` afterwards is what snapshots the file
+        into git — a mutating pack needs no per-call history hook.
+        """
+        store = self.service.store
+        store.manifest(proj)                       # NotFoundError: bad project
+        if store.write_guard is not None:
+            store.write_guard(proj)
+        path = self.specs_path(proj)
+        text = script if isinstance(script, str) else ""
+        if text.strip():
+            ProjectStore._atomic_write(path, text.encode())
+            state = self._project_state(proj, text)
+        else:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            state = self._project_state(proj, None)
+        self.service.bus.publish(
+            {"type": "project_changed", "project": proj, "reason": "specs"})
+        return state
+
     # ----------------------------------------------------- declarations
 
     def _declare(self, script: str, scope: str, affinity: str) -> dict:

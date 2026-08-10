@@ -368,6 +368,13 @@ def specs_projects(kernel, tmp_path_factory):
 
     service.create_project("bare")
     service.create_part("bare", "plain", script=BOX_SCRIPT)
+
+    # Slice 4's get_part wrapper evaluates the shape tier as each part is
+    # created, so a clone would start with a WARM .cache/<key>.specs.json.
+    # These tests measure the cold path — drop the spec sidecars only (a cold
+    # mesh would make every clone rebuild from scratch).
+    for sidecar in projects.rglob("*.specs.json"):
+        sidecar.unlink()
     return projects
 
 
@@ -874,3 +881,130 @@ class TestRefs:
         assert on_branch["status"] == "red"
         assert _by_id(on_branch, "box:wall_min")["status"] == "fail"
         assert pinned_tree_var.get() is None          # the pin is released
+
+
+# ---- the specs.py writer (slice 4)
+
+
+class TestProjectSpecsWriter:
+    """``specs.py`` has no other writer: ``update_part_script`` covers part
+    scope and there is no generic file-write tool, so FR2 is unreachable for an
+    agent without these two. The rules are ``update_part_script``'s verbatim —
+    write unconditionally, report afterwards, return post-state — because you
+    must be able to save a broken file in order to fix it."""
+
+    pytestmark = _GIT + [pytest.mark.slow]
+
+    def test_it_writes_the_file_and_returns_the_declarations(self, git_demo):
+        service, registry, _runner = git_demo
+        result = registry.call("set_project_specs",
+                               {"project": "demo", "script": PROJECT_SPECS})
+
+        assert "error" not in result, result
+        assert result["path"] == "specs.py"
+        assert result["exists"] is True
+        assert result["declaration_error"] is None
+        assert result["declared"] == 4
+        assert [d["name"] for d in result["specs"]] == [
+            "no_interference", "clearance_box_1_box_2", "touching",
+            "stackup_box_2_box_3_x"]
+        path = service.store.path_of("demo") / "specs.py"
+        assert path.read_text(encoding="utf-8") == PROJECT_SPECS
+        assert not list(path.parent.glob("*.tmp"))     # atomic, nothing left
+
+        read = registry.call("get_project_specs", {"project": "demo"})
+        assert read["script"] == PROJECT_SPECS
+        assert [d["name"] for d in read["specs"]] == [
+            d["name"] for d in result["specs"]]
+
+    def test_it_is_refused_under_another_clients_turn(self, git_demo):
+        service, registry, _runner = git_demo
+        service.turnlock.acquire(service.store.lock_key("demo"), "agent_b")
+
+        refused = registry.call("set_project_specs",
+                                {"project": "demo", "script": PROJECT_SPECS})
+
+        assert refused["error"]["type"] == "conflict_error"
+        assert refused["error"]["details"]["holder"] == "agent_b"
+        assert not (service.store.path_of("demo") / "specs.py").exists()
+
+    def test_it_snapshots_the_project_so_the_file_rides_git(self, git_demo):
+        service, registry, _runner = git_demo
+        canonical = service.store.canonical_path_of("demo")
+        before = len(service.history.log(canonical, limit=100))
+
+        assert "error" not in registry.call(
+            "set_project_specs", {"project": "demo", "script": PROJECT_SPECS})
+
+        after = service.history.log(canonical, limit=100)
+        assert len(after) == before + 1
+        assert "specs" in after[0]["message"]
+        committed = service.history._run(canonical, "show", "HEAD:specs.py")
+        assert committed.stdout == PROJECT_SPECS
+        assert registry.call("project_history", {"project": "demo"})[
+            "history"][0]["id"] == after[0]["id"]
+
+    def test_a_broken_script_is_written_and_reported_not_refused(self,
+                                                                git_demo):
+        service, registry, _runner = git_demo
+        broken = registry.call("set_project_specs",
+                               {"project": "demo", "script": BROKEN_SPECS_PY})
+
+        assert "error" not in broken            # the TOOL did not fail
+        assert broken["specs"] == []
+        assert broken["declared"] == 0
+        assert broken["declaration_error"]["type"] == "script_error"
+        assert broken["declaration_error"]["details"].get("line")
+        assert (service.store.path_of("demo") / "specs.py").read_text(
+            encoding="utf-8") == BROKEN_SPECS_PY
+
+        # ...and the same error is what a read reports, so it is fixable.
+        assert registry.call("get_project_specs", {"project": "demo"})[
+            "declaration_error"]["type"] == "script_error"
+
+    def test_an_empty_script_deletes_the_file(self, git_demo):
+        service, registry, _runner = git_demo
+        registry.call("set_project_specs",
+                      {"project": "demo", "script": PROJECT_SPECS})
+
+        emptied = registry.call("set_project_specs",
+                                {"project": "demo", "script": ""})
+
+        assert emptied == {"path": "specs.py", "exists": False, "script": None,
+                           "declared": 0, "specs": [],
+                           "declaration_error": None, "warnings": []}
+        assert not (service.store.path_of("demo") / "specs.py").exists()
+        assert registry.call("get_project_specs", {"project": "demo"}) == {
+            "path": "specs.py", "exists": False, "script": None,
+            "declared": 0, "specs": [], "declaration_error": None,
+            "warnings": []}
+
+    def test_an_unknown_project_is_a_notfound_error(self, git_demo):
+        _service, registry, _runner = git_demo
+        assert registry.call("set_project_specs",
+                             {"project": "ghost", "script": ""})[
+            "error"]["type"] == "notfound_error"
+        assert registry.call("get_project_specs", {"project": "ghost"})[
+            "error"]["type"] == "notfound_error"
+
+    def test_the_file_rides_branches(self, git_demo):
+        """FR2 structurally: ``git add -A`` tracks it, so branching, restore
+        and merge are free — nothing here had to be built for it."""
+        service, registry, _runner = git_demo
+        service.branches.create("demo", "feat")
+        locks.set_client_id("agent_a")
+        service.branches.switch("demo", "feat")
+        assert "error" not in registry.call(
+            "set_project_specs", {"project": "demo", "script": PROJECT_SPECS})
+        assert registry.call("get_project_specs",
+                             {"project": "demo"})["exists"] is True
+
+        service.branches.switch("demo", "master")
+        assert registry.call("get_project_specs", {"project": "demo"}) == {
+            "path": "specs.py", "exists": False, "script": None,
+            "declared": 0, "specs": [], "declaration_error": None,
+            "warnings": []}
+
+        service.branches.switch("demo", "feat")
+        assert registry.call("get_project_specs",
+                             {"project": "demo"})["script"] == PROJECT_SPECS
