@@ -1,6 +1,6 @@
 # PRD-003 — Design specs as executable tests
 
-- **Status:** pending
+- **Status:** in progress — design spec and implementation plan approved
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
