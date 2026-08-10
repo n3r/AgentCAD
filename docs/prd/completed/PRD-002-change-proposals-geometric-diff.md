@@ -1,9 +1,6 @@
 # PRD-002 — Change proposals with geometric diff (CAD pull requests)
 
-- **Status:** implemented — MVP shipped in six slices (changelog entries
-  `0077`–`0082`); every acceptance criterion has a named test in
-  `tests/test_prd002_acceptance.py`. Design spec and implementation plan:
-  `docs/superpowers/specs|plans/2026-08-10-change-proposals*.md`
+- **Status:** completed — merged to main in PR #9 (AC1–AC9 verified)
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
