@@ -1,6 +1,7 @@
 # PRD-002 — Change proposals with geometric diff (CAD pull requests)
 
-- **Status:** pending
+- **Status:** in progress — design spec and implementation plan approved
+  (`docs/superpowers/specs|plans/2026-08-10-change-proposals*.md`)
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
