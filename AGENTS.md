@@ -146,6 +146,31 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
 - Fillet/shell/boolean fail readily; prefer the `toolkit.safe_*` helpers, and
   the Error Doctor (`kernel/error_doctor.py`) turns raw OCCT errors into hints.
 
+## Branching gotchas (PRD-001 — read before touching the store or history)
+
+- **Branch worktrees live at `.history/trees/<branch>/`** — *not*
+  `.history/worktrees/`, which is git's own per-worktree admin directory.
+  Sidecars (default branch, per-client checkouts, tag referrers, a staged
+  merge) live at `.history/agentcad/`. Both are inside GIT_DIR, so they are
+  never committed.
+- **`ours` = the TARGET branch, `theirs` = the SOURCE** everywhere (payloads,
+  tool descriptions, UI labels), exactly like `git merge <source>`. Getting it
+  backwards silently discards someone's work.
+- **`.cache/` is canonical and shared by every branch** (content-addressed
+  keys). Use `store.canonical_path_of` for derived data and `store.path_of`
+  for authored state; `store.lock_key` — not the bare project name — for turn
+  locks and undo stacks.
+- Authored-state access goes through the `ProjectStore.branch_resolver` seam,
+  so nothing else needs to know about branches. `BranchManager.pinned()` is the
+  only override, and only the merge validation pass uses it.
+- **`project.json` never merges line-wise.** It is always re-merged by
+  `core/manifest_merge.py` (pure, I/O-free), even when git thought the file
+  merged cleanly.
+- Every git call goes through `ProjectHistory._run` (hermetic env, 10 s
+  timeout, never raises into a save) — never a raw `subprocess`. Merging needs
+  **git 2.38+**; branches and tags do not, and with no git at all the
+  versioning pack registers nothing.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script

@@ -56,7 +56,16 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   helpers add ISO threads and fasteners — all importable from part scripts.
   An **Error Doctor** rewrites raw OCCT errors into plain-language fixes.
 
-The agent tool surface is now **42 tools** (was 17; 45 with the `[fem]`
+- **Branching version control.** A project is a real git repository, so it
+  gets branches with independent histories (one materialized working tree
+  each, per-client checkouts, shared mesh cache), immutable named versions
+  (tags) you can restore, and **semantic merges**: part scripts merge as text,
+  `project.json` merges key-wise (per part, parameter, instance, material), and
+  every merge is revalidated by the kernel — a merge that breaks a build,
+  strands an instance, or introduces interference is blocked unless you land it
+  deliberately. Conflicts come back as structured data with base/ours/theirs.
+
+The agent tool surface is now **52 tools** (was 17; 55 with the `[fem]`
 extra), and multi-part rebuilds fan out across a small pool of warm kernel
 workers. v3 added typed parameters, per-solid semantics, sheet metal with
 flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,
@@ -164,7 +173,7 @@ def build(p):
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — processes, components, data flow
-- [docs/agent-api.md](docs/agent-api.md) — the 42-tool agent surface, MCP setup
+- [docs/agent-api.md](docs/agent-api.md) — the 52-tool agent surface, MCP setup
 - [docs/part-authoring.md](docs/part-authoring.md) — the script contract and toolkit
 - [docs/user-guide.md](docs/user-guide.md) — the UI, surface by surface
 - [docs/roadmap.md](docs/roadmap.md) — the forward roadmap: a PRD index with statuses

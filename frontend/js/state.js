@@ -17,6 +17,11 @@ export const state = {
   materials: null,       // GET /api/materials?project= payload {materials,caveat,...}
   partKinds: {},         // partId -> {kind, source} learned lazily from get_part
   gizmoMode: "translate",// assembly gizmo: "translate" | "rotate"
+  branch: null,          // this client's checked-out branch (null = no branching)
+  branches: null,        // branch_list payload's branches[], null when stale
+  clientId: null,        // branch_list's `you` — our identity in branch events
+  versions: null,        // list_versions payload's versions[]
+  merge: null,           // staged merge summary from merge_status, or null
 };
 
 const listeners = new Map();

@@ -18,7 +18,7 @@ the same service humans use through the browser UI.
 │ FastAPI server — 127.0.0.1:<port>   (agentcad serve)        │
 │                                                             │
 │   ToolRegistry ──► AgentCADService ──► ProjectStore (files) │
-│   (42 tools,       (cache, events,     ~/AgentCAD/projects  │
+│   (52 tools,       (cache, events,     ~/AgentCAD/projects  │
 │    single source    orchestration)     or --projects-dir    │
 │    of truth)             │                                  │
 │                          │ line-delimited JSON-RPC (stdio)  │
@@ -66,10 +66,14 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/core/materials.py` | Materials v2: frozen `Material` schema + 30-entry builtin library + `MaterialLibrary` (builtin < global file < project overrides). |
 | `agentcad/core/mates.py` | Server-side seam that marshals instances to the worker's `resolve_mates` and writes concrete transforms back. |
 | `agentcad/core/imports.py` | Reference-file ingest helpers: safe basename, 100 MB cap, supported-extension gate. |
+| `agentcad/core/history.py` | The per-project git engine: snapshot-on-mutation, log/restore, ref primitives (`resolve_ref`, `branches`, `tags`), and the `UndoCursor`. Works in the project directory *or* a linked worktree; every git call is hermetic (`GIT_CONFIG_NOSYSTEM`, scratch `HOME`, 10 s timeout) and never raises into a save. |
+| `agentcad/core/branches.py` | `BranchManager`: branch/tag operations and the per-client branch resolver installed into `ProjectStore.branch_resolver`. Owns `.history/trees/<branch>/` worktrees and the `.history/agentcad/` sidecars. |
+| `agentcad/core/manifest_merge.py` | Pure, I/O-free three-way merge of `project.json` at CAD key granularity: `merge_manifests(base, ours, theirs) -> (merged, conflicts)` and `apply_choices`. No git, no kernel, no service imports. |
+| `agentcad/core/merge.py` | `MergeOrchestrator`: `git merge-tree` for scripts, the manifest driver for the manifest, a staged detached worktree, the kernel validation pass, and the two-parent `commit-tree` + compare-and-swap `update-ref` that lands it. |
 | `agentcad/core/tools.py` | ToolRegistry — the 17 core tools defined once; discovers and loads `tools_*.py` packs. MCP and chat render from the merged registry. |
-| `agentcad/core/tools_*.py` | v2 tool packs (import, materials, mates, drawing, analysis, sketch), each exporting `register(registry, service)`. |
+| `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning), each exporting `register(registry, service)`. |
 | `agentcad/server/app.py` | Core REST routes (thin), `/api/tools` passthrough, WebSocket channel, static hosting; mounts `routes_*.py` packs under `/api`. |
-| `agentcad/server/routes_*.py` | v2 route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve). |
+| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve, history, branches/versions/merge). |
 | `agentcad/agent/mcp_server.py` | MCP stdio server proxying `/api/tools`; auto-starts the HTTP server when unreachable. |
 | `agentcad/agent/chat.py` | Server-side Anthropic tool-use loop streaming to the UI over the WebSocket. |
 | `frontend/` | Static ES modules (no bundler): Three.js viewport, tree, parameter inspector, CodeMirror editor, chat panel. |
@@ -156,6 +160,91 @@ Two upstream build123d bugs are corrected in this layer: nested-`Compound`
 manifest is **schema_version 2** (adds `kind`/`source` per part, an optional
 per-instance `mate`, and a project `materials` section) while still reading v1
 files.
+
+## Branches, versions and merges
+
+A fifth seam, and the same shape as the fourth: `ProjectStore.branch_resolver`
+is a post-init hook `(proj, canonical_path) -> working_tree_path`. Every read
+and write of *authored* state already funnels through `ProjectStore._resolve`,
+so installing one function makes the manifest, scripts, exports, imports, the
+snapshot hook, the turn lock and the undo cursor branch-aware with no service
+or pack edits. `agentcad/core/tools_versioning.py` installs it (plus
+`service.branches` and `service.merges`) and **declines to register anything
+when `git` is absent**, so the product degrades to linear history rather than
+offering tools that cannot run.
+
+**Layout.** The default branch keeps the project directory as its working
+tree, so an unbranched project is byte-identical on disk to a pre-branching
+one and the migration is a no-op. Everything else lives inside the existing
+git dir:
+
+```
+<project>/                     # the DEFAULT branch's working tree
+├── project.json, parts/, imports/
+├── .cache/                    # canonical + content-addressed: SHARED by all branches
+└── .history/                  # the git repository (already excluded from itself)
+    ├── trees/<branch>/        # one linked worktree per non-default branch
+    │                          #  ('/' → '-'; not .history/worktrees/, which is git's own)
+    └── agentcad/              # sidecars, inside GIT_DIR so never committed
+        ├── config.json        # the discovered default branch
+        ├── checkouts.json     # client → branch, branch → tree dirname
+        ├── tags.json          # version referrers (PRD-015 forward-compat)
+        ├── merge.json         # the staged merge, if any
+        └── merge-<id>/        # its detached staging worktree
+```
+
+**Resolution order** in `BranchManager.resolve_path`: an explicit
+`pinned_tree_var` (used only by the merge validation pass) → the calling
+client's checked-out branch (`locks.current_client_id()`, the same ContextVar
+turn-locking stamps) → the canonical directory. It never raises: an unreadable
+sidecar or a missing worktree degrades to the project directory, which is
+always a valid project. `cache_dir` stays canonical, so a mesh built on one
+branch is a cache hit on every other (byte-determinism across branches);
+`lock_key` returns the project name on the default branch and the resolved
+tree path elsewhere, which is what makes per-branch turn locks and undo stacks
+fall out for free while unbranched behavior stays bit-identical.
+
+**A merge, end to end** (`MergeOrchestrator.merge`):
+
+1. Resolve both branches, snapshot and require both trees clean, take the
+   *target's* turn lock, and compute the merge base. Base == source ⇒ no-op;
+   base == target ⇒ fast-forward (ref + tree move, no validation pass).
+2. `git merge-tree --write-tree -z <target> <source>` produces the merged tree
+   oid and per-path stages `{1: base, 2: ours, 3: theirs}`. `ours` is always
+   the **target**.
+3. `project.json` is re-merged by `manifest_merge` **regardless** of what git
+   thought — a line-wise merge of a manifest is either garbage or a clean
+   result nobody authored. Non-text content (`imports/*.stl|step`) is read and
+   staged as raw **bytes**: a binary conflict reports sizes and digests, takes
+   a side verbatim, and never becomes conflict-marked text.
+4. The result is staged in a detached worktree under `.history/agentcad/`.
+   Nothing outside that directory is written while conflicts are outstanding,
+   and no ref moves, so a conflicted merge is never partially applied.
+   Conflicts are **returned** as a `{"error": {"type": "merge_conflict", …}}`
+   payload (the registry derives error types from exception class names, so
+   raising would rename it), and `resolve_merge` re-runs the same pipeline
+   with accumulated choices.
+5. The validation pass runs inside `branches.pinned(proj, staged_dir)` and
+   calls the *ordinary* service methods (`_ensure_built`, `_resolved_instances`,
+   `check_interference`), so the kernel pool, the mesh cache and the mates
+   resolver are reused verbatim and already-built parts are cache hits. It
+   reports built parts, build failures, referential integrity (dangling
+   instances/mates a clean key-wise merge can still produce) and interference
+   diffed against the pre-merge target — only **new** pairs block.
+6. Landing is `commit-tree` with both parents plus a compare-and-swap
+   `update-ref`: a commit that arrived on the target while the merge was
+   staged fails the swap and surfaces as a `conflict_error` instead of
+   silently clobbering it. Then the target's working tree is reset to the
+   merge commit, the undo cursor records it, and `project_changed` +
+   `merge_completed` go out on the bus.
+
+**New events:** `branch_changed {project, client, branch}` (a switch is
+per-client, so the UI resets its context only for its own client id) and
+`merge_completed {project, source, target, commit, validation}`.
+
+**Requirements.** Branches and tags work on any git; merging needs **git
+2.38+** for `merge-tree --write-tree` and says so by name in a
+`validation_error` on older versions.
 
 ## Anatomy of one rebuild
 

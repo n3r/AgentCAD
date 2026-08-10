@@ -1,8 +1,8 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 42 tools (45 with the
+Agents drive AgentCAD through a single tool surface — 52 tools (55 with the
 `[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
-tools) plus the v2/v3 feature packs in `agentcad/core/tools_*.py` — and
+tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
 
 1. **MCP** (any MCP client, e.g. Claude Code): a stdio server that proxies
@@ -30,6 +30,12 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
   `{"ok": false, "error", "hint"}`. On failure the previous good geometry is
   kept.
 - Units: mm, grams, degrees. Instance rotations are intrinsic XYZ Euler.
+- One error type is **returned rather than raised**: `merge_conflict`
+  (`merge_branch` / `resolve_merge`). It arrives as an ordinary
+  `{"error": {"type": "merge_conflict", "details": {"conflicts": […]}}}`
+  payload — over REST at HTTP **200**, not 409 — because a conflict is a
+  workflow state to render, not a failure. Everything else keeps the usual
+  `validation_error` / `notfound_error` / `conflict_error` mapping.
 
 ## Tools
 
@@ -115,13 +121,74 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 | `get_part_pmi` | **project, part_id** | The part's stored PMI section, with empty `dims`/`datums`/`fcf` when unset. |
 | `face_info` | **project, part_id, face_index** | Inspect one B-rep face by its mesh-order index (the same ordinal the viewport's face picking and the `mesh/faces` sidecar use): `{planar, normal, area_mm2, center, n_faces}`. |
 | `push_pull` | **project, part_id, face_index, distance_mm** | Direct-manipulation face offset recorded as code: validates the face is planar, then APPENDS an auto-generated wrapper to the script (`push_face(build(p), i, d)` — visible, editable, composable) and rebuilds. Positive distance grows the solid along the outward normal; negative cuts inward. The script stays the source of truth. |
-| `project_history` | **project**, limit | List the project's automatic history snapshots, newest first (`{id, message, ts}`); entry [0] is the current state. `available: false` + empty list when git is missing on the server. |
-| `project_restore` | **project, commit** | Restore the project to a snapshot id and append a linear "restore" commit. Returns refreshed history + `{restored}`; validation_error on unknown commit/no git, conflict_error under someone else's turn lock. A manual restore is itself one undoable step. |
+| `project_history` | **project**, limit, ref | List the project's automatic history snapshots, newest first (`{id, message, ts}`); entry [0] is the current state. History is **per branch**: you see your own branch's unless you pass `ref` — a branch or tag name — which reads that ref's history without switching you. `available: false` + empty list when git is missing on the server. |
+| `project_restore` | **project, commit** | Restore the project to a snapshot id **or a branch/tag name** (`{commit: "shop-rev-a"}` restores a version) and append a linear "restore" commit on your current branch. Returns refreshed history + `{restored}`; validation_error on unknown commit/no git, conflict_error under someone else's turn lock. A manual restore is itself one undoable step. |
 | `undo` | **project** | Undo the last mutation (any client's) by stepping back through the git history: `{undone, history: {available, undo, redo}}`. conflict_error when nothing to undo; after a server restart one step remains available. |
 | `redo` | **project** | Redo the most recently undone mutation. The redo stack clears when any new mutation happens. |
 | `get_history` | **project** | Undoable/redoable action labels, newest first, plus `available` (false when git is missing). The full durable snapshot log with commit ids is `project_history`. |
 | `render_view` | **project**, part_id, view, width, height | Server-side shaded orthographic render of built geometry so the agent can *see* the shape. `part_id` renders one part; omit it to render the whole placed assembly (instance transforms and colors honored; unbuildable instances are listed in `skipped`). `view` is `iso` (default), `front`, `top` or `right`; `width`/`height` are 64..2048 px (default 800×600). Writes `exports/renders/<part|assembly>_<view>.png` and returns `{path, width, height, view, png_base64}`; over MCP and in chat the PNG arrives as actual image content. |
 | `analyze_part` | **project, part_id, kind**, plane, axis, min_required | `kind=section` (cross-section area on `plane` XY\|XZ\|YZ), `wall` (min wall thickness; with `min_required` it adds an `ok` flag), `inertia` (mass-properties tensor + centre of mass), `projected_area` (silhouette area along `axis` X\|Y\|Z), `curvature` (per-face gaussian K in 1/mm² and mean H in 1/mm sampled on an 8×8 UV grid: `faces[]` with min/max/mean per face, `worst_gaussian_abs`, `n_faces`, `sampled_points`; H's sign is orientation-dependent — compare magnitudes; a true G2 blend shows no jump in K/H across the seam). Script parts only. |
+
+### Branches, versions and merges
+
+Registered **only when `git` is on the server's PATH** (no git ⇒ no branch
+tools, no `/branches` routes, and the product degrades to linear history).
+Convention, repeated in every tool description because it is the one thing
+agents get backwards: **`ours` = the target branch** (what you merge into),
+**`theirs` = the source**, exactly like `git merge <source>`.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `branch_create` | **project, name**, from | Creates a branch and materializes its working tree at `<project>/.history/trees/<name>/`. Names match `[a-z0-9][a-z0-9_/-]{0,63}`. `from` defaults to *your* current branch and also accepts a tag or commit id. Does **not** switch you. Returns the `branch_list` payload plus `{created}`. |
+| `branch_list` | **project** | `{branches: [{name, head, ts, message, is_default, is_current, checked_out_by: [client…]}], current, default, you}` (`head` is the branch's commit id, `message` its subject; `you` is your client identity). Branches are **per client identity**: two agents can sit on two branches of one project at once, each with its own turn lock and undo stack. |
+| `branch_switch` | **project, name** | Points *your* client at `name` (nobody else moves). O(1) — the tree already exists — and it snapshots the tree you are leaving first, so a switch is always a clean, restorable boundary. Returns `{branch, project}` (the post-switch project state). Publishes `branch_changed`. |
+| `branch_delete` | **project, name** | Deletes the branch and its working tree. `validation_error` for the default branch, for a branch any client has checked out, and for one whose working tree has uncommitted changes that cannot be snapshotted (the tree is committed first, then removed — `--force` never discards live work). Versions (tags) made on it survive. Returns the `branch_list` payload plus `{deleted}`. |
+| `version_tag` | **project, name**, message | Names the current state of your branch as an immutable version (an annotated git tag): `{tag, commit, versions}`. Re-using a name is a `conflict_error` — versions never move, and there is deliberately no delete tool. Restore one with `project_restore {commit: "<name>"}`. |
+| `list_versions` | **project** | `{versions: [{name, commit, ts, author, message, referrers}]}`, newest first. `referrers` is the forward-compatibility hook for releases (PRD-015). |
+| `merge_branch` | **project, source**, target, allow_invalid | Merges `source` (theirs) into `target` (ours; default: your current branch). Fast-forwards when the target has nothing of its own (`{fast_forward: true}`) — **still validated**, because an edit persists before its rebuild fails, so a branch can carry a script that does not build; merging an ancestor returns `{already_up_to_date: true}` with `validation: null`. Otherwise a real three-way merge: part scripts via git's textual merge, `project.json` **always** re-merged key-wise (per part, param, instance, material, PMI section). Conflicts come back as `merge_conflict` with the merge **staged** — nothing outside `.history/agentcad/` is written and no ref moves until you resolve or abort. On success: one merge commit with **two parents**, plus `{commit, parents, conflicts_resolved, validation, project}`. Re-running it on a staged merge whose branches have moved is a `conflict_error` — the recorded resolutions no longer apply, so discard it with `merge_abort` and merge again rather than losing them silently. |
+| `resolve_merge` | **project, choices** | Resolves the staged merge. `choices` maps a conflict's `path` (scripts, e.g. `"parts/flange.py"`) or `key` (manifest, e.g. `"parts.flange.params.bolt_d"`) to `{"take": "ours"\|"theirs"\|"base"}`, or `{"content": "<full file text>"}` for a script, or `{"value": …}` for a manifest key. In a manifest conflict a side that has **no value** (it deleted the key, or both branches added it so there is no base) is **omitted** from the payload — `"ours": null` means that side authored a JSON `null`, and taking it writes that null rather than deleting the key. Each manifest conflict also carries `path`, the exact key segments, because an id may contain a `.` (`parts.body.solid_materials.wall.inner`); `key` remains the dotted string you address the choice by. A `kind: "binary"` conflict (anything under `imports/`) carries `sides: {base\|ours\|theirs: {bytes, sha256} \| null}` instead of text and takes a side only — `content` is a `validation_error`. Taking a side where the file is absent (that branch deleted it) **deletes** it; taking `base` when there is none (both branches added the file) is a `validation_error` naming the valid choices. Partial resolution is fine — the reply lists what is still outstanding — and the merge completes (validation pass included) as soon as nothing is. Unknown path/key → `validation_error`, staged merge untouched. |
+| `merge_abort` | **project** | Discards the staged merge (its worktree and state); no branch moves. `{aborted: false}` when nothing was staged. |
+| `merge_status` | **project** | `{merge: {id, source, target, base, by, created, outstanding, conflicts, resolved} \| null}` — re-enter a merge you or another client staged earlier (e.g. after a reload or a server restart). |
+
+**The validation pass (FR9).** Before **any** merge lands — fast-forward
+included — the merged tree is rebuilt by the real kernel: changed parts build,
+mates re-resolve, referential integrity is checked, and interference is re-run.
+`validation` is
+`{ok, blocked, warnings: [str], built: [{part, cached}], failures: [{part, error}], integrity: [{kind, instance, …}], interference: {checked, new_pairs: [{a, b, volume_mm3}], skipped}}`.
+Only **newly introduced** interference pairs block, so a project that already
+overlaps stays mergeable; `skipped: "instances"` means the assembly was above
+the pair-check cap (40 instances) or had fewer than two — above the cap it also
+appears in `warnings`, so an `ok: true` report never hides a check it did not
+run. `integrity` also carries `kind: "manifest_invalid"` when the merged
+`project.json` would not load (no `name`, a malformed `parts` list, …).
+Failures block the merge with a `validation_error` carrying the same report
+under `details.validation`; `allow_invalid: true` lands it anyway, with the
+failures recorded in the merge commit message and returned to the caller. Parts
+already built on either branch are cache hits — the mesh cache is shared across
+branches (byte-determinism, FR13).
+
+A `project.json` that **exists but does not parse** on any of base/ours/theirs
+is a `validation_error` naming the ref and the file, refused before the merge
+starts: an unreadable manifest is not the same statement as a deleted one, and
+reading it as `{}` would merge as "this side deleted everything".
+
+**Branch names are resolved as branches.** `git rev-parse <name>` searches
+`refs/tags` before `refs/heads`, so a tag named like a branch can answer for
+it. Every branch operation (create-from-current, switch, delete, merge, tag)
+resolves `refs/heads/<name>` explicitly; only surfaces documented to take *any*
+ref — `project_history {ref}`, `project_restore {commit}` — keep git's
+precedence.
+
+**Events.** `branch_changed {project, client, branch}` and
+`merge_completed {project, source, target, commit, validation}`, alongside the
+usual `project_changed`.
+
+**Routes** (all under `/api`): `GET|POST /projects/{proj}/branches`,
+`POST /projects/{proj}/branches/switch`,
+`DELETE /projects/{proj}/branches/{name}` (the name may contain `/`),
+`GET|POST /projects/{proj}/versions`,
+`GET|POST /projects/{proj}/merge`, `POST /projects/{proj}/merge/resolve`,
+`POST /projects/{proj}/merge/abort`.
 
 ### Sketch solving
 
@@ -243,3 +310,62 @@ Notes that keep this loop tight:
 - **A mate is authoritative.** While `bracket1` is mate-driven, editing its
   transform directly (`PATCH …/assembly/instances/bracket1`) returns `409`;
   `clear_mate` first if you want to pose it by hand.
+
+## A v4 example: branch, edit, merge
+
+Try a risky change in isolation, then land it — the loop every agent should
+use instead of editing the mainline in place:
+
+```
+→ branch_create {"project": "rig", "name": "flange-weld"}
+← {"created": "flange-weld", "current": "master", "default": "master",
+   "you": "mcp", "branches": [...]}      # created, NOT switched
+
+→ branch_switch {"project": "rig", "name": "flange-weld"}
+← {"branch": "flange-weld", "project": {...}}   # your client only
+
+# Work normally: every existing tool now reads and writes this branch.
+→ update_part_script {"project": "rig", "part_id": "flange", "script": "..."}
+→ set_params {"project": "rig", "part_id": "flange", "values": {"bolt_d": 8}}
+
+→ version_tag {"project": "rig", "name": "weld-study-a",
+               "message": "welded flange, 8 mm bolts"}
+← {"tag": "weld-study-a", "commit": "9f2c…", "versions": [...]}
+
+# Land it. Meanwhile someone edited the same script on master:
+→ merge_branch {"project": "rig", "source": "flange-weld", "target": "master"}
+← {"error": {"type": "merge_conflict", "details": {
+     "source": "flange-weld", "target": "master", "outstanding": 2,
+     "conflicts": [
+       {"kind": "script", "path": "parts/flange.py", "part": "flange",
+        "ours": "<master's text>", "theirs": "<yours>", "base": "<...>",
+        "merged": "<<<<<<< master … ||||||| base … ======= … >>>>>>> flange-weld"},
+       {"kind": "manifest", "key": "parts.flange.params.bolt_d",
+        "base": 6.0, "ours": 10.0, "theirs": 8.0}],
+     "hint": "Resolve with resolve_merge …"}}}
+   # nothing was applied; the merge is staged until you resolve or abort
+
+→ resolve_merge {"project": "rig", "choices": {
+     "parts/flange.py": {"content": "<the merge you authored, by hand>"},
+     "parts.flange.params.bolt_d": {"value": 8.0}}}
+← {"merged": true, "commit": "1a4b…", "parents": ["<master>", "<flange-weld>"],
+   "conflicts_resolved": 2,
+   "validation": {"ok": true, "built": [{"part": "flange", "cached": false}],
+                  "failures": [], "integrity": [],
+                  "interference": {"checked": 3, "new_pairs": [], "skipped": null}},
+   "project": {...}}
+```
+
+What keeps this loop cheap and safe:
+
+- **Branch first, always.** A branch costs one checkout of scripts and the
+  manifest; `.cache/` is shared, so nothing rebuilds when you switch.
+- **`ours` is the target.** In every conflict payload `ours` is the branch you
+  are merging *into*. Getting this backwards silently discards someone's work.
+- **A conflict is staged, not applied.** Re-read it any time with
+  `merge_status`, resolve it in pieces, or `merge_abort` to walk away — the
+  target branch never moves until the merge completes.
+- **Read the validation report.** `ok: false` with `blocked: true` means the
+  merge would break a build, strand an instance, or introduce interference.
+  Fix the source branch and merge again; `allow_invalid: true` is for when you
+  intend to land the failure (it is recorded in the commit message).

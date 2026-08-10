@@ -74,6 +74,14 @@ lists every known project with its part count, plus:
 The last opened project is remembered (localStorage) and reopened on the
 next visit.
 
+**Branch switcher** — the button next to it, showing the branch you are on
+(`master` for a project that has never branched). It appears only when the
+server has `git` on its PATH; without git the app behaves exactly as it did
+before branching. The menu lists every branch with the relative time of its
+last change, marks the current one and the default, and ends with **New
+branch…**, **Merge into…** and **Versions…**. Details in
+[Branches, versions and merges](#branches-versions-and-merges) below.
+
 **Rebuild indicator** — a spinner labeled `Rebuilding <part>…` (or
 `Rebuilding N parts…`) appears while any rebuild is in flight, driven by
 `rebuild_started`/`rebuild_finished` events — including rebuilds an agent
@@ -389,6 +397,89 @@ built-in chat, so a vision-capable model can check proportions, hole placement,
 and assembly layout instead of reasoning from numbers alone. The same render is
 available over HTTP via `POST /api/projects/<proj>/render`.
 
+## Branches, versions and merges
+
+A project is a real git repository (`<project>/.history/`), and the toolbar
+exposes it as branches you can work on, versions you can name and return to,
+and merges that the kernel validates before they land. Everything here is
+equally available to agents (see
+[agent-api.md](agent-api.md#branches-versions-and-merges)) — a human can pick
+up an agent's branch, and vice versa.
+
+**The branch switcher.** The menu lists each branch with its last-change time
+(hover for the commit subject); the current one is highlighted and the default
+is labelled. Picking a branch switches **you only**: branches are per client,
+so the browser, the chat agent, and an MCP client can each sit on a different
+branch of one project at the same time, each with its own editing turn and
+undo stack. Switching is instant — every branch keeps a materialized working
+tree, so nothing is checked out and nothing rebuilds — and the viewport, tree
+and inspector reload from the branch you moved to. Unsaved editor changes
+prompt first, as everywhere else.
+
+- **New branch…** prompts for a name matching `[a-z0-9][a-z0-9_/-]{0,63}`,
+  forks it from the branch you are on, and switches you to it.
+- **×** on a branch row deletes that branch and its working tree, after a
+  confirm. It appears only where the server would allow it — never on the
+  default branch or the one you are on — and a branch someone else has checked
+  out comes back as an error toast. Versions (tags) made on the branch survive
+  it, and its working tree is committed before removal, so nothing uncommitted
+  is silently thrown away.
+
+**Versions… (the versions dialog).** A version is an immutable named state —
+"the revision we sent to the machine shop" — stored as an annotated git tag.
+The dialog lists them newest-first with the message, author, relative date and
+short commit, and gives each a **Restore** action (it restores that state onto
+your current branch as one undoable step). **Tag current state…** prompts for
+a name (`[a-z0-9][a-z0-9._/-]{0,63}`, so `v1.2` works). Versions cannot be
+moved or deleted, and they outlive the branch they were made on.
+
+**Merge into… (the merge modal).** Pick the source branch (*theirs*, what you
+merge from) and the target (*ours*, what you merge into — your current branch
+by default), then **Merge**. Three outcomes:
+
+1. **Clean.** The modal shows the post-merge report: the merge commit and its
+   two parents, how many conflicts were resolved, which parts rebuilt, and the
+   interference result. The project reloads live (a `merge_completed` event
+   reaches every open client).
+2. **Conflicts.** The modal becomes the conflict view: a left rail listing
+   each conflicted part script or manifest key, and a right pane showing
+   either the conflict-marked script (read-only CodeMirror, with the
+   `<<<<<<< ours / ||||||| base / >>>>>>> theirs` sections labelled by branch)
+   or a base/ours/theirs value table for a manifest key. Per conflict: **Use
+   ours (target)**, **Use theirs (source)**, **Use base**, or **Edit…** to
+   author the merged text by hand and **Save edit**. Each pick posts
+   immediately, so partial resolution is real — the footer counts "N of M
+   resolved" and **Complete merge** enables at zero outstanding. **Abort
+   merge** throws the staged merge away. Until the merge completes, *nothing*
+   on either branch has changed: the merge is staged, and reloading the page
+   (or restarting the server) reopens the conflict view where you left it.
+3. **Blocked by validation.** Before a merge lands, the kernel rebuilds the
+   merged state: changed parts build, mates re-resolve, and interference is
+   re-checked. If the result would break a build, strand an assembly instance,
+   or **introduce** a new interfering pair, the merge is refused and the same
+   report is shown as blocked, naming the failing part or the overlapping
+   pair. Fix the source branch and merge again, or use **Land anyway
+   (allow_invalid)** — the failures are then recorded in the merge commit
+   message.
+
+Only *newly introduced* interference blocks: a project that already overlaps
+stays mergeable. Merges of very large assemblies skip the pair check (above 40
+instances) rather than spending minutes on it.
+
+**What merges how.** Part scripts merge as text, like any Python file, so two
+people editing different functions of one script merge cleanly and only real
+overlaps conflict. `project.json` never merges line-wise — it is re-merged
+key by key (per part, per parameter, per instance, per material, per PMI
+section), so "A rewrote the flange script while B changed its bolt diameter"
+lands both. A merge is one entry in the project history with both parents:
+`git log --graph` in the project directory shows exactly what happened, and
+Undo (Cmd+Z) after a merge takes the target branch back to its pre-merge
+state.
+
+**Working outside the app.** The project stays a plain git repository — clone
+it, `git log`, `git diff master..flange-weld`, or check out a version tag with
+your own tools. Derived data (`.cache/`, `exports/`) is never committed.
+
 ## Working with the bundled examples
 
 Pick them from the project switcher:
@@ -417,7 +508,8 @@ suite, so the shipped defaults always build.
 | `<project>/project.json` | Manifest (schema v2): parts (script or `reference`), a project `materials` section, parameter overrides, and assembly instances with optional `mate` specs. Human-readable, atomically written, diff-friendly; v1 files still load. |
 | `<project>/parts/<id>.py` | One plain build123d script per part — the model itself. Edit with anything; the UI picks up saves via its own editor, agents via tools. (Reference parts have no script here.) |
 | `<project>/imports/` | Uploaded reference CAD (STEP/BREP/STL) backing `reference` parts. |
-| `<project>/.cache/` | Derived data (ACM1 meshes + metrics JSON keyed by content hash). Safe to delete; rebuilt on demand. |
+| `<project>/.cache/` | Derived data (ACM1 meshes + metrics JSON keyed by content hash). Safe to delete; rebuilt on demand — and **shared by every branch**, since the keys are content hashes. |
+| `<project>/.history/` | The project's git repository (snapshots, branches, tags). `git log`/`diff`/`clone` work on it directly. Inside it: `trees/<branch>/` — one working tree per non-default branch — and `agentcad/` — sidecar state (default branch, per-client checkouts, version referrers, any staged merge). None of it is ever committed. |
 | `<project>/exports/` | STEP/STL/3MF part & assembly exports, plus `<part>_drawing.svg`/`.dxf` drawings, from the Export menu, agent tools, or `agentcad export`. |
 | `examples/` (repo) | The bundled example projects, registered at startup. |
 | `~/.agentcad/config.json` | The persisted port (`AGENTCAD_CONFIG` overrides the path). |

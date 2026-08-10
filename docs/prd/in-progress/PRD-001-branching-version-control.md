@@ -1,6 +1,8 @@
 # PRD-001 — Branching version control for projects
 
-- **Status:** pending
+- **Status:** implemented — MVP complete, **AC1–AC7 verified** (2026-08-10,
+  branch `prd-001-branching-version-control`, slices 1–5). Moves to
+  `docs/prd/shipped/` when the branch merges.
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
@@ -216,6 +218,50 @@ default branch).
   definition of done.
 - AC7. Full suite green; `project_history`/undo behavior unchanged on the
   default branch (existing tests untouched).
+
+**Verification (2026-08-10).** One named test per criterion in
+`tests/test_prd001_acceptance.py` (`test_ac1_…` … `test_ac7_…`), over the real
+service, registry and kernel; AC1 uses the rocketry example on a copy. AC6 is
+the browser session driven in slice 4 — screenshots and a clean console
+recorded in `docs/changelog/0070-branching-ui.md`; the AC6 test asserts that
+evidence is on the record rather than re-driving a browser. AC7's
+"existing tests untouched" half is `git diff --name-status main -- tests/`,
+which lists only additions (`A`) of the five new files.
+
+## As built — divergences from this PRD
+
+Folded back from the design spec
+(`docs/superpowers/specs/2026-08-09-branching-version-control-design.md`) and
+the implementation:
+
+1. **Worktree path.** Branch working trees live at
+   `<project>/.history/trees/<branch>/`, not `.history/worktrees/` — that path
+   is git's own per-worktree admin directory. Chosen over checkout-on-switch
+   (FR2/FR3) and over a new top-level directory, because `.history/` is
+   already in `info/exclude` in every existing project.
+2. **Kernel affinity is left alone.** The risks section proposed
+   branch-qualifying the pool's affinity keys; the worker shape LRU is
+   content-keyed, so branch-qualifying would reduce reuse without buying
+   correctness.
+3. **Interference blocks on *newly introduced* pairs only** (FR9/AC4), so a
+   project that already overlaps stays mergeable. The validation pass diffs
+   the merged assembly's pairs against the pre-merge target's, and skips the
+   check above 40 instances (`MERGE_INTERFERENCE_MAX_INSTANCES`).
+4. **One additive tool** beyond the agent surface listed above:
+   `merge_status {project}`, so the UI and a restarted agent can re-enter a
+   merge staged earlier.
+5. **Reference-part cache signature** moved from `(path, mtime)` to a content
+   hash (`service._content_signature`) — required for FR13 once `imports/` is
+   per-worktree, since the same file checked out on two branches has two paths
+   and two mtimes.
+
+Also of note, though not divergences: `merge_conflict` is **returned** as an
+`{"error": …}` payload at HTTP 200 (the registry derives error types from
+exception class names, so raising it would rename it); merging requires **git
+2.38+** for `merge-tree --write-tree`, while branches and tags work on older
+git and the whole pack self-disables without git; and MVP ships the conflict
+**list**, with the dual-viewport geometry compare and the pre-merge summary
+left to Phase 2.
 
 ## Risks & open questions
 

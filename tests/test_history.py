@@ -182,6 +182,33 @@ def test_cache_and_exports_are_not_tracked(demo):
     assert not [f for f in tracked if f.startswith((".cache/", "exports/"))]
 
 
+def test_refresh_excludes_appends_instead_of_clobbering(demo):
+    """info/exclude is a file a user may legitimately add patterns to: the
+    managed lines are appended when missing, never written over the top."""
+    service, registry, _bus = demo
+    exclude = (service.store.canonical_path_of("demo") / ".history" / "info"
+               / "exclude")
+    exclude.write_text("# mine\nscratch/\n.cache/\n", encoding="utf-8")
+
+    assert registry.call(
+        "update_part_script",
+        {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT},
+    )["ok"] is True
+
+    lines = exclude.read_text(encoding="utf-8").splitlines()
+    assert lines[:3] == ["# mine", "scratch/", ".cache/"]
+    assert set(history_mod._EXCLUDE_LINES) <= set(lines)
+    assert lines.count(".cache/") == 1  # already present: not duplicated
+
+    # Nothing new to add on the next snapshot, so the file stops changing.
+    before = exclude.read_bytes()
+    assert registry.call(
+        "update_part_script",
+        {"project": "demo", "part_id": "box", "script": BOX_SCRIPT},
+    )["ok"] is True
+    assert exclude.read_bytes() == before
+
+
 # ------------------------------------------------ 6. git-missing degradation
 
 

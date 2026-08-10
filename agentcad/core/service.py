@@ -94,6 +94,8 @@ class AgentCADService:
         self.kernel = kernel
         self.bus = bus
         self._lock = threading.RLock()
+        # Per-part build state, keyed by _status_key: the caller's working
+        # tree, not the project name, so branches keep their own badges.
         self._status: dict[tuple[str, str], dict] = {}
         self._spec_cache: dict[str, dict] = {}
         # Seams the v2 feature packs replace; defaults preserve v1 behavior.
@@ -167,11 +169,31 @@ class AgentCADService:
             name = self.store.open(path)
         return self.get_project(name)
 
+    def _status_key(self, proj: str, part_id: str) -> tuple[str, str]:
+        """Key of a part's in-memory build state.
+
+        Two branches of one project hold different scripts and params for the
+        same part id, so their ok/error badges must not share a slot.
+        ``store.lock_key`` is exactly that identity — and it is the project
+        name while branching is inactive, so the key is unchanged there.
+        """
+        return (self.store.lock_key(proj), part_id)
+
+    def _forget_status(self, lock_key: str) -> None:
+        """Drop every build state recorded against one working tree.
+
+        A merge's validation pass builds parts with the resolver pinned to its
+        staged worktree, so the entries are keyed by that temporary directory.
+        It is deleted when the merge finalizes or aborts; without this the
+        entries would outlive it for the life of the process."""
+        for key in [k for k in self._status if k[0] == lock_key]:
+            self._status.pop(key, None)
+
     def get_project(self, proj: str) -> dict:
         manifest = self.store.manifest(proj)
         parts = []
         for entry in manifest["parts"]:
-            status = self._status.get((proj, entry["id"]))
+            status = self._status.get(self._status_key(proj, entry["id"]))
             parts.append(
                 {
                     "id": entry["id"],
@@ -239,7 +261,9 @@ class AgentCADService:
         is_reference = record.kind == "reference"
         script = None if is_reference else self.store.read_script(proj, part_id)
         self._ensure_built(proj, part_id)
-        status = self._status.get((proj, part_id), {"state": "unbuilt"})
+        status = self._status.get(
+            self._status_key(proj, part_id), {"state": "unbuilt"}
+        )
         detail = {
             "id": record.id,
             "label": record.label,
@@ -327,7 +351,7 @@ class AgentCADService:
     def delete_part(self, proj: str, part_id: str) -> None:
         with self._lock:
             self.store.remove_part(proj, part_id)
-            self._status.pop((proj, part_id), None)
+            self._status.pop(self._status_key(proj, part_id), None)
         self.bus.publish(
             {"type": "project_changed", "project": proj, "part": part_id}
         )
@@ -520,14 +544,20 @@ class AgentCADService:
         return self.materials.density(proj, material_id)
 
     def _content_signature(self, proj: str, record) -> str:
-        """Cache-key content for a part: script text for scripts, or file
-        identity (path+mtime+size) for reference parts."""
+        """Cache-key content for a part: script text for scripts, or the
+        imported file's content hash for reference parts.
+
+        Content, not path+mtime: imports/ is per working tree, so a branch
+        checkout restamps the mtime of a byte-identical file and would
+        otherwise mint a fresh cache key on every branch (breaking FR13's
+        determinism guarantee, and forcing a rebuild after every restore).
+        """
         if record.kind == "reference":
             src = self.store.imports_dir(proj) / Path(record.source).name \
                 if record.source else None
             if src and src.is_file():
-                st = src.stat()
-                return f"ref:{record.source}:{st.st_mtime_ns}:{st.st_size}"
+                digest = hashlib.sha256(src.read_bytes()).hexdigest()
+                return f"ref:{record.source}:sha256:{digest}"
             return f"ref:{record.source}:missing"
         return self.store.read_script(proj, record.id)
 
@@ -566,7 +596,7 @@ class AgentCADService:
         return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
     def _ensure_built(self, proj: str, part_id: str) -> dict:
-        status = self._status.get((proj, part_id))
+        status = self._status.get(self._status_key(proj, part_id))
         if status is not None and status["state"] in ("ok", "error"):
             record = self.store.get_part(proj, part_id)
             current = self._cache_key_for(proj, record)
@@ -605,7 +635,7 @@ class AgentCADService:
                 except OSError:
                     pass
             else:
-                self._status[(proj, part_id)] = {
+                self._status[self._status_key(proj, part_id)] = {
                     "state": "ok",
                     "cache_key": key,
                     "metrics": cached_metrics,
@@ -659,10 +689,11 @@ class AgentCADService:
             )
         except KernelError as exc:
             payload = exc.to_payload()
-            self._status[(proj, part_id)] = {
+            status_key = self._status_key(proj, part_id)
+            self._status[status_key] = {
                 "state": "error",
                 "cache_key": key,
-                "metrics": self._status.get((proj, part_id), {}).get("metrics"),
+                "metrics": self._status.get(status_key, {}).get("metrics"),
                 "warnings": [],
                 "error": payload,
             }
@@ -685,7 +716,7 @@ class AgentCADService:
                 {"metrics": metrics, "warnings": warnings, "lods": lods}
             ).encode(),
         )
-        self._status[(proj, part_id)] = {
+        self._status[self._status_key(proj, part_id)] = {
             "state": "ok",
             "cache_key": key,
             "metrics": metrics,
