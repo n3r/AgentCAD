@@ -313,8 +313,9 @@ class TestBranchLifecycle:
         assert (tree / "project.json").is_file()
         assert (tree / "parts" / "box.py").is_file()
         assert (tree / ".git").is_file()          # linked worktree marker
+        # git prints forward-slash paths on every OS; compare in posix form.
         listing = _git(canonical / ".history", canonical, "worktree", "list")
-        assert str(canonical) in listing and str(tree) in listing
+        assert canonical.as_posix() in listing and tree.as_posix() in listing
         # create does not switch the caller
         assert branches.current("demo") == "master"
 
