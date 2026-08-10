@@ -3,8 +3,9 @@
 A proposal is a *CAD pull request*: a branch pair (``source`` -> ``target``),
 an intent, an attributed lifecycle and a gate in front of PRD-001's merge. This
 module is the whole of that workflow and nothing else — it writes files, reads
-branch heads, and never merges, builds or renders. ``proposal_merge`` (slice 2)
-and the review packet (slice 4) are built on top of it.
+branch heads, evaluates gates, and never builds or renders. The merge itself is
+``MergeOrchestrator``'s, called unchanged once the gates are green
+(:meth:`ProposalManager.merge`); the review packet is slice 4.
 
 **Where the state lives.** ``<project>/.history/agentcad/proposals/``, beside
 PRD-001's ``config.json``/``checkouts.json``/``tags.json``/``merge.json``, and
@@ -413,6 +414,7 @@ class ProposalManager:
         return {**self._result(proj, proposal), "packet": None}
 
     def list(self, proj: str, state: str | None = None) -> dict:
+        self.ensure_branch_guard()
         if state is not None and state not in STATES:
             raise ValidationError(f"unknown proposal state {state!r}",
                                   {"allowed": list(STATES)})
@@ -426,6 +428,7 @@ class ProposalManager:
         return {"proposals": rows, "counts": counts}
 
     def get(self, proj: str, pid: str) -> dict:
+        self.ensure_branch_guard()
         proposal = self.store.load(proj, pid)
         return {
             **self._result(proj, proposal),
@@ -436,6 +439,7 @@ class ProposalManager:
     def update(self, proj: str, pid: str, title: str | None = None,
                description: str | None = None,
                state: str | None = None) -> dict:
+        self.ensure_branch_guard()
         with self._lock:
             proposal = self.store.load(proj, pid)
             # Validate the transition BEFORE touching anything, so a refused
@@ -467,6 +471,7 @@ class ProposalManager:
 
     def review(self, proj: str, pid: str, verdict: str,
                summary: str | None = None) -> dict:
+        self.ensure_branch_guard()
         if verdict not in VERDICTS:
             raise ValidationError(f"unknown verdict {verdict!r}",
                                   {"allowed": list(VERDICTS)})
@@ -492,6 +497,107 @@ class ProposalManager:
             self.store.save(proj, proposal)
         self._publish(proj, proposal, "review")
         return self._result(proj, proposal)
+
+    def merge(self, proj: str, pid: str, allow_invalid: bool = False) -> dict:
+        """The gate, then PRD-001's merge — which is not re-implemented,
+        re-checked or wrapped.
+
+        Gates are evaluated and a red one refuses **before** anything is
+        merged, so a blocked proposal never leaves a staged merge behind.
+        Then ``MergeOrchestrator.merge`` runs and its three outcomes are
+        forwarded: success is recorded on the proposal (state ``merged``,
+        packet frozen, audit ``merged`` plus ``override`` when the kernel
+        gate was overridden); a returned ``merge_conflict`` is passed through
+        **verbatim** with only ``details.proposal`` added, leaving the state
+        alone so ``resolve_merge`` and a second call finish the job; a raised
+        blocked-validation ``validation_error`` propagates with the same one
+        addition.
+
+        ``allow_invalid`` reaches PRD-001's kernel gate and nothing else — it
+        is the caller's statement about the kernel's verdict on geometry, and
+        letting it also waive the approvals policy would make one field mean
+        two unrelated things (FR11). Locking is PRD-001's too:
+        ``_holding_target`` already holds the target's turn across validation
+        and finalization, so this adds nothing beyond the proposal RLock.
+        """
+        merges = self._merges()
+        with self._lock:
+            proposal = self.store.load(proj, pid)
+            state = proposal.get("state")
+            if state == "draft":
+                raise ConflictError(
+                    f"proposal {pid} is a draft and cannot be merged; open it "
+                    "first",
+                    {"id": pid, "state": state},
+                )
+            if state in TERMINAL:
+                raise ConflictError(
+                    f"proposal {pid} is already {state}",
+                    {"id": pid, "state": state},
+                )
+            gates = self.gates(proj, proposal)
+            failing = next((g for g in gates if g.get("state") == "fail"), None)
+            if failing is not None:
+                raise ConflictError(
+                    f"proposal {pid} cannot merge: {failing.get('summary')}",
+                    {"id": pid, "failing": failing.get("name"), "gates": gates},
+                )
+            source, target = proposal.get("source"), proposal.get("target")
+            attempt = {"source": source, "target": target,
+                       "allow_invalid": bool(allow_invalid)}
+            try:
+                result = merges.merge(proj, source, target,
+                                      allow_invalid=bool(allow_invalid))
+            except ValidationError as exc:
+                report = (exc.details or {}).get("validation")
+                if not isinstance(report, dict):
+                    raise  # not the kernel gate: PRD-001's error, untouched
+                self.store.append_audit(proj, pid, {
+                    "action": "merge_attempted",
+                    "details": {**attempt, "outcome": "blocked"},
+                })
+                raise ValidationError(
+                    exc.message, {**(exc.details or {}), "proposal": pid}
+                ) from exc
+            error = result.get("error") if isinstance(result, dict) else None
+            if isinstance(error, dict):
+                self.store.append_audit(proj, pid, {
+                    "action": "merge_attempted",
+                    "details": {**attempt, "outcome": "conflict"},
+                })
+                # Verbatim, so the UI's existing conflict modal and
+                # resolve_merge keep working unchanged.
+                error.setdefault("details", {})["proposal"] = pid
+                return result
+
+            report = result.get("validation")
+            report = report if isinstance(report, dict) else None
+            proposal["merge"] = {
+                "commit": result.get("commit"),
+                "parents": result.get("parents") or [],
+                "ts": _now(),
+                "allow_invalid": bool(allow_invalid),
+                "fast_forward": bool(result.get("fast_forward")),
+                "validation": report,
+            }
+            self.transition(proposal, "merged", action="merged",
+                            details={"commit": result.get("commit"),
+                                     **attempt})
+            if allow_invalid and report is not None and not report.get("ok"):
+                # The third place the override is recorded: the audit log, the
+                # proposal, and MergeOrchestrator's commit message (FR10).
+                self.store.append_audit(proj, pid, {
+                    "action": "override",
+                    "details": {"gate": "validation",
+                                "commit": result.get("commit"),
+                                "validation": report},
+                })
+            self.store.save(proj, proposal)
+            self._freeze_packet(proj, pid)
+            gates = self.gates(proj, proposal)
+        self._publish(proj, proposal, "merged")
+        return {**result, "proposal": self._view(proj, proposal),
+                "gates": gates}
 
     def transition(self, proposal: dict, to: str, *, action: str,
                    details: dict | None = None) -> dict:
@@ -600,6 +706,48 @@ class ProposalManager:
                            else "kernel validation failed",
                 "details": {"validation": report}}
 
+    # ------------------------------------------------- the branch-delete guard
+
+    def ensure_branch_guard(self) -> None:
+        """Refuse to delete a branch an active proposal names (FR2).
+
+        Wraps the bound ``BranchManager.delete`` — the
+        ``install_write_guard`` precedent — so one hook covers the tool, the
+        REST route and the UI at once and ``branches.py`` stays untouched.
+        Installed lazily and idempotently rather than from the pack's
+        ``register()``: ``tools_proposals`` is imported *before*
+        ``tools_versioning``, so ``service.branches`` does not exist yet then.
+        """
+        branches = getattr(self.service, "branches", None)
+        if branches is None or getattr(branches.delete, "_proposal_guard", False):
+            return
+
+        inner = branches.delete
+
+        def delete(proj: str, name: str) -> dict:
+            self._check_branch_free(proj, name)
+            return inner(proj, name)
+
+        delete._proposal_guard = True
+        branches.delete = delete
+
+    def _check_branch_free(self, proj: str, name: str) -> None:
+        if not self.store.dir_of(proj).is_dir():
+            return  # no proposals here: byte-identical to PRD-001's behavior
+        for proposal in self.store.list(proj):
+            if proposal.get("state") not in ACTIVE:
+                continue  # a merged/closed proposal holds nothing hostage
+            for role in ("source", "target"):
+                if proposal.get(role) != name:
+                    continue
+                raise ConflictError(
+                    f"branch {name!r} is the {role} of proposal "
+                    f"{proposal.get('id')} ({proposal.get('state')}); close "
+                    "or merge it first",
+                    {"proposal": proposal.get("id"), "branch": name,
+                     "role": role, "state": proposal.get("state")},
+                )
+
     # ------------------------------------------------------------ internals
 
     def _branches(self):
@@ -608,7 +756,29 @@ class ProposalManager:
             raise ValidationError(
                 "proposals unavailable: git not found on PATH"
             )
+        self.ensure_branch_guard()
         return branches
+
+    def _merges(self):
+        merges = getattr(self.service, "merges", None)
+        if merges is None:
+            raise ValidationError(
+                "proposals unavailable: git not found on PATH"
+            )
+        self.ensure_branch_guard()
+        return merges
+
+    def _freeze_packet(self, proj: str, pid: str) -> None:
+        """FR12: the evidence a decision was made on is never regenerated."""
+        path = self.store.packet_path(proj, pid)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(data, dict) or data.get("frozen"):
+            return
+        data["frozen"] = True
+        ProjectStore._atomic_write(path, json.dumps(data, indent=2).encode())
 
     def _source_head(self, proj: str, proposal: dict) -> str | None:
         canonical = self.service.store.canonical_path_of(proj)

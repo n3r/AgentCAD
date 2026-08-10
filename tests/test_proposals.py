@@ -1,13 +1,15 @@
-"""Change proposals: store, lifecycle, audit, policy and gates (PRD-002 slice 1).
+"""Change proposals: store, lifecycle, audit, policy, gates and gated merge.
 
-The core semantics only — no tools, no routes, no review packet (slices 2 and
-4). Everything here resolves branches through git and asserts the sidecar's
-durability guarantee, so the module carries ``integration`` + ``portability``
-and skips without git; almost nothing here needs geometry, because a proposal
-is about a branch pair, not about a shape.
+The core semantics only — the tool and route surface is
+``tests/test_proposals_api.py`` and the review packet is slice 4. Everything
+here resolves branches through git and asserts the sidecar's durability
+guarantee, so the module carries ``integration`` + ``portability`` and skips
+without git; only section 8's merge cases need geometry, because a proposal is
+about a branch pair, not about a shape.
 
 Sections: 1. store and identity · 2. the state machine · 3. creation rules ·
-4. attribution and the audit log · 5. durability · 6. policy and gates.
+4. attribution and the audit log · 5. durability · 6. policy and gates ·
+7. the branch-delete guard · 8. proposal_merge over PRD-001.
 """
 
 from __future__ import annotations
@@ -41,6 +43,14 @@ _GIT = [
 ]
 pytestmark = _GIT
 
+BOX_V2_SCRIPT = BOX_SCRIPT.replace(
+    "Box(p.size, p.size, p.size)", "Box(p.size, p.size, p.size * 2)"
+)
+BOX_V3_SCRIPT = BOX_SCRIPT.replace(
+    "Box(p.size, p.size, p.size)", "Box(p.size, p.size, p.size * 3)"
+)
+BROKEN_SCRIPT = BOX_SCRIPT.replace("return part.part", "return no_such_name")
+
 
 @pytest.fixture(autouse=True)
 def _reset_context():
@@ -73,10 +83,52 @@ def demo(stack):
     return service, registry, ProposalManager(service)
 
 
+@pytest.fixture
+def parts(stack):
+    """'demo' with two buildable parts on master and a 'feat' branch forked
+    from them: the shape section 8's merges validate."""
+    service, registry = stack
+    assert "error" not in registry.call("create_project", {"name": "demo"})
+    for part in ("box", "pin"):
+        created = registry.call(
+            "create_part",
+            {"project": "demo", "part_id": part, "script": BOX_SCRIPT},
+        )
+        assert "error" not in created, created
+    service.branches.create("demo", "feat")
+    return service, registry, ProposalManager(service)
+
+
 def _create(manager, **kwargs) -> dict:
     payload = {"source": "feat", "title": "Thinner wall"}
     payload.update(kwargs)
     return manager.create("demo", **payload)["proposal"]
+
+
+def _on(service, client: str, branch: str) -> None:
+    """Put a client on a branch (identity + checkout)."""
+    locks.set_client_id(client)
+    if service.branches.current("demo") != branch:
+        service.branches.switch("demo", branch)
+
+
+def _script(registry, part: str, text: str, *, builds: bool = True) -> None:
+    result = registry.call(
+        "update_part_script",
+        {"project": "demo", "part_id": part, "script": text},
+    )
+    # A script that does not build is still written and snapshotted; only the
+    # rebuild result reports the failure.
+    assert ("error" not in result) is builds, result
+
+
+def _propose_and_approve(service, manager) -> str:
+    """The AC1 shape: an agent proposes, a human approves."""
+    locks.set_client_id("chat:main")
+    pid = _create(manager)["id"]
+    locks.set_client_id("browser")
+    manager.review("demo", pid, "approve")
+    return pid
 
 
 def _move_source_head(service, text: str = "note\n") -> str:
@@ -589,3 +641,234 @@ def test_a_review_goes_stale_when_the_source_head_moves_but_still_counts(demo):
     approvals = _gate(detail["gates"], "approvals")
     assert approvals["state"] == "pass"  # still counts in v1
     assert "stale" in approvals["summary"]
+
+
+# ------------------------------------------- 7. the branch-delete guard (FR2)
+
+
+def test_deleting_a_branch_an_active_proposal_names_is_refused(demo):
+    """Either side of the pair: a proposal whose source or target vanished
+    could never be reviewed, diffed or merged."""
+    service, registry, manager = demo
+    service.branches.create("demo", "release")
+    pid = _create(manager, target="release")["id"]
+
+    for name in ("feat", "release"):
+        refused = registry.call("branch_delete", {"project": "demo", "name": name})
+        assert refused["error"]["type"] == "conflict_error", refused
+        assert refused["error"]["details"]["proposal"] == pid
+        assert refused["error"]["details"]["branch"] == name
+        assert pid in refused["error"]["message"]
+    assert {b["name"] for b in service.branches.list("demo")["branches"]} == {
+        "master", "feat", "release"}
+
+    # A terminal proposal does not hold a branch hostage.
+    manager.update("demo", pid, state="closed")
+    assert "error" not in registry.call(
+        "branch_delete", {"project": "demo", "name": "feat"})
+
+
+def test_the_guard_is_idempotent_and_leaves_free_branches_alone(demo):
+    service, registry, manager = demo
+    service.branches.create("demo", "spare")
+    _create(manager)  # first proposal-manager use installs the guard
+
+    wrapped = service.branches.delete
+    manager.ensure_branch_guard()
+    manager.ensure_branch_guard()
+    assert service.branches.delete is wrapped  # wrapping twice is a no-op
+
+    assert "error" not in registry.call(
+        "branch_delete", {"project": "demo", "name": "spare"})
+
+
+# ---------------------------------------- 8. proposal_merge over PRD-001
+
+
+def test_a_draft_cannot_be_merged(demo):
+    """Well-formed, refused by workflow state: a conflict_error, not a
+    validation_error."""
+    _service, _registry, manager = demo
+    pid = _create(manager, draft=True)["id"]
+
+    with pytest.raises(ConflictError) as excinfo:
+        manager.merge("demo", pid)
+    assert "draft" in excinfo.value.message
+    assert manager.get("demo", pid)["proposal"]["state"] == "draft"
+
+    manager.update("demo", pid, state="open")
+    manager.update("demo", pid, state="closed")
+    with pytest.raises(ConflictError):
+        manager.merge("demo", pid)
+
+
+def test_policy_blocks_the_merge_and_allow_invalid_does_not_bypass_it(demo):
+    """AC6. ``allow_invalid`` is the caller's statement about the KERNEL's
+    verdict on geometry; letting it also waive a human approval would make one
+    field mean two unrelated things."""
+    _service, _registry, manager = demo
+    locks.set_client_id("chat:main")
+    pid = _create(manager)["id"]
+
+    with pytest.raises(ConflictError) as excinfo:
+        manager.merge("demo", pid)
+    details = excinfo.value.details
+    assert details["failing"] == "approvals"
+    assert [g["name"] for g in details["gates"]][:2] == ["state", "approvals"]
+    assert "1 approval required, 0 recorded" in excinfo.value.message
+
+    manager.review("demo", pid, "approve")  # the author's own approval
+    with pytest.raises(ConflictError):
+        manager.merge("demo", pid)
+    with pytest.raises(ConflictError):
+        manager.merge("demo", pid, allow_invalid=True)
+    assert manager.get("demo", pid)["proposal"]["state"] == "approved"
+    assert manager.get("demo", pid)["proposal"]["merge"] is None
+
+    locks.set_client_id("browser")
+    manager.review("demo", pid, "approve")
+    result = manager.merge("demo", pid)
+    # 'feat' never diverged from master, so PRD-001 reports the no-op merge;
+    # the proposal is still resolved by it.
+    assert result["already_up_to_date"] is True
+    assert result["proposal"]["state"] == "merged"
+
+
+def test_a_changes_requested_proposal_is_refused_by_the_state_gate(demo):
+    _service, _registry, manager = demo
+    locks.set_client_id("chat:main")
+    pid = _create(manager)["id"]
+    _write_policy(manager, approvals_required=0)
+
+    locks.set_client_id("browser")
+    manager.review("demo", pid, "request_changes")
+    with pytest.raises(ConflictError) as excinfo:
+        manager.merge("demo", pid)
+    assert excinfo.value.details["failing"] == "state"
+
+
+def test_the_packet_is_frozen_by_the_merge(demo):
+    """FR12: the evidence a decision was made on must not be regenerated
+    afterwards. Slice 4's proposal_packet refuses to regenerate a frozen one."""
+    _service, _registry, manager = demo
+    locks.set_client_id("chat:main")
+    pid = _create(manager)["id"]
+    packet = manager.store.packet_path("demo", pid)
+    packet.parent.mkdir(parents=True, exist_ok=True)
+    packet.write_text(json.dumps({"proposal": pid, "ok": True, "stale": True}),
+                      encoding="utf-8")
+
+    locks.set_client_id("browser")
+    manager.review("demo", pid, "approve")
+    assert "error" not in manager.merge("demo", pid)
+
+    stored = json.loads(packet.read_text(encoding="utf-8"))
+    assert stored["frozen"] is True
+    summary = manager.get("demo", pid)["packet"]
+    assert summary["frozen"] is True and summary["stale"] is False
+
+
+@pytest.mark.slow
+def test_an_approved_proposal_merges_through_prd001(parts):
+    service, registry, manager = parts
+    canonical = service.store.canonical_path_of("demo")
+    _on(service, "agent_a", "feat")
+    _script(registry, "box", BOX_V2_SCRIPT)
+    _on(service, "browser", "master")
+    _script(registry, "pin", BOX_V3_SCRIPT)
+    pid = _propose_and_approve(service, manager)
+
+    result = manager.merge("demo", pid)
+
+    assert "error" not in result, result
+    assert result["merged"] is True and result["fast_forward"] is False
+    assert result["validation"]["ok"] is True
+    assert len(result["parents"]) == 2
+    assert result["proposal"]["state"] == "merged"
+    assert result["proposal"]["merge"]["commit"] == result["commit"]
+    assert result["proposal"]["merge"]["allow_invalid"] is False
+    assert [g["state"] for g in result["gates"] if g["name"] == "validation"] \
+        == ["pass"]
+
+    stored = manager.get("demo", pid)
+    assert stored["proposal"]["merge"]["validation"]["ok"] is True
+    assert [e["action"] for e in stored["audit"]][-1] == "merged"
+    parents = service.history._run(
+        canonical, "rev-list", "--parents", "-n", "1", "master"
+    ).stdout.split()[1:]
+    assert len(parents) == 2
+    assert (canonical / "parts" / "box.py").read_text() == BOX_V2_SCRIPT
+
+
+@pytest.mark.slow
+def test_a_blocked_validation_refuses_then_lands_with_allow_invalid(parts):
+    """AC5: the kernel gate blocks, the override lands it, and the override is
+    recorded in all three places (audit, proposal, merge commit message)."""
+    service, registry, manager = parts
+    canonical = service.store.canonical_path_of("demo")
+    _on(service, "agent_a", "feat")
+    _script(registry, "box", BROKEN_SCRIPT, builds=False)
+    _on(service, "browser", "master")
+    _script(registry, "pin", BOX_V2_SCRIPT)
+    pid = _propose_and_approve(service, manager)
+
+    with pytest.raises(ValidationError) as excinfo:
+        manager.merge("demo", pid)
+    details = excinfo.value.details
+    assert details["validation"]["ok"] is False
+    assert details["validation"]["blocked"] is True
+    assert [f["part"] for f in details["validation"]["failures"]] == ["box"]
+    assert details["proposal"] == pid
+
+    blocked = manager.get("demo", pid)
+    assert blocked["proposal"]["state"] == "approved"
+    assert blocked["proposal"]["merge"] is None
+    attempts = [e for e in blocked["audit"] if e["action"] == "merge_attempted"]
+    assert attempts[-1]["details"]["outcome"] == "blocked"
+
+    landed = manager.merge("demo", pid, allow_invalid=True)
+    assert "error" not in landed, landed
+    assert landed["proposal"]["state"] == "merged"
+    assert landed["proposal"]["merge"]["allow_invalid"] is True
+    assert landed["validation"]["ok"] is False
+    actions = [e["action"] for e in manager.get("demo", pid)["audit"]]
+    assert "override" in actions
+    message = service.history._run(
+        canonical, "log", "-1", "--pretty=%B", "master").stdout
+    assert "Validation: FAILED" in message and "allow_invalid" in message
+
+
+@pytest.mark.slow
+def test_a_conflicting_merge_passes_through_verbatim(parts):
+    service, registry, manager = parts
+    _on(service, "agent_a", "feat")
+    _script(registry, "box", BOX_V2_SCRIPT)
+    _on(service, "browser", "master")
+    _script(registry, "box", BOX_V3_SCRIPT)
+    pid = _propose_and_approve(service, manager)
+
+    result = manager.merge("demo", pid)
+
+    assert set(result) == {"error"}  # PRD-001's payload, nothing wrapped round it
+    error = result["error"]
+    assert error["type"] == "merge_conflict"
+    assert set(error["details"]) >= {"merge_id", "source", "target", "base",
+                                     "outstanding", "conflicts", "hint",
+                                     "proposal"}
+    assert error["details"]["proposal"] == pid
+    assert error["details"]["conflicts"][0]["path"] == "parts/box.py"
+
+    detail = manager.get("demo", pid)
+    assert detail["proposal"]["state"] == "approved"  # unchanged
+    assert [e["details"]["outcome"] for e in detail["audit"]
+            if e["action"] == "merge_attempted"] == ["conflict"]
+    assert service.merges.status("demo")["merge"]["source"] == "feat"
+
+    resolved = registry.call("resolve_merge", {
+        "project": "demo", "choices": {"parts/box.py": {"take": "theirs"}}})
+    assert "error" not in resolved, resolved
+
+    done = manager.merge("demo", pid)
+    assert "error" not in done, done
+    assert done["proposal"]["state"] == "merged"
+    assert done["proposal"]["merge"]["commit"]
