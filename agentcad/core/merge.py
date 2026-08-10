@@ -763,6 +763,9 @@ class MergeOrchestrator:
             if staged.exists():
                 shutil.rmtree(staged, ignore_errors=True)
         self._run(canonical, "worktree", "prune", check=False)
+        # The staged tree was its own lock key, so the validation pass left
+        # build state keyed on a directory that no longer exists.
+        self.service._forget_status(str(staged))
         if not keep_state:
             self._state_file(canonical).unlink(missing_ok=True)
 
@@ -912,6 +915,13 @@ class MergeOrchestrator:
 
         A caller that already holds the turn keeps it afterwards; one that did
         not gets it released again.
+
+        The hold carries the ordinary TTL, so a validation pass that outlives
+        it frees the turn and someone else may legitimately take it. Releasing
+        then raises — over a body that has already landed its merge (ref moved,
+        tree synced, event published). A lock that is no longer ours is not
+        this merge's problem: the release cannot be the thing that reports a
+        completed merge as a conflict.
         """
         turnlock = getattr(self.service, "turnlock", None)
         if turnlock is None:
@@ -925,7 +935,10 @@ class MergeOrchestrator:
             yield
         finally:
             if existing is None or existing.get("holder") != holder:
-                turnlock.release(key, holder)
+                try:
+                    turnlock.release(key, holder)
+                except ConflictError:
+                    pass  # our hold expired and another client took the turn
 
     def _verify_clean(self, tree: Path, branch: str) -> None:
         """Assert (never snapshot) that a tree is unmodified. Used at the very

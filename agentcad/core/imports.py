@@ -36,6 +36,6 @@ def ingest_file(store, proj: str, filename: str, src_path: str) -> str:
         raise ValidationError(f"source file not found: {src_path}")
     if src.stat().st_size > MAX_IMPORT_BYTES:
         raise ValidationError("import exceeds the 100 MB limit")
-    dest = store.imports_dir(proj) / name
+    dest = store.imports_dir(proj, write=True) / name
     shutil.copyfile(src, dest)
     return name

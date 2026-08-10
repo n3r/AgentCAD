@@ -85,6 +85,21 @@ def _registers(porcelain: str, target: Path, name: str) -> bool:
     return False
 
 
+def _points_elsewhere(canonical: Path, target: Path) -> bool:
+    """True when ``target``'s ``.git`` names a DIFFERENT repository — a copied
+    project's leftover checkout, whose content still lives in that project and
+    which is therefore the one case where replacing a tree loses nothing. A
+    missing or unreadable ``.git`` is NOT this case."""
+    try:
+        text = (target / ".git").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if "gitdir:" not in text:
+        return False
+    admin = Path(text.split("gitdir:", 1)[1].strip())
+    return not _inside(admin, canonical / ".history" / "worktrees")
+
+
 def _read_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -145,7 +160,11 @@ class BranchManager:
         and if that is impossible the write is refused rather than misfiled.
 
         Cheap by construction: the fast path is the same ``project.json``
-        stat ``resolve_path`` already does, with no git call at all.
+        stat ``resolve_path`` already does plus one more for the ``.git``
+        link, with no git call at all. That second stat is not optional: a
+        tree that lost its link still looks like a checkout, and writing to it
+        makes the next snapshot ``git init`` a throwaway repo inside it — the
+        edit never reaches the branch, and the next materialize discards it.
         """
         pinned = pinned_tree_var.get()
         if pinned is not None:
@@ -158,12 +177,14 @@ class BranchManager:
         dirname = state["trees"].get(branch)
         if dirname:
             tree = canonical / ".history" / "trees" / dirname
-            if (tree / "project.json").is_file():
+            if (tree / "project.json").is_file() and (tree / ".git").is_file():
                 return tree
         with self._lock:
             try:
                 dirname = self._materialize(canonical, state, branch)
-            except (ValidationError, ConflictError, OSError) as exc:
+            except ConflictError:
+                raise  # already a precise refusal (e.g. an unrepairable tree)
+            except (ValidationError, OSError) as exc:
                 raise ConflictError(
                     f"the working tree for branch {branch!r} is missing and "
                     f"could not be restored ({exc}); switch branches or "
@@ -501,14 +522,31 @@ class BranchManager:
         copied project brings its predecessor's trees along, whose ``.git``
         files still point at the ORIGINAL project's repo (so commits would
         land there), and a tree that lost its ``.git`` would be ``git init``-ed
-        into an invisible throwaway repo. Either way the tree is discarded and
-        re-materialized from the branch ref.
+        into an invisible throwaway repo.
+
+        Content is never destroyed to fix that. A tree that lost its link is
+        re-attached (``git worktree repair``) and kept; only a tree belonging
+        to ANOTHER repository is replaced, because its content still lives in
+        that project. Anything else is a refusal — a tree may hold work that
+        exists nowhere else.
         """
         dirname = state["trees"].get(name) or self._tree_dirname(state, name)
         target = canonical / ".history" / "trees" / dirname
-        if (target / "project.json").is_file() \
-                and self._is_linked_worktree(canonical, target, name):
-            return dirname
+        if (target / "project.json").is_file():
+            if self._is_linked_worktree(canonical, target, name):
+                return dirname
+            # Before the prune below, which deletes the very admin directory
+            # repair reads (a tree whose '.git' is missing is 'prunable').
+            if self._repair_link(canonical, target, name):
+                return dirname
+            if not _points_elsewhere(canonical, target):
+                raise ConflictError(
+                    f"the working tree for branch {name!r} is no longer "
+                    "attached to this project's repository and could not be "
+                    f"repaired; move {target} aside — its contents are kept — "
+                    "and use the branch again",
+                    {"branch": name, "tree": str(target)},
+                )
         # A tree deleted out from under git stays registered and 'prunable',
         # and blocks re-adding the same path — prune before every add.
         self._run(canonical, "worktree", "prune", check=False)
@@ -524,6 +562,18 @@ class BranchManager:
                 f"{result.stderr.strip() or result.stdout.strip()}"
             )
         return dirname
+
+    def _repair_link(self, canonical: Path, target: Path, name: str) -> bool:
+        """Rewrite a linked worktree's ``.git`` file from git's own admin
+        directory; True when ``target`` is a proper linked worktree afterwards.
+
+        ``git worktree repair`` exits non-zero while reporting what it fixed,
+        so the outcome is read from the tree, never from the status code. It
+        can only work while the admin directory survives — hence the call site
+        ahead of ``worktree prune``.
+        """
+        self._run(canonical, "worktree", "repair", str(target), check=False)
+        return self._is_linked_worktree(canonical, target, name)
 
     def _is_linked_worktree(self, canonical: Path, target: Path,
                             name: str) -> bool:

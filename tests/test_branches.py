@@ -25,7 +25,7 @@ import pytest
 from agentcad.core import locks
 from agentcad.core.branches import BranchManager, _inside, pinned_tree_var
 from agentcad.core.history import ProjectHistory
-from agentcad.core.model import PartRecord
+from agentcad.core.model import ConflictError, PartRecord
 from agentcad.core.project import ProjectStore
 from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
@@ -991,3 +991,118 @@ class TestSnapshotFailuresAreLoud:
         assert payload["deleted"] == "feat"
         assert not tree.exists()
         assert "feat" not in {b["name"] for b in payload["branches"]}
+
+
+# --------------------------- verifier regressions (D2 / G1, PRD-001)
+
+
+class TestDetachedWorktreeIsRepaired:
+    """D2 — a branch tree that lost its ``.git`` file still *looks* like a
+    checkout (project.json is right there), so the write path's fast path
+    accepted it: the edit landed in a directory git no longer knew about, the
+    next snapshot ``git init``-ed a throwaway repo inside it, and the following
+    switch discarded the lot. Re-attach the tree; never discard its content."""
+
+    pytestmark = _GIT
+
+    @staticmethod
+    def _on_broken_feat(service, branches):
+        canonical = service.store.canonical_path_of("demo")
+        branches.create("demo", "feat")
+        locks.set_client_id("agent_a")
+        branches.switch("demo", "feat")
+        tree = canonical / ".history" / "trees" / "feat"
+        (tree / ".git").unlink()
+        return canonical, tree
+
+    def test_d2_a_write_re_attaches_a_tree_that_lost_its_git_link(self, demo):
+        service, registry, branches = demo
+        canonical, tree = self._on_broken_feat(service, branches)
+
+        result = registry.call(
+            "update_part_script",
+            {"project": "demo", "part_id": "box", "script": BOX_V2_SCRIPT})
+
+        if "error" in result:  # a git too old to repair: refuse, don't misfile
+            assert result["error"]["type"] == "conflict_error", result
+            assert (tree / "parts" / "box.py").read_text() == BOX_SCRIPT
+            return
+        assert (tree / ".git").is_file()
+        assert not (tree / ".history").exists()  # no throwaway repo
+        assert (tree / "parts" / "box.py").read_text() == BOX_V2_SCRIPT
+        # the edit is on the real branch — visible to git, and to branch_list
+        assert service.history._run(
+            canonical, "cat-file", "blob", "refs/heads/feat:parts/box.py"
+        ).stdout == BOX_V2_SCRIPT
+        assert (canonical / "parts" / "box.py").read_text() == BOX_SCRIPT
+        # ...and survives a round trip through the default branch
+        branches.switch("demo", "master")
+        branches.switch("demo", "feat")
+        assert (tree / "parts" / "box.py").read_text() == BOX_V2_SCRIPT
+
+    def test_d2_an_unrepairable_tree_is_refused_not_discarded(
+            self, demo, registry_error):
+        service, _registry, branches = demo
+        canonical, tree = self._on_broken_feat(service, branches)
+        (tree / "parts" / "box.py").write_text("uncommitted\n", encoding="utf-8")
+        # git repairs a tree from its admin directory; without one it cannot.
+        shutil.rmtree(canonical / ".history" / "worktrees" / "feat")
+
+        assert registry_error(
+            service.store.write_script, "demo", "box", BOX_V2_SCRIPT
+        ) == "conflict_error"
+        assert (tree / "parts" / "box.py").read_text() == "uncommitted\n"
+        assert (canonical / "parts" / "box.py").read_text() == BOX_SCRIPT
+
+        # and materializing it again says so instead of deleting the content
+        branches.switch("demo", "master")
+        assert registry_error(branches.switch, "demo", "feat") == "conflict_error"
+        assert (tree / "parts" / "box.py").read_text() == "uncommitted\n"
+
+
+class TestImportsFollowTheBranch:
+    """G1 — an ingested STL/STEP payload is authored state (it is committed,
+    and a reference part points at it), so ingest must go through the write
+    guard like a script write: same branch tree, same ensure_checkout."""
+
+    pytestmark = _GIT
+
+    def test_g1_ingest_lands_in_the_callers_branch_tree(self, demo, tmp_path):
+        from agentcad.core.imports import ingest_file
+
+        service, _registry, branches = demo
+        canonical = service.store.canonical_path_of("demo")
+        branches.create("demo", "feat")
+        locks.set_client_id("agent_a")
+        branches.switch("demo", "feat")
+        src = tmp_path / "widget.step"
+        src.write_bytes(b"ISO-10303-21;\n")
+
+        name = ingest_file(service.store, "demo", "widget.step", str(src))
+
+        tree = canonical / ".history" / "trees" / "feat"
+        assert (tree / "imports" / name).read_bytes() == b"ISO-10303-21;\n"
+        assert not (canonical / "imports" / name).exists()
+
+    def test_g1_ingest_onto_a_detached_tree_repairs_or_refuses(
+            self, demo, tmp_path, registry_error):
+        from agentcad.core.imports import ingest_file
+
+        service, _registry, branches = demo
+        canonical = service.store.canonical_path_of("demo")
+        branches.create("demo", "feat")
+        locks.set_client_id("agent_a")
+        branches.switch("demo", "feat")
+        tree = canonical / ".history" / "trees" / "feat"
+        (tree / ".git").unlink()
+        src = tmp_path / "widget.step"
+        src.write_bytes(b"ISO-10303-21;\n")
+
+        try:
+            name = ingest_file(service.store, "demo", "widget.step", str(src))
+        except ConflictError:
+            assert not (canonical / "imports" / "widget.step").exists()
+            return
+        assert (tree / ".git").is_file()
+        assert (tree / "imports" / name).read_bytes() == b"ISO-10303-21;\n"
+        assert not (canonical / "imports" / name).exists()

@@ -19,8 +19,9 @@ def build_router(service, registry) -> APIRouter:
             raise ValidationError("import exceeds the 100 MB limit")
         if not body:
             raise ValidationError("empty upload")
-        service.store.get_part  # touch to ensure project resolves via store
-        dest = service.store.imports_dir(proj) / name
+        # write=True: the upload is a persistent mutation, so it answers to
+        # the write guard (branch checkout + turn lock) like a script write.
+        dest = service.store.imports_dir(proj, write=True) / name
         dest.write_bytes(body)
         return {"source": name, "size_bytes": len(body)}
 

@@ -328,7 +328,18 @@ class ProjectStore:
         path.mkdir(exist_ok=True)
         return path
 
-    def imports_dir(self, proj: str) -> Path:
+    def imports_dir(self, proj: str, *, write: bool = False) -> Path:
+        """Imported CAD payloads for the caller's branch.
+
+        ``write=True`` is the ingest path. An import is authored state — it is
+        tracked by git and a reference part points at it — so it goes through
+        the same guard as ``write_script``: the caller's branch tree is made
+        good first, and a payload can never follow the read resolver's
+        fallback onto the default branch. Reads stay unguarded (a rebuild must
+        not fail because someone else holds the turn).
+        """
+        if write and self.write_guard is not None:
+            self.write_guard(proj)
         path = self._resolve(proj) / "imports"
         path.mkdir(exist_ok=True)
         return path

@@ -179,6 +179,16 @@ class AgentCADService:
         """
         return (self.store.lock_key(proj), part_id)
 
+    def _forget_status(self, lock_key: str) -> None:
+        """Drop every build state recorded against one working tree.
+
+        A merge's validation pass builds parts with the resolver pinned to its
+        staged worktree, so the entries are keyed by that temporary directory.
+        It is deleted when the merge finalizes or aborts; without this the
+        entries would outlive it for the life of the process."""
+        for key in [k for k in self._status if k[0] == lock_key]:
+            self._status.pop(key, None)
+
     def get_project(self, proj: str) -> dict:
         manifest = self.store.manifest(proj)
         parts = []

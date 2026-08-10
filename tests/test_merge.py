@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -1273,3 +1274,89 @@ class TestMalformedManifests:
                       empty_tree, "-m", "orphan")
 
         assert service.merges._manifest_at(canonical, commit) == {}
+
+
+# ------------------------------- verifier regressions (D1 / D3, PRD-001)
+
+
+class TestHeldTurnOutlivingItsTtl:
+    """D1 — the target's turn is held across validation, but the hold carries
+    the ordinary 120 s TTL. A validation pass that outlives it frees the lock;
+    a client that then legitimately takes the free turn made the release in
+    ``_holding_target``'s finally raise — reporting a merge that had already
+    landed (ref moved, tree synced, ``merge_completed`` published) as a
+    conflict_error."""
+
+    pytestmark = _GIT
+
+    def test_d1_a_stolen_expired_turn_cannot_fail_a_landed_merge(self, demo):
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        _script(registry, "box", BOX_V2_SCRIPT)
+        _on(service, "agent_b", "master")
+        _script(registry, "pin", BOX_V3_SCRIPT)
+        canonical = service.store.canonical_path_of("demo")
+        before = service.history.resolve_branch(canonical, "master")
+        source_head = service.history.resolve_branch(canonical, "feat")
+        key = service.merges._turn_key(
+            "demo", service.branches.tree_of("demo", "master")
+        )
+        original = service.merges._validate
+
+        def expire_then_steal(*args, **kwargs):
+            report = original(*args, **kwargs)
+            holder, _expires = service.turnlock._held[key]
+            service.turnlock._held[key] = (holder, time.time() - 1)  # aged out
+            service.turnlock.acquire(key, "agent_z")  # the turn was free
+            return report
+
+        service.merges._validate = expire_then_steal
+        result = registry.call("merge_branch", {"project": "demo",
+                                                "source": "feat"})
+
+        assert "error" not in result, result
+        assert result["merged"] is True and result["validation"]["ok"]
+        after = service.history.resolve_branch(canonical, "master")
+        assert after == result["commit"] != before
+        # the ref moved exactly once: one merge commit over the old head
+        assert _parents(canonical, "master") == [before, source_head]
+
+
+class TestStagedTreeLeavesNoStatus:
+    """D3 — the validation pass runs the ordinary service methods pinned to the
+    staged worktree, so every part it builds records ``_status`` under that
+    temp directory's lock key. The directory is deleted on finalize; the
+    entries used to live for the life of the process."""
+
+    pytestmark = _GIT
+
+    def test_d3_a_finalized_merge_purges_its_staged_status_entries(self, demo):
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        _script(registry, "box", BOX_V2_SCRIPT)
+        _on(service, "agent_b", "master")
+        _script(registry, "pin", BOX_V3_SCRIPT)
+
+        result = registry.call("merge_branch", {"project": "demo",
+                                                "source": "feat"})
+
+        assert "error" not in result, result
+        assert result["validation"]["built"], result["validation"]
+        assert [k for k in service._status if "merge-" in str(k[0])] == []
+
+    def test_d3_an_aborted_merge_purges_them_too(self, demo):
+        service, registry = demo
+        _on(service, "agent_a", "feat")
+        _script(registry, "box", BOX_V2_SCRIPT)
+        _on(service, "agent_b", "master")
+        _script(registry, "box", BOX_V3_SCRIPT)
+
+        conflicted = registry.call("merge_branch", {"project": "demo",
+                                                    "source": "feat"})
+        assert conflicted["error"]["type"] == "merge_conflict"
+        resolved = registry.call("resolve_merge", {
+            "project": "demo",
+            "choices": {"parts/box.py": {"take": "theirs"}}})
+        assert "error" not in resolved, resolved
+
+        assert [k for k in service._status if "merge-" in str(k[0])] == []
