@@ -1,0 +1,421 @@
+"""PRD-008 slice 7: per-part soft claims at the ``write_guard`` seam.
+
+The riskiest slice in the plan: it inserts a wrapper into the one seam every
+persistent write passes through. Four things are therefore asserted here more
+loudly than anywhere else in the feature.
+
+**The precedence order** (design Decision 14) is turn → own-turn bypass →
+claim → proceed. The turn lock decides first with its existing code path,
+message and details; AC6's regression gate is that ``tests/test_locks.py``
+passes *unmodified*, and it does.
+
+**Claims are human-vs-human only.** If an agent's write were blocked by a
+human's open editor, the flagship loop — human pins a comment on a face, agent
+fixes it and replies — would 409 on the agent's very first write. Two tests
+pin both directions.
+
+**Coverage is bounded and honest.** Only ``write_script`` and
+``update_part_entry`` carry a ``locks.write_scope``, so only the script and the
+params/material/label paths are claim-covered. ``add_part``, ``remove_part``,
+assembly edits, project materials, restore and undo are whole-manifest or
+project-wide writes and are turn-locked *only* — pretending otherwise would be
+a lie told by a green test, so a test says so out loud instead.
+
+**The guard installs lazily** (risk R7), because tool packs load alphabetically
+and ``tools_versioning`` (``v``) *replaces* ``write_guard`` after anything at
+``c`` could have wrapped it. So the wrapper is (re)installed from
+``routes_presence.build_router`` and from every claims entry point, and
+``checks.py``'s ephemeral service — which nulls the guard on purpose — must
+still end with no guard at all.
+"""
+
+from __future__ import annotations
+
+import queue
+
+import pytest
+from fastapi.testclient import TestClient
+
+from agentcad.core import locks
+from agentcad.core.locks import CLAIM_TTL_S, ClaimRegistry
+from agentcad.core.presence import ensure_claim_guard
+from agentcad.core.service import AgentCADService, EventBus
+from agentcad.core.tools import build_registry
+from agentcad.server.app import create_app
+
+from .conftest import BOX_SCRIPT, make_test_service
+
+ALICE = {"X-Agent-Id": "browser:aaaaaaaa"}
+BOB = {"X-Agent-Id": "browser:bbbbbbbb"}
+BOT = {"X-Agent-Id": "bot"}
+
+
+@pytest.fixture(autouse=True)
+def _reset_identity():
+    token = locks.client_id_var.set("browser")
+    yield
+    locks.client_id_var.reset(token)
+
+
+@pytest.fixture
+def http(kernel, tmp_path):
+    """A two-part project behind a real app (the route pack is what installs
+    the claim guard, so the app must be built)."""
+    service = make_test_service(tmp_path / "projects", kernel)
+    registry = build_registry(service)
+    app = create_app(service, registry, extra_allowed_hosts={"testserver"})
+    client = TestClient(app, base_url="http://127.0.0.1")
+    assert client.post("/api/projects", json={"name": "demo"}).status_code == 201
+    for part in ("box", "lid"):
+        assert client.post("/api/projects/demo/parts",
+                           json={"id": part, "script": BOX_SCRIPT}
+                           ).status_code == 201
+    return service, registry, client
+
+
+def _drain(subscription) -> list[dict]:
+    events = []
+    while True:
+        try:
+            events.append(subscription.get_nowait())
+        except queue.Empty:
+            return events
+
+
+def _claim(client, part: str, who: dict) -> dict:
+    """Take a claim the way the UI does: a heartbeat with a dirty buffer."""
+    response = client.post("/api/projects/demo/presence",
+                           json={"part_id": part, "surface": "editor",
+                                 "claim": True}, headers=who)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _write(client, part: str, who: dict, text: str = BOX_SCRIPT):
+    return client.put(f"/api/projects/demo/parts/{part}",
+                      json={"script": text}, headers=who)
+
+
+# -------------------------------------------------------- 1. the registry
+
+
+def test_a_claim_is_taken_refreshed_released_and_never_stolen_by_accident():
+    claims = ClaimRegistry()
+
+    taken = claims.acquire("demo", "box", "browser:a")
+    assert taken["holder"] == "browser:a"
+    assert taken["holder_kind"] == "human"
+    assert taken["expires_at"] > 0
+
+    # Another client's acquire returns the standing claim UNCHANGED: refusing
+    # a write is check()'s job, and acquire never raises.
+    assert claims.acquire("demo", "box", "browser:b")["holder"] == "browser:a"
+    assert claims.acquire("demo", "box", "browser:b",
+                          force=True)["holder"] == "browser:b"
+
+    assert claims.release("demo", "box", "browser:a") == {"released": False}
+    assert claims.release("demo", "box", "browser:b") == {"released": True}
+    assert claims.get("demo", "box") is None
+    assert claims.all("demo") == {}
+
+
+def test_claims_expire_and_are_pruned_lazily(monkeypatch):
+    claims = ClaimRegistry()
+    claims.acquire("demo", "box", "browser:a")
+
+    import agentcad.core.locks as locks_mod
+
+    real = locks_mod.time.time
+    monkeypatch.setattr(locks_mod.time, "time",
+                        lambda: real() + CLAIM_TTL_S + 1)
+    assert claims.get("demo", "box") is None
+    assert claims.all("demo") == {}
+    # …and an expired claim conflicts with nobody.
+    claims.check("demo", "box", "browser:b")
+
+
+def test_check_is_human_vs_human_and_names_the_holder():
+    claims = ClaimRegistry()
+    claims.acquire("demo", "box", "browser:a")
+
+    claims.check("demo", "box", "browser:a")     # our own
+    claims.check("demo", "lid", "browser:b")     # a different part
+    claims.check("demo", None, "browser:b")      # a whole-manifest write
+    claims.check("demo", "box", "chat:main")     # an agent: never blocked
+
+    with pytest.raises(Exception) as excinfo:
+        claims.check("demo", "box", "browser:b")
+    details = excinfo.value.details
+    assert details["claim"]["holder"] == "browser:a"
+    assert details["overridable"] is True
+    assert "browser:a" in str(excinfo.value)
+
+    # A human is likewise never blocked by an AGENT's claim.
+    agent_claims = ClaimRegistry()
+    agent_claims.acquire("demo", "box", "chat:main")
+    agent_claims.check("demo", "box", "browser:b")
+
+
+def test_an_override_is_single_use_and_so_is_the_contextvar():
+    claims = ClaimRegistry()
+    claims.acquire("demo", "box", "browser:a")
+
+    claims.arm_override("demo", "box", "browser:b")
+    claims.check("demo", "box", "browser:b")            # spends it
+    with pytest.raises(Exception):
+        claims.check("demo", "box", "browser:b")        # and it is spent
+
+    with locks.claim_override():
+        claims.check("demo", "box", "browser:b")
+    with pytest.raises(Exception):
+        claims.check("demo", "box", "browser:b")
+
+
+def test_claim_write_leaves_a_humans_claim_alone_for_an_agent():
+    """The acquisition policy: a write takes a free part, refreshes its own,
+    steals under an override, and touches nothing when it got through only
+    because one of the two parties is an agent."""
+    claims = ClaimRegistry()
+    claims.acquire("demo", "box", "browser:a")
+
+    assert claims.claim_write("demo", "box", "chat:main") is None
+    assert claims.get("demo", "box")["holder"] == "browser:a"
+
+    assert claims.claim_write("demo", None, "browser:b") is None
+
+    fresh = claims.claim_write("demo", "lid", "browser:b")
+    assert fresh["changed"] is True and fresh["claim"]["holder"] == "browser:b"
+    assert claims.claim_write("demo", "lid", "browser:b")["changed"] is False
+
+    claims.arm_override("demo", "box", "browser:b")
+    stolen = claims.claim_write("demo", "box", "browser:b")
+    assert stolen["overridden"] is True
+    assert claims.get("demo", "box")["holder"] == "browser:b"
+
+
+def test_write_scope_carries_the_part_and_always_unwinds():
+    assert locks.current_write_part() is None
+    with locks.write_scope("box"):
+        assert locks.current_write_part() == "box"
+        with locks.write_scope("lid"):
+            assert locks.current_write_part() == "lid"
+        assert locks.current_write_part() == "box"
+    assert locks.current_write_part() is None
+
+    with pytest.raises(RuntimeError):
+        with locks.write_scope("box"):
+            raise RuntimeError("boom")
+    assert locks.current_write_part() is None
+
+
+# ------------------------------------------------------------- 2. AC5, HTTP
+
+
+def test_ac5_conflict_override_and_an_untouched_other_part(http):
+    service, _registry, client = http
+    subscription = service.bus.subscribe()
+    _claim(client, "box", ALICE)
+
+    refused = _write(client, "box", BOB)
+    assert refused.status_code == 409
+    error = refused.json()["error"]
+    assert error["details"]["claim"]["holder"] == "browser:aaaaaaaa"
+    assert error["details"]["claim"]["part"] == "box"
+    assert error["details"]["overridable"] is True
+    assert "browser:aaaaaaaa" in error["message"]
+
+    # Bob's OTHER part is untouched throughout — this is a part claim.
+    assert _write(client, "lid", BOB).status_code == 200
+
+    armed = client.post("/api/projects/demo/claims/override",
+                        json={"part": "box"}, headers=BOB)
+    assert armed.status_code == 200, armed.text
+    assert armed.json()["armed_until"] > 0
+    assert armed.json()["claim"]["holder"] == "browser:aaaaaaaa"
+
+    assert _write(client, "box", BOB).status_code == 200
+    overridden = [e for e in _drain(subscription)
+                  if e["type"] == "claim_changed"
+                  and e.get("overridden_by") == "browser:bbbbbbbb"]
+    assert overridden, "an override must be announced — it is the audit trail"
+    assert overridden[-1]["part"] == "box"
+
+    # The claim moved with the write; the override is spent, so Alice now has
+    # to arm her own to take it back.
+    assert _write(client, "box", ALICE).status_code == 409
+    service.bus.unsubscribe(subscription)
+
+
+def test_the_params_path_is_claim_covered_too(http):
+    _service, _registry, client = http
+    _claim(client, "box", ALICE)
+
+    refused = client.patch("/api/projects/demo/parts/box/params",
+                           json={"size": 12.0}, headers=BOB)
+    assert refused.status_code == 409
+    assert refused.json()["error"]["details"]["claim"]["part"] == "box"
+
+    ok = client.patch("/api/projects/demo/parts/box/params",
+                      json={"size": 12.0}, headers=ALICE)
+    assert ok.status_code == 200
+
+
+def test_an_agent_writes_straight_through_a_humans_claim(http):
+    """The flagship loop: a human's open editor must never 409 the agent that
+    was asked to fix the thing the human commented on."""
+    _service, _registry, client = http
+    _claim(client, "box", ALICE)
+
+    assert _write(client, "box", BOT).status_code == 200
+    # …and the agent did not evict the human who is still typing.
+    roster = client.get("/api/projects/demo/presence", headers=ALICE).json()
+    assert roster["claims"]["box"]["holder"] == "browser:aaaaaaaa"
+
+
+def test_the_turn_holder_is_never_claim_checked(http):
+    """FR12. Bob takes the turn; Alice's claim on box does not stop him."""
+    _service, _registry, client = http
+    _claim(client, "box", ALICE)
+
+    acquired = client.post("/api/tools/acquire_turn",
+                           json={"project": "demo"}, headers=BOB).json()
+    assert acquired["holder"] == "browser:bbbbbbbb"
+
+    assert _write(client, "box", BOB).status_code == 200
+    # Alice is now stopped by the TURN, with the turn's own message — not by a
+    # claim, and with no override offered.
+    refused = _write(client, "box", ALICE)
+    assert refused.status_code == 409
+    assert "locked by" in refused.json()["error"]["message"]
+    assert "claim" not in refused.json()["error"]["details"]
+
+
+def test_whole_manifest_writes_are_turn_locked_only(http):
+    """Honest, bounded coverage: a claim is a *part* claim."""
+    _service, _registry, client = http
+    _claim(client, "box", ALICE)
+
+    assert client.post("/api/projects/demo/parts",
+                       json={"id": "shim", "script": BOX_SCRIPT},
+                       headers=BOB).status_code == 201
+    assert client.put("/api/projects/demo/assembly",
+                      json={"instances": [{"id": "box_1", "part": "box"}]},
+                      headers=BOB).status_code == 200
+    assert client.delete("/api/projects/demo/parts/shim",
+                         headers=BOB).status_code == 200
+
+
+# ---------------------------------------------------- 3. claims and presence
+
+
+def test_a_heartbeat_claims_releases_and_publishes(http):
+    service, _registry, client = http
+    subscription = service.bus.subscribe()
+
+    payload = _claim(client, "box", ALICE)
+    assert payload["claims"]["box"]["holder"] == "browser:aaaaaaaa"
+    taken = [e for e in _drain(subscription) if e["type"] == "claim_changed"]
+    assert taken and taken[-1]["part"] == "box"
+    assert taken[-1]["holder"] == "browser:aaaaaaaa"
+
+    # Moving to another part moves the claim: one client edits one thing.
+    moved = _claim(client, "lid", ALICE)
+    assert set(moved["claims"]) == {"lid"}
+
+    # Viewing never claims: a heartbeat without `claim` drops ours.
+    idle = client.post("/api/projects/demo/presence",
+                       json={"part_id": "lid", "surface": "viewport"},
+                       headers=ALICE).json()
+    assert idle["claims"] == {}
+    released = [e for e in _drain(subscription)
+                if e["type"] == "claim_changed" and e["holder"] is None]
+    assert released, "a released claim must be announced too"
+
+    service.bus.unsubscribe(subscription)
+
+
+def test_leaving_releases_every_claim(http):
+    _service, _registry, client = http
+    _claim(client, "box", ALICE)
+    _claim(client, "lid", BOB)
+
+    client.post("/api/projects/demo/presence", json={"leave": True},
+                headers=ALICE)
+    remaining = client.get("/api/projects/demo/presence", headers=BOB).json()
+    assert set(remaining["claims"]) == {"lid"}
+
+
+def test_a_claim_on_an_unknown_project_is_404_and_a_bad_part_is_422(http):
+    _service, _registry, client = http
+
+    assert client.post("/api/projects/nope/claims/override",
+                       json={"part": "box"}, headers=BOB).status_code == 404
+    assert client.post("/api/projects/demo/claims/override",
+                       json={}, headers=BOB).status_code == 422
+
+
+# ------------------------------------------------------- 4. R7, installation
+
+
+def test_the_guard_survives_a_full_build_registry(http):
+    """R7. ``tools_versioning`` REPLACES ``write_guard``; the wrapper is
+    re-installed lazily, from the route pack and from every claims entry
+    point, so a registry rebuilt after the fact cannot silently disarm it."""
+    service, _registry, client = http
+    _claim(client, "box", ALICE)
+    assert getattr(service.store.write_guard, "_claims_installed", False)
+
+    build_registry(service)  # the versioning pack installs its own guard
+    assert not getattr(service.store.write_guard, "_claims_installed", False)
+
+    # …and the next claims entry point puts it back, with the turn check still
+    # underneath it (the previous guard is called FIRST).
+    _claim(client, "box", ALICE)
+    assert getattr(service.store.write_guard, "_claims_installed", False)
+    assert _write(client, "box", BOB).status_code == 409
+
+
+def test_installation_is_idempotent_and_the_kill_switch_works(http):
+    service, _registry, client = http
+    ensure_claim_guard(service)
+    guard = service.store.write_guard
+    ensure_claim_guard(service)
+    assert service.store.write_guard is guard  # no wrapper on a wrapper
+
+    _claim(client, "box", ALICE)
+    assert _write(client, "box", BOB).status_code == 409
+    # The documented rollback (the plan's landing notes): the wrapper reads the
+    # registry on every call, so nulling it makes the guard a passthrough to
+    # whatever it wrapped — the turn lock still works, claims stop existing.
+    service.claims = None
+    assert _write(client, "box", BOB).status_code == 200
+
+
+def test_an_ephemeral_check_service_still_ends_with_no_guard(kernel, tmp_path):
+    """R7's other half, mirroring ``tests/test_checks_ref.py``: nothing here
+    may reinstall a guard behind ``checks.py``'s back, because a check runs on
+    a linked worktree of the user's real repository."""
+    service = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    service.bus.on_publish = None
+    build_registry(service)
+    service.store.branch_resolver = None
+    service.store.write_guard = None
+
+    assert service.store.write_guard is None
+    assert getattr(service, "claims", None) is None
+
+
+def test_a_library_caller_overrides_with_the_context_manager(http):
+    """The tool/library entry point to the same override the browser arms."""
+    service, _registry, client = http
+    _claim(client, "box", ALICE)
+    token = locks.client_id_var.set("browser:bbbbbbbb")
+    try:
+        with pytest.raises(Exception):
+            service.store.write_script("demo", "box", BOX_SCRIPT)
+        with locks.claim_override():
+            service.store.write_script("demo", "box", BOX_SCRIPT)
+    finally:
+        locks.client_id_var.reset(token)
+    assert service.claims.get(service.store.lock_key("demo"),
+                              "box")["holder"] == "browser:bbbbbbbb"

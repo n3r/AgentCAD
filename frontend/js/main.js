@@ -15,6 +15,7 @@ import * as theme from "./theme.js";
 import * as versions from "./versions.js";
 import * as merge from "./merge.js";
 import * as proposals from "./proposals.js";
+import * as presence from "./presence.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 const BRANCH_RE = /^[a-z0-9][a-z0-9_/-]{0,63}$/;
@@ -754,6 +755,14 @@ function handleEvent(ev) {
       if (ev.branch && state.branch && ev.branch !== state.branch) return;
       lockHolder = ev.holder || null;
       renderLockIndicator();
+      return;
+    }
+    case "presence_changed": {
+      // An optimization, never the mechanism: the 15-second heartbeat's own
+      // response carries the same roster, so missing this event costs
+      // latency and nothing else.
+      if (ev.project !== state.projectName) return;
+      presence.handleEvent(ev);
       return;
     }
     case "chat_delta":
@@ -1589,6 +1598,7 @@ async function boot() {
   versions.init(actions);
   merge.init(actions);
   proposals.init(actions);
+  presence.init();
   setupMenus();
   setupProjectMenu();
   setupBranchMenu();

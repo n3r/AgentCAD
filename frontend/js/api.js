@@ -15,11 +15,56 @@ export class ApiError extends Error {
 
 const enc = encodeURIComponent;
 
+// ---- client identity -------------------------------------------------------
+// Every request carries one identity, minted once per browser profile and kept
+// in localStorage. Two TABS of one profile stay one client — which is what
+// keeps the per-client branch checkout behaving as it does today — while two
+// browsers, or a normal and an incognito window, are two clients. That is what
+// makes presence visible and soft claims meaningful at all: before this, every
+// browser in the world was literally the identity `browser`.
+//
+// It is NOT authentication. The header is self-asserted and the server says so
+// in every tool description; a fresh id simply has no checkout row yet and
+// lands on the default branch.
+const CLIENT_ID_KEY = "agentcad.client_id";
+const CLIENT_ID_RE = /^browser:[0-9a-f]{8}$/;
+
+function mintClientId() {
+  const bytes = new Uint8Array(4);
+  if (globalThis.crypto && globalThis.crypto.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = (Math.random() * 256) | 0;
+  }
+  return (
+    "browser:" +
+    [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")
+  );
+}
+
+/** This browser's identity, e.g. "browser:7f3a1b2c". */
+export const clientId = (() => {
+  let stored = null;
+  try {
+    stored = localStorage.getItem(CLIENT_ID_KEY);
+  } catch {
+    /* storage disabled (private mode, file://): a per-page id still works */
+  }
+  if (CLIENT_ID_RE.test(stored || "")) return stored;
+  const minted = mintClientId();
+  try {
+    localStorage.setItem(CLIENT_ID_KEY, minted);
+  } catch {
+    /* ignore: the id lives for this page only */
+  }
+  return minted;
+})();
+
 async function request(method, path, body) {
   let res;
-  const init = { method };
+  const init = { method, headers: { "X-Agent-Id": clientId } };
   if (body !== undefined) {
-    init.headers = { "Content-Type": "application/json" };
+    init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
   try {
@@ -180,7 +225,7 @@ export const api = {
   async getDiffMesh(url) {
     let res;
     try {
-      res = await fetch(url);
+      res = await fetch(url, { headers: { "X-Agent-Id": clientId } });
     } catch {
       throw new ApiError(0, {
         error: { type: "network_error", message: "server unreachable", details: {} },
@@ -213,7 +258,10 @@ export const api = {
     try {
       res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/octet-stream" },
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Agent-Id": clientId,
+        },
         body: arrayBuffer,
       });
     } catch {
@@ -233,6 +281,15 @@ export const api = {
     return res.json();
   },
 
+  // ---- presence ----
+  // The heartbeat's RESPONSE carries the whole roster, so a client that misses
+  // every presence_changed event still converges within one beat. An over-rate
+  // beat is a 200 with {throttled: true}, never an error.
+  /** body: {part_id?, surface?, label?, claim?, leave?} */
+  heartbeat: (proj, body) =>
+    request("POST", `/api/projects/${enc(proj)}/presence`, body || {}),
+  presence: (proj) => request("GET", `/api/projects/${enc(proj)}/presence`),
+
   chat: (project, message) => request("POST", "/api/chat", { project, message }),
   chatHistory: (project) =>
     request("GET", `/api/chat/history?project=${enc(project)}`),
@@ -248,7 +305,7 @@ export const api = {
       `/api/projects/${enc(proj)}/parts/${enc(id)}/mesh` +
       (lod ? `?lod=${enc(lod)}` : "");
     try {
-      res = await fetch(url);
+      res = await fetch(url, { headers: { "X-Agent-Id": clientId } });
     } catch {
       throw new ApiError(0, {
         error: { type: "network_error", message: "server unreachable", details: {} },
@@ -275,7 +332,10 @@ export const api = {
   async getMeshFaces(proj, id) {
     let res;
     try {
-      res = await fetch(`/api/projects/${enc(proj)}/parts/${enc(id)}/mesh/faces`);
+      res = await fetch(
+        `/api/projects/${enc(proj)}/parts/${enc(id)}/mesh/faces`,
+        { headers: { "X-Agent-Id": clientId } }
+      );
     } catch {
       throw new ApiError(0, {
         error: { type: "network_error", message: "server unreachable", details: {} },

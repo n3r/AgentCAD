@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 from typing import Callable
 
+from . import locks
 from .materials import DEFAULT_MATERIAL, get_material
 from .model import (
     ConflictError,
@@ -163,10 +164,17 @@ class ProjectStore:
         return path.read_text(encoding="utf-8")
 
     def write_script(self, proj: str, part_id: str, text: str) -> None:
-        if self.write_guard is not None:
-            self.write_guard(proj)
-        self.get_part(proj, part_id)
-        self._atomic_write(self.script_path(proj, part_id), text.encode())
+        # One of the two part-scoped write paths (the other is
+        # update_part_entry). The scope tells the write guard WHICH part this
+        # write is about without changing the guard's signature — see
+        # locks.write_scope. Whole-manifest writes deliberately have no scope:
+        # a claim is a *part* claim, and pretending it guarded add_part or an
+        # assembly edit would be a lie told by a green test.
+        with locks.write_scope(part_id):
+            if self.write_guard is not None:
+                self.write_guard(proj)
+            self.get_part(proj, part_id)
+            self._atomic_write(self.script_path(proj, part_id), text.encode())
 
     def add_part(
         self,
@@ -231,6 +239,21 @@ class ProjectStore:
             script.unlink()
 
     def update_part_entry(
+        self,
+        proj: str,
+        part_id: str,
+        *,
+        label: str | None = None,
+        material: str | None = None,
+        params: dict[str, float | int | bool | str] | None = None,
+    ) -> PartRecord:
+        # The params/material/label path: scoped like write_script, so the
+        # guard called by save_manifest below sees the part this is about.
+        with locks.write_scope(part_id):
+            return self._update_part_entry(proj, part_id, label=label,
+                                           material=material, params=params)
+
+    def _update_part_entry(
         self,
         proj: str,
         part_id: str,
