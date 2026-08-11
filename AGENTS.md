@@ -35,7 +35,7 @@ make app          # build dist/AgentCAD.app (macOS launcher)
 uv sync --extra fem   # optional: enable structural FEM (gmsh/scikit-fem/meshio)
 ```
 
-CLI: `agentcad serve|open|mcp|new|export` (see `agentcad/cli.py`). Port is
+CLI: `agentcad serve|open|mcp|new|export|check` (see `agentcad/cli.py`). Port is
 `8630`, persisted in `~/.agentcad/config.json`; kernel pool size via
 `AGENTCAD_KERNEL_POOL_SIZE` (default `min(3, cores//3)`).
 
@@ -341,6 +341,90 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   because the browser's `PATCH .../params` route calls `service.set_params`
   directly and a tool wrapper would miss the UI entirely.
 
+## CI gotchas (PRD-004 — read before touching `checks.py` or the action)
+
+- **The ephemeral service must have `bus.on_publish = None`,
+  `store.branch_resolver = None` and `store.write_guard = None`**, or a `--ref`
+  check commits a history snapshot **into the user's repository** through the
+  linked worktree (the bus hook), writes a `.history/agentcad/` sidecar that
+  does not exist there (the resolver), or materializes a branch tree there on
+  the first authored write (the guard's `ensure_checkout`). Set the last two
+  *after* `build_registry` — that is what installs them. Resolve both paths
+  first: macOS hands `/var/…` for `/private/var/…` and `ProjectStore.open`
+  compares resolved paths.
+- **The pack is `tools_run_checks.py`, never `tools_checks.py`.** Packs load
+  alphabetically and `tools_proposals` (`p`) assigns `service.gate_providers =
+  []` **unconditionally**, so a pack at `c` would have its gate silently
+  discarded — no error, no warning. At `r` it also loads *before* `tools_specs`
+  and `tools_versioning`, so `service.specs` and `service.branches` are read
+  inside the runner's methods, never captured in `__init__`.
+- **Rows are `items`, never `checks`.** `checks` already means the gate name,
+  `report["checks"]` in a spec report and the proposals UI tab. `status` is the
+  four-value row status; `state` is the gate's. They are not interchangeable.
+- **`check` is report-honest; `--strict` is the opt-in.** A `skip` keeps its
+  status, reason and hint whatever you pass; `--strict` only records ids in
+  `strict_failures` and moves the derived verdict. `evaluate_specs` and the
+  `specs` gate are unconditionally fail-closed — different audiences, one set
+  of measurements. Neither `checks` nor `specs` ever answers `pending`:
+  `ProposalManager.merge` blocks `fail` and nothing else, so `pending` is
+  merge-permissive.
+- **`--ref` uses `worktree add --detach <sha>`, never a branch name** — a
+  branch already checked out at `.history/trees/<b>/` cannot be checked out
+  twice — and resolves with **`resolve_branch` then `resolve_tag`, never
+  `resolve_ref`** (`git rev-parse` searches tags *before* branches, PRD-001 X1).
+- **A ref check runs on a cold cache, deliberately.** The work dir holds no
+  `.cache/`; that is the price of AC7's byte-identity guarantee. Every row
+  reports `cached: false`, and the tests assert it rather than hiding it.
+- **DXF is not byte-stable** (`ezdxf` stamps `$TDCREATE` and fresh GUIDs), so
+  the determinism stage compares **SVG only** and carries one
+  `skip`/`not_byte_stable` row. That row is the one `strict_exempt: true` in
+  the report: an unconditional skip is not a `--strict` candidate, or
+  `--strict --verify-determinism` would be red for ever and say nothing.
+- **`--budget` cannot preempt a kernel call that has already started.** It is a
+  deadline on `time.monotonic` read before *every item and every kernel call* —
+  the specs stage runs under it too (`SpecRunner.run(deadline=…)`), determinism
+  re-reads it before each of its four calls, and below a one-second floor no
+  call is issued at all. `_ensure_built` (300 s) and the drawing tools (120 s)
+  take no `timeout_s`, so the worst case is **one** call's overshoot. An item
+  the deadline stopped is a `skip`/`budget_exceeded`, never an `error`: a blown
+  budget is `complete: false` → exit **2**, with the partial report kept as
+  evidence, and never a red. An overshoot *inside the last item* keeps
+  `complete: true` (everything was measured) and is named in `warnings[]`.
+  `--budget`/`--min-volume` must be **finite and non-negative**: NaN compares
+  false against everything, so it switches off the limit it configures.
+- **A run's policy lives on a per-run runner, not on `service.checks`.** That is
+  one shared object; `run()` builds a context with `_run_context` and never
+  assigns to `self`, or two concurrent runs (chat + route + CLI) overwrite each
+  other's deadline and interference threshold.
+- **A check that measured a dirty tree may not be posted.** Its `source.sha` is
+  the *committed* head, so the gate would read it as certifying bytes it never
+  measured. Refused at `post_to_proposal` — which **raises**, but only the CLI
+  turns that into exit 2: `run_checks` catches it and returns the measured
+  report with `posted: {ok: false, error}` and a warning, so a refused post is
+  a *receipt*, not an error (never discard minutes of kernel work to report a
+  delivery failure). A `--ref` report's `dirty` flag is provenance about a tree
+  it did not measure, and still posts.
+- **The `checks` gate asks the audit before it answers `skipped`.** A
+  `checks_posted` line with no readable record is a `fail` ("re-run"), never the
+  permissive "nothing posted" — deleting `checks.json` must not unblock a merge.
+  The record is validated (`validate_record`) against `CHECKS_SCHEMA`, against
+  `validate_report`, and field-by-field against the report it wraps.
+- **A check may not write anywhere but its own throwaway cell.** `--work-dir`
+  that is, holds or sits inside the project (or the projects root) is refused;
+  a run materializes into `<work-dir>/agentcad-check-<pid>-<rand>/` and deletes
+  only that. Three seams on the ephemeral service must stay nulled —
+  `bus.on_publish`, `store.branch_resolver`, `store.write_guard` — each reaches
+  the user's repository through the linked worktree.
+- **An imported reference part's `is_valid` is reported, never enforced.** OCCT
+  calls the shipped `examples/rocketry` STEP import invalid over its 180 solids
+  — the same reason `tests/test_examples.py` exempts reference parts — so the
+  row passes, `details.is_valid` carries the fact and a warning names the part.
+  Enforcing it would redden a clean bundled example and the dogfood workflow.
+- **The Action checks the WORKING TREE; `$GITHUB_SHA` is provenance.**
+  `actions/checkout` already materialized the ref and a runner has no AgentCAD
+  `.history/`, so `--ref "$GITHUB_SHA"` would exit 2 on every run. Pass
+  `--sha` / `--ref-label` instead.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script
@@ -411,7 +495,8 @@ Write the changelog from the real diff, not from memory.
 ## Where to read more
 
 - `docs/architecture.md` — processes, components, ACM1 format, rebuild flow
-- `docs/agent-api.md` — the 42/45 agent tools with schemas + a worked loop
+- `docs/agent-api.md` — the 65/68 agent tools with schemas + a worked loop
+- `docs/geometry-ci.md` — `agentcad check`, the report schema, the GitHub Action
 - `docs/part-authoring.md` — the script contract, toolkit, mates, sketch solver
 - `docs/user-guide.md` — the UI surface by surface
 - `docs/roadmap.md` — the PRD index with statuses (what we're building and why)

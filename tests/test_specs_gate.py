@@ -386,8 +386,10 @@ def test_a_head_that_moves_during_evaluation_is_pending(spec_demo,
 def test_the_provider_replaces_the_placeholder_and_keeps_five_gates(
         spec_demo):
     service, _registry, manager = spec_demo
+    # PRD-004 appends a second provider, `checks`, from a pack that loads at
+    # `r` — before this one at `s`. Both replace a placeholder by name.
     assert [getattr(p, "__name__", None)
-            for p in service.gate_providers] == ["specs"]
+            for p in service.gate_providers] == ["checks", "specs"]
     pid = _create(manager)["id"]
 
     gates = manager.get("demo", pid)["gates"]

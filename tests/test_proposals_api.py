@@ -107,7 +107,9 @@ def test_every_proposal_tool_is_registered(demo):
 def test_the_pack_installs_the_service_seams(demo):
     service, _registry = demo
     assert isinstance(getattr(service, "proposals", None), ProposalManager)
-    assert [getattr(p, "__name__", None) for p in service.gate_providers] == ["specs"]
+    # `checks` is PRD-004's provider (pack at `r`, before PRD-003's at `s`).
+    assert [getattr(p, "__name__", None) for p in service.gate_providers] == [
+        "checks", "specs"]
 
 
 def test_tool_descriptions_state_the_conventions(demo):

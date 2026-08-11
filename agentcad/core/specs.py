@@ -1341,23 +1341,32 @@ class SpecRunner:
             yield
 
     def run(self, proj: str, part_id: str | None = None,
-            ref: str | None = None) -> dict:
+            ref: str | None = None, deadline: float | None = None) -> dict:
         """The full report (FR7, FR12): all three tiers, every scope.
 
         Unlike a rebuild this evaluates the assembly and expensive tiers too —
         that is the whole difference between the two surfaces.
 
         It is also **the exit from every cached refusal** this module keeps,
-        which is what makes those caches safe: it is unbounded (no deadline),
-        it re-measures a cached failure rather than re-raising it, and
-        afterwards it drops the memoized ``budget_exceeded`` verdicts for this
-        project so the next gate read is measured against the sidecars this run
-        just warmed. Every "run run_specs on that branch" in a gate summary is
-        this sentence.
+        which is what makes those caches safe: it re-measures a cached failure
+        rather than re-raising it, and afterwards it drops the memoized
+        ``budget_exceeded`` verdicts for this project so the next gate read is
+        measured against the sidecars this run just warmed. Every "run
+        run_specs on that branch" in a gate summary is this sentence.
+
+        *deadline* is a ``time.monotonic`` wall-clock bound, threaded straight
+        into :meth:`_report` — the same mechanism the proposal gate uses, and
+        the only thing this parameter does. ``run_specs`` passes ``None`` and
+        is unbounded by design (an engineer asking for a full report has asked
+        for the cost); ``agentcad check --budget`` passes what is left of its
+        budget, because a promise to bound a run cannot exempt its most
+        expensive stage. A refusal measured under a deadline is never cached,
+        so a bounded run still leaves this method the honest exit it is.
         """
         self._forget_declaration_failures()
         with self._pinned(proj, ref):
-            report = self._report(proj, part_id, ref, refresh=True)
+            report = self._report(proj, part_id, ref, deadline=deadline,
+                                  refresh=True)
         self._forget_budget_verdicts(proj)
         return report
 
@@ -1495,9 +1504,10 @@ class SpecRunner:
     def _report(self, proj: str, part_id: str | None, ref: str | None,
                 deadline: float | None = None,
                 refresh: bool = False) -> dict:
-        """*deadline* is :meth:`evaluate_specs`'s wall-clock budget (and only
-        its: ``run`` passes ``None`` and is unbounded by design — an engineer
-        asking for a full report has asked for the cost).
+        """*deadline* is :meth:`evaluate_specs`'s wall-clock budget, and the one
+        :meth:`run` was given (``run_specs`` still passes ``None`` and is
+        unbounded by design — an engineer asking for a full report has asked
+        for the cost; ``agentcad check --budget`` passes its remainder).
 
         *refresh* is ``run``'s: the one surface that re-measures a cached
         failure instead of re-raising it."""
