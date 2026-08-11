@@ -41,6 +41,7 @@ JSON-RPC boundary by :func:`json_safe`.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 
 #: Declaration marker *and* format version — a dict without it is not a spec.
@@ -59,7 +60,15 @@ def _number(label: str, value) -> float:
     # bool is an int subclass; a True wall minimum is a typo, not a number.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{label} must be a number, got {value!r}")
-    return float(value)
+    number = float(value)
+    # NaN and the infinities are rejected here, where the argument is read,
+    # because a comparison predicate cannot: every ordered comparison against
+    # NaN is false, so a NaN limit reports *pass* while measuring nothing, and
+    # an infinite limit is one no measurement can ever breach. A limit that
+    # cannot fail is not a limit.
+    if not math.isfinite(number):
+        raise ValueError(f"{label} must be a finite number, got {value!r}")
+    return number
 
 
 def _positive(label: str, value) -> float:
@@ -296,16 +305,46 @@ def check_stackup(from_instance: str, to_instance: str, axis: str, within: float
 
 # ---- helpers for the evaluators (kernel pack, runner) ------------------------
 
-def is_declaration(value) -> bool:
-    """True for a dict this module produced at this format version.
+def declaration_problem(value) -> str | None:
+    """Why *value* is not a declaration at this format version, or None.
 
-    The ``spec`` marker is the whole test: a dict without it is not a spec,
-    and a structural rejection should name ``agentcad.toolkit.specs``.
+    The ``spec`` marker alone used to be the whole test, and a dict carrying
+    only ``spec``/``kind``/``scope`` was therefore accepted — while every
+    reader downstream (the kernel pack's ``_record``, the service's ``_record``
+    and ``_residue``) reads ``name``/``limit``/``options`` as required keys. An
+    incomplete hand-written entry became a ``KeyError`` in the *server*, i.e. a
+    500, instead of structural residue. So the whole emitted shape is validated
+    here, once, and the reason names the offending key: it is the only text a
+    script author gets back.
     """
-    return (isinstance(value, dict)
-            and value.get("spec") == SPEC_FORMAT
-            and value.get("kind") in PART_KINDS + PROJECT_KINDS
-            and value.get("scope") in ("part", "project"))
+    if not isinstance(value, dict):
+        return f"a declaration is a dict, got {type(value).__name__}"
+    if value.get("spec") != SPEC_FORMAT:
+        return (f"'spec' must be {SPEC_FORMAT}, got {value.get('spec')!r}")
+    if value.get("kind") not in PART_KINDS + PROJECT_KINDS:
+        return f"unknown 'kind' {value.get('kind')!r}"
+    if value.get("scope") not in ("part", "project"):
+        return f"'scope' must be 'part' or 'project', got {value.get('scope')!r}"
+    if not isinstance(value.get("name"), str) or not value["name"]:
+        return f"'name' must be a non-empty string, got {value.get('name')!r}"
+    for key in ("limit", "options"):
+        if not isinstance(value.get(key), dict):
+            return f"{key!r} must be a dict, got {value.get(key)!r}"
+    requirement = value.get("requirement")
+    if requirement is not None and not isinstance(requirement, str):
+        return f"'requirement' must be a string or None, got {requirement!r}"
+    return None
+
+
+def is_declaration(value) -> bool:
+    """True for a dict with the shape this module produces at this version.
+
+    The *shape*, not the identity: a hand-written dict carrying every key is a
+    declaration, and one missing any of them is structural residue that must be
+    rejected before a reader indexes into it. See :func:`declaration_problem`,
+    which is the same test with the reason attached.
+    """
+    return declaration_problem(value) is None
 
 
 def json_safe(declaration: dict) -> dict:

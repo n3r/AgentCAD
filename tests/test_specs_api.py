@@ -179,6 +179,7 @@ def test_argument_validation(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_the_pack_does_not_self_disable_without_git(kernel, tmp_path,
                                                     monkeypatch):
     """The deliberate difference from tools_proposals/tools_versioning: specs
@@ -218,6 +219,7 @@ def test_the_pack_sorts_after_proposals_and_before_stackup_and_versioning():
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_freshly_built_registry_serves_run_specs_immediately(kernel,
                                                                tmp_path):
     """The pack must not touch ``service.branches`` at register() time: a
@@ -241,6 +243,7 @@ def test_a_freshly_built_registry_serves_run_specs_immediately(kernel,
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_install_rebuild_specs_is_idempotent(demo, monkeypatch):
     service, _registry = demo
     rebuild, get_part = service._rebuild, service.get_part
@@ -257,6 +260,7 @@ def test_install_rebuild_specs_is_idempotent(demo, monkeypatch):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_the_wrapper_survives_a_second_registration(demo):
     """``build_registry`` may run again over the same service (the tests do
     it); the wrapper must resolve ``service.specs`` at call time rather than
@@ -268,6 +272,7 @@ def test_the_wrapper_survives_a_second_registration(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_successful_rebuild_gains_specs_and_nothing_else(demo):
     service, _registry = demo
     raw = service._rebuild.__wrapped__("demo", "box")
@@ -281,6 +286,7 @@ def test_a_successful_rebuild_gains_specs_and_nothing_else(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_failed_rebuild_carries_no_specs_key(demo):
     """There is no geometry to assert over, and a spec block beside a build
     failure would compete with with_hint's 'fix the script first'."""
@@ -293,6 +299,7 @@ def test_a_failed_rebuild_carries_no_specs_key(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_get_part_on_a_part_that_does_not_build_carries_no_specs_key(
         demo, monkeypatch):
     """The same rule on the read side: no shape to assert over, the build error
@@ -309,6 +316,7 @@ def test_get_part_on_a_part_that_does_not_build_carries_no_specs_key(
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_spec_less_part_is_unchanged_and_costs_no_kernel_call(
         demo, monkeypatch):
     """The guard against wrapper drift: the presence scan is an ast.parse, so
@@ -328,6 +336,7 @@ def test_a_spec_less_part_is_unchanged_and_costs_no_kernel_call(
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_the_rebuild_returning_tools_carry_the_post_state_summary(demo):
     service, registry = demo
     thinned = registry.call("set_params", {"project": "demo",
@@ -346,6 +355,7 @@ def test_the_rebuild_returning_tools_carry_the_post_state_summary(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_get_part_carries_specs_beside_metrics_without_rebuilding(
         demo, monkeypatch):
     service, registry = demo
@@ -367,6 +377,7 @@ def test_get_part_carries_specs_beside_metrics_without_rebuilding(
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_failing_spec_eval_is_cached_and_re_read_for_free(demo, monkeypatch):
     """The sidecar caches the FAILURE too (S3).
 
@@ -401,6 +412,7 @@ def test_a_failing_spec_eval_is_cached_and_re_read_for_free(demo, monkeypatch):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_an_exception_in_the_runner_never_escapes_a_rebuild(demo, monkeypatch):
     """A broken spec layer must never break a rebuild — the whole point of a
     wrapper that is strictly best-effort."""
@@ -423,6 +435,7 @@ def test_an_exception_in_the_runner_never_escapes_a_rebuild(demo, monkeypatch):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_the_browsers_own_part_routes_carry_specs(client):
     """The reason the seam wraps ``_rebuild`` and ``get_part`` rather than the
     three rebuild-returning tools: ``PATCH …/params`` calls
@@ -449,6 +462,7 @@ def test_the_browsers_own_part_routes_carry_specs(client):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_the_spec_routes_round_trip(client):
     _service, _registry, http = client
 
@@ -478,6 +492,7 @@ def test_the_spec_routes_round_trip(client):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_the_project_specs_file_routes_read_and_write(client):
     service, _registry, http = client
 
@@ -506,6 +521,7 @@ def test_the_project_specs_file_routes_read_and_write(client):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_unknown_body_keys_are_ignored_and_nulls_are_not_forwarded(client):
     _service, _registry, http = client
     response = http.post(
@@ -518,6 +534,7 @@ def test_unknown_body_keys_are_ignored_and_nulls_are_not_forwarded(client):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_body_without_a_content_length_is_still_read(client):
     """A chunked request carries no ``content-length``: trusting the header
     would turn this body into 'no arguments at all' — a missing script rather
@@ -537,6 +554,7 @@ def test_a_body_without_a_content_length_is_still_read(client):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_route_error_mapping(client):
     _service, _registry, http = client
     assert http.get("/api/projects/ghost/specs").status_code == 404
@@ -553,6 +571,7 @@ def test_route_error_mapping(client):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_broken_specs_py_is_written_and_reported_over_http(client):
     """The ``update_part_script`` precedent: you must be able to save a broken
     file in order to fix it."""

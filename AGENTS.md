@@ -262,18 +262,44 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   has no row in the report and a requirement with zero checks does not exist.
   The presence scan is `ast.parse` and **never executes** the script — that is
   what makes a spec-less project cost nothing.
-- **The `specs` gate is fail-closed.** A declared check that was not evaluated
-  is red, and `allow_invalid` does not waive it (that flag means "override the
-  *kernel's* verdict on geometry", nothing else). Its verdict is about the
-  proposal's SOURCE branch, and the head is re-read afterwards — a moved head
-  is `pending`, never a verdict wearing a commit it did not measure. Two
-  gate-only divergences from a `run_specs` report, both fail-closed: a
-  `mesh_only` clearance skip is a **fail** in the gate (an unmeasured clearance
-  must not pass a merge — an STL swap would otherwise satisfy it silently), and
-  a `budget_exceeded` verdict **is memoized** for that head, so the gate stays
-  red with that reason until the head moves or `run_specs` warms the caches
-  (which drops the memoized verdict). The memo can only keep a red, never make
-  one green.
+- **The `specs` gate is fail-closed, and it never returns `pending`.** A
+  declared check that was not evaluated is red, and `allow_invalid` does not
+  waive it (that flag means "override the *kernel's* verdict on geometry",
+  nothing else). `ProposalManager.merge` blocks a `fail` and **nothing else**,
+  so every non-green outcome this provider can produce is a `fail` — including
+  a source head that moved mid-evaluation, which is a `fail` whose summary says
+  to retry (the verdict is not memoized, so the retry re-measures). `pending`
+  stays defined in PRD-002 for other providers; this one has no use for it.
+  Three gate-only divergences from a `run_specs` report, all fail-closed:
+  **every** skip is a `fail` in the gate whatever its reason
+  (`fem_extra_missing`, `mesh_only`, `unsupported_scope`, `no_instances`, …) —
+  "declared but not measured" is the hole the gate exists to close, and the
+  reason travels in `details.reason` plus `details.skipped_in_report`; a
+  spec module that will not read or declare is a synthetic `declaration` check
+  row (an `errors[]` entry alone is invisible to both `report_status` and the
+  gate); and a `budget_exceeded` verdict **is memoized** for that head, so the
+  gate stays red with that reason until the head moves or `run_specs` warms the
+  caches (which drops the memoized verdict). The memo can only keep a red,
+  never make one green.
+- **`declares_specs` fails closed on a syntax error.** A script with no AST is
+  text-scanned for a line-anchored `SPECS` binding: answering "declares
+  nothing" made the gate classify a visibly spec-declaring part as spec-less
+  and skip it, so a declared check never became red. A false positive costs one
+  error row on a script that already fails its build.
+- **A declaration is a shape, not a marker.** `toolkit.specs.is_declaration`
+  validates every key a constructor emits (`spec`/`kind`/`scope`/`name`/
+  `limit`/`options`/`requirement`); an incomplete hand-written `SPECS` entry is
+  a `contract_error` naming the key, never a `KeyError` in the server process
+  (which is a 500). Readers still use `.get` with defaults so a format drift
+  degrades. Non-finite numbers (`nan`, `inf`) are rejected at construction and
+  again at evaluation: every ordered comparison against NaN is false, so a NaN
+  limit reports *pass* while measuring nothing.
+- **A spec cache key covers every input the check reads.** The assembly sidecar
+  key includes the mate graph and each referenced part's PMI dims (what
+  `check_stackup` sums — neither moves a part cache key), and the cached
+  `fem_static` row is keyed by the material's `E` (the part cache key covers
+  density only, while the solver is handed `E_mpa` and displacement scales with
+  1/E).
 - **`evaluate_specs(proj, ref=None)` means the CALLER's branch** — resolve it
   with `branches.current`, and stamp/key the verdict with *that* branch's head.
   The canonical repo head is the default branch's; using it hands one client

@@ -99,6 +99,27 @@ def build(p):
     pass
 '''
 
+# Hand-written declarations: a dict is only a declaration if it carries every
+# key a constructor emits. The incomplete one used to be accepted and then read
+# unguarded one layer up; the NaN one used to pass every comparison.
+INCOMPLETE_SPEC = '''\
+from build123d import *
+PARAMS = {}
+SPECS = [{"spec": 1, "kind": "mass", "scope": "part"}]
+def build(p):
+    return Box(10, 10, 10)
+'''
+
+NAN_LIMIT_SPEC = '''\
+from build123d import *
+PARAMS = {}
+SPECS = [{"spec": 1, "kind": "mass", "scope": "part", "name": "mass_max",
+          "limit": {"max_g": float("nan")}, "requirement": None,
+          "options": {}}]
+def build(p):
+    return Box(10, 10, 10)
+'''
+
 # The eager-validation path: line 3 raises while the module executes.
 BAD_CONSTRUCTOR_ARG = '''\
 from agentcad.toolkit.specs import check_wall
@@ -324,6 +345,33 @@ def test_structurally_bad_specs_is_a_contract_error(kernel, script):
     assert excinfo.value.type == "contract_error"
     assert "agentcad.toolkit.specs" in excinfo.value.message
     assert "SPECS" in excinfo.value.message
+
+
+def test_an_incomplete_hand_written_declaration_is_a_contract_error(kernel):
+    """It carries ``spec``/``kind``/``scope`` and nothing else, so it used to
+    be accepted — and every reader downstream (``_record`` here, ``_residue``
+    in the service) then read ``name``/``limit``/``options`` unguarded. The
+    rejection names the missing key."""
+    for method, params in (("spec_declare", {"scope": "part"}),
+                           ("spec_eval", {"density_g_cm3": 1.0})):
+        with pytest.raises(KernelError) as excinfo:
+            kernel.request(method, {"script": INCOMPLETE_SPEC, **params})
+        assert excinfo.value.type == "contract_error", method
+        assert "name" in excinfo.value.message
+        assert "agentcad.toolkit.specs" in excinfo.value.message
+    assert kernel.request("ping", {})            # the worker survived both
+
+
+def test_a_non_finite_hand_written_limit_is_an_error_record_not_a_pass(kernel):
+    """A NaN limit satisfies every ordered comparison, so a check declared with
+    one used to report ``pass`` while measuring nothing. The constructors
+    reject it eagerly; a hand-written dict reaches the evaluator, where it is
+    a per-check ``error``."""
+    result = evaluate(kernel, NAN_LIMIT_SPEC, params={}, density_g_cm3=1.0)
+    check = result["checks"][0]
+    assert check["status"] == "error"
+    assert "finite" in check["message"]
+    assert check["measured"] is None
 
 
 def test_bad_constructor_argument_is_a_script_error_with_a_line(kernel):

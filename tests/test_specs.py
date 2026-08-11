@@ -20,6 +20,7 @@ Section 2 drives the real runner over a kernel-backed project. Its rules:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -103,9 +104,26 @@ def test_declares_specs_ignores_a_comment_a_string_and_a_local():
 
 
 def test_declares_specs_is_false_for_a_script_that_does_not_parse():
-    """A script that will not parse fails its build with a line number anyway;
-    the scan never raises and never executes."""
+    """A script that will not parse and mentions no ``SPECS`` binding declares
+    nothing: the scan never raises and never executes."""
     assert declares_specs("def build(p:\n") is False
+
+
+def test_declares_specs_fails_closed_when_a_broken_script_binds_specs():
+    """A syntax error used to answer 'no specs', which made the gate classify a
+    visibly spec-declaring part as spec-less and skip it entirely. There is no
+    AST to scan, so the fallback is a line-anchored text scan for the binding:
+    the part is treated as declaring, its build fails, and the failure is red."""
+    broken = ("from agentcad.toolkit.specs import check_mass\n"
+              "SPECS = [check_mass(max_g=10)]\n"
+              "def build(p:\n"
+              "    return None\n")
+    assert declares_specs(broken) is True
+    assert declares_specs("SPECS: list = []\ndef build(p:\n") is True
+    assert declares_specs("SPECS += [1]\ndef build(p:\n") is True
+    # a mention that is not a binding is still not a declaration
+    assert declares_specs("# SPECS = [1]\ndef build(p:\n") is False
+    assert declares_specs("x = 'SPECS = [1]'\ndef build(p:\n") is False
 
 
 def test_declares_specs_never_executes_the_script(tmp_path):
@@ -313,6 +331,28 @@ def build(p):
 BROKEN_SPECS_PY = "from agentcad.toolkit.specs import check_clearance\n" \
                   "SPECS = [check_clearance('a', 'b', min_mm='wide')]\n"
 
+# A hand-written declaration missing name/limit/options: accepted by the old
+# is_declaration, then read unguarded by _record/_residue — a 500.
+INCOMPLETE_SPECS = '''\
+from build123d import *
+PARAMS = {}
+SPECS = [{"spec": 1, "kind": "mass", "scope": "part"}]
+
+def build(p):
+    return Box(10, 10, 10)
+'''
+
+# The same script with every key present: still a valid declaration.
+HAND_WRITTEN_SPECS = '''\
+from build123d import *
+PARAMS = {}
+SPECS = [{"spec": 1, "kind": "mass", "scope": "part", "name": "mass_max",
+          "limit": {"max_g": 1e6}, "requirement": "SYS-042", "options": {}}]
+
+def build(p):
+    return Box(10, 10, 10)
+'''
+
 STRUCTURAL_SPECS = '''\
 from build123d import *
 PARAMS = {}
@@ -396,6 +436,7 @@ def _by_id(report: dict, ident: str) -> dict:
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_spec_less_project_issues_no_spec_kernel_calls(demo, monkeypatch):
     """AC9. The presence scan is an ast.parse, so a spec-less project reaches
     no kernel call at all — and tier1 says 'none declared', not 'unevaluated'."""
@@ -420,6 +461,7 @@ def test_a_spec_less_project_issues_no_spec_kernel_calls(demo, monkeypatch):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_tier1_evaluates_the_shape_tier_in_one_call_with_part_affinity(
         demo, monkeypatch):
     service, runner = demo
@@ -450,6 +492,7 @@ def test_tier1_evaluates_the_shape_tier_in_one_call_with_part_affinity(
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_tier1_defers_the_assembly_tier_by_name_and_never_drops_it(demo):
     """A project-scope check declared in a part script is reported, with a
     reason and a hint — the one thing a spec must never do is disappear."""
@@ -466,6 +509,7 @@ def test_tier1_defers_the_assembly_tier_by_name_and_never_drops_it(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_tier1_writes_a_sidecar_and_the_second_call_reads_it(demo, monkeypatch):
     service, runner = demo
     built = service._rebuild("demo", "box")
@@ -486,6 +530,7 @@ def test_tier1_writes_a_sidecar_and_the_second_call_reads_it(demo, monkeypatch):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_param_change_mints_a_new_key_and_re_evaluates(demo, monkeypatch):
     service, runner = demo
     first = service._rebuild("demo", "box")
@@ -504,6 +549,7 @@ def test_a_param_change_mints_a_new_key_and_re_evaluates(demo, monkeypatch):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_corrupt_sidecar_is_discarded_and_re_evaluated(demo, monkeypatch):
     service, runner = demo
     built = service._rebuild("demo", "box")
@@ -524,6 +570,7 @@ def test_a_corrupt_sidecar_is_discarded_and_re_evaluated(demo, monkeypatch):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_failing_spec_never_fails_the_rebuild(demo):
     """AC2: the geometry lands, ``ok`` stays True, the failure is signal."""
     service, runner = demo
@@ -537,6 +584,7 @@ def test_a_failing_spec_never_fails_the_rebuild(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_raising_predicate_is_an_error_and_siblings_still_report(demo):
     """AC5: 'the check broke' is not 'the check failed', and it is not a
     dead worker either."""
@@ -557,6 +605,7 @@ def test_a_raising_predicate_is_an_error_and_siblings_still_report(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_structurally_broken_specs_list_is_data_not_a_failed_rebuild(demo):
     service, runner = demo
     service.create_part("demo", "structural", script=STRUCTURAL_SPECS)
@@ -571,6 +620,7 @@ def test_a_structurally_broken_specs_list_is_data_not_a_failed_rebuild(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_kernel_error_turns_the_parts_checks_into_error_records(
         demo, monkeypatch):
     service, runner = demo
@@ -598,6 +648,7 @@ def test_a_kernel_error_turns_the_parts_checks_into_error_records(
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_declarations_read_every_scope_without_building(demo, monkeypatch):
     """AC6. list_specs must work on a project that has never been built."""
     service, runner = demo
@@ -625,6 +676,7 @@ def test_declarations_read_every_scope_without_building(demo, monkeypatch):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_declarations_are_memoized_by_script_hash(demo, monkeypatch):
     service, runner = demo
     runner.declarations("demo")
@@ -634,6 +686,7 @@ def test_declarations_are_memoized_by_script_hash(demo, monkeypatch):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_broken_specs_py_is_an_errors_entry_and_part_specs_still_read(demo):
     service, runner = demo
     (service.store.path_of("demo") / "specs.py").write_text(
@@ -648,10 +701,130 @@ def test_a_broken_specs_py_is_an_errors_entry_and_part_specs_still_read(demo):
     assert payload["parts"]["box"]["specs"]        # still readable
 
 
+@pytest.mark.slow
+@pytest.mark.portability
+def test_a_specs_py_that_will_not_declare_is_a_red_check_row(demo):
+    """A declaration failure used to land in ``errors[]`` alone — and neither
+    ``report_status`` nor the proposal gate reads that list, so a ``specs.py``
+    that could not execute left the report green. It is now a synthetic
+    ``declaration`` check row, named after the file, and red."""
+    service, runner = demo
+    (service.store.path_of("demo") / "specs.py").write_text(
+        BROKEN_SPECS_PY, encoding="utf-8")
+
+    report = runner.run("demo")
+
+    row = _by_id(report, "project:specs")
+    assert row["status"] == "error"
+    assert row["kind"] == "declaration"
+    assert "specs.py" in row["message"] and "min_mm" in row["message"]
+    assert report["status"] == "red"
+    assert report["project_checks"]["status"] == "red"
+    assert report["errors"][0]["scope"] == "project"    # and still an error
+
+
+@pytest.mark.slow
+@pytest.mark.portability
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX permission bits")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="root reads a mode-000 file anyway")
+def test_an_unreadable_specs_py_is_red_not_absent(demo):
+    """An ``OSError`` reading an existing file used to be indistinguishable
+    from 'there is no file' — the quietest possible way to lose a spec."""
+    service, runner = demo
+    path = service.store.path_of("demo") / "specs.py"
+    path.chmod(0o000)
+    try:
+        report = runner.run("demo")
+        state = runner.read_project_specs("demo")
+    finally:
+        path.chmod(0o644)
+
+    row = _by_id(report, "project:specs")
+    assert row["status"] == "error"
+    assert "specs.py" in row["message"]
+    assert report["status"] == "red"
+    assert state["exists"] is True
+    assert state["declaration_error"] is not None
+
+
+@pytest.mark.slow
+@pytest.mark.portability
+def test_a_project_with_no_specs_py_declares_no_project_checks(demo):
+    """The other half of the same rule: genuinely absent stays silent."""
+    service, runner = demo
+    (service.store.path_of("demo") / "specs.py").unlink()
+
+    report = runner.run("demo")
+
+    assert report["project_checks"]["checks"] == []
+    assert [c for c in report["checks"] if c["kind"] == "declaration"] == []
+    assert report["errors"] == []
+    assert runner.read_project_specs("demo")["exists"] is False
+
+
+@pytest.mark.slow
+@pytest.mark.portability
+def test_an_incomplete_hand_written_declaration_is_a_check_error(demo):
+    """``{"spec": 1, "kind": "mass", "scope": "part"}`` used to pass
+    ``is_declaration`` and then raise ``KeyError('name')`` inside ``_residue``
+    — in the *server*, so the whole tool/route became a 500."""
+    service, runner = demo
+    service.create_part("demo", "hand", script=INCOMPLETE_SPECS)
+
+    report = runner.run("demo", "hand")
+
+    assert report["status"] == "red"
+    row = report["checks"][0]
+    assert row["status"] == "error"
+    assert "name" in row["message"]
+    assert runner.tier1("demo", "hand")["status"] == "error"
+
+
+@pytest.mark.slow
+@pytest.mark.portability
+def test_the_residue_path_degrades_on_a_declaration_it_cannot_read(
+        demo, monkeypatch):
+    """The 500's exact frame: ``_residue`` asks for the declarations of the
+    script that just failed to evaluate and builds a record per declaration. A
+    declaration the *worker* accepted but this layer cannot read must degrade
+    into a named row, never a ``KeyError`` out of the server."""
+    service, runner = demo
+    monkeypatch.setattr(
+        runner, "_declare",
+        lambda script, scope, affinity, deadline=None: {
+            "declared": [{"spec": 1, "kind": "mass", "scope": "part"}]})
+
+    residue = runner._residue("demo", "box",
+                              KernelError("contract_error", "boom", {}),
+                              set(), [])
+
+    assert residue["status"] == "error"
+    assert [row["status"] for row in residue["checks"]] == ["error"]
+    assert residue["checks"][0]["id"] == "box:spec_0"
+    assert residue["checks"][0]["message"] == "boom"
+
+
+@pytest.mark.slow
+@pytest.mark.portability
+def test_a_complete_hand_written_declaration_still_evaluates(demo):
+    """The validation is the constructors' *shape*, not their identity."""
+    service, runner = demo
+    service.create_part("demo", "hand", script=HAND_WRITTEN_SPECS)
+
+    report = runner.run("demo", "hand")
+
+    assert report["status"] == "green"
+    assert report["checks"][0]["status"] == "pass"
+    assert report["checks"][0]["requirement"] == "SYS-042"
+
+
 # ---- AC4: the project tier
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_run_measures_clearance_and_names_interference(demo):
     """AC4. Both are absent from a rebuild and present in a run."""
     _service, runner = demo
@@ -678,6 +851,7 @@ def test_run_measures_clearance_and_names_interference(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_run_names_the_offending_pair_when_instances_overlap(demo):
     service, runner = demo
     service.set_assembly("demo", [
@@ -695,6 +869,7 @@ def test_run_names_the_offending_pair_when_instances_overlap(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_run_reports_the_stackup_from_the_mate_chain(demo):
     service, runner = demo
     report = runner.run("demo")
@@ -712,6 +887,51 @@ def test_run_reports_the_stackup_from_the_mate_chain(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
+def test_a_pmi_change_alone_re_evaluates_the_cached_stackup(demo):
+    """The assembly sidecar is content-addressed, and ``check_stackup``'s
+    content includes each contributing part's PMI dims — which live in the
+    manifest, not in any script, params or transform the key used to hash. A
+    loosened tolerance would otherwise reuse the verdict measured against the
+    tight one."""
+    service, runner = demo
+    registry = build_registry(service)
+    assert _by_id(runner.run("demo"),
+                  "project:stackup_box_2_box_3_x")["status"] == "pass"
+
+    assert "error" not in registry.call("set_part_pmi", {
+        "project": "demo", "part_id": "box",
+        "pmi": {"dims": [{"id": "w1", "kind": "linear", "target": "width",
+                          "plus": 1.0, "minus": 1.0}]}})
+
+    stackup = _by_id(runner.run("demo"), "project:stackup_box_2_box_3_x")
+    assert stackup["status"] == "fail"
+    assert stackup["measured"] == pytest.approx(2.0)
+
+
+@pytest.mark.slow
+@pytest.mark.portability
+def test_the_project_key_covers_the_mate_graph(demo):
+    """Two assemblies whose resolved transforms are identical but whose mate
+    chains differ are two different stack-up questions, so they must not share
+    a sidecar entry."""
+    service, runner = demo
+    script = (service.store.path_of("demo") / "specs.py").read_text(
+        encoding="utf-8")
+    mated = runner._project_key("demo", script)
+    placed = [{"id": i.id, "part": i.part, "position": list(i.position),
+               "rotation_deg": list(i.rotation_deg)}
+              for i in service._resolved_instances("demo")]
+
+    service.set_assembly("demo", placed)     # the same transforms, no mate
+
+    assert [list(i.position) for i in service._resolved_instances("demo")] == \
+        [entry["position"] for entry in placed]        # nothing moved
+    assert runner._project_key("demo", script) != mated
+
+
+@pytest.mark.slow
+@pytest.mark.portability
 def test_an_unknown_instance_id_is_an_error_naming_it(demo):
     service, runner = demo
     (service.store.path_of("demo") / "specs.py").write_text(
@@ -732,6 +952,7 @@ def test_an_unknown_instance_id_is_an_error_naming_it(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_run_groups_requirements_over_both_scopes(demo):
     _service, runner = demo
     report = runner.run("demo")
@@ -751,6 +972,7 @@ def test_run_groups_requirements_over_both_scopes(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_run_for_one_part_skips_the_project_tier(demo, monkeypatch):
     service, runner = demo
     calls = _counting(service, monkeypatch)
@@ -774,6 +996,7 @@ def test_run_rejects_an_unknown_project_and_part(demo):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_fem_static_skips_without_the_extra(demo, monkeypatch):
     from agentcad.core import specs as specs_module
 
@@ -794,6 +1017,7 @@ def test_fem_static_skips_without_the_extra(demo, monkeypatch):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_fem_static_evaluates_with_the_extra(demo):
     pytest.importorskip("skfem")
     pytest.importorskip("gmsh")
@@ -809,6 +1033,69 @@ def test_fem_static_evaluates_with_the_extra(demo):
     assert check["limit"] == {"max_disp_mm": 10.0}
     assert check["requirement"] == "STR-001"
     assert report["requirements"]["STR-001"]["checks"] == ["fem_box:fem_static"]
+
+
+@pytest.mark.slow
+@pytest.mark.portability
+def test_a_cached_fem_verdict_is_re_measured_when_youngs_modulus_changes(
+        demo, monkeypatch):
+    """The FEM row rides in the part sidecar, whose key covers the script, the
+    params and the material *density* — while ``_eval_fem`` hands the solver
+    ``E_mpa``. An E-only material change left the key unmoved and reused
+    physically stale evidence (displacement scales with 1/E).
+
+    The solver is stubbed so the key logic is exercised with or without the
+    ``[fem]`` extra; the test below does the same over the real one.
+    """
+    from agentcad.core import specs as specs_module
+
+    service, runner = demo
+    service.create_part("demo", "fem_box", script=FEM_BOX)
+    monkeypatch.setattr(specs_module, "_fem_available", lambda: True)
+    solved: list = []
+    original = service.kernel.request
+
+    def stub(method, params, timeout_s=None, affinity=None):
+        if method == "fem_static":
+            solved.append(params.get("E_mpa"))
+            return {"max_disp_mm": 0.1, "max_von_mises_mpa": 1.0,
+                    "n_nodes": 8, "n_tets": 6, "note": None}
+        return original(method, params, timeout_s=timeout_s, affinity=affinity)
+
+    monkeypatch.setattr(service.kernel, "request", stub)
+    modulus = [200_000.0]
+    monkeypatch.setattr(runner, "_youngs_mpa", lambda proj, mat: modulus[0])
+
+    assert runner.run("demo", part_id="fem_box")["checks"][0]["status"] == "pass"
+    runner.run("demo", part_id="fem_box")           # the sidecar answers
+    assert solved == [200_000.0]
+
+    modulus[0] = 2_000.0            # E alone: the part cache key is unmoved
+    assert runner.run("demo", part_id="fem_box")["checks"][0]["status"] == "pass"
+    assert solved == [200_000.0, 2_000.0]
+
+
+@pytest.mark.slow
+@pytest.mark.portability
+def test_the_real_fem_sidecar_is_keyed_by_youngs_modulus(demo, monkeypatch):
+    """The same rule over the real solver, where the evidence being reused is
+    an actual displacement."""
+    pytest.importorskip("skfem")
+    pytest.importorskip("gmsh")
+    pytest.importorskip("meshio")
+
+    service, runner = demo
+    service.create_part("demo", "fem_box", script=FEM_BOX)
+    assert runner.run("demo", part_id="fem_box")["checks"][0]["status"] \
+        in ("pass", "fail")
+
+    calls = _counting(service, monkeypatch)
+    runner.run("demo", part_id="fem_box")
+    assert calls["methods"].get("fem_static", 0) == 0        # cached
+
+    monkeypatch.setattr(runner, "_youngs_mpa", lambda proj, mat: 2_000.0)
+    runner.run("demo", part_id="fem_box")
+    assert calls["methods"].get("fem_static", 0) == 1
 
 
 # ---- refs (PRD-001)
@@ -829,6 +1116,7 @@ def git_demo(kernel, tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_ref_without_git_is_a_validation_error_naming_git(demo, monkeypatch):
     """The pack deliberately does NOT self-disable without git — only ``ref``
     needs branches, and it says so."""
@@ -840,6 +1128,7 @@ def test_a_ref_without_git_is_a_validation_error_naming_git(demo, monkeypatch):
 
 
 @pytest.mark.slow
+@pytest.mark.portability
 def test_a_ref_on_a_project_with_no_branches_seam_is_a_validation_error(
         demo, monkeypatch):
     service, runner = demo

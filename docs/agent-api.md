@@ -166,7 +166,17 @@ Five rules govern every payload here:
   a `SPECS` that will not declare, a script that will not build and a predicate
   that hangs are properties of that script and those params, and every
   `get_part` would otherwise re-pay them. `run_specs` is the one surface that
-  ignores a cached failure and measures again.
+  ignores a cached failure and measures again. The keys cover every input a
+  check reads: the assembly sidecar also hashes the **mate graph** and each
+  referenced part's **PMI dims** (what `check_stackup` sums), and a cached
+  `fem_static` row is additionally keyed by the material's **E** — the part
+  cache key covers density only, and displacement scales with 1/E.
+- **A declaration is a shape.** A hand-written `SPECS` entry is accepted only
+  if it carries every key a constructor emits (`spec`, `kind`, `scope`, `name`,
+  `limit`, `options`, `requirement`); anything else is a `contract_error`
+  naming the key. Limits must be finite: `nan`/`inf` are rejected at
+  construction, because every ordered comparison against NaN is false and such
+  a check would report `pass` without measuring anything.
 
 | Tool | Arguments | Returns |
 |---|---|---|
@@ -198,15 +208,27 @@ show (measured from the merge base, so a target that moved never sets it). Run
 `run_specs {project, ref: "<source>"}` to see and fix what the gate is red
 about.
 
-Two divergences between the gate and a `run_specs` report, both deliberate and
-both fail-closed:
+Divergences between the gate and a `run_specs` report, all deliberate and all
+fail-closed:
 
-- **A `mesh_only` clearance is a `skip` in a report and a `fail` in the gate.**
-  An STL side has no B-rep to measure against, so the distance was never taken;
-  a report says so with its reason and hint, but letting a merge pass on it
-  would mean swapping a STEP reference for an STL silently satisfies a declared
-  clearance. The gate's failure keeps `details.reason: "mesh_only"` and
-  `details.skipped_in_report: true`.
+- **Every `skip` is a `fail` in the gate**, whatever its reason —
+  `fem_extra_missing` (no `[fem]` extra on the reviewing machine), `mesh_only`
+  (an STL side has no B-rep to measure against), `unsupported_scope`,
+  `no_instances`, and any reason added later. A report is read by an engineer,
+  who is better served by the named skip and its hint; a gate decides a merge,
+  and "declared but not measured" is exactly the hole it exists to close —
+  otherwise swapping a STEP reference for an STL, or reviewing without the FEM
+  extra, silently satisfies a declared check. Each gate failure keeps
+  `details.reason`, `details.hint` and `details.skipped_in_report: true`, and
+  names the reason in its message.
+- **The gate never answers `pending`.** `proposal_merge` blocks a `fail` and
+  nothing else, so a source head that moved during evaluation is a `fail`
+  saying to retry, not a `pending` that would let unevaluated content merge.
+  That verdict is not memoized, so reading the proposal again re-measures.
+- **A spec module that will not read or declare is a red `declaration` check
+  row** named after the file (`project:specs`), not merely an `errors[]` entry:
+  status and the gate are computed from the check rows alone, so a `specs.py`
+  that raised while it executed used to leave the report green.
 - **The 30 s budget is a deadline, and its verdict is remembered.** Every kernel
   call under the gate asks for what the budget has left rather than its own
   300 s/600 s ceiling, and the deadline is re-checked between checks. A

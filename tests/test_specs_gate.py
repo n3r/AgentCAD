@@ -82,6 +82,46 @@ from agentcad.toolkit.specs import check_clearance
 SPECS = [check_clearance("box_1", "box_2", min_mm=1.0, requirement="INT-009")]
 '''
 
+# A project spec file whose constructor rejects its own argument: the module
+# raises while it executes, so nothing is ever declared.
+BROKEN_PROJECT_SPECS = '''\
+from agentcad.toolkit.specs import check_clearance
+
+SPECS = [check_clearance("box_1", "box_2", min_mm="wide")]
+'''
+
+# A part that declares SPECS above a def that will not parse.
+SYNTAX_BROKEN_BOX = GATE_BOX.replace("def build(p):", "def build(p:")
+
+# Only a FEM check: on a machine without the [fem] extra nothing is measured.
+FEM_PART = '''\
+from build123d import *
+from agentcad.toolkit.specs import check_fem_static
+
+PARAMS = {}
+
+SPECS = [check_fem_static({"axis": "z", "side": "min"},
+                          {"axis": "z", "side": "max"}, 50.0,
+                          max_disp_mm=10.0, requirement="STR-001")]
+
+def build(p):
+    return Box(10, 10, 10)
+'''
+
+# A project-scope check declared in a PART script: the worker can only report
+# it as a named skip, because there is one shape and no assembly.
+MISPLACED_SCOPE_PART = '''\
+from build123d import *
+from agentcad.toolkit.specs import check_clearance
+
+PARAMS = {}
+
+SPECS = [check_clearance("box_1", "box_2", min_mm=1.0, name="misplaced")]
+
+def build(p):
+    return Box(10, 10, 10)
+'''
+
 
 @pytest.fixture(autouse=True)
 def _reset_context():
@@ -136,6 +176,12 @@ def _on(service, client: str, branch: str) -> None:
 
 def _gate(gates: list[dict], name: str) -> dict:
     return next(g for g in gates if g["name"] == name)
+
+
+def _named_check(gate: dict, ident: str) -> dict:
+    """One failing check row out of a gate's details, by id."""
+    rows = gate["details"]["failures"] + gate["details"]["errors"]
+    return next(row for row in rows if row["id"] == ident)
 
 
 def _create(manager, **kwargs) -> dict:
@@ -319,9 +365,12 @@ def test_a_ref_declaring_nothing_is_skipped_not_pass(bare_demo):
     assert "no design specs" in specs["summary"]
 
 
-def test_a_skip_is_data_and_the_gate_still_passes(spec_demo):
-    """A named skip (here: an interference check with nothing to overlap) is
-    reported in the summary and never turns the gate red."""
+def test_a_skip_is_data_in_a_report_and_red_in_the_gate(spec_demo):
+    """The generalized fail-closed rule: **every** skip on a declared check is
+    red in the GATE, whatever its reason (here: an interference check with
+    nothing to overlap). A report an engineer reads keeps the named skip and
+    its hint; a gate decides a merge, and 'declared but not measured' is
+    exactly the hole it exists to close."""
     service, registry, manager = spec_demo
     _on(service, "agent_a", "feat")
     assert "error" not in registry.call(
@@ -331,10 +380,63 @@ def test_a_skip_is_data_and_the_gate_still_passes(spec_demo):
 
     specs = _gate(manager.get("demo", pid)["gates"], "specs")
 
-    assert specs["state"] == "pass"
-    assert [c["id"] for c in specs["details"]["skips"]] == [
-        "project:no_interference"]
-    assert "skip" in specs["summary"]
+    assert specs["state"] == "fail"
+    assert specs["details"]["skips"] == []
+    failure = _named_check(specs, "project:no_interference")
+    assert failure["details"]["reason"] == "no_instances"
+    assert "no_instances" in failure["message"]
+    assert failure["details"]["skipped_in_report"] is True
+
+    report = service.specs.run("demo", ref="feat")
+    row = next(c for c in report["checks"] if c["kind"] == "interference_free")
+    assert row["status"] == "skip" and row["reason"] == "no_instances"
+
+
+def test_a_fem_check_that_cannot_be_measured_here_is_red_in_the_gate(
+        spec_demo, monkeypatch):
+    """The finding's own scenario: a proposal declaring only ``check_fem_static``
+    on a reviewing machine without the ``[fem]`` extra used to pass the gate
+    with zero structural measurement."""
+    service, registry, manager = spec_demo
+    _on(service, "agent_a", "feat")
+    assert "error" not in registry.call(
+        "create_part", {"project": "demo", "part_id": "beam",
+                        "script": FEM_PART})
+    _on(service, "browser", "master")
+    pid = _create(manager)["id"]
+    monkeypatch.setattr("agentcad.core.specs._fem_available", lambda: False)
+    _cold(service)
+
+    specs = _gate(manager.get("demo", pid)["gates"], "specs")
+
+    assert specs["state"] == "fail"
+    failure = _named_check(specs, "beam:fem_static")
+    assert failure["details"]["reason"] == "fem_extra_missing"
+    assert "fem_extra_missing" in failure["message"]
+    assert failure["details"]["hint"]
+
+    report = service.specs.run("demo", ref="feat")
+    row = next(c for c in report["checks"] if c["kind"] == "fem_static")
+    assert row["status"] == "skip" and row["reason"] == "fem_extra_missing"
+
+
+def test_an_unsupported_scope_skip_is_red_in_the_gate(spec_demo):
+    """A project-scope check declared in a part script is a named skip in the
+    worker's records — and an unmeasured declared check at the gate."""
+    service, registry, manager = spec_demo
+    _on(service, "agent_a", "feat")
+    assert "error" not in registry.call(
+        "create_part", {"project": "demo", "part_id": "misplaced",
+                        "script": MISPLACED_SCOPE_PART})
+    _on(service, "browser", "master")
+    pid = _create(manager)["id"]
+
+    specs = _gate(manager.get("demo", pid)["gates"], "specs")
+
+    assert specs["state"] == "fail"
+    failure = _named_check(specs, "misplaced:misplaced")
+    assert failure["details"]["reason"] == "unsupported_scope"
+    assert "unsupported_scope" in failure["message"]
 
 
 def test_a_mesh_only_clearance_skip_is_red_in_the_gate_and_a_skip_in_a_report(
@@ -437,6 +539,49 @@ def test_a_source_branch_that_does_not_build_is_red(spec_demo):
     assert specs["details"]["errors"]
 
 
+def test_a_specs_py_that_will_not_declare_is_red_and_names_the_file(spec_demo):
+    """A ``specs.py`` whose constructor rejects its argument declares nothing,
+    so the gate used to see an empty project scope and pass — the declaration
+    failure went to ``errors[]``, which neither the status nor the gate reads."""
+    service, registry, manager = spec_demo
+    _on(service, "agent_a", "feat")
+    assert "error" not in registry.call(
+        "set_project_specs", {"project": "demo",
+                              "script": BROKEN_PROJECT_SPECS})
+    _on(service, "browser", "master")
+    pid = _create(manager)["id"]
+
+    specs = _gate(manager.get("demo", pid)["gates"], "specs")
+
+    assert specs["state"] == "fail"
+    failure = _named_check(specs, "project:specs")
+    assert failure["kind"] == "declaration"
+    assert "specs.py" in failure["message"]
+    assert service.specs.run("demo", ref="feat")["status"] == "red"
+
+
+def test_a_syntax_broken_script_that_declares_specs_is_red_not_skipped(
+        spec_demo):
+    """``declares_specs`` fails closed. A script that will not parse but
+    visibly binds ``SPECS`` used to be classified spec-less, so the gate
+    skipped the part and its declared checks never became red."""
+    service, _registry, manager = spec_demo
+    tree = service.branches.tree_of("demo", "feat")
+    (tree / "parts" / "box.py").write_text(SYNTAX_BROKEN_BOX, encoding="utf-8")
+    service.history.snapshot(tree, "a script that will not parse")
+    pid = _create(manager)["id"]
+
+    specs = _gate(manager.get("demo", pid)["gates"], "specs")
+
+    assert specs["state"] == "fail"
+    assert specs["details"]["errors"]
+    report = service.specs.run("demo", ref="feat")
+    assert report["status"] == "red"
+    row = next(c for c in report["checks"] if c["part"] == "box")
+    assert row["status"] == "error"
+    assert "syntax" in row["message"].lower()
+
+
 def test_a_declared_check_that_was_never_evaluated_is_red(spec_demo,
                                                           monkeypatch):
     """The budget is the only way a declared check goes unmeasured without an
@@ -454,24 +599,44 @@ def test_a_declared_check_that_was_never_evaluated_is_red(spec_demo,
     assert [c["status"] for c in specs["details"]["errors"]] == ["error"]
 
 
-def test_a_head_that_moves_during_evaluation_makes_the_gate_pending(
+def test_a_head_that_moves_during_evaluation_blocks_the_merge_and_retries(
         spec_demo, monkeypatch):
+    """The specs gate never returns ``pending``.
+
+    ``ProposalManager.merge`` blocks a ``fail`` and nothing else, so a
+    ``pending`` gate — the state a moved head produced — merged content that
+    was never evaluated (an external git process can move a head regardless of
+    the turn lock). The verdict is still not memoized, so the retry is a real
+    re-evaluation rather than a cached refusal."""
     service, _registry, manager = spec_demo
-    pid = _create(manager)["id"]
+    pid = _propose_and_approve(service, manager)
     runner = service.specs
     runner._gate_memo.clear()          # the memo answers for an unmoved head
     original = runner._report
+    moving_on = {"yes": True}
 
     def moving(*args, **kwargs):
         result = original(*args, **kwargs)
-        _move_head(service)
+        if moving_on["yes"]:
+            _move_head(service, f"note {time.monotonic()}\n")
         return result
 
     monkeypatch.setattr(runner, "_report", moving)
     specs = _gate(manager.get("demo", pid)["gates"], "specs")
 
-    assert specs["state"] == "pending"
+    assert specs["state"] == "fail"
     assert specs["details"]["reason"] == "head_moved"
+    assert "retry" in specs["summary"]
+
+    locks.set_client_id("browser")
+    with pytest.raises(ConflictError) as excinfo:
+        manager.merge("demo", pid)
+    assert excinfo.value.details["failing"] == "specs"
+
+    moving_on["yes"] = False           # the source stops moving: retry lands
+    landed = manager.merge("demo", pid)
+    assert "error" not in landed, landed
+    assert _gate(landed["gates"], "specs")["state"] == "pass"
 
 
 def test_specs_py_changed_says_a_proposal_touched_the_spec_file(spec_demo):

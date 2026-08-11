@@ -237,6 +237,28 @@ def test_booleans_are_not_numbers():
         check_wall(min_mm=True)
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_numbers_are_rejected_at_construction(value):
+    """A NaN limit is false green: every ordered comparison against it is
+    false, so ``_bounded`` never enters its over-limit branch and the check
+    passes without measuring anything. An infinite limit is one no measurement
+    can ever breach. Both are rejected where the argument is read."""
+    with pytest.raises(ValueError) as excinfo:
+        check_mass(max_g=value)
+    assert "max_g" in str(excinfo.value)
+    with pytest.raises(ValueError):
+        check_wall(min_mm=value)
+    with pytest.raises(ValueError):
+        check_bbox([1.0, value, 3.0])
+    with pytest.raises(ValueError):
+        check_clearance("a", "b", min_mm=value)
+    with pytest.raises(ValueError):
+        check_stackup("a", "b", "z", value)
+    with pytest.raises(ValueError):
+        check_fem_static({"axis": "z", "side": "min"},
+                         {"axis": "z", "side": "max"}, 1.0, max_vm_mpa=value)
+
+
 # ---- the JSON boundary -------------------------------------------------------
 
 @pytest.mark.parametrize("decl,_kind", PART_DECLS + PROJECT_DECLS)
@@ -274,6 +296,41 @@ def test_is_declaration_recognizes_the_format_marker():
     assert specs.is_declaration({"spec": 1, "kind": "nope",
                                  "scope": "part"}) is False
     assert specs.is_declaration("hello") is False
+
+
+# a hand-written dict with every key a constructor emits
+FULL_DICT = {"spec": SPEC_FORMAT, "kind": "mass", "scope": "part",
+             "name": "mass_max", "limit": {"max_g": 120.0},
+             "requirement": "SYS-042", "options": {}}
+
+
+def test_is_declaration_requires_every_key_a_constructor_emits():
+    """A dict missing ``name``/``limit``/``options`` used to be accepted, and
+    the readers downstream (``_record``, ``_residue``) read those keys without
+    a guard — so an incomplete hand-written ``SPECS`` entry became a KeyError
+    in the *server*, i.e. a 500, instead of structural residue."""
+    assert specs.is_declaration(FULL_DICT) is True
+    assert specs.is_declaration({"spec": 1, "kind": "mass",
+                                 "scope": "part"}) is False
+    for key, bad in (("name", 42), ("name", None), ("limit", None),
+                     ("limit", 3), ("options", "none"), ("requirement", 7)):
+        assert specs.is_declaration({**FULL_DICT, key: bad}) is False, key
+    # requirement is the one optional key: None is what a constructor emits
+    assert specs.is_declaration({**FULL_DICT, "requirement": None}) is True
+
+
+def test_declaration_problem_names_the_key_that_is_wrong():
+    """The rejection message is what a script author reads, so it must say
+    which key — 'not a declaration' alone is not actionable."""
+    assert specs.declaration_problem(check_wall(2.5)) is None
+    assert specs.declaration_problem(FULL_DICT) is None
+    for key in ("name", "limit", "options"):
+        missing = {k: v for k, v in FULL_DICT.items() if k != key}
+        assert key in specs.declaration_problem(missing)
+    assert "spec" in specs.declaration_problem({"kind": "mass"})
+    assert "kind" in specs.declaration_problem({**FULL_DICT, "kind": "nope"})
+    assert "scope" in specs.declaration_problem({**FULL_DICT, "scope": "all"})
+    assert specs.declaration_problem("hello")
 
 
 # ---- packaging ---------------------------------------------------------------

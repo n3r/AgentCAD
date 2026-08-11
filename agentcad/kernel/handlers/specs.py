@@ -63,10 +63,11 @@ know which part it is building. ``SpecRunner`` joins them on ``index`` and adds
 from __future__ import annotations
 
 import copy
+import math
 
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 
-from ...toolkit.specs import is_declaration, json_safe
+from ...toolkit.specs import declaration_problem, json_safe
 from .analysis import _min_wall
 
 #: Kinds this handler can measure from one built shape (Decision 3, tier 1).
@@ -85,6 +86,25 @@ def _slack(limit: float) -> float:
     return max(1e-9, abs(limit) * 1e-9)
 
 
+def _limit(limit: dict, key: str, label: str | None = None):
+    """One bound out of a declaration's ``limit``, guaranteed comparable.
+
+    The constructors reject a non-finite number where the argument is read, but
+    a hand-written ``SPECS`` entry reaches here directly — and every ordered
+    comparison against NaN is false, so a NaN bound would report *pass* without
+    measuring anything. Raising inside a per-check evaluation is an ``error``
+    record, which is what 'this check cannot be decided' means.
+    """
+    value = limit.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) \
+            or not math.isfinite(value):
+        raise ValueError(
+            f"{label or key} must be a finite number, got {value!r}")
+    return float(value)
+
+
 def _fmt(value: float) -> str:
     return f"{value:.4g}"
 
@@ -92,7 +112,7 @@ def _fmt(value: float) -> str:
 def _bounded(measured: float, limit: dict, lo_key: str, hi_key: str,
              unit: str, noun: str) -> dict:
     """A one- or two-sided numeric budget, with the message a human reads."""
-    lo, hi = limit.get(lo_key), limit.get(hi_key)
+    lo, hi = _limit(limit, lo_key), _limit(limit, hi_key)
     if lo is not None and measured < lo - _slack(lo):
         return {"status": "fail", "measured": measured,
                 "message": f"{noun} {_fmt(measured)} {unit} is below the "
@@ -134,7 +154,15 @@ def _eval_volume(decl: dict, shape, metrics: dict) -> dict:
 def _eval_bbox(decl: dict, shape, metrics: dict) -> dict:
     bbox = metrics["bbox"]
     size = [float(bbox["max"][i] - bbox["min"][i]) for i in range(3)]
-    within = decl["limit"]["within_mm"]
+    axes = decl["limit"].get("within_mm")
+    if not isinstance(axes, (list, tuple)) or len(axes) != 3:
+        raise ValueError(
+            f"within_mm must be a finite number per axis, got {axes!r}")
+    within = [_limit({"v": v}, "v", f"within_mm[{i}]")
+              for i, v in enumerate(axes)]
+    if None in within:
+        raise ValueError(
+            f"within_mm must be a finite number per axis, got {axes!r}")
     over = [axis for axis, i in (("x", 0), ("y", 1), ("z", 2))
             if size[i] > within[i] + _slack(within[i])]
     got = " x ".join(_fmt(v) for v in size)
@@ -148,7 +176,9 @@ def _eval_bbox(decl: dict, shape, metrics: dict) -> dict:
 
 
 def _eval_wall(decl: dict, shape, metrics: dict) -> dict:
-    minimum = decl["limit"]["min_mm"]
+    minimum = _limit(decl["limit"], "min_mm")
+    if minimum is None:
+        raise ValueError("min_mm must be a finite number, got None")
     probe = _min_wall(shape, minimum, int(decl["options"].get("grid", 8)))
     measured = probe["min_thickness_mm"]
     if measured is None:
@@ -215,12 +245,17 @@ def register(toolbox: dict) -> dict:
                 f"agentcad.toolkit.specs (got {type(raw).__name__})")
         declarations, warnings = [], []
         for index, entry in enumerate(raw):
-            if not is_declaration(entry):
+            # The whole emitted shape, not just the marker: a dict missing
+            # name/limit/options is residue every reader downstream would index
+            # into, and the reason names the key that is wrong.
+            problem = declaration_problem(entry)
+            if problem is not None:
                 raise WorkerError(
                     ERROR_CONTRACT,
                     f"SPECS[{index}] is not a declaration from "
-                    "agentcad.toolkit.specs — build it with one of that "
-                    f"module's check_* constructors (got {entry!r:.60})")
+                    f"agentcad.toolkit.specs ({problem}) — build it with one "
+                    f"of that module's check_* constructors "
+                    f"(got {entry!r:.60})")
             declarations.append(entry)
             if entry["scope"] != scope:
                 warnings.append(
@@ -230,24 +265,29 @@ def register(toolbox: dict) -> dict:
         return declarations, warnings
 
     def _record(decl: dict, index: int) -> dict:
-        return {"index": index, "name": decl["name"], "kind": decl["kind"],
-                "scope": decl["scope"], "requirement": decl.get("requirement"),
+        # ``.get`` throughout, though ``_declarations`` has already validated
+        # the shape: a record must degrade with a future format drift rather
+        # than raise out of the handler and cost the caller a whole report.
+        kind = decl.get("kind") or "unknown"
+        return {"index": index, "name": decl.get("name") or f"spec_{index}",
+                "kind": kind, "scope": decl.get("scope") or "part",
+                "requirement": decl.get("requirement"),
                 "limit": decl.get("limit") or {},
-                "unit": UNITS.get(decl["kind"]), "measured": None,
+                "unit": UNITS.get(kind), "measured": None,
                 "location": None, "message": "", "details": {}}
 
     def _evaluate(decl: dict, index: int, shape, metrics) -> dict:
         """One check, guarded on its own: this never raises (AC5)."""
         record = _record(decl, index)
-        if decl["scope"] != "part":
+        if record["scope"] != "part":
             return {**record, "status": "skip", "reason": "unsupported_scope",
                     "hint": _SCOPE_HINT,
-                    "message": f"{decl['kind']} is a project-scope check and "
-                               "is not evaluated against a single part"}
-        if decl["kind"] not in SHAPE_TIER:
+                    "message": f"{record['kind']} is a project-scope check "
+                               "and is not evaluated against a single part"}
+        if record["kind"] not in SHAPE_TIER:
             return {**record, "status": "skip", "reason": "deferred",
                     "hint": _DEFERRED_HINT,
-                    "message": f"{decl['kind']} is not evaluated with the "
+                    "message": f"{record['kind']} is not evaluated with the "
                                "shape tier"}
         try:
             # deepcopy, not the shared dict: a check_that predicate is script
@@ -255,8 +295,8 @@ def register(toolbox: dict) -> dict:
             # what any other check measured (the metrics are plain JSON-safe
             # numbers, lists and dicts, so the copy is cheap).
             return {**record,
-                    **_EVALUATORS[decl["kind"]](decl, shape,
-                                                copy.deepcopy(metrics()))}
+                    **_EVALUATORS[record["kind"]](decl, shape,
+                                                  copy.deepcopy(metrics()))}
         except Exception as exc:  # noqa: BLE001 — a broken check is payload
             # _script_error_from_exc gives the traceback and, when a frame
             # belongs to the script, the line the predicate lives on.

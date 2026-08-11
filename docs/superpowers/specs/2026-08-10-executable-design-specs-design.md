@@ -758,6 +758,61 @@ Four corrections to the text above, all of them in the fail-closed direction:
    unmeasured" hole this gate exists to close. The failure carries
    `details.reason: "mesh_only"`, its hint, and `details.skipped_in_report`.
 
+### As-built (second review, findings X5–X8, changelog 0095)
+
+The table above is superseded on two rows, and item 4 is generalized. All three
+changes are in the fail-closed direction:
+
+1. **`pending` is gone from this gate.** `ProposalManager.merge()` blocks a
+   gate whose state is `fail` and *nothing else*, so the "retry-only" `pending`
+   was merge-**permissive**: an external git process can advance the source
+   branch regardless of the turn lock, and a moved head then merged content no
+   verdict had ever measured. A moved head is now `state: "fail"` with a
+   summary saying *source moved during evaluation — retry*, and the verdict is
+   still not memoized, so reading the proposal again is a real re-evaluation.
+   `evaluate_specs` still reports `status: "pending"` / `available: false` for
+   that head (it is the honest verdict-layer answer, and `pending` stays
+   defined in PRD-002 for other providers); `_gate_wording` is the one place
+   that maps it, and it maps it to `fail`.
+2. **Every skip is red in the gate**, not only a `mesh_only` clearance
+   (`_gate_row`). `fem_extra_missing` was the finding's scenario — a proposal
+   declaring only `check_fem_static`, reviewed on a machine without the `[fem]`
+   extra, passed the gate with zero structural measurement — and
+   `unsupported_scope`, `no_instances` and any future reason are the same
+   sentence. "Declared but not measured is red" now has no exceptions, the
+   reason is named in the failure message, and `details` still carries
+   `reason`, `hint` and `skipped_in_report` so the report and the UI keep the
+   engineer-facing wording.
+3. **A spec module that will not read or declare is a check row.** Both
+   failures used to land only in `report["errors"]`, which neither
+   `report_status` nor the gate reads — and an `OSError` reading an *existing*
+   `specs.py` was indistinguishable from "there is no file". `_project_block`
+   now returns a synthetic `declaration` check (`project:specs`, status
+   `error`, message naming the file and the cause), so the report is red and
+   the gate blocks; `project_script` raises on an unreadable existing file and
+   every caller names it. A genuinely absent `specs.py` is unchanged.
+
+Three more from the same review, outside the gate:
+
+4. **`declares_specs` fails closed on a syntax error** (X6). A script with no
+   AST is text-scanned for a line-anchored `SPECS` binding, so a part that
+   visibly declares specs but will not parse is evaluated (and reported red)
+   rather than classified spec-less and skipped.
+5. **`is_declaration` validates the whole emitted shape** (X1). A hand-written
+   `{"spec": 1, "kind": "mass", "scope": "part"}` used to be accepted and then
+   read unguarded by `_record`/`_residue` — a `KeyError` in the *server*, i.e.
+   a 500. It is now a `contract_error` naming the missing key, and the readers
+   use `.get` with defaults so a format drift degrades instead of raising.
+   Non-finite limits are rejected at construction and again at evaluation (X10):
+   every ordered comparison against NaN is false, so a NaN limit reported
+   `pass` while measuring nothing.
+6. **The cache keys cover every input** (X3, X4). The assembly sidecar key adds
+   the mate graph and each referenced part's PMI dims — the two things
+   `check_stackup` reads that live in the manifest rather than a script, so
+   neither moves a part cache key — and a cached `fem_static` row is keyed by
+   the material's `E` as well, because `_eval_fem` sends `E_mpa` while the part
+   cache key covers density alone.
+
 ## Decision 8 — writing project specs needs a tool
 
 Part specs are written by `update_part_script`, which already exists. `specs.py`

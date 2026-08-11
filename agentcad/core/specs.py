@@ -47,11 +47,13 @@ Four rules this file is written around:
   the tool pack that constructs the runner sorts before the versioning pack, so
   the seam does not exist yet at construction time.
 * **The proposal gate is fail-closed** (:meth:`SpecRunner.gate_provider`). A
-  declared check that failed, errored, was never evaluated, or was *skipped
-  because it could not be measured at all* (a ``mesh_only`` clearance) is RED,
-  and ``allow_invalid`` does not waive it. That is the deliberate divergence
-  from PRD-002's default — where a provider outage degrades to ``pending`` —
-  and it is the divergence PRD-002's as-built note reserved for this PRD.
+  declared check that failed, errored, was never evaluated, or was *skipped for
+  any reason at all* is RED, and ``allow_invalid`` does not waive it. It never
+  returns ``pending`` either — PRD-002's ``merge()`` blocks only a ``fail``, so
+  a source head that moved mid-evaluation is a ``fail`` that says to retry.
+  That is the deliberate divergence from PRD-002's default — where a provider
+  outage degrades to ``pending`` — and it is the divergence PRD-002's as-built
+  note reserved for this PRD.
 """
 
 from __future__ import annotations
@@ -59,6 +61,8 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
+import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -160,14 +164,34 @@ def _binds_specs(body) -> bool:
     return False
 
 
+#: The fallback for a script that will not parse: a **line-anchored** binding
+#: of ``SPECS``, in any of the three forms :func:`_binds_specs` recognizes
+#: (``SPECS =``, ``SPECS: list =``, ``SPECS +=``). Anchoring to the start of a
+#: line (whitespace only in front) is what keeps a comment (``# SPECS = …``), a
+#: string literal (``x = "SPECS = …"``) and an attribute (``m.SPECS =``) out; an
+#: indented match — inside a function, or inside a triple-quoted block — is
+#: accepted, because there is no AST to tell the two apart and the direction to
+#: err in is *declaring*. The cost of a false positive is one red row on a
+#: script that already fails its build; the cost of a false negative is a
+#: declared spec the gate never measures.
+_SPECS_TEXT_RE = re.compile(r"^[ \t]*SPECS[ \t]*(?::[^=\n]+)?(?:\+)?=",
+                            re.MULTILINE)
+
+
 def declares_specs(script: str) -> bool:
     """True iff *script* binds a top-level name ``SPECS``.
 
     AST, never exec: the kernel worker is the only thing in this system that
     runs a part script, and a *presence* question must not become a reason to
     execute one (the rule ``packet.params_spec`` already follows for
-    ``PARAMS``). A script that does not parse is ``False`` — it fails its build
-    with a line number anyway.
+    ``PARAMS``).
+
+    **A script that does not parse fails closed.** It has no AST to scan, and
+    answering "declares nothing" made the proposal gate classify a part that
+    visibly binds ``SPECS`` as spec-less and skip it entirely — a declared
+    check that never becomes red. So the text is scanned for the binding
+    instead (:data:`_SPECS_TEXT_RE`); the part is then evaluated, its build
+    fails, and the ``script_error`` is reported as a red row.
     """
     if not isinstance(script, str):
         return False
@@ -178,7 +202,7 @@ def declares_specs(script: str) -> bool:
     try:
         tree = ast.parse(script)
     except (SyntaxError, ValueError):
-        answer = False
+        answer = bool(_SPECS_TEXT_RE.search(script))
     else:
         answer = _binds_specs(tree.body)
     if len(_DECLARES_MEMO) > _MEMO_LIMIT:
@@ -288,13 +312,37 @@ def _fmt(value: float) -> str:
 
 def _record(declaration: dict, index: int, part: str | None) -> dict:
     """The empty record for one declaration — the kernel's ``_record`` shape,
-    plus the ``part`` the service (and only the service) knows."""
-    return {"index": index, "name": declaration["name"],
-            "kind": declaration["kind"], "scope": declaration["scope"],
+    plus the ``part`` the service (and only the service) knows.
+
+    ``.get`` throughout: ``is_declaration`` now validates the whole emitted
+    shape, but this is the *server* process and a format drift (or a sidecar
+    written by an older version) must degrade into a named row rather than a
+    ``KeyError`` that becomes a 500 for the whole tool.
+    """
+    kind = declaration.get("kind") or "unknown"
+    return {"index": index,
+            "name": declaration.get("name") or f"spec_{index}",
+            "kind": kind,
+            "scope": declaration.get("scope") or ("part" if part else "project"),
             "part": part, "requirement": declaration.get("requirement"),
             "limit": declaration.get("limit") or {},
-            "unit": _UNITS.get(declaration["kind"]), "measured": None,
+            "unit": _UNITS.get(kind), "measured": None,
             "location": None, "message": "", "details": {}}
+
+
+def _non_finite_limit(limit: dict | None) -> str | None:
+    """The name of the first non-finite bound in *limit*, or None.
+
+    The constructors reject one where the argument is read; a hand-written
+    ``SPECS`` entry reaches an evaluator directly, and NaN satisfies every
+    ordered comparison — a limit that cannot fail is not a limit.
+    """
+    for key, value in (limit or {}).items():
+        numbers = value if isinstance(value, (list, tuple)) else [value]
+        for number in numbers:
+            if isinstance(number, float) and not math.isfinite(number):
+                return key
+    return None
 
 
 def _error_row(message: str, details: dict | None = None) -> dict:
@@ -327,19 +375,29 @@ def _gate_wording(source: str | None, verdict: dict,
     Every red summary names its exit, because the gate is a hard block: a
     measurement failure names the failing checks and says that ``allow_invalid``
     does not waive this gate, and an unmeasured one names ``run_specs``.
+
+    **This gate never returns ``pending``.** PRD-002's ``merge()`` refuses a
+    ``fail`` and nothing else, so ``pending`` — the state a source head that
+    moved mid-evaluation produced — was merge-*permissive*: an external git
+    process can advance a branch regardless of the turn lock, and the merge
+    then landed content no verdict had ever measured. A moved head is therefore
+    a ``fail`` whose summary says to retry; the verdict is not memoized, so the
+    retry is a real re-evaluation. ``pending`` remains defined in PRD-002 for
+    other providers; this one simply has no use for it.
     """
     status = verdict["status"]
     if status == "pending":
-        return "pending", (
-            f"{source!r} moved while its design specs were being evaluated; "
-            "read the proposal again for a verdict")
+        return "fail", (
+            f"{source!r} moved while its design specs were being evaluated, so "
+            "nothing here was measured against its current head — source moved "
+            "during evaluation, retry: read the proposal again")
     if status == "skip":
         return "skipped", f"{source!r} declares no design specs"
-    named_skips = f" ({_named(verdict['skips'])})" if counts["skipped"] else ""
-    skipped = f", {counts['skipped']} skipped" if counts["skipped"] else ""
+    # There are no skips left to name: _gate_row has already turned every one
+    # of them into a failure, reason and all.
     if status != "red":
         return "pass", (f"{counts['passed']} of {counts['total']} design "
-                        f"specs met on {source!r}{skipped}{named_skips}")
+                        f"specs met on {source!r}")
     if verdict["reason"] == "budget_exceeded":
         return "fail", (
             f"the design specs on {source!r} were not fully evaluated within "
@@ -353,8 +411,8 @@ def _gate_wording(source: str | None, verdict: dict,
     return "fail", (
         f"{counts['failed']} of {counts['total']} design specs fail on "
         f"{source!r}: {_named(verdict['failures'] + verdict['errors'])}"
-        f"{skipped}. allow_invalid does not waive this gate — fix the "
-        "geometry or the spec on the source branch")
+        ". allow_invalid does not waive this gate — fix the geometry or the "
+        "spec on the source branch")
 
 
 def _fem_available() -> bool:
@@ -391,6 +449,20 @@ def _read_sidecar(path: Path) -> dict | None:
             pass
         return None
     return stored
+
+
+def _read_error(exc: Exception) -> KernelError:
+    """An unreadable ``specs.py`` as the same shape a failed declaration has.
+
+    A ``KernelError`` because that is what every caller of a declaration
+    already degrades honestly, and because the *cause* — a permission, a
+    directory in its place, an unreadable encoding — belongs in the message a
+    reviewer reads.
+    """
+    reason = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
+    return KernelError("read_error",
+                       f"specs.py could not be read ({reason})",
+                       {"path": "specs.py", "reason": reason})
 
 
 def _cached_error(payload: dict) -> KernelError:
@@ -439,13 +511,21 @@ class SpecRunner:
         return self.service.store.path_of(proj) / "specs.py"
 
     def project_script(self, proj: str) -> str | None:
-        """The ``specs.py`` text, or None. Discovery is presence (``is_file``),
-        not convention: a second root-level module is not a spec file."""
+        """The ``specs.py`` text, or None when there is no such file.
+
+        Discovery is presence (``is_file``), not convention: a second
+        root-level module is not a spec file.
+
+        **An existing file that cannot be read raises.** Swallowing the
+        ``OSError`` made "there is no spec file" and "there is one and we could
+        not read it" the same answer — the quietest possible way to lose a
+        declared spec, and green in a gate. Every caller turns it into a named
+        error instead.
+        """
         path = self.specs_path(proj)
-        try:
-            return path.read_text(encoding="utf-8") if path.is_file() else None
-        except OSError:
+        if not path.is_file():
             return None
+        return path.read_text(encoding="utf-8")
 
     # --------------------------------------------------- the specs.py writer
 
@@ -485,10 +565,18 @@ class SpecRunner:
 
         A project with no ``specs.py`` is ``{"script": None, "specs": []}`` —
         not a 404: "this project declares no project-scope specs" is an answer,
-        not a missing resource.
+        not a missing resource. A file that exists but cannot be *read* is the
+        opposite answer: ``exists`` stays true and the failure is reported as
+        the declaration error it is.
         """
         self.service.store.manifest(proj)          # NotFoundError: bad project
-        return self._project_state(proj, self.project_script(proj))
+        try:
+            return self._project_state(proj, self.project_script(proj))
+        except (OSError, UnicodeDecodeError) as exc:
+            state = self._project_state(proj, None)
+            state["exists"] = True
+            state["declaration_error"] = _read_error(exc).to_payload()
+            return state
 
     def write_project_specs(self, proj: str, script: str) -> dict:
         """Write ``specs.py`` and report what it declares (FR2, Decision 8).
@@ -645,8 +733,15 @@ class SpecRunner:
 
         project_specs = {"path": "specs.py", "exists": False, "specs": []}
         if part_id is None:
-            script = self.project_script(proj)
-            project_specs["exists"] = script is not None
+            try:
+                script = self.project_script(proj)
+            except (OSError, UnicodeDecodeError) as exc:
+                script = None
+                project_specs["exists"] = True
+                errors.append({"scope": "project", "path": "specs.py",
+                               "error": _read_error(exc).to_payload()})
+            else:
+                project_specs["exists"] = script is not None
             if script is not None:
                 try:
                     declared = self._declare(script, "project", proj)
@@ -814,6 +909,11 @@ class SpecRunner:
         600 s: a cold FEM source must not make ``proposal_get`` block for ten
         minutes while ``proposal_merge`` holds the source's turn lock.
         """
+        bad = _non_finite_limit(declaration.get("limit"))
+        if bad is not None:
+            return _error_row(
+                f"{bad} is not a finite number, so this budget can never be "
+                "breached; declare it with check_fem_static")
         if not _fem_available():
             return _skip_row(
                 "fem_extra_missing", _FEM_HINT,
@@ -870,6 +970,25 @@ class SpecRunner:
                 "message": f"displacement {_fmt(displacement)} mm and von "
                            f"Mises {_fmt(von_mises)} MPa are within budget"}
 
+    def _fem_material_key(self, proj: str, part_id: str) -> str:
+        """The material properties the FEM solver actually consumes, as a key
+        fragment for the cached ``fem`` rows.
+
+        The sidecar those rows live in is filed under the *part cache key*,
+        which covers the script, the params and the material **density** — but
+        :meth:`_eval_fem` also sends ``E_mpa``, and displacement scales with
+        1/E. An E-only material change left the key unmoved and reused
+        physically stale evidence. E is the whole list: the solver's Poisson
+        ratio is its own constant (``_fem_impl``'s ``nu`` default), and this
+        layer never sends one.
+        """
+        try:
+            record = self.service.store.get_part(proj, part_id)
+        except (NotFoundError, OSError):
+            return "unknown"
+        modulus = self._youngs_mpa(proj, record.material)
+        return "default" if modulus is None else f"E{modulus:.10g}"
+
     def _youngs_mpa(self, proj: str, material_id: str) -> float | None:
         """The part material's Young's modulus, when the catalog has one —
         ``fem_modal``'s convention, minus its hard error: a spec that cannot
@@ -889,9 +1008,24 @@ class SpecRunner:
     # -------------------------------------------------------- tier 2
 
     def _project_key(self, proj: str, script: str) -> str:
-        """Content key for the assembly tier: the specs text plus every placed
-        instance's identity, part cache key and resolved transform. Moving one
-        instance changes every clearance, so the whole placement is the key."""
+        """Content key for the assembly tier — over **every** input the three
+        project checks read, not only the ones ``clearance`` reads.
+
+        The specs text, plus each placed instance's identity, part cache key
+        and resolved transform (moving one instance changes every clearance, so
+        the whole placement is the key), plus the two inputs ``check_stackup``
+        consumes that live in the manifest rather than in a script: the **mate
+        graph** (it is what the stack path is walked over, and two chains can
+        resolve to the same transforms) and each referenced part's **PMI
+        dims** (the tolerances that are summed). Neither moves a part cache key,
+        so a loosened tolerance would otherwise reuse the verdict measured
+        against the tight one.
+        """
+        pmi = {entry["id"]: entry.get("pmi")
+               for entry in self.service.store.manifest(proj)["parts"]}
+        mates = {instance.id: instance.mate
+                 for instance in self.service.store.instances(proj)
+                 if getattr(instance, "mate", None)}
         rows = []
         for instance in self.service._resolved_instances(proj):
             try:
@@ -903,6 +1037,9 @@ class SpecRunner:
                          [float(v) for v in instance.position],
                          [float(v) for v in instance.rotation_deg]])
         payload = json.dumps({"specs": script, "instances": sorted(rows),
+                              "mates": mates,
+                              "pmi": {pid: pmi.get(pid) for pid in sorted(
+                                  {row[1] for row in rows})},
                               "version": SPEC_RESULT_VERSION}, sort_keys=True)
         return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
@@ -1022,6 +1159,14 @@ class SpecRunner:
 
     def _eval_project_check(self, proj: str, declaration: dict,
                             deadline: float | None = None) -> dict:
+        bad = _non_finite_limit(declaration.get("limit"))
+        if bad is not None:
+            # A NaN bound passes every comparison in every evaluator below, so
+            # it is rejected before one runs (the constructors reject it at
+            # declaration; this is the hand-written path).
+            return _error_row(
+                f"{bad} is not a finite number, so this check can never fail; "
+                "declare it with one of agentcad.toolkit.specs' constructors")
         if declaration.get("scope") != "project":
             return _skip_row(
                 "unsupported_scope", _SCOPE_HINT,
@@ -1039,18 +1184,54 @@ class SpecRunner:
         except Exception as exc:  # noqa: BLE001 — the report degrades, never raises
             return _error_row(f"{type(exc).__name__}: {exc}")
 
+    def _declaration_row(self, message: str, details: dict | None,
+                         part: str | None, prefix: str, seen: set,
+                         warnings: list[str]) -> dict:
+        """One synthetic ``declaration`` check row for a spec module that could
+        not be read or executed.
+
+        The fail-closed rule needs a *check*, not an ``errors[]`` entry:
+        ``report_status`` and the proposal gate are both computed from the
+        check rows alone, so a ``specs.py`` that never declared anything used
+        to leave a report green and a merge unblocked.
+        """
+        row = {**_record({"name": "specs", "kind": "declaration",
+                          "scope": "part" if part else "project",
+                          "requirement": None, "limit": {}}, 0, part),
+               **_error_row(message, details)}
+        assign_ids([row], prefix, seen, warnings)
+        return row
+
     def _project_block(self, proj: str, seen: set, warnings: list[str],
                        errors: list[dict],
                        deadline: float | None = None) -> list[dict]:
-        script = self.project_script(proj)
+        try:
+            script = self.project_script(proj)
+        except (OSError, UnicodeDecodeError) as exc:
+            # An existing specs.py we cannot read is NOT "no specs.py": it is a
+            # declared scope we did not measure, which is red.
+            failure = _read_error(exc)
+            errors.append({"scope": "project", "path": "specs.py",
+                           "error": failure.to_payload()})
+            return [self._declaration_row(failure.message,
+                                          failure.details, None, "project",
+                                          seen, warnings)]
         if script is None:
             return []
         try:
             declared = self._declare(script, "project", proj, deadline)
         except KernelError as exc:
+            payload = exc.to_payload()
             errors.append({"scope": "project", "path": "specs.py",
-                           "error": exc.to_payload()})
-            return []
+                           "error": payload})
+            # The same rule one step later: a specs.py that will not execute
+            # declared nothing, and an empty project scope used to read as
+            # "nothing to check" in both the status and the gate.
+            return [self._declaration_row(
+                f"specs.py could not be declared: {payload['message']}",
+                {**(payload.get("details") or {}), "path": "specs.py",
+                 "error_type": payload["type"]},
+                None, "project", seen, warnings)]
         rows = declared.get("declared", [])
         warnings.extend(declared.get("warnings") or [])
         if not rows:
@@ -1173,19 +1354,21 @@ class SpecRunner:
         tiers = payload.get("tiers") if isinstance(payload.get("tiers"), dict) \
             else {}
         fem_cache = tiers.get("fem") if isinstance(tiers.get("fem"), dict) else {}
+        material = self._fem_material_key(proj, part_id)
         dirty = False
         for record in checks:
             if record.get("kind") not in EXPENSIVE_TIER:
                 continue
             index = record.get("index")
-            row = fem_cache.get(str(index))
+            slot = f"{index}|{material}"
+            row = fem_cache.get(slot)
             if row is None:
                 declaration = declarations[index] \
                     if isinstance(index, int) and index < len(declarations) else {}
                 row = self._budget_row() if self._out_of_budget(deadline) \
                     else self._eval_fem(proj, part_id, declaration, deadline)
                 if row["status"] in ("pass", "fail"):
-                    fem_cache[str(index)] = row
+                    fem_cache[slot] = row
                     dirty = True
             # The deferred record carried reason/hint; a measured one has none.
             record.pop("reason", None)
@@ -1302,7 +1485,7 @@ class SpecRunner:
         # Project scope is the assembly's, so a per-part report never runs it.
         if part_id is not None:
             project_checks: list[dict] = []
-        elif self._out_of_budget(deadline) and self.project_script(proj):
+        elif self._out_of_budget(deadline) and self.specs_path(proj).is_file():
             project_checks = self._unevaluated("project", None, seen, warnings,
                                                errors)
         else:
@@ -1461,27 +1644,31 @@ class SpecRunner:
     def _gate_row(self, check: dict) -> dict:
         """One report record as the **gate** sees it.
 
-        The only divergence: a ``clearance`` that was skipped because a side is
-        an imported mesh becomes a ``fail``. The measurement genuinely did not
-        happen (an STL is one welded face; ``BRepExtrema`` has no solution on
-        it), so in a report — which an engineer reads — it stays a named skip
-        with its hint. But the gate's contract is fail-closed, and swapping a
-        STEP reference for an STL would otherwise make a declared clearance
-        *silently pass a merge*: exactly the "declared but unmeasured" hole
-        this gate exists to close. The reason and hint ride along in
-        ``details`` so the proposals UI can still say why.
+        The one divergence, and it has no exceptions: **every skip on a
+        declared check is a ``fail`` here**, whatever its reason —
+        ``fem_extra_missing`` on a machine without the extra, ``mesh_only`` on
+        an STL side, ``unsupported_scope`` on a project check declared in a
+        part script, ``no_instances``, and whatever reason is added next.
+
+        A report is read by an engineer, who is better served by the named skip
+        and its hint. A gate decides a merge, and "declared but not measured"
+        is precisely the hole it exists to close: a skip that passed would mean
+        swapping a STEP reference for an STL, or reviewing on a machine without
+        ``[fem]``, silently satisfies a declared check. The reason and hint ride
+        along in ``details`` (plus ``skipped_in_report``) so the proposals UI
+        can still say why, and the reason is named in the message so a one-line
+        gate summary is actionable.
         """
-        if check.get("status") != "skip" or check.get("kind") != "clearance" \
-                or check.get("reason") != "mesh_only":
+        if check.get("status") != "skip":
             return check
+        reason = check.get("reason") or "not_measured"
         details = dict(check.get("details") or {})
-        details.update({"reason": check.get("reason"),
-                        "hint": check.get("hint"),
+        details.update({"reason": reason, "hint": check.get("hint"),
                         "skipped_in_report": True})
         return {**check, "status": "fail", "details": details,
-                "message": f"{check.get('message') or 'mesh part'} — an "
-                           "unmeasured clearance cannot pass this gate; import "
-                           "the part as STEP, or drop the check"}
+                "message": f"{check.get('message') or 'not measured'} — "
+                           f"declared but not measured ({reason}), and an "
+                           "unmeasured spec cannot pass this gate"}
 
     def _specs_py_changed(self, proj: str, target: str | None,
                           source: str | None,
@@ -1544,14 +1731,19 @@ class SpecRunner:
 
         ==========  =====================================================
         ``skipped`` the source ref declares no specs at all
-        ``pass``    everything declared was evaluated; nothing failed or
-                    errored (skips are allowed, and are named in the summary)
-        ``fail``    anything failed, errored, or could not be evaluated —
-                    including a kernel error, a source branch that will not
-                    build, and an exhausted gate budget
-        ``pending`` the source head moved mid-evaluation: the one condition a
-                    retry resolves
+        ``pass``    everything declared was measured; nothing failed, errored
+                    or was skipped
+        ``fail``    anything failed, errored, was skipped, or could not be
+                    evaluated — including a kernel error, a source branch that
+                    will not build, a ``specs.py`` that will not declare, an
+                    exhausted gate budget, and a source head that moved
+                    mid-evaluation (retry)
         ==========  =====================================================
+
+        ``pending`` is deliberately **not** in that table. PRD-002's ``merge()``
+        blocks a ``fail`` and nothing else, so every state this provider can
+        return that is not a measured green has to be ``fail`` — a ``pending``
+        specs gate would have merged content no verdict ever measured.
 
         PRD-002 refuses a merge on any ``fail`` and ``allow_invalid`` cannot
         waive a provider gate — it is the caller's statement about the
