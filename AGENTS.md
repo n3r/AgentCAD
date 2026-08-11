@@ -35,7 +35,7 @@ make app          # build dist/AgentCAD.app (macOS launcher)
 uv sync --extra fem   # optional: enable structural FEM (gmsh/scikit-fem/meshio)
 ```
 
-CLI: `agentcad serve|open|mcp|new|export` (see `agentcad/cli.py`). Port is
+CLI: `agentcad serve|open|mcp|new|export|check` (see `agentcad/cli.py`). Port is
 `8630`, persisted in `~/.agentcad/config.json`; kernel pool size via
 `AGENTCAD_KERNEL_POOL_SIZE` (default `min(3, cores//3)`).
 
@@ -341,6 +341,57 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   because the browser's `PATCH .../params` route calls `service.set_params`
   directly and a tool wrapper would miss the UI entirely.
 
+## CI gotchas (PRD-004 — read before touching `checks.py` or the action)
+
+- **The ephemeral service must have `bus.on_publish = None` and
+  `store.branch_resolver = None`**, or a `--ref` check commits a history
+  snapshot **into the user's repository** through the linked worktree (the bus
+  hook) or writes a `.history/agentcad/` sidecar that does not exist there (the
+  resolver). Set the resolver *after* `build_registry` — that is what installs
+  it. Resolve both paths first: macOS hands `/var/…` for `/private/var/…` and
+  `ProjectStore.open` compares resolved paths.
+- **The pack is `tools_run_checks.py`, never `tools_checks.py`.** Packs load
+  alphabetically and `tools_proposals` (`p`) assigns `service.gate_providers =
+  []` **unconditionally**, so a pack at `c` would have its gate silently
+  discarded — no error, no warning. At `r` it also loads *before* `tools_specs`
+  and `tools_versioning`, so `service.specs` and `service.branches` are read
+  inside the runner's methods, never captured in `__init__`.
+- **Rows are `items`, never `checks`.** `checks` already means the gate name,
+  `report["checks"]` in a spec report and the proposals UI tab. `status` is the
+  four-value row status; `state` is the gate's. They are not interchangeable.
+- **`check` is report-honest; `--strict` is the opt-in.** A `skip` keeps its
+  status, reason and hint whatever you pass; `--strict` only records ids in
+  `strict_failures` and moves the derived verdict. `evaluate_specs` and the
+  `specs` gate are unconditionally fail-closed — different audiences, one set
+  of measurements. Neither `checks` nor `specs` ever answers `pending`:
+  `ProposalManager.merge` blocks `fail` and nothing else, so `pending` is
+  merge-permissive.
+- **`--ref` uses `worktree add --detach <sha>`, never a branch name** — a
+  branch already checked out at `.history/trees/<b>/` cannot be checked out
+  twice — and resolves with **`resolve_branch` then `resolve_tag`, never
+  `resolve_ref`** (`git rev-parse` searches tags *before* branches, PRD-001 X1).
+- **A ref check runs on a cold cache, deliberately.** The work dir holds no
+  `.cache/`; that is the price of AC7's byte-identity guarantee. Every row
+  reports `cached: false`, and the tests assert it rather than hiding it.
+- **DXF is not byte-stable** (`ezdxf` stamps `$TDCREATE` and fresh GUIDs), so
+  the determinism stage compares **SVG only** and carries one
+  `skip`/`not_byte_stable` row. `--strict --verify-determinism` is therefore red
+  by construction.
+- **`--budget` cannot preempt an in-flight kernel call.** It is a deadline on
+  `time.monotonic` read *between items*; `_ensure_built` (300 s) and the drawing
+  tools (120 s) take no `timeout_s`, so the worst case is one call's overshoot.
+  A blown budget is `complete: false` → exit **2**, with the partial report kept
+  as evidence.
+- **An imported reference part's `is_valid` is reported, never enforced.** OCCT
+  calls the shipped `examples/rocketry` STEP import invalid over its 180 solids
+  — the same reason `tests/test_examples.py` exempts reference parts — so the
+  row passes, `details.is_valid` carries the fact and a warning names the part.
+  Enforcing it would redden a clean bundled example and the dogfood workflow.
+- **The Action checks the WORKING TREE; `$GITHUB_SHA` is provenance.**
+  `actions/checkout` already materialized the ref and a runner has no AgentCAD
+  `.history/`, so `--ref "$GITHUB_SHA"` would exit 2 on every run. Pass
+  `--sha` / `--ref-label` instead.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script
@@ -411,7 +462,8 @@ Write the changelog from the real diff, not from memory.
 ## Where to read more
 
 - `docs/architecture.md` — processes, components, ACM1 format, rebuild flow
-- `docs/agent-api.md` — the 42/45 agent tools with schemas + a worked loop
+- `docs/agent-api.md` — the 65/68 agent tools with schemas + a worked loop
+- `docs/geometry-ci.md` — `agentcad check`, the report schema, the GitHub Action
 - `docs/part-authoring.md` — the script contract, toolkit, mates, sketch solver
 - `docs/user-guide.md` — the UI surface by surface
 - `docs/roadmap.md` — the PRD index with statuses (what we're building and why)

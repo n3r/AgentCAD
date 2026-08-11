@@ -23,6 +23,7 @@ UI after a second. The other entry points:
 | `agentcad open` | Serve **and** open `http://127.0.0.1:<port>` in the default browser. |
 | `agentcad new <name>` | Create an empty project on disk without starting the server. |
 | `agentcad export <project> <part> --format step\|stl\|3mf [-o OUT]` | Headless one-shot export. |
+| `agentcad check [--project P] [--ref R]` | Certify a whole project headlessly — rebuild, assembly, specs, drawings — writing a JSON report and a markdown summary and answering with an exit code (`0` green, `1` red, `2` no verdict). See [geometry-ci.md](geometry-ci.md). |
 | `agentcad mcp` | The MCP stdio server for external agents — see [agent-api.md](agent-api.md). |
 | `make app` | Build `dist/AgentCAD.app`, a macOS wrapper that runs `agentcad open` (logs to `~/Library/Logs/AgentCAD.log`). |
 
@@ -552,10 +553,10 @@ moves.
   action. The overlay is drawn over the target build and disappears on a part
   switch or a rebuild.
 - **Checks** — the merge gates (state, approvals, kernel validation, the
-  **design specs** of the source branch, and the CI slot) with
-  pass/fail/pending/skipped chips, the reviews with their verdicts, and —
-  after a merge the kernel blocked — the full validation report with a
-  **Merge anyway (allow_invalid)** button.
+  **design specs** of the source branch, and the **geometry CI** verdict posted
+  to this proposal) with pass/fail/pending/skipped chips, the reviews with
+  their verdicts, and — after a merge the kernel blocked — the full validation
+  report with a **Merge anyway (allow_invalid)** button.
 - **Audit** — the append-only log: sequence, timestamp, actor and whether it
   was a human or an agent, action, details. It cannot be edited from anywhere.
 
@@ -581,6 +582,21 @@ summary names the failing checks (or, when nothing could be measured, tells you
 to run `run_specs` on that branch). A proposal that edits `specs.py` rather
 than the geometry is flagged there too, since the packet's part rows cannot
 show it.
+
+**The geometry-CI gate is opt-in, then fail-closed.** Nobody has to run CI on a
+proposal — until someone does. Run `agentcad check --proposal <id>` (or
+`--auto-proposal` on the source branch, or `run_checks {proposal}`) and the
+whole-project verdict is attached to the proposal permanently: the report, who
+posted it, and the commit it measured. From then on the **checks** chip is
+green only while that report is *complete*, *green* and certifies the source
+branch's **current** head. A red report, a run whose budget ran out, an
+unreadable one, or one that certifies a commit the branch has since moved past
+are all a red chip that blocks the merge, with a summary telling you to re-run
+and post again. There is deliberately no "pending" middle state: a merge is
+blocked by a red gate and nothing else, so a soft state would let a stale green
+wave through commits nobody measured. Before any report is posted the chip is
+simply *skipped* and blocks nothing. See
+[geometry-ci.md](geometry-ci.md).
 
 **Conflicts.** If the merge conflicts, the proposals modal hands off to the
 usual conflict view on a staged merge; resolve it there. That merge is **held

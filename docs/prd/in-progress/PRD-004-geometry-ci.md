@@ -1,6 +1,9 @@
 # PRD-004 — Geometry CI
 
-- **Status:** pending
+- **Status:** implemented — AC2–AC10 verified in
+  `tests/test_prd004_acceptance.py`; AC1 awaits the live GitHub Actions run
+  (see Verification). Moves to `prd/completed/` when that run is green and the
+  branch merges.
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
@@ -221,6 +224,89 @@ the tool exists so agents close the loop without a shell.
 - AC9. `run_checks` over MCP returns a report identical to the CLI's
   (test).
 - AC10. Full suite green, count cited.
+
+### Verification (slice 8)
+
+Every criterion above has a named test in `tests/test_prd004_acceptance.py`,
+which walks it end to end through the surfaces a user and an agent actually
+touch — the `run_checks` tool, the HTTP passthrough MCP proxies, the real
+console script, git and the bundled examples on a renamed copy — rather than
+through the unit seams (`tests/test_checks.py`, `test_checks_pipeline.py`,
+`test_checks_ref.py`, `test_checks_cli.py`, `test_checks_api.py`,
+`test_checks_gate.py`, `test_geometry_ci_action.py` — 193 tests between them):
+
+| AC | Proving test |
+|----|---|
+| AC1 | `test_ac1_the_dogfood_workflow_certifies_the_bundled_examples` — the workflow parses, matrixes `construction`/`prototyping`/`rocketry` (each a real project on disk), drives them through `./.github/actions/agentcad-check` with `agentcad: .`, and is `pull_request` and never `pull_request_target`; the action is composite and runs `agentcad check`. **The live run is the criterion** and is cited in `docs/changelog/0105-prd-004-docs-and-acceptance.md` and in the pull request |
+| AC2 | `test_ac2_interference_in_construction_is_red_in_both_renderings` — two construction instances parked on top of each other: the assembly stage red, a `pair` row naming both ids with a positive `volume_mm3`, exit 1, and both ids in `render_markdown` |
+| AC3 | `test_ac3_a_broken_spec_names_the_check_with_measured_and_limit` — a PRD-003 `check_wall` fixture green at `wall=2.5`, red at `wall=0.8` with `measured < limit.min_mm`, the requirement red, the geometry still built |
+| AC4 | `test_ac4_a_script_error_carries_the_update_part_script_payload` — the row's `error.type`, `details.line` and Error-Doctor `details.hint` asserted **equal to** the payload `update_part_script` returned for the same edit |
+| AC5 | `test_ac5_the_three_exit_codes_and_a_report_that_validates` — the real console script: 0 on a clean copy (with `validate_report` clean), 1 on a copy with a broken script, 2 on an unknown project |
+| AC6 | `test_ac6_verify_determinism_passes_on_a_bundled_example` — the `determinism` stage green, every pass row naming what it `compared`, the DXF row a `skip`/`not_byte_stable` |
+| AC7 | `test_ac7_checking_a_tag_leaves_the_project_byte_identical` — a warmed project fingerprinted file by file before and after `--ref v1`, head and `git status` unchanged, and the ref run's cold cache asserted rather than hidden |
+| AC8 | `test_ac8_without_the_fem_extra_a_check_skips_and_strict_flips_it` — `skip`/`fem_extra_missing` at exit 0, `--strict` at exit 1 with the row **still** a skip |
+| AC9 | `test_ac9_the_mcp_passthrough_and_the_cli_report_the_same_thing` — `POST /api/tools/run_checks` (what the MCP server proxies) against the real CLI over one project, equal after normalizing the clock, the host block and every duration |
+| AC10 | `test_ac10_the_full_suite_count_is_cited` — the evidence check over the slice-8 changelog, where `make test`'s count is recorded |
+
+**AC1 is the one criterion the suite cannot satisfy.** It asks for a green
+**live** workflow run in this repository's own Actions, which no local test can
+produce. Following the PRD-001 AC6 / PRD-003 AC8 precedent, its test asserts
+the *shape* (the workflow exists, matrixes the bundled examples and drives them
+through the same composite action a user consumes) plus the *record*, and the
+run URL and conclusion are cited in the changelog and the pull request.
+Everything the runner executes is exercised locally by
+`tests/test_geometry_ci_action.py`, which runs the action's shell bodies
+verbatim against copies of `examples/construction` — but a simulation is not
+the criterion.
+
+### As built — divergences from this document
+
+1. **A reference part's `is_valid` is reported, never enforced.** FR2 says
+   "validity per solid"; that holds for **script** parts. OCCT calls the
+   shipped `examples/rocketry` STEP import invalid across its 180 solids, which
+   is exactly why `tests/test_examples.py` exempts reference parts from the
+   same assertion and `import_cad_file` merely reports the flag. Failing on it
+   would redden a clean bundled example — and the dogfood workflow — over
+   geometry nobody in this repo authored. The row passes, `details.is_valid`
+   carries the fact, and a warning names the part and the solid count in both
+   renderings.
+2. **There is no separate `fem-smoke` stage.** FR2 listed one; PRD-003 already
+   evaluates `check_fem_static` inside the specs tier, honestly skipping it as
+   `fem_extra_missing` without the extra. A fifth stage would have been a
+   second way to say the same thing, with a second cache and a second skip
+   vocabulary. AC8 is satisfied by the specs stage.
+3. **The tool pack is `agentcad/core/tools_run_checks.py`, not
+   `tools_checks.py`** (which the Technical approach names). Packs load
+   alphabetically and `tools_proposals` assigns `service.gate_providers = []`
+   unconditionally, so a pack at `c` would have had its gate silently
+   discarded. The route pack keeps its planned name.
+4. **The `checks` gate never answers `pending`.** `ProposalManager.merge()`
+   blocks a gate whose state is `fail` and *nothing else*, so `pending` is
+   merge-permissive and a green posted against an older commit would have stood
+   while the source moved on. A stale report is a `fail` naming both SHAs and
+   saying re-run — PRD-003's X8 finding, closed the same way. The
+   complementary asymmetry: **posting is how a proposal opts in**, so a
+   proposal nobody checked is `skipped` and blocks nothing.
+5. **The drawings stage regenerates SVG only, and byte-stability lives in
+   `--verify-determinism`.** DXF is excluded by name because `ezdxf` stamps
+   `$TDCREATE` and fresh GUIDs into every document; it is one
+   `skip`/`not_byte_stable` row with a hint naming the prerequisite. A
+   consequence: `--strict --verify-determinism` is red by construction.
+6. **A ref check runs on a cold cache.** FR3's "byte-untouched" guarantee is
+   absolute, so the throwaway worktree carries no `.cache/` and every part is a
+   real kernel build. The price is stated in the docs and asserted in the
+   tests rather than hidden; a `ProjectStore.cache_dir` override seam is the
+   recorded phase-2 follow-up, after measurement.
+7. **The GitHub Action checks the working tree and takes `$GITHUB_SHA` as
+   provenance** (`--sha` / `--ref-label`), not as `--ref` as FR10 words it.
+   `actions/checkout` has already materialized the ref, and a runner has no
+   AgentCAD `.history/` repo — that directory is per-project and is the first
+   thing users are told to `.gitignore` — so `--ref "$GITHUB_SHA"` would exit 2
+   on every run.
+8. **The CLI prints its stage table after the run, not live.** `CheckRunner`
+   has no progress callback, and adding one was out of the CLI slice's file
+   list. A per-stage event would serve the UI and the CLI at once and is the
+   clean follow-up.
 
 ## Risks & open questions
 

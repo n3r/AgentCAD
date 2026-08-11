@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 64 tools (67 with the
+Agents drive AgentCAD through a single tool surface — 65 tools (68 with the
 `[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -321,7 +321,7 @@ get backwards: read the pair like `git merge <source>` — the **target branch i
 |---|---|---|
 | `proposal_create` | **project, source, title**, target, description, draft | `{proposal, gates, packet}`. `target` defaults to the project's **default** branch, not your current one (a proposal is read by other clients). A second *active* proposal for the same pair is a `conflict_error` naming the existing id; an unknown branch is a `notfound_error` (a version tag does not answer for a branch); `source == target` is a `validation_error`. `draft: true` opens it unreviewable until you update it to `open`. |
 | `proposal_list` | **project**, state | `{proposals: [{id, source, target, title, state, author, author_kind, created, updated, reviews, merge_commit}], counts: {<state>: n}}`, oldest id first. |
-| `proposal_get` | **project, id** | `{proposal, gates, audit, packet}`. `gates` is the merge checklist — `[{name, state: pass\|fail\|pending\|skipped, summary, details}]` over `state`, `approvals`, `validation` (pending until the merge runs it), `specs` (the fail-closed design-spec gate over the source branch — see [Design specs](#design-specs)) and `checks` (skipped until PRD-004 installs a provider). `audit` is the append-only log. `packet` here is only a status summary (`{generated, stale, ok, frozen}`, or `null` before the first view). |
+| `proposal_get` | **project, id** | `{proposal, gates, audit, packet}`. `gates` is the merge checklist — `[{name, state: pass\|fail\|pending\|skipped, summary, details}]` over `state`, `approvals`, `validation` (pending until the merge runs it), `specs` (the fail-closed design-spec gate over the source branch — see [Design specs](#design-specs)) and `checks` (the geometry-CI verdict posted to this proposal — see [Geometry CI](#geometry-ci); `skipped` until one is). `audit` is the append-only log. `packet` here is only a status summary (`{generated, stale, ok, frozen}`, or `null` before the first view). |
 | `proposal_update` | **project, id**, title, description, state | Edits the title/description, or moves state: `draft → open`, anything active → `closed`, `closed → open`, `changes_requested → open`. Approving is `proposal_review` and merging is `proposal_merge`; neither can be faked by writing a state — any other move is a `validation_error` carrying `{from, to, allowed}`. |
 | `proposal_packet` | **project, id**, regenerate | The review packet (below). Generated on first view, re-served while both branch heads hold, regenerated when either moved or on `regenerate: true`. A packet frozen by a merge refuses `regenerate` with a `conflict_error`. A **terminal** (merged/closed) proposal is never measured again — a packet built then would describe the branches as they are now, under this proposal's name. Merging freezes the packet, or, when none was ever generated, freezes the *absence* as `{frozen: true, generated: null, ok: false, parts: [], note: "…"}`; a closed proposal keeps whatever it had, and a terminal proposal with no packet at all is a `conflict_error`. |
 | `proposal_render` | **project, id, side**, part, view | One image you can actually look at: `{path, width, height, view, side, part, png_base64}`. `side` is `old` (target) or `new` (source); omit `part` for the whole assembly. Framed by the union of both sides' bounding boxes, so old and new superimpose. Views: `iso`, `front`, `top`, `right`. Every render is **written to `path`** and served from there afterwards, so the path names a file that exists. A **frozen** packet serves only the renders stored with it: any other view is a `conflict_error`, because drawing one now would draw today's branches under the decision's date. |
@@ -408,7 +408,7 @@ proposals.
 
 **Events.** `proposal_changed {project, id, state, reason}` for every
 state/packet transition — `reason` is one of `created`, `updated`, `review`,
-`packet`, `merged`.
+`packet`, `checks` (a geometry-CI report was posted), `merged`.
 
 **Routes** (all under `/api`): `GET|POST /projects/{proj}/proposals`,
 `GET|PATCH /projects/{proj}/proposals/{id}`,
@@ -423,6 +423,108 @@ state/packet transition — `reason` is one of `created`, `updated`, `review`,
 serves the geometry it was persisted with; a generation that has been collected
 (or discarded) is a 404. Read the URLs off the packet rather than composing
 them.
+
+### Geometry CI
+
+One call certifies a whole project: rebuild every part, re-resolve the
+assembly and look for interference, evaluate the declared design specs (all
+three tiers) and regenerate the drawings. It is exactly what `agentcad check`
+runs — the same `CheckRunner` over the same project — so the report is
+identical on both surfaces. Full reference: [geometry-ci.md](geometry-ci.md).
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `run_checks` | **project**, ref, stages, strict, budget, proposal | The whole `schema: 1` report (below). `stages` is a subset of `build`, `assembly`, `specs`, `drawings`; `ref` certifies a branch/tag/commit instead of the working tree; `strict` counts skipped rows as failures *in the verdict only*; `budget` is a soft deadline in seconds; `proposal` posts the report to that change proposal. |
+
+**It measures nothing new.** Every row comes from a surface you already have —
+`update_part_script`'s rebuild, the mate resolver, `check_interference`,
+`run_specs`, `generate_drawing`/`flat_pattern` — so a failing row's `error` is
+that tool's payload **verbatim**, including `details.line` and the Error Doctor
+`details.hint`. A red stage is a structured task you can pick up and fix
+without re-deriving anything.
+
+**A red check is data, never an error.** The call returns normally; only the
+harness raises — an unknown project is a `notfound_error`, an unknown stage or
+a `ref` on a project with no git is a `validation_error`, and an unknown or
+already-merged proposal is a `notfound_error` / `conflict_error` raised
+**before** anything is measured.
+
+Four things about the payload:
+
+- **All four stages always appear**, in order, whatever you selected: an
+  unselected one is `skip`/`not_selected`, so you never have to guess whether a
+  stage was green or never ran. Per-stage rows are called `items` — `checks`
+  already means the gate, a spec report's rows and the proposals UI tab.
+- **Four row statuses, and they are not interchangeable.** `pass`/`fail` were
+  *measured*; `skip` is a named structural inability to measure and always
+  carries a `reason` **and** a `hint` (`not_selected`, `budget_exceeded`,
+  `mesh_only`, `fem_extra_missing`, `not_declared`, `no_instances`,
+  `not_script`, …); `error` means the check itself broke — "we do not know",
+  which is not "it is fine".
+- **`exit_code` is the verdict as one integer**: `0` green · `1` red, the model
+  is wrong · `2` harness, no verdict at all (`complete: false` — a budget ran
+  out mid-run). `strict: true` rewrites **no row**: it lists the skipped ids in
+  `strict_failures` and lets only the derived `status`/`exit_code` move, so a
+  reader can always tell what was measured from what was demanded.
+- **`ref` never mutates the project.** The commit is materialized into a
+  throwaway detached git worktree and measured through a second, ephemeral
+  service, so your files and `.cache/` are byte-identical afterwards — at the
+  price of a cold cache, which makes it much slower than checking the tree you
+  are in.
+
+```jsonc
+{"schema": 1, "agentcad": "0.1.0", "project": "rocketry",
+ "source": {"kind": "worktree|branch|tag|commit", "ref": null, "sha": null,
+            "label": null, "host_sha": null, "dirty": false},
+ "started": "…Z", "finished": "…Z", "duration_s": 46.3,
+ "status": "green|red|skip", "complete": true, "strict": false,
+ "strict_failures": [], "exit_code": 0,
+ "summary": {"passed": 18, "failed": 0, "skipped": 1, "errors": 0, "total": 19},
+ "stages": [{"name": "build", "status": "green|red|skip", "reason": null,
+             "duration_s": 44.8, "summary": {…},
+             "items": [{"id": "build:nozzle", "kind": "part",
+                        "subject": "nozzle", "status": "pass",
+                        "message": "built — …", "reason": null, "hint": null,
+                        "requirement": null, "error": null,
+                        "details": {"cache_key": "…", "volume_mm3": 1.0,
+                                    "mass_g": 1.0, "n_solids": 1,
+                                    "is_valid": true, "cached": false}}]}],
+ "requirements": {"ENG-014": {"status": "pass",
+                              "checks": ["specs:nozzle:wall_min"]}},
+ "warnings": [], "errors": [],
+ "host": {"platform": "darwin", "python": "3.12…", "agentcad": "0.1.0",
+          "fem": true, "sandbox": true, "pool_size": 1,
+          "kernel_pool": "KernelPool"}}
+```
+
+The specs stage additionally embeds its `run_specs` document whole as
+`stage["report"]`, and the top-level `requirements` map is that report's
+traceability re-keyed to **this** report's item ids.
+
+**Posting to a proposal.** `proposal: "<id>"` stores the report durably as that
+proposal's `checks.json`, appends one audit line, publishes `proposal_changed
+{reason: "checks"}` and returns a `posted` receipt on the report. It is then
+read by the proposal's `checks` gate: nothing posted → `skipped` (blocks
+nothing); a **complete, green** report against the source branch's **current**
+head → `pass`; anything else — red, incomplete, unreadable, or certifying a
+head the branch has moved past — → `fail`, which **does** block
+`proposal_merge`. A stale green is a `fail` saying to re-run, never a soft
+`pending`: a merge blocks on `fail` and nothing else, so a `pending` would wave
+through commits nobody measured. Posting is how a proposal opts in — this gate
+is **evidence**, while the `specs` and `validation` gates are enforcement and
+re-measure on every merge.
+
+**Routes** (under `/api`): `POST /projects/{proj}/checks` (body whitelisted to
+`{ref, stages, strict, budget, proposal}`; a red project is an ordinary **200**
+— only "no verdict at all" is an HTTP error), `GET /projects/{proj}/checks`
+(the last report *this process* produced, 404 when there is none) and
+`GET /projects/{proj}/checks?proposal=<id>` (the durable posted record).
+
+**Events.** `check_finished {project, ref, status, exit_code, summary,
+duration_s}` after **every** completed run — including a red one and a
+budget-truncated one, and from the CLI as well as from the tool and the route.
+It is deliberately not `project_changed`: measuring a project is not changing
+it, so it triggers no history snapshot.
 
 ### Sketch solving
 

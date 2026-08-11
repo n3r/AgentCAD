@@ -73,10 +73,11 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/core/proposals.py` | `ProposalStore` (JSON documents + an append-only `audit.jsonl` in the `.history/agentcad/` sidecar, atomic writes, id allocation) and `ProposalManager`: the state machine, attribution, the approvals policy, the gate list, and the gated merge that delegates to `MergeOrchestrator` unchanged. No kernel, no packet work. |
 | `agentcad/core/packet.py` | `PacketBuilder`: the review packet. Four pure delta functions (changed parts, PARAMS, assembly, metrics) plus generation over the two branch worktrees — git diffs, per-part metrics through the ordinary service path, frame-matched renders, and `geom_diff` kernel calls — persisted with both branch heads. Talks to the kernel only through `service.kernel.request`. |
 | `agentcad/core/specs.py` | `SpecRunner`: design-spec orchestration — the `ast`-only `declares_specs` presence scan, the three evaluation tiers, the `.cache/*.specs.json` result sidecars, the report (flat check records, per-part blocks, per-requirement grouping), the `specs.py` reader/writer, and `evaluate_specs`/`gate_provider` for the proposal gate. Talks to the kernel only through `service.kernel.request`; imports no OCP. |
+| `agentcad/core/checks.py` | Geometry CI: the `schema: 1` report (rows, stages, verdict), its markdown rendering, a hand-rolled `validate_report`, and `CheckRunner` — the *sequencer* that drives four existing surfaces (`_ensure_built`, `_resolved_instances` + `check_interference`, `SpecRunner.run`, the drawing tools), materializes a `--ref` into a throwaway worktree behind a second ephemeral service, verifies determinism, and posts a verdict to a proposal (`CheckStore` + the `checks` gate provider). Composes; never measures. Imports no OCP. |
 | `agentcad/core/tools.py` | ToolRegistry — the 17 core tools defined once; discovers and loads `tools_*.py` packs. MCP and chat render from the merged registry. |
-| `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals, specs), each exporting `register(registry, service)`. `tools_specs` additionally *wraps* `service._rebuild` and `service.get_part` (the `install_write_guard` precedent) and appends the `specs` gate provider. |
+| `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals, specs, run_checks), each exporting `register(registry, service)`. `tools_specs` additionally *wraps* `service._rebuild` and `service.get_part` (the `install_write_guard` precedent) and appends the `specs` gate provider; `tools_run_checks` installs `service.checks` and appends the `checks` gate — and is named for **load order**, since packs load alphabetically and `tools_proposals` resets `gate_providers`. |
 | `agentcad/server/app.py` | Core REST routes (thin), `/api/tools` passthrough, WebSocket channel, static hosting; mounts `routes_*.py` packs under `/api`. |
-| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve, history, branches/versions/merge, proposals, specs). |
+| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve, history, branches/versions/merge, proposals, specs, checks). |
 | `agentcad/agent/mcp_server.py` | MCP stdio server proxying `/api/tools`; auto-starts the HTTP server when unreachable. |
 | `agentcad/agent/chat.py` | Server-side Anthropic tool-use loop streaming to the UI over the WebSocket. |
 | `frontend/` | Static ES modules (no bundler): Three.js viewport, tree, parameter inspector, CodeMirror editor, chat panel. |
@@ -400,6 +401,93 @@ feature.
 in the server process, under exactly the same sandbox as any part script (see
 [Trust model](#trust-model)). A predicate's callable never crosses the JSON-RPC
 boundary: it is reported to the service as `"predicate": true`.
+
+## Geometry CI
+
+`agentcad/core/checks.py` certifies a **whole project** in one bounded run:
+every part rebuilds, the assembly re-resolves and is interference-checked, the
+declared specs are evaluated and every drawing regenerates — headless, with no
+server process. Full reference: [geometry-ci.md](geometry-ci.md).
+
+**It is a sequencer, not a measurement.** `CheckRunner` drives four surfaces
+that already exist and are reviewed, and shapes one report out of what they
+return:
+
+| Stage | Surface |
+|---|---|
+| `build` | `service._ensure_built` per manifest part |
+| `assembly` | `service._resolved_instances`, then `service.check_interference` (the **service** method — the tool's schema has no `timeout_s`) |
+| `specs` | `service.specs.run` (PRD-003, all three tiers), embedded whole |
+| `drawings` | the registered `generate_drawing` (SVG) and `flat_pattern` tools |
+
+Row statuses, summary counts and stage statuses are literally PRD-003's —
+`summarize`, `report_status`, `group_requirements` and `assign_ids` are
+**imported** from `core/specs.py`, not restated — so one product has one status
+vocabulary. A failing row's `error` is the driving surface's payload verbatim,
+which is what makes a red check a task an agent can act on. Rows are called
+`items`: `checks` already means the gate name, a spec report's rows and the
+proposals UI tab.
+
+**Four surfaces, one runner.** `tools_run_checks.register` constructs
+`service.checks = CheckRunner(service, registry)` **once**, so the CLI
+(`cmd_check`), the `run_checks` tool, `POST /api/projects/{p}/checks` and the
+GitHub Action all share one runner, one last-report cache and one publisher —
+and therefore produce identical reports. The pack is named for load order:
+packs load alphabetically and `tools_proposals` (`p`) assigns
+`gate_providers = []` unconditionally, so at `r` this pack's `checks` gate
+survives while a `tools_checks.py` (`c`) would have been silently discarded —
+and, for the same reason, `service.specs` (`s`) and `service.branches` (`v`) do
+not exist yet at registration and are read lazily inside the runner's methods.
+
+**Checking a ref never mutates the project** (the containment rule). The
+resolved *commit* is materialized into a throwaway detached `git worktree` and
+measured through a **second, ephemeral `AgentCADService`** rooted in the work
+dir:
+
+```
+  your project                                   throwaway <work-dir>/<project>/
+  ┌──────────────────────────┐   worktree add   ┌──────────────────────────────┐
+  │ parts/ project.json      │  --detach <sha>  │ the same files at <sha>      │
+  │ .cache/  exports/        │ ───────────────► │ a cold .cache/               │
+  │ .history/ (git repo)     │                  │                              │
+  └──────────────────────────┘                  │ ephemeral AgentCADService    │
+        byte-untouched                          │   bus.on_publish   = None    │
+                                                │   branch_resolver  = None    │
+                                                │   the SAME kernel object     │
+                                                └──────────────────────────────┘
+                                       removed in a `finally`, then `worktree prune`
+```
+
+Both muzzles are load-bearing. A live event bus would publish
+`project_changed`, and `service._snapshot_on_event` would commit a history
+snapshot **into the linked worktree** — the user's real repository — from a
+command whose contract is "never mutates". A live `branch_resolver` would route
+every read and write through a `.history/agentcad/` sidecar that does not exist
+there, and create one. The kernel object is *shared*: a second pool would cost
+another ~3 s per worker and ~0.5 GB. The price of the containment is stated
+rather than hidden — a ref check runs on a **cold cache**.
+
+**Determinism is verified, not assumed.** `--verify-determinism` adds a derived
+`determinism` stage that builds every part a second time against a copy of the
+measured tree with no `.cache`, and compares the cache key, the `.acm` mesh
+bytes, the metrics and the SVG drawing for exact equality. DXF is excluded by
+name (ezdxf stamps `$TDCREATE` and fresh GUIDs), as one `skip` row with a hint.
+
+**The verdict lands where decisions are made.** `--proposal <id>` writes the
+report to `.history/agentcad/proposals/<id>/checks.json` beside PRD-002's
+packet, appends one `audit.jsonl` line and publishes `proposal_changed
+{reason: "checks"}`; a gate provider named `checks` reads it back and replaces
+PRD-002's placeholder of the same name. Like the `specs` gate it never answers
+`pending` — `ProposalManager.merge` blocks `fail` and nothing else — so a
+report certifying a head the branch has moved past is a `fail` saying *re-run*.
+`proposals.py`, `packet.py`, `merge.py` and `specs.py` are untouched by the
+feature: the whole enforcement surface is one new file beside the packet and
+one `append` to `service.gate_providers`.
+
+**Trust.** A check executes the project's part scripts — inside the same
+confined kernel worker as every other build (see [Trust model](#trust-model)).
+On Linux there is no seatbelt until PRD-006, which is why the GitHub Action
+documents `pull_request` (never `pull_request_target`) and no secrets.
 
 ## Anatomy of one rebuild
 

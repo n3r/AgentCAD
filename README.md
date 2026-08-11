@@ -86,7 +86,20 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   hardware: state the budget once, and every later change is refereed against
   it.
 
-The agent tool surface is now **64 tools** (was 17; 67 with the `[fem]`
+- **Geometry CI.** One command certifies a whole project —
+  `agentcad check` rebuilds every part, re-resolves the assembly, runs
+  interference, evaluates the design specs and regenerates the drawings,
+  headless and without a server, and answers with a versioned JSON report, a
+  markdown summary and an exit code (`0` green · `1` the model is wrong · `2`
+  we could not produce a verdict). `--ref <branch|tag|commit>` certifies a
+  commit without touching your working tree or your cache; `--verify-determinism`
+  proves that two builds of the same ref produce identical mesh bytes. A
+  **GitHub Action** ships in the box, so a repo-hosted CAD project gets real CI
+  from one workflow file — and a check can post its verdict straight onto a
+  change proposal, where a red or stale report blocks the merge. See
+  [docs/geometry-ci.md](docs/geometry-ci.md).
+
+The agent tool surface is now **65 tools** (was 17; 68 with the `[fem]`
 extra), and multi-part rebuilds fan out across a small pool of warm kernel
 workers. v3 added typed parameters, per-solid semantics, sheet metal with
 flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,
@@ -151,6 +164,40 @@ launch after a build takes a few minutes while macOS verifies the freshly
 written libraries; later launches take ~15–20 s. Verify a build with
 `make smoke`.
 
+## Continuous integration for CAD
+
+An AgentCAD project is a directory of scripts and JSON, so it belongs in a git
+repository — and a repository expects CI. Locally:
+
+```bash
+agentcad check --project . --report report.json --md report.md
+```
+
+In GitHub Actions, with the composite action that ships in this repo:
+
+```yaml
+name: Geometry CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  geometry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: n3r/AgentCAD/.github/actions/agentcad-check@main
+        with:
+          project: .
+```
+
+It sets up uv (cached), installs the OCCT system libraries, runs the same
+check, appends the markdown report to the job summary, uploads both reports as
+an artifact and fails the job with the check's own exit code. This repository
+dogfoods it over the bundled examples on every push
+(`.github/workflows/geometry-ci.yml`). Runner requirements, caching, the report
+schema and the trust model are in
+[docs/geometry-ci.md](docs/geometry-ci.md).
+
 ## Drive it from Claude Code
 
 ```bash
@@ -196,7 +243,8 @@ def build(p):
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — processes, components, data flow
-- [docs/agent-api.md](docs/agent-api.md) — the 60-tool agent surface, MCP setup
+- [docs/agent-api.md](docs/agent-api.md) — the 65-tool agent surface, MCP setup
+- [docs/geometry-ci.md](docs/geometry-ci.md) — `agentcad check`, the report schema, the GitHub Action
 - [docs/part-authoring.md](docs/part-authoring.md) — the script contract and toolkit
 - [docs/user-guide.md](docs/user-guide.md) — the UI, surface by surface
 - [docs/roadmap.md](docs/roadmap.md) — the forward roadmap: a PRD index with statuses

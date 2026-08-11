@@ -46,6 +46,14 @@ This project is built skill-first. Use the Superpowers process skills:
 - Rotations are **intrinsic XYZ Euler degrees** everywhere (kernel + THREE.js).
 - **Imported STL** = one welded mesh face (no surface) → needs crease-angle
   normals, not smooth averaging; and its **booleans segfault OCCT** (blocked).
+- Geometry CI (`core/checks.py`): the ephemeral `--ref` service **must** have
+  `bus.on_publish = None` and `branch_resolver = None` or a check commits into
+  the user's repo · the pack is `tools_run_checks.py` (load order), never
+  `tools_checks.py` · rows are **`items`**, never `checks` · `check` is
+  report-honest and `--strict` only moves the verdict, while the `specs`/`checks`
+  gates are fail-closed and never answer `pending` · DXF is not byte-stable, so
+  determinism compares SVG only · the Action checks the working tree and takes
+  `--sha` as provenance, never `--ref`.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests
@@ -69,6 +77,7 @@ commit manifest-reformatting churn or the venv.
 ## Deeper docs
 
 `AGENTS.md` (contributor guide) · `docs/architecture.md` · `docs/agent-api.md`
-· `docs/part-authoring.md` · `docs/user-guide.md` · `docs/roadmap.md` (PRD
+· `docs/part-authoring.md` · `docs/user-guide.md` · `docs/geometry-ci.md`
+(`agentcad check` + the GitHub Action) · `docs/roadmap.md` (PRD
 index) · `docs/prd/` (one PRD per feature) · `docs/market_research.md` ·
 `docs/superpowers/specs|plans/` (design specs and implementation plans).

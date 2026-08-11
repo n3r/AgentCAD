@@ -9,6 +9,11 @@ uploads both as an artifact and exits `0` / `1` / `2`.
 Composite rather than Docker: a Docker action would have to bake the ~2 GB
 OCCT layer into an image and would defeat `setup-uv`'s cache.
 
+This file is the action's own surface — its inputs and outputs, which version
+with `action.yml`. The command it runs, the report schema, the stage semantics,
+the exit codes and the proposal gate are documented once, in
+[`docs/geometry-ci.md`](../../../docs/geometry-ci.md).
+
 ```yaml
 jobs:
   geometry:
