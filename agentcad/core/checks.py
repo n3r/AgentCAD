@@ -105,6 +105,13 @@ ITEM_KINDS = ("part", "instance", "pair", "check", "drawing", "flat_pattern",
 #: ``--ref``); the other three are what ``--ref`` resolved to.
 SOURCE_KINDS = ("worktree", "branch", "tag", "commit")
 
+#: How many projects' last reports a :class:`CheckRunner` keeps in memory. The
+#: cache exists so ``GET /api/projects/{p}/checks`` can answer without re-running
+#: a check; it is per process and deliberately tiny, because a report is a large
+#: document and a long-lived server may see many projects. The durable copy is
+#: the proposal's ``checks.json`` (slice 6), not this.
+LAST_REPORTS = 8
+
 #: How many failure blocks (and skip rows) the markdown renders before it
 #: summarizes the rest. ``$GITHUB_STEP_SUMMARY`` is capped at 1 MiB, and a
 #: 33-part project with a broken shared import would blow past it.
@@ -844,6 +851,11 @@ class CheckRunner:
       (``ValidationError``) — because those mean *we could not produce a
       verdict*, which is exit 2, not a red report.
 
+    Every completed run leaves two traces behind, in :meth:`run` rather than in
+    any one caller, so the CLI, the ``run_checks`` tool and the route behave
+    identically: a ``check_finished`` event on the bus, and the report in
+    :attr:`last` (bounded to :data:`LAST_REPORTS` projects, in memory only).
+
     ``budget_s`` is a **deadline read between items**, on ``time.monotonic``
     (an NTP step must never move a budget). The honest limitation, which is
     also in ``--help`` and the docs: ``service._ensure_built`` hard-codes 300 s
@@ -862,6 +874,9 @@ class CheckRunner:
         self._deadline: float | None = None
         self._truncated = False
         self._min_volume = 0.001
+        # The last report per project, this process only (LAST_REPORTS deep).
+        # `GET /api/projects/{p}/checks` reads it; nothing persists it.
+        self.last: dict[str, dict] = {}
 
     # ------------------------------------------------------------- the budget
 
@@ -934,11 +949,63 @@ class CheckRunner:
                 proj, ref, selected, seen, warnings, errors, sha=sha,
                 ref_label=ref_label, work_dir=work_dir,
                 verify_determinism=verify_determinism)
-        return finalize_report(
+        report = finalize_report(
             project, blocks, source=source, host=self._host(),
             started=started_at, duration_s=time.monotonic() - started,
             strict=strict, complete=not self._truncated, warnings=warnings,
             errors=errors)
+        # Both are here rather than in the tool pack so that the CLI, the tool
+        # and the route emit the same event and fill the same cache — one run,
+        # one announcement, whoever asked for it (AC9).
+        self._remember(proj, report)
+        self._publish(proj, ref, report)
+        return report
+
+    # ------------------------------------------------- what a run leaves behind
+
+    def _remember(self, proj: str, report: dict) -> None:
+        """Keep the last report for *proj*, bounded to :data:`LAST_REPORTS`.
+
+        Insertion-ordered: re-checking a project moves it to the end, so the
+        entry evicted is genuinely the least recently produced.
+        """
+        self.last.pop(proj, None)
+        self.last[proj] = report
+        while len(self.last) > LAST_REPORTS:
+            self.last.pop(next(iter(self.last)))
+
+    def last_report(self, proj: str) -> dict:
+        """The last report this process produced for *proj*.
+
+        A :class:`NotFoundError` rather than ``None``: "no check has run here"
+        is a 404, and it is not the same answer as a green report.
+        """
+        report = self.last.get(proj)
+        if report is None:
+            raise NotFoundError(
+                f"no check report for {proj!r} in this process — run a check "
+                f"first (the cache is in memory and is not persisted)",
+                {"project": proj})
+        return report
+
+    def _publish(self, proj: str, ref: str | None, report: dict) -> None:
+        """``check_finished`` — for **every** completed run, including a red
+        one and a budget-truncated one.
+
+        A UI that only heard about green runs would leave a stale badge exactly
+        when it mattered. The payload is the verdict, never the whole report:
+        the document goes over HTTP, the event says it is worth fetching.
+        Publishing is best effort — a dropped event must not lose a report.
+        """
+        bus = getattr(self.service, "bus", None)
+        if bus is None:
+            return
+        with contextlib.suppress(Exception):
+            bus.publish({"type": "check_finished", "project": proj,
+                         "ref": ref, "status": report["status"],
+                         "exit_code": report["exit_code"],
+                         "summary": report["summary"],
+                         "duration_s": report["duration_s"]})
 
     def _measure(self, runner: "CheckRunner", proj: str, selected: set[str],
                  seen: set, warnings: list[str],
