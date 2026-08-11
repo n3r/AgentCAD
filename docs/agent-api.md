@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 65 tools (68 with the
+Agents drive AgentCAD through a single tool surface — 72 tools (75 with the
 `[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -37,6 +37,14 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
   payload — over REST at HTTP **200**, not 409 — because a conflict is a
   workflow state to render, not a failure. Everything else keeps the usual
   `validation_error` / `notfound_error` / `conflict_error` mapping.
+- A review thread's anchor resolves into **four** statuses, and they are not
+  interchangeable: `ok` (it still points at what it pointed at), `moved`
+  (re-matched at a **new** address, which the block carries), `orphaned` (the
+  target is gone or no candidate cleared the tolerance — the contract, not a
+  bug) and `unverified` (*we did not look*: the part is unbuilt, git is
+  absent, the packet is frozen, the anchor belongs to another branch).
+  `unverified` is never a synonym for "fine". See [Review
+  threads](#review-threads).
 
 ## Tools
 
@@ -543,6 +551,76 @@ duration_s}` after **every** completed run — including a red one and a
 budget-truncated one, and from the CLI as well as from the tool and the route.
 It is deliberately not `project_changed`: measuring a project is not changing
 it, so it triggers no history snapshot.
+
+### Review threads
+
+Feedback that points at something and can be marked done: a thread is a root
+comment plus replies, anchored to a part, a face, a parameter, a script line
+range, an assembly instance or a proposal diff hunk, with state `open` or
+`resolved`. Threads live at `.history/agentcad/comments/` — **canonical,
+branch-free, and outside model state**: every branch sees the same list,
+`project_restore` cannot rewind one, no merge ever touches one, and a comment
+never appears in `git status`.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `list_comments` | **project**, part_id, state, kind, branch, anchor_status, resolve_anchors | `{threads: [{id, state, anchor, resolution, branch, author, author_kind, created, updated, resolved, comments: [{id, author, author_kind, ts, body, attachments: [{path, available}], mentions, edited, deleted}]}], counts: {open, resolved, orphaned}}`. `counts` describes the whole project, never the filtered page. `resolve_anchors: false` is the cheapest listing — no `resolution` block and no `orphaned` count, because nothing was looked at. |
+| `add_comment` | **project, body**, anchor, thread, attachments | The post-state `{thread}`. Exactly **one** of `anchor` (open a new thread) or `thread` (reply to that id) — both or neither is a `validation_error`. |
+| `resolve_thread` | **project, thread** | The post-state `{thread}`. Idempotent: resolving a resolved thread records nothing and publishes nothing. |
+| `reopen_thread` | **project, thread** | The post-state `{thread}`. |
+
+**The six anchors, validated at creation** (a bad anchor is a
+`validation_error`, never a stored orphan):
+`{kind: "part", part}` · `{kind: "face", part, face_index}` (the part must have
+been built; validated against the mesh's face count, and an imported reference
+part has no faces to anchor to) · `{kind: "param", part, param}` ·
+`{kind: "script_range", part, start, end}` (1-based, **inclusive**) ·
+`{kind: "instance", instance}` · `{kind: "proposal_hunk", proposal, file,
+hunk}`. Branch, head and every piece of evidence (a face's signature, a line
+range's snippet) are stamped **by the server** and refused from the caller: a
+signature a client can assert is not evidence of anything.
+
+**An anchor is immutable; its status is computed on every read** into the four
+statuses in the conventions above, so `resolution` is *view* data and the
+stored `anchor` never changes under you. Address a face through
+`resolution.face_index` and lines through `resolution.start`/`end` — **never**
+the stored `anchor.face_index`, which is the ordinal at creation time. Face
+ordinals are not stable across a parameter change (measured: 87–93% hold; one
+bundled part renumbered 20 of its 44 faces for a **1%** tweak), so a face
+anchor is re-matched from its stored mesh signature: measured over 2 537 faces
+it resolves about **two times in three** and honestly `orphaned` otherwise,
+with **zero** mis-pins. Orphan, never mis-pin.
+
+**Listing never builds.** Resolution reads the manifest, the meshes a build
+already wrote and at most one git blob per anchor — so a face anchor on a part
+that has never been built is `unverified`/`part_not_built` rather than a 300 s
+rebuild, and `list_comments` on a 40-part project stays a cheap read.
+
+**Attachments** must live under the project's `exports/` (pass what
+`render_view` returned, or `"exports/renders/iso.png"`); anything resolving
+outside that tree, symlinks included, is a `validation_error`, and there are at
+most 8 per comment. A file that is missing at read time is reported as
+`{path, available: false}`, never an error — `exports/` is branch-scoped.
+
+**Attribution is bookkeeping, not authentication.** `author`/`actor` is the
+client identity (`browser`, `browser:<nonce>`, `chat:<session>`, an MCP agent's
+`X-Agent-Id`) and `author_kind` is `human` iff it is the browser; the header is
+unvalidated. Anyone may resolve or reopen anything; only a comment's own author
+may edit or delete it, and the root comment cannot be deleted at all (retire a
+thread by resolving it). Every action appends to a per-thread audit log.
+
+Routes: `GET|POST /api/projects/{proj}/comments`,
+`GET /api/projects/{proj}/comments/{id}`,
+`POST /api/projects/{proj}/comments/{id}/resolve`,
+`.../reopen`, `PATCH|DELETE /api/projects/{proj}/comments/{id}/comments/{cid}`
+(edit or tombstone one comment — panel affordances, deliberately not tools),
+`GET /api/projects/{proj}/comments/{id}/audit`.
+
+**Events.** `comment_changed {project, thread, state, action, part}` on every
+mutation (`created`, `replied`, `resolved`, `reopened`, `comment_edited`,
+`comment_deleted`) — and on **no** no-op. It is deliberately not
+`project_changed`: a comment is not a model change, so it triggers no history
+snapshot and no rebuild.
 
 ### Sketch solving
 

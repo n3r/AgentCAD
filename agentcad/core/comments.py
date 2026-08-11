@@ -51,9 +51,17 @@ on. The audit says who did.
 
 ``face`` and ``script_range`` anchors landed with ``core/anchors.py`` (slice
 2), which also annotates every *view* — never the document — with a
-``resolution`` block. Slices that still extend this module:
-``comment_changed`` events published from the manager (3), ``proposal_hunk``
-anchors (4), mentions and ``notifications.jsonl`` (5).
+``resolution`` block.
+
+**Events.** Every mutation publishes exactly one ``comment_changed`` through
+``service.bus.publish`` (:meth:`CommentManager._publish`), and an idempotent
+no-op publishes none. It is deliberately **not** ``project_changed``: that
+event's ``on_publish`` hook snapshots project history, and a comment is not a
+model change. ``bus.on_publish`` itself is a single slot already owned by
+``service._snapshot_on_event`` and is never assigned here.
+
+Slices that still extend this module: ``proposal_hunk`` anchors (4), mentions
+and ``notifications.jsonl`` (5).
 """
 
 from __future__ import annotations
@@ -404,7 +412,7 @@ class CommentManager:
                 details["part"] = anchor["part"]
             self.store.append_audit(proj, tid, {"action": "created",
                                                 "details": details})
-        return self._view(proj, thread)
+        return self._publish(proj, self._view(proj, thread), "created")
 
     def reply(self, proj: str, tid: str, body: object,
               attachments: object = None) -> dict:
@@ -422,7 +430,7 @@ class CommentManager:
             self.store.save(proj, thread)
             self.store.append_audit(proj, tid, {"action": "replied",
                                                 "details": {"comment": cid}})
-        return self._view(proj, thread)
+        return self._publish(proj, self._view(proj, thread), "replied")
 
     def resolve(self, proj: str, tid: str) -> dict:
         return self._set_state(proj, tid, "resolved")
@@ -460,7 +468,7 @@ class CommentManager:
                 "action": "comment_edited",
                 "details": {"comment": cid, "previous_sha256": previous},
             })
-        return self._view(proj, thread)
+        return self._publish(proj, self._view(proj, thread), "comment_edited")
 
     def delete_comment(self, proj: str, tid: str, cid: str) -> dict:
         """Tombstone a comment — its own author only, and never the root.
@@ -491,7 +499,7 @@ class CommentManager:
             self.store.append_audit(proj, tid, {
                 "action": "comment_deleted", "details": {"comment": cid},
             })
-        return self._view(proj, thread)
+        return self._publish(proj, self._view(proj, thread), "comment_deleted")
 
     def get(self, proj: str, tid: str) -> dict:
         self.service.store.manifest(proj)  # existence check -> notfound_error
@@ -585,7 +593,36 @@ class CommentManager:
                 "action": "resolved" if state == "resolved" else "reopened",
                 "details": {"state": state},
             })
-        return self._view(proj, thread)
+        return self._publish(
+            proj, self._view(proj, thread),
+            "resolved" if state == "resolved" else "reopened")
+
+    def _publish(self, proj: str, view: dict, action: str) -> dict:
+        """Announce one mutation and hand the view straight back.
+
+        Called from the single return point of each mutator, so every mutation
+        publishes exactly once and an idempotent no-op — which returns
+        earlier — publishes nothing: a no-op is not an event, and five clients
+        re-resolving a resolved thread must not be five events.
+
+        The type is ``comment_changed`` and **never** ``project_changed``: the
+        bus's ``on_publish`` hook snapshots project history on that one, and a
+        comment is not a model change. The payload is deliberately a *pointer*
+        (design Decision 12) — id, state, action and the part it hangs on — so
+        a UI re-reads what it needs and no comment body is fanned out to every
+        connected client.
+        """
+        bus = getattr(self.service, "bus", None)
+        if bus is not None:
+            bus.publish({
+                "type": "comment_changed",
+                "project": proj,
+                "thread": view.get("id"),
+                "state": view.get("state"),
+                "action": action,
+                "part": (view.get("anchor") or {}).get("part"),
+            })
+        return view
 
     def _context(self, proj: str) -> dict:
         """What one page of threads is read against: the project root, the
