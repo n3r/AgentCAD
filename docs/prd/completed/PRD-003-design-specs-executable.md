@@ -1,7 +1,6 @@
 # PRD-003 — Design specs as executable tests
 
-- **Status:** implemented — AC1–AC9 verified (see Verification below); awaiting
-  merge
+- **Status:** completed — merged to main in PR #10 (AC1–AC9 verified)
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
