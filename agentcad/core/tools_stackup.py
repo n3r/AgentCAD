@@ -46,7 +46,7 @@ def _chain_to_root(by_id: dict, start: str) -> list[str]:
 
 
 def compute_stackup(service, project: str, axis: str, from_instance: str,
-                    to_instance: str) -> dict:
+                    to_instance: str, timeout_s: float | None = None) -> dict:
     """The stack-up math, callable without the tool registry.
 
     Module-level so ``check_stackup`` (PRD-003's project tier) can reach it
@@ -54,6 +54,11 @@ def compute_stackup(service, project: str, axis: str, from_instance: str,
     walk, so ``registry.call("tolerance_stackup", …)`` would not yet resolve —
     and a check has no business depending on a tool's registration order
     anyway. The tool below is a thin call through, so the two can never drift.
+
+    The tolerances are manifest arithmetic, but the *nominal* comes from the
+    resolved placement — one ``resolve_mates`` round trip on a mated assembly.
+    ``timeout_s`` bounds it for a caller under a deadline (the spec gate
+    budget); None keeps the flat ceiling.
     """
     if axis not in AXIS_TARGETS:
         raise ValidationError(
@@ -107,7 +112,8 @@ def compute_stackup(service, project: str, axis: str, from_instance: str,
                              "dims": dims, "plus": plus, "minus": minus})
 
     resolved = {inst.id: inst
-                for inst in service._resolved_instances(project)}
+                for inst in service._resolved_instances(project,
+                                                        timeout_s=timeout_s)}
     nominal = abs(resolved[to_instance].position[index]
                   - resolved[from_instance].position[index])
 

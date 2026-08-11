@@ -751,6 +751,30 @@ def test_an_unreadable_specs_py_is_red_not_absent(demo):
 
 @pytest.mark.slow
 @pytest.mark.portability
+def test_a_directory_named_specs_py_is_red_not_absent(demo):
+    """The same rule for the other 'exists but is not readable text'.
+
+    Discovery used to be ``is_file()``, which answers False for a directory —
+    so a ``specs.py/`` (a bad checkout, a stray unpack) read as 'this project
+    declares no project specs' and left the gate green."""
+    service, runner = demo
+    path = service.store.path_of("demo") / "specs.py"
+    path.unlink()
+    path.mkdir()
+
+    report = runner.run("demo")
+    state = runner.read_project_specs("demo")
+
+    row = _by_id(report, "project:specs")
+    assert row["status"] == "error"
+    assert "specs.py" in row["message"]
+    assert report["status"] == "red"
+    assert state["exists"] is True
+    assert state["declaration_error"]["type"] == "read_error"
+
+
+@pytest.mark.slow
+@pytest.mark.portability
 def test_a_project_with_no_specs_py_declares_no_project_checks(demo):
     """The other half of the same rule: genuinely absent stays silent."""
     service, runner = demo

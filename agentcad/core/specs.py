@@ -76,11 +76,13 @@ from .tools_stackup import compute_stackup
 SPEC_RESULT_VERSION = 1
 
 #: Wall-clock budget for the proposal gate. It is a **deadline**, not a
-#: between-parts courtesy: every kernel call made under it asks for the time
-#: the budget has left rather than its own (300 s / 600 s) ceiling, and the
-#: deadline is re-read between checks. On exhaustion the scopes and checks that
-#: were not reached are reported as ``unevaluated`` — which is RED, never a
-#: silent green.
+#: between-parts courtesy: every kernel call made under it — the measurements
+#: through :meth:`SpecRunner._kernel`, ``check_interference``, and the mate
+#: pass behind ``_resolved_instances`` — asks for the time the budget has left
+#: rather than its own (120 s / 300 s / 600 s) ceiling, and the deadline is
+#: re-read between checks. On exhaustion the scopes and checks that were not
+#: reached are reported as ``unevaluated`` — which is RED, never a silent
+#: green.
 GATE_BUDGET_S = 30.0
 
 #: Floor for a budgeted kernel timeout. A request is never issued with a
@@ -513,17 +515,19 @@ class SpecRunner:
     def project_script(self, proj: str) -> str | None:
         """The ``specs.py`` text, or None when there is no such file.
 
-        Discovery is presence (``is_file``), not convention: a second
+        Discovery is presence (``exists``), not convention: a second
         root-level module is not a spec file.
 
-        **An existing file that cannot be read raises.** Swallowing the
+        **Anything at that path that cannot be read raises.** Swallowing the
         ``OSError`` made "there is no spec file" and "there is one and we could
         not read it" the same answer — the quietest possible way to lose a
         declared spec, and green in a gate. Every caller turns it into a named
-        error instead.
+        error instead. ``exists``, not ``is_file``, for the same reason: a
+        *directory* named ``specs.py`` is not an absent spec file, it is an
+        unreadable one (``IsADirectoryError`` on the read below).
         """
         path = self.specs_path(proj)
-        if not path.is_file():
+        if not path.exists():
             return None
         return path.read_text(encoding="utf-8")
 
@@ -621,6 +625,24 @@ class SpecRunner:
 
     # -------------------------------------------------- budgeted kernel calls
 
+    def _budgeted(self, normal: float, deadline: float, method: str) -> float:
+        """What *method* may ask for with this deadline left, or a refusal.
+
+        With nothing left the request is not issued at all: a
+        :data:`_ERROR_BUDGET` ``KernelError`` is raised, which every
+        measurement path already degrades into an honest ``error`` record.
+        """
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise KernelError(
+                _ERROR_BUDGET,
+                f"the {GATE_BUDGET_S:.0f} s spec gate budget was exhausted "
+                f"before {method} could run; run run_specs on this branch "
+                "to populate the caches, then read the gate again",
+                {"reason": "budget_exceeded", "budget_s": GATE_BUDGET_S,
+                 "method": method})
+        return max(_MIN_KERNEL_TIMEOUT_S, min(normal, remaining))
+
     def _kernel(self, method: str, params: dict, *, normal: float,
                 affinity: str | None, deadline: float | None) -> dict:
         """One ``kernel.request`` under the gate budget.
@@ -628,24 +650,30 @@ class SpecRunner:
         The budget is worthless if the call it wraps may run for ten times its
         length, so every request made under a *deadline* asks for what the
         deadline has left instead of its own ceiling (``spec_eval``'s 300 s,
-        ``fem_static``'s 600 s). With nothing left the request is not issued at
-        all: a :data:`_ERROR_BUDGET` ``KernelError`` is raised, which every
-        measurement path already degrades into an honest ``error`` record.
+        ``fem_static``'s 600 s).
         """
-        timeout = normal
-        if deadline is not None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise KernelError(
-                    _ERROR_BUDGET,
-                    f"the {GATE_BUDGET_S:.0f} s spec gate budget was exhausted "
-                    f"before {method} could run; run run_specs on this branch "
-                    "to populate the caches, then read the gate again",
-                    {"reason": "budget_exceeded", "budget_s": GATE_BUDGET_S,
-                     "method": method})
-            timeout = max(_MIN_KERNEL_TIMEOUT_S, min(normal, remaining))
+        timeout = (normal if deadline is None
+                   else self._budgeted(normal, deadline, method))
         return self.service.kernel.request(method, params, timeout_s=timeout,
                                            affinity=affinity)
+
+    def _mate_timeout(self, deadline: float | None) -> float | None:
+        """The mate pass's share of the budget, or None when unbounded.
+
+        ``resolve_mates`` is the one kernel call the gate reaches through
+        ``service._resolved_instances`` rather than through :meth:`_kernel`,
+        and it has its own flat 120 s ceiling — four times the whole budget. On
+        a mated assembly with project specs that was ``proposal_get`` blocking
+        for minutes while ``proposal_merge`` held the source turn lock, so the
+        deadline is threaded through it on exactly the same terms.
+        """
+        if deadline is None:
+            return None
+        try:
+            from .mates import RESOLVE_TIMEOUT_S
+        except ImportError:      # the same optional seam _resolved_instances
+            return None          # keeps: no module, no request to bound
+        return self._budgeted(RESOLVE_TIMEOUT_S, deadline, "resolve_mates")
 
     # ----------------------------------------------------- declarations
 
@@ -1007,7 +1035,8 @@ class SpecRunner:
 
     # -------------------------------------------------------- tier 2
 
-    def _project_key(self, proj: str, script: str) -> str:
+    def _project_key(self, proj: str, script: str,
+                     deadline: float | None = None) -> str:
         """Content key for the assembly tier — over **every** input the three
         project checks read, not only the ones ``clearance`` reads.
 
@@ -1027,7 +1056,8 @@ class SpecRunner:
                  for instance in self.service.store.instances(proj)
                  if getattr(instance, "mate", None)}
         rows = []
-        for instance in self.service._resolved_instances(proj):
+        for instance in self.service._resolved_instances(
+                proj, timeout_s=self._mate_timeout(deadline)):
             try:
                 record = self.service.store.get_part(proj, instance.part)
                 part_key = self.service._cache_key_for(proj, record)
@@ -1087,7 +1117,14 @@ class SpecRunner:
                         deadline: float | None = None) -> dict:
         options = declaration.get("options") or {}
         minimum = (declaration.get("limit") or {}).get("min_mm")
-        resolved = {i.id: i for i in self.service._resolved_instances(proj)}
+        try:
+            resolved = {i.id: i for i in self.service._resolved_instances(
+                proj, timeout_s=self._mate_timeout(deadline))}
+        except KernelError as exc:
+            # The budget refusing to start the mate pass, reported like every
+            # other measurement the deadline stopped.
+            payload = exc.to_payload()
+            return _error_row(payload["message"], payload.get("details"))
         items = {}
         for side in ("a", "b"):
             name = options.get(side)
@@ -1131,8 +1168,9 @@ class SpecRunner:
 
     def _eval_stackup(self, proj: str, declaration: dict,
                       deadline: float | None = None) -> dict:
-        # No kernel call at all (the mate chain is manifest arithmetic), so the
-        # deadline is accepted for one uniform evaluator signature and unused.
+        # The tolerances are manifest arithmetic, but the nominal is read off
+        # the RESOLVED placement, so a mated assembly costs one resolve_mates
+        # — which the deadline bounds like every other call under the gate.
         options = declaration.get("options") or {}
         within = (declaration.get("limit") or {}).get("within_mm")
         try:
@@ -1141,9 +1179,15 @@ class SpecRunner:
             # registered yet — and a check must not depend on that order.
             result = compute_stackup(self.service, proj, options["axis"],
                                      options["from_instance"],
-                                     options["to_instance"])
+                                     options["to_instance"],
+                                     timeout_s=self._mate_timeout(deadline))
         except (NotFoundError, ValidationError) as exc:
             return _error_row(str(exc), getattr(exc, "details", None) or {})
+        except KernelError as exc:
+            # The budget refusing to start the mate pass, reported like every
+            # other measurement the deadline stopped.
+            payload = exc.to_payload()
+            return _error_row(payload["message"], payload.get("details"))
         worst = result["worst_case"]
         measured = max(abs(worst["plus"]), abs(worst["minus"]))
         details = {"worst_case": worst, "rss": result["rss"],
@@ -1241,7 +1285,8 @@ class SpecRunner:
 
         try:
             sidecar = (self.service.store.cache_dir(proj)
-                       / f"{self._project_key(proj, script)}.projspecs.json")
+                       / f"{self._project_key(proj, script, deadline)}"
+                         ".projspecs.json")
             stored = _read_sidecar(sidecar) or {}
         except Exception:  # noqa: BLE001 — an unkeyable assembly (a dangling
             sidecar, stored = None, {}   # mate) evaluates uncached, never raises

@@ -90,6 +90,28 @@ from agentcad.toolkit.specs import check_clearance
 SPECS = [check_clearance("box_1", "box_2", min_mm="wide")]
 '''
 
+# A block with connectors, so an instance of it can carry a declarative mate.
+# It declares no SPECS of its own: the only kernel work such a report does is
+# the project scope, which is where the mate pass lives.
+MATE_BLOCK = '''\
+from build123d import *
+
+PARAMS = {}
+
+def build(p):
+    return Box(10, 10, 10)
+
+def connectors(p, part):
+    return {"top": {"type": "rigid", "location": ((0, 0, 5), (0, 0, 0))},
+            "base": {"type": "rigid", "location": ((0, 0, -5), (0, 0, 0))}}
+'''
+
+MATED_CLEARANCE_SPECS = '''\
+from agentcad.toolkit.specs import check_clearance
+
+SPECS = [check_clearance("lower", "upper", min_mm=0.5, requirement="INT-011")]
+'''
+
 # A part that declares SPECS above a def that will not parse.
 SYNTAX_BROKEN_BOX = GATE_BOX.replace("def build(p):", "def build(p:")
 
@@ -165,6 +187,31 @@ def bare_demo(stack):
         "create_part", {"project": "demo", "part_id": "box",
                         "script": BOX_SCRIPT})
     service.branches.create("demo", "feat")
+    return service, registry, ProposalManager(service)
+
+
+@pytest.fixture
+def mated_demo(stack):
+    """'demo' with a mate-driven assembly and a project-scope clearance on
+    'feat'. Every spec here is project-scope, so the report's kernel work is
+    ``spec_declare`` + the mate pass + ``clearance``."""
+    service, registry = stack
+    assert "error" not in registry.call("create_project", {"name": "demo"})
+    assert "error" not in registry.call(
+        "create_part", {"project": "demo", "part_id": "block",
+                        "script": MATE_BLOCK})
+    service.branches.create("demo", "feat")
+    _on(service, "agent_a", "feat")
+    assert "error" not in registry.call("set_assembly", {
+        "project": "demo",
+        "instances": [{"id": "lower", "part": "block"},
+                      {"id": "upper", "part": "block",
+                       "mate": {"connector": "base", "to_instance": "lower",
+                                "to_connector": "top"}}]})
+    assert "error" not in registry.call(
+        "set_project_specs", {"project": "demo",
+                              "script": MATED_CLEARANCE_SPECS})
+    _on(service, "browser", "master")
     return service, registry, ProposalManager(service)
 
 
@@ -781,6 +828,103 @@ def test_a_kernel_call_under_the_gate_is_bounded_by_the_remaining_budget(
     assert max(timeouts) <= 2.0                # never the 300 s spec_eval one
     assert elapsed < 10.0                      # near the budget, not the call
     assert verdict["status"] == "red"
+
+
+def test_the_mate_pass_under_the_gate_is_bounded_by_the_remaining_budget(
+        mated_demo, monkeypatch):
+    """The same rule for the one kernel call the gate does NOT reach through
+    ``_kernel``.
+
+    ``_project_key`` and ``_eval_clearance`` resolve the assembly's mates
+    through ``service._resolved_instances``, which asked ``resolve_mates`` for
+    a flat 120 s — four times the whole gate budget. On a large mated assembly
+    that is ``proposal_get`` blocking for two minutes while ``proposal_merge``
+    holds the source turn lock."""
+    service, _registry, _manager = mated_demo
+    _cold(service)
+    monkeypatch.setattr("agentcad.core.specs.GATE_BUDGET_S", 2.0)
+    issued: list[float | None] = []
+    original = service.kernel.request
+
+    def slow_mates(method, params, timeout_s=None, affinity=None):
+        if method != "resolve_mates":
+            return original(method, params, timeout_s=timeout_s,
+                            affinity=affinity)
+        issued.append(timeout_s)
+        # A resolution that outlasts any timeout it is given, exactly as the
+        # kernel client would report it.
+        time.sleep(min(5.0 if timeout_s is None else timeout_s, 5.0))
+        raise KernelError("timeout", "resolve_mates timed out", {})
+
+    monkeypatch.setattr(service.kernel, "request", slow_mates)
+    started = time.monotonic()
+    verdict = service.specs.evaluate_specs("demo", "feat")
+    elapsed = time.monotonic() - started
+
+    assert issued, "the gate never resolved the assembly's mates"
+    assert max(issued) <= 2.0            # never the flat 120 s ceiling
+    assert min(issued) >= 0.5            # ...nor a timeout by construction
+    assert elapsed < 10.0                # near the budget, not the call
+    assert verdict["status"] == "red"
+    assert verdict["reason"] == "budget_exceeded"
+
+
+def test_every_project_evaluator_bounds_the_mate_pass(mated_demo, monkeypatch):
+    """The sidecar key is not the only place the assembly is resolved.
+
+    ``clearance`` resolves it directly and ``stackup`` resolves it through
+    ``compute_stackup``; both run under the deadline, so neither may ask
+    ``resolve_mates`` for its flat ceiling."""
+    service, _registry, _manager = mated_demo
+    _on(service, "agent_a", "feat")
+    issued: list[float | None] = []
+    original = service.kernel.request
+
+    def capturing(method, params, timeout_s=None, affinity=None):
+        if method == "resolve_mates":
+            issued.append(timeout_s)
+        return original(method, params, timeout_s=timeout_s, affinity=affinity)
+
+    monkeypatch.setattr(service.kernel, "request", capturing)
+    deadline = time.monotonic() + 5.0
+    runner = service.specs
+    clearance = runner._eval_clearance(
+        "demo", {"kind": "clearance", "scope": "project",
+                 "options": {"a": "lower", "b": "upper"},
+                 "limit": {"min_mm": 0.5}}, deadline)
+    stackup = runner._eval_stackup(
+        "demo", {"kind": "stackup", "scope": "project",
+                 "options": {"axis": "z", "from_instance": "lower",
+                             "to_instance": "upper"},
+                 "limit": {"within_mm": 1.0}}, deadline)
+
+    assert clearance["status"] in ("pass", "fail")
+    assert stackup["status"] in ("pass", "fail")
+    assert len(issued) == 2, "one evaluator never resolved the mates"
+    assert max(issued) <= 5.0            # never the flat 120 s ceiling
+    assert min(issued) >= 0.5
+
+
+def test_run_specs_resolves_mates_at_the_flat_ceiling(mated_demo, monkeypatch):
+    """The other half of the deadline: ``run_specs`` carries none (it is the
+    documented exit from an exhausted budget), so the mate pass keeps its own
+    120 s ceiling."""
+    service, _registry, _manager = mated_demo
+    _cold(service)
+    issued: list[float | None] = []
+    original = service.kernel.request
+
+    def capturing(method, params, timeout_s=None, affinity=None):
+        if method == "resolve_mates":
+            issued.append(timeout_s)
+        return original(method, params, timeout_s=timeout_s, affinity=affinity)
+
+    monkeypatch.setattr(service.kernel, "request", capturing)
+    report = service.specs.run("demo", ref="feat")
+
+    assert issued, "run_specs never resolved the assembly's mates"
+    assert set(issued) == {120.0}
+    assert any(c["kind"] == "clearance" for c in report["checks"])
 
 
 def test_a_budget_exceeded_verdict_is_memoized_and_run_specs_is_its_exit(

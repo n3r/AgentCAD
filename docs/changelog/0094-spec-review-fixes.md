@@ -24,16 +24,19 @@ correctness/UI holes.
   moved-head re-read all use that branch. A branch the layer cannot name is
   evaluated and returned but not memoized.
 - **S2 — `GATE_BUDGET_S` is now a deadline.** New `SpecRunner._kernel` issues
-  every kernel call made under the gate with `min(its own ceiling, remaining)`
-  instead of 300 s (`spec_eval`, `spec_declare`, `clearance`) or 600 s
-  (`fem_static`, `interference`), and refuses to issue one with nothing left
-  (`KernelError("budget_exceeded")`). The deadline is also re-checked *between
-  checks* inside `_part_block` (before each FEM) and `_project_block` (before
-  each assembly check) via the new `_budget_row`. `budget_exceeded` verdicts
-  are now **memoized** — red with a stable reason for that head — and
+  every kernel call made under the gate *through it* with `min(its own ceiling,
+  remaining)` instead of 300 s (`spec_eval`, `spec_declare`, `clearance`) or
+  600 s (`fem_static`, `interference`), and refuses to issue one with nothing
+  left (`KernelError("budget_exceeded")`). The deadline is also re-checked
+  *between checks* inside `_part_block` (before each FEM) and `_project_block`
+  (before each assembly check) via the new `_budget_row`. `budget_exceeded`
+  verdicts are now **memoized** — red with a stable reason for that head — and
   `run_specs`, which is unbounded by design, drops them for the project
   afterwards (`_forget_budget_verdicts`), so "run run_specs on that branch" is
-  a true instruction rather than a hope.
+  a true instruction rather than a hope. (One call did *not* go through
+  `_kernel` and kept its own ceiling — the mate pass behind
+  `service._resolved_instances`; threaded through in
+  [0096](0096-spec-gate-mate-deadline.md).)
 - **S3 — the `.specs.json` sidecar caches the FAILURE too.** A failed
   `spec_eval` writes `{version, cache_key, error}` under the same content key
   and a later read re-raises that `KernelError` (the `_residue` path is

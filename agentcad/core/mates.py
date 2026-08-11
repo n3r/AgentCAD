@@ -5,6 +5,10 @@ Geometry (build123d Joints) lives in the worker; this module marshals the
 instance list to the worker's ``resolve_mates`` handler and writes the
 resulting concrete transforms back onto copies of the instances, so the rest
 of the service and the frontend see ordinary position/rotation_deg.
+
+The one request it makes takes an optional ``timeout_s`` for the same reason
+``check_interference`` does: a caller under a wall-clock deadline must not have
+this pass outlive its whole budget.
 """
 
 from __future__ import annotations
@@ -16,7 +20,14 @@ from ..kernel.client import KernelError
 from .model import ValidationError
 
 
-def resolve(service, proj: str, instances: list):
+#: Ceiling for one ``resolve_mates`` round trip. A *caller working under a
+#: deadline* (PRD-003's spec gate budget) passes a smaller ``timeout_s``; it is
+#: clamped here so no caller can ask for more than the flat ceiling.
+RESOLVE_TIMEOUT_S = 120.0
+
+
+def resolve(service, proj: str, instances: list,
+            timeout_s: float | None = None):
     ids = {inst.id for inst in instances}
     kinds = {inst.id: service.store.get_part(proj, inst.part).kind for inst in instances}
     items = []
@@ -55,7 +66,9 @@ def resolve(service, proj: str, instances: list):
 
     try:
         result = service.kernel.request(
-            "resolve_mates", {"items": items}, timeout_s=120.0
+            "resolve_mates", {"items": items},
+            timeout_s=RESOLVE_TIMEOUT_S if timeout_s is None
+            else min(RESOLVE_TIMEOUT_S, timeout_s),
         )
     except KernelError as exc:
         # Surface mate errors (unknown connector, cycle, range) as validation.

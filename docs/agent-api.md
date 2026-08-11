@@ -230,8 +230,9 @@ fail-closed:
   status and the gate are computed from the check rows alone, so a `specs.py`
   that raised while it executed used to leave the report green.
 - **The 30 s budget is a deadline, and its verdict is remembered.** Every kernel
-  call under the gate asks for what the budget has left rather than its own
-  300 s/600 s ceiling, and the deadline is re-checked between checks. A
+  call under the gate — the measurements, and the mate resolution an assembly
+  check needs first — asks for what the budget has left rather than its own
+  120 s/300 s/600 s ceiling, and the deadline is re-checked between checks. A
   `budget_exceeded` verdict is memoized for that source head — it is red with a
   stable reason, and re-paying an exhausted budget on every `proposal_get` is
   worse than answering from the memo — so the gate stays red until the head
