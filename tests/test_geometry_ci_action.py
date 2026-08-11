@@ -532,6 +532,30 @@ def test_a_report_the_parser_refuses_cannot_leave_the_job_green(tmp_path):
     assert "::error::" in proc.stdout
 
 
+@needs_bash
+@pytest.mark.integration
+def test_a_parser_refusal_is_a_harness_error_whatever_the_check_said(tmp_path):
+    """The escalation used to be ``if [ "$code" = "0" ]``, so a hostile or
+    unparseable report *alongside exit 1* kept the 1 — and the re-raise step
+    prints ``red — failed stages: unknown`` for it, claiming measured geometry
+    nobody could read. A refusal means the report is not evidence; the check's
+    own code is not either, because the file it wrote is the only thing that
+    says what the code meant. Always 2: no verdict."""
+    out = tmp_path / "out"
+    out.write_text("")
+    report_json, report_md = tmp_path / "report.json", tmp_path / "report.md"
+    hostile = _stub_bin(
+        tmp_path, f"cat > {report_json} <<'EOF'\n{STALE_REPORT}\nEOF\nexit 1")
+
+    proc = _run_body(_load(ACTION), "check",
+                     _check_env(tmp_path, hostile, out, report_json,
+                                report_md), cwd=tmp_path)
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _outputs(out)["exit-code"] == "2"
+    assert "::error::" in proc.stdout
+
+
 def test_the_check_step_owns_the_exit_code_and_writes_it_last():
     """The ordering that makes the above true, asserted on the file: nothing may
     be appended to ``$GITHUB_OUTPUT`` after ``exit-code``."""

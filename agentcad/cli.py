@@ -447,12 +447,15 @@ def cmd_check(args) -> int:
         # Absolute, and known before the kernel spawns: `history._run` runs git
         # with cwd set to the project, so a relative work dir would materialize
         # a `--ref` worktree *inside* the project — and the seatbelt profile is
-        # fixed at spawn.
+        # fixed at spawn. Resolved here, but NOT created here: `CheckRunner`
+        # creates it after `_refuse_overlap` has accepted it, so a work dir
+        # inside the project no longer gets made on the way to exit 2. The
+        # sandbox grant is a path, not a directory, and does not need it to
+        # exist yet.
         work_dir = None
         extra_writable: list[str] = []
         if args.work_dir:
             work_dir = str(Path(args.work_dir).expanduser().resolve())
-            Path(work_dir).mkdir(parents=True, exist_ok=True)
             extra_writable.append(work_dir)
         # A project given as a path is the CI case (`--project .` on a checkout)
         # and it lives nowhere `_writable_roots` guessed, so the kernel could not

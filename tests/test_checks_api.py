@@ -29,6 +29,7 @@ import queue
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -131,6 +132,10 @@ def test_the_tool_description_states_the_status_contract(demo):
     assert "exit_code" in text
     for stage in STAGES:
         assert stage in text
+    # And the one refusal that is ALSO not an error: a post that did not
+    # happen is a receipt on a normally-returned report, so an agent reading
+    # only status/exit_code would believe the proposal was certified.
+    assert "posted.ok" in text and "receipt" in text
 
 
 def test_the_pack_installs_the_runner_seam(demo):
@@ -354,6 +359,48 @@ def test_the_last_report_cache_is_bounded(demo):
     assert f"p{LAST_REPORTS + 2}" in service.checks.last
 
 
+def test_the_last_report_cache_survives_concurrent_runs():
+    """``service.checks`` is one object shared by the CLI, the chat agent, the
+    tool and every request — and ``_remember`` reads ``len``, walks
+    ``next(iter(...))`` and ``pop``\\ s, three statements deep in a dict any
+    other thread may be writing. Unserialized that is a real race: with the
+    switch interval tightened it raises ``RuntimeError: dictionary changed size
+    during iteration`` and ``KeyError`` thousands of times.
+
+    What it costs is the reason it is a bug and not a nuisance: ``_remember``
+    runs at the **end** of ``run()``, after every measurement, so the exception
+    escapes ``run`` and throws away a report that took minutes of kernel work —
+    CLI exit 2, tool error. Nothing is evicted early; a verdict is lost.
+    """
+    runner = CheckRunner(object())
+    names = [f"p{index}" for index in range(60)]     # more than LAST_REPORTS,
+    errors: list[BaseException] = []                 # so eviction runs often
+    start = threading.Barrier(8)
+
+    def hammer(seed: int) -> None:
+        start.wait()
+        for index in range(3000):
+            try:
+                runner._remember(names[(seed * 7 + index) % len(names)], {})
+            except BaseException as exc:   # noqa: BLE001 — the bug, verbatim
+                errors.append(exc)
+
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-9)            # a switch between any two statements
+    try:
+        threads = [threading.Thread(target=hammer, args=(seed,))
+                   for seed in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        sys.setswitchinterval(previous)
+
+    assert not errors, f"{len(errors)} raised, first: {errors[0]!r}"
+    assert len(runner.last) <= LAST_REPORTS
+
+
 # ---------------------------------------------------------------- 4. routes
 
 
@@ -428,14 +475,41 @@ def test_a_second_client_sees_check_finished(client):
 # ------------------------------------------------------------------- AC9
 
 
+#: Every key in a check report whose value a clock wrote: the wall clock
+#: (``started``/``finished``/``generated``/``checked_at``) and the stopwatch
+#: (``duration_s``). Nothing here is geometry, and nothing here can agree
+#: between two runs.
+_CLOCK_KEYS = frozenset(
+    {"started", "finished", "generated", "checked_at", "duration_s"})
+
+
+def _strip_clocks(value):
+    """*value* with every :data:`_CLOCK_KEYS` entry removed, at every depth."""
+    if isinstance(value, dict):
+        return {key: _strip_clocks(item) for key, item in value.items()
+                if key not in _CLOCK_KEYS}
+    if isinstance(value, list):
+        return [_strip_clocks(item) for item in value]
+    return value
+
+
 def _normalize(report: dict) -> dict:
     """Everything that cannot be identical between two runs of the same
-    project: the clock, the host block, and every duration."""
-    stages = []
-    for stage in report["stages"]:
-        stages.append({**stage, "duration_s": 0.0})
-    return {**report, "started": "", "finished": "", "duration_s": 0.0,
-            "host": {}, "stages": stages}
+    project: the host block, and every clock **at every depth**.
+
+    Depth is the whole point. Zeroing the top-level clock and each stage's
+    ``duration_s`` leaves the documents a stage *embeds* — ``stages[i].report``
+    is PRD-003's spec report, which carries its own second-resolution
+    ``generated`` — still stamped, and the CLI subprocess and the in-process
+    tool stamp them a fraction of a second apart. Identical strings most of the
+    time, different ones whenever the pair straddles a second boundary: a ~10%
+    flake that says nothing about the geometry. Stripping a *named key set*
+    recursively also survives the next embedded document, rather than pinning
+    the one path we happened to know about.
+
+    ``host`` goes whole: it describes the machine, not the measurement.
+    """
+    return {**_strip_clocks(report), "host": {}}
 
 
 @pytest.mark.slow
@@ -443,8 +517,12 @@ def _normalize(report: dict) -> dict:
 @pytest.mark.timeout(900)
 def test_the_cli_and_the_tool_report_the_same_thing(demo, tmp_path):
     """AC9: same report everywhere. The CLI and the tool drive the *same*
-    ``CheckRunner`` code over the same project; the only differences a
-    consumer may see are the clock, the host and the durations."""
+    ``CheckRunner`` code over the same project; the only differences a consumer
+    may see are the host block and the clocks — every ``started``,
+    ``finished``, ``generated``, ``checked_at`` and ``duration_s``, including
+    the ones inside the documents a stage embeds. :func:`_normalize` removes
+    exactly those, and nothing else: if any *measurement* differed, this fails.
+    """
     service, registry = demo
     projects = str(service.store.root)
 

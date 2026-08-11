@@ -308,12 +308,17 @@ runs:
         # Writes status= and failed-stages=; empty for a missing or unparseable
         # report. It REFUSES a report whose values could forge a second
         # $GITHUB_OUTPUT line (a status of "red\nexit-code=0" used to replace
-        # the real exit code and finish the job green) — and a refusal escalates
-        # a green run rather than being ignored.
+        # the real exit code and finish the job green) — and a refusal is a
+        # harness error, ALWAYS.
         if ! "$BIN/python" "$ACTION_PATH/report_outputs.py" "$REPORT_JSON"; then
           echo "::error::the check report could not be turned into step" \
                "outputs; treating this run as having produced no verdict"
-          if [ "$code" = "0" ]; then code=2; fi
+          # 2 whatever the check said, not just when it said 0. A refused
+          # report is not evidence, and neither is the code beside it: with
+          # `code=1` left intact the re-raise step printed "red — failed
+          # stages: unknown" (both outputs are empty after a refusal), which
+          # claims measured geometry that nobody could read.
+          code=2
         fi
         # LAST, and written by the step that owns it: no line any report
         # contains can come after it and override it.

@@ -57,6 +57,7 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -1177,8 +1178,10 @@ class CheckRunner:
         self._truncated = False
         self._min_volume = 0.001
         # The last report per project, this process only (LAST_REPORTS deep).
-        # `GET /api/projects/{p}/checks` reads it; nothing persists it.
+        # `GET /api/projects/{p}/checks` reads it; nothing persists it. The
+        # lock serializes `_remember`'s read-then-evict — see the note there.
         self.last: dict[str, dict] = {}
+        self._last_lock = threading.Lock()
 
     # ------------------------------------------------------------- the budget
 
@@ -1364,11 +1367,24 @@ class CheckRunner:
 
         Insertion-ordered: re-checking a project moves it to the end, so the
         entry evicted is genuinely the least recently produced.
+
+        **Under the lock**, because this is the one instance every surface
+        shares: the CLI, the chat agent, the ``run_checks`` tool and every
+        request all reach the same ``service.checks``, and two checks may
+        finish at once. The read-then-evict is three statements — ``len``, a
+        ``next(iter(...))`` walk and a ``pop`` — over a dict another thread is
+        writing, which raises ``RuntimeError: dictionary changed size during
+        iteration`` and ``KeyError``. It matters because of *where* it happens:
+        the last line of ``run()``, after minutes of kernel work, so the
+        exception does not evict an entry early — it escapes ``run`` and
+        discards a finished report (CLI exit 2, tool error). The lock is held
+        for three dict operations and never across a measurement.
         """
-        self.last.pop(proj, None)
-        self.last[proj] = report
-        while len(self.last) > LAST_REPORTS:
-            self.last.pop(next(iter(self.last)))
+        with self._last_lock:
+            self.last.pop(proj, None)
+            self.last[proj] = report
+            while len(self.last) > LAST_REPORTS:
+                self.last.pop(next(iter(self.last)))
 
     def last_report(self, proj: str) -> dict:
         """The last report this process produced for *proj*.

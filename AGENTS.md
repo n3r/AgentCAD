@@ -398,8 +398,12 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   other's deadline and interference threshold.
 - **A check that measured a dirty tree may not be posted.** Its `source.sha` is
   the *committed* head, so the gate would read it as certifying bytes it never
-  measured. Refused at `post_to_proposal` (exit 2); a `--ref` report's `dirty`
-  flag is provenance about a tree it did not measure, and still posts.
+  measured. Refused at `post_to_proposal` — which **raises**, but only the CLI
+  turns that into exit 2: `run_checks` catches it and returns the measured
+  report with `posted: {ok: false, error}` and a warning, so a refused post is
+  a *receipt*, not an error (never discard minutes of kernel work to report a
+  delivery failure). A `--ref` report's `dirty` flag is provenance about a tree
+  it did not measure, and still posts.
 - **The `checks` gate asks the audit before it answers `skipped`.** A
   `checks_posted` line with no readable record is a `fail` ("re-run"), never the
   permissive "nothing posted" — deleting `checks.json` must not unblock a merge.

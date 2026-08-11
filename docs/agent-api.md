@@ -446,10 +446,11 @@ without re-deriving anything.
 **A red check is data, never an error.** The call returns normally; only the
 harness raises — an unknown project is a `notfound_error`; an unknown stage, an
 **empty** `stages` list (it is refused, never read as "all four"), a
-non-finite `budget`, a `ref` on a project with no git or a report that measured
-a **dirty** working tree being posted are all `validation_error`; and an unknown
-or already-merged proposal is a `notfound_error` / `conflict_error` raised
-**before** anything is measured.
+non-finite `budget` and a `ref` on a project with no git are all
+`validation_error`; and an unknown or already-merged proposal is a
+`notfound_error` / `conflict_error` raised **before** anything is measured. A
+refused **post** does not raise here at all — it is a receipt on the returned
+report (see `posted.ok` below).
 
 Four things about the payload:
 
@@ -517,9 +518,19 @@ never a soft `pending`: a merge blocks on `fail` and nothing else, so a
 opts in — this gate is **evidence**, while the `specs` and `validation` gates
 are enforcement and re-measure on every merge.
 
-A report that measured a **dirty working tree** cannot be posted at all
-(`validation_error`): its `head` is the *committed* sha, so the gate would read
-it as certifying bytes the run never measured. Commit or stash, then re-run.
+A report that measured a **dirty working tree** cannot be posted at all: its
+`head` is the *committed* sha, so the gate would read it as certifying bytes the
+run never measured. Commit or stash, then re-run.
+
+**Read `posted.ok`.** A post that was refused — a dirty tree, or a proposal that
+went terminal while you were measuring — is a **receipt, not an error**:
+`run_checks` returns the report it just measured, at HTTP 200 with no top-level
+`error`, carrying `posted: {id, ok: false, error: {...}}` and a `NOT posted`
+line in `warnings`. Minutes of kernel work are not thrown away to report a
+delivery failure. `status` and `exit_code` are about the **geometry** — a
+green, complete report whose `posted.ok` is `false` certified nothing, and that
+proposal's `checks` gate is still `skipped`. (On the CLI the same refusal is a
+message on stderr and exit `2`.)
 
 **Routes** (under `/api`): `POST /projects/{proj}/checks` (body whitelisted to
 `{ref, stages, strict, budget, proposal}`; a red project is an ordinary **200**

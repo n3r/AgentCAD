@@ -31,8 +31,12 @@ docs, `--help` and `AGENTS.md` was false when it was written; it is true now.
 - `CheckRunner._work_dir` resolves the caller's `--work-dir` **once**, at the
   top of `run()`, and `_refuse_overlap` rejects any path that equals, contains
   or is contained by the project directory **or** the projects root — a
-  `ValidationError` naming both paths (CLI exit 2). The directory is created
-  only after it is accepted, so a refused path leaves nothing behind.
+  `ValidationError` naming both paths (CLI exit 2). The runner creates the
+  directory only after it has accepted it. *(Correction, entry 0108: the CLI
+  still `mkdir`'d `--work-dir` itself before the runner ever saw it, so on the
+  primary surface a refused path **did** leave an empty directory behind —
+  nothing was deleted, but the sentence was false until 0108 removed that
+  `mkdir`.)*
 - A run materializes into a **unique subdirectory it creates itself**:
   `tempfile.mkdtemp(prefix=f"agentcad-check-{os.getpid()}-", dir=work_dir)`,
   with the worktree at `<cell>/<project>/`. The ephemeral service and the

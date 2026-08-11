@@ -609,6 +609,42 @@ def test_the_tool_posts_and_returns_a_receipt(demo):
     assert "posted" not in record["report"]
 
 
+def test_a_refused_post_is_a_receipt_on_the_report_not_an_error(demo):
+    """The tool does **not** raise for a post it refuses. ``post_to_proposal``
+    does — but ``run_checks`` catches it and hands back the report it just
+    measured with ``posted: {ok: false, error}`` and a warning, at HTTP 200
+    with no top-level ``error`` key. That is deliberate: the alternative throws
+    away minutes of kernel work to say "not posted".
+
+    It is also the reason ``posted.ok`` is named in the tool's description. A
+    consumer that reads only ``status``/``exit_code`` sees a green, complete
+    report and would conclude the proposal is certified; the receipt is the
+    only place the truth lives, and nothing was written or audited.
+    """
+    service, registry, manager = demo
+    pid = _create(manager)
+    _on(service, "ci", "feat")
+    # An uncommitted edit: the run's `source.sha` is the committed head, so
+    # posting it would certify bytes the check never measured.
+    tree = service.branches.tree_of("demo", "feat")
+    (tree / "uncommitted.txt").write_text("edit\n", encoding="utf-8")
+
+    report = registry.call("run_checks", {"project": "demo", "proposal": pid})
+
+    assert "error" not in report, report
+    # A clean run of an empty project: `exit_code: 0`, `complete: true` — the
+    # two fields a naive consumer reads, and neither of them says "not posted".
+    assert report["exit_code"] == 0 and report["complete"] is True
+    assert report["posted"] == {"id": pid, "ok": False,
+                                "error": report["posted"]["error"]}
+    assert report["posted"]["error"]["type"] == "validation_error"
+    assert "dirty" in report["posted"]["error"]["message"].lower()
+    assert any("NOT posted" in warning for warning in report["warnings"])
+    assert not _slot(service, pid).exists()
+    assert not any(line["action"] == "checks_posted"
+                   for line in _audit(service, pid))
+
+
 def test_the_tool_refuses_an_unknown_proposal_before_measuring(demo):
     _service, registry, _manager = demo
     result = registry.call("run_checks", {"project": "demo",

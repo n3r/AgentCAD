@@ -467,8 +467,19 @@ current commit as `source.sha` *and* `dirty: true` beside it, so posting it
 would claim the committed bytes were measured when an uncommitted edit means
 they were not — commit `C` has the broken drawing, the local fix makes the run
 green, the gate passes, and the merge lands `C`. Posting such a report is
-refused (`validation_error`, CLI exit 2, nothing written and nothing audited);
-commit or stash and re-run. A `--ref` run is unaffected: it measured the commit
+refused — nothing written, nothing audited, the gate stays `skipped` — and the
+refusal reaches you differently on each surface:
+
+- **CLI** (`--proposal`/`--auto-proposal`): the message on stderr and **exit
+  2**. The report files are still written; only the post did not happen.
+- **Tool and route** (`run_checks {proposal}`, `POST .../checks`): the refusal
+  is a **receipt, not an error**. The report comes back normally — HTTP 200, no
+  top-level `error` — carrying `posted: {id, ok: false, error: {...}}` and a
+  `NOT posted` line in `warnings`. Discarding minutes of kernel work to say
+  "not posted" would help nobody, so **read `posted.ok`**: `status` and
+  `exit_code` describe the geometry and say nothing about the post.
+
+Commit or stash and re-run. A `--ref` run is unaffected: it measured the commit
 it materialized, and its `dirty` flag describes a tree it deliberately did not
 measure. CI runners are always clean, so the Action path never meets this.
 

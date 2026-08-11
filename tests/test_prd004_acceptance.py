@@ -74,6 +74,11 @@ from agentcad.core.tools import build_registry
 from agentcad.server.app import create_app
 
 from .conftest import BOX_SCRIPT
+# AC9 compares two reports of one project, and there is exactly one rule for
+# what may differ between them. Imported rather than copied: the copy that used
+# to live here had the same hole (it left the clock inside `stages[i].report`
+# alone) and would have kept the flake alive after the original was fixed.
+from .test_checks_api import _normalize
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = REPO_ROOT / "examples"
@@ -602,14 +607,6 @@ def test_ac8_without_the_fem_extra_a_check_skips_and_strict_flips_it(
 # ------------------------------------------------------------------- AC9
 
 
-def _normalize(report: dict) -> dict:
-    """Everything that cannot be identical between two runs of one project: the
-    clock, the host block and every duration."""
-    stages = [{**stage, "duration_s": 0.0} for stage in report["stages"]]
-    return {**report, "started": "", "finished": "", "duration_s": 0.0,
-            "host": {}, "stages": stages}
-
-
 @pytest.mark.slow
 def test_ac9_the_mcp_passthrough_and_the_cli_report_the_same_thing(
         stack, tmp_path):
@@ -618,7 +615,9 @@ def test_ac9_the_mcp_passthrough_and_the_cli_report_the_same_thing(
     MCP is a stdio proxy in front of ``POST /api/tools/{name}``, so the honest
     test of "over MCP" is that passthrough, driven through a ``TestClient``,
     against the real console script over the same project. The only differences
-    a consumer may see are the clock, the host block and the durations.
+    a consumer may see are the host block and the clocks —
+    :func:`_normalize` removes every one of them, at every depth, and nothing
+    else.
     """
     service, registry = stack
     assert "error" not in registry.call("create_project", {"name": "same"})

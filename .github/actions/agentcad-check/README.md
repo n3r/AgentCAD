@@ -107,7 +107,9 @@ Three rules make `exit-code` the only thing that decides the job:
   `key=value` line protocol, so a report status of `"red\nexit-code=0"` would
   otherwise forge a second line and hand the job a passing exit code;
 - `exit-code` is written by the check step itself, **last**, after that parser.
-  A report the parser refuses turns a `0` into a `2`: no verdict is not a pass.
+  A report the parser refuses is `2` whatever the check itself said: an
+  unreadable report is not a verdict, and "no verdict" is neither a pass nor
+  measured red geometry.
 
 ## Runner requirements
 

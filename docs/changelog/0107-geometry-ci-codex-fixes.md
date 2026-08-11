@@ -102,7 +102,8 @@ forged a second output line that replaced the verdict, and the job finished
   single-line form stays.
 - `exit-code` is written by the step that owns it, **last**, after the parser —
   and a parser refusal escalates a `0` to a `2`, because no verdict is not a
-  pass.
+  pass. *(Widened in entry 0108: a refusal is `2` whatever the check said, not
+  only when it said `0`.)*
 
 ### C8 (major) — CLI setup is inside the exit-code mapping
 
@@ -204,11 +205,17 @@ silently claims it stayed inside its budget.
   `self._deadline`/`self._min_volume`, and threading a new parameter through
   eleven methods would have rewritten every test that drives a stage directly —
   a large diff whose only purpose is to say the same thing differently.
-- The dirty-post refusal is a **contract change** on `post_to_proposal`
-  (`run_checks {proposal}` and `POST /checks` now answer `validation_error` for a
-  dirty working-tree report). It is the intended one: the alternative — posting
-  it and recording it as non-certifying — leaves a record whose only purpose is
-  to be disbelieved.
+- The dirty-post refusal is a **contract change** on `post_to_proposal`, which
+  raises a `ValidationError` for a dirty working-tree report. It is the intended
+  one: the alternative — posting it and recording it as non-certifying — leaves
+  a record whose only purpose is to be disbelieved. *(Correction, entry 0108:
+  `run_checks {proposal}` and `POST /checks` do **not** surface that as a
+  `validation_error`. `run_checks` catches it and returns the report it just
+  measured with `posted: {ok: false, error}` plus a `NOT posted` warning, at
+  HTTP 200 with no top-level `error` key — the refusal is a receipt, and only
+  the CLI turns it into exit 2.)*
 - Not taken here: `service.checks.last` is still mutated from `run()` on the
-  shared runner. It is a bounded dict of finished reports, not policy, and the
-  worst a race can do is evict one entry early.
+  shared runner. It is a bounded dict of finished reports, not policy. *(That
+  was wrong, and entry 0108 fixes it: `_remember` is the **last** statement of
+  `run()`, so its `RuntimeError: dictionary changed size during iteration` does
+  not evict an entry early — it escapes `run` and discards a finished report.)*

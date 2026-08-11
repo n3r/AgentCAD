@@ -236,6 +236,29 @@ def test_blown_budget_exits_two_with_a_partial_report_on_disk(green):
 
 
 @pytest.mark.slow
+def test_a_refused_work_dir_is_never_created(tmp_path):
+    """The overlap refusal (review W1) lives in ``CheckRunner._work_dir``, but
+    the CLI used to ``mkdir`` the path *before* the runner ever saw it — so
+    ``--work-dir <project>/scratch`` created ``scratch`` inside the user's
+    project and only then exited 2. Nothing was deleted, but the promise the
+    changelog made ("a refused path leaves nothing behind") was false on the
+    surface most people use.
+
+    Creating the directory is the runner's job, after it has accepted it.
+    """
+    proj = _copy_example(tmp_path / "refused", "cli_refused")
+    inside = proj / "scratch"
+
+    res = _cli("check", "--project", str(proj), "--stages", "build",
+               "--projects-dir", str(tmp_path / "projects"),
+               "--work-dir", str(inside), "--quiet")
+
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "overlaps" in res.stderr and str(inside) in res.stderr
+    assert not inside.exists(), "the refused work dir was created anyway"
+
+
+@pytest.mark.slow
 @pytest.mark.portability
 def test_a_project_outside_the_usual_roots_is_still_writable(tmp_path):
     """`--project .` on a checkout is *the* CI shape, and the checkout is
@@ -278,6 +301,12 @@ class _Runner:
 
     def run(self, proj, **kwargs):
         self.seen = dict(kwargs, project=proj)
+        # The real `CheckRunner._work_dir` creates the work dir itself, once
+        # `_refuse_overlap` has accepted it — the CLI no longer pre-creates it
+        # (F3). A fake that skipped the mkdir would make an unwritable
+        # `--work-dir` look like it worked.
+        if kwargs.get("work_dir"):
+            Path(kwargs["work_dir"]).mkdir(parents=True, exist_ok=True)
         if self.raises is not None:
             raise self.raises
         return self.report
@@ -419,7 +448,12 @@ def test_an_unwritable_work_dir_is_exit_two_not_a_traceback(wired, tmp_path,
     the try/except that maps a harness failure to exit 2, so a ``--work-dir``
     the user cannot create escaped as a traceback and process exit **1** — the
     code reserved for "the model is wrong", which automation reads as red
-    geometry."""
+    geometry.
+
+    Since F3 the ``mkdir`` is the runner's, inside ``run()`` — later, but under
+    the same mapping, so the contract is unchanged: exit 2 and a named message.
+    The kernel is up by then, and the ``finally`` stops it.
+    """
     blocked = tmp_path / "blocked"
     blocked.mkdir()
     blocked.chmod(0o500)
@@ -430,8 +464,8 @@ def test_an_unwritable_work_dir_is_exit_two_not_a_traceback(wired, tmp_path,
 
     err = capsys.readouterr().err
     assert "agentcad check" in err and "PermissionError" in err
-    # Nothing was started, so nothing had to be stopped.
-    assert wired.stopped is False
+    # The failure is now inside the run, so the kernel was up — and stopped.
+    assert wired.stopped is True
 
 
 def test_a_failure_after_the_kernel_starts_does_not_leak_workers(fake_kernel,

@@ -180,7 +180,18 @@ def register(registry, service) -> None:
         "commits it never measured. An unknown proposal id is a not_found "
         "error raised BEFORE anything is measured, and a merged or closed "
         "proposal is a conflict_error (a terminal proposal is never measured "
-        "again). On success the report carries a 'posted' receipt.",
+        "again). ALWAYS READ 'posted' — a refused post is a RECEIPT, not an "
+        "error: the report comes back normally (no top-level 'error', HTTP "
+        "200) carrying posted: {id, ok, error}, plus a 'NOT posted' line in "
+        "warnings, because throwing away minutes of kernel work to say 'not "
+        "posted' helps nobody. posted.ok is false when the proposal went "
+        "terminal while you were measuring, and when the report measured a "
+        "DIRTY working tree (its source.sha is the committed head, so posting "
+        "it would certify bytes it never measured — commit or stash and "
+        "re-run). 'status' and 'exit_code' describe the GEOMETRY and say "
+        "nothing about the post: a green, complete report whose posted.ok is "
+        "false certified nothing, and the proposal's checks gate is still "
+        "'skipped'.",
         schema({"project": _PROJ,
                 "ref": {"type": "string",
                         "description": "Branch, tag or commit to certify "
@@ -200,7 +211,9 @@ def register(registry, service) -> None:
                 "proposal": {"type": "string",
                              "description": "Proposal id to post the report "
                                             "to (it becomes that proposal's "
-                                            "checks gate)"}},
+                                            "checks gate) — read posted.ok in "
+                                            "the reply: a refused post is a "
+                                            "receipt, not an error"}},
                ["project"]),
         run_checks,
     ))
