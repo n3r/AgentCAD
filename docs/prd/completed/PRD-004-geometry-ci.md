@@ -1,9 +1,6 @@
 # PRD-004 — Geometry CI
 
-- **Status:** implemented — AC2–AC10 verified in
-  `tests/test_prd004_acceptance.py`; AC1 awaits the live GitHub Actions run
-  (see Verification). Moves to `prd/completed/` when that run is green and the
-  branch merges.
+- **Status:** completed — merged to main in PR #11 (AC1–AC10 verified)
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
