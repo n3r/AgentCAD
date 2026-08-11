@@ -121,7 +121,9 @@ undo/redo — a mutating pack needs NO per-call hook: publishing
 A part is a plain build123d script defining `PARAMS` (numeric specs with
 `default`, optional `min`/`max`/`unit`/`description`) and `build(p)` returning
 a `Part`/`Solid`/`Compound`. Optional additions: `connectors(p, part)` for
-assembly mates, and `from agentcad.toolkit import …` for robust ops. Full
+assembly mates, `SPECS` for executable design intent
+(`from agentcad.toolkit.specs import check_wall, …`), and
+`from agentcad.toolkit import …` for robust ops. Full
 contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
 
 ## build123d / OCCT gotchas (hard-won — read before touching geometry)
@@ -236,6 +238,108 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   not "no script changed": both are `errors[]` entries with `fatal: true` that
   force `ok: false` (the per-part FR8 degradation is separate and keeps
   `ok: true`).
+
+## Spec gotchas (PRD-003 — read before touching specs, the runner or the gate)
+
+- **Specs are code in the tree, not manifest state** — part scope in
+  `parts/<id>.py`'s `SPECS`, project scope in a root `specs.py`. `git add -A`
+  tracks them, so branching, restore, undo and merge are free. Use
+  `store.path_of` (authored, branch-resolved), never `canonical_path_of`.
+- **A failing spec never fails a rebuild.** Geometry lands, `ok` stays `true`,
+  the failure is signal. `pass`/`fail` (measured), `skip` (a named structural
+  inability, always with a `reason` **and** a `hint`) and `error` (the check
+  itself broke — "we do not know", not "it is fine") are four different facts
+  and must not be collapsed. Nothing about a check is ever an exception.
+- **A rebuild evaluates the shape tier only.** Assembly checks and FEM are
+  deferred and say so (`skip`/`deferred`); `run_specs` evaluates all three
+  tiers. A 600 s solve inside a slider drag is not "without friction".
+- **`SPECS` is in the script, so it is in the cache key** — editing a spec
+  forces one kernel rebuild of a part whose geometry did not change. That is
+  deliberate: splitting geometry identity from spec identity risks serving a
+  stale mesh.
+- **A part that declares nothing is absent, not green.** `specs: null` on a
+  rebuild means "none declared", which is not "not evaluated"; a spec-less part
+  has no row in the report and a requirement with zero checks does not exist.
+  The presence scan is `ast.parse` and **never executes** the script — that is
+  what makes a spec-less project cost nothing.
+- **The `specs` gate is fail-closed, and it never returns `pending`.** A
+  declared check that was not evaluated is red, and `allow_invalid` does not
+  waive it (that flag means "override the *kernel's* verdict on geometry",
+  nothing else). `ProposalManager.merge` blocks a `fail` and **nothing else**,
+  so every non-green outcome this provider can produce is a `fail` — including
+  a source head that moved mid-evaluation, which is a `fail` whose summary says
+  to retry (the verdict is not memoized, so the retry re-measures). `pending`
+  stays defined in PRD-002 for other providers; this one has no use for it.
+  Three gate-only divergences from a `run_specs` report, all fail-closed:
+  **every** skip is a `fail` in the gate whatever its reason
+  (`fem_extra_missing`, `mesh_only`, `unsupported_scope`, `no_instances`, …) —
+  "declared but not measured" is the hole the gate exists to close, and the
+  reason travels in `details.reason` plus `details.skipped_in_report`; a
+  spec module that will not read or declare is a synthetic `declaration` check
+  row (an `errors[]` entry alone is invisible to both `report_status` and the
+  gate); and a `budget_exceeded` verdict **is memoized** for that head, so the
+  gate stays red with that reason until the head moves or `run_specs` warms the
+  caches (which drops the memoized verdict). The memo can only keep a red,
+  never make one green.
+- **`declares_specs` fails closed on a syntax error.** A script with no AST is
+  text-scanned for a line-anchored `SPECS` binding: answering "declares
+  nothing" made the gate classify a visibly spec-declaring part as spec-less
+  and skip it, so a declared check never became red. A false positive costs one
+  error row on a script that already fails its build.
+- **A declaration is a shape, not a marker.** `toolkit.specs.is_declaration`
+  validates every key a constructor emits (`spec`/`kind`/`scope`/`name`/
+  `limit`/`options`/`requirement`); an incomplete hand-written `SPECS` entry is
+  a `contract_error` naming the key, never a `KeyError` in the server process
+  (which is a 500). Readers still use `.get` with defaults so a format drift
+  degrades. Non-finite numbers (`nan`, `inf`) are rejected at construction and
+  again at evaluation: every ordered comparison against NaN is false, so a NaN
+  limit reports *pass* while measuring nothing.
+- **A spec cache key covers every input the check reads.** The assembly sidecar
+  key includes the mate graph and each referenced part's PMI dims (what
+  `check_stackup` sums — neither moves a part cache key), and the cached
+  `fem_static` row is keyed by the material's `E` (the part cache key covers
+  density only, while the solver is handed `E_mpa` and displacement scales with
+  1/E).
+- **`evaluate_specs(proj, ref=None)` means the CALLER's branch** — resolve it
+  with `branches.current`, and stamp/key the verdict with *that* branch's head.
+  The canonical repo head is the default branch's; using it hands one client
+  another branch's verdict through the shared memo. The memo key is
+  `(project, branch, head)`.
+- **The gate budget is a deadline, not a between-parts check.** Every kernel
+  call made under it takes `min(its own ceiling, remaining)` — a 300 s
+  `spec_eval` or a 600 s `fem_static` inside a 30 s budget is not a budget —
+  and a call with nothing left is refused as a `budget_exceeded` `KernelError`.
+- **The `.specs.json` sidecar caches failures too**, keyed like the result: the
+  same script and params produce the same `contract_error`, and the UI re-reads
+  a part on every rebuild. `run_specs` is the only surface that re-measures a
+  cached failure (and the only exit from a cached `spec_declare` failure or a
+  memoized budget verdict) — say so in any message that tells a user to retry.
+- **A `check_that` predicate gets a COPY of the metrics and runs after the
+  built-in kinds.** Predicates are untrusted script code; one that writes to
+  the shared metrics dict must not be able to change what another check
+  measured. Records stay in declared order, and evaluation order is not a
+  contract a predicate may rely on.
+- **Three live name collisions:** `service._spec_cache` already means the
+  PARAMS spec cache, `inspector.js`'s `renderedSpecJson` already means the
+  PARAMS spec JSON, and `packet.py`'s `params_diff` rows already use
+  `"source": "spec"` for the PARAMS declaration. Do not reuse any of them.
+- **`_min_wall` measures along the inward face normal from a UV sample grid** —
+  it over-estimates on non-parallel walls, can miss a feature finer than the
+  sample spacing, and finds chamfers and fillet runouts that are genuinely
+  thinner than the nominal wall (the rocketry nozzle's 3 mm wall measures
+  1.02 mm at `grid=4`). It is a sampled ray cast, not a medial-axis
+  measurement, and must never be described as one. `check_wall`'s `grid` is
+  the knob and is quadratic in cost; **pick a limit from a measurement and pin
+  the grid**, because changing it changes the number.
+- **The runner reads `service.branches` inside its methods, never in
+  `__init__`** — `tools_specs` loads before `tools_versioning` — and
+  `check_stackup` calls `tools_stackup.compute_stackup` directly rather than
+  through the registry, for the same reason.
+- **The rebuild seam is a wrapper, not a `service.py` edit**
+  (`install_rebuild_specs`, idempotent by attribute marker). It wraps
+  `_rebuild` and `get_part` rather than the three rebuild-returning tools,
+  because the browser's `PATCH .../params` route calls `service.set_params`
+  directly and a tool wrapper would miss the UI entirely.
 
 ## Conventions (match these)
 

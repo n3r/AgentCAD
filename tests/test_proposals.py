@@ -670,6 +670,7 @@ def test_a_comment_does_not_lift_a_request_for_changes(demo):
 
 def test_specs_and_checks_are_skipped_with_no_providers(demo):
     service, _registry, manager = demo
+    service.gate_providers = []   # PRD-003 appends one; this is the no-provider case
     assert getattr(service, "gate_providers", None) in (None, [])
     pid = _create(manager)["id"]
 

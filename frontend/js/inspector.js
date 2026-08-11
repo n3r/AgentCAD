@@ -154,6 +154,7 @@ function render() {
     syncParamValues(part);
   }
   renderWarnings(part);
+  renderSpecs(part);
   renderMetrics(part);
   editor.setPart(isReference ? null : part.id, isReference ? "" : part.script);
 
@@ -189,6 +190,7 @@ function buildParamControls(part) {
     paramsPane.innerHTML =
       '<div class="pane-note">This part exposes no parameters. Define a PARAMS dict in the script.</div>';
     appendWarningsHost();
+    appendSpecsHost();
     return;
   }
   for (const [name, entry] of Object.entries(spec)) {
@@ -277,6 +279,7 @@ function buildParamControls(part) {
     paramsPane.appendChild(wrap);
   }
   appendWarningsHost();
+  appendSpecsHost();
 }
 
 function buildNumericControls(ctl, name, entry, value, isInt) {
@@ -339,6 +342,18 @@ function appendWarningsHost() {
   paramsPane.appendChild(w);
 }
 
+// Design-spec chips sit right below the warnings, because a failing spec is
+// the warnings tier. The host is appended by the pane builders (never by
+// renderSpecs) so it is torn down and re-created with the controls and can
+// never accumulate; it stays empty — and invisible, via `.spec-block:empty` —
+// for a part that declares nothing.
+function appendSpecsHost() {
+  const s = document.createElement("div");
+  s.className = "spec-block";
+  s.id = "part-specs";
+  paramsPane.appendChild(s);
+}
+
 // Reference (imported) parts have no editable parameters; show provenance in
 // the Parameters pane instead so the pane is never blank.
 function buildReferencePane(part) {
@@ -379,6 +394,9 @@ function buildReferencePane(part) {
 
   paramsPane.appendChild(block);
   appendWarningsHost();
+  // A reference part declares no specs, so this host stays empty — but it is
+  // appended anyway so renderSpecs has one contract, not two.
+  appendSpecsHost();
 }
 
 function kv(key, value) {
@@ -442,6 +460,143 @@ function renderWarnings(part) {
   }
 }
 
+// -------------------------------------------------------------- design specs
+
+// One chip per declared check, live on every rebuild: `part.specs` rides the
+// part payload (get_part and the PATCH post-state both carry it), so this
+// needs no new event and no new state key.
+//
+// `part.specs == null` — the part declares nothing — renders NOTHING: no
+// header, no "no specs" note. "Nothing declared" and "declared but not
+// evaluated" are different facts and only the second one is worth pixels.
+function renderSpecs(part) {
+  const host = document.getElementById("part-specs");
+  if (!host) return;
+  host.textContent = "";
+  const specs = part.specs;
+  if (!specs) return;
+
+  const checks = specs.checks || [];
+  const note = specSummaryText(specs, checks);
+  if (note) {
+    const line = document.createElement("div");
+    line.className = "spec-summary";
+    line.textContent = note;
+    host.appendChild(line);
+  }
+
+  const chips = document.createElement("div");
+  chips.className = "spec-chips";
+  if (checks.length) {
+    for (const check of checks) chips.appendChild(specChip(check));
+  } else if (specs.status === "error") {
+    // Residue with no records at all (the rebuild wrapper's catch-all): say
+    // that the specs did not run rather than showing an empty, reassuring row.
+    chips.appendChild(
+      specChip({ name: "specs", status: "error", message: specError(specs) })
+    );
+  }
+  // `SPECS = []` declares nothing to show: an empty row is a 12px strip of
+  // margin that reads as "something is here", which is worse than nothing.
+  if (chips.childElementCount) host.appendChild(chips);
+}
+
+// Only a red strip gets a summary line — a green one is just chips (the
+// design's rule: no chrome for the healthy case).
+function specSummaryText(specs, checks) {
+  if (specs.status === "error") {
+    return `Design specs could not be evaluated — ${specError(specs)}`;
+  }
+  const s = specs.summary || {};
+  const failed = s.failed || 0;
+  const errors = s.errors || 0;
+  if (!failed && !errors) return "";
+  const parts = [];
+  if (failed) parts.push(`${failed} failing`);
+  if (errors) parts.push(`${errors} errored`);
+  const total = s.total != null ? s.total : checks.length;
+  return `${parts.join(", ")} of ${total} design ${
+    total === 1 ? "spec" : "specs"
+  }`;
+}
+
+function specError(specs) {
+  const err = specs.error || {};
+  return err.message || err.type || "unknown error";
+}
+
+// The chip atom, modelled on proposals.js's gateChip. createElement +
+// textContent only: names, requirements and messages are script-controlled
+// strings, so the template-literal row()/arow() builders above are the wrong
+// precedent here.
+function specChip(check) {
+  const status = check.status || "error";
+  const chip = document.createElement("span");
+  chip.className = `spec-chip spec-${status}`;
+  chip.textContent = check.name || check.id || check.kind || "check";
+  chip.title = specTitle(check, status);
+  return chip;
+}
+
+function specTitle(check, status) {
+  const lines = [`${check.name || "check"} — ${status}`];
+  const measured = specMeasured(check);
+  const limit = specLimit(check.limit);
+  if (measured && limit) lines.push(`${measured} vs ${limit}`);
+  else if (measured) lines.push(measured);
+  else if (limit) lines.push(limit);
+  if (check.requirement) lines.push(`requirement: ${check.requirement}`);
+  if (check.message) lines.push(check.message);
+  if (status === "skip" && check.reason) {
+    lines.push(check.hint ? `${check.reason} — ${check.hint}` : check.reason);
+  }
+  return lines.join("\n");
+}
+
+function specMeasured(check) {
+  const value = check.measured;
+  if (value == null) return "";
+  const unit = check.unit ? ` ${check.unit}` : "";
+  if (Array.isArray(value)) return `${value.map(specNum).join(" x ")}${unit}`;
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return `${specNum(value)}${unit}`;
+  return String(value);
+}
+
+// The limit dict is kind-specific ({min_g}, {within_mm: [x, y, z]},
+// {max_vm_mpa}, …), so it is rendered generically rather than switched on
+// kind: a key this build has never heard of still reads as something ("max
+// vm 200 MPa") instead of vanishing. Longest suffix first — _mm3 before _mm.
+const LIMIT_UNITS = [
+  ["_mm3", "mm3"],
+  ["_mpa", "MPa"],
+  ["_mm", "mm"],
+  ["_deg", "deg"],
+  ["_g", "g"],
+  ["_n", "N"],
+];
+
+function specLimit(limit) {
+  if (!limit || typeof limit !== "object") return "";
+  const parts = [];
+  for (const [key, value] of Object.entries(limit)) {
+    if (value == null) continue;
+    const shown = Array.isArray(value)
+      ? value.map(specNum).join(" x ")
+      : typeof value === "number"
+        ? specNum(value)
+        : String(value);
+    const hit = LIMIT_UNITS.find(([suffix]) => key.endsWith(suffix));
+    const label = (hit ? key.slice(0, -hit[0].length) : key).replace(/_/g, " ");
+    parts.push(`${label} ${shown}${hit ? ` ${hit[1]}` : ""}`.trim());
+  }
+  return parts.join(", ");
+}
+
+function specNum(value) {
+  return typeof value === "number" ? String(Number(value.toPrecision(4))) : String(value);
+}
+
 // ------------------------------------------------------------- param patch
 
 function queueParam(name, value) {
@@ -485,6 +640,10 @@ function applyRebuildResult(partId, result, values) {
     if (isCurrent) {
       Object.assign(state.part.params, values || {});
       state.part.metrics = result.metrics;
+      // The rebuild post-state carries the shape-tier spec summary (absent on
+      // a failed build), so the chips repaint with this response instead of
+      // waiting for the rebuild_finished → refreshPartDetail round trip.
+      if ("specs" in result) state.part.specs = result.specs;
       state.part.status = { state: "ok", error: null, warnings: result.warnings || [] };
       setState({ part: state.part });
       hideBanner();
@@ -498,6 +657,10 @@ function applyRebuildResult(partId, result, values) {
         error: result.error,
         warnings: [],
       };
+      // A failed rebuild carries no `specs` key — there is no shape to assert
+      // over — so the chips from the LAST good build would sit, green, beside
+      // a red build banner. Clear them: nothing evaluated is not "all fine".
+      state.part.specs = null;
       if (values) Object.assign(state.part.params, values);
       setState({ part: state.part });
       showBanner(result.error);

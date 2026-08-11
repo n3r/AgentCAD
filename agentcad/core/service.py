@@ -141,10 +141,13 @@ class AgentCADService:
         if commit:
             self.undo_cursor.on_snapshot(proj, commit, message)
 
-    def _resolved_instances(self, proj: str):
+    def _resolved_instances(self, proj: str, timeout_s: float | None = None):
         """Assembly instances with any declarative mates resolved to concrete
         transforms. Seam: when the mates module is present it resolves mate
-        chains (and rejects cycles); otherwise instances pass through."""
+        chains (and rejects cycles); otherwise instances pass through.
+
+        ``timeout_s`` bounds the resolution for a caller working under a
+        deadline (PRD-003's spec gate budget); None keeps the flat ceiling."""
         instances = self.store.instances(proj)
         if not any(getattr(i, "mate", None) for i in instances):
             return instances
@@ -152,7 +155,7 @@ class AgentCADService:
             from . import mates
         except ImportError:
             return instances
-        return mates.resolve(self, proj, instances)
+        return mates.resolve(self, proj, instances, timeout_s=timeout_s)
 
     # ------------------------------------------------------------- projects
 
@@ -496,8 +499,13 @@ class AgentCADService:
             item["params"] = record.params
         return item
 
-    def check_interference(self, proj: str, min_volume: float = 0.001) -> dict:
-        resolved = self._resolved_instances(proj)
+    def check_interference(self, proj: str, min_volume: float = 0.001,
+                           timeout_s: float | None = None) -> dict:
+        # timeout_s overrides the default ceiling for a caller working under a
+        # deadline (PRD-003's spec gate budget); None keeps the historical 600 s.
+        # The mate pass is under the same deadline and gets the same bound
+        # (clamped to its own, smaller ceiling by mates.resolve).
+        resolved = self._resolved_instances(proj, timeout_s=timeout_s)
         items = []
         for inst in resolved:
             record = self.store.get_part(proj, inst.part)
@@ -508,7 +516,8 @@ class AgentCADService:
             return {"pairs": [], "checked": len(items)}
         result = self.kernel.request(
             "interference", {"items": items, "min_volume": min_volume},
-            timeout_s=600.0,  # large assemblies: pairs grow quadratically
+            # large assemblies: pairs grow quadratically
+            timeout_s=600.0 if timeout_s is None else timeout_s,
         )
         out = {"pairs": result["pairs"], "checked": len(items)}
         if result.get("skipped_mesh"):

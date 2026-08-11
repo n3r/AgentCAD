@@ -8,6 +8,8 @@ parameter extreme.
 
 from build123d import *
 
+from agentcad.toolkit.specs import check_wall
+
 PARAMS = {
     "outer_d": {"default": 140.0, "min": 60.0, "max": 400.0, "unit": "mm",
                 "description": "Flange outer diameter"},
@@ -22,6 +24,18 @@ PARAMS = {
     "bolt_circle_d": {"default": 118.0, "min": 30.0, "max": 380.0, "unit": "mm",
                       "description": "Bolt circle diameter (auto-clamped to fit)"},
 }
+
+# INT-003 — the bolt circle must keep real material between the bolt holes and
+# both the bore and the rim. ``build`` clamps ``bolt_circle_d`` between them;
+# this check *measures* the result instead of trusting the clamp. At the
+# shipped bolt circle the thinnest sampled point is the 6.5 mm rim ligament
+# (outer_r - bc_r - bolt_r), and crowding the circle outward
+# (``bolt_circle_d = 130``) drops it under 1 mm. ``grid=4`` is pinned: a finer
+# grid samples the rim and bore chamfers instead of the ligament.
+SPECS = [
+    check_wall(min_mm=2.0, grid=4, name="bolt_circle_ligament",
+               requirement="INT-003"),
+]
 
 
 def build(p):
