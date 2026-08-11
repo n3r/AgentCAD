@@ -40,11 +40,16 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import platform
 import re
+import sys
 import time
 
 import agentcad
 
+from ..kernel.client import KernelError
+from . import specs as _specs
+from .model import AppError, ValidationError
 from .specs import assign_ids, group_requirements, report_status, summarize
 
 #: Report format version. A consumer reads this first; :func:`validate_report`
@@ -630,3 +635,601 @@ def declares_flat_pattern(script: str) -> bool:
         _FLAT_MEMO.clear()
     _FLAT_MEMO[key] = answer
     return answer
+
+
+# ------------------------------------------------------------ the sequencer
+
+
+#: Hints for the skips the *runner* emits. A skip row always says why and what
+#: to do about it (:func:`make_item` enforces it), so each of these is one
+#: half of a contract, not decoration.
+_BUDGET_HINT = ("the run's --budget ran out before this item was reached; "
+                "raise --budget, narrow --stages, or check fewer parts")
+_MESH_HINT = ("booleans on an imported STL mesh segfault OCCT, so this "
+              "instance was excluded from the pairwise interference check — "
+              "an empty pair list is therefore not proof that it clears; "
+              "import the part as STEP to include it")
+_NOT_SCRIPT_HINT = ("drawings and flat patterns are generated from a part "
+                    "script, and a reference (imported) part has none")
+
+#: The kind a whole-stage failure is filed under, when a stage raises something
+#: nobody predicted and the runner has to name the stage itself as the subject.
+_STAGE_KIND = {"build": "part", "assembly": "instance", "specs": "check",
+               "drawings": "drawing"}
+
+
+def _elapsed(started: float) -> float:
+    return round(time.monotonic() - started, 3)
+
+
+def _payload(exc: BaseException) -> dict:
+    """Any exception as the structured payload the tools already return.
+
+    A ``KernelError`` carries its own (``details.traceback``, ``details.line``,
+    the Error Doctor's ``details.hint``) and is passed through untouched — FR7
+    is literal: a machine consumer of a check report gets exactly what an agent
+    calling ``update_part_script`` would have got. An ``AppError`` is named the
+    way :meth:`ToolRegistry.call` names it, so one error family reads the same
+    on every surface.
+    """
+    if isinstance(exc, KernelError):
+        return exc.to_payload()
+    if isinstance(exc, AppError):
+        name = type(exc).__name__.replace("Error", "").lower() + "_error"
+        return {"type": name, "message": exc.message, "details": exc.details}
+    return {"type": type(exc).__name__, "message": str(exc), "details": {}}
+
+
+class CheckRunner:
+    """The four stages, in order, over one project — and nothing else.
+
+    Every stage is a call into a surface that already exists and is reviewed:
+    ``service._ensure_built`` per manifest part, ``_resolved_instances`` +
+    ``check_interference``, ``SpecRunner.run``, and the registered
+    ``generate_drawing`` / ``flat_pattern`` tools. This class orders them,
+    budgets them, and turns their results into rows. **It measures nothing**,
+    which is why it needs no kernel handler and imports no geometry.
+
+    Two rules the code encodes and a reader should not have to rediscover:
+
+    * **Nothing is captured in ``__init__``.** ``service.specs`` and
+      ``service.branches`` are installed by packs that load *after*
+      ``tools_run_checks`` (``s`` and ``v`` after ``r``), so they are read
+      inside the methods that use them — a runner built at registration time
+      would otherwise capture ``None`` forever.
+    * **A failing, skipped or errored item is payload, never an exception.**
+      The only exceptions that leave :meth:`run` are the harness's own —
+      an unknown project (``NotFoundError``) or an unknown stage
+      (``ValidationError``) — because those mean *we could not produce a
+      verdict*, which is exit 2, not a red report.
+
+    ``budget_s`` is a **deadline read between items**, on ``time.monotonic``
+    (an NTP step must never move a budget). The honest limitation, which is
+    also in ``--help`` and the docs: ``service._ensure_built`` hard-codes 300 s
+    and the drawing tools 120 s, neither taking a ``timeout_s``, so the
+    worst-case overshoot is **one in-flight kernel call**. The two assembly
+    calls do take one and get exactly what is left.
+    """
+
+    def __init__(self, service, registry=None):
+        # No `service.specs` / `service.branches` here — see the class
+        # docstring; the pack that builds this loads before both of theirs.
+        self.service = service
+        self._registry = registry
+        # Per-run state, reset by `run`: the deadline and whether anything was
+        # cut short by it (which is what `complete: false` means).
+        self._deadline: float | None = None
+        self._truncated = False
+        self._min_volume = 0.001
+
+    # ------------------------------------------------------------- the budget
+
+    def _remaining(self) -> float | None:
+        """Seconds left, or None when the run is unbounded — the value the
+        assembly calls take as their ``timeout_s``."""
+        if self._deadline is None:
+            return None
+        return max(0.0, self._deadline - time.monotonic())
+
+    def _out_of_budget(self) -> bool:
+        return self._deadline is not None and time.monotonic() > self._deadline
+
+    def _budget_item(self, stage: str, kind: str, subject: str, seen: set,
+                     warnings: list[str]) -> dict:
+        """One item the budget never reached, and the flag that makes the
+        whole report ``complete: false`` (and therefore exit 2)."""
+        self._truncated = True
+        return make_item(stage, kind, subject, "skip",
+                         "not reached: the run's budget was exhausted before "
+                         "this item was measured",
+                         reason="budget_exceeded", hint=_BUDGET_HINT,
+                         seen=seen, warnings=warnings)
+
+    # ---------------------------------------------------------------- the run
+
+    def run(self, proj: str, *, ref: str | None = None,
+            stages: tuple[str, ...] = STAGES, strict: bool = False,
+            budget_s: float | None = None, min_volume: float = 0.001,
+            verify_determinism: bool = False, sha: str | None = None,
+            ref_label: str | None = None,
+            work_dir: str | None = None) -> dict:
+        """Certify *proj* and answer with one ``schema: 1`` report.
+
+        *stages* selects a subset; the unselected ones still appear, as
+        ``skip``/``not_selected``, so a consumer never has to guess whether a
+        stage was green or absent. *strict* changes only the derived verdict
+        (Decision 6). *sha* and *ref_label* are **provenance** — the host VCS's
+        commit and ref name, recorded and never resolved (Decision 9).
+
+        *ref*, *verify_determinism* and *work_dir* are slice 3's: checking a
+        ref materializes a throwaway ``git worktree`` and runs a second,
+        ephemeral service against it. The seam is declared here and raises
+        rather than quietly measuring the working tree and calling it a ref.
+        """
+        if ref is not None:
+            raise NotImplementedError(
+                "checking a ref materializes a detached git worktree and runs "
+                "an ephemeral service against it (PRD-004 slice 3); until "
+                "then omit --ref to check the working tree")
+        if verify_determinism:
+            raise NotImplementedError(
+                "--verify-determinism builds every part a second time into a "
+                "cold cache and compares the bytes (PRD-004 slice 3)")
+
+        selected = self._selected(stages)
+        started_at = _now()
+        started = time.monotonic()
+        self._deadline = None if budget_s is None else started + float(budget_s)
+        self._truncated = False
+        self._min_volume = float(min_volume)
+
+        manifest = self.service.store.manifest(proj)     # NotFoundError: exit 2
+        seen: set[str] = set()
+        warnings: list[str] = []
+        errors: list[dict] = []
+        blocks = [self._stage(name, proj, selected, seen, warnings, errors)
+                  for name in STAGES]
+        return finalize_report(
+            manifest.get("name") or proj, blocks,
+            source=self._source(proj, sha, ref_label), host=self._host(),
+            started=started_at, duration_s=time.monotonic() - started,
+            strict=strict, complete=not self._truncated, warnings=warnings,
+            errors=errors)
+
+    def _selected(self, stages) -> set[str]:
+        names = tuple(STAGES if stages is None else stages)
+        unknown = [name for name in names if name not in STAGES]
+        if unknown:
+            raise ValidationError(
+                f"unknown check stage(s) {', '.join(repr(n) for n in unknown)};"
+                f" expected any of {', '.join(STAGES)}",
+                {"stages": list(STAGES), "unknown": unknown})
+        return set(names)
+
+    def _stage(self, name: str, proj: str, selected: set[str], seen: set,
+               warnings: list[str], errors: list[dict]) -> dict:
+        """One stage block — dispatched, timed, and never allowed to raise.
+
+        An unexpected exception out of a stage is *this program's* fault as
+        much as the model's, so it becomes one ``error`` item plus a
+        ``report.errors[]`` entry and the run continues: the stages after it
+        still carry information, and a report that stops at the first surprise
+        is worth less than one that names it.
+        """
+        if name not in selected:
+            return make_stage(name, reason="not_selected")
+        if self._out_of_budget():
+            self._truncated = True
+            return make_stage(name, reason="budget_exceeded")
+        handler = {"build": self._stage_build,
+                   "assembly": self._stage_assembly,
+                   "specs": self._stage_specs,
+                   "drawings": self._stage_drawings}[name]
+        started = time.monotonic()
+        try:
+            return handler(proj, seen, warnings, errors, started)
+        except Exception as exc:  # noqa: BLE001 — a stage never propagates
+            payload = _payload(exc)
+            errors.append({**payload, "stage": name, "fatal": True})
+            item = make_item(name, _STAGE_KIND[name], name, "error",
+                             f"the {name} stage did not complete: "
+                             f"{payload['message']}",
+                             error=payload, seen=seen, warnings=warnings)
+            return make_stage(name, [item], duration_s=_elapsed(started))
+
+    # -------------------------------------------------------- stage 1: build
+
+    def _stage_build(self, proj: str, seen: set, warnings: list[str],
+                     errors: list[dict], started: float) -> dict:
+        """One row per manifest part, through the same ``_ensure_built`` that
+        ``get_assembly``, ``merge._validate`` and the packet already use — so
+        the cache the app warms is the cache a check hits."""
+        items = []
+        for entry in self.service.store.manifest(proj)["parts"]:
+            part_id = entry["id"]
+            if self._out_of_budget():
+                items.append(self._budget_item("build", "part", part_id, seen,
+                                               warnings))
+                continue
+            items.append(self._build_item(proj, part_id, seen, warnings,
+                                          errors))
+        return make_stage("build", items, duration_s=_elapsed(started))
+
+    def _build_item(self, proj: str, part_id: str, seen: set,
+                    warnings: list[str], errors: list[dict]) -> dict:
+        cached = self._is_cached(proj, part_id)
+        reference = self._is_reference(proj, part_id)
+        try:
+            result = self.service._ensure_built(proj, part_id)
+        except Exception as exc:  # noqa: BLE001 — `_ensure_built` converts a
+            # KernelError into `ok: false` already; this is the defensive edge
+            # (a missing script file, an unreadable import) that must still be
+            # one row rather than the end of the run.
+            payload = _payload(exc)
+            errors.append({**payload, "stage": "build", "part": part_id})
+            return make_item("build", "part", part_id, "error",
+                             f"the build did not complete: "
+                             f"{payload['message']}", error=payload,
+                             seen=seen, warnings=warnings)
+        if not result.get("ok"):
+            payload = result.get("error") or {
+                "type": "kernel_error", "message": "the build failed",
+                "details": {}}
+            return make_item("build", "part", part_id, "fail",
+                             f"build failed: {payload.get('message')}",
+                             error=payload, details={"cached": cached},
+                             seen=seen, warnings=warnings)
+        warnings.extend(f"{part_id}: {warning}"
+                        for warning in result.get("warnings") or [])
+        metrics = result.get("metrics") or {}
+        details = {"cache_key": result.get("cache_key"),
+                   "volume_mm3": metrics.get("volume_mm3"),
+                   "mass_g": metrics.get("mass_g"),
+                   "n_solids": metrics.get("n_solids"),
+                   "is_valid": metrics.get("is_valid"),
+                   "cached": cached}
+        if metrics.get("is_valid") is False and not reference:
+            # PRD divergence, recorded in the design (Decision 3): the kernel
+            # reports validity for the whole shape only, so this row says
+            # exactly that and carries the per-solid metrics beside it.
+            return make_item("build", "part", part_id, "fail",
+                             "built, but the kernel reports the shape is not "
+                             "valid B-rep geometry",
+                             details={**details,
+                                      "solids": metrics.get("solids")},
+                             seen=seen, warnings=warnings)
+        if metrics.get("is_valid") is False:
+            # An IMPORTED part's whole-shape flag is not a verdict on a model
+            # anybody here authored: `Compound.is_valid` over a 180-solid STEP
+            # assembly is routinely false, which is why `test_examples` exempts
+            # reference parts from it and `import_cad_file` merely reports it.
+            # So the row passes and the fact is raised as a warning — loudly,
+            # in both renderings, but not as a red nobody can act on.
+            warnings.append(
+                f"{part_id}: the imported geometry reports is_valid=false on "
+                f"the whole shape ({metrics.get('n_solids')} solids); "
+                f"validity is reported for imported parts, never enforced")
+        return make_item(
+            "build", "part", part_id, "pass",
+            f"built{' from cache' if cached else ''} — "
+            f"{_number(metrics.get('volume_mm3'))} mm³, "
+            f"{_number(metrics.get('mass_g'))} g, "
+            f"{metrics.get('n_solids', 0)} solid(s), "
+            + ("valid" if metrics.get("is_valid")
+               else "is_valid=false (imported: reported, not enforced)"),
+            details=details, seen=seen, warnings=warnings)
+
+    def _is_reference(self, proj: str, part_id: str) -> bool:
+        try:
+            return self.service.store.get_part(proj, part_id).kind == "reference"
+        except Exception:  # noqa: BLE001 — an unreadable manifest entry is
+            return False   # already the build's problem, not this question's
+
+    def _is_cached(self, proj: str, part_id: str) -> bool:
+        """Whether this part's current cache key is already on disk.
+
+        Observed **before** the build, never inferred from it: ``_ensure_built``
+        returns the same shape either way, and guessing afterwards would report
+        every part as cached.
+        """
+        try:
+            record = self.service.store.get_part(proj, part_id)
+            key = self.service._cache_key_for(proj, record)
+            return (self.service.store.cache_dir(proj) / f"{key}.acm").is_file()
+        except Exception:  # noqa: BLE001 — provenance must never break a row
+            return False
+
+    # ----------------------------------------------------- stage 2: assembly
+
+    def _stage_assembly(self, proj: str, seen: set, warnings: list[str],
+                        errors: list[dict], started: float) -> dict:
+        """The mate pass and the pairwise interference check, through the
+        **service methods** — the ``check_interference`` tool has no
+        ``timeout_s`` in its schema, so a budget could not reach it.
+        """
+        if len(self.service.store.instances(proj)) < 2:
+            return make_stage("assembly", reason="no_instances",
+                              duration_s=_elapsed(started))
+        try:
+            resolved = self.service._resolved_instances(
+                proj, timeout_s=self._remaining())
+        except (AppError, KernelError) as exc:
+            payload = _payload(exc)
+            # A mate that will not resolve is the model being wrong (`fail`);
+            # a kernel that broke mid-resolution is "we do not know" (`error`).
+            status = "error" if isinstance(exc, KernelError) else "fail"
+            if status == "error":
+                errors.append({**payload, "stage": "assembly"})
+            item = make_item("assembly", "mate", "mates", status,
+                             f"the assembly's mates do not resolve: "
+                             f"{payload['message']}", error=payload,
+                             seen=seen, warnings=warnings)
+            return make_stage("assembly", [item], duration_s=_elapsed(started))
+
+        pairs: list[dict] = []
+        mesh: list[str] = []
+        extra: list[dict] = []
+        if self._out_of_budget():
+            extra.append(self._budget_item("assembly", "pair", "interference",
+                                           seen, warnings))
+        else:
+            try:
+                result = self.service.check_interference(
+                    proj, self._min_volume, timeout_s=self._remaining())
+            except Exception as exc:  # noqa: BLE001 — one row, not a traceback
+                payload = _payload(exc)
+                errors.append({**payload, "stage": "assembly"})
+                extra.append(make_item(
+                    "assembly", "pair", "interference", "error",
+                    f"the interference check did not complete: "
+                    f"{payload['message']}", error=payload, seen=seen,
+                    warnings=warnings))
+            else:
+                pairs = result.get("pairs") or []
+                mesh = result.get("skipped_mesh") or []
+
+        # The instance rows are built AFTER the interference call on purpose:
+        # an instance excluded from it is a `skip`, and one instance must have
+        # exactly one row (a pass row plus a skip row would be two ids for the
+        # same subject, and the second would silently become `…#2`).
+        excluded = set(mesh)
+        items = [self._instance_item(instance, excluded, seen, warnings)
+                 for instance in resolved]
+        items += [self._pair_item(pair, seen, warnings) for pair in pairs]
+        items += extra
+        return make_stage("assembly", items, duration_s=_elapsed(started))
+
+    def _instance_item(self, instance, excluded: set[str], seen: set,
+                       warnings: list[str]) -> dict:
+        details = {"part": instance.part,
+                   "mated": bool(getattr(instance, "mate", None)),
+                   "position": list(instance.position),
+                   "rotation_deg": list(instance.rotation_deg)}
+        if instance.id in excluded:
+            return make_item("assembly", "instance", instance.id, "skip",
+                             f"placed, but excluded from the interference "
+                             f"check: {instance.part} is an imported mesh",
+                             reason="mesh_only", hint=_MESH_HINT,
+                             details=details, seen=seen, warnings=warnings)
+        return make_item("assembly", "instance", instance.id, "pass",
+                         f"placed{' by its mate' if details['mated'] else ''} "
+                         f"at {_point(instance.position)}", details=details,
+                         seen=seen, warnings=warnings)
+
+    def _pair_item(self, pair: dict, seen: set, warnings: list[str]) -> dict:
+        a, b = pair.get("a"), pair.get("b")
+        volume = pair.get("volume_mm3")
+        return make_item("assembly", "pair", f"{a} ↔ {b}", "fail",
+                         f"{a} and {b} overlap by {_number(volume)} mm³",
+                         details={"a": a, "b": b, "volume_mm3": volume},
+                         seen=seen, warnings=warnings)
+
+    # -------------------------------------------------------- stage 3: specs
+
+    def _stage_specs(self, proj: str, seen: set, warnings: list[str],
+                     errors: list[dict], started: float) -> dict:
+        """``SpecRunner.run`` — all three tiers, unbounded, and *the documented
+        exit from every cached refusal* PRD-003 keeps. Its report is embedded
+        whole, so requirement traceability is passed through rather than
+        re-derived.
+        """
+        runner = getattr(self.service, "specs", None)   # read HERE, not in init
+        if runner is None:
+            return make_stage("specs", reason="specs_unavailable",
+                              duration_s=_elapsed(started))
+        try:
+            report = runner.run(proj)
+        except Exception as exc:  # noqa: BLE001 — the runner never propagates
+            payload = _payload(exc)
+            errors.append({**payload, "stage": "specs"})
+            item = make_item("specs", "check", "specs", "error",
+                             f"the spec run did not complete: "
+                             f"{payload['message']}", error=payload, seen=seen,
+                             warnings=warnings)
+            return make_stage("specs", [item], duration_s=_elapsed(started))
+        warnings.extend(report.get("warnings") or [])
+        if not report.get("declared"):
+            # "A part that declares nothing is absent, not green" travels up
+            # one level intact.
+            return make_stage("specs", [], reason="not_declared",
+                              duration_s=_elapsed(started), report=report)
+        items = [self._spec_item(row, seen, warnings)
+                 for row in report.get("checks") or []]
+        return make_stage("specs", items, duration_s=_elapsed(started),
+                          report=report)
+
+    def _spec_item(self, row: dict, seen: set, warnings: list[str]) -> dict:
+        """One spec row as one item, unchanged in every field that matters.
+
+        ``measured``, ``limit`` and ``unit`` travel in ``details`` — the row
+        keeps its own numbers, so a consumer reading the check report gets the
+        same evidence as one reading the spec report.
+        """
+        status = row.get("status")
+        reason, hint = row.get("reason"), row.get("hint")
+        if status == "skip" and not (reason and hint):
+            # PRD-003 guarantees both; a sidecar written by an older format
+            # must degrade into a named row rather than a ValueError that
+            # takes the whole stage with it.
+            reason = reason or "unspecified"
+            hint = hint or ("the spec runner reported a skip with no hint; "
+                            "re-run run_specs to re-measure it")
+        details = {**(row.get("details") or {}),
+                   "measured": row.get("measured"), "limit": row.get("limit"),
+                   "unit": row.get("unit"), "scope": row.get("scope"),
+                   "part": row.get("part")}
+        if row.get("location") is not None:
+            details["location"] = row["location"]
+        return make_item("specs", "check", row.get("id") or row.get("name", "?"),
+                         status, row.get("message") or "", reason=reason,
+                         hint=hint, error=row.get("error"), details=details,
+                         requirement=row.get("requirement"), seen=seen,
+                         warnings=warnings)
+
+    # ----------------------------------------------------- stage 4: drawings
+
+    def _stage_drawings(self, proj: str, seen: set, warnings: list[str],
+                        errors: list[dict], started: float) -> dict:
+        """The registered tools, not a re-derivation: they carry the "is it
+        drawable" guards, the PMI forwarding and the export paths.
+
+        SVG only — DXF is not byte-stable (``ezdxf`` stamps ``$TDCREATE`` and
+        fresh GUIDs on every document), so it cannot join a determinism
+        assertion and generating it would only double the runtime.
+        """
+        if self._registry is None:
+            return make_stage("drawings", reason="drawings_unavailable",
+                              duration_s=_elapsed(started))
+        items: list[dict] = []
+        for entry in self.service.store.manifest(proj)["parts"]:
+            part_id = entry["id"]
+            if self._out_of_budget():
+                items.append(self._budget_item("drawings", "drawing", part_id,
+                                               seen, warnings))
+                continue
+            if entry.get("kind", "script") != "script":
+                items.append(make_item(
+                    "drawings", "drawing", part_id, "skip",
+                    "no drawing: this is a reference (imported) part",
+                    reason="not_script", hint=_NOT_SCRIPT_HINT, seen=seen,
+                    warnings=warnings))
+                continue
+            items.append(self._tool_item(
+                "generate_drawing", "drawing", proj, part_id, part_id, seen,
+                warnings))
+            if not self._declares_flat(proj, part_id):
+                continue        # absent, not green: no row at all
+            if self._out_of_budget():
+                items.append(self._budget_item(
+                    "drawings", "flat_pattern", f"{part_id}:flat_pattern",
+                    seen, warnings))
+                continue
+            items.append(self._tool_item(
+                "flat_pattern", "flat_pattern", proj, part_id,
+                f"{part_id}:flat_pattern", seen, warnings))
+        return make_stage("drawings", items, duration_s=_elapsed(started))
+
+    def _declares_flat(self, proj: str, part_id: str) -> bool:
+        try:
+            script = self.service.store.read_script(proj, part_id)
+        except Exception:  # noqa: BLE001 — a script we cannot read has already
+            return False   # failed the build stage; it does not fail twice
+        return declares_flat_pattern(script)
+
+    def _tool_item(self, tool: str, kind: str, proj: str, part_id: str,
+                   subject: str, seen: set, warnings: list[str]) -> dict:
+        """One registered tool call as one row.
+
+        ``ToolRegistry.call`` converts ``AppError``/``KernelError`` into an
+        ``{"error": {...}}`` payload rather than raising, so the failure path
+        here is a dict test — and that payload is carried verbatim.
+        """
+        result = self._registry.call(tool, {"project": proj,
+                                            "part_id": part_id,
+                                            "format": "svg"})
+        if isinstance(result, dict) and result.get("error"):
+            payload = result["error"]
+            return make_item("drawings", kind, subject, "fail",
+                             f"{tool} failed: {payload.get('message')}",
+                             error=payload, seen=seen, warnings=warnings)
+        details = {"format": "svg", "path": result.get("path"),
+                   "size_bytes": result.get("size_bytes")}
+        if result.get("n_bend_lines") is not None:
+            details["n_bend_lines"] = result["n_bend_lines"]
+        return make_item("drawings", kind, subject, "pass",
+                         f"{tool} regenerated "
+                         f"({_number(result.get('size_bytes'))} bytes of SVG)",
+                         details=details, seen=seen, warnings=warnings)
+
+    # --------------------------------------------------- source and host
+
+    def _source(self, proj: str, sha: str | None,
+                ref_label: str | None) -> dict:
+        """What was measured, and how it was named.
+
+        Working-tree mode: the caller's branch tree, its ``.history`` head when
+        there is one, and whether it has uncommitted edits. Every git touch
+        here is **best effort** — a project with no history is an ordinary
+        project, and a check must not fail because git is absent.
+        """
+        return {"kind": "worktree", "ref": None, "sha": self._head(proj),
+                "label": ref_label, "host_sha": sha, "dirty": self._dirty(proj)}
+
+    def _tree(self, proj: str):
+        """The working tree this run measured (branch-pin aware)."""
+        return self.service.store.path_of(proj)
+
+    def _head(self, proj: str) -> str | None:
+        history = getattr(self.service, "history", None)
+        if history is None:
+            return None
+        try:
+            return history.head(self._tree(proj))
+        except Exception:  # noqa: BLE001 — provenance, never a verdict
+            return None
+
+    def _dirty(self, proj: str) -> bool:
+        history = getattr(self.service, "history", None)
+        try:
+            path = self._tree(proj)
+            if history is None or not history.available() \
+                    or not history._has_repo(path):
+                return False
+            # Through `history._run`: hermetic env, 10 s timeout, never a raw
+            # subprocess.
+            result = history._run(path, "status", "--porcelain", check=False)
+            return bool((result.stdout or "").strip())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _host(self) -> dict:
+        """The machine, so a report read on another one is interpretable —
+        `fem: false` is why a spec row says `fem_extra_missing`, and
+        `sandbox`/`pool_size` are why a timing differs."""
+        kernel = getattr(self.service, "kernel", None)
+        try:
+            fem = bool(_specs._fem_available())
+        except Exception:  # noqa: BLE001 — an optional extra, never a failure
+            fem = False
+        return {"platform": platform.system().lower(),
+                "python": sys.version,
+                "agentcad": agentcad.__version__,
+                "fem": fem,
+                "sandbox": bool(getattr(kernel, "sandboxed", False)),
+                "pool_size": int(getattr(kernel, "size", 1)),
+                "kernel_pool": type(kernel).__name__ if kernel else None}
+
+
+def _number(value) -> str:
+    """A measurement for a human, in a message a machine also reads (the
+    numbers themselves live in ``details``, typed)."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "?"
+    return f"{float(value):.4g}"
+
+
+def _point(values) -> str:
+    try:
+        return "(" + ", ".join(_number(value) for value in values) + ")"
+    except TypeError:
+        return "(?)"
