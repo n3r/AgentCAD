@@ -235,6 +235,59 @@ def test_posting_to_a_terminal_proposal_is_refused(demo, state):
     assert not _slot(service, pid).exists()
 
 
+def test_a_merge_that_lands_mid_post_discards_the_post(demo, monkeypatch):
+    """Review W6: ``post_target`` reconciled under ``ProposalManager._lock`` and
+    then **released** it before ``CheckStore.write`` + ``append_audit``, so a
+    merge landing in that window got post-decision evidence written onto a
+    terminal proposal — the exact race ``record_packet`` solves by doing the
+    re-check and the write under the lock. This mirrors it.
+
+    The merge is forced at the seam: ``measured_branch`` runs after the target
+    is resolved and before the record is written.
+    """
+    service, _registry, manager = demo
+    pid = _create(manager)
+    before = [json.dumps(e, sort_keys=True) for e in _audit(service, pid)]
+    original = CheckRunner.measured_branch
+
+    def merge_mid_flight(self, proj, report):
+        proposal = manager.store.load("demo", pid)
+        if proposal["state"] != "merged":
+            proposal["state"] = "merged"
+            manager.store.save("demo", proposal)
+        return original(self, proj, report)
+
+    monkeypatch.setattr(CheckRunner, "measured_branch", merge_mid_flight)
+
+    with pytest.raises(ConflictError) as exc:
+        _post(service, pid, _report(_head(service)))
+
+    assert "merged" in str(exc.value)
+    assert not _slot(service, pid).exists(), \
+        "post-decision evidence was written onto a merged proposal"
+    assert [json.dumps(e, sort_keys=True)
+            for e in _audit(service, pid)] == before
+
+
+def test_the_write_and_the_audit_line_land_together_or_not_at_all(demo,
+                                                                  monkeypatch):
+    """The second half of W6: a gate read must never see evidence with no
+    audit line behind it. The append is what makes the write final — an append
+    that fails rolls the slot back to what it was."""
+    service, _registry, manager = demo
+    pid = _create(manager)
+
+    def refuse(proj, ident, entry):
+        raise OSError("audit.jsonl is not writable")
+
+    monkeypatch.setattr(service.proposals.store, "append_audit", refuse)
+
+    with pytest.raises(OSError):
+        _post(service, pid, _report(_head(service)))
+
+    assert not _slot(service, pid).exists()
+
+
 def test_posting_to_an_unknown_proposal_is_not_found(demo):
     service, _registry, _manager = demo
     with pytest.raises(NotFoundError):
@@ -541,6 +594,24 @@ def test_auto_proposal_with_no_match_warns_and_keeps_the_verdict(wired_cli,
     service, _manager = wired_cli
     assert cli.cmd_check(_args(auto_proposal=True)) == 0
     assert "no active proposal" in capsys.readouterr().err
+
+
+def test_a_proposals_index_that_cannot_be_rebuilt_is_exit_two(wired_cli,
+                                                              capsys):
+    """Review W5, on a real store: ``--auto-proposal`` reads the proposal list
+    *after* the run, outside the CLI's exit-code mapping, so an index that
+    cannot even be rewritten (here: a directory where the file goes) escaped as
+    a traceback and exit 1 — the code reserved for red geometry."""
+    service, manager = wired_cli
+    pid = _create(manager)
+    index = service.proposals.store.packet_path("demo", pid).parent.parent \
+        / "index.json"
+    index.unlink()
+    index.mkdir()
+
+    assert cli.cmd_check(_args(auto_proposal=True)) == 2
+
+    assert "agentcad check" in capsys.readouterr().err
 
 
 def test_an_explicit_terminal_proposal_fails_fast(wired_cli, capsys):

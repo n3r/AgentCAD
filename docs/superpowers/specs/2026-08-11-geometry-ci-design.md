@@ -897,3 +897,67 @@ matters, with the autouse `_reset_context` fixture that rebinds
 8. The `checks` gate never answers `pending`: a stale posted report is `fail`
    with a re-run sentence, because `merge()` blocks `fail` and nothing else
    (Decision 8, as-built — PRD-003's X8 lesson).
+
+---
+
+## As built — the second review (W1–W10)
+
+An independent review of the finished feature returned CHANGES-REQUIRED with
+ten reproduced findings. What changed, and why the design text above is now
+read with these amendments:
+
+1. **`--work-dir` cannot reach the project (W1, critical).** Decision 5's
+   containment argument covered the *ephemeral service* and forgot the *work
+   dir*. `<work-dir>/<project>` was `rmtree`'d before `worktree add`, so
+   `--work-dir .` from the projects root deleted the live project — uncommitted
+   files included — and the teardown deleted it again. Two changes, either of
+   which alone would have been enough and both of which are now in:
+   a work dir that **is, contains or sits inside** the project or the projects
+   root is refused (`ValidationError` naming both paths, exit 2), and a run
+   materializes into a **unique subdirectory it creates itself**
+   (`<work-dir>/agentcad-check-<pid>-<rand>/<project>/`), so nothing is ever
+   deleted that the run did not make. The docs' "a dir you pass is left alone"
+   is now literally true.
+2. **The budget bounds every stage (W2, W3).** It bounded `build`, `drawings`
+   and the two assembly calls only: `SpecRunner.run` was called with no
+   deadline (PRD-003 has taken one since its own gate work — `run()` now
+   forwards it to `_report`, a passthrough and not a new mechanism), and one
+   determinism row made four unpreemptable kernel calls behind a single check.
+   The deadline is now read before every kernel call, with a `_MIN_CALL_S`
+   floor below which no call is issued — because a call that cannot finish only
+   overshoots and is then reported as a *timeout*, i.e. as a red row for
+   something the budget did. An item the deadline stopped is
+   `skip`/`budget_exceeded` and `complete: false` (exit 2), never an `error`.
+   The "one in-flight kernel call" sentence in the docs, `--help` and
+   `AGENTS.md` was false when written; it is true now.
+3. **The third live seam (W4).** `bus.on_publish` and `store.branch_resolver`
+   were nulled; `build_registry` also installs a `write_guard` whose
+   `ensure_checkout` materializes a branch tree in the repository the worktree
+   is linked to — the user's. It was inert only because a check happens not to
+   write. Nulled, with the same comment discipline and a pinning test.
+4. **The CLI's post-run steps are inside the exit-code mapping (W5).**
+   `_write_check_outputs`/`_post_check`/`_print_check` ran after the
+   `try/except`, so a mangled proposals index left a traceback and exit 1 — the
+   code reserved for "the model is wrong".
+5. **Posting is serialized against the lifecycle (W6).** `post_target`
+   reconciled under `ProposalManager._lock` and released it before the write, so
+   a merge landing in between got post-decision evidence. Resolution, terminal
+   re-check, write and audit now happen under that lock, `record_packet`'s
+   mechanism for `record_packet`'s reason; a failed audit append rolls the slot
+   back, so a gate never reads evidence with no audit line behind it.
+6. **A missing check step is a harness error (W7).** With an empty
+   `steps.check.outputs.exit-code` the action's last step reported "red —
+   failed stages: unknown", blaming the user's geometry for a failed install.
+   An absent verdict now exits 2 with wording that cannot be confused with red.
+7. **`--strict --verify-determinism` is no longer red by construction (W8).**
+   The DXF row is a skip *by construction*; `--strict` asks whether anything
+   measurable went unmeasured, so an unconditional skip is not a candidate.
+   Rows carry `strict_exempt`, `finalize_report` skips them, and the row stays
+   visible with its reason, its hint and its place in the counts. The design's
+   earlier note (and `AGENTS.md`) said the combination was permanently red;
+   that is now a fixed behaviour, not a documented wart.
+8. **The action's check step is executed by a test (W9).** It was regex-scraped
+   only; a test now runs its body verbatim with a real `agentcad` on `$BIN`,
+   over a project path containing a space, and asserts the argv, the quoting
+   and the `set +e` capture. Two input guards came with it: a requirement
+   starting with `-` and a newline in any `$GITHUB_OUTPUT` value are refused.

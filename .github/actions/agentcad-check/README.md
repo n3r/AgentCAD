@@ -52,7 +52,7 @@ runner would exit `2` on every run.
 | `project` | `.` | project directory (a path) or project name (with `projects-dir`) |
 | `projects-dir` | `` | projects root, for a repository holding several projects |
 | `stages` | `build,assembly,specs,drawings` | comma-separated subset |
-| `strict` | `false` | count skipped rows as failures (rows keep their status; only the verdict moves) |
+| `strict` | `false` | count skipped rows as failures (rows keep their status; only the verdict moves). A row marked `strict_exempt` — an unconditional skip, today only the DXF determinism row — is never counted |
 | `budget` | `` | wall-clock seconds; empty is unbounded |
 | `verify-determinism` | `false` | build every part a second time on a cold cache and compare bytes |
 | `proposal` | `` | post the report to this proposal id |
@@ -84,6 +84,10 @@ code.
 The check step never fails the job itself: it saves the exit code, the summary
 and the artifact land under `if: always()`, and a final step re-raises the code.
 A red check is therefore always accompanied by its evidence.
+
+If a **setup** step fails, the check never runs and `exit-code` is empty: the
+final step then fails the job with a harness error (exit `2`) that says so —
+never as `red`, which would blame your geometry for a failed install.
 
 ## Runner requirements
 

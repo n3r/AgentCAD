@@ -343,13 +343,15 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
 
 ## CI gotchas (PRD-004 — read before touching `checks.py` or the action)
 
-- **The ephemeral service must have `bus.on_publish = None` and
-  `store.branch_resolver = None`**, or a `--ref` check commits a history
-  snapshot **into the user's repository** through the linked worktree (the bus
-  hook) or writes a `.history/agentcad/` sidecar that does not exist there (the
-  resolver). Set the resolver *after* `build_registry` — that is what installs
-  it. Resolve both paths first: macOS hands `/var/…` for `/private/var/…` and
-  `ProjectStore.open` compares resolved paths.
+- **The ephemeral service must have `bus.on_publish = None`,
+  `store.branch_resolver = None` and `store.write_guard = None`**, or a `--ref`
+  check commits a history snapshot **into the user's repository** through the
+  linked worktree (the bus hook), writes a `.history/agentcad/` sidecar that
+  does not exist there (the resolver), or materializes a branch tree there on
+  the first authored write (the guard's `ensure_checkout`). Set the last two
+  *after* `build_registry` — that is what installs them. Resolve both paths
+  first: macOS hands `/var/…` for `/private/var/…` and `ProjectStore.open`
+  compares resolved paths.
 - **The pack is `tools_run_checks.py`, never `tools_checks.py`.** Packs load
   alphabetically and `tools_proposals` (`p`) assigns `service.gate_providers =
   []` **unconditionally**, so a pack at `c` would have its gate silently
@@ -375,13 +377,24 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   reports `cached: false`, and the tests assert it rather than hiding it.
 - **DXF is not byte-stable** (`ezdxf` stamps `$TDCREATE` and fresh GUIDs), so
   the determinism stage compares **SVG only** and carries one
-  `skip`/`not_byte_stable` row. `--strict --verify-determinism` is therefore red
-  by construction.
-- **`--budget` cannot preempt an in-flight kernel call.** It is a deadline on
-  `time.monotonic` read *between items*; `_ensure_built` (300 s) and the drawing
-  tools (120 s) take no `timeout_s`, so the worst case is one call's overshoot.
-  A blown budget is `complete: false` → exit **2**, with the partial report kept
-  as evidence.
+  `skip`/`not_byte_stable` row. That row is the one `strict_exempt: true` in
+  the report: an unconditional skip is not a `--strict` candidate, or
+  `--strict --verify-determinism` would be red for ever and say nothing.
+- **`--budget` cannot preempt a kernel call that has already started.** It is a
+  deadline on `time.monotonic` read before *every item and every kernel call* —
+  the specs stage runs under it too (`SpecRunner.run(deadline=…)`), determinism
+  re-reads it before each of its four calls, and below a one-second floor no
+  call is issued at all. `_ensure_built` (300 s) and the drawing tools (120 s)
+  take no `timeout_s`, so the worst case is **one** call's overshoot. An item
+  the deadline stopped is a `skip`/`budget_exceeded`, never an `error`: a blown
+  budget is `complete: false` → exit **2**, with the partial report kept as
+  evidence, and never a red.
+- **A check may not write anywhere but its own throwaway cell.** `--work-dir`
+  that is, holds or sits inside the project (or the projects root) is refused;
+  a run materializes into `<work-dir>/agentcad-check-<pid>-<rand>/` and deletes
+  only that. Three seams on the ephemeral service must stay nulled —
+  `bus.on_publish`, `store.branch_resolver`, `store.write_guard` — each reaches
+  the user's repository through the linked worktree.
 - **An imported reference part's `is_valid` is reported, never enforced.** OCCT
   calls the shipped `examples/rocketry` STEP import invalid over its 180 solids
   — the same reason `tests/test_examples.py` exempts reference parts — so the

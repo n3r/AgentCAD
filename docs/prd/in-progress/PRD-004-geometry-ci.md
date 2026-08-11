@@ -254,10 +254,14 @@ produce. Following the PRD-001 AC6 / PRD-003 AC8 precedent, its test asserts
 the *shape* (the workflow exists, matrixes the bundled examples and drives them
 through the same composite action a user consumes) plus the *record*, and the
 run URL and conclusion are cited in the changelog and the pull request.
-Everything the runner executes is exercised locally by
+Most of what the runner executes is exercised locally by
 `tests/test_geometry_ci_action.py`, which runs the action's shell bodies
-verbatim against copies of `examples/construction` — but a simulation is not
-the criterion.
+verbatim: the input plumbing (paths, the `[fem]` splice, the artifact name, the
+refusals), the summary step, the re-raise step, and the **check step's own
+body** — argv construction, quoting and the `set +e` capture — against a real
+`agentcad` over a throwaway project. The install step is *not* executed (it
+provisions a Python and installs a package), and neither is the workflow
+itself, so a simulation is still not the criterion.
 
 ### As built — divergences from this document
 
@@ -290,8 +294,9 @@ the criterion.
 5. **The drawings stage regenerates SVG only, and byte-stability lives in
    `--verify-determinism`.** DXF is excluded by name because `ezdxf` stamps
    `$TDCREATE` and fresh GUIDs into every document; it is one
-   `skip`/`not_byte_stable` row with a hint naming the prerequisite. A
-   consequence: `--strict --verify-determinism` is red by construction.
+   `skip`/`not_byte_stable` row with a hint naming the prerequisite. That row
+   is the report's one `strict_exempt` skip: it is unconditional, so `--strict`
+   does not count it (it would otherwise be red for ever and say nothing).
 6. **A ref check runs on a cold cache.** FR3's "byte-untouched" guarantee is
    absolute, so the throwaway worktree carries no `.cache/` and every part is a
    real kernel build. The price is stated in the docs and asserted in the

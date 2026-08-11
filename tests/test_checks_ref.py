@@ -34,6 +34,7 @@ self-healing. What must not move is a single byte the *user* owns.
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 from pathlib import Path
 
@@ -43,6 +44,7 @@ from agentcad.core.checks import (
     CheckRunner,
     _byte_diff,
     _compare_builds,
+    _ephemeral_service,
     validate_report,
 )
 from agentcad.core.model import NotFoundError, ValidationError
@@ -251,6 +253,119 @@ def test_the_default_work_dir_is_a_temp_dir_and_is_deleted(stack, monkeypatch):
 
     assert seen and seen[0].name.startswith("agentcad-check-")
     assert not seen[0].exists()
+
+
+def test_a_work_dir_that_holds_the_project_is_refused_and_nothing_is_deleted(
+        stack):
+    """The critical containment hole (review W1): the throwaway tree was
+    ``<work-dir>/<project-name>`` and anything already there was
+    ``shutil.rmtree``'d *before* ``worktree add`` ran. From the projects root
+    that path **is** the live project directory, so ``--work-dir .`` deleted
+    the user's project — uncommitted work included — and the ``finally``
+    deleted it a second time.
+
+    A work dir that equals, holds, or lives inside the project (or the
+    projects root) is refused by name, and not one byte moves.
+    """
+    service, _registry, runner = stack
+    proj = _tiny(service)
+    canonical = service.store.canonical_path_of(proj)
+    (canonical / "UNCOMMITTED.txt").write_text("precious\n", encoding="utf-8")
+    head = service.history.head(canonical)
+    projects_root = Path(service.store.root)
+    before = _fingerprint(canonical)
+
+    with pytest.raises(ValidationError) as excinfo:
+        with runner._materialized(canonical, head, projects_root, []):
+            pass                                    # pragma: no cover
+
+    # Both paths are named: a refusal a user cannot act on is not a refusal.
+    assert str(projects_root) in str(excinfo.value)
+    assert str(canonical) in str(excinfo.value)
+    assert canonical.is_dir(), "the check deleted the user's project"
+    assert _fingerprint(canonical) == before
+    assert (canonical / "UNCOMMITTED.txt").read_text() == "precious\n"
+
+
+@pytest.mark.parametrize("where", ["inside", "outside"])
+def test_a_work_dir_that_overlaps_the_project_is_refused_before_anything_runs(
+        stack, tmp_path, where):
+    """Both directions of the overlap: a work dir *inside* the project, and one
+    that *contains* the projects root."""
+    service, _registry, runner = stack
+    proj = _tiny(service)
+    canonical = service.store.canonical_path_of(proj)
+    branch = service.branches.default_branch(proj)
+    before = _repo_state(service, canonical)
+    work = canonical / "scratch" if where == "inside" else tmp_path
+
+    with pytest.raises(ValidationError) as excinfo:
+        runner.run(proj, ref=branch, stages=("build",), work_dir=str(work))
+
+    assert str(work.resolve()) in str(excinfo.value)
+    assert not (canonical / "scratch").exists(), "the refusal still made a dir"
+    assert _repo_state(service, canonical) == before
+
+
+def test_a_caller_supplied_work_dir_keeps_everything_it_already_held(
+        stack, tmp_path, monkeypatch):
+    """A work dir is materialized into through a **unique subdirectory we
+    created** (``<work-dir>/agentcad-check-<pid>-<rand>/<project>/``), so a name
+    collision is impossible and only that subtree is ever cleaned. The dir the
+    caller passed is left alone — which is what the docs promise."""
+    service, _registry, runner = stack
+    proj = _tiny(service)
+    canonical = service.store.canonical_path_of(proj)
+    branch = service.branches.default_branch(proj)
+    work = tmp_path / "work"
+    (work / canonical.name).mkdir(parents=True)
+    (work / canonical.name / "keep.txt").write_text("not ours\n",
+                                                    encoding="utf-8")
+    (work / "other.txt").write_text("neither\n", encoding="utf-8")
+    seen: list[Path] = []
+    original = CheckRunner._materialized
+
+    def spy(self, canon, sha, work_dir, warnings):
+        seen.append(Path(work_dir))
+        return original(self, canon, sha, work_dir, warnings)
+
+    monkeypatch.setattr(CheckRunner, "_materialized", spy)
+
+    report = runner.run(proj, ref=branch, stages=("build",),
+                        work_dir=str(work))
+
+    assert report["exit_code"] == 0
+    assert (work / canonical.name / "keep.txt").read_text() == "not ours\n"
+    assert (work / "other.txt").is_file()
+    cell = seen[0]
+    assert cell.parent == work.resolve()
+    assert cell.name.startswith("agentcad-check-") and str(os.getpid()) in cell.name
+    assert not cell.exists(), "the subtree we created was not cleaned up"
+    assert work.is_dir(), "the caller's work dir was deleted"
+
+
+def test_the_ephemeral_service_muzzles_all_three_live_seams(stack, tmp_path):
+    """Three seams reach the **user's** repository through the linked worktree,
+    not two (review W4). ``build_registry`` installs a ``write_guard`` whose
+    ``ensure_checkout`` materializes a branch tree in the user's ``.history``;
+    it is inert today only because a check happens not to write. Pinned here so
+    a later write cannot make it live."""
+    service, _registry, _runner = stack
+    proj = _tiny(service)
+    canonical = service.store.canonical_path_of(proj)
+    work = tmp_path / "ephemeral"
+    shutil.copytree(canonical, work / canonical.name,
+                    ignore=shutil.ignore_patterns(".history", ".cache",
+                                                  "exports"))
+
+    ephemeral, registry, name = _ephemeral_service(work, work / canonical.name,
+                                                   service.kernel)
+
+    assert name == proj
+    assert ephemeral.bus.on_publish is None
+    assert ephemeral.store.branch_resolver is None
+    assert ephemeral.store.write_guard is None
+    assert registry.get("run_checks") is not None
 
 
 def test_a_relative_work_dir_never_lands_inside_the_project(
@@ -462,6 +577,29 @@ def test_the_determinism_stage_compares_the_stable_artefacts_and_skips_dxf(
     assert "ezdxf" in dxf["hint"] and "$TDCREATE" in dxf["hint"]
     assert report["exit_code"] == 0
     assert validate_report(report) == []
+
+
+def test_strict_never_counts_the_unconditional_dxf_skip(stack):
+    """Review W8: the DXF row is a skip **by construction** — no project can
+    make it pass — so counting it in ``strict_failures`` made
+    ``--strict --verify-determinism`` permanently red and told a reader
+    nothing. An unconditional skip is not a strict-failure candidate; the row
+    stays visible, only the verdict leaves it alone."""
+    service, _registry, runner = stack
+    proj = _tiny(service)
+
+    report = runner.run(proj, stages=("build",), strict=True,
+                        verify_determinism=True)
+
+    dxf = _item(report, "determinism:dxf")
+    assert dxf["status"] == "skip" and dxf["reason"] == "not_byte_stable"
+    assert dxf["strict_exempt"] is True
+    assert "determinism:dxf" not in report["strict_failures"]
+    assert report["strict_failures"] == []
+    assert report["status"] == "green" and report["exit_code"] == 0
+    assert validate_report(report) == []
+    # Every other row is an ordinary strict candidate.
+    assert _item(report, "determinism:cube")["strict_exempt"] is False
 
 
 def test_determinism_composes_with_a_ref_check(stack):

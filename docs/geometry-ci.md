@@ -80,11 +80,11 @@ agentcad check [--project PATH|NAME] [--projects-dir DIR]
 | `--ref` | Certify a **branch, tag or commit** instead of the working tree (below). |
 | `--stages` | A comma-separated subset of `build,assembly,specs,drawings`. An unknown name exits 2 naming the valid ones, before the kernel starts. `determinism` is not selectable — it has its own flag. |
 | `--report` / `--md` | Write the JSON report / the markdown summary. Both are atomic writes; an unwritable path is exit 2. |
-| `--strict` | Count every `skip` row as a failure **in the verdict only**. |
+| `--strict` | Count every `skip` row as a failure **in the verdict only** — except a row marked `strict_exempt` (an unconditional skip; today only the DXF determinism row, below). |
 | `--verify-determinism` | Build every part a second time on a cold cache and compare the artefacts byte for byte. |
-| `--budget` | A wall-clock deadline in seconds, read between items. |
+| `--budget` | A wall-clock deadline in seconds, read before each item and each kernel call. |
 | `--min-volume` | The overlap volume below which an interference is noise (default `0.001` mm³). |
-| `--work-dir` | Where `--ref` materializes its worktree. Default: a temp dir, deleted afterwards. A dir you pass is left alone. |
+| `--work-dir` | Where `--ref` materializes its worktree. Default: a temp dir, deleted afterwards. A dir you pass keeps everything in it — the run works inside a unique subdirectory it creates and deletes only that. A work dir that **is, holds or sits inside** the project (or the projects root) is refused, exit 2. |
 | `--proposal` / `--auto-proposal` | Post the report to a change proposal (below). Mutually exclusive. |
 | `--sha` / `--ref-label` | **Provenance only.** The host VCS commit and ref name (`$GITHUB_SHA`, `$GITHUB_REF_NAME`). They are recorded; they resolve nothing. |
 | `--quiet` / `--json` | `--quiet` prints nothing (a harness failure still names itself on stderr — an exit 2 with no diagnosis is unactionable). `--json` puts the report **alone** on stdout, so `agentcad check --json \| jq` works. Exit codes are identical in all three modes. |
@@ -149,6 +149,10 @@ a row that says "not measured" without saying why or what to do about it is a
 (`fem_extra_missing`, `deferred`, `unsupported_scope`, …), passed through
 unchanged.
 
+One of them, `not_byte_stable`, is **unconditional**: no project can make that
+row pass. It is the only row that carries `strict_exempt: true`, and it is the
+only reason that field exists (see `--verify-determinism`).
+
 ---
 
 ## The report
@@ -177,7 +181,8 @@ acceptance tests use.
   "status": "green",             // green | red | skip
   "complete": true,              // false ⇒ a budget cut the run short ⇒ exit 2
   "strict": false,
-  "strict_failures": [],         // the skip ids --strict counted (rows unchanged)
+  "strict_failures": [],         // the skip ids --strict counted (rows unchanged;
+                                 // a strict_exempt row is never a candidate)
   "exit_code": 0,
   "summary": {"passed": 6, "failed": 0, "skipped": 0, "errors": 0, "total": 6},
   "stages": [ /* below */ ],
@@ -225,6 +230,7 @@ are not interchangeable.
   "reason": null,                // skip ⇒ non-null
   "hint": null,                  // skip ⇒ non-null
   "requirement": null,           // spec rows carry their requirement id
+  "strict_exempt": false,        // true ⇒ an UNCONDITIONAL skip --strict ignores
   "error": null,                 // fail/error ⇒ the tool payload, verbatim
   "details": {"cache_key": "4a2e…", "volume_mm3": 38686.8, "mass_g": 40.23,
               "n_solids": 1, "is_valid": true, "cached": false}
@@ -288,13 +294,14 @@ is the point:
                  └──────────────┬────────────────────────────┘
                                 │ git worktree add --detach <sha>
                                 ▼
-        ┌─ <work-dir>/<project>/ ── throwaway ───────────────┐
-        │  a second, EPHEMERAL AgentCADService               │
-        │    bus.on_publish = None      (never commits)      │
-        │    store.branch_resolver = None (no sidecar)       │
-        │    the SAME kernel object     (no second pool)     │
-        │  its own cold .cache/                              │
-        └────────────────────────────────────────────────────┘
+   ┌─ <work-dir>/agentcad-check-<pid>-<rand>/<project>/ ─────┐
+   │  a second, EPHEMERAL AgentCADService                    │
+   │    bus.on_publish = None       (never commits)          │
+   │    store.branch_resolver = None  (no sidecar)           │
+   │    store.write_guard = None    (no ensure_checkout)     │
+   │    the SAME kernel object      (no second pool)         │
+   │  its own cold .cache/                                   │
+   └─────────────────────────────────────────────────────────┘
                      removed in a `finally`, then `worktree prune`
 ```
 
@@ -305,12 +312,20 @@ is the point:
   ambiguity; `refs/heads/<x>` and `refs/tags/<x>` disambiguate.
 - **`--detach` with the resolved commit**, never a branch name: a branch
   already checked out at `.history/trees/<b>/` cannot be checked out twice.
-- The two muzzles are not optional. A live event bus would publish
+- **The work dir is never written to directly.** Everything a run makes goes
+  into one `agentcad-check-<pid>-<rand>/` subdirectory it created itself, and
+  the teardown deletes exactly that. A work dir that is, contains or sits
+  inside the project — or the projects root — is **refused** (exit 2, naming
+  both paths): the throwaway tree is named after the project, so `--work-dir .`
+  from the projects root would otherwise resolve onto the live project.
+- The three muzzles are not optional. A live event bus would publish
   `project_changed`, and the service's snapshot hook would commit **into the
   linked worktree** — i.e. into your real repository — from a command whose
   contract is "never mutates". A live branch resolver would send every read and
   write through a `.history/agentcad/` sidecar that does not exist there, and
-  create one.
+  create one. A live `write_guard` (the versioning pack installs one) would
+  call `branches.ensure_checkout` on the first authored write and materialize a
+  branch tree in your `.history` repo.
 - A branch with uncommitted edits is measured **as committed**: `source.dirty`
   is `true`, a warning names the snapshot that was measured, and the runner
   deliberately does *not* snapshot first. A check may not mutate.
@@ -333,14 +348,31 @@ the SHA as provenance.
 ## `--budget`
 
 The budget is a **deadline on `time.monotonic`** (never wall clock: an NTP step
-must not move a budget), read **before each item**. What it cut short is
-reported as `skip`/`budget_exceeded`, every later stage is marked the same way,
-`complete` goes `false` and the exit code is `2` — a partial report is
-evidence, a missing one is not.
+must not move a budget), read **before each item and before each kernel call**.
+What it cut short is reported as `skip`/`budget_exceeded`, every later stage is
+marked the same way, `complete` goes `false` and the exit code is `2` — a
+partial report is evidence, a missing one is not.
+
+Every stage is under it:
+
+- **build** and **drawings** check it before each part;
+- the two **assembly** calls take the remainder as their `timeout_s`;
+- the **specs** stage runs `SpecRunner.run(deadline=…)`, so PRD-003's own
+  machinery bounds each tier's kernel call and reports a check it never reached
+  as an `error` row that says so (fail-closed);
+- **determinism** re-reads it before *each* of the four calls one row makes
+  (two builds, two drawings) rather than once per row.
+
+Below a **one-second floor** no kernel call is issued at all: a call that
+cannot finish inside the budget can only overshoot it and then fail as a
+*timeout*, which would read as "the model is wrong" for something the budget
+did. An item the deadline stopped is a `skip`/`budget_exceeded` — never an
+`error`, and never a red. A red report means the model is wrong; a blown budget
+is exit 2, and the two must not be confused.
 
 **The honest limitation:** `_ensure_built` (300 s) and the drawing tools (120 s)
-take no `timeout_s`, so a budget cannot preempt an in-flight kernel call. The
-worst-case overshoot is one such call.
+take no `timeout_s`, so a budget cannot preempt a kernel call that has already
+started. The worst-case overshoot is **one in-flight call**.
 
 ---
 
@@ -366,11 +398,16 @@ know whether this part is deterministic" — not a pass and not a fail.
 
 **DXF is excluded by name**, as one `skip`/`not_byte_stable` row: `ezdxf`
 stamps `$TDCREATE` and fresh `$FINGERPRINTGUID`/`$VERSIONGUID` into every
-document, so an equality assertion over it would fail on every run. A
-consequence worth knowing: **`--strict --verify-determinism` is red by
-construction**, because that row is a skip. That is the honest reading of both
-flags — DXF is not measured — and the row's hint names the prerequisite
-(adopting ezdxf's fixed-date / `CONST_GUID` path in the drawing handlers).
+document, so an equality assertion over it would fail on every run. The row's
+hint names the prerequisite (adopting ezdxf's fixed-date / `CONST_GUID` path in
+the drawing handlers).
+
+It is the one row in the whole report marked **`strict_exempt: true`**, and it
+is the only reason that field exists. `--strict` asks *"is anything unmeasured
+that could have been measured"*; this skip is unconditional — no project can
+make it pass — so counting it would make `--strict --verify-determinism` red
+forever and tell a reader nothing. The row stays visible, with its reason and
+its hint, and in the `skipped` count; only the derived verdict leaves it alone.
 
 ---
 

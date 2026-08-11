@@ -256,6 +256,40 @@ def test_strict_flips_the_verdict_without_rewriting_a_single_row():
     assert row["hint"]
 
 
+def test_strict_never_counts_a_row_that_is_exempt_by_construction():
+    """Review W8, at the pure level: `--strict` asks *"is anything unmeasured
+    that could have been measured"*. A skip that no project can ever make pass
+    (the DXF determinism row) is not a candidate — counting it would make the
+    flag permanently red and say nothing. The row is untouched: same status,
+    same reason, same hint, same place in the counts."""
+    stage = make_stage("determinism", [
+        make_item("determinism", "part", "cube", "pass", "identical"),
+        make_item("determinism", "drawing", "dxf", "skip", "not compared",
+                  reason="not_byte_stable", hint="ezdxf stamps $TDCREATE",
+                  strict_exempt=True)])
+    report = _report([stage], strict=True)
+
+    assert report["strict_failures"] == []
+    assert report["status"] == "green" and report["exit_code"] == 0
+    assert report["summary"]["skipped"] == 1
+    row = stage["items"][1]
+    assert row["status"] == "skip" and row["reason"] == "not_byte_stable"
+    assert row["strict_exempt"] is True
+    assert stage["items"][0]["strict_exempt"] is False
+    assert validate_report(report) == []
+
+    # It is meaningless on anything but a skip, both at construction …
+    with pytest.raises(ValueError, match="strict-exempt"):
+        make_item("build", "part", "a", "pass", "ok", strict_exempt=True)
+    # … and to a consumer validating a document somebody else wrote.
+    forged = _report([make_stage("build", [
+        make_item("build", "part", "a", "pass", "ok")])])
+    forged["stages"][0]["items"][0]["strict_exempt"] = True
+    assert any("strict-exempt" in problem for problem in validate_report(forged))
+    forged["stages"][0]["items"][0]["strict_exempt"] = "yes"
+    assert any("strict_exempt" in problem for problem in validate_report(forged))
+
+
 def test_finalize_report_defaults_are_a_finished_now_and_no_stages():
     report = finalize_report("demo", [], source=dict(SOURCE), host=dict(HOST),
                              started="2026-08-11T09:14:02Z")

@@ -24,6 +24,7 @@ from __future__ import annotations
 import shutil
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,6 +35,7 @@ from agentcad.core.branches import pinned_tree_var
 from agentcad.core.checks import (
     STAGES,
     CheckRunner,
+    finalize_report,
     render_markdown,
     validate_report,
 )
@@ -143,7 +145,13 @@ def test_a_run_always_reports_all_four_stages_and_validates(stack, tmp_path):
     assert report["project"] == "prototyping"
     assert report["source"] == {"kind": "worktree", "ref": None, "sha": None,
                                 "label": None, "host_sha": None, "dirty": False}
-    assert report["host"]["agentcad"] == report["agentcad"]
+    # Both version fields come from `agentcad.__version__`, so comparing them
+    # to each other proves nothing: compare them to the INSTALLED package's
+    # metadata instead, which is what a consumer reading the report resolves.
+    from importlib.metadata import version
+
+    assert report["agentcad"] == version("agentcad")
+    assert report["host"]["agentcad"] == version("agentcad")
     assert report["host"]["kernel_pool"] in ("KernelClient", "KernelPool")
     assert report["complete"] is True
     assert report["duration_s"] >= 0
@@ -585,10 +593,16 @@ def test_a_blown_budget_reports_what_it_measured_and_exits_two(stack, tmp_path):
     assert report["exit_code"] == 2
     assert validate_report(report) == []
     # Whatever the clock did in the microsecond the run had, every stage is
-    # accounted for: skipped whole, or holding nothing but budget skips.
+    # accounted for: skipped whole (a reason and no rows), or holding nothing
+    # but budget skips — and never an empty stage with no reason at all, which
+    # is what a bare `all()` over an empty item list would have waved through.
     for stage in report["stages"]:
-        assert stage["reason"] == "budget_exceeded" or all(
-            item["reason"] == "budget_exceeded" for item in stage["items"])
+        if stage["reason"] is None:
+            assert stage["items"], f"{stage['name']} claims nothing and says why nothing"
+            assert all(item["reason"] == "budget_exceeded"
+                       for item in stage["items"])
+        else:
+            assert stage["reason"] == "budget_exceeded"
         assert stage["summary"]["passed"] == 0
     text = render_markdown(report)
     assert "budget" in text.lower() and "exit 2" in text
@@ -613,6 +627,189 @@ def test_a_budget_that_runs_out_mid_stage_degrades_the_rows_it_did_not_reach(
     assert all(item["reason"] == "budget_exceeded" and item["hint"]
                for item in stage["items"])
     assert runner._truncated is True, "a truncated run is never `complete`"
+
+
+def test_the_specs_stage_runs_under_the_pipelines_own_deadline(stack,
+                                                               monkeypatch):
+    """Review W2: the budget bounded three stages out of four. ``SpecRunner``
+    has taken a *deadline* since PRD-003 (``_report`` threads it through every
+    tier); ``run_specs`` passes ``None`` deliberately — an engineer asking for a
+    full report has asked for the cost — but a check under ``--budget`` must
+    hand the specs stage what is left of it, or the whole spec run is
+    unpreemptable."""
+    import inspect
+
+    service, _registry, runner = stack
+    service.create_project("slow")
+    service.create_part("slow", "cube", script=BOX_SCRIPT)
+    seen: dict = {}
+    # The sanctioned entry point takes it: this is a passthrough, not a new
+    # budget mechanism.
+    assert "deadline" in inspect.signature(specs_module.SpecRunner.run).parameters
+
+    def fake_run(self, proj, part_id=None, ref=None, deadline=None):
+        seen["deadline"] = deadline
+        # Unbounded: five seconds of tiers. Bounded: stop at the deadline, the
+        # way every budgeted spec call does.
+        time.sleep(5.0 if deadline is None
+                   else max(0.0, deadline - time.monotonic()))
+        return {"declared": 0, "checks": [], "warnings": []}
+
+    monkeypatch.setattr(specs_module.SpecRunner, "run", fake_run)
+    started = time.monotonic()
+
+    report = runner.run("slow", stages=("specs",), budget_s=1.0)
+
+    elapsed = time.monotonic() - started
+    assert seen["deadline"] is not None, "the specs stage ran unbounded"
+    assert elapsed < 3.0, f"the budget did not bound the specs stage ({elapsed:.1f}s)"
+    assert report["complete"] is False, "a run cut short is never complete"
+    assert report["exit_code"] == 2
+
+
+class _SlowBuilds:
+    """A stand-in for the two services ``_determinism_item`` drives: it records
+    every build it is asked for and charges the clock for it."""
+
+    def __init__(self, seconds: float, calls: list, cache: Path):
+        self.seconds, self.calls = seconds, calls
+        self.store = SimpleNamespace(cache_dir=lambda proj: cache)
+
+    def _ensure_built(self, proj: str, part_id: str) -> dict:
+        self.calls.append((proj, part_id))
+        time.sleep(self.seconds)
+        return {"ok": True, "cache_key": "k", "metrics": {}}
+
+
+def test_determinism_reads_the_deadline_before_each_kernel_call(tmp_path):
+    """Review W2: one budget check guarded **four** unpreemptable kernel calls
+    (two 300 s builds and two 120 s drawings), so ``--budget`` could overshoot
+    by four calls inside a single determinism row. The deadline is read before
+    each of them."""
+    calls: list = []
+    first = _SlowBuilds(0.4, calls, tmp_path)
+    second = _SlowBuilds(0.4, calls, tmp_path)
+
+    runner = CheckRunner(first, None)
+    runner._deadline = time.monotonic() + 0.2      # already below the floor
+    row = runner._determinism_item(runner, second, None, "p", "p", "cube",
+                                   {"kind": "script"}, set(), [], [])
+
+    assert calls == [], "a call was issued the budget could not pay for"
+    assert row["status"] == "skip" and row["reason"] == "budget_exceeded"
+    assert row["hint"] and runner._truncated is True
+
+    # And between the two builds: the first is affordable, the second is not.
+    calls.clear()
+    runner = CheckRunner(first, None)
+    runner._deadline = time.monotonic() + 1.2
+    row = runner._determinism_item(runner, second, None, "p", "p", "cube",
+                                   {"kind": "script"}, set(), [], [])
+
+    assert len(calls) == 1
+    assert row["status"] == "skip" and row["reason"] == "budget_exceeded"
+    assert runner._truncated is True
+
+
+def test_no_stage_starts_a_kernel_call_the_budget_cannot_pay_for(stack,
+                                                                 monkeypatch):
+    """The floor is one rule, applied everywhere: a build (300 s) and a drawing
+    (120 s) take no ``timeout_s``, so one started with a fraction of a second
+    left cannot be preempted — it just overshoots the budget and then reports
+    the overshoot as a failure. Below the floor the item is a
+    ``budget_exceeded`` skip and the call is never made."""
+    service, _registry, runner = stack
+    service.create_project("floor")
+    service.create_part("floor", "cube", script=BOX_SCRIPT)
+    calls: list[str] = []
+    monkeypatch.setattr(service, "_ensure_built",
+                        lambda proj, part_id: calls.append(part_id))
+    runner._deadline = time.monotonic() + 0.2      # positive, under the floor
+
+    build = runner._stage("build", "floor", {"build"}, set(), [], [])
+    drawings = runner._stage("drawings", "floor", {"drawings"}, set(), [], [])
+
+    assert calls == [], "a kernel build was started the budget could not pay for"
+    for stage in (build, drawings):
+        assert [item["reason"] for item in stage["items"]] == \
+            ["budget_exceeded"]
+        assert stage["summary"]["errors"] == 0
+    assert runner._truncated is True
+
+
+def test_a_budget_that_expires_at_the_assembly_boundary_is_a_skip_not_a_red(
+        stack):
+    """Review W3: with a fraction of a second left, ``_resolved_instances`` and
+    ``check_interference`` got that fraction as their ``timeout_s`` and the
+    kernel timed out — an ``error`` row, ``complete: true`` and exit **1**,
+    i.e. "the model is wrong" reported for a budget that ran out. A stage item
+    that fails *because* the deadline expired is the truncation path."""
+    service, _registry, runner = stack
+    service.create_project("assy")
+    service.create_part("assy", "cube", script=BOX_SCRIPT)
+    service.set_assembly("assy", [
+        {"id": "cube_1", "part": "cube"},
+        {"id": "cube_2", "part": "cube", "position": [50.0, 0.0, 0.0]}])
+    runner._deadline = time.monotonic() + 0.05     # positive, but unaffordable
+
+    stage = runner._stage("assembly", "assy", {"assembly"}, set(), [], [])
+
+    # Not red, and not measured: one `budget_exceeded` skip, which is the row
+    # every other truncated item gets. (A stage holding only skips reads
+    # `green` — skips never redden anything — and `complete: false` is what
+    # turns the report into exit 2.)
+    assert stage["status"] != "red"
+    assert stage["summary"]["errors"] == 0 and stage["summary"]["failed"] == 0
+    assert [(item["id"], item["status"], item["reason"])
+            for item in stage["items"]] == [("assembly:mates", "skip",
+                                             "budget_exceeded")]
+    assert stage["items"][0]["hint"]
+    assert runner._truncated is True
+    report = finalize_report("assy", [stage], source={"kind": "worktree"},
+                             host={"platform": "test"},
+                             started="2026-01-01T00:00:00Z",
+                             complete=not runner._truncated)
+    assert report["exit_code"] == 2, "a blown budget is harness, never red"
+
+
+@pytest.mark.parametrize("method,subject", [
+    ("_resolved_instances", "assembly:mates"),
+    ("check_interference", "assembly:interference"),
+])
+def test_a_kernel_timeout_the_deadline_caused_is_a_budget_skip(
+        stack, monkeypatch, method, subject):
+    """The same rule one layer down: a timeout on a call whose ``timeout_s``
+    was *the remaining budget* (below the call's own ceiling) is the budget
+    running out, not the geometry failing."""
+    from agentcad.kernel.client import ERROR_TIMEOUT, KernelError
+
+    service, _registry, runner = stack
+    service.create_project("assy2")
+    service.create_part("assy2", "cube", script=BOX_SCRIPT)
+    service.set_assembly("assy2", [
+        {"id": "cube_1", "part": "cube"},
+        {"id": "cube_2", "part": "cube", "position": [50.0, 0.0, 0.0]}])
+
+    def timeout(*args, **kwargs):
+        raise KernelError(ERROR_TIMEOUT,
+                          "kernel request 'x' exceeded 4s; worker restarted")
+
+    monkeypatch.setattr(service, method, timeout)
+    runner._deadline = time.monotonic() + 5.0      # above the floor, below 120 s
+
+    stage = runner._stage("assembly", "assy2", {"assembly"}, set(), [], [])
+
+    row = next(item for item in stage["items"] if item["id"] == subject)
+    assert row["status"] == "skip" and row["reason"] == "budget_exceeded"
+    assert runner._truncated is True
+    assert stage["summary"]["errors"] == 0
+
+    # Without a deadline the very same timeout is what it has always been: the
+    # kernel broke, and we do not know.
+    runner._deadline, runner._truncated = None, False
+    stage = runner._stage("assembly", "assy2", {"assembly"}, set(), [], [])
+    row = next(item for item in stage["items"] if item["id"] == subject)
+    assert row["status"] == "error" and runner._truncated is False
 
 
 def test_a_generous_budget_does_not_truncate_anything(stack, tmp_path):

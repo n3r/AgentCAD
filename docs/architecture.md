@@ -18,7 +18,7 @@ the same service humans use through the browser UI.
 │ FastAPI server — 127.0.0.1:<port>   (agentcad serve)        │
 │                                                             │
 │   ToolRegistry ──► AgentCADService ──► ProjectStore (files) │
-│   (64 tools,       (cache, events,     ~/AgentCAD/projects  │
+│   (65 tools,       (cache, events,     ~/AgentCAD/projects  │
 │    single source    orchestration)     or --projects-dir    │
 │    of truth)             │                                  │
 │                          │ line-delimited JSON-RPC (stdio)  │
@@ -445,33 +445,45 @@ measured through a **second, ephemeral `AgentCADService`** rooted in the work
 dir:
 
 ```
-  your project                                   throwaway <work-dir>/<project>/
+  your project                    throwaway <work-dir>/agentcad-check-<pid>-<rand>/
   ┌──────────────────────────┐   worktree add   ┌──────────────────────────────┐
-  │ parts/ project.json      │  --detach <sha>  │ the same files at <sha>      │
+  │ parts/ project.json      │  --detach <sha>  │ <project>/ at <sha>          │
   │ .cache/  exports/        │ ───────────────► │ a cold .cache/               │
   │ .history/ (git repo)     │                  │                              │
   └──────────────────────────┘                  │ ephemeral AgentCADService    │
         byte-untouched                          │   bus.on_publish   = None    │
                                                 │   branch_resolver  = None    │
+                                                │   write_guard      = None    │
                                                 │   the SAME kernel object     │
                                                 └──────────────────────────────┘
                                        removed in a `finally`, then `worktree prune`
 ```
 
-Both muzzles are load-bearing. A live event bus would publish
+All three muzzles are load-bearing. A live event bus would publish
 `project_changed`, and `service._snapshot_on_event` would commit a history
 snapshot **into the linked worktree** — the user's real repository — from a
 command whose contract is "never mutates". A live `branch_resolver` would route
 every read and write through a `.history/agentcad/` sidecar that does not exist
-there, and create one. The kernel object is *shared*: a second pool would cost
+there, and create one. A live `write_guard` (the versioning pack installs one)
+would call `branches.ensure_checkout` and materialize a branch tree in that
+same repository. The kernel object is *shared*: a second pool would cost
 another ~3 s per worker and ~0.5 GB. The price of the containment is stated
 rather than hidden — a ref check runs on a **cold cache**.
+
+The work dir itself is never written to directly: a run materializes into a
+unique subdirectory it creates (`agentcad-check-<pid>-<rand>/`) and deletes
+only that, and a `--work-dir` that is, contains or sits inside the project (or
+the projects root) is refused. The throwaway tree is named after the project,
+so without that rule `--work-dir .` from the projects root resolves onto the
+live one.
 
 **Determinism is verified, not assumed.** `--verify-determinism` adds a derived
 `determinism` stage that builds every part a second time against a copy of the
 measured tree with no `.cache`, and compares the cache key, the `.acm` mesh
 bytes, the metrics and the SVG drawing for exact equality. DXF is excluded by
-name (ezdxf stamps `$TDCREATE` and fresh GUIDs), as one `skip` row with a hint.
+name (ezdxf stamps `$TDCREATE` and fresh GUIDs), as one `skip` row with a hint
+— the report's only `strict_exempt` row, because a skip nothing can fix is not
+a `--strict` candidate.
 
 **The verdict lands where decisions are made.** `--proposal <id>` writes the
 report to `.history/agentcad/proposals/<id>/checks.json` beside PRD-002's

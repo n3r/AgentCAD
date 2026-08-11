@@ -50,6 +50,7 @@ import ast
 import contextlib
 import hashlib
 import json
+import os
 import platform
 import re
 import shutil
@@ -60,7 +61,7 @@ from pathlib import Path
 
 import agentcad
 
-from ..kernel.client import KernelError
+from ..kernel.client import ERROR_TIMEOUT, KernelError
 from . import locks
 from . import specs as _specs
 from .history import HistoryError, looks_like_commit
@@ -151,6 +152,19 @@ _FLAT_MEMO: dict[str, bool] = {}
 _MEMO_LIMIT = 512
 
 
+def _within(inner: Path, outer: Path) -> bool:
+    """Whether *inner* is *outer* itself or somewhere beneath it.
+
+    ``is_relative_to`` on already-resolved paths: purely lexical, which is what
+    is wanted here — a symlink that *currently* points elsewhere is not a
+    licence to materialize a worktree over someone's project.
+    """
+    try:
+        return Path(inner).is_relative_to(Path(outer))
+    except (TypeError, ValueError):     # pragma: no cover — defensive
+        return False
+
+
 def _now() -> str:
     """UTC, ISO-8601, zone-aware, second resolution — ``specs._now``'s reasoning
     verbatim: a report is read by a human, and the trailing ``Z`` is what stops
@@ -164,7 +178,8 @@ def _now() -> str:
 def make_item(stage: str, kind: str, subject: str, status: str, message: str,
               *, reason: str | None = None, hint: str | None = None,
               error: dict | None = None, details: dict | None = None,
-              requirement: str | None = None, seen: set[str] | None = None,
+              requirement: str | None = None, strict_exempt: bool = False,
+              seen: set[str] | None = None,
               warnings: list[str] | None = None) -> dict:
     """One row: ``<stage>:<subject>``, de-duplicated exactly like a spec id.
 
@@ -176,6 +191,14 @@ def make_item(stage: str, kind: str, subject: str, status: str, message: str,
     A ``skip`` **must** carry both a *reason* and a *hint* — PRD-003's rule,
     enforced here so a malformed skip is a ``ValueError`` a test catches, never
     a row that says "not measured" without saying why or what to do about it.
+
+    *strict_exempt* marks a skip that is **unconditional by construction** —
+    one no project can ever make pass (today: the DXF determinism row, because
+    ezdxf stamps a fresh timestamp and GUIDs into every document). ``--strict``
+    asks "is anything unmeasured that could have been measured", so counting a
+    skip that can never be fixed would make the flag permanently red and say
+    nothing. The row stays visible, with its reason and its hint; only the
+    derived verdict leaves it alone. It is meaningless on any other status.
     """
     if status not in ITEM_STATUSES:
         raise ValueError(f"unknown item status {status!r}; expected one of "
@@ -186,6 +209,9 @@ def make_item(stage: str, kind: str, subject: str, status: str, message: str,
     if status == "skip" and not (reason and hint):
         raise ValueError(f"a skip row ({stage}:{subject}) needs both a reason "
                          f"and a hint")
+    if strict_exempt and status != "skip":
+        raise ValueError(f"only a skip row can be strict-exempt "
+                         f"({stage}:{subject} is {status!r})")
     if seen is None:
         ident = f"{stage}:{subject}"
     else:
@@ -195,8 +221,8 @@ def make_item(stage: str, kind: str, subject: str, status: str, message: str,
         ident = holder["id"]
     return {"id": ident, "kind": kind, "subject": subject, "status": status,
             "message": message, "reason": reason, "hint": hint,
-            "requirement": requirement, "error": error,
-            "details": dict(details or {})}
+            "requirement": requirement, "strict_exempt": bool(strict_exempt),
+            "error": error, "details": dict(details or {})}
 
 
 def make_stage(name: str, items: list[dict] | None = None, *,
@@ -241,8 +267,12 @@ def finalize_report(project: str, stages: list[dict], *, source: dict,
     """
     items = [item for stage in stages for item in stage.get("items") or []]
     summary = summarize(items)
+    # A row marked `strict_exempt` is a skip nothing can fix (see `make_item`):
+    # it is not a strict-failure *candidate*, so it never enters this list and
+    # never moves the verdict. It stays a visible skip in the rows and counts.
     strict_failures = [item["id"] for item in items
-                       if item.get("status") == "skip"] if strict else []
+                       if item.get("status") == "skip"
+                       and not item.get("strict_exempt")] if strict else []
     status = report_status(summary)
     if strict_failures:
         status = "red"
@@ -347,6 +377,11 @@ def _item_problems(item, label: str, ids: set[str]) -> list[str]:
             if not isinstance(item.get(key), str) or not item[key]:
                 problems.append(f"{label}: a skip row needs a non-empty "
                                 f"{key}")
+    exempt = item.get("strict_exempt", False)
+    if not isinstance(exempt, bool):
+        problems.append(f"{label}.strict_exempt is not a boolean")
+    elif exempt and item.get("status") != "skip":
+        problems.append(f"{label}: only a skip row can be strict-exempt")
     error = item.get("error")
     if error is not None:
         if not isinstance(error, dict):
@@ -708,6 +743,22 @@ _STAGE_KIND = {"build": "part", "assembly": "instance", "specs": "check",
 #: here: its numbers are compared as numbers, below.
 _MESH_ARTIFACTS = (".acm", ".faces.u32")
 
+#: The floor under which a stage issues no further kernel call. The cheapest
+#: call this module makes — a cached ``_ensure_built``, a small drawing — is
+#: still comfortably longer than a second, so a call started with less than
+#: this left cannot finish inside the budget: it can only overshoot it and then
+#: fail as a *timeout*, which reads as "the model is wrong" for something that
+#: is entirely the budget's doing. Below the floor the item is recorded as
+#: ``budget_exceeded`` instead (``specs._MIN_KERNEL_TIMEOUT_S``'s reasoning,
+#: one size up, because these calls are seconds and not milliseconds).
+_MIN_CALL_S = 1.0
+
+#: The flat ceilings the two assembly calls would have taken without a budget.
+#: A timeout on a call that was handed *less* than its ceiling is a fact about
+#: the deadline, not about the geometry — see :meth:`CheckRunner._budget_broke`.
+_MATES_CEILING_S = 120.0
+_INTERFERENCE_CEILING_S = 600.0
+
 #: The scalars a determinism run compares. Exact equality, not a tolerance:
 #: the product guarantee is "same script + params ⇒ identical output", and a
 #: tolerance would quietly redefine it.
@@ -722,10 +773,10 @@ def _ephemeral_service(work_dir: Path, tree: Path, kernel):
     ``exports/`` — lands inside the throwaway directory and the user's project
     is untouched *by construction* rather than by care.
 
-    The two assignments below are the dangerous part of this whole feature,
+    The three assignments below are the dangerous part of this whole feature,
     and each is named for the failure it prevents. They are not decoration:
-    losing either turns a command whose contract is "never mutates" into one
-    that writes to the user's repository.
+    losing any of them turns a command whose contract is "never mutates" into
+    one that writes to the user's repository.
 
     The kernel is **shared**, never re-started: a second pool would cost
     another ~3 s per worker and ~0.5 GB of RAM to run the same builds.
@@ -754,6 +805,16 @@ def _ephemeral_service(work_dir: Path, tree: Path, kernel):
     # `.history/agentcad/` sidecar that does not exist here — and write one.
     # A check runs on exactly one tree; it needs no branch layer.
     service.store.branch_resolver = None
+    # NON-NEGOTIABLE, and the third seam `build_registry` leaves live: the
+    # versioning pack installs a `write_guard` whose first act is
+    # `branches.ensure_checkout(proj)`, which MATERIALIZES a branch working
+    # tree — `.history/trees/<b>/` in the repository this tree is linked to,
+    # i.e. the user's. It fires on `write_script`, `save_manifest` and the
+    # authored writes; a check makes none of those today, so the guard is inert
+    # BY ACCIDENT. One future write inside a stage would make it live, and it
+    # would write into the user's repository. It is nulled for the same reason
+    # as the other two, not because anything currently trips it.
+    service.store.write_guard = None
     return service, registry, project
 
 
@@ -987,12 +1048,18 @@ class CheckRunner:
     identically: a ``check_finished`` event on the bus, and the report in
     :attr:`last` (bounded to :data:`LAST_REPORTS` projects, in memory only).
 
-    ``budget_s`` is a **deadline read between items**, on ``time.monotonic``
-    (an NTP step must never move a budget). The honest limitation, which is
-    also in ``--help`` and the docs: ``service._ensure_built`` hard-codes 300 s
-    and the drawing tools 120 s, neither taking a ``timeout_s``, so the
-    worst-case overshoot is **one in-flight kernel call**. The two assembly
-    calls do take one and get exactly what is left.
+    ``budget_s`` is a **deadline read before every item and every kernel
+    call**, on ``time.monotonic`` (an NTP step must never move a budget). Every
+    stage is under it: the two assembly calls take what is left as their
+    ``timeout_s``, the specs stage passes the remainder into
+    ``SpecRunner.run(deadline=…)`` (PRD-003 bounds each tier with it), and the
+    determinism row re-reads it before each of its four calls. Below
+    :data:`_MIN_CALL_S` nothing is issued at all, because a call that cannot
+    finish can only overshoot and then be reported as a timeout — a red row for
+    something the budget did. The honest limitation, which is also in
+    ``--help`` and the docs: ``service._ensure_built`` hard-codes 300 s and the
+    drawing tools 120 s, neither taking a ``timeout_s``, so the worst-case
+    overshoot is **one in-flight kernel call**.
     """
 
     def __init__(self, service, registry=None):
@@ -1021,10 +1088,43 @@ class CheckRunner:
     def _out_of_budget(self) -> bool:
         return self._deadline is not None and time.monotonic() > self._deadline
 
+    def _cannot_afford(self) -> bool:
+        """Whether the budget can still pay for **one more kernel call**.
+
+        ``_out_of_budget`` answers "has the deadline passed"; this answers the
+        question a caller about to spend seconds actually has. Issuing a call
+        with 40 ms left buys nothing: it times out, and a timeout is reported
+        as an ``error`` row — "we do not know" — for something the budget did
+        on purpose. Below :data:`_MIN_CALL_S` the item is a
+        ``budget_exceeded`` skip instead, which is the truth.
+        """
+        remaining = self._remaining()
+        return remaining is not None and remaining < _MIN_CALL_S
+
+    def _budget_broke(self, exc: BaseException, remaining: float | None,
+                      ceiling: float) -> bool:
+        """Whether *exc* is a timeout the **deadline** caused.
+
+        A kernel timeout on a call that was handed its own flat *ceiling* is a
+        fact about the geometry (or the kernel). A timeout on a call that was
+        handed the budget's *remainder* instead — i.e. one whose ``timeout_s``
+        was below *ceiling* — is the budget running out mid-call, and it is
+        reported as the truncation it is rather than as a red row nobody can
+        act on.
+        """
+        return (remaining is not None
+                and remaining < ceiling
+                and isinstance(exc, KernelError)
+                and exc.type == ERROR_TIMEOUT)
+
     def _budget_item(self, stage: str, kind: str, subject: str, seen: set,
                      warnings: list[str]) -> dict:
         """One item the budget never reached, and the flag that makes the
-        whole report ``complete: false`` (and therefore exit 2)."""
+        whole report ``complete: false`` (and therefore exit 2).
+
+        It is a ``skip``, never an ``error``: exit 1 means the model is wrong,
+        and a budget running out says nothing at all about the model.
+        """
         self._truncated = True
         return make_item(stage, kind, subject, "skip",
                          "not reached: the run's budget was exhausted before "
@@ -1067,6 +1167,10 @@ class CheckRunner:
         seen: set[str] = set()
         warnings: list[str] = []
         errors: list[dict] = []
+        # Validated ONCE, here, before anything is built or materialized: a
+        # work dir that overlaps the project is refused rather than written to
+        # (and never created as a side effect of being refused).
+        root = self._work_dir(proj, work_dir)
         if ref is None:
             manifest = self.service.store.manifest(proj)  # NotFoundError: → 2
             project = manifest.get("name") or proj
@@ -1074,11 +1178,11 @@ class CheckRunner:
             blocks = self._measure(self, proj, selected, seen, warnings, errors)
             if verify_determinism:
                 blocks.append(self._determinism_stage(
-                    self, proj, work_dir, seen, warnings, errors))
+                    self, proj, root, seen, warnings, errors))
         else:
             project, source, blocks = self._run_ref(
                 proj, ref, selected, seen, warnings, errors, sha=sha,
-                ref_label=ref_label, work_dir=work_dir,
+                ref_label=ref_label, work_dir=root,
                 verify_determinism=verify_determinism)
         report = finalize_report(
             project, blocks, source=source, host=self._host(),
@@ -1209,7 +1313,10 @@ class CheckRunner:
         items = []
         for entry in self.service.store.manifest(proj)["parts"]:
             part_id = entry["id"]
-            if self._out_of_budget():
+            # `_cannot_afford`, not `_out_of_budget`: a build takes seconds at
+            # best and takes no `timeout_s`, so starting one the budget cannot
+            # pay for is exactly the overshoot the floor exists to stop.
+            if self._cannot_afford():
                 items.append(self._budget_item("build", "part", part_id, seen,
                                                warnings))
                 continue
@@ -1312,10 +1419,24 @@ class CheckRunner:
         if len(self.service.store.instances(proj)) < 2:
             return make_stage("assembly", reason="no_instances",
                               duration_s=_elapsed(started))
+        # Below the floor the mate pass cannot finish, and issuing it anyway
+        # would report the budget's own doing as a red row (review W3).
+        if self._cannot_afford():
+            item = self._budget_item("assembly", "mate", "mates", seen,
+                                     warnings)
+            return make_stage("assembly", [item], duration_s=_elapsed(started))
+        remaining = self._remaining()
         try:
-            resolved = self.service._resolved_instances(
-                proj, timeout_s=self._remaining())
+            resolved = self.service._resolved_instances(proj,
+                                                        timeout_s=remaining)
         except (AppError, KernelError) as exc:
+            if self._budget_broke(exc, remaining, _MATES_CEILING_S):
+                # The deadline stopped it, not the model: the same
+                # `budget_exceeded` skip every other truncated item gets.
+                item = self._budget_item("assembly", "mate", "mates", seen,
+                                         warnings)
+                return make_stage("assembly", [item],
+                                  duration_s=_elapsed(started))
             payload = _payload(exc)
             # A mate that will not resolve is the model being wrong (`fail`);
             # a kernel that broke mid-resolution is "we do not know" (`error`).
@@ -1331,21 +1452,26 @@ class CheckRunner:
         pairs: list[dict] = []
         mesh: list[str] = []
         extra: list[dict] = []
-        if self._out_of_budget():
+        if self._cannot_afford():
             extra.append(self._budget_item("assembly", "pair", "interference",
                                            seen, warnings))
         else:
+            remaining = self._remaining()
             try:
                 result = self.service.check_interference(
-                    proj, self._min_volume, timeout_s=self._remaining())
+                    proj, self._min_volume, timeout_s=remaining)
             except Exception as exc:  # noqa: BLE001 — one row, not a traceback
-                payload = _payload(exc)
-                errors.append({**payload, "stage": "assembly"})
-                extra.append(make_item(
-                    "assembly", "pair", "interference", "error",
-                    f"the interference check did not complete: "
-                    f"{payload['message']}", error=payload, seen=seen,
-                    warnings=warnings))
+                if self._budget_broke(exc, remaining, _INTERFERENCE_CEILING_S):
+                    extra.append(self._budget_item(
+                        "assembly", "pair", "interference", seen, warnings))
+                else:
+                    payload = _payload(exc)
+                    errors.append({**payload, "stage": "assembly"})
+                    extra.append(make_item(
+                        "assembly", "pair", "interference", "error",
+                        f"the interference check did not complete: "
+                        f"{payload['message']}", error=payload, seen=seen,
+                        warnings=warnings))
             else:
                 pairs = result.get("pairs") or []
                 mesh = result.get("skipped_mesh") or []
@@ -1390,17 +1516,26 @@ class CheckRunner:
 
     def _stage_specs(self, proj: str, seen: set, warnings: list[str],
                      errors: list[dict], started: float) -> dict:
-        """``SpecRunner.run`` — all three tiers, unbounded, and *the documented
-        exit from every cached refusal* PRD-003 keeps. Its report is embedded
-        whole, so requirement traceability is passed through rather than
-        re-derived.
+        """``SpecRunner.run`` — all three tiers, *the documented exit from every
+        cached refusal* PRD-003 keeps, and **under this run's deadline**. Its
+        report is embedded whole, so requirement traceability is passed through
+        rather than re-derived.
+
+        The deadline is the one place this differs from ``run_specs``, which
+        passes ``None`` deliberately (an engineer asking for a full report has
+        asked for the cost). A check under ``--budget`` promises a bound, and a
+        spec run is the most expensive stage there is: unbounded here, the
+        budget would have covered three stages out of four. PRD-003's own
+        machinery does the bounding — every tier's kernel call asks for what
+        the deadline has left, and a check the budget never reached becomes an
+        ``error`` row that says so, fail-closed.
         """
         runner = getattr(self.service, "specs", None)   # read HERE, not in init
         if runner is None:
             return make_stage("specs", reason="specs_unavailable",
                               duration_s=_elapsed(started))
         try:
-            report = runner.run(proj)
+            report = runner.run(proj, deadline=self._deadline)
         except Exception as exc:  # noqa: BLE001 — the runner never propagates
             payload = _payload(exc)
             errors.append({**payload, "stage": "specs"})
@@ -1409,6 +1544,12 @@ class CheckRunner:
                              f"{payload['message']}", error=payload, seen=seen,
                              warnings=warnings)
             return make_stage("specs", [item], duration_s=_elapsed(started))
+        if self._out_of_budget():
+            # The deadline expired somewhere inside the spec run: whatever it
+            # returned is partial, so the report is `complete: false` (exit 2)
+            # like every other stage the budget cut short. The rows themselves
+            # are PRD-003's and are left exactly as measured.
+            self._truncated = True
         warnings.extend(report.get("warnings") or [])
         if not report.get("declared"):
             # "A part that declares nothing is absent, not green" travels up
@@ -1465,7 +1606,7 @@ class CheckRunner:
         items: list[dict] = []
         for entry in self.service.store.manifest(proj)["parts"]:
             part_id = entry["id"]
-            if self._out_of_budget():
+            if self._cannot_afford():
                 items.append(self._budget_item("drawings", "drawing", part_id,
                                                seen, warnings))
                 continue
@@ -1481,7 +1622,7 @@ class CheckRunner:
                 warnings))
             if not self._declares_flat(proj, part_id):
                 continue        # absent, not green: no row at all
-            if self._out_of_budget():
+            if self._cannot_afford():
                 items.append(self._budget_item(
                     "drawings", "flat_pattern", f"{part_id}:flat_pattern",
                     seen, warnings))
@@ -1525,9 +1666,55 @@ class CheckRunner:
 
     # ------------------------------------------------------------- the ref
 
+    # -------------------------------------------------------- the work dir
+
+    def _work_dir(self, proj: str, work_dir: str | None) -> Path | None:
+        """The caller's ``--work-dir``, resolved and **proven not to overlap the
+        project**, or ``None`` for "make your own temp dir".
+
+        Absolute, always: ``history._run`` runs git with ``cwd`` set to the
+        project, so a relative work dir would put the throwaway worktree
+        *inside the user's project* — the one place it may not go.
+
+        Created only after it is accepted, so a refused path never leaves a
+        directory behind.
+        """
+        if work_dir is None:
+            return None
+        root = Path(work_dir).expanduser().resolve()
+        self._refuse_overlap(root, self.service.store.canonical_path_of(proj))
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _refuse_overlap(self, root: Path, canonical: Path) -> None:
+        """Refuse a work dir that is, holds, or lives inside the project — or
+        the projects root.
+
+        This is the guard behind the one catastrophic bug this feature could
+        have: the throwaway tree is named after the project, so from the
+        projects root ``<work-dir>/<project>`` **is** the live project
+        directory. A check that materializes there is a check that deletes the
+        user's work. Refusing beats every cleverer answer, and the message
+        names both paths because a refusal a user cannot act on is not one.
+        """
+        root = Path(root).resolve()
+        canonical = Path(canonical).resolve()
+        projects = Path(self.service.store.root).resolve()
+        for label, path in (("the project directory", canonical),
+                            ("the projects root", projects)):
+            if root == path or _within(path, root) or _within(root, path):
+                raise ValidationError(
+                    f"--work-dir {root} overlaps {label} {path}: a check "
+                    f"materializes a throwaway worktree under the work dir and "
+                    f"deletes it afterwards, so it must not be, contain or sit "
+                    f"inside the project it is measuring — pass a directory "
+                    f"elsewhere, or omit --work-dir for a temp dir",
+                    {"work_dir": str(root), "project_dir": str(canonical),
+                     "projects_root": str(projects)})
+
     def _run_ref(self, proj: str, ref: str, selected: set[str], seen: set,
                  warnings: list[str], errors: list[dict], *, sha: str | None,
-                 ref_label: str | None, work_dir: str | None,
+                 ref_label: str | None, work_dir: Path | None,
                  verify_determinism: bool) -> tuple[str, dict, list[dict]]:
         """Measure a **commit**, and leave the user's project byte-identical.
 
@@ -1537,34 +1724,46 @@ class CheckRunner:
         ``finally``. The report's ``source`` block is stamped out here, by the
         *outer* runner, because the ephemeral service knows nothing about how
         the tree it was handed was named.
+
+        Everything a run writes goes into **one subdirectory it created
+        itself**, ``<work-dir>/agentcad-check-<pid>-<rand>/``. That is what
+        makes the teardown safe: nothing is ever deleted that this run did not
+        make, a name collision inside the work dir is impossible, and the work
+        dir the caller passed is left exactly as it was (review W1).
         """
         # An unknown project is a NotFoundError here — 404, CLI exit 2.
         canonical = self.service.store.canonical_path_of(proj)
         resolved = self._resolve_ref(proj, canonical, ref, warnings)
         owned = work_dir is None
-        # Absolute, always: `history._run` runs git with ``cwd`` set to the
-        # project, so a relative --work-dir would put the throwaway worktree
-        # *inside the user's project directory* — the one place it may not go.
-        root = Path(work_dir).resolve() if work_dir is not None else Path(
+        # `_work_dir` has already resolved and vetted a caller's path; without
+        # one this is a temp dir we own outright.
+        root = Path(work_dir) if work_dir is not None else Path(
             tempfile.mkdtemp(prefix="agentcad-check-")).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        # The pid names whoever left a cell behind after a kill; `mkdtemp`
+        # supplies the uniqueness (and creates it 0700, which is why a
+        # collision cannot be inherited from anyone else).
+        cell = Path(tempfile.mkdtemp(prefix=f"agentcad-check-{os.getpid()}-",
+                                     dir=str(root))).resolve()
         try:
-            root.mkdir(parents=True, exist_ok=True)
-            with self._materialized(canonical, resolved["sha"], root,
+            with self._materialized(canonical, resolved["sha"], cell,
                                     warnings) as tree:
                 service, registry, name = _ephemeral_service(
-                    root, tree, self.service.kernel)
+                    cell, tree, self.service.kernel)
                 inner = self._bind(service, registry)
                 blocks = self._measure(inner, name, selected, seen, warnings,
                                        errors)
                 if verify_determinism:
                     blocks.append(self._determinism_stage(
-                        inner, name, root, seen, warnings, errors))
+                        inner, name, cell, seen, warnings, errors))
                 self._truncated = self._truncated or inner._truncated
                 project = service.store.manifest(name).get("name") or name
         finally:
+            # Only what this run created. A caller who passed --work-dir (an
+            # actions/cache path, a big disk) keeps the directory itself and
+            # everything that was already in it.
+            shutil.rmtree(cell, ignore_errors=True)
             if owned:
-                # Only a work dir we created is ours to delete; a caller who
-                # passed --work-dir (an actions/cache path, a big disk) keeps it.
                 shutil.rmtree(root, ignore_errors=True)
         source = {"kind": resolved["kind"], "ref": ref, "sha": resolved["sha"],
                   "label": ref_label, "host_sha": sha,
@@ -1652,11 +1851,27 @@ class CheckRunner:
         come off is a ``warnings[]`` entry, because a cleanup problem is not a
         verdict about the user's geometry. ``git worktree prune`` heals a
         leaked registration on the next run.
+
+        **Nothing here deletes a directory it did not create** (review W1).
+        ``<work-dir>/<project>`` used to be ``rmtree``'d if it existed, which
+        from the projects root is the live project. The caller hands this an
+        empty cell it just made, so a pre-existing tree means the destination
+        is not ours — and that is a refusal, not a cleanup.
         """
         history = self.service.history
-        tree = Path(work_dir) / canonical.name
+        work_dir = Path(work_dir).resolve()
+        # Belt and braces: `run` vets a caller's --work-dir, and this is the
+        # last gate before a path is handed to `worktree add`.
+        self._refuse_overlap(work_dir, canonical)
+        tree = work_dir / canonical.name
         if tree.exists():
-            shutil.rmtree(tree, ignore_errors=True)
+            raise ValidationError(
+                f"the check's worktree path {tree} already exists; refusing to "
+                f"delete a directory this run did not create — a check "
+                f"materializes into a fresh subdirectory of its --work-dir, so "
+                f"this one is not ours to reuse",
+                {"path": str(tree), "work_dir": str(work_dir),
+                 "project_dir": str(canonical)})
         try:
             history._run(canonical, "worktree", "prune", check=False)
             added = history._run(canonical, "worktree", "add", "--detach",
@@ -1817,7 +2032,7 @@ class CheckRunner:
             items: list[dict] = []
             for entry in service.store.manifest(proj)["parts"]:
                 part_id = entry["id"]
-                if self._out_of_budget():
+                if self._cannot_afford():
                     items.append(self._budget_item("determinism", "part",
                                                    part_id, seen, warnings))
                     continue
@@ -1828,8 +2043,12 @@ class CheckRunner:
                 "determinism", "drawing", "dxf", "skip",
                 "DXF output was not compared: it is not byte-stable, so an "
                 "equality assertion over it would fail on every run",
-                reason="not_byte_stable", hint=_DXF_HINT, seen=seen,
-                warnings=warnings))
+                reason="not_byte_stable", hint=_DXF_HINT,
+                # The one unconditional skip in the whole report: no project
+                # can make it pass, so `--strict` does not count it (it would
+                # make `--strict --verify-determinism` red forever, which
+                # tells a reader nothing). The row stays, and says why.
+                strict_exempt=True, seen=seen, warnings=warnings))
             return make_stage("determinism", items,
                               duration_s=_elapsed(started))
         finally:
@@ -1839,9 +2058,27 @@ class CheckRunner:
                           proj: str, mirror: str, part_id: str, entry: dict,
                           seen: set, warnings: list[str],
                           errors: list[dict]) -> dict:
+        """One part built twice and compared — with the deadline read **before
+        each** of the (up to four) kernel calls this row makes.
+
+        Two builds and two drawings behind a single budget check was the whole
+        of review W2: a ``--budget`` that had already run out could still spend
+        two 300 s builds and two 120 s drawings on one row. None of these
+        surfaces takes a ``timeout_s`` (``_ensure_built`` hard-codes 300 s, the
+        drawing tools 120 s), so the honest bound is the one every other stage
+        has: one in-flight call, and a ``budget_exceeded`` skip for the rest.
+        """
         first = runner.service
+        if self._cannot_afford():
+            return self._budget_item("determinism", "part", part_id, seen,
+                                     warnings)
         try:
             left = first._ensure_built(proj, part_id)
+            if self._cannot_afford():
+                # The first build ate the rest of the budget: the second one
+                # would only overshoot it, and one build proves nothing.
+                return self._budget_item("determinism", "part", part_id, seen,
+                                         warnings)
             right = second._ensure_built(mirror, part_id)
         except Exception as exc:  # noqa: BLE001 — one row, not a traceback
             payload = _payload(exc)
@@ -1876,6 +2113,11 @@ class CheckRunner:
             diverged += svg
             if ok:
                 compared.append("drawing.svg")
+            elif self._out_of_budget():
+                # The drawings were not compared because the budget stopped
+                # them: the row can still report the meshes and the metrics,
+                # but the run as a whole is no longer complete.
+                self._truncated = True
         details = {"cache_key": left.get("cache_key"), "compared": compared,
                    "diverged": diverged}
         if diverged:
@@ -1904,8 +2146,16 @@ class CheckRunner:
             warnings.append(f"{part_id}: no tool registry, so SVG determinism "
                             f"was not measured")
             return [], False
+        if self._cannot_afford():
+            warnings.append(f"{part_id}: the run's budget ran out before the "
+                            f"SVG drawings could be compared")
+            return [], False
         left = runner._registry.call("generate_drawing", {
             "project": proj, "part_id": part_id, "format": "svg"})
+        if self._cannot_afford():
+            warnings.append(f"{part_id}: the run's budget ran out between the "
+                            f"two SVG drawings, so they were not compared")
+            return [], False
         right = registry.call("generate_drawing", {
             "project": mirror, "part_id": part_id, "format": "svg"})
         for result in (left, right):
@@ -2042,8 +2292,21 @@ class CheckRunner:
         the one the report itself says it measured (``source.sha``), never the
         head at posting time: the gate's whole job is to notice when those two
         have drifted apart.
+
+        The resolution, the terminal-state check, the write and the audit line
+        all happen **under the proposal manager's lock**, which is
+        ``record_packet``'s mechanism and is here for ``record_packet``'s exact
+        reason (review W6): a check measures for minutes, and a merge landing
+        between "this proposal is open" and "here is the evidence" would write
+        post-decision evidence onto a terminal proposal. A post that loses that
+        race is discarded with the same :class:`ConflictError` a late explicit
+        post gets — nothing is written, and the audit log stays clean.
+
+        Everything that can be computed *before* the lock is, and is: the
+        record — including :meth:`measured_branch`, which is a git call — is
+        built first, because holding a lifecycle lock across git would make
+        every proposal read in the process wait on this run.
         """
-        proposal = self.post_target(proj, pid)
         actor = locks.current_client_id()
         source = (report.get("source") or {})
         record = {
@@ -2067,18 +2330,42 @@ class CheckRunner:
                        for stage in report.get("stages") or []],
             "report": report,
         }
-        path = self._check_store().write(proj, pid, record)
-        # Appended, never rewritten (FR14): the log is the evidence that this
-        # verdict was posted, by whom, and when.
-        entry = self._proposals(proj).store.append_audit(proj, pid, {
-            "action": "checks_posted",
-            "details": {"status": record["status"],
-                        "exit_code": record["exit_code"],
-                        "head": record["head"], "source": record["source"],
-                        "complete": record["complete"],
-                        "strict": record["strict"],
-                        "summary": record["summary"],
-                        "agentcad": report.get("agentcad")}})
+        manager = self._proposals(proj)
+        store = self._check_store()
+        # PRD-002's own lifecycle lock, reached for by name: it is the only
+        # thing that serializes this against `merge`, and a second lock of our
+        # own would serialize nothing. It is re-entrant, so `post_target`'s
+        # `reconcile` takes it again below without deadlocking.
+        with manager._lock:
+            # Resolved AGAIN, inside the lock, and this resolution is the one
+            # that decides: `post_target` outside it would be a check whose
+            # answer could be stale by the time the write lands.
+            proposal = self.post_target(proj, pid)
+            previous = store.path(proj, pid)
+            restore = previous.read_bytes() if previous.is_file() else None
+            path = store.write(proj, pid, record)
+            try:
+                # Appended, never rewritten (FR14): the log is the evidence
+                # that this verdict was posted, by whom, and when.
+                entry = manager.store.append_audit(proj, pid, {
+                    "action": "checks_posted",
+                    "details": {"status": record["status"],
+                                "exit_code": record["exit_code"],
+                                "head": record["head"],
+                                "source": record["source"],
+                                "complete": record["complete"],
+                                "strict": record["strict"],
+                                "summary": record["summary"],
+                                "agentcad": report.get("agentcad")}})
+            except Exception:
+                # The append is what makes the write final: a gate must never
+                # read evidence with no audit line behind it, so the slot goes
+                # back to whatever it held (nothing, or the previous post).
+                if restore is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    ProjectStore._atomic_write(path, restore)
+                raise
         self._publish_proposal(proj, pid, proposal.get("state"))
         return {"id": pid, "ok": True, "state": proposal.get("state"),
                 "head": record["head"], "source": record["source"],

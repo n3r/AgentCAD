@@ -384,6 +384,32 @@ def test_a_partial_report_is_still_written_before_exit_two(wired, tmp_path):
     assert json.loads(report.read_text())["complete"] is False
 
 
+@pytest.mark.parametrize("failure", ["app", "bare"])
+def test_a_post_run_failure_is_exit_two_with_a_message_not_a_traceback(
+        wired, capsys, failure):
+    """Review W5: ``_write_check_outputs``/``_post_check``/``_print_check`` ran
+    *after* the try/except that maps a harness failure to exit 2, so anything
+    they raised — ``matching_proposals`` over a mangled proposals index, an
+    audit append that will not write — left a traceback and exit **1**, which
+    is reserved for "the model is wrong"."""
+    from agentcad.core.model import ValidationError
+
+    exc = (ValidationError("the proposals index.json could not be read")
+           if failure == "app"
+           else OSError("proposals/index.json is not a file"))
+
+    def boom(project, report):
+        raise exc
+
+    wired.runner.can_post = lambda: True
+    wired.runner.matching_proposals = boom
+
+    assert cli.cmd_check(_args(auto_proposal=True)) == 2
+
+    err = capsys.readouterr().err
+    assert "index.json" in err and "agentcad check" in err
+
+
 def test_proposal_flags_are_accepted_and_warn_until_slice_six(wired, capsys):
     assert cli.cmd_check(_args(proposal="pr-1")) == 0
     assert "--proposal" in capsys.readouterr().err

@@ -354,7 +354,11 @@ def test_ac3_a_broken_spec_names_the_check_with_measured_and_limit(stack):
     row = _item(report, "specs:box:wall_min")
     assert row["kind"] == "check" and row["status"] == "fail"
     assert row["requirement"] == "ENG-014"
-    assert row["details"]["measured"] < row["details"]["limit"]["min_mm"]
+    # The limit is the one HOLLOW_BOX declares, literally: a row that compared
+    # `measured` against whatever limit it happened to carry would still pass
+    # if the declaration travelled wrong.
+    assert row["details"]["limit"] == {"min_mm": 2.0}
+    assert row["details"]["measured"] < 2.0
     assert row["details"]["unit"] == "mm"
     assert report["requirements"]["ENG-014"]["status"] == "fail"
     assert report["exit_code"] == 1

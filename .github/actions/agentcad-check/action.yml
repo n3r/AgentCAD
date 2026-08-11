@@ -150,6 +150,17 @@ runs:
         report_md="${INPUT_REPORT_MD:-$out_dir/report.md}"
         mkdir -p "$(dirname "$report_json")" "$(dirname "$report_md")"
 
+        # The requirement is passed to `uv pip install` as a POSITIONAL
+        # argument, so a value starting with "-" would be read as a flag
+        # (`--index-url=…` on a fork's pull request is the whole attack).
+        case "$INPUT_AGENTCAD" in
+          -*)
+            echo "::error::agentcad must be a requirement, not a flag:" \
+                 "$INPUT_AGENTCAD" >&2
+            exit 2
+            ;;
+        esac
+
         # The requirement, with the [fem] extra spliced in before any version
         # specifier or marker ("agentcad==1.2" -> "agentcad[fem]==1.2").
         requirement="$INPUT_AGENTCAD"
@@ -168,6 +179,19 @@ runs:
         slug="${slug%-}"
         os="$(printf '%s' "${RUNNER_OS_LOWER:-unknown}" | tr '[:upper:]' '[:lower:]')"
         artifact_name="${INPUT_ARTIFACT_NAME:-agentcad-check-$os-${slug:-project}}"
+
+        # A newline inside a value forges a SECOND `$GITHUB_OUTPUT` line —
+        # `status=green` written by an input, say. These four are the only
+        # values here that carry user text, and none of them may contain one.
+        for value in "$report_json" "$report_md" "$requirement" \
+                     "$artifact_name"; do
+          case "$value" in
+            *$'\n'*)
+              echo "::error::action inputs must not contain newlines" >&2
+              exit 2
+              ;;
+          esac
+        done
 
         {
           echo "report-json=$report_json"
@@ -318,9 +342,20 @@ runs:
         EXIT_CODE: ${{ steps.check.outputs.exit-code }}
         STATUS: ${{ steps.check.outputs.status }}
         FAILED_STAGES: ${{ steps.check.outputs.failed-stages }}
+        OUTCOME: ${{ steps.check.outcome }}
       run: |
         set -euo pipefail
-        code="${EXIT_CODE:-1}"
+        # An EMPTY exit code means the check step never ran — a setup step
+        # failed before it. That is a harness failure (exit 2), and it must not
+        # be dressed up as red geometry: `${EXIT_CODE:-1}` used to report
+        # "red — failed stages: unknown" for a failed `uv pip install`.
+        if [ -z "${EXIT_CODE:-}" ]; then
+          echo "::error::agentcad check did not run (the check step's outcome" \
+               "was '${OUTCOME:-skipped}'); no geometry was measured — see the" \
+               "failing setup step above"
+          exit 2
+        fi
+        code="$EXIT_CODE"
         if [ "$code" = "1" ]; then
           echo "::error::agentcad check: ${STATUS:-red} — failed stages:" \
                "${FAILED_STAGES:-unknown}"

@@ -47,11 +47,16 @@ This project is built skill-first. Use the Superpowers process skills:
 - **Imported STL** = one welded mesh face (no surface) → needs crease-angle
   normals, not smooth averaging; and its **booleans segfault OCCT** (blocked).
 - Geometry CI (`core/checks.py`): the ephemeral `--ref` service **must** have
-  `bus.on_publish = None` and `branch_resolver = None` or a check commits into
-  the user's repo · the pack is `tools_run_checks.py` (load order), never
-  `tools_checks.py` · rows are **`items`**, never `checks` · `check` is
-  report-honest and `--strict` only moves the verdict, while the `specs`/`checks`
-  gates are fail-closed and never answer `pending` · DXF is not byte-stable, so
+  `bus.on_publish = None`, `branch_resolver = None` **and** `write_guard = None`
+  or a check writes into the user's repo · a run materializes into a unique
+  `<work-dir>/agentcad-check-<pid>-<rand>/` and **never deletes a directory it
+  did not create** (a `--work-dir` overlapping the project is refused) · the
+  pack is `tools_run_checks.py` (load order), never `tools_checks.py` · rows are
+  **`items`**, never `checks` · `check` is report-honest and `--strict` only
+  moves the verdict (skipping `strict_exempt` rows), while the `specs`/`checks`
+  gates are fail-closed and never answer `pending` · `--budget` is read before
+  every item **and every kernel call**, and what it stops is a
+  `skip`/`budget_exceeded` + exit 2, never a red · DXF is not byte-stable, so
   determinism compares SVG only · the Action checks the working tree and takes
   `--sha` as provenance, never `--ref`.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;

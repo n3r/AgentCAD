@@ -61,13 +61,17 @@ def _step(action: dict, key: str) -> dict:
     raise AssertionError(f"no step {key!r} in {[s.get('name') for s in _steps(action)]}")
 
 
-def _run_body(action: dict, key: str, env: dict[str, str],
-              cwd: Path | None = None) -> subprocess.CompletedProcess:
-    """Execute one composite step's script the way a runner would."""
+def _run_body(action: dict, key: str, env: dict[str, str], cwd: Path,
+              timeout: int = 120) -> subprocess.CompletedProcess:
+    """Execute one composite step's script the way a runner would.
+
+    *cwd* is explicit — a body that reads the working directory (the install
+    step tests for `uv.lock`) must never silently pick up this repository.
+    """
     base = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "")}
     return subprocess.run(["bash", "-c", _step(action, key)["run"]],
-                          cwd=str(cwd or REPO), env={**base, **env},
-                          capture_output=True, text=True, timeout=120)
+                          cwd=str(cwd), env={**base, **env},
+                          capture_output=True, text=True, timeout=timeout)
 
 
 def _outputs(path: Path) -> dict[str, str]:
@@ -224,7 +228,7 @@ def test_the_plan_step_resolves_paths_the_requirement_and_the_artifact_name(tmp_
         "INPUT_REPORT_JSON": "", "INPUT_REPORT_MD": "", "INPUT_ARTIFACT_NAME": "",
         "INPUT_AGENTCAD": ".", "INPUT_FEM": "false", "INPUT_PROPOSAL": "",
         "INPUT_AUTO_PROPOSAL": "false", "INPUT_GITHUB_TOKEN": "",
-    })
+    }, cwd=tmp_path)
     assert proc.returncode == 0, proc.stderr
     got = _outputs(out)
     assert got["report-json"] == str(tmp_path / "agentcad-check/report.json")
@@ -253,7 +257,7 @@ def test_the_fem_extra_is_spliced_before_any_version_specifier(
         "INPUT_REPORT_JSON": "", "INPUT_REPORT_MD": "", "INPUT_ARTIFACT_NAME": "",
         "INPUT_AGENTCAD": requirement, "INPUT_FEM": "true", "INPUT_PROPOSAL": "",
         "INPUT_AUTO_PROPOSAL": "false", "INPUT_GITHUB_TOKEN": "",
-    })
+    }, cwd=tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert _outputs(out)["requirement"] == expected
 
@@ -270,7 +274,7 @@ def test_proposal_and_auto_proposal_are_refused_before_the_kernel_spawns(tmp_pat
         "INPUT_AGENTCAD": "agentcad", "INPUT_FEM": "false",
         "INPUT_PROPOSAL": "3", "INPUT_AUTO_PROPOSAL": "true",
         "INPUT_GITHUB_TOKEN": "",
-    })
+    }, cwd=tmp_path)
     assert proc.returncode == 2
     assert "mutually exclusive" in proc.stderr
 
@@ -283,7 +287,7 @@ def test_the_summary_step_says_so_when_there_is_no_report(tmp_path):
     proc = _run_body(_load(ACTION), "Write the job summary", {
         "GITHUB_STEP_SUMMARY": str(summary),
         "REPORT_MD": str(tmp_path / "absent.md"), "EXIT_CODE": "2",
-    })
+    }, cwd=tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert "No markdown summary" in summary.read_text(encoding="utf-8")
 
@@ -293,9 +297,38 @@ def test_the_summary_step_says_so_when_there_is_no_report(tmp_path):
     proc = _run_body(_load(ACTION), "Write the job summary", {
         "GITHUB_STEP_SUMMARY": str(summary), "REPORT_MD": str(written),
         "EXIT_CODE": "1",
-    })
+    }, cwd=tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert summary.read_text(encoding="utf-8") == written.read_text(encoding="utf-8")
+
+
+@needs_bash
+@pytest.mark.integration
+def test_a_check_that_never_ran_is_a_harness_error_not_red_geometry(tmp_path):
+    """Review W7: when setup fails the check step never runs, its `exit-code`
+    output is **empty**, and `${EXIT_CODE:-1}` turned that into `1` — "red —
+    failed stages: unknown", i.e. the action blaming the user's geometry for
+    its own install failure. An absent verdict is a harness error (exit 2),
+    worded so the two cannot be confused."""
+    proc = _run_body(_load(ACTION), "Re-raise the check's exit code", {
+        "EXIT_CODE": "", "STATUS": "", "FAILED_STAGES": "",
+        "OUTCOME": "failure",
+    }, cwd=tmp_path)
+
+    assert proc.returncode == 2
+    assert "::error::" in proc.stdout
+    assert "did not run" in proc.stdout
+    assert "no geometry was measured" in proc.stdout
+    # Distinct from the red wording, which blames the model.
+    assert "failed stages" not in proc.stdout
+    assert "agentcad check:" not in proc.stdout
+
+
+def test_the_re_raise_step_reads_the_check_steps_outcome():
+    """The condition and the env that make the above reachable at all."""
+    step = _step(_load(ACTION), "Re-raise the check's exit code")
+    assert "steps.check.outcome" in step["env"]["OUTCOME"]
+    assert "steps.check.outputs.exit-code != '0'" in step["if"]
 
 
 @needs_bash
@@ -304,9 +337,116 @@ def test_the_summary_step_says_so_when_there_is_no_report(tmp_path):
 def test_the_saved_exit_code_is_re_raised(tmp_path, code):
     proc = _run_body(_load(ACTION), "Re-raise the check's exit code", {
         "EXIT_CODE": code, "STATUS": "red", "FAILED_STAGES": "build,specs",
-    })
+        "OUTCOME": "success",
+    }, cwd=tmp_path)
     assert proc.returncode == int(code)
     assert "::error::" in proc.stdout
+
+
+@needs_bash
+@pytest.mark.integration
+@pytest.mark.parametrize("field,value", [
+    ("INPUT_AGENTCAD", "--index-url=http://evil.example/simple"),
+    ("INPUT_REPORT_JSON", "/tmp/r.json\nstatus=green"),
+    ("INPUT_ARTIFACT_NAME", "art\nreport-md=/etc/passwd"),
+])
+def test_the_plan_step_refuses_an_input_that_would_smuggle_something(
+        tmp_path, field, value):
+    """Two shapes of the same trap on a fork's pull request: a requirement that
+    begins with `-` is a **flag** to `uv pip install`, and a newline in a value
+    written to `$GITHUB_OUTPUT` forges a second output line."""
+    out = tmp_path / "out"
+    out.write_text("")
+    env = {
+        "GITHUB_OUTPUT": str(out), "RUNNER_TEMP": str(tmp_path),
+        "RUNNER_OS_LOWER": "Linux", "INPUT_PROJECT": ".",
+        "INPUT_REPORT_JSON": "", "INPUT_REPORT_MD": "",
+        "INPUT_ARTIFACT_NAME": "", "INPUT_AGENTCAD": "agentcad",
+        "INPUT_FEM": "false", "INPUT_PROPOSAL": "",
+        "INPUT_AUTO_PROPOSAL": "false", "INPUT_GITHUB_TOKEN": "",
+    }
+    env[field] = value
+
+    proc = _run_body(_load(ACTION), "plan", env, cwd=tmp_path)
+
+    assert proc.returncode == 2, proc.stdout
+    assert "::error::" in proc.stderr
+    assert _outputs(out) == {}
+
+
+# --------------------------------------------------------------------------
+# the check step, executed
+
+
+TINY_PROJECT = """{
+  "schema": 1,
+  "name": "action_probe",
+  "parts": [],
+  "instances": []
+}
+"""
+
+
+def _fake_bin(tmp_path: Path) -> Path:
+    """A `bin/` holding the two executables the check step calls: the real
+    `agentcad` CLI (through this interpreter, which has it installed) and the
+    `python` that runs `report_outputs.py`."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cli = bin_dir / "agentcad"
+    cli.write_text('#!/bin/sh\nexec "%s" -c '
+                   '"from agentcad.cli import main; main()" "$@"\n'
+                   % sys.executable)
+    cli.chmod(0o755)
+    (bin_dir / "python").symlink_to(sys.executable)
+    return bin_dir
+
+
+@needs_bash
+@pytest.mark.integration
+@pytest.mark.slow
+def test_the_check_steps_argv_is_built_quoted_and_actually_runs(tmp_path):
+    """Review W9: the run step's argv was only ever regex-scraped, so the array
+    construction, the quoting of a value with a space and the `set +e` capture
+    were never executed by a test. This runs the body **verbatim**, with the
+    real CLI on `$BIN`, over a project whose path contains a space.
+    """
+    project = tmp_path / "my project"
+    project.mkdir()
+    (project / "project.json").write_text(TINY_PROJECT, encoding="utf-8")
+    out = tmp_path / "out"
+    out.write_text("")
+    report_json, report_md = tmp_path / "report.json", tmp_path / "report.md"
+
+    proc = _run_body(_load(ACTION), "check", {
+        "BIN": str(_fake_bin(tmp_path)), "ACTION_PATH": str(ACTION_DIR),
+        "PROJECT": str(project), "PROJECTS_DIR": str(tmp_path / "projects"),
+        "STAGES": ",".join(STAGES), "STRICT": "false", "BUDGET": "",
+        "VERIFY_DETERMINISM": "false", "PROPOSAL": "", "AUTO_PROPOSAL": "false",
+        "REPORT_JSON": str(report_json), "REPORT_MD": str(report_md),
+        "GITHUB_OUTPUT": str(out), "GITHUB_SHA": "deadbeefcafe",
+        "GITHUB_REF_NAME": "feat/nozzle",
+        "AGENTCAD_KERNEL_POOL_SIZE": "1",
+        "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+    }, cwd=tmp_path, timeout=600)
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    # The echoed command line: one `%q`-quoted argument per array element, so a
+    # path with a space is one argument and not two.
+    echoed = proc.stdout.splitlines()[0]
+    assert echoed.startswith("agentcad check --project ")
+    assert "my\\ project" in echoed or "'my project'" in echoed
+    assert " --sha deadbeefcafe " in echoed
+    assert " --ref-label feat/nozzle" in echoed
+    assert "--strict" not in echoed and "--budget" not in echoed
+    assert "--proposal" not in echoed and "--verify-determinism" not in echoed
+
+    got = _outputs(out)
+    assert got["exit-code"] == "0"      # `set +e` / `code=$?` really captured it
+    assert got["report"] == "true"
+    assert got["status"] == "skip"      # a project with no parts measures nothing
+    assert got["failed-stages"] == ""
+    assert report_json.is_file() and report_md.is_file()
 
 
 # --------------------------------------------------------------------------

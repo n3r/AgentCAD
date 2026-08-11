@@ -451,14 +451,28 @@ def cmd_check(args) -> int:
     finally:
         service.kernel.stop()
 
-    written = _write_check_outputs(args, report)
-    if written is None:
+    # Everything after the run is under the SAME exit-code mapping as the run
+    # itself: writing the report, posting it and printing it can all fail (an
+    # unreadable proposals index, an audit append that will not write), and a
+    # traceback out of here would exit 1 — the code reserved for "the model is
+    # wrong". The report is written first, so a post that fails still leaves
+    # the evidence on disk.
+    try:
+        written = _write_check_outputs(args, report)
+        if written is None:
+            return 2
+        # Posted AFTER the files are written, and from the report exactly as it
+        # was measured: the copy on disk and the copy in the proposal are the
+        # same document, because a check never edits a verdict it has already
+        # produced.
+        override = _post_check(runner, project, args, report, post_to)
+        _print_check(args, report, written)
+    except AppError as exc:
+        print(f"agentcad check: {exc.message}", file=sys.stderr)
         return 2
-    # Posted AFTER the files are written, and from the report exactly as it was
-    # measured: the copy on disk and the copy in the proposal are the same
-    # document, because a check never edits a verdict it has already produced.
-    override = _post_check(runner, project, args, report, post_to)
-    _print_check(args, report, written)
+    except Exception as exc:  # noqa: BLE001 — any harness failure is exit 2
+        print(f"agentcad check: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
     return override if override is not None else int(report.get("exit_code", 2))
 
 
@@ -512,18 +526,24 @@ def main() -> None:
                         "($GITHUB_STEP_SUMMARY, a PR comment)")
     p.add_argument("--strict", action="store_true",
                    help="count skipped rows as failures (rows keep their "
-                        "status; only the verdict moves)")
+                        "status; only the verdict moves). A row marked "
+                        "strict_exempt — an unconditional skip, today only the "
+                        "DXF determinism row — is never counted")
     p.add_argument("--verify-determinism", action="store_true",
                    help="build every part a second time on a cold cache and "
                         "compare the artefacts byte for byte")
     p.add_argument("--budget", type=float, default=None, metavar="SECONDS",
-                   help="deadline read between items; an in-flight build "
-                        "(300 s) or drawing (120 s) cannot be preempted")
+                   help="deadline read before every item and every kernel "
+                        "call; a build (300 s) or drawing (120 s) already in "
+                        "flight cannot be preempted, so the worst case is one "
+                        "such call")
     p.add_argument("--min-volume", type=float, default=0.001, metavar="MM3",
                    help="interference volume below which an overlap is noise")
     p.add_argument("--work-dir", default=None, metavar="DIR",
-                   help="where --ref materializes its worktree (default: a "
-                        "temp dir, deleted afterwards)")
+                   help="where --ref materializes its worktree, in a unique "
+                        "subdirectory it creates and cleans up (default: a "
+                        "temp dir, deleted afterwards). It may not be, hold or "
+                        "sit inside the project")
     group = p.add_mutually_exclusive_group()
     group.add_argument("--proposal", default=None, metavar="ID",
                        help="post the report to this proposal; it becomes that "
