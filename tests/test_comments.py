@@ -244,14 +244,14 @@ def test_an_unknown_target_is_a_validation_error_carrying_the_known_set(demo):
 
 
 def test_an_unknown_or_unsupported_kind_is_a_validation_error(demo):
-    """Slice 4's kind is registered but not yet reachable — and a
-    NotImplementedError must never escape a public API. (``face`` and
-    ``script_range`` became reachable with slice 2's ``core/anchors.py``;
-    ``tests/test_anchors.py`` owns their rules.)"""
+    """Every kind in ``ANCHOR_KINDS`` now has a validator (``face`` and
+    ``script_range`` with slice 2's ``core/anchors.py``, ``proposal_hunk`` with
+    slice 4's; ``tests/test_anchors.py`` and
+    ``tests/test_comments_proposals.py`` own their rules), so what is left
+    here is the vocabulary itself: an anchor that is not one of the six, or is
+    not an object at all."""
     _service, _registry, manager = demo
     for anchor in (
-        {"kind": "proposal_hunk", "proposal": "1",
-         "file": "parts/box.py", "hunk": 0},
         {"kind": "nonsense", "part": "box"},
         {"part": "box"},
         "part",

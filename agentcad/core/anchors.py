@@ -58,6 +58,12 @@ Two traps this module encodes:
   orphan — never a mis-pin. The payload labels these numbers as mesh-derived
   for the same reason, and ``face_info`` remains the tool for inspecting one
   face exactly.
+* **A ``proposal_hunk`` anchor reads the persisted ``packet.json``, and only
+  that.** ``service.packets.packet(...)`` regenerates a stale packet — which
+  rebuilds geometry on both sides of the proposal and can move the proposal's
+  own state — so validating or reading one comment would rewrite the evidence
+  it comments on. :func:`stored_packet` is the one door, and a packet that is
+  absent, frozen or unreadable is answered as a *state*, never built.
 """
 
 from __future__ import annotations
@@ -624,6 +630,121 @@ def validate_script_range(service, proj: str, fields: dict) -> dict:
             **snippet_of(text, start, end)}
 
 
+def validate_proposal_hunk(service, proj: str, fields: dict) -> dict:
+    """FR1's hunk rules, against the **persisted** ``packet.json`` only.
+
+    A hunk anchor points at a *measurement*, so the measurement must already
+    exist: an absent packet is a ``validation_error`` telling the caller to
+    build one, never a build. Captures the evidence Decision 8 re-maps by —
+    the hunk's header byte-for-byte, and the generation it was read from.
+    """
+    store = _proposal_store(service)
+    if store is None:
+        raise ValidationError(
+            "this server has no change proposals (the pack needs git), so "
+            "there is no review packet to anchor a thread to",
+            {"hint": "anchor to a script_range on the part instead"},
+        )
+    pid = _proposal_id(fields.get("proposal"))
+    try:
+        store.load(proj, pid)
+    except (NotFoundError, ValidationError) as exc:
+        raise ValidationError(f"unknown proposal {pid!r}",
+                              {"proposal": pid}) from exc
+    packet = stored_packet(service, proj, pid)
+    if packet is None:
+        raise ValidationError(
+            f"proposal {pid} has no review packet on disk, so there is no "
+            "hunk to point at",
+            {"proposal": pid,
+             "hint": "call proposal_packet first — a thread anchors to a diff "
+                     "that has been measured, and reading one never builds a "
+                     "packet"},
+        )
+    diffs = packet_diffs(packet)
+    file = fields.get("file")
+    if not isinstance(file, str) or file not in diffs:
+        raise ValidationError(
+            f"proposal {pid}'s review packet has no script diff for {file!r}",
+            {"proposal": pid, "file": file, "files": sorted(diffs)},
+        )
+    diff = diffs[file]
+    if diff.get("truncated") or diff.get("unified") is None:
+        raise ValidationError(
+            f"the diff for {file} in proposal {pid} was truncated (too large "
+            "to keep), so its hunks carry no reviewable text",
+            {"proposal": pid, "file": file, "truncated": True},
+        )
+    hunks = [hunk for hunk in (diff.get("hunks") or []) if isinstance(hunk, dict)]
+    index = fields.get("hunk")
+    if isinstance(index, bool) or not isinstance(index, int) \
+            or not 0 <= index < len(hunks):
+        raise ValidationError(
+            f"anchor.hunk must be a hunk index of {file} in proposal {pid}: "
+            f"0 <= hunk < {len(hunks)}",
+            {"proposal": pid, "file": file, "hunk": index, "hunks": len(hunks)},
+        )
+    header = hunks[index].get("header")
+    if not isinstance(header, str) or not header:
+        raise ValidationError(
+            f"hunk {index} of {file} in proposal {pid} has no header to "
+            "identify it by",
+            {"proposal": pid, "file": file, "hunk": index},
+        )
+    return {"proposal": pid, "file": file, "hunk": index,
+            "hunk_header": header, "generation": packet.get("generation") or ""}
+
+
+def _proposal_id(value: object) -> str:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValidationError(
+            "anchor.proposal must be a proposal id like '3'",
+            {"proposal": value},
+        )
+    pid = str(value).strip()
+    if not pid:
+        raise ValidationError("anchor.proposal must be a proposal id like '3'",
+                              {"proposal": value})
+    return pid
+
+
+def _proposal_store(service):
+    """PRD-002's ``ProposalStore``, or ``None`` when the proposals pack is not
+    installed (it self-disables without git, and comments do not)."""
+    return getattr(getattr(service, "proposals", None), "store", None)
+
+
+def stored_packet(service, proj: str, pid: str) -> dict | None:
+    """The review packet exactly as PRD-002 persisted it, or ``None``.
+
+    ``packet.json`` and nothing else. **Never**
+    ``service.packets.packet(...)``: that regenerates a stale packet, which
+    rebuilds the geometry on both sides of the proposal and can move the
+    proposal's own state — so validating or reading one comment would rewrite
+    the evidence it is commenting on.
+    """
+    store = _proposal_store(service)
+    if store is None:
+        return None
+    try:
+        data = json.loads(
+            store.packet_path(proj, pid).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, NotFoundError, ValidationError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def packet_diffs(packet: dict) -> dict[str, dict]:
+    """``{path: script_diff}`` over the packet's part rows — the files a
+    ``proposal_hunk`` anchor may name."""
+    diffs: dict[str, dict] = {}
+    for part in packet.get("parts") or []:
+        diff = part.get("script_diff") if isinstance(part, dict) else None
+        if isinstance(diff, dict) and isinstance(diff.get("path"), str):
+            diffs[diff["path"]] = diff
+    return diffs
+
+
 def _require_part(service, proj: str, value: object) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValidationError("anchor.part must be a non-empty string")
@@ -923,6 +1044,100 @@ def _resolve_script_range(service, proj, anchor, context) -> dict:
         reason=None if status == "ok" else "remapped_by_diff")
 
 
+def _resolve_proposal_hunk(service, proj, anchor, context) -> dict:
+    """Decision 8's table, read off the persisted packet.
+
+    The header is the identity and the index is not: a regeneration renumbers
+    hunks freely, so a re-map is a byte-identical ``header`` match *within the
+    new generation*, unique or nothing. Three deliberate choices:
+
+    * **A frozen packet is ``unverified``, whatever its generation says.** The
+      diff it describes is history the moment a merge lands, and this thread is
+      the record of a review of exactly that; answering ``ok`` would invite a
+      UI to open a live diff that no longer exists.
+    * **A new generation is ``moved``, even to the same index.** A generation
+      is one measurement; a different one measured different commits, so
+      claiming the reviewed text is unchanged would be a claim nobody checked.
+    * **Two matching headers orphan.** Same rule as the face matcher:
+      ambiguity is an orphan, never a guess.
+
+    Decision 7's cross-branch rule does not apply here — a proposal is
+    branch-free storage that *names* its two branches, so it is equally
+    readable from either one.
+    """
+    from .proposals import TERMINAL
+
+    pid = str(anchor.get("proposal") or "")
+    file = anchor.get("file")
+    index = anchor.get("hunk")
+    header = anchor.get("hunk_header")
+    store = _proposal_store(service)
+    if store is None:
+        return make_resolution(
+            "unverified", reason="proposals_unavailable",
+            hint="this server has no change proposals (the pack needs git), so "
+                 "the review packet this thread points at cannot be read — we "
+                 "did not look, so this is not an orphan")
+    try:
+        proposal = store.load(proj, pid)
+    except (NotFoundError, ValidationError):
+        return make_resolution(
+            "orphaned", reason="proposal_removed",
+            hint=f"proposal {pid} is no longer in this project; the thread "
+                 "keeps the hunk it was opened on")
+    packet = stored_packet(service, proj, pid)
+    if packet is None:
+        return make_resolution(
+            "orphaned", reason="packet_missing",
+            hint=f"proposal {pid}'s review packet is not on disk any more, and "
+                 "resolving a comment never builds one")
+    state = proposal.get("state")
+    if packet.get("frozen") or state in TERMINAL:
+        return make_resolution(
+            "unverified", reason="packet_frozen",
+            hint=f"proposal {pid} is {state} and its review packet is frozen: "
+                 "the diff this thread reviewed is history now and is never "
+                 "measured again",
+            generation=packet.get("generation") or None)
+    diffs = packet_diffs(packet)
+    diff = diffs.get(file) if isinstance(file, str) else None
+    if diff is None:
+        return make_resolution(
+            "orphaned", reason="file_not_in_diff",
+            hint=f"{file} is no longer part of what proposal {pid} changes")
+    hunks = [hunk for hunk in (diff.get("hunks") or []) if isinstance(hunk, dict)]
+    generation = packet.get("generation") or ""
+    if (generation and generation == anchor.get("generation")
+            and isinstance(index, int) and 0 <= index < len(hunks)
+            and hunks[index].get("header") == header):
+        return make_resolution("ok", hunk=index, generation=generation,
+                               confidence=1.0)
+    if not isinstance(header, str) or not header:
+        return make_resolution(
+            "unverified", reason="no_header",
+            hint="this anchor stored no hunk header, so there is nothing to "
+                 "re-match the regenerated packet against; re-create the "
+                 "thread on the current packet")
+    matches = [hunk for hunk in hunks if hunk.get("header") == header]
+    if len(matches) == 1:
+        found = matches[0].get("index")
+        if isinstance(found, bool) or not isinstance(found, int):
+            found = hunks.index(matches[0])
+        return make_resolution(
+            "moved", reason="hunk_remapped_by_header", hunk=found,
+            generation=generation, confidence=1.0,
+            new_start=matches[0].get("new_start"))
+    hint = (
+        f"{file}'s diff in proposal {pid} no longer contains the hunk this "
+        "thread was opened on, so it was rewritten by a regeneration"
+        if not matches else
+        f"{file}'s diff now contains that hunk header {len(matches)} times, "
+        "and pointing at the wrong one is worse than pointing at nothing"
+    )
+    return make_resolution("orphaned", reason="hunk_regenerated", hint=hint,
+                           generation=generation)
+
+
 def _git_available(service) -> bool:
     history = getattr(service, "history", None)
     try:
@@ -961,4 +1176,5 @@ _RESOLVERS = {
     "param": _resolve_param,
     "script_range": _resolve_script_range,
     "instance": _resolve_instance,
+    "proposal_hunk": _resolve_proposal_hunk,
 }

@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 72 tools (75 with the
+Agents drive AgentCAD through a single tool surface — 73 tools (76 with the
 `[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -564,10 +564,11 @@ never appears in `git status`.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `list_comments` | **project**, part_id, state, kind, branch, anchor_status, resolve_anchors | `{threads: [{id, state, anchor, resolution, branch, author, author_kind, created, updated, resolved, comments: [{id, author, author_kind, ts, body, attachments: [{path, available}], mentions, edited, deleted}]}], counts: {open, resolved, orphaned}}`. `counts` describes the whole project, never the filtered page. `resolve_anchors: false` is the cheapest listing — no `resolution` block and no `orphaned` count, because nothing was looked at. |
+| `list_comments` | **project**, part_id, state, kind, branch, proposal, anchor_status, resolve_anchors | `{threads: [{id, state, anchor, resolution, branch, author, author_kind, created, updated, resolved, comments: [{id, author, author_kind, ts, body, attachments: [{path, available}], mentions, edited, deleted}]}], counts: {open, resolved, orphaned}}`. `counts` describes the whole project, never the filtered page. `resolve_anchors: false` is the cheapest listing — no `resolution` block and no `orphaned` count, because nothing was looked at. |
 | `add_comment` | **project, body**, anchor, thread, attachments | The post-state `{thread}`. Exactly **one** of `anchor` (open a new thread) or `thread` (reply to that id) — both or neither is a `validation_error`. |
 | `resolve_thread` | **project, thread** | The post-state `{thread}`. Idempotent: resolving a resolved thread records nothing and publishes nothing. |
 | `reopen_thread` | **project, thread** | The post-state `{thread}`. |
+| `list_notifications` | project, unread | `{notifications: [{seq, kind: "mention", to, project, thread, comment, from, ts, read}], unread: n}` for **the calling identity only**, oldest first. Omit `project` for every project on this server. |
 
 **The six anchors, validated at creation** (a bad anchor is a
 `validation_error`, never a stored orphan):
@@ -596,6 +597,24 @@ already wrote and at most one git blob per anchor — so a face anchor on a part
 that has never been built is `unverified`/`part_not_built` rather than a 300 s
 rebuild, and `list_comments` on a 40-part project stays a cheap read.
 
+**Hunk threads re-map by header, and never regenerate a packet.** A
+`{kind: "proposal_hunk", proposal, file, hunk}` anchor is validated against the
+proposal's **already-built** review packet (`file` is a path in its script
+diffs, `hunk` a 0-based index into that file's hunks; no packet on disk is a
+`validation_error` telling you to call `proposal_packet`, never a build), and
+it stores that hunk's header byte-for-byte plus the packet's `generation`.
+Because a regeneration renumbers hunks freely, the header is the identity:
+same generation → `ok`; a new generation carrying that exact header exactly
+once → `moved` to its new index (**never** `ok`, even at the same index — a new
+generation measured different commits); the header rewritten or now
+non-unique → `orphaned`/`hunk_regenerated`; a packet frozen by a merge →
+`unverified`/`packet_frozen`, because the diff it describes is history and the
+thread is the record of a review of exactly that. Reading a thread only ever
+reads the persisted `packet.json` — never `proposal_packet`'s regeneration
+path, which rebuilds geometry on both sides and can move the proposal's state.
+`list_comments {kind: "proposal_hunk", proposal: "3"}` fetches one proposal's
+threads in a single call.
+
 **Attachments** must live under the project's `exports/` (pass what
 `render_view` returned, or `"exports/renders/iso.png"`); anything resolving
 outside that tree, symlinks included, is a `validation_error`, and there are at
@@ -609,18 +628,38 @@ unvalidated. Anyone may resolve or reopen anything; only a comment's own author
 may edit or delete it, and the root comment cannot be deleted at all (retire a
 thread by resolving it). Every action appends to a per-thread audit log.
 
+**Mentions.** `@<identity>` in a body notifies that identity — but only when it
+names a **plausible** one: `browser`, `browser:<nonce>`, `chat`,
+`chat:<session>` (the chat engine's own `[a-z0-9_-]{1,32}` session rule), or a
+client the presence registry currently knows. `@todo` and `@nobody` stay plain
+text and deliver nothing, and mentioning yourself delivers nothing. Deliveries
+land in one append-only `notifications.jsonl` per project with a `to` field —
+never a file per identity, which would make an unvalidated header into a
+path — and *read* is another line in the same log, so unread is derived
+(mentions minus every seq a later `read` line names) and nothing is rewritten.
+Editing a comment re-scans it and delivers only the **newly** mentioned.
+
 Routes: `GET|POST /api/projects/{proj}/comments`,
 `GET /api/projects/{proj}/comments/{id}`,
 `POST /api/projects/{proj}/comments/{id}/resolve`,
 `.../reopen`, `PATCH|DELETE /api/projects/{proj}/comments/{id}/comments/{cid}`
 (edit or tombstone one comment — panel affordances, deliberately not tools),
-`GET /api/projects/{proj}/comments/{id}/audit`.
+`GET /api/projects/{proj}/comments/{id}/audit`,
+`GET /api/projects/{proj}/notifications?unread=`,
+`POST /api/projects/{proj}/notifications/read {ids?}` (omit `ids` to mark all
+of yours; another identity's seq is a 422). Both notification routes answer for
+the identity of the *request* and never take one as an argument.
 
 **Events.** `comment_changed {project, thread, state, action, part}` on every
 mutation (`created`, `replied`, `resolved`, `reopened`, `comment_edited`,
 `comment_deleted`) — and on **no** no-op. It is deliberately not
 `project_changed`: a comment is not a model change, so it triggers no history
-snapshot and no rebuild.
+snapshot and no rebuild. Each mention adds `notification {to, project, thread,
+comment, from, ts}`, published straight after it. **The bus is a broadcast**:
+every `/ws` client receives every `notification` and filters on `to` itself.
+That is honest for a single-user, 127.0.0.1-only server with no authentication
+— it discloses nothing a `GET` on the same box would not — and per-principal
+delivery arrives with real identity (PRD-005), with no payload change.
 
 ### Sketch solving
 

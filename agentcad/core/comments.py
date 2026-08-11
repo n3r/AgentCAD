@@ -19,8 +19,9 @@ follows the caller's branch.
 
 ```
 .history/agentcad/comments/
-  next_id      "8\\n"     the id high-water mark (NOT a cache)
-  index.json   {"next_id": 8, "threads": [summary, …]}   (a CACHE)
+  next_id             "8\\n"     the id high-water mark (NOT a cache)
+  index.json          {"next_id": 8, "threads": [summary, …]}   (a CACHE)
+  notifications.jsonl mention + read lines, append-only, one log per project
   7/thread.json · 7/audit.jsonl
 ```
 
@@ -49,19 +50,29 @@ are restricted to a comment's own author as an honesty check, and anyone may
 resolve or reopen anything, because there is no authentication to base a rule
 on. The audit says who did.
 
-``face`` and ``script_range`` anchors landed with ``core/anchors.py`` (slice
-2), which also annotates every *view* — never the document — with a
-``resolution`` block.
+``face``, ``script_range`` and ``proposal_hunk`` anchors are validated by
+``core/anchors.py``, which also annotates every *view* — never the document —
+with a ``resolution`` block. A ``proposal_hunk`` anchor reads PRD-002's
+**persisted** ``packet.json`` and never ``service.packets.packet(...)``, which
+rebuilds geometry and can move a proposal's state.
+
+**Mentions.** ``@<identity>`` in a body notifies that identity — but only when
+it names a *plausible* one (``browser``, ``browser:<nonce>``, ``chat``,
+``chat:<session>``, or a client the presence registry currently knows).
+``@todo`` stays prose. Deliveries are appended to a single per-project
+``notifications.jsonl`` with a ``to`` field, never one file per identity: an
+identity is an arbitrary string from an unvalidated header, and a filename
+derived from one is a path-traversal surface. ``read`` is a *line* in the same
+log, so unread is derived (mentions minus every seq a later ``read`` line
+names) and nothing is ever rewritten.
 
 **Events.** Every mutation publishes exactly one ``comment_changed`` through
 ``service.bus.publish`` (:meth:`CommentManager._publish`), and an idempotent
 no-op publishes none. It is deliberately **not** ``project_changed``: that
 event's ``on_publish`` hook snapshots project history, and a comment is not a
 model change. ``bus.on_publish`` itself is a single slot already owned by
-``service._snapshot_on_event`` and is never assigned here.
-
-Slices that still extend this module: ``proposal_hunk`` anchors (4), mentions
-and ``notifications.jsonl`` (5).
+``service._snapshot_on_event`` and is never assigned here. Each mention adds a
+``notification`` event beside that one, published from the same seam.
 """
 
 from __future__ import annotations
@@ -92,6 +103,21 @@ MAX_SNIPPET_LINES, MAX_SNIPPET_BYTES = 40, 4096
 
 _ID_RE = re.compile(r"^[1-9][0-9]{0,17}$")
 
+# ``@handle`` anywhere in a body. The lookbehind is load-bearing: it keeps
+# ``nobody@example.com`` an address and ``@@chat`` prose, so neither delivers.
+_MENTION_RE = re.compile(r"(?<![\w@])@([A-Za-z0-9_.:-]{1,64})")
+# Sentence punctuation the character class swallows. "ping @chat:main." names
+# a session; stripping these before the plausibility check only ever turns a
+# non-identity into an identity, never one identity into another.
+_MENTION_TRAILING = ".:-"
+# The two identity families that exist without a presence registry. Anything
+# else must be *currently present* to be mentionable — see
+# :func:`plausible_mention`.
+_BROWSER, _CHAT = "browser", "chat"
+_BROWSER_NONCE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+NOTIFICATION_KINDS = ("mention", "read")
+
 # The exact fields each kind carries, whitelisted before anything is stored:
 # an anchor reaches here from a REST body and from a tool argument, and a
 # stray key would be persisted forever as evidence of nothing.
@@ -112,6 +138,9 @@ _ANCHOR_FIELDS: dict[str, tuple[str, ...]] = {
 _ANCHOR_EVIDENCE: dict[str, tuple[str, ...]] = {
     "face": ("signature",),
     "script_range": ("snippet", "snippet_sha256", "before", "after"),
+    # The hunk's header byte-for-byte and the packet generation it was read
+    # from: the two things Decision 8 re-maps a regenerated packet by.
+    "proposal_hunk": ("hunk_header", "generation"),
 }
 
 # The tool/REST surface says ``part_id``/``instance_id`` (FR1's wording); the
@@ -130,6 +159,54 @@ def _now() -> str:
     """UTC, ISO-8601, zone-aware — ``proposals._now``'s stamp, so an audit
     line from either log reads the same way."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def parse_mentions(body: object) -> list[str]:
+    """Every ``@handle`` in *body*, in order, deduplicated.
+
+    Pure syntax — plausibility is :func:`plausible_mention`'s job, and the body
+    itself is never rewritten: a handle that delivers nothing stays exactly
+    where the author typed it.
+    """
+    if not isinstance(body, str):
+        return []
+    found: list[str] = []
+    for match in _MENTION_RE.finditer(body):
+        handle = match.group(1)
+        if handle not in found:
+            found.append(handle)
+    return found
+
+
+def plausible_mention(handle: object, present: object = ()) -> bool:
+    """Does *handle* name an identity that could exist?
+
+    ``browser``, ``browser:<nonce>``, ``chat``, ``chat:<session>`` (validated
+    with the chat engine's own ``SESSION_ID_RE`` — imported, never re-written)
+    or a client id in *present*, the presence registry's roster.
+
+    Everything else is prose: ``@todo`` and ``@nobody`` are not notifications
+    waiting for a recipient, and minting one for them would fill a drawer with
+    noise nobody can act on.
+    """
+    # Imported lazily: ``agent.chat`` imports ``core.tools``, which imports
+    # this module's pack, and the dependency only points that way.
+    from ..agent.chat import SESSION_ID_RE
+
+    if not isinstance(handle, str) or not handle:
+        return False
+    if handle in (_BROWSER, _CHAT):
+        return True
+    if handle in (present or ()):
+        return True
+    prefix, sep, rest = handle.partition(":")
+    if not sep or not rest:
+        return False
+    if prefix == _CHAT:
+        return bool(SESSION_ID_RE.fullmatch(rest))
+    if prefix == _BROWSER:
+        return bool(_BROWSER_NONCE_RE.match(rest))
+    return False
 
 
 class CommentStore:
@@ -311,7 +388,42 @@ class CommentStore:
     def audit(self, proj: str, tid: str) -> list[dict]:
         """Every entry, in order. A corrupt line (a torn write) is skipped
         rather than raised — the rest of the log is still evidence."""
-        path = self._thread_dir(proj, tid) / "audit.jsonl"
+        return self._read_lines(self._thread_dir(proj, tid) / "audit.jsonl")
+
+    # ---------------------------------------------------------- notifications
+
+    def notifications_path(self, proj: str) -> Path:
+        return self.dir_of(proj) / "notifications.jsonl"
+
+    def append_notification(self, proj: str, entry: dict) -> dict:
+        """Append one line to ``notifications.jsonl`` and return it.
+
+        **One log per project, with a ``to`` field** — never a file per
+        identity. An identity is an arbitrary string from an unvalidated
+        header, so a filename derived from one is a path-traversal surface;
+        a shared log needs no sanitizing at all. ``read`` is a *line* rather
+        than a mutation for the same reason ``audit.jsonl`` is: an append-only
+        record that is rewritten to mark something is no longer append-only.
+        """
+        path = self.notifications_path(proj)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            record = {"seq": self._line_count(path) + 1,
+                      "kind": entry.get("kind") or "mention",
+                      **{key: value for key, value in entry.items()
+                         if key not in ("seq", "kind")},
+                      "ts": entry.get("ts") or _now()}
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record) + "\n")
+                handle.flush()
+        return record
+
+    def notifications(self, proj: str) -> list[dict]:
+        """Every line of the project's log, in order, corrupt lines skipped."""
+        return self._read_lines(self.notifications_path(proj))
+
+    @staticmethod
+    def _read_lines(path: Path) -> list[dict]:
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
@@ -390,6 +502,7 @@ class CommentManager:
         body = _body(body)
         files = self._attachments(proj, attachments)
         actor = locks.current_client_id()
+        mentions = self._mentions(proj, body)
         with self._lock:
             tid = self.store.allocate_id(proj)
             stamp = _now()
@@ -404,7 +517,8 @@ class CommentManager:
                 "created": stamp,
                 "updated": stamp,
                 "resolved": None,
-                "comments": [_comment("1", actor, stamp, body, files)],
+                "comments": [_comment("1", actor, stamp, body, files,
+                                      mentions)],
             }
             self.store.save(proj, thread)
             details = {"kind": anchor["kind"], "comment": "1"}
@@ -412,7 +526,8 @@ class CommentManager:
                 details["part"] = anchor["part"]
             self.store.append_audit(proj, tid, {"action": "created",
                                                 "details": details})
-        return self._publish(proj, self._view(proj, thread), "created")
+            notices = self._deliver(proj, tid, "1", actor, mentions)
+        return self._publish(proj, self._view(proj, thread), "created", notices)
 
     def reply(self, proj: str, tid: str, body: object,
               attachments: object = None) -> dict:
@@ -421,16 +536,19 @@ class CommentManager:
         body = _body(body)
         files = self._attachments(proj, attachments)
         actor = locks.current_client_id()
+        mentions = self._mentions(proj, body)
         with self._lock:
             thread = self.store.load(proj, tid)
             cid = _next_comment_id(thread)
             stamp = _now()
-            thread["comments"].append(_comment(cid, actor, stamp, body, files))
+            thread["comments"].append(
+                _comment(cid, actor, stamp, body, files, mentions))
             thread["updated"] = stamp
             self.store.save(proj, thread)
             self.store.append_audit(proj, tid, {"action": "replied",
                                                 "details": {"comment": cid}})
-        return self._publish(proj, self._view(proj, thread), "replied")
+            notices = self._deliver(proj, tid, cid, actor, mentions)
+        return self._publish(proj, self._view(proj, thread), "replied", notices)
 
     def resolve(self, proj: str, tid: str) -> dict:
         return self._set_state(proj, tid, "resolved")
@@ -460,7 +578,16 @@ class CommentManager:
                 (comment.get("body") or "").encode("utf-8")
             ).hexdigest()
             stamp = _now()
+            # An edit re-scans: leaving the recorded mentions to describe a
+            # body that no longer contains them would make the field a lie,
+            # and a mistyped handle would be unfixable. Only the *newly*
+            # mentioned are delivered — nobody is notified twice for one
+            # comment.
+            already = [m for m in comment.get("mentions") or []
+                       if isinstance(m, str)]
+            mentions = self._mentions(proj, body)
             comment["body"] = body
+            comment["mentions"] = mentions
             comment["edited"] = stamp
             thread["updated"] = stamp
             self.store.save(proj, thread)
@@ -468,7 +595,11 @@ class CommentManager:
                 "action": "comment_edited",
                 "details": {"comment": cid, "previous_sha256": previous},
             })
-        return self._publish(proj, self._view(proj, thread), "comment_edited")
+            notices = self._deliver(
+                proj, tid, cid, actor,
+                [m for m in mentions if m not in already])
+        return self._publish(proj, self._view(proj, thread), "comment_edited",
+                             notices)
 
     def delete_comment(self, proj: str, tid: str, cid: str) -> dict:
         """Tombstone a comment — its own author only, and never the root.
@@ -508,6 +639,7 @@ class CommentManager:
     def list(self, proj: str, state: str | None = None,
              kind: str | None = None, part_id: str | None = None,
              branch: str | None = None, anchor_status: str | None = None,
+             proposal: str | None = None,
              resolve_anchors: bool = True) -> dict:
         """``{threads, counts}``, each thread carrying its live ``resolution``.
 
@@ -519,6 +651,9 @@ class CommentManager:
         **never builds** (design Decision 4). ``resolve_anchors=False`` is the
         cheapest possible listing: no ``resolution`` block at all, and no
         ``orphaned`` count, because nothing was looked at.
+
+        ``proposal`` narrows to one change proposal's hunk threads, so the
+        proposals UI fetches exactly its own conversation in one call.
         """
         self.service.store.manifest(proj)  # existence check -> notfound_error
         if state is not None and state not in STATES:
@@ -558,6 +693,8 @@ class CommentManager:
                     and (kind is None or anchor.get("kind") == kind)
                     and (part_id is None or anchor.get("part") == part_id)
                     and (branch is None or thread.get("branch") == branch)
+                    and (proposal is None
+                         or anchor.get("proposal") == proposal)
                     and (anchor_status is None or status == anchor_status)):
                 rows.append(view)
         return {"threads": rows, "counts": counts}
@@ -565,6 +702,88 @@ class CommentManager:
     def audit(self, proj: str, tid: str) -> list[dict]:
         self.store.load(proj, tid)  # existence check -> notfound_error
         return self.store.audit(proj, tid)
+
+    # --------------------------------------------------------- notifications
+
+    def notifications(self, proj: str) -> list[dict]:
+        """Every delivery recorded for a project, for any identity.
+
+        The raw ``mention`` lines — no ``read`` bookkeeping and no identity
+        filter. :meth:`list_notifications` is what a *client* calls; this is
+        the project-wide view the drawer's counts and the tests read.
+        """
+        return [record for record in self.store.notifications(proj)
+                if record.get("kind") == "mention"]
+
+    def list_notifications(self, project: str | None = None,
+                           unread: bool = False) -> dict:
+        """``{notifications, unread}`` for the **calling identity only**.
+
+        Oldest first, each record carrying ``read``. Omitting ``project``
+        answers across every project on this server, because a drawer is a
+        per-person inbox and a mention does not stop mattering when you switch
+        projects.
+        """
+        identity = locks.current_client_id()
+        rows: list[dict] = []
+        for proj in self._projects(project):
+            rows.extend(self._for(identity, self.store.notifications(proj)))
+        pending = len([row for row in rows if not row["read"]])
+        if unread:
+            rows = [row for row in rows if not row["read"]]
+        return {"notifications": rows, "unread": pending}
+
+    def mark_read(self, proj: str, ids: object = None) -> dict:
+        """Mark this identity's notifications read by appending a ``read``
+        line. Omitting ``ids`` marks every unread one.
+
+        A route rather than a tool (design Decision 11): agents do not need a
+        read cursor, and FR7 freezes the agent surface at five tools.
+        """
+        self.service.store.manifest(proj)  # existence check -> notfound_error
+        identity = locks.current_client_id()
+        with self._lock:
+            rows = self._for(identity, self.store.notifications(proj))
+            mine = {row["seq"] for row in rows if isinstance(row.get("seq"), int)}
+            unread = [row["seq"] for row in rows
+                      if not row["read"] and isinstance(row.get("seq"), int)]
+            if ids is None:
+                marked = unread
+            else:
+                marked = [seq for seq in _read_ids(ids, mine) if seq in unread]
+            if marked:
+                self.store.append_notification(
+                    proj, {"kind": "read", "to": identity, "ids": marked})
+        return {"marked": marked, "unread": len(set(unread) - set(marked))}
+
+    def _projects(self, project: str | None) -> list[str]:
+        if project is not None:
+            self.service.store.manifest(project)  # -> notfound_error
+            return [project]
+        return [row["name"] for row in self.service.store.list_projects()
+                if isinstance(row.get("name"), str)]
+
+    @staticmethod
+    def _for(identity: str, lines: list[dict]) -> list[dict]:
+        """This identity's mention lines, each flagged ``read``.
+
+        Unread is *derived*: the mention seqs addressed to an identity minus
+        every seq named by a ``read`` line for the same identity. Nothing is
+        ever rewritten to record a read, which is what keeps the log
+        append-only.
+        """
+        read: set[int] = set()
+        mentions: list[dict] = []
+        for record in lines:
+            if record.get("to") != identity:
+                continue
+            if record.get("kind") == "read":
+                read.update(seq for seq in record.get("ids") or []
+                            if isinstance(seq, int))
+            elif record.get("kind") == "mention":
+                mentions.append(record)
+        return [{**record, "read": record.get("seq") in read}
+                for record in mentions]
 
     # ------------------------------------------------------------- internals
 
@@ -597,7 +816,76 @@ class CommentManager:
             proj, self._view(proj, thread),
             "resolved" if state == "resolved" else "reopened")
 
-    def _publish(self, proj: str, view: dict, action: str) -> dict:
+    def _mentions(self, proj: str, body: str) -> list[str]:
+        """The plausible identities *body* names, in order, deduplicated.
+
+        Implausible handles are dropped here and nowhere else: the body is
+        stored verbatim, so ``@todo`` survives in the text and delivers
+        nothing.
+        """
+        present = self._present_ids(proj)
+        found: list[str] = []
+        for handle in parse_mentions(body):
+            if not plausible_mention(handle, present):
+                # "ping @chat:main." — the character class swallows sentence
+                # punctuation, so retry once without it. This can only turn a
+                # non-identity into an identity, never one into another.
+                handle = handle.rstrip(_MENTION_TRAILING)
+                if not plausible_mention(handle, present):
+                    continue
+            if handle not in found:
+                found.append(handle)
+        return found
+
+    def _present_ids(self, proj: str) -> set[str]:
+        """Client ids the presence registry currently knows, or none.
+
+        An optional seam read lazily like every other cross-pack seam: the
+        presence pack (PRD-008 slice 6) installs ``service.presence`` and
+        exposes ``mention_ids(project)``; without it, the two static identity
+        families are all a mention can name.
+        """
+        getter = getattr(getattr(self.service, "presence", None),
+                         "mention_ids", None)
+        if getter is None:
+            return set()
+        try:
+            return {cid for cid in getter(proj) if isinstance(cid, str)}
+        except Exception:                                  # noqa: BLE001
+            # Presence is ephemeral and best-effort; a registry that cannot
+            # answer must not stop a comment from being written.
+            return set()
+
+    def _deliver(self, proj: str, tid: str, cid: str, actor: str,
+                 mentions: list[str]) -> list[dict]:
+        """Record one ``mention`` line per recipient and return the events.
+
+        Self-mentions deliver nothing — you do not need telling that you wrote
+        your own name — and a comment that mentions nobody records nothing at
+        all, so the log stays a record of deliveries rather than of scans.
+        """
+        recipients = [who for who in mentions if who != actor]
+        if not recipients:
+            return []
+        notices = []
+        for who in recipients:
+            record = self.store.append_notification(proj, {
+                "kind": "mention", "to": who, "project": proj, "thread": tid,
+                "comment": cid, "from": actor,
+            })
+            notices.append({
+                "type": "notification", "to": who, "project": proj,
+                "thread": tid, "comment": cid, "from": actor,
+                "ts": record["ts"],
+            })
+        self.store.append_audit(proj, tid, {
+            "action": "mentioned",
+            "details": {"comment": cid, "to": recipients},
+        })
+        return notices
+
+    def _publish(self, proj: str, view: dict, action: str,
+                 notices: list[dict] | None = None) -> dict:
         """Announce one mutation and hand the view straight back.
 
         Called from the single return point of each mutator, so every mutation
@@ -622,6 +910,16 @@ class CommentManager:
                 "action": action,
                 "part": (view.get("anchor") or {}).get("part"),
             })
+            # …then one ``notification`` per mention, after the mutation is
+            # announced, so a client that reacts to a notification by reading
+            # the thread finds the comment that mentions it. The bus is a
+            # BROADCAST: every /ws client receives every notification and
+            # filters on ``to``. That is honest for a single-user,
+            # 127.0.0.1-only server with no authentication — per-principal
+            # delivery is PRD-005 — and it is said out loud in the tool
+            # description and in docs/agent-api.md rather than implied.
+            for notice in notices or ():
+                bus.publish(notice)
         return view
 
     def _context(self, proj: str) -> dict:
@@ -702,16 +1000,7 @@ class CommentManager:
                 f"anchor kind {kind!r} requires {', '.join(missing)}",
                 {"kind": kind, "required": list(allowed), "missing": missing},
             )
-        try:
-            validated = _VALIDATORS[kind](self, proj, fields)
-        except NotImplementedError as exc:
-            # The table registers every kind so the vocabulary is one list;
-            # the ones whose validator is not written yet are refused here,
-            # so no partial surface ever leaks out of a public API.
-            raise ValidationError(
-                f"anchor kind {kind!r} is not supported yet: {exc}",
-                {"kind": kind, "supported": sorted(_SUPPORTED)},
-            ) from exc
+        validated = _VALIDATORS[kind](self, proj, fields)
         return {"kind": kind, **validated, **self._provenance(proj)}
 
     def _provenance(self, proj: str) -> dict:
@@ -788,10 +1077,11 @@ class CommentManager:
         return anchors.validate_script_range(self.service, proj, fields)
 
     def _validate_proposal_hunk(self, proj: str, fields: dict) -> dict:
-        raise NotImplementedError(
-            "proposal_hunk anchors validate against a persisted packet.json, "
-            "which lands with the proposals integration"
-        )
+        """Against the *persisted* ``packet.json`` — never
+        ``service.packets.packet``, which rebuilds geometry and can move the
+        proposal's state. Captures the hunk's header and the generation it was
+        read from."""
+        return anchors.validate_proposal_hunk(self.service, proj, fields)
 
     def _part(self, proj: str, value: object) -> str:
         part = _text(value, "anchor.part")
@@ -856,9 +1146,10 @@ class CommentManager:
         return f"{_EXPORTS}/{resolved.relative_to(exports).as_posix()}"
 
 
-# Every kind is registered, so the vocabulary is one list and a caller always
-# gets the same shape of refusal; the kinds whose validator is not written yet
-# raise NotImplementedError, which ``_anchor`` turns into a validation_error.
+# One entry per kind in ``ANCHOR_KINDS``, so the vocabulary is a single list
+# and every kind refuses in the same shape. Each validator raises
+# ``ValidationError`` and nothing else: a bad anchor is a refusal a caller can
+# read, never an exception type the REST layer has to guess at.
 _VALIDATORS = {
     "part": CommentManager._validate_part,
     "face": CommentManager._validate_face,
@@ -867,11 +1158,10 @@ _VALIDATORS = {
     "instance": CommentManager._validate_instance,
     "proposal_hunk": CommentManager._validate_proposal_hunk,
 }
-_SUPPORTED = ("part", "face", "param", "script_range", "instance")
 
 
 def _comment(cid: str, actor: str, ts: str, body: str,
-             attachments: list[str]) -> dict:
+             attachments: list[str], mentions: list[str] | None = None) -> dict:
     return {
         "id": cid,
         "author": actor,
@@ -879,12 +1169,38 @@ def _comment(cid: str, actor: str, ts: str, body: str,
         "ts": ts,
         "body": body,
         "attachments": attachments,
-        # Filled by the mention scanner (slice 5); present from the start so
-        # the document shape never changes under a reader.
-        "mentions": [],
+        # The PLAUSIBLE identities the body names — the ones a notification
+        # was delivered to (minus the author's own). Implausible handles stay
+        # in the body and appear nowhere else.
+        "mentions": list(mentions or []),
         "edited": None,
         "deleted": False,
     }
+
+
+def _read_ids(value: object, mine: set[int]) -> list[int]:
+    """Whitelist the ``ids`` of a read mark: integers, and this identity's own.
+
+    Another identity's seq is a ``validation_error`` rather than a silent
+    no-op: marking somebody else's notification read is not a thing that can
+    succeed, so it must not look like it did.
+    """
+    if not isinstance(value, list):
+        raise ValidationError("ids must be a list of notification seq numbers",
+                              {"ids": value})
+    wanted: list[int] = []
+    for seq in value:
+        if isinstance(seq, bool) or not isinstance(seq, int):
+            raise ValidationError(
+                "each notification id must be an integer seq number",
+                {"id": seq})
+        if seq not in mine:
+            raise ValidationError(
+                f"notification {seq} is not addressed to this client",
+                {"id": seq, "ids": sorted(mine)})
+        if seq not in wanted:
+            wanted.append(seq)
+    return wanted
 
 
 def _comment_of(thread: dict, tid: str, cid: object) -> dict:

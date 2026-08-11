@@ -104,16 +104,18 @@ def _anchor(**fields) -> dict:
 # ------------------------------------------- 1. registration and load order
 
 
-def test_the_pack_installs_the_manager_and_exactly_four_tools(demo):
+def test_the_pack_installs_the_manager_and_exactly_five_tools(demo):
     service, registry = demo
 
     assert isinstance(service.comments, CommentManager)
     assert service.comments.service is service
-    for name in _TOOLS:
+    for name in (*_TOOLS, "list_notifications"):
         assert registry.get(name) is not None, name
-    # The fifth PRD tool (list_notifications) is slice 5; nothing else here.
+    # FR7 freezes the agent surface at five: marking a notification read is a
+    # route, not a sixth tool.
     assert not [t.name for t in registry.list()
-                if "comment" in t.name and t.name not in _TOOLS]
+                if ("comment" in t.name or "notification" in t.name)
+                and t.name not in (*_TOOLS, "list_notifications")]
 
 
 def test_the_pack_adds_no_gate_provider(demo):
@@ -158,7 +160,7 @@ def test_register_captures_nothing_a_later_pack_installs(kernel, tmp_path):
     registry = _Registry()
     register_comments(registry, service)  # must not raise on the bare service
 
-    assert set(registry.tools) == set(_TOOLS)
+    assert set(registry.tools) == {*_TOOLS, "list_notifications"}
     assert not hasattr(service, "gate_providers")
     # And the manager works with those seams absent: ``service.branches`` is
     # read inside each call, and its absence degrades the anchor's provenance
@@ -196,7 +198,7 @@ def test_the_schemas_are_whitelisted(demo):
 
     assert set(schemas["list_comments"]["properties"]) == {
         "project", "part_id", "state", "kind", "branch", "anchor_status",
-        "resolve_anchors"}
+        "proposal", "resolve_anchors"}
     assert schemas["list_comments"]["required"] == ["project"]
     assert set(schemas["add_comment"]["properties"]) == {
         "project", "anchor", "thread", "body", "attachments"}

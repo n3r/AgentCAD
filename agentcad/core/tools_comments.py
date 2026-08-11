@@ -1,12 +1,16 @@
 """Tool pack: anchored review threads — the agent's half of PRD-008.
 
 Installs the one seam the feature needs — ``service.comments``
-(:class:`~agentcad.core.comments.CommentManager`) — and exposes four of the
-five tools FR7 freezes: ``list_comments``, ``add_comment``, ``resolve_thread``
-and ``reopen_thread`` (``list_notifications`` arrives with mentions). Handlers
-are thin delegations: every lifecycle rule lives in ``core/comments.py`` and
-every anchor rule in ``core/anchors.py``. This pack measures nothing and
-resolves nothing itself.
+(:class:`~agentcad.core.comments.CommentManager`) — and exposes the five tools
+FR7 freezes: ``list_comments``, ``add_comment``, ``list_notifications``,
+``resolve_thread`` and ``reopen_thread``. Handlers are thin delegations: every
+lifecycle rule lives in ``core/comments.py`` and every anchor rule in
+``core/anchors.py``. This pack measures nothing and resolves nothing itself.
+
+Marking a notification read is deliberately **not** a sixth tool: it is
+``POST /api/projects/{proj}/notifications/read`` in the route pack, because an
+agent reading its own mentions needs no read cursor and FR7 freezes the agent
+surface at five.
 
 **The pack does not self-disable without git**, unlike ``tools_proposals`` and
 ``tools_versioning``: a comment is not a commit. ``.history/agentcad/comments/``
@@ -78,6 +82,23 @@ _FACE_ODDS = (
     "genuinely ambiguous and orphans by design: 'orphan, never mis-pin'."
 )
 
+#: The hunk table (design Decision 8), in the words an agent has to act on.
+_HUNKS = (
+    "A 'proposal_hunk' anchor points at ONE HUNK of a change proposal's review "
+    "packet and re-maps by that hunk's BYTE-IDENTICAL header inside the "
+    "packet's new generation, because a regeneration renumbers hunks freely: "
+    "same generation -> 'ok'; a regenerated packet carrying that exact header "
+    "exactly once -> 'moved' to its new index (never 'ok', even at the same "
+    "index — a new generation measured different commits, so nothing checked "
+    "that the text is unchanged); the header rewritten, or now occurring more "
+    "than once -> 'orphaned'/'hunk_regenerated'; a packet frozen by a merge -> "
+    "'unverified'/'packet_frozen', because the diff it describes is history "
+    "and the thread is the record of a review of exactly that. Reading a "
+    "thread NEVER regenerates a packet (that would rebuild geometry on both "
+    "sides and can move the proposal's state) — call proposal_packet yourself "
+    "first, and address the hunk through resolution.hunk, never anchor.hunk."
+)
+
 #: Identity here is a self-asserted header, and every surface must say so.
 _IDENTITY = (
     "'author'/'actor' is locks.current_client_id() (browser, browser:<nonce>, "
@@ -102,10 +123,11 @@ def register(registry, service) -> None:
                       state: str | None = None, kind: str | None = None,
                       branch: str | None = None,
                       anchor_status: str | None = None,
+                      proposal: str | None = None,
                       resolve_anchors: bool | None = None) -> dict:
         return service.comments.list(
             project, state=state, kind=kind, part_id=part_id, branch=branch,
-            anchor_status=anchor_status,
+            anchor_status=anchor_status, proposal=proposal,
             # `null` on an optional argument means "omitted" (the registry's
             # convention), and the default is TRUE: a caller sending a uniform
             # payload of nulls must get resolutions, not a silently cheap list.
@@ -133,6 +155,11 @@ def register(registry, service) -> None:
         return {"thread": service.comments.create(
             project, anchor, body, attachments)}
 
+    def list_notifications(project: str | None = None,
+                           unread: bool | None = None) -> dict:
+        return service.comments.list_notifications(
+            project=project, unread=bool(unread))
+
     def resolve_thread(project: str, thread: str) -> dict:
         return {"thread": service.comments.resolve(project, thread)}
 
@@ -151,7 +178,8 @@ def register(registry, service) -> None:
         "head}}, branch, author, author_kind, created, updated, resolved, "
         "comments: [{id, author, author_kind, ts, body, attachments: [{path, "
         "available}], mentions, edited, deleted}]}], counts: {open, resolved, "
-        "orphaned}}. 'counts' describes the WHOLE project, never the filtered "
+        "orphaned}}. " + _HUNKS +
+        " 'counts' describes the WHOLE project, never the filtered "
         "page, so a badge does not change when a filter is applied. Listing "
         "NEVER BUILDS a part: resolution reads the manifest, the meshes a "
         "build already wrote and at most one git blob per anchor, so a face "
@@ -175,6 +203,10 @@ def register(registry, service) -> None:
                                           "thread — a review comment on main "
                                           "must stay visible from a feature "
                                           "branch)"},
+                "proposal": {"type": "string",
+                             "description": "Only threads anchored to a hunk "
+                                            "of this change proposal's review "
+                                            "packet, e.g. '3'"},
                 "anchor_status": {"type": "string",
                                   "description": "Only threads whose anchor "
                                                  "resolves to this status: "
@@ -211,7 +243,12 @@ def register(registry, service) -> None:
         "context so the range follows an edit made above it; {kind: "
         "'instance', instance: 'nozzle_1'} — one assembly instance; {kind: "
         "'proposal_hunk', proposal: '3', file: 'parts/nozzle.py', hunk: 1} — "
-        "one diff hunk of a change proposal. The anchor's branch, head and "
+        "one diff hunk of a change proposal, validated against that "
+        "proposal's ALREADY-BUILT review packet ('file' is a path in its "
+        "script diffs and 'hunk' is a 0-based index into that file's hunks; a "
+        "proposal whose packet has not been built yet is a validation_error "
+        "telling you to call proposal_packet, never a build). " + _HUNKS +
+        " The anchor's branch, head and "
         "evidence are stamped by the server and REFUSED from the caller: a "
         "signature a client can assert is not evidence of anything. " +
         _RESOLUTION + " Attachments are project files that must live under "
@@ -236,6 +273,37 @@ def register(registry, service) -> None:
                                                "['exports/renders/iso.png']"}},
                ["project", "body"]),
         add_comment,
+    ))
+
+    registry.register(Tool(
+        "list_notifications",
+        "List the @-mention notifications addressed to YOU — the calling "
+        "identity only (locks.current_client_id(): your X-Agent-Id header, "
+        "'chat:<session>' for a chat turn, 'browser'/'browser:<nonce>' for the "
+        "UI). Writing '@chat:main' or '@browser:7f3a' in a comment body "
+        "delivers one to that identity; a handle that names no plausible "
+        "identity ('@todo', '@nobody') is left as plain text and delivers "
+        "NOTHING, and mentioning yourself delivers nothing either. Returns "
+        "{notifications: [{seq, kind: 'mention', to, project, thread, "
+        "comment, from, ts, read}], unread: n}, oldest first; omit 'project' "
+        "for every project on this server. Marking them read is a ROUTE, not "
+        "a tool (POST /api/projects/{project}/notifications/read {ids?}, and "
+        "omitting 'ids' marks all of yours) — an agent reading its mentions "
+        "needs no read cursor. The WebSocket 'notification' event is a "
+        "BROADCAST: every connected client receives every one and filters on "
+        "'to' itself, which is honest for a single-user, 127.0.0.1-only "
+        "server with no authentication and no secret a GET on the same box "
+        "would not disclose; per-principal delivery arrives with real "
+        "identity. " + _IDENTITY,
+        schema({"project": {"type": "string",
+                            "description": "Only this project's notifications "
+                                           "(default: every project)"},
+                "unread": {"type": "boolean",
+                           "description": "Only the ones you have not marked "
+                                          "read (the 'unread' count is "
+                                          "reported either way)"}},
+               []),
+        list_notifications,
     ))
 
     registry.register(Tool(
