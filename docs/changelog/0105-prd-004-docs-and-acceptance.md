@@ -106,8 +106,11 @@ request, following the PRD-001 AC6 / PRD-003 AC8 evidence precedent.
 - **AC1 — the live run.** `.github/workflows/geometry-ci.yml`, `examples`
   matrix (`construction`, `prototyping`, `rocketry`, `fasteners`) on
   `ubuntu-latest`.
-  - Run: _cited in the pull request when the branch is pushed_ — the URL,
-    the conclusion and the four job names go here.
+  - Run: https://github.com/n3r/AgentCAD/actions/runs/31492128698 —
+    conclusion **success**, on PR #11 (`576acff`). All four jobs green:
+    `check (construction)`, `check (prototyping)`, `check (rocketry)`,
+    `check (fasteners)`; `check (engine)` skipped, as designed (nightly).
+    AC1 is met: the Action certified the bundled examples on a real runner.
   - It could not be produced locally: this machine is not a GitHub runner, and
     `act` is not installed. Everything the runner executes *is* exercised
     locally — `tests/test_geometry_ci_action.py` runs the action's shell bodies
