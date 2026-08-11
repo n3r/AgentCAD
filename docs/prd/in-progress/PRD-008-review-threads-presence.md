@@ -1,6 +1,7 @@
 # PRD-008 — Anchored review threads and presence
 
-- **Status:** pending
+- **Status:** implemented — AC1–AC9 verified (branch
+  `prd-008-review-threads`; see Verification below)
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
@@ -261,6 +262,124 @@ coordinate through turns and branches (PRD-001), not claims.
 - AC8. Threads survive `project_restore` to an earlier snapshot (test).
 - AC9. Attachments outside `exports/` are rejected as
   `validation_error` (test); full suite green, count cited.
+
+### Verification (slice 11)
+
+Every criterion above has a named test in `tests/test_prd008_acceptance.py`,
+which walks it through the surfaces a human and an agent actually touch — the
+five tools, the REST routes, the WebSocket, real git history and a real kernel
+build — rather than through the unit seams (`tests/test_comments.py`,
+`test_anchors.py`, `test_anchors_kernel.py`, `test_comments_api.py`,
+`test_comments_proposals.py`, `test_comments_notifications.py`,
+`test_presence.py`, `test_claims.py`, `test_undo_authors.py`).
+
+| AC | Proving test |
+|----|---|
+| AC1 | `test_ac1_the_review_loop_end_to_end` — a browser identity opens a face thread; an agent identity lists it, sees the server-stamped signature, edits the script, `render_view`s, replies with the render attached and resolves; a WS client observes the resolution live and the bus carries `created`/`replied`/`resolved` in order. The **two-browser half** was driven for real in slices 8–9 (headless Chrome, two `localStorage` identities, screenshots, zero page errors) and is asserted as a record by `test_ac1_browser_half_evidence_is_recorded` — the PRD-001 AC6 / PRD-002 AC1 precedent |
+| AC2 | `test_ac2_a_face_anchor_survives_or_says_it_did_not` — at the narrowed wording below: a bounds-stable tweak keeps the anchor on the *same face* (verified geometrically, not by trusting the resolver), cutting the face away answers `orphaned` with a reason, a hint and **no** face index, and the thread stays listable, filterable and resolvable either way |
+| AC3 | `test_ac3_a_script_range_anchor_tracks_an_insert_above_it` — two lines inserted above the range: `moved`, `reason: snippet_found_verbatim`, the new address in the payload, the stored anchor untouched |
+| AC4 | `test_ac4_a_mention_delivers_an_event_and_an_unread_record` — `@chat:main` publishes `notification` on `/ws` and leaves exactly one unread record for that identity, cleared by the read route; `@nobody` stays plain text; nobody else's inbox is involved |
+| AC5 | `test_ac5_a_claim_conflicts_overrides_and_leaves_other_parts_alone` — the 409 with `claim.holder` and `overridable: true`, the armed override landing the retry, part Y untouched throughout, and an agent never claim-blocked |
+| AC6 | `test_ac6_the_turn_lock_still_decides_first` — with an agent holding the turn both browsers fail with the pre-existing message and **no** claim details, and the turn holder is never claim-checked; `test_ac6_the_lock_suite_is_unmodified_evidence` is the record that `tests/test_locks.py` passed unmodified (a claim about a diff, not about a run) |
+| AC7 | `test_ac7_per_user_undo_and_its_structured_conflict` — A edits X, B edits Y, A's `undo {scope: "mine"}` reverts only X; then B edits X on top of A and A's undo is a `conflict_error` with `{commit, reason: "overlapping_changes", paths, blocked_by}`, nothing landed, the entry still A's |
+| AC8 | `test_ac8_threads_survive_project_restore` — thread and audit byte-identical across a restore to the first snapshot |
+| AC9 | `test_ac9_an_attachment_outside_exports_is_refused` — traversal, absolute, symlink-out, wrong-tree and missing paths all `validation_error` at the tool and 422 at the route, with a real export still accepted; `test_ac9_the_full_suite_count_is_cited` is the evidence check over the close-out changelog where `make test`'s count is recorded |
+
+### As built — divergences from this document
+
+1. **AC2's wording is narrowed to what the system provably does**, and this is
+   the divergence that matters most. The criterion above says a face anchor
+   "survives a rebuild that keeps the face (param tweak) via signature
+   re-match". The slice-2 spike measured it — 11 bundled parts × up to 3
+   parameters × +1%/+10%/+30%, 3 206 face pairs with ground truth established
+   independently of the matcher (`docs/changelog/0113-prd008-anchor-resolution.md`):
+
+   | claim | measured |
+   |---|---|
+   | face ordinals are stable | **no** — 87–93% hold; one part renumbered 20 of 44 faces for a 1% tweak |
+   | a surviving face re-matches | **~69%** (1 756 of 2 537), not always |
+   | a destroyed face orphans | **98.2%** (657 of 669) |
+   | it never mis-pins | **0 of 2 537** — the contract, and it holds |
+
+   Slices 8–9 found two further ceilings in the browser
+   (`docs/changelog/0119-prd008-threads-ui.md`): a parameter change that moves
+   a face's position *relative to the shape's bounds* orphans it even though
+   the face still exists (`bbox_uvw` is what makes a pure scale survivable, and
+   is exactly what a bounds change moves), and a **closed curved face** — a
+   cylinder's side — orphans on any edit, because its area-weighted normal
+   nearly cancels and the `NORMAL_DOT` gate then admits no candidate.
+
+   **The honest criterion, and the one the acceptance test asserts:** *a face
+   anchor survives a parameter tweak where the face's position within the
+   shape's bounds is stable, or reports `orphaned` with a reason and no
+   address — and never points at the wrong face; the thread stays listable
+   either way.* Orphaned is a correct outcome, and for a repeated feature (104
+   near-identical thread faces on `fasteners/tapped_plate`) it is the *only*
+   correct outcome. Loosening a tolerance to raise the hit rate buys mis-pins:
+   at `AMBIGUITY_MARGIN 0.15` the rate rises ~1.5 points and one mis-pin
+   appears. That trade was refused.
+2. **The module is `comments`, not `threads`** — `core/comments.py`,
+   `core/anchors.py`, `core/tools_comments.py`, `server/routes_comments.py`.
+   `agentcad/toolkit/threads.py` is ISO screw threads and `tests/test_threads.py`
+   is its test module. The word survives in the payloads and tool names the
+   agent surface froze (`resolve_thread`, `comment_changed {thread}`).
+3. **Storage is `<project>/.history/agentcad/comments/`, not `<project>/.threads/`.**
+   Inside GIT_DIR, so threads are canonical, ride no branch, are never merged
+   and are structurally beyond `project_restore`'s reach — the PRD-002 sidecar
+   pattern, and what makes AC8 true by construction rather than by an exclude
+   rule that a future `git add -A` could out-vote.
+4. **Face signatures are derived in the server from the `.acm` mesh plus the
+   `<key>.faces.u32` sidecar — not from the `face_info` handler.** Resolution
+   therefore issues **zero** kernel calls and never rebuilds: an unbuilt part's
+   anchors come back `unverified`/`part_not_built` instead of triggering a
+   300-second build behind a list call. The signature also gained `area_frac`
+   (a face's share of the tessellated area) because an absolute area is not
+   scale-invariant, and the planned `STICKY_MARGIN` tie-break was **deleted**:
+   at an ambiguity margin of 0.20 it is unreachable, and dead code that looks
+   like a safety net is worse than none.
+5. **Presence is an HTTP heartbeat, not client→server WebSocket traffic.**
+   `/ws` lives in `server/app.py` — a core this feature may not edit — carries
+   no client identity (`set_client_id` is HTTP middleware) and is guarded by
+   HTTP middleware a route pack cannot reproduce. The substance of FR9 (report
+   focus, see others) is met over `POST /api/projects/{p}/presence`, whose
+   *response* is the whole roster, with `presence_changed` as an optimization.
+   The new-attack-surface risk this document raised is answered by not creating
+   the surface.
+6. **`ProjectStore.write_guard`'s signature did not change.** The part a write
+   names travels on a `contextvars` variable (`locks.write_scope`), so
+   `service.py`'s lambda, `tools_versioning.install_write_guard` and every
+   guard any test installs keep working byte-identically — which is what let
+   `tests/test_locks.py` be the AC6 regression gate rather than a casualty.
+   Only `write_script` and `update_part_entry` are claim-covered; whole-manifest
+   writes stay turn-locked only, and there is a test asserting exactly that.
+7. **Per-user undo did not re-key the undo stacks.** `scope` defaults to
+   `"any"` and is byte-identical to the behavior that predates authorship,
+   because a human pressing Cmd+Z to take back the agent's edit is the product's
+   flagship loop; per-client stacks would have left that browser's stack empty.
+   `"mine"` skips (never discards) other clients' entries. Authorship is a
+   `Client:` commit **trailer**, not a git author field: the client id is an
+   unvalidated header and must not be dressed up as a cryptographic claim.
+8. **Proposal-hunk anchors landed in the MVP, not in phase 3**, and they answer
+   this document's open question: a regenerated packet re-maps by the hunk's
+   byte-identical **header** (`moved`, never `ok`, even at the same index), a
+   rewritten or now-ambiguous header is `orphaned`, and a packet frozen by a
+   merge is `unverified`/`packet_frozen` — the thread is the record of a review
+   of exactly that diff.
+9. **Notifications are one append-only log per project with a `to` field**, not
+   a file per identity: an identity is an unvalidated header, and a filename
+   derived from one is a traversal surface. Delivery is the existing broadcast
+   with client-side filtering, which is honest on a single-node,
+   unauthenticated, 127.0.0.1-only server and is what PRD-005 changes.
+10. **The agent surface is five tools and no claim tools** (registry 65 → 70;
+    73 with the `[fem]` extra). Agents coordinate through `acquire_turn` and
+    branches; claims are human-vs-human, because an agent blocked by a human's
+    open editor would 409 on the first write of the loop this PRD exists for.
+11. **Three deliberate UI gaps**, named rather than left to be discovered: the
+    assembly-`instance` anchor has no create affordance in the browser (it is
+    creatable over tools/REST and focuses correctly); comment attachments have
+    no file picker (an agent attaches a render from `exports/`, and the panel
+    renders the chip); and `scope: "mine"` undo has **no toolbar gesture** —
+    Cmd+Z stays the shared stack on purpose.
 
 ## Risks & open questions
 

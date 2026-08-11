@@ -425,6 +425,83 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   `.history/`, so `--ref "$GITHUB_SHA"` would exit 2 on every run. Pass
   `--sha` / `--ref-label` instead.
 
+## Review-thread gotchas (PRD-008 — read before touching comments, anchors, presence or undo)
+
+- **Threads live at `.history/agentcad/comments/`, are canonical and
+  branch-free, and are never model state.** `project_restore` cannot rewind
+  them, every branch sees the same list, no merge ever touches them, and a
+  comment never shows up in `git status`. Paths come from
+  `store.canonical_path_of`, **never `path_of`**.
+- **The module is `comments`, never `threads`.** `agentcad/toolkit/threads.py`
+  is ISO screw threads and `tests/test_threads.py` is its test module. The word
+  survives only in payloads and tool names (`resolve_thread`,
+  `comment_changed {thread}`), which FR7 freezes.
+- **An anchor is immutable; its status is computed on every read.** `ok`,
+  `moved`, `orphaned` and `unverified` are four different facts. `unverified`
+  means *we did not look* (unbuilt part, no git, frozen packet) and must never
+  be rendered as "fine". Address geometry through `resolution.face_index` and
+  lines through `resolution.start`/`end` — never the stored ordinal.
+- **Orphan, never mis-pin.** An ambiguous face match is an orphan; a
+  low-confidence line remap is an orphan. Loosening a tolerance to make a pin
+  appear is the one change this feature must never take (measured: at
+  `AMBIGUITY_MARGIN 0.20`, 0 mis-pins in 2 537 faces; at 0.15, one appears).
+- **Two measured ceilings on face re-matching, both documented rather than
+  tuned away.** (1) *Any* parameter change that alters the part's **bounding
+  box** orphans every anchor on that part — `bbox_uvw` is relative to the
+  bounds, which is exactly what makes a pure scale survivable and what makes a
+  bounds change total. (2) A **closed curved face** (a cylinder's side) orphans
+  on any edit: its area-weighted normal nearly cancels, so `NORMAL_DOT` admits
+  no candidate. Both are the safe direction.
+- **`metrics.n_faces` is deduped (`len(shape.faces())`); the `<key>.faces.u32`
+  sidecar is the authority for face-index validation** — it is what an ordinal
+  is *defined* by (the `TopExp_Explorer` walk `mesh.py` tessellates).
+- **Face signatures are derived in the server from `.acm` + `.faces.u32` — no
+  kernel call, no rebuild.** `signature_table` uses `service._cache_key_for`,
+  never `mesh_info`/`_ensure_built`; a part that was never built resolves to
+  `unverified`/`part_not_built`, and listing a hundred threads is a cheap read.
+- **Hunk anchors read the persisted `packet.json` only** — never
+  `service.packets.packet(...)`, which rebuilds geometry on both sides and can
+  move a proposal's state. The hunk **header** is the identity, not the index.
+- **Claims are human-vs-human only, and never apply to a client holding the
+  turn.** Precedence: turn → own-turn bypass → claim → proceed. A claim names
+  one *part*, is taken by editing (a `claim: true` heartbeat or a successful
+  part-scoped write), and expires in 90 s; the **turn lock** is project-wide,
+  explicit (`acquire_turn`) and applies to everyone. Agents get no claim tools
+  by design — an agent blocked by a human's open editor would 409 on the first
+  write of the flagship loop.
+- **The part dimension reaches `write_guard` through `locks.write_scope`, not
+  through the guard's signature** — every existing guard keeps working
+  byte-identically, and only `write_script` / `update_part_entry` are
+  claim-covered. Whole-manifest writes are turn-locked only, on purpose.
+- **The claim guard is installed lazily and from `routes_presence`**, because
+  `tools_versioning` (`v`) REPLACES `write_guard` after `tools_comments` (`c`)
+  loads. Same trap, same fix as `ProposalManager`'s branch-delete guard.
+- **Presence is an HTTP heartbeat, not a client→server WebSocket.** `/ws` is in
+  `app.py` (a core this feature may not edit), carries no client identity, and
+  its Host guard is HTTP middleware. The heartbeat *response* is the mechanism;
+  `presence_changed` is an optimization. The registry is in-memory and never
+  persisted.
+- **`notification` events are broadcast to every `/ws` client and filtered
+  client-side.** Honest on a single-node, unauthenticated, 127.0.0.1-only
+  server; PRD-005 is what makes delivery per-principal.
+- **`comment_changed` is never `project_changed`.** A comment is not a model
+  change: it must trigger no history snapshot and no rebuild. `bus.on_publish`
+  is a single slot already owned by `service._snapshot_on_event` — never
+  assign it.
+- **Per-user undo did not re-key the undo stacks.** `scope: "any"` is the
+  default and is byte-identical to the behavior that predates authorship,
+  because a human pressing Cmd+Z to take back the agent's edit is the product's
+  flagship loop. `scope: "mine"` skips (never discards) other clients' entries,
+  and reverts instead of restoring once the entry is no longer the head.
+- **Authorship is a commit-message *trailer*, not a git author.** `Client: <id>`
+  goes in the body, so every `%s` subject contract still holds; git's
+  author/committer stay the fixed local identity because the client id is an
+  unvalidated header. `log()` reports `author: null` — never `"unknown"` — for
+  a commit written before authorship existed.
+- **`actor_kind`/`author_kind` is bookkeeping, not authentication.** It is
+  `human` iff the identity is the browser. Say so on every surface that shows
+  it, until PRD-005.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script

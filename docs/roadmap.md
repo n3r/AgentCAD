@@ -71,7 +71,7 @@ part incumbents structurally cannot copy.
 | [005](prd/pending/PRD-005-multi-tenant-cloud.md) | Multi-tenant cloud — auth, orgs, roles, audit principals, local-first git sync, one-compose self-host | pending | analysis | — |
 | [006](prd/pending/PRD-006-sandboxing-quotas.md) | Cross-platform sandboxing & quotas — Linux/Windows confinement, cgroup budgets, per-tenant metering | pending | analysis | — |
 | [007](prd/pending/PRD-007-share-links-customizer.md) | Share links & customizer publishing — read-only viewer links; published parts with parameter sliders emitting B-rep artifacts | pending | analysis + idea 1e | 005 · 006 |
-| [008](prd/pending/PRD-008-review-threads-presence.md) | Review threads & presence — comments anchored to faces/params/lines/diffs; per-part claims; per-user undo | pending | analysis | 005 (soft) |
+| [008](prd/in-progress/PRD-008-review-threads-presence.md) | Review threads & presence — comments anchored to faces/params/lines/diffs; per-part claims; per-user undo | implemented (AC1–AC9 verified, branch `prd-008-review-threads`) | analysis | 005 (soft) |
 
 ### v5 — daily-driver depth & the ecosystem
 

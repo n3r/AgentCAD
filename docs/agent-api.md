@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 73 tools (76 with the
+Agents drive AgentCAD through a single tool surface — 70 tools (73 with the
 `[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -130,11 +130,11 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 | `get_part_pmi` | **project, part_id** | The part's stored PMI section, with empty `dims`/`datums`/`fcf` when unset. |
 | `face_info` | **project, part_id, face_index** | Inspect one B-rep face by its mesh-order index (the same ordinal the viewport's face picking and the `mesh/faces` sidecar use): `{planar, normal, area_mm2, center, n_faces}`. |
 | `push_pull` | **project, part_id, face_index, distance_mm** | Direct-manipulation face offset recorded as code: validates the face is planar, then APPENDS an auto-generated wrapper to the script (`push_face(build(p), i, d)` — visible, editable, composable) and rebuilds. Positive distance grows the solid along the outward normal; negative cuts inward. The script stays the source of truth. |
-| `project_history` | **project**, limit, ref | List the project's automatic history snapshots, newest first (`{id, message, ts}`); entry [0] is the current state. History is **per branch**: you see your own branch's unless you pass `ref` — a branch or tag name — which reads that ref's history without switching you. `available: false` + empty list when git is missing on the server. |
+| `project_history` | **project**, limit, ref | List the project's automatic history snapshots, newest first (`{id, message, ts, author}` — `author` is the client id that made it, read from the commit's `Client:` trailer, and `null` for a snapshot taken before authorship was recorded); entry [0] is the current state. History is **per branch**: you see your own branch's unless you pass `ref` — a branch or tag name — which reads that ref's history without switching you. `available: false` + empty list when git is missing on the server. |
 | `project_restore` | **project, commit** | Restore the project to a snapshot id **or a branch/tag name** (`{commit: "shop-rev-a"}` restores a version) and append a linear "restore" commit on your current branch. Returns refreshed history + `{restored}`; validation_error on unknown commit/no git, conflict_error under someone else's turn lock. A manual restore is itself one undoable step. |
-| `undo` | **project** | Undo the last mutation (any client's) by stepping back through the git history: `{undone, history: {available, undo, redo}}`. conflict_error when nothing to undo; after a server restart one step remains available. |
-| `redo` | **project** | Redo the most recently undone mutation. The redo stack clears when any new mutation happens. |
-| `get_history` | **project** | Undoable/redoable action labels, newest first, plus `available` (false when git is missing). The full durable snapshot log with commit ids is `project_history`. |
+| `undo` | **project**, scope | Undo the last mutation by stepping back through the git history: `{undone, history: {available, undo, redo, mine}}`. `scope` is `any` (**default** — one shared stack, so you may take back another client's edit, which is the point of Cmd+Z next to a working agent) or `mine` (skip other clients' entries and take back your own most recent one). A `mine` undo of an entry that is no longer the branch head is a **`git revert` of exactly that commit**, so nobody else's later work moves; a later change that overlaps it is a `conflict_error` with `details: {commit, reason: "overlapping_changes", paths, blocked_by}` — never a merge, never a partial apply. conflict_error when there is nothing to undo; after a server restart one step remains available. |
+| `redo` | **project**, scope | Redo the most recently undone mutation. The redo stack clears when any new mutation happens. A step that was undone by a revert is redone by reverting that revert. |
+| `get_history` | **project** | Undoable/redoable action labels, newest first, plus `available` (false when git is missing) and `mine: {undo, redo}` — how many entries on each stack are yours. The full durable snapshot log with commit ids is `project_history`. |
 | `render_view` | **project**, part_id, view, width, height | Server-side shaded orthographic render of built geometry so the agent can *see* the shape. `part_id` renders one part; omit it to render the whole placed assembly (instance transforms and colors honored; unbuildable instances are listed in `skipped`). `view` is `iso` (default), `front`, `top` or `right`; `width`/`height` are 64..2048 px (default 800×600). Writes `exports/renders/<part|assembly>_<view>.png` and returns `{path, width, height, view, png_base64}`; over MCP and in chat the PNG arrives as actual image content. |
 | `analyze_part` | **project, part_id, kind**, plane, axis, min_required | `kind=section` (cross-section area on `plane` XY\|XZ\|YZ), `wall` (min wall thickness; with `min_required` it adds an `ok` flag), `inertia` (mass-properties tensor + centre of mass), `projected_area` (silhouette area along `axis` X\|Y\|Z), `curvature` (per-face gaussian K in 1/mm² and mean H in 1/mm sampled on an 8×8 UV grid: `faces[]` with min/max/mean per face, `worst_gaussian_abs`, `n_faces`, `sampled_points`; H's sign is orientation-dependent — compare magnitudes; a true G2 blend shows no jump in K/H across the seam). Script parts only. |
 
@@ -590,7 +590,13 @@ ordinals are not stable across a parameter change (measured: 87–93% hold; one
 bundled part renumbered 20 of its 44 faces for a **1%** tweak), so a face
 anchor is re-matched from its stored mesh signature: measured over 2 537 faces
 it resolves about **two times in three** and honestly `orphaned` otherwise,
-with **zero** mis-pins. Orphan, never mis-pin.
+with **zero** mis-pins. Orphan, never mis-pin. Two ceilings are worth knowing
+before you read an `orphaned` as a bug: a parameter change that moves a face's
+position *relative to the shape's bounds* orphans it even though the face still
+exists (`bbox_uvw` is measured against those bounds — which is exactly what
+makes a pure scale survivable), and a **closed curved face** such as a
+cylinder's side orphans on any edit, because its area-weighted normal nearly
+cancels and no candidate clears the normal gate.
 
 **Listing never builds.** Resolution reads the manifest, the meshes a build
 already wrote and at most one git blob per anchor — so a face anchor on a part
@@ -660,6 +666,64 @@ every `/ws` client receives every `notification` and filters on `to` itself.
 That is honest for a single-user, 127.0.0.1-only server with no authentication
 — it discloses nothing a `GET` on the same box would not — and per-principal
 delivery arrives with real identity (PRD-005), with no payload change.
+
+### Presence and per-part claims
+
+Who else is in this project, and who is currently editing which part. **There
+are no tools here on purpose** — an agent coordinates through `acquire_turn`
+and branches, and a claim is a *human*-vs-human courtesy that an agent must
+never be blocked by (see the precedence table below). The surface is three
+routes:
+
+```
+GET  /api/projects/{proj}/presence            # read the roster, register nobody
+POST /api/projects/{proj}/presence            # heartbeat  {part_id?, surface?,
+                                              #             label?, claim?, leave?}
+POST /api/projects/{proj}/claims/override     # {part} -> {part, armed_until, claim}
+```
+
+Both presence calls answer with the whole roster:
+`{you, clients: [{id, kind, label, focus: {part_id, surface}, since}],
+claims: {<part>: {part, holder, holder_kind, expires_at}}, ttl_s,
+heartbeat_s}`. `surface` is one of `viewport | editor | inspector | proposals`
+(anything else is a `validation_error`); `kind` is `human` iff the identity is
+a browser. The registry is **in-memory and never persisted**, entries expire
+45 s after the last beat (the browser beats every 15 s), and `{leave: true}` is
+what a closing tab sends. An over-rate heartbeat is **HTTP 200 with
+`throttled: true`**, never an error — the response is the mechanism, so a
+client that misses every event still converges within one beat.
+
+A **claim** names one part, is taken by *editing* (a heartbeat with
+`claim: true`, or any successful part-scoped write — viewing never claims),
+lasts 90 s, and is enforced at the one seam every persistent write passes
+through:
+
+| # | Condition | Outcome |
+|---|---|---|
+| 1 | another client holds the project **turn** | today's `conflict_error`, unchanged |
+| 2 | you hold the turn | proceed — never claim-checked |
+| 3 | the part is claimed by another client and **both are `human`** | `conflict_error` with `details: {claim: {part, holder, holder_kind, expires_at}, overridable: true}` |
+| 4 | otherwise | proceed, and refresh your claim on that part |
+
+Only `update_part_script` and per-part manifest edits are claim-covered;
+whole-manifest writes (`add_part`, assembly, project materials) are turn-locked
+only, on purpose. To take a part anyway, `POST …/claims/override {part}` arms a
+**single-use, 30-second** override for your identity and retries the write; a
+library or tool caller uses `with locks.claim_override():` instead. Arming
+publishes `claim_changed` with `overridden_by`, so taking somebody's part is on
+the record before the write lands.
+
+**Events.** `presence_changed {project, clients, claims}` when the roster
+actually differs (never on a no-op heartbeat) and `claim_changed {project,
+part, holder, holder_kind, expires_at, overridden_by?}`. With
+`comment_changed` and `notification` these are the four events PRD-008 adds;
+all four ride the existing `/ws` broadcast and none of them is
+`project_changed`.
+
+**Identity is self-asserted.** `X-Agent-Id` is an unvalidated header, so
+presence, claims, authorship and mentions are bookkeeping and coordination, not
+authentication or access control. That is honest for a single-node,
+127.0.0.1-only server; PRD-005 is what makes it a principal.
 
 ### Sketch solving
 

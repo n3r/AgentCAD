@@ -26,6 +26,15 @@ created by ``core/branches.py`` — ``_locate`` finds the right GIT_DIR either
 way, so snapshots, restores and undo all land on the branch whose tree they
 were handed.
 
+Authorship (PRD-008, design Decision 15): every snapshot carries a
+``Client: <client id>`` TRAILER — a body line, never the subject, so every
+subject-prefix contract in the tree (``"restore "`` below, the proposals
+reconciler's scans, and every exact-message assertion in the suite, all of
+which read ``%s``) is unaffected. Git's own author/committer stay the fixed
+repo-local identity on purpose: the client id is a self-asserted header, and
+rewriting a commit's author with it would dress bookkeeping up as a
+cryptographic claim about who wrote the change.
+
 Design constraints: stdlib only, subprocess git with a hard timeout, and
 ``snapshot`` NEVER raises into the caller — a broken or missing git must
 never break a CAD save.
@@ -39,6 +48,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from . import locks
 
 _GIT_TIMEOUT_S = 10.0
 # Managed exclude lines, appended to info/exclude when missing — never a
@@ -54,6 +65,14 @@ _COMMIT_RE = re.compile(r"^[0-9a-fA-F]{4,40}$")
 # but git refuses or reads specially.
 _REF_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,63}$")
 _REF_REJECT = ("..", "@{", ".lock", "//")
+# The authorship trailer (Decision 15). Matched anywhere in the BODY, so a
+# caller that already wrote one (the merge orchestrator's style) keeps it.
+_CLIENT_TRAILER_RE = re.compile(r"^Client:[ \t]*(.+?)[ \t]*$", re.M)
+# One record per commit in log(): %B is multi-line, so commits are separated
+# by \x1e and fields within a record by \x1f. Deliberately NOT git's
+# %(trailers:...) placeholder — that one needs git >= 2.22 and degrades by
+# emitting itself literally, which would put junk in every author field.
+_LOG_FORMAT = "%H%x1f%cI%x1f%s%x1f%B%x1e"
 
 
 def looks_like_commit(value: object) -> bool:
@@ -68,6 +87,26 @@ def valid_ref_name(value: object) -> bool:
     if value.endswith(("/", ".")) or any(bad in value for bad in _REF_REJECT):
         return False
     return True
+
+
+def with_client_trailer(message: str) -> str:
+    """``message`` plus a ``Client:`` trailer, unless it already carries one.
+
+    The subject line is never touched — the trailer is appended after a blank
+    line, which is where git looks for trailers and where nothing in this repo
+    parses.
+    """
+    body = message or "change"
+    if _CLIENT_TRAILER_RE.search(body):
+        return body
+    return f"{body.rstrip()}\n\nClient: {locks.current_client_id()}\n"
+
+
+def author_of(body: str) -> str | None:
+    """The ``Client:`` trailer's value, or None for a commit written before
+    authorship existed. Never ``"unknown"``: absent is a different fact."""
+    match = _CLIENT_TRAILER_RE.search(body or "")
+    return match.group(1) if match else None
 
 
 class HistoryError(RuntimeError):
@@ -255,7 +294,7 @@ class ProjectHistory:
             staged = self._run(path, "diff", "--cached", "--quiet", check=False)
             if staged.returncode == 0:
                 return None  # nothing changed since the last snapshot
-            self._run(path, "commit", "-m", message or "change")
+            self._run(path, "commit", "-m", with_client_trailer(message))
             return self._run(path, "rev-parse", "HEAD").stdout.strip()
         except Exception as exc:  # noqa: BLE001 — never raise into a CAD save
             print(f"[history] snapshot of {path.name!r} failed: {exc}",
@@ -264,8 +303,12 @@ class ProjectHistory:
 
     def log(self, project_path: Path | str, limit: int = 20,
             ref: str | None = None) -> list[dict]:
-        """Snapshots newest-first: [{"id", "message", "ts"}] (ts is the ISO
-        commit time). Empty when git is missing or no snapshot exists yet.
+        """Snapshots newest-first: [{"id", "message", "ts", "author"}] (ts is
+        the ISO commit time, ``author`` the ``Client:`` trailer's value or
+        None). Empty when git is missing or no snapshot exists yet.
+
+        ``message`` is the SUBJECT (``%s``) exactly as before the authorship
+        trailer existed — callers that match on it are unaffected.
 
         ``ref`` (a branch or tag name) reads another line of history without
         touching the working tree; an unknown or malformed ref reads as empty.
@@ -282,16 +325,18 @@ class ProjectHistory:
         try:
             result = self._run(
                 path, "log", "-n", str(limit),
-                "--pretty=format:%H%x1f%cI%x1f%s", *extra, check=False,
+                f"--pretty=format:{_LOG_FORMAT}", *extra, check=False,
             )
             if result.returncode != 0:
                 return []  # e.g. unborn branch: repo exists, no commits yet
             entries = []
-            for line in result.stdout.splitlines():
-                if not line.strip():
+            for record in result.stdout.split("\x1e"):
+                record = record.lstrip("\n")
+                if not record.strip():
                     continue
-                commit, ts, message = line.split("\x1f", 2)
-                entries.append({"id": commit, "message": message, "ts": ts})
+                commit, ts, message, body = record.split("\x1f", 3)
+                entries.append({"id": commit, "message": message, "ts": ts,
+                                "author": author_of(body)})
             return entries
         except Exception as exc:  # noqa: BLE001 — reads must never raise
             print(f"[history] log of {path.name!r} failed: {exc}",
@@ -319,6 +364,92 @@ class ProjectHistory:
             raise HistoryError(f"unknown commit {commit!r}")
         self._run(path, "checkout", commit, "--", ".")
         self.snapshot(path, f"restore {commit[:8]}")
+
+    def revert(self, project_path: Path | str, commit: str,
+               message: str | None = None) -> str:
+        """Undo ONE commit's changes as a new commit, leaving every later
+        commit standing; returns the new commit id (PRD-008, Decision 16).
+
+        This is what a ``scope: "mine"`` undo does when the caller's edit is no
+        longer the branch head: ``restore`` would overlay a whole past tree and
+        silently take somebody else's later work with it, so a targeted revert
+        is the only honest step. A two-parent commit (a merge) is reverted
+        against its FIRST parent — the branch that was merged *into*, i.e. the
+        one that keeps.
+
+        Never a partial apply (FR14): a conflict is rolled back with
+        ``revert --abort`` plus a hard reset and raised as a ``ConflictError``
+        carrying ``{commit, reason, paths, blocked_by}``. A commit whose
+        changes are already gone from the tree raises the same error with
+        ``reason: "already_reverted"`` rather than an empty commit.
+        """
+        from .model import ConflictError
+
+        if not self.available():
+            raise HistoryError("git not found on PATH")
+        path = Path(project_path)
+        if not self._has_repo(path):
+            raise HistoryError("project has no history yet")
+        if not isinstance(commit, str) or not _COMMIT_RE.match(commit):
+            raise HistoryError(f"invalid commit id {commit!r}")
+        probe = self._run(path, "cat-file", "-e", f"{commit}^{{commit}}",
+                          check=False)
+        if probe.returncode != 0:
+            raise HistoryError(f"unknown commit {commit!r}")
+
+        parents = self._run(
+            path, "rev-list", "--parents", "-n", "1", commit
+        ).stdout.split()[1:]
+        # git refuses a merge revert without a mainline; first parent = target.
+        mainline = ["-m", "1"] if len(parents) > 1 else []
+
+        attempt = self._run(path, "revert", "--no-commit", *mainline, commit,
+                            check=False)
+        if attempt.returncode != 0:
+            paths = self._unmerged_paths(path)
+            blocked_by = self._commits_touching(path, commit, paths)
+            self._run(path, "revert", "--abort", check=False)
+            self._run(path, "reset", "--hard", "HEAD", check=False)
+            if not paths:
+                detail = (attempt.stderr or attempt.stdout).strip()
+                raise HistoryError(f"git revert failed: {detail}")
+            raise ConflictError(
+                f"cannot undo {commit[:8]}: later changes overlap it",
+                {"commit": commit, "reason": "overlapping_changes",
+                 "paths": paths, "blocked_by": blocked_by},
+            )
+        staged = self._run(path, "diff", "--cached", "--quiet", check=False)
+        if staged.returncode == 0:
+            self._run(path, "reset", "--hard", "HEAD", check=False)
+            raise ConflictError(
+                f"commit {commit[:8]} has already been undone",
+                {"commit": commit, "reason": "already_reverted",
+                 "paths": [], "blocked_by": []},
+            )
+        self._run(path, "commit", "-m", with_client_trailer(
+            message or f"revert {commit[:8]}"))
+        return self._run(path, "rev-parse", "HEAD").stdout.strip()
+
+    def _unmerged_paths(self, path: Path) -> list[str]:
+        """Paths git left conflicted — read BEFORE the abort clears them."""
+        result = self._run(path, "diff", "--name-only", "--diff-filter=U",
+                           check=False)
+        if result.returncode != 0:
+            return []
+        return [line for line in result.stdout.splitlines() if line.strip()]
+
+    def _commits_touching(self, path: Path, commit: str,
+                          paths: list[str]) -> list[str]:
+        """Commits after ``commit`` (up to HEAD) that touched ``paths`` — the
+        honest answer to "who is blocking this undo"."""
+        args = ["log", "--format=%H", f"{commit}..HEAD"]
+        if paths:
+            args += ["--", *paths]
+        result = self._run(path, *args, check=False)
+        if result.returncode != 0:
+            return []
+        return [line.strip() for line in result.stdout.splitlines()
+                if line.strip()]
 
     # ---------------------------------------------------- cursor primitives
 
@@ -482,9 +613,23 @@ class UndoCursor:
     snapshot via the git log, and ``redo`` is empty. Bounded to
     ``UNDO_LIMIT`` entries per stack, and keyed by ``store.lock_key(proj)``
     so each branch's working tree gets its own undo/redo history.
+
+    **Authorship, not ownership (PRD-008, Decision 16).** Entries record the
+    client that made the edit, and ``scope`` selects which of them a step may
+    consume — but the stacks are deliberately NOT re-keyed per client. A human
+    watching an agent edit and pressing Cmd+Z to take it back is this product's
+    flagship loop; per-client stacks would leave that browser's stack empty.
+    So ``scope="any"`` is the default and is byte-identical to the behavior
+    that predates authorship, and ``scope="mine"`` is the opt-in that skips
+    other clients' entries. When a ``"mine"`` step's entry is no longer the
+    branch head, it becomes a ``git revert`` of exactly that commit instead of
+    a whole-tree restore, which would silently take later work with it.
     """
 
     UNDO_LIMIT = 100
+    #: Selectors for a step. "any" = today's behavior; "mine" = the caller's
+    #: own most recent entry, skipping (never discarding) everyone else's.
+    SCOPES = ("any", "mine")
 
     def __init__(self, history: ProjectHistory, store, bus) -> None:
         import threading
@@ -515,35 +660,53 @@ class UndoCursor:
         key = self._key(proj)
         with self._lock:
             stack = self._undo.setdefault(key, [])
-            entry = {"id": commit_id, "label": label}
+            # The client id is read HERE, not at step time: on_snapshot runs
+            # synchronously inside the mutating call, so this contextvar still
+            # carries the identity that made the edit.
+            entry = {"id": commit_id, "label": label,
+                     "author": locks.current_client_id()}
             if undo_to:
                 entry["undo_to"] = undo_to
             stack.append(entry)
             del stack[: -self.UNDO_LIMIT]
             self._redo.pop(key, None)
 
-    def undo(self, proj: str) -> dict:
-        return self._step(proj, redo=False)
+    def undo(self, proj: str, scope: str = "any") -> dict:
+        return self._step(proj, redo=False, scope=scope)
 
-    def redo(self, proj: str) -> dict:
-        return self._step(proj, redo=True)
+    def redo(self, proj: str, scope: str = "any") -> dict:
+        return self._step(proj, redo=True, scope=scope)
 
     def status(self, proj: str) -> dict:
-        """Undoable/redoable labels, newest first (no git calls)."""
+        """Undoable/redoable labels, newest first (no git calls), plus how
+        many of each belong to the calling client (``mine``) so a UI can
+        label the button without guessing."""
         key = self._key(proj)
+        caller = locks.current_client_id()
         with self._lock:
+            undo = self._undo.get(key, [])
+            redo = self._redo.get(key, [])
             return {
                 "available": self.history.available(),
-                "undo": [e["label"] for e in reversed(self._undo.get(key, []))],
-                "redo": [e["label"] for e in reversed(self._redo.get(key, []))],
+                "undo": [e["label"] for e in reversed(undo)],
+                "redo": [e["label"] for e in reversed(redo)],
+                "mine": {
+                    "undo": sum(1 for e in undo if e.get("author") == caller),
+                    "redo": sum(1 for e in redo if e.get("author") == caller),
+                },
             }
 
     # ------------------------------------------------------------- internals
 
-    def _step(self, proj: str, *, redo: bool) -> dict:
+    def _step(self, proj: str, *, redo: bool, scope: str = "any") -> dict:
         from .model import ConflictError, ValidationError
 
         verb = "redo" if redo else "undo"
+        if scope not in self.SCOPES:
+            raise ValidationError(
+                f"invalid scope {scope!r}: expected "
+                + " or ".join(repr(s) for s in self.SCOPES)
+            )
         if not self.history.available():
             raise ValidationError("undo/redo unavailable: git not found on PATH")
         # Turn-locking: undo/redo rewrites project files outside the store
@@ -554,47 +717,92 @@ class UndoCursor:
             self.store.write_guard(proj)
         path = self.store.path_of(proj)
         key = self._key(proj)
+        caller = locks.current_client_id()
         with self._lock:
             source = (self._redo if redo else self._undo).setdefault(key, [])
             while source and not self.history.has_commit(path, source[-1]["id"]):
                 source.pop()  # history repo was pruned/replaced under us
-            entry = source.pop() if source else None
+            index = len(source) - 1
+            if scope == "mine":
+                # Skip, never discard, other clients' entries: their undo is
+                # still theirs to take.
+                index = next(
+                    (i for i in range(len(source) - 1, -1, -1)
+                     if source[i].get("author") == caller),
+                    -1,
+                )
+            entry = source.pop(index) if index >= 0 else None
             if entry is None and not redo:
                 # Post-restart fallback: one step back through the latest
                 # snapshot. Refused when that snapshot is itself a restore —
                 # undoing it would act as a redo, and repeated fallback undos
-                # would oscillate between two states.
+                # would oscillate between two states. Under "mine" the
+                # trailer's author has to be the caller, or it is not theirs.
                 log = self.history.log(path, limit=1)
-                if log and not log[0]["message"].startswith("restore "):
+                if (log and not log[0]["message"].startswith("restore ")
+                        and (scope == "any" or log[0].get("author") == caller)):
                     entry = {"id": log[0]["id"], "message_from_log": True,
-                             "label": log[0]["message"]}
+                             "label": log[0]["message"],
+                             "author": log[0].get("author")}
             if entry is None:
-                raise ConflictError(f"nothing to {verb}")
+                raise ConflictError(
+                    f"nothing to {verb}" if scope == "any"
+                    else f"nothing of yours to {verb}"
+                )
+            # A "mine" step whose commit is no longer the branch head cannot
+            # restore a tree — that would take everyone's later work with it.
+            # It reverts exactly its own commit instead (Decision 16 step 4).
+            head = self.history.head(path)
             if redo:
                 # entry["id"] captures the state to return to; going back is
                 # "undo the redo": restore its parent again later.
-                target = entry["id"]
+                revert_target = entry.get("undone_by")
+                target = None if revert_target else entry["id"]
             else:
-                target = entry.get("undo_to") or self.history.parent_of(
-                    path, entry["id"]
-                )
-                if target is None:
-                    # The root snapshot has no parent: nothing before it to
-                    # return to. Keep the stack entry — it wasn't consumed.
-                    if not entry.get("message_from_log"):
-                        source.append(entry)
-                    raise ConflictError(f"nothing to {verb}")
+                revert_target = entry.get("applied_by")
+                if (revert_target is None and scope == "mine"
+                        and entry["id"] != head):
+                    revert_target = entry["id"]
+                target = None
+                if revert_target is None:
+                    target = entry.get("undo_to") or self.history.parent_of(
+                        path, entry["id"]
+                    )
+                    if target is None:
+                        # The root snapshot has no parent: nothing before it to
+                        # return to. Keep the stack entry — it wasn't consumed.
+                        if not entry.get("message_from_log"):
+                            source.insert(max(index, 0), entry)
+                        raise ConflictError(f"nothing to {verb}")
             opposite = (self._undo if redo else self._redo).setdefault(key, [])
-            opposite.append(entry)
-            del opposite[: -self.UNDO_LIMIT]
             self.history.in_restore = True
             try:
-                self.history.restore(path, target)
+                if revert_target is not None:
+                    commit = self.history.revert(
+                        path, revert_target,
+                        f"revert {revert_target[:8]} ({verb} by {caller})",
+                    )
+                    moved = {k: v for k, v in entry.items()
+                             if k not in ("applied_by", "undone_by")}
+                    moved["applied_by" if redo else "undone_by"] = commit
+                else:
+                    self.history.restore(path, target)
+                    moved = entry
+                opposite.append(moved)
+                del opposite[: -self.UNDO_LIMIT]
+                # Published while in_restore is still set, so the service's bus
+                # hook does not stack a snapshot on our own restore/revert.
                 self.bus.publish(
-                    {"type": "project_changed", "project": proj, "reason": verb}
+                    {"type": "project_changed", "project": proj,
+                     "reason": verb}
                 )
+            except ConflictError:
+                # Refused, not half-applied: the entry is still the caller's.
+                source.insert(max(index, 0), entry)
+                raise
             except HistoryError as exc:
-                opposite.pop()  # the step never happened; don't fake a redo
+                if revert_target is not None:
+                    source.insert(max(index, 0), entry)
                 raise ValidationError(f"{verb} failed: {exc}") from exc
             finally:
                 self.history.in_restore = False
