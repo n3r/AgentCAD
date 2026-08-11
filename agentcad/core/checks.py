@@ -32,6 +32,14 @@ a skip, with its reason and its hint; ``--strict`` changes only the *derived*
 always tell what was measured from what was demanded. PRD-003's ``specs`` gate
 is the fail-closed reading of the same measurements, and it stays that way.
 
+And one containment rule, which is the whole of ``--ref`` (design Decision 5):
+**a check never mutates the project it measures.** Checking a ref materializes
+the resolved *commit* into a throwaway detached ``git worktree`` and drives a
+second, ephemeral :class:`AgentCADService` rooted there — with its event bus
+and its branch resolver muzzled, because either one left live would write into
+the user's real repository through the link. The price is stated rather than
+hidden: a ref check runs on a **cold cache**.
+
 Nothing here imports ``OCP`` or build123d, directly or transitively — this is
 server-process code and a test asserts it.
 """
@@ -39,17 +47,22 @@ server-process code and a test asserts it.
 from __future__ import annotations
 
 import ast
+import contextlib
 import hashlib
 import platform
 import re
+import shutil
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 import agentcad
 
 from ..kernel.client import KernelError
 from . import specs as _specs
-from .model import AppError, ValidationError
+from .history import HistoryError, looks_like_commit
+from .model import AppError, NotFoundError, ValidationError
 from .specs import assign_ids, group_requirements, report_status, summarize
 
 #: Report format version. A consumer reads this first; :func:`validate_report`
@@ -652,10 +665,138 @@ _MESH_HINT = ("booleans on an imported STL mesh segfault OCCT, so this "
 _NOT_SCRIPT_HINT = ("drawings and flat patterns are generated from a part "
                     "script, and a reference (imported) part has none")
 
+_DXF_HINT = ("DXF is not byte-stable: ezdxf stamps $TDCREATE and fresh "
+             "$FINGERPRINTGUID/$VERSIONGUID into every document it creates, so "
+             "two identical builds produce different bytes. Adopting ezdxf's "
+             "fixed-date / CONST_GUID path in the drawing handlers is the "
+             "prerequisite before DXF can join this comparison")
+
 #: The kind a whole-stage failure is filed under, when a stage raises something
 #: nobody predicted and the runner has to name the stage itself as the subject.
 _STAGE_KIND = {"build": "part", "assembly": "instance", "specs": "check",
-               "drawings": "drawing"}
+               "drawings": "drawing", "determinism": "part"}
+
+#: The mesh sidecars a determinism run compares byte for byte. Both are written
+#: by ``kernel/worker.py`` through ``acm.py``/``mesh.py``, none of which touch
+#: ``datetime``, ``uuid``, ``random`` or ``time()`` — which is *why* they can
+#: carry an equality assertion (design Decision 7). ``.metrics.json`` is not
+#: here: its numbers are compared as numbers, below.
+_MESH_ARTIFACTS = (".acm", ".faces.u32")
+
+#: The scalars a determinism run compares. Exact equality, not a tolerance:
+#: the product guarantee is "same script + params ⇒ identical output", and a
+#: tolerance would quietly redefine it.
+_METRIC_KEYS = ("volume_mm3", "mass_g", "area_mm2")
+
+
+def _ephemeral_service(work_dir: Path, tree: Path, kernel):
+    """A second ``AgentCADService`` over *tree*, sharing *kernel* — muzzled.
+
+    Returns ``(service, registry, project_name)``. The service is rooted at
+    *work_dir*, so ``canonical_path_of`` — and therefore ``.cache/`` and
+    ``exports/`` — lands inside the throwaway directory and the user's project
+    is untouched *by construction* rather than by care.
+
+    The two assignments below are the dangerous part of this whole feature,
+    and each is named for the failure it prevents. They are not decoration:
+    losing either turns a command whose contract is "never mutates" into one
+    that writes to the user's repository.
+
+    The kernel is **shared**, never re-started: a second pool would cost
+    another ~3 s per worker and ~0.5 GB of RAM to run the same builds.
+    """
+    from .service import AgentCADService, EventBus
+    from .tools import build_registry
+
+    # Both resolved, because `ProjectStore.open` resolves the path it is given
+    # and compares it against `root / <name>`: an unresolved root (macOS hands
+    # `/var/…` for `/private/var/…`) makes the store believe a *different*
+    # project of that name is already registered.
+    work_dir, tree = Path(work_dir).resolve(), Path(tree).resolve()
+    service = AgentCADService(Path(work_dir), kernel, EventBus())
+    # NON-NEGOTIABLE. `AgentCADService.__init__` installs `_snapshot_on_event`
+    # as the bus's pre-fan-out hook, so ANY `project_changed` publish commits a
+    # history snapshot into this tree — and in ref mode this tree is a LINKED
+    # WORKTREE of the user's `.history` repo, so that commit lands in the
+    # user's real repository. A check may not commit.
+    service.bus.on_publish = None
+    project = service.store.open(tree)
+    registry = build_registry(service)
+    # NON-NEGOTIABLE, and only meaningful AFTER `build_registry`: the
+    # versioning pack constructs a `BranchManager` (git is on PATH), and
+    # constructing one installs `store.branch_resolver`. Left installed it
+    # would resolve every authored read and write against a
+    # `.history/agentcad/` sidecar that does not exist here — and write one.
+    # A check runs on exactly one tree; it needs no branch layer.
+    service.store.branch_resolver = None
+    return service, registry, project
+
+
+def _byte_diff(left: Path, right: Path) -> int | None:
+    """Offset of the first differing byte, or ``None`` when the files are
+    identical. A file that is a prefix of the other differs at its own length.
+
+    Streamed in blocks: an ``.acm`` mesh for a 33-part assembly is tens of MB,
+    and a determinism guard that needs both copies resident to answer "are
+    these equal" would be its own kind of failure.
+    """
+    block = 1 << 20
+    offset = 0
+    with left.open("rb") as a, right.open("rb") as b:
+        while True:
+            chunk_a, chunk_b = a.read(block), b.read(block)
+            if chunk_a == chunk_b:
+                if not chunk_a:
+                    return None
+                offset += len(chunk_a)
+                continue
+            for index in range(min(len(chunk_a), len(chunk_b))):
+                if chunk_a[index] != chunk_b[index]:
+                    return offset + index
+            return offset + min(len(chunk_a), len(chunk_b))
+
+
+def _compare_builds(key_a: str | None, key_b: str | None, cache_a: Path,
+                    cache_b: Path, metrics_a: dict, metrics_b: dict) \
+        -> tuple[list[str], list[str]]:
+    """``(divergences, what was compared)`` for two builds of one part.
+
+    Three comparisons, in the order a reader would debug them: the content
+    hash (``_cache_key_for``), the mesh bytes it addresses, and the scalars the
+    kernel measured. "Not deterministic" is not a useful sentence; "the .acm
+    differs at byte 41 208" is, so each entry says *which* artefact and *where*.
+
+    The second return value is what makes a green row mean something: an
+    artefact neither build wrote is **not** counted as agreement, so a row that
+    says ``pass`` also says what it looked at.
+    """
+    if key_a != key_b:
+        return ([f"the cache key differs ({key_a} vs {key_b}) — the same "
+                 f"script and parameters hashed to two different content ids"],
+                ["cache_key"])
+    problems: list[str] = []
+    compared = ["cache_key"]
+    for suffix in _MESH_ARTIFACTS:
+        left, right = cache_a / f"{key_a}{suffix}", cache_b / f"{key_b}{suffix}"
+        if not left.is_file() and not right.is_file():
+            continue        # neither side writes it for this part: not a fact
+        compared.append(suffix)
+        if left.is_file() != right.is_file():
+            side = "the second" if left.is_file() else "the first"
+            problems.append(f"{suffix} was written by one build and not the "
+                            f"other ({side} build has none)")
+            continue
+        offset = _byte_diff(left, right)
+        if offset is not None:
+            problems.append(f"{suffix} differs at byte {offset} "
+                            f"({left.stat().st_size} vs "
+                            f"{right.stat().st_size} bytes)")
+    for key in _METRIC_KEYS:
+        first, second = metrics_a.get(key), metrics_b.get(key)
+        compared.append(key)
+        if first != second:
+            problems.append(f"{key} differs ({first!r} vs {second!r})")
+    return problems, compared
 
 
 def _elapsed(started: float) -> float:
@@ -761,21 +902,15 @@ class CheckRunner:
         (Decision 6). *sha* and *ref_label* are **provenance** — the host VCS's
         commit and ref name, recorded and never resolved (Decision 9).
 
-        *ref*, *verify_determinism* and *work_dir* are slice 3's: checking a
-        ref materializes a throwaway ``git worktree`` and runs a second,
-        ephemeral service against it. The seam is declared here and raises
-        rather than quietly measuring the working tree and calling it a ref.
+        *ref* measures a **commit** rather than the working tree: it is
+        resolved (branch, then tag, then commit id), materialized into a
+        throwaway detached ``git worktree`` under *work_dir*, and driven
+        through a second, ephemeral service — so the caller's files and
+        ``.cache/`` are byte-identical afterwards, at the price of a cold
+        cache. *verify_determinism* appends the ``determinism`` pseudo-stage:
+        every part built a second time into a fresh cache and compared byte
+        for byte.
         """
-        if ref is not None:
-            raise NotImplementedError(
-                "checking a ref materializes a detached git worktree and runs "
-                "an ephemeral service against it (PRD-004 slice 3); until "
-                "then omit --ref to check the working tree")
-        if verify_determinism:
-            raise NotImplementedError(
-                "--verify-determinism builds every part a second time into a "
-                "cold cache and compares the bytes (PRD-004 slice 3)")
-
         selected = self._selected(stages)
         started_at = _now()
         started = time.monotonic()
@@ -783,18 +918,47 @@ class CheckRunner:
         self._truncated = False
         self._min_volume = float(min_volume)
 
-        manifest = self.service.store.manifest(proj)     # NotFoundError: exit 2
         seen: set[str] = set()
         warnings: list[str] = []
         errors: list[dict] = []
-        blocks = [self._stage(name, proj, selected, seen, warnings, errors)
-                  for name in STAGES]
+        if ref is None:
+            manifest = self.service.store.manifest(proj)  # NotFoundError: → 2
+            project = manifest.get("name") or proj
+            source = self._source(proj, sha, ref_label)
+            blocks = self._measure(self, proj, selected, seen, warnings, errors)
+            if verify_determinism:
+                blocks.append(self._determinism_stage(
+                    self, proj, work_dir, seen, warnings, errors))
+        else:
+            project, source, blocks = self._run_ref(
+                proj, ref, selected, seen, warnings, errors, sha=sha,
+                ref_label=ref_label, work_dir=work_dir,
+                verify_determinism=verify_determinism)
         return finalize_report(
-            manifest.get("name") or proj, blocks,
-            source=self._source(proj, sha, ref_label), host=self._host(),
+            project, blocks, source=source, host=self._host(),
             started=started_at, duration_s=time.monotonic() - started,
             strict=strict, complete=not self._truncated, warnings=warnings,
             errors=errors)
+
+    def _measure(self, runner: "CheckRunner", proj: str, selected: set[str],
+                 seen: set, warnings: list[str],
+                 errors: list[dict]) -> list[dict]:
+        """The four stages, in order, over whichever service *runner* holds.
+
+        Working-tree mode passes ``self``; ref mode passes a runner bound to
+        the ephemeral service. The stages themselves cannot tell the
+        difference, which is the point: one pipeline, measured twice over.
+        """
+        return [runner._stage(name, proj, selected, seen, warnings, errors)
+                for name in STAGES]
+
+    def _bind(self, service, registry) -> "CheckRunner":
+        """A runner over *service*, sharing **this** run's deadline and
+        min-volume — a second budget would be a second promise."""
+        inner = CheckRunner(service, registry)
+        inner._deadline = self._deadline
+        inner._min_volume = self._min_volume
+        return inner
 
     def _selected(self, stages) -> set[str]:
         names = tuple(STAGES if stages is None else stages)
@@ -1160,6 +1324,403 @@ class CheckRunner:
                          f"{tool} regenerated "
                          f"({_number(result.get('size_bytes'))} bytes of SVG)",
                          details=details, seen=seen, warnings=warnings)
+
+    # ------------------------------------------------------------- the ref
+
+    def _run_ref(self, proj: str, ref: str, selected: set[str], seen: set,
+                 warnings: list[str], errors: list[dict], *, sha: str | None,
+                 ref_label: str | None, work_dir: str | None,
+                 verify_determinism: bool) -> tuple[str, dict, list[dict]]:
+        """Measure a **commit**, and leave the user's project byte-identical.
+
+        The order is load-bearing (design Decision 5): resolve explicitly →
+        materialize the resolved sha into a detached worktree → drive an
+        ephemeral service rooted in the work dir → tear the worktree down in a
+        ``finally``. The report's ``source`` block is stamped out here, by the
+        *outer* runner, because the ephemeral service knows nothing about how
+        the tree it was handed was named.
+        """
+        # An unknown project is a NotFoundError here — 404, CLI exit 2.
+        canonical = self.service.store.canonical_path_of(proj)
+        resolved = self._resolve_ref(proj, canonical, ref, warnings)
+        owned = work_dir is None
+        # Absolute, always: `history._run` runs git with ``cwd`` set to the
+        # project, so a relative --work-dir would put the throwaway worktree
+        # *inside the user's project directory* — the one place it may not go.
+        root = Path(work_dir).resolve() if work_dir is not None else Path(
+            tempfile.mkdtemp(prefix="agentcad-check-")).resolve()
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            with self._materialized(canonical, resolved["sha"], root,
+                                    warnings) as tree:
+                service, registry, name = _ephemeral_service(
+                    root, tree, self.service.kernel)
+                inner = self._bind(service, registry)
+                blocks = self._measure(inner, name, selected, seen, warnings,
+                                       errors)
+                if verify_determinism:
+                    blocks.append(self._determinism_stage(
+                        inner, name, root, seen, warnings, errors))
+                self._truncated = self._truncated or inner._truncated
+                project = service.store.manifest(name).get("name") or name
+        finally:
+            if owned:
+                # Only a work dir we created is ours to delete; a caller who
+                # passed --work-dir (an actions/cache path, a big disk) keeps it.
+                shutil.rmtree(root, ignore_errors=True)
+        source = {"kind": resolved["kind"], "ref": ref, "sha": resolved["sha"],
+                  "label": ref_label, "host_sha": sha,
+                  "dirty": self._ref_dirty(canonical, resolved, warnings)}
+        return project, source, blocks
+
+    def _resolve_ref(self, proj: str, canonical: Path, ref: str,
+                     warnings: list[str]) -> dict:
+        """``{"kind", "ref", "sha"}`` for *ref*: branch, then tag, then commit.
+
+        **Never** ``resolve_ref``: ``git rev-parse`` searches ``refs/tags``
+        *before* ``refs/heads``, so a tag named like a branch would silently
+        answer for it (PRD-001 X1 — the same reason ``SpecRunner._pinned``
+        resolves branches explicitly). A name that is both resolves as the
+        **branch** and says so in ``warnings``; ``refs/heads/<x>`` and
+        ``refs/tags/<x>`` are accepted for disambiguation.
+        """
+        history = self.service.history
+        if not history.available():
+            raise ValidationError(
+                "checking a ref needs git on PATH (a ref is materialized from "
+                "the project's .history repository); omit --ref to check the "
+                "working tree instead", {"ref": ref})
+        if not history._has_repo(canonical):
+            raise ValidationError(
+                f"checking a ref needs git history, and project {proj!r} has "
+                f"no .history repository yet — nothing has been snapshotted; "
+                f"omit --ref to check the working tree instead",
+                {"ref": ref, "project": proj})
+        name = str(ref)
+        for prefix, kind, resolve in (("refs/heads/", "branch",
+                                       history.resolve_branch),
+                                      ("refs/tags/", "tag",
+                                       history.resolve_tag)):
+            if name.startswith(prefix):
+                found = resolve(canonical, name[len(prefix):])
+                if found:
+                    return {"kind": kind, "ref": ref, "sha": found}
+                raise NotFoundError(f"{kind} {name[len(prefix):]!r} not found "
+                                    f"in project {proj!r}", {"ref": ref})
+        branch = history.resolve_branch(canonical, name)
+        tag = history.resolve_tag(canonical, name)
+        if branch and tag:
+            warnings.append(
+                f"{ref!r} names both a branch and a tag; the BRANCH was "
+                f"checked ({_short(branch)}) — pass 'refs/tags/{ref}' to check "
+                f"the tag ({_short(tag)}) instead")
+        if branch:
+            return {"kind": "branch", "ref": ref, "sha": branch}
+        if tag:
+            return {"kind": "tag", "ref": ref, "sha": tag}
+        if looks_like_commit(name) and history.has_commit(canonical, name):
+            return {"kind": "commit", "ref": ref,
+                    "sha": self._full_sha(canonical, name) or name}
+        raise NotFoundError(
+            f"ref {ref!r} not found in project {proj!r}: searched "
+            f"refs/heads/{name}, refs/tags/{name} and the project's commit ids",
+            {"ref": ref, "searched": ["refs/heads", "refs/tags", "commit"]})
+
+    def _full_sha(self, canonical: Path, commit: str) -> str | None:
+        """A short commit id spelled out in full, so ``source.sha`` is one
+        thing (40 hex) whatever the caller typed."""
+        try:
+            result = self.service.history._run(
+                canonical, "rev-parse", "--verify", "--quiet",
+                f"{commit}^{{commit}}", check=False)
+        except HistoryError:
+            return None
+        return result.stdout.strip() or None
+
+    @contextlib.contextmanager
+    def _materialized(self, canonical: Path, sha: str, work_dir: Path,
+                      warnings: list[str]):
+        """The resolved commit, checked out at ``<work_dir>/<project>/``.
+
+        ``worktree add --detach <sha>`` — **the commit, never the branch
+        name**: a branch that is already checked out (its
+        ``.history/trees/<b>/``) cannot be checked out a second time, and this
+        is ``MergeOrchestrator._stage``'s exact mechanism. ``prune`` runs
+        before the add (a killed process leaves an admin entry behind) and
+        again after the removal, and every git call goes through
+        ``history._run`` — hermetic env, 10 s timeout, never a raw subprocess.
+
+        Teardown is a ``finally`` and it never raises: a worktree that will not
+        come off is a ``warnings[]`` entry, because a cleanup problem is not a
+        verdict about the user's geometry. ``git worktree prune`` heals a
+        leaked registration on the next run.
+        """
+        history = self.service.history
+        tree = Path(work_dir) / canonical.name
+        if tree.exists():
+            shutil.rmtree(tree, ignore_errors=True)
+        try:
+            history._run(canonical, "worktree", "prune", check=False)
+            added = history._run(canonical, "worktree", "add", "--detach",
+                                 str(tree), sha, check=False)
+        except HistoryError as exc:
+            raise ValidationError(
+                f"could not materialize {sha[:8]} for the check: {exc}",
+                {"sha": sha}) from exc
+        if added.returncode != 0:
+            raise ValidationError(
+                "could not materialize the ref into a worktree: "
+                f"{(added.stderr or '').strip() or (added.stdout or '').strip()}",
+                {"sha": sha, "path": str(tree)})
+        try:
+            yield tree
+        finally:
+            self._release(canonical, tree, warnings)
+
+    def _release(self, canonical: Path, tree: Path,
+                 warnings: list[str]) -> None:
+        history = self.service.history
+        try:
+            removed = history._run(canonical, "worktree", "remove", "--force",
+                                   str(tree), check=False)
+            if removed.returncode != 0:
+                warnings.append(
+                    f"the check's temporary worktree at {tree} could not be "
+                    f"removed ({(removed.stderr or '').strip()}); it was "
+                    f"deleted from disk and `git worktree prune` will forget "
+                    f"the registration")
+                shutil.rmtree(tree, ignore_errors=True)
+            history._run(canonical, "worktree", "prune", check=False)
+        except HistoryError as exc:      # a cleanup problem is never a red
+            warnings.append(f"the check's temporary worktree at {tree} could "
+                            f"not be cleaned up: {exc}")
+            shutil.rmtree(tree, ignore_errors=True)
+
+    def _ref_dirty(self, canonical: Path, resolved: dict,
+                   warnings: list[str]) -> bool:
+        """Whether the checked branch has uncommitted edits on disk.
+
+        A ref check measures the **commit**, so a branch whose working tree has
+        been edited since its last snapshot is measured as of that snapshot.
+        The runner says so — here, and in a warning — and it deliberately does
+        **not** snapshot first: the packet's ``_checkpoint`` may commit because
+        it is producing review evidence on the user's behalf; a command whose
+        contract is "never mutates" may not.
+
+        Read-only throughout, and best effort: a tag or a commit id has no
+        working tree, so there is nothing to be dirty.
+        """
+        if resolved["kind"] != "branch":
+            return False
+        branch = str(resolved["ref"]).removeprefix("refs/heads/")
+        try:
+            tree = self._branch_tree(canonical, branch)
+            if tree is None:
+                return False
+            result = self.service.history._run(tree, "status", "--porcelain",
+                                               check=False)
+            dirty = bool((result.stdout or "").strip())
+        except Exception:  # noqa: BLE001 — provenance, never a verdict
+            return False
+        if dirty:
+            warnings.append(
+                f"branch {branch!r} has uncommitted changes in its working "
+                f"tree; this check measured its last snapshot "
+                f"({_short(resolved['sha'])}), not the files on disk")
+        return dirty
+
+    def _branch_tree(self, canonical: Path, branch: str) -> Path | None:
+        """The working tree *branch* is checked out in, or ``None``.
+
+        Read-only on purpose: ``BranchManager.tree_of`` would *materialize* a
+        missing tree, which is a write, and a check may not make one. So this
+        asks git what already exists.
+
+        The **main** worktree is answered from ``symbolic-ref``, not from
+        ``worktree list``: AgentCAD's repos are ``--git-dir <project>/.history
+        --work-tree <project>``, and git lists the main worktree as its *git
+        directory* (``…/.history``) rather than as the project directory. Only
+        the linked trees — ``.history/trees/<b>/``, which branching creates —
+        are listed at the path they actually live at, and each one holds a
+        ``project.json``.
+        """
+        history = self.service.history
+        current = history._run(canonical, "symbolic-ref", "--short", "HEAD",
+                               check=False)
+        if current.returncode == 0 and current.stdout.strip() == branch:
+            return canonical
+        result = history._run(canonical, "worktree", "list", "--porcelain",
+                              check=False)
+        if result.returncode != 0:
+            return None
+        path: Path | None = None
+        for line in (result.stdout or "").splitlines():
+            if line.startswith("worktree "):
+                path = Path(line[len("worktree "):].strip())
+            elif line.startswith("branch ") and path is not None:
+                if line[len("branch "):].strip() == f"refs/heads/{branch}" \
+                        and (path / "project.json").is_file():
+                    return path
+        return None
+
+    # ------------------------------------------------------- determinism
+
+    def _determinism_stage(self, runner: "CheckRunner", proj: str,
+                           work_dir: str | Path | None, seen: set,
+                           warnings: list[str], errors: list[dict]) -> dict:
+        """The ``determinism`` pseudo-stage, guarded like a real one.
+
+        It is not in :data:`STAGES` and not selectable with ``--stages``: it
+        does not certify the project, it certifies the **product guarantee** —
+        same script and parameters ⇒ identical bytes — so it is opt-in
+        (``--verify-determinism``) and it is the standing regression guard for
+        the one property the whole cache rests on.
+        """
+        started = time.monotonic()
+        if self._out_of_budget():
+            self._truncated = True
+            return make_stage("determinism", reason="budget_exceeded")
+        try:
+            return self._determinism(runner, proj, work_dir, seen, warnings,
+                                     errors, started)
+        except Exception as exc:  # noqa: BLE001 — a stage never propagates
+            payload = _payload(exc)
+            errors.append({**payload, "stage": "determinism", "fatal": True})
+            item = make_item("determinism", "part", "determinism", "error",
+                             f"the determinism stage did not complete: "
+                             f"{payload['message']}", error=payload, seen=seen,
+                             warnings=warnings)
+            return make_stage("determinism", [item],
+                              duration_s=_elapsed(started))
+
+    def _determinism(self, runner: "CheckRunner", proj: str,
+                     work_dir: str | Path | None, seen: set,
+                     warnings: list[str], errors: list[dict],
+                     started: float) -> dict:
+        """Build every part a second time into a **cold** cache and compare.
+
+        The second build runs against a throwaway copy of the measured tree
+        with no ``.cache/`` — a cache hit proves nothing, so the copy is the
+        only way to make the second build real. The copy carries no git
+        (``.history``/``.git`` are excluded), so this side cannot commit
+        anywhere even in principle.
+        """
+        service = runner.service
+        tree = Path(service.store.path_of(proj))
+        root = Path(tempfile.mkdtemp(
+            prefix="agentcad-determinism-",
+            dir=str(work_dir) if work_dir is not None else None)).resolve()
+        try:
+            copy = root / tree.name
+            shutil.copytree(tree, copy, ignore=shutil.ignore_patterns(
+                ".cache", "exports", ".history", ".git"))
+            second, registry, name = _ephemeral_service(root, copy,
+                                                        service.kernel)
+            items: list[dict] = []
+            for entry in service.store.manifest(proj)["parts"]:
+                part_id = entry["id"]
+                if self._out_of_budget():
+                    items.append(self._budget_item("determinism", "part",
+                                                   part_id, seen, warnings))
+                    continue
+                items.append(self._determinism_item(
+                    runner, second, registry, proj, name, part_id, entry, seen,
+                    warnings, errors))
+            items.append(make_item(
+                "determinism", "drawing", "dxf", "skip",
+                "DXF output was not compared: it is not byte-stable, so an "
+                "equality assertion over it would fail on every run",
+                reason="not_byte_stable", hint=_DXF_HINT, seen=seen,
+                warnings=warnings))
+            return make_stage("determinism", items,
+                              duration_s=_elapsed(started))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def _determinism_item(self, runner: "CheckRunner", second, registry,
+                          proj: str, mirror: str, part_id: str, entry: dict,
+                          seen: set, warnings: list[str],
+                          errors: list[dict]) -> dict:
+        first = runner.service
+        try:
+            left = first._ensure_built(proj, part_id)
+            right = second._ensure_built(mirror, part_id)
+        except Exception as exc:  # noqa: BLE001 — one row, not a traceback
+            payload = _payload(exc)
+            # The defensive edge `_build_item` also guards (an unreadable
+            # script, a copy that lost a file): harness-level, so it is named
+            # in `report.errors[]` too. A part that merely *fails* to build is
+            # not — the build stage rules on that one.
+            errors.append({**payload, "stage": "determinism", "part": part_id})
+            return make_item("determinism", "part", part_id, "error",
+                             f"determinism could not be measured: "
+                             f"{payload['message']}", error=payload, seen=seen,
+                             warnings=warnings)
+        if not left.get("ok") or not right.get("ok"):
+            broken = left if not left.get("ok") else right
+            payload = broken.get("error") or {"type": "kernel_error",
+                                              "message": "the build failed",
+                                              "details": {}}
+            # `error`, not `fail`: the part not building is a fact the BUILD
+            # stage rules on. Here it means "we do not know whether this part
+            # is deterministic", which is exactly what `error` says.
+            return make_item("determinism", "part", part_id, "error",
+                             f"determinism could not be measured: the part "
+                             f"did not build ({payload.get('message')})",
+                             error=payload, seen=seen, warnings=warnings)
+        diverged, compared = _compare_builds(
+            left.get("cache_key"), right.get("cache_key"),
+            first.store.cache_dir(proj), second.store.cache_dir(mirror),
+            left.get("metrics") or {}, right.get("metrics") or {})
+        if entry.get("kind", "script") == "script":
+            svg, ok = self._compare_svg(runner, registry, proj, mirror,
+                                        part_id, warnings)
+            diverged += svg
+            if ok:
+                compared.append("drawing.svg")
+        details = {"cache_key": left.get("cache_key"), "compared": compared,
+                   "diverged": diverged}
+        if diverged:
+            return make_item("determinism", "part", part_id, "fail",
+                             "two builds of the same script and parameters "
+                             "did not agree: " + "; ".join(diverged),
+                             details=details, seen=seen, warnings=warnings)
+        return make_item("determinism", "part", part_id, "pass",
+                         f"identical across two builds on a cold cache "
+                         f"({', '.join(compared)})", details=details,
+                         seen=seen, warnings=warnings)
+
+    def _compare_svg(self, runner: "CheckRunner", registry, proj: str,
+                     mirror: str, part_id: str,
+                     warnings: list[str]) -> tuple[list[str], bool]:
+        """The SVG drawing, byte for byte — ``(divergences, compared)``.
+
+        SVG is in because ``handlers/drawing.py`` writes
+        ``atomic_write(out, svg.encode())`` with no timestamp and no id; DXF is
+        out, with its own row and :data:`_DXF_HINT` saying why. A drawing that
+        will not generate produces **no divergence and no row of its own** —
+        the drawings stage is where that failure is ruled on — but it does
+        produce a warning, so "SVG was not compared" is never silent.
+        """
+        if runner._registry is None:
+            warnings.append(f"{part_id}: no tool registry, so SVG determinism "
+                            f"was not measured")
+            return [], False
+        left = runner._registry.call("generate_drawing", {
+            "project": proj, "part_id": part_id, "format": "svg"})
+        right = registry.call("generate_drawing", {
+            "project": mirror, "part_id": part_id, "format": "svg"})
+        for result in (left, right):
+            if not isinstance(result, dict) or result.get("error") \
+                    or not result.get("path"):
+                warnings.append(
+                    f"{part_id}: the SVG drawing did not generate, so SVG "
+                    f"determinism was not measured (see the drawings stage)")
+                return [], False
+        offset = _byte_diff(Path(left["path"]), Path(right["path"]))
+        if offset is None:
+            return [], True
+        return [f"the SVG drawing differs at byte {offset}"], True
 
     # --------------------------------------------------- source and host
 

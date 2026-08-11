@@ -626,14 +626,24 @@ def test_a_generous_budget_does_not_truncate_anything(stack, tmp_path):
                for item in _stage(report, "build")["items"])
 
 
-def test_ref_and_verify_determinism_are_declared_seams_not_silent_no_ops(stack):
-    """Slice 3 lands both; until then the seam is real and says so, rather
-    than quietly measuring the working tree and calling it a ref."""
-    _service, _registry, runner = stack
-    with pytest.raises(NotImplementedError):
+def test_ref_and_verify_determinism_are_live_not_silent_no_ops(stack):
+    """Slice 3 landed both, and the seam stayed honest through the change: a
+    `--ref` this runner cannot satisfy is refused by name, never quietly
+    answered by measuring the working tree and calling it a ref.
+
+    (`tests/test_checks_ref.py` owns the behaviour; this pins the seam the
+    pipeline declared in slice 2 — it raised `NotImplementedError` here.)
+    """
+    service, _registry, runner = stack
+    service.create_project("unversioned")
+    with pytest.raises(NotFoundError):
         runner.run("anything", ref="feat/nozzle")
-    with pytest.raises(NotImplementedError):
-        runner.run("anything", verify_determinism=True)
+    with pytest.raises(ValidationError) as excinfo:
+        runner.run("unversioned", ref="feat/nozzle")
+    assert "git" in str(excinfo.value)
+    assert runner.run("unversioned", stages=("build",),
+                      verify_determinism=True)["stages"][-1]["name"] == \
+        "determinism"
 
 
 def test_the_runner_never_captures_service_specs_at_construction(stack):
