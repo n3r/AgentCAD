@@ -213,6 +213,62 @@ def _write_check_outputs(args, report: dict) -> list[str] | None:
     return written
 
 
+def _can_post(runner) -> bool:
+    """Whether this run could post to a proposal at all.
+
+    The runner owns the answer (proposals are a git feature and
+    ``tools_proposals`` self-disables without one); the ``getattr`` is for a
+    runner that does not know the question — an embedder's stand-in, or a
+    ``CheckRunner`` from a version before posting existed.
+    """
+    ask = getattr(runner, "can_post", None)
+    return bool(ask) and bool(ask())
+
+
+def _post_note(message: str) -> None:
+    """Posting notes go to stderr **even under ``--quiet``**: ``--quiet`` says
+    the exit code is the answer about the *check*, and "you asked me to post
+    this and I did not" is not something an exit code can say."""
+    print(f"agentcad check: {message}", file=sys.stderr)
+
+
+def _post_check(runner, project: str, args, report: dict,
+                pid: str | None) -> int | None:
+    """Post the report to a proposal. Returns an exit-code override, or None.
+
+    ``--auto-proposal`` matches **active** proposals whose source is the branch
+    that was checked: none is a warning (most checks are not about a proposal),
+    and more than one is exit 2 — guessing which proposal a verdict belongs to
+    is worse than refusing to say.
+    """
+    from .core.model import AppError
+
+    if pid is None and args.auto_proposal:
+        matches = runner.matching_proposals(project, report)
+        branch = runner.measured_branch(project, report)
+        if not matches:
+            _post_note(f"--auto-proposal: no active proposal has source "
+                       f"{branch!r}; nothing was posted")
+            return None
+        if len(matches) > 1:
+            ids = ", ".join(str(row.get("id")) for row in matches)
+            _post_note(f"--auto-proposal: {len(matches)} active proposals "
+                       f"share source {branch!r} ({ids}); refusing to guess — "
+                       f"pass --proposal ID")
+            return 2
+        pid = str(matches[0].get("id"))
+    if pid is None:
+        return None
+    try:
+        receipt = runner.post_to_proposal(project, pid, report)
+    except AppError as exc:
+        _post_note(f"could not post to proposal {pid}: {exc.message}")
+        return 2
+    _post_note(f"posted to proposal {pid}: {receipt['status']} "
+               f"(exit {receipt['exit_code']}) — {receipt['path']}")
+    return None
+
+
 _CHECK_ROW = "  {:<10} {:<6} {:>5} {:>5} {:>5} {:>6} {:>6}  {:>7}"
 
 
@@ -320,7 +376,14 @@ def cmd_check(args) -> int:
     part is a red report, never a traceback.
 
     Identity is ``ci`` so a run never collides with a human's per-client
-    checkout, and so slice 6's proposal post classifies as an agent.
+    checkout, and so a proposal post classifies as an agent action.
+
+    ``--proposal``/``--auto-proposal`` attach the report to a change proposal,
+    where it becomes that proposal's ``checks`` gate. The target is resolved
+    *before* the run (a mistyped id must not cost a full rebuild) and the post
+    happens *after* the report files are written, from the report exactly as it
+    was measured. Refusing to post is exit 2 — except when the project has no
+    proposals at all (no git), which is a warning: the check itself still ran.
     """
     from .core import locks
     from .core.checks import CheckRunner
@@ -349,12 +412,10 @@ def cmd_check(args) -> int:
     # the only moment the seatbelt profile can still be widened.
     if _is_path(args.project):
         extra_writable.append(str(Path(args.project).expanduser().resolve()))
-    if args.proposal or args.auto_proposal:
-        print("agentcad check: --proposal/--auto-proposal are accepted but not "
-              "implemented yet; this report will not be posted", file=sys.stderr)
 
     service = _build_service(Path(args.projects_dir or DEFAULT_PROJECTS_DIR),
                              extra_writable=extra_writable or None)
+    post_to = args.proposal
     try:
         locks.set_client_id("ci")
         registry = build_registry(service)
@@ -364,6 +425,18 @@ def cmd_check(args) -> int:
         # `service.checks` is the tool pack's runner once slice 5 lands; until
         # then (and for a bare service) build one over the same registry.
         runner = getattr(service, "checks", None) or CheckRunner(service, registry)
+        if (post_to or args.auto_proposal) and not _can_post(runner):
+            # No git, no proposals, nothing to post to. A warning rather than
+            # exit 2: the check itself ran and its verdict is honest, and this
+            # is exactly the CI-runner case (a checkout has no .history repo).
+            _post_note("--proposal/--auto-proposal: this project has no "
+                       "proposals (they need git history); the report will "
+                       "not be posted")
+            post_to, args.auto_proposal = None, False
+        elif post_to:
+            # Resolved BEFORE the kernel measures anything: a mistyped id or a
+            # merged proposal should cost a millisecond, not a full rebuild.
+            runner.post_target(project, post_to)
         report = runner.run(
             project, ref=args.ref, stages=stages, strict=args.strict,
             budget_s=args.budget, min_volume=args.min_volume,
@@ -381,8 +454,12 @@ def cmd_check(args) -> int:
     written = _write_check_outputs(args, report)
     if written is None:
         return 2
+    # Posted AFTER the files are written, and from the report exactly as it was
+    # measured: the copy on disk and the copy in the proposal are the same
+    # document, because a check never edits a verdict it has already produced.
+    override = _post_check(runner, project, args, report, post_to)
     _print_check(args, report, written)
-    return int(report.get("exit_code", 2))
+    return override if override is not None else int(report.get("exit_code", 2))
 
 
 def main() -> None:
@@ -449,11 +526,12 @@ def main() -> None:
                         "temp dir, deleted afterwards)")
     group = p.add_mutually_exclusive_group()
     group.add_argument("--proposal", default=None, metavar="ID",
-                       help="post the report to this proposal (not yet "
-                            "implemented)")
+                       help="post the report to this proposal; it becomes that "
+                            "proposal's checks gate")
     group.add_argument("--auto-proposal", action="store_true",
-                       help="post to the proposal for the checked branch (not "
-                            "yet implemented)")
+                       help="post to the one active proposal whose source is "
+                            "the branch that was checked (none: a warning; "
+                            "more than one: exit 2)")
     p.add_argument("--sha", default=None,
                    help="provenance: the host VCS commit this run measured")
     p.add_argument("--ref-label", default=None,

@@ -555,6 +555,45 @@ every `merge()` call, so a stale CI green cannot merge a newer red; the PRD's
 own "status races" risk resolves exactly this way. A repo that wants CI itself
 to block runs `--strict` and puts a branch-protection rule on the GitHub side.
 
+### As-built (slice 6): `pending` is gone from this gate
+
+The table above is **superseded on one row**, in the fail-closed direction, and
+the change is PRD-003's X8 finding applied here before it could bite.
+
+**A moved head is `fail`, not `pending`.** The argument above — "this gate
+reports someone else's measurement, so `pending` is honest, and the gates that
+enforce re-measure anyway" — describes the report layer correctly and the
+*merge* layer wrongly. `ProposalManager.merge()` blocks a gate whose state is
+`fail` and **nothing else**, so `pending` is merge-**permissive**: a green
+posted against an older commit would have stood there, unblocking, while the
+source moved on to commits it never measured. That is exactly the hole X8 closed
+in the `specs` gate (`docs/superpowers/specs/2026-08-10-executable-design-specs-design.md`,
+"As-built (second review, findings X5–X8)"), and it is closed the same way — a
+stale posted report is `state: "fail"` whose summary names both SHAs and says
+*re-run*. The relay to `validation`/`specs` is not a defence: those gates answer
+their *own* questions, and nothing else would have answered CI's.
+
+The as-built table:
+
+| posted state | gate | why |
+|---|---|---|
+| nothing posted | `skipped`, "no checks posted" | unchanged, and byte-identical to the placeholder |
+| `head` ≠ the proposal's current source head (or either is unresolvable) | **`fail`**, naming both SHAs and saying re-run | a stale green must not *wear* a commit it never measured — and `pending` would have let it |
+| the report did not finish (`complete: false`, a blown `--budget`) | **`fail`** | an unfinished run is not a verdict; its own `exit_code` is 2 |
+| the posted file will not parse / the gate cannot evaluate it | **`fail`** | evidence we cannot read is not "no evidence" |
+| `status: red` | **`fail`** | the only state PRD-002 acts on |
+| `status: skip` (nothing was measured at all) | `skipped` | an empty project is not a verdict either way |
+| `status: green`, complete, current | `pass` | |
+
+**`pending` is therefore never returned by this provider**, and the remaining
+permissiveness is bounded and deliberate: a proposal nobody posted a check to is
+`skipped`, so **this gate can only ever block a proposal that opted in by
+posting one**. Absent is skipped (an optional CI report is not a
+declared-but-unmeasured spec — PRD-003's `specs` gate already covers that,
+fail-closed); everything after the first post is fail-closed. `ProposalManager`
+still degrades a *raising* provider to `pending`, which is why this one catches
+its own exceptions and answers `fail` instead.
+
 **Matching a proposal.** `--proposal <id>` is explicit. `--auto-proposal` looks
 up `proposals.list(proj)` for **active** proposals whose `source` equals the
 branch that was checked; zero → a warning and no post (never an error: most
@@ -855,3 +894,6 @@ matters, with the autouse `_reset_context` fixture that rebinds
 6. Phase-2 drawing byte-stability covers SVG only (Decision 7).
 7. `docs/roadmap.md` points PRD-004 at `prd/pending/`; the file is in
    `prd/in-progress/`.
+8. The `checks` gate never answers `pending`: a stale posted report is `fail`
+   with a re-run sentence, because `merge()` blocks `fail` and nothing else
+   (Decision 8, as-built — PRD-003's X8 lesson).

@@ -10,9 +10,10 @@ drawing tools). This pack adds no measurement of its own.
 **Why the file is called ``tools_run_checks.py`` and never ``tools_checks.py``.**
 ``tools._load_tool_packs`` walks ``pkgutil.iter_modules`` **alphabetically**. A
 pack at ``c`` would load *before* ``tools_proposals`` (``p``) — which assigns
-``service.gate_providers = []`` **unconditionally** — so slice 6's ``checks``
-gate, appended from ``register()``, would be silently thrown away, with no
-error and no warning. Named after the tool it registers, the pack sorts at
+``service.gate_providers = []`` **unconditionally** — so the ``checks`` gate
+:func:`install_checks_gate` appends from ``register()`` would be silently
+thrown away, with no error and no warning. Named after the tool it registers,
+the pack sorts at
 ``r``: after ``tools_proposals`` (``service.proposals`` and
 ``service.gate_providers`` exist) and before ``tools_specs`` (``s``) and
 ``tools_versioning`` (``v``) — so **``service.specs`` and ``service.branches``
@@ -27,7 +28,8 @@ methods instead. ``tests/test_checks_api.py`` pins both halves.
 
 from __future__ import annotations
 
-from .checks import STAGES, CheckRunner
+from .checks import STAGES, CheckRunner, _payload
+from .model import AppError
 from .tools import Tool, schema
 
 _PROJ = {"type": "string", "description": "Project name"}
@@ -48,29 +50,74 @@ _STATUSES = (
 )
 
 
+def install_checks_gate(service) -> None:
+    """Append the ``checks`` gate to PRD-002's provider list.
+
+    The whole of PRD-004's decision surface is this one ``append``: a provider
+    whose closure is named ``checks`` **replaces** ``ProposalManager.gates``'
+    built-in placeholder of the same name, so a posted report is read where the
+    merge decision is made. Reverting the feature's effect on merges is
+    deleting this call.
+
+    Calling it from ``register()`` is only safe because of the load order the
+    module docstring defends: at ``r`` this pack runs *after* ``tools_proposals``
+    has assigned ``service.gate_providers = []``. From a pack at ``c`` the
+    append would be silently discarded.
+
+    ``service.gate_providers`` is **absent** when git is (``tools_proposals``
+    self-disables), which is not an error here: a check still runs on a project
+    with no history, there is simply no proposal to post it to.
+
+    Idempotent by name — ``build_registry`` may run twice over one service (the
+    versioning pack's ``install_write_guard`` precedent), and two providers
+    named ``checks`` would evaluate the gate twice and have one silently
+    overwrite the other in ``ProposalManager.gates``.
+    """
+    providers = getattr(service, "gate_providers", None)
+    if providers is None:
+        return
+    providers[:] = [p for p in providers
+                    if getattr(p, "__name__", None) != "checks"]
+    providers.append(service.checks.gate_provider())
+
+
 def register(registry, service) -> None:
     # Always constructed, and constructed HERE so the CLI, the tool and the
     # route share one runner (one last-report cache, one publisher). Nothing
     # about `service.specs` / `service.branches` is captured — see the module
     # docstring; both are installed by packs that load after this one.
     service.checks = CheckRunner(service, registry)
+    install_checks_gate(service)
 
     def run_checks(project: str, ref: str | None = None,
                    stages: list | None = None, strict: bool = False,
                    budget: float | None = None,
                    proposal: str | None = None) -> dict:
+        if proposal:
+            # Resolved BEFORE the run: an unknown or already-merged proposal is
+            # the caller's mistake, and finding it out after rebuilding every
+            # part would cost minutes to say so. The refusal is an AppError,
+            # which `ToolRegistry.call` turns into the ordinary
+            # {"error": {...}} payload (404/409 on the route).
+            service.checks.post_target(project, proposal)
         report = service.checks.run(
             project, ref=ref,
             stages=tuple(stages) if stages else STAGES,
             strict=bool(strict), budget_s=budget)
         if proposal:
-            # Accepted now so the argument does not change shape mid-plan; the
-            # durable proposal copy and the `checks` gate are slice 6. Saying
-            # so in the report itself is the honest half — a caller that asked
-            # for a post must not have to infer that nothing was posted.
-            report["warnings"].append(
-                f"proposal {proposal!r}: posting a check report to a proposal "
-                f"is not implemented yet; this report was not posted")
+            try:
+                report["posted"] = service.checks.post_to_proposal(
+                    project, proposal, report)
+            except AppError as exc:
+                # The proposal merged or closed while we were measuring — the
+                # only refusal that can still happen here. The report is minutes
+                # of kernel work and is returned rather than thrown away; the
+                # caller is told, twice, that it was not posted.
+                report["posted"] = {"id": proposal, "ok": False,
+                                    "error": _payload(exc)}
+                report["warnings"].append(
+                    f"proposal {proposal}: this report was NOT posted "
+                    f"({exc.message})")
         return report
 
     registry.register(Tool(
@@ -108,8 +155,21 @@ def register(registry, service) -> None:
         "are in. 'budget' is a soft deadline in seconds, read between items: "
         "the stages it does not reach are skip/budget_exceeded, complete "
         "becomes false and the exit code is 2, and one in-flight kernel call "
-        "may overshoot it. 'proposal' is accepted but not yet implemented (the "
-        "report is returned and a warning says it was not posted).",
+        "may overshoot it. 'proposal' POSTS the report to that change proposal: "
+        "it is stored durably as proposals/<id>/checks.json, audited, "
+        "announced as proposal_changed, and read by the proposal's 'checks' "
+        "GATE, which is returned by proposal_get. The gate is evidence, not "
+        "enforcement, and posting is how a proposal opts into it: nothing "
+        "posted is 'skipped' and blocks nothing, a complete green report "
+        "against the source's CURRENT head is 'pass', and everything else is "
+        "'fail' — which DOES block proposal_merge. In particular a report "
+        "posted against a head the source branch has since moved past is a "
+        "fail saying to re-run, never a soft 'pending': a merge blocks on fail "
+        "and nothing else, so a stale green would otherwise wave through "
+        "commits it never measured. An unknown proposal id is a not_found "
+        "error raised BEFORE anything is measured, and a merged or closed "
+        "proposal is a conflict_error (a terminal proposal is never measured "
+        "again). On success the report carries a 'posted' receipt.",
         schema({"project": _PROJ,
                 "ref": {"type": "string",
                         "description": "Branch, tag or commit to certify "
@@ -125,7 +185,8 @@ def register(registry, service) -> None:
                            "description": "Soft deadline in seconds"},
                 "proposal": {"type": "string",
                              "description": "Proposal id to post the report "
-                                            "to (not implemented yet)"}},
+                                            "to (it becomes that proposal's "
+                                            "checks gate)"}},
                ["project"]),
         run_checks,
     ))

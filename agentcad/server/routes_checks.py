@@ -3,6 +3,8 @@
     POST   /api/projects/{proj}/checks   {ref, stages, strict, budget,
                                           proposal}          -> run_checks
     GET    /api/projects/{proj}/checks                 -> the last run's report
+    GET    /api/projects/{proj}/checks?proposal=<id>   -> the report POSTED to
+                                                          that proposal
 
 Body keys are whitelisted per route (the registry rejects unknown arguments,
 and ``null`` must read as "omitted", not as an argument) — never ``**body``.
@@ -80,7 +82,7 @@ def build_router(service, registry) -> APIRouter:
         return _result(registry.call("run_checks", args))
 
     @router.get("/projects/{proj}/checks")
-    def last_check(proj: str):
+    def last_check(proj: str, proposal: str | None = None):
         # `service.checks` is installed by the tool pack, which is always
         # loaded before the app is built; the guard is for a hand-built
         # registry (a test, an embedder) rather than for a real server.
@@ -88,6 +90,11 @@ def build_router(service, registry) -> APIRouter:
         if runner is None:
             raise NotFoundError(
                 "checks are not available on this service", {"project": proj})
+        if proposal:
+            # The DURABLE copy — the record posted to that proposal, which
+            # outlives this process and is what its `checks` gate reads. 404
+            # when nothing was posted, which is not the same answer as a green.
+            return runner.posted_report(proj, proposal)
         return runner.last_report(proj)
 
     return router

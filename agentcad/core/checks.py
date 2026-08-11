@@ -49,6 +49,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import hashlib
+import json
 import platform
 import re
 import shutil
@@ -60,9 +61,12 @@ from pathlib import Path
 import agentcad
 
 from ..kernel.client import KernelError
+from . import locks
 from . import specs as _specs
 from .history import HistoryError, looks_like_commit
-from .model import AppError, NotFoundError, ValidationError
+from .model import AppError, ConflictError, NotFoundError, ValidationError
+from .project import ProjectStore
+from .proposals import ACTIVE, TERMINAL, ProposalStore, actor_kind
 from .specs import assign_ids, group_requirements, report_status, summarize
 
 #: Report format version. A consumer reads this first; :func:`validate_report`
@@ -109,8 +113,22 @@ SOURCE_KINDS = ("worktree", "branch", "tag", "commit")
 #: cache exists so ``GET /api/projects/{p}/checks`` can answer without re-running
 #: a check; it is per process and deliberately tiny, because a report is a large
 #: document and a long-lived server may see many projects. The durable copy is
-#: the proposal's ``checks.json`` (slice 6), not this.
+#: the proposal's ``checks.json`` (:class:`CheckStore`), not this.
 LAST_REPORTS = 8
+
+#: Format version of the *posted* record — the small document a check report
+#: becomes when it is attached to a proposal. Deliberately separate from
+#: :data:`REPORT_SCHEMA`: the envelope (who posted, against which head) and the
+#: report inside it version independently.
+CHECKS_SCHEMA = 1
+
+#: The proposal's check slot, beside ``packet.json`` in its own directory.
+CHECKS_FILE = "checks.json"
+
+#: How many failing rows a gate names inline. The gate's ``details`` are read on
+#: every proposal fetch, so the whole report never goes in — the ids and their
+#: messages are what a reviewer needs to decide whether to keep reading.
+GATE_FAILURES = 20
 
 #: How many failure blocks (and skip rows) the markdown renders before it
 #: summarizes the rest. ``$GITHUB_STEP_SUMMARY`` is capped at 1 MiB, and a
@@ -826,6 +844,119 @@ def _payload(exc: BaseException) -> dict:
         name = type(exc).__name__.replace("Error", "").lower() + "_error"
         return {"type": name, "message": exc.message, "details": exc.details}
     return {"type": type(exc).__name__, "message": str(exc), "details": {}}
+
+
+class CheckStore:
+    """The durable slot a posted check lands in: ``proposals/<pid>/checks.json``.
+
+    Files only — no policy, no git, no events, which is ``ProposalStore``'s own
+    rule and the reason this can be a separate, tiny class rather than an edit
+    to PRD-002's finished module.
+
+    The path is derived from the **public** ``ProposalStore.packet_path``: the
+    proposal directory itself is private, and going through the accessor is
+    what runs the id through ``_valid_id`` before it can touch the filesystem —
+    a proposal id arrives from a REST path segment as readily as from a tool
+    argument. Where it lands matters as much as what it holds: a proposal is
+    canonical and branch-independent and a check result is workflow metadata
+    rather than model state, so the slot lives inside ``GIT_DIR`` beside the
+    packet, visible from every branch, and ``project_restore`` (a checkout into
+    a working tree) structurally cannot rewind it.
+    """
+
+    def __init__(self, service) -> None:
+        self.service = service
+
+    def _store(self) -> ProposalStore:
+        """PRD-002's file layer: the manager's own instance when there is one —
+        so an audit append shares its lock — and a bare one otherwise, because
+        *reading* a posted report needs neither git nor the lifecycle."""
+        manager = getattr(self.service, "proposals", None)
+        store = getattr(manager, "store", None)
+        return store if store is not None else ProposalStore(self.service.store)
+
+    def path(self, proj: str, pid: str) -> Path:
+        return self._store().packet_path(proj, pid).with_name(CHECKS_FILE)
+
+    def read(self, proj: str, pid: str) -> dict | None:
+        """The posted record, or ``None`` when **nothing was posted**.
+
+        The two answers are deliberately different, and the gate's whole safety
+        argument rests on the distinction: "nobody posted a check" is
+        ``skipped``, while a file that exists and will not parse is a
+        ``ValidationError`` the gate turns **red**. Evidence we cannot read
+        must never read as no evidence at all.
+        """
+        path = self.path(proj, pid)
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise ValidationError(
+                f"the check report posted to proposal {pid} could not be read "
+                f"({exc})", {"id": pid, "project": proj, "path": str(path)},
+            ) from exc
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValidationError(
+                f"the check report posted to proposal {pid} is not valid JSON "
+                f"({exc})", {"id": pid, "project": proj, "path": str(path)},
+            ) from exc
+        if not isinstance(data, dict):
+            raise ValidationError(
+                f"the check report posted to proposal {pid} is not an object",
+                {"id": pid, "project": proj, "path": str(path)})
+        return data
+
+    def write(self, proj: str, pid: str, record: dict) -> Path:
+        """One atomic write — a reader mid-post sees the old record or the new
+        one, never half of either."""
+        path = self.path(proj, pid)
+        ProjectStore._atomic_write(path, json.dumps(record, indent=2).encode())
+        return path
+
+
+def _gate(state: str, summary: str, details: dict) -> dict:
+    """One ``checks`` gate object. The name is fixed here, in one place, so a
+    provider bug can never emit a differently named gate and quietly leave
+    PRD-002's permissive placeholder standing in its place."""
+    if state not in GATE_STATES:
+        raise ValueError(f"unknown gate state {state!r}")
+    return {"name": "checks", "state": state, "summary": summary,
+            "details": details}
+
+
+def _gate_details(**overrides) -> dict:
+    """The gate's ``details`` with every key always present: a UI that reads
+    ``details.head`` must not have to branch on which verdict it got."""
+    details = {"posted": False, "reason": None, "posted_at": None,
+               "posted_by": None, "actor_kind": None, "source": None,
+               "head": None, "source_head": None, "status": None,
+               "exit_code": None, "complete": None, "strict": None,
+               "summary": None, "stages": [], "failures": [], "error": None}
+    details.update(overrides)
+    return details
+
+
+def _counts(summary) -> dict:
+    summary = summary if isinstance(summary, dict) else {}
+    return {key: int(summary.get(key) or 0) for key in _SUMMARY_KEYS}
+
+
+def _failing(record: dict) -> list[dict]:
+    """The failing and errored rows of a posted report, capped and flattened —
+    what a reviewer needs to see beside the verdict."""
+    report = record.get("report")
+    rows: list[dict] = []
+    for stage in (report or {}).get("stages") or []:
+        for item in (stage or {}).get("items") or []:
+            if isinstance(item, dict) and item.get("status") in ("fail",
+                                                                 "error"):
+                rows.append({"id": item.get("id"), "status": item.get("status"),
+                             "message": item.get("message")})
+    return rows[:GATE_FAILURES]
 
 
 class CheckRunner:
@@ -1846,6 +1977,308 @@ class CheckRunner:
                 "sandbox": bool(getattr(kernel, "sandboxed", False)),
                 "pool_size": int(getattr(kernel, "size", 1)),
                 "kernel_pool": type(kernel).__name__ if kernel else None}
+
+    # ------------------------------------------------------ the proposal slot
+
+    def _check_store(self) -> CheckStore:
+        return CheckStore(self.service)
+
+    def _proposals(self, proj: str):
+        """PRD-002's manager, or a ``ValidationError`` naming git.
+
+        Read at call time like every other seam this runner does not own:
+        ``tools_proposals`` self-disables without git, so on a project with no
+        history there is simply nothing to post to — which is a refusal, not a
+        crash, and not a reason for the check itself to fail.
+        """
+        manager = getattr(self.service, "proposals", None)
+        if manager is None:
+            raise ValidationError(
+                "this project has no proposals: they are a git feature and "
+                "git history is not available here, so a check report cannot "
+                "be posted to one", {"project": proj})
+        return manager
+
+    def can_post(self) -> bool:
+        """Whether posting is possible at all — i.e. whether this project has
+        proposals, which is whether it has git. The CLI asks before it warns:
+        a runner on a CI checkout (no ``.history``) has nothing to post to, and
+        that is a warning about the *post*, never a failure of the check."""
+        return getattr(self.service, "proposals", None) is not None
+
+    def post_target(self, proj: str, pid: str) -> dict:
+        """The proposal a report may be posted to — or a structured refusal.
+
+        Called **twice** on purpose: once before a run, so a mistyped
+        ``--proposal`` costs a millisecond instead of a full rebuild of every
+        part, and once inside :meth:`post_to_proposal`, because a proposal can
+        merge while a check is measuring and the second resolution is the one
+        that decides.
+
+        A **terminal** proposal is refused (PRD-002's rule, and
+        ``record_packet``'s: a merged or closed proposal is never measured
+        again, and post-decision evidence written over it would describe a
+        decision nobody could act on).
+        """
+        # ``reconcile``, not ``get``: it is the documented read path (it
+        # finalizes a merge that landed while nobody was looking) and it
+        # answers with the proposal itself rather than with the view + gates —
+        # and evaluating the gates here would ask this very provider to read a
+        # report we are in the middle of posting.
+        proposal = self._proposals(proj).reconcile(proj, pid)
+        state = proposal.get("state")
+        if state in TERMINAL:
+            raise ConflictError(
+                f"proposal {pid} is already {state}: a terminal proposal is "
+                f"never measured again, so a check report cannot be posted "
+                f"to it", {"id": pid, "state": state, "project": proj})
+        return proposal
+
+    def post_to_proposal(self, proj: str, pid: str, report: dict) -> dict:
+        """Attach *report* to a proposal: the slot, the audit line, the event.
+
+        The stored record is an **envelope** — who posted it, from which branch
+        and against which commit — wrapping the report verbatim. The head is
+        the one the report itself says it measured (``source.sha``), never the
+        head at posting time: the gate's whole job is to notice when those two
+        have drifted apart.
+        """
+        proposal = self.post_target(proj, pid)
+        actor = locks.current_client_id()
+        source = (report.get("source") or {})
+        record = {
+            "schema": CHECKS_SCHEMA,
+            "posted_at": _now(),
+            "posted_by": actor,
+            "actor_kind": actor_kind(actor),
+            # The branch that was MEASURED, which may be null (a tag, a bare
+            # commit, a project with no branch manager) and is never guessed
+            # from the proposal: a lie here would read as agreement.
+            "source": self.measured_branch(proj, report),
+            "head": source.get("sha"),
+            "status": report.get("status"),
+            "exit_code": report.get("exit_code"),
+            "complete": bool(report.get("complete", True)),
+            "strict": bool(report.get("strict", False)),
+            "summary": report.get("summary") or {},
+            "stages": [{"name": stage.get("name"), "status": stage.get("status"),
+                        "reason": stage.get("reason"),
+                        "summary": stage.get("summary") or {}}
+                       for stage in report.get("stages") or []],
+            "report": report,
+        }
+        path = self._check_store().write(proj, pid, record)
+        # Appended, never rewritten (FR14): the log is the evidence that this
+        # verdict was posted, by whom, and when.
+        entry = self._proposals(proj).store.append_audit(proj, pid, {
+            "action": "checks_posted",
+            "details": {"status": record["status"],
+                        "exit_code": record["exit_code"],
+                        "head": record["head"], "source": record["source"],
+                        "complete": record["complete"],
+                        "strict": record["strict"],
+                        "summary": record["summary"],
+                        "agentcad": report.get("agentcad")}})
+        self._publish_proposal(proj, pid, proposal.get("state"))
+        return {"id": pid, "ok": True, "state": proposal.get("state"),
+                "head": record["head"], "source": record["source"],
+                "status": record["status"], "exit_code": record["exit_code"],
+                "posted_at": record["posted_at"], "path": str(path),
+                "audit_seq": entry.get("seq")}
+
+    def posted_report(self, proj: str, pid: str) -> dict:
+        """The record posted to a proposal, or a 404 — the durable counterpart
+        of :meth:`last_report`, which is per process and forgets."""
+        record = self._check_store().read(proj, pid)
+        if record is None:
+            raise NotFoundError(
+                f"no check report has been posted to proposal {pid}",
+                {"project": proj, "id": pid})
+        return record
+
+    def measured_branch(self, proj: str, report: dict) -> str | None:
+        """Which branch a report measured, or ``None`` when it names none.
+
+        A ``--ref`` run says so itself; a working-tree run measured whichever
+        branch this client has checked out (``branches.current`` is per client,
+        which is why ``agentcad check`` sets its identity to ``ci`` first). A
+        tag or a bare commit is deliberately ``None``: it is not a branch, and
+        ``--auto-proposal`` must not match one to a proposal's source.
+        """
+        source = report.get("source") or {}
+        kind = source.get("kind")
+        if kind == "branch":
+            ref = source.get("ref")
+            return ref if isinstance(ref, str) and ref else None
+        if kind != "worktree":
+            return None
+        branches = getattr(self.service, "branches", None)
+        if branches is None:
+            return None
+        try:
+            return branches.current(proj)
+        except Exception:  # noqa: BLE001 — a match hint, never a verdict
+            return None
+
+    def matching_proposals(self, proj: str, report: dict) -> list[dict]:
+        """The **active** proposals whose source is the branch *report*
+        measured — ``--auto-proposal``'s candidate set.
+
+        Zero is the ordinary case (most checks are not about a proposal) and
+        the caller warns; more than one is a refusal, because guessing which
+        proposal a verdict belongs to is worse than declining to say.
+        """
+        branch = self.measured_branch(proj, report)
+        if not branch:
+            return []
+        rows = self._proposals(proj).list(proj)["proposals"]
+        return [row for row in rows
+                if row.get("source") == branch and row.get("state") in ACTIVE]
+
+    def _publish_proposal(self, proj: str, pid: str, state) -> None:
+        bus = getattr(self.service, "bus", None)
+        if bus is None:
+            return
+        with contextlib.suppress(Exception):
+            bus.publish({"type": "proposal_changed", "project": proj,
+                         "id": pid, "state": state, "reason": "checks"})
+
+    def _source_head(self, proj: str, branch) -> str | None:
+        """The proposal's source head *now* — the commit a posted report has to
+        have measured for its verdict to still stand."""
+        if not isinstance(branch, str) or not branch:
+            return None
+        history = getattr(self.service, "history", None)
+        if history is None:
+            return None
+        return history.resolve_branch(
+            self.service.store.canonical_path_of(proj), branch)
+
+    # ----------------------------------------------------------- the gate
+
+    def gate_provider(self):
+        """PRD-002's ``service.gate_providers`` entry — **evidence, not
+        enforcement**, and never merge-permissive once evidence exists.
+
+        The closure is named ``checks`` on purpose: ``ProposalManager.gates``
+        replaces a built-in gate of the same name, so this becomes *the* checks
+        gate rather than a sixth one beside the placeholder.
+
+        ==========  =====================================================
+        ``skipped`` nothing was posted (byte-identical to the placeholder), or
+                    the posted report measured nothing at all
+        ``pass``    a complete, green report against the source's current head
+        ``fail``    the posted report is red · certifies a **different** head ·
+                    did not finish · will not parse · could not be evaluated
+        ==========  =====================================================
+
+        **``pending`` is deliberately absent**, and this is the one place this
+        implementation diverges from its own design spec. The spec argued a
+        moved head should be ``pending`` because this gate reports someone
+        else's measurement — but ``merge()`` blocks a ``fail`` and *nothing
+        else*, so ``pending`` is merge-**permissive**: a green posted against
+        an older commit would have waved through content it never measured.
+        That is exactly PRD-003's X8 finding, and the answer is the same one:
+        a moved head is a ``fail`` whose summary says *re-run*.
+
+        The permissiveness that remains is bounded and intentional: a proposal
+        nobody posted a check to is ``skipped``, so this gate can only ever
+        block a proposal that opted in by posting. Every branch below that
+        point — including both except-branches — is ``fail``, because from
+        there on we are holding evidence and either it is current and green or
+        it is not.
+        """
+        runner = self
+
+        def checks(project: str, proposal: dict) -> dict:
+            pid = proposal.get("id")
+            try:
+                record = runner._check_store().read(project, pid)
+            except Exception as exc:  # noqa: BLE001 — the provider always
+                # answers, and answers RED: a report we cannot read is not the
+                # same thing as a proposal nobody checked.
+                return _gate("fail",
+                             f"a check report was posted to proposal {pid} but "
+                             f"could not be read ({_payload(exc)['message']}); "
+                             f"run the check again and post it",
+                             _gate_details(posted=True, reason="unreadable",
+                                           error=_payload(exc)))
+            if record is None:
+                # Byte-identical to PRD-002's placeholder: installing this
+                # feature changes nothing until a report is actually posted.
+                return _gate("skipped", "no checks posted",
+                             _gate_details(reason="not_posted"))
+            try:
+                return runner._checks_verdict(project, proposal, record)
+            except Exception as exc:  # noqa: BLE001
+                return _gate("fail",
+                             f"the check report posted to proposal {pid} could "
+                             f"not be evaluated "
+                             f"({_payload(exc)['message']}); run the check "
+                             f"again and post it",
+                             _gate_details(posted=True,
+                                           reason="evaluation_failed",
+                                           error=_payload(exc)))
+
+        return checks
+
+    def _checks_verdict(self, project: str, proposal: dict,
+                        record: dict) -> dict:
+        """The posted record read against the proposal as it is *now*."""
+        pid = proposal.get("id")
+        source = proposal.get("source")
+        head = record.get("head")
+        current = self._source_head(project, source)
+        counts = _counts(record.get("summary"))
+        details = _gate_details(
+            posted=True, posted_at=record.get("posted_at"),
+            posted_by=record.get("posted_by"),
+            actor_kind=record.get("actor_kind"), source=record.get("source"),
+            head=head, source_head=current, status=record.get("status"),
+            exit_code=record.get("exit_code"), complete=record.get("complete"),
+            strict=record.get("strict"), summary=counts,
+            stages=record.get("stages") or [], failures=_failing(record))
+
+        if not head or not current or head != current:
+            details["reason"] = "stale_head"
+            return _gate("fail",
+                         f"the posted check certifies "
+                         f"{_short(head) or 'no commit'}; {source!r} is now "
+                         f"{_short(current) or 'unresolved'} — re-run "
+                         f"`agentcad check --proposal {pid}` on that head and "
+                         f"post it again", details)
+        if record.get("complete") is False:
+            details["reason"] = "incomplete"
+            return _gate("fail",
+                         f"the posted check did not finish on "
+                         f"{_short(head)}: its budget ran out before every "
+                         f"item was measured — re-run it without --budget and "
+                         f"post it again", details)
+
+        status = record.get("status")
+        if status == "green":
+            return _gate("pass",
+                         f"the posted check is green on {_short(head)}: "
+                         f"{counts['passed']} passed, {counts['skipped']} "
+                         f"skipped of {counts['total']}", details)
+        if status == "red":
+            details["reason"] = "red"
+            return _gate("fail",
+                         f"the posted check is red on {_short(head)}: "
+                         f"{counts['failed']} failed, {counts['errors']} "
+                         f"errored of {counts['total']} — fix them on "
+                         f"{source!r} and post a new check", details)
+        if status == "skip":
+            details["reason"] = "measured_nothing"
+            return _gate("skipped",
+                         f"the posted check measured nothing on "
+                         f"{_short(head)} (no parts, or every stage was "
+                         f"skipped)", details)
+        details["reason"] = "unknown_status"
+        return _gate("fail",
+                     f"the posted check reports an unknown status "
+                     f"{status!r}; run the check again with this version of "
+                     f"agentcad and post it", details)
 
 
 def _number(value) -> str:
