@@ -70,7 +70,12 @@ runner would exit `2` on every run.
 `proposal` and `auto-proposal` are mutually exclusive. Both need a project with
 AgentCAD history (`.history/`) — on a plain runner checkout there is none, and
 the CLI degrades to a warning on stderr and still returns the check's own exit
-code.
+code. A report that measured a **dirty** working tree is refused by the post
+(exit `2`): it would certify a commit whose bytes it never measured. A runner is
+never dirty — `actions/checkout` materializes the commit — so this only bites a
+local `agentcad check --proposal` with uncommitted edits.
+
+`budget` must be a finite, non-negative number of seconds; `nan`/`inf` exit `2`.
 
 ## Outputs
 
@@ -88,6 +93,21 @@ A red check is therefore always accompanied by its evidence.
 If a **setup** step fails, the check never runs and `exit-code` is empty: the
 final step then fails the job with a harness error (exit `2`) that says so —
 never as `red`, which would blame your geometry for a failed install.
+
+### The verdict cannot come from a file the run did not write
+
+Three rules make `exit-code` the only thing that decides the job:
+
+- the check step **deletes `report-json`/`report-md` before it runs**, so a
+  restored cache, a report committed to the repository or a previous matrix leg
+  can never be read as this run's verdict;
+- `report_outputs.py` — which turns the report into `status` and
+  `failed-stages` — validates every value against a closed set and **refuses**
+  any that contains a newline or a carriage return. `$GITHUB_OUTPUT` is a
+  `key=value` line protocol, so a report status of `"red\nexit-code=0"` would
+  otherwise forge a second line and hand the job a passing exit code;
+- `exit-code` is written by the check step itself, **last**, after that parser.
+  A report the parser refuses turns a `0` into a `2`: no verdict is not a pass.
 
 ## Runner requirements
 

@@ -82,8 +82,8 @@ agentcad check [--project PATH|NAME] [--projects-dir DIR]
 | `--report` / `--md` | Write the JSON report / the markdown summary. Both are atomic writes; an unwritable path is exit 2. |
 | `--strict` | Count every `skip` row as a failure **in the verdict only** — except a row marked `strict_exempt` (an unconditional skip; today only the DXF determinism row, below). |
 | `--verify-determinism` | Build every part a second time on a cold cache and compare the artefacts byte for byte. |
-| `--budget` | A wall-clock deadline in seconds, read before each item and each kernel call. |
-| `--min-volume` | The overlap volume below which an interference is noise (default `0.001` mm³). |
+| `--budget` | A wall-clock deadline in seconds, read before each item and each kernel call. Must be **finite and non-negative** — `nan`/`inf` are refused with exit 2 before the kernel starts, because a NaN deadline is never in the past and so bounds nothing. |
+| `--min-volume` | The overlap volume below which an interference is noise (default `0.001` mm³). Finite and non-negative, for the same reason: every comparison with NaN is false, so a NaN threshold reports a genuinely interfering assembly as green. |
 | `--work-dir` | Where `--ref` materializes its worktree. Default: a temp dir, deleted afterwards. A dir you pass keeps everything in it — the run works inside a unique subdirectory it creates and deletes only that. A work dir that **is, holds or sits inside** the project (or the projects root) is refused, exit 2. |
 | `--proposal` / `--auto-proposal` | Post the report to a change proposal (below). Mutually exclusive. |
 | `--sha` / `--ref-label` | **Provenance only.** The host VCS commit and ref name (`$GITHUB_SHA`, `$GITHUB_REF_NAME`). They are recorded; they resolve nothing. |
@@ -99,7 +99,7 @@ verdict goes to stdout.
 |---|---|
 | `0` | **green** — everything selected was measured and passed (skips are not failures). |
 | `1` | **red — the model is wrong.** Any `fail` or `error` row; or `--strict` met a `skip`. Read the report and fix the design. |
-| `2` | **harness — we could not produce a verdict.** `complete: false` (a blown `--budget`) *regardless of status*; an unknown project or stage; `--ref` on a project with no git; an unwritable report path; `--auto-proposal` matching more than one proposal. Fix the environment or the invocation. |
+| `2` | **harness — we could not produce a verdict.** `complete: false` (a blown `--budget`) *regardless of status*; an unknown project or stage; a non-finite `--budget`/`--min-volume`; `--ref` on a project with no git; an unwritable report path or work dir; `--auto-proposal` matching more than one proposal; a refused post (a terminal proposal, or a report that measured a dirty tree). Fix the environment or the invocation. |
 
 A **spec `error`** ("the check itself broke") is deliberately `1`, not `2`: it
 is a fact about the model, and a caller must be able to tell *read the report*
@@ -372,7 +372,16 @@ is exit 2, and the two must not be confused.
 
 **The honest limitation:** `_ensure_built` (300 s) and the drawing tools (120 s)
 take no `timeout_s`, so a budget cannot preempt a kernel call that has already
-started. The worst-case overshoot is **one in-flight call**.
+started. The worst-case overshoot is **one in-flight call**. When the deadline
+expires *inside the last item* — the one case no later check can see — the
+report stays `complete` (everything selected was measured, so there is a
+verdict) and the overshoot is named in `warnings[]`. `complete: false` means
+*something was not measured*; it never means "this took longer than you asked".
+
+The budget is **per run, not per runner**: `service.checks` is one object shared
+by the CLI, the chat agent, the tool and the route, and each `run()` measures
+through a private run context. Two concurrent checks cannot see, let alone
+overwrite, each other's deadline or `--min-volume`.
 
 ---
 
@@ -416,8 +425,12 @@ its hint, and in the `skipped` count; only the derived verdict leaves it alone.
 **Tool.** `run_checks {project, ref?, stages?, strict?, budget?, proposal?}`
 returns the same report as data. A red check is **data**: the call returns
 normally and only the harness raises (unknown project → `not_found_error`; an
-unknown stage or a `ref` without git → `validation_error`; a terminal proposal
-→ `conflict_error`).
+unknown stage, an **empty** `stages` list, a non-finite `budget` or a `ref`
+without git → `validation_error`; a terminal proposal → `conflict_error`).
+`stages: []` is refused rather than read as "all four" — it is falsy, and
+guessing which of the two opposite meanings a caller wanted is worse than
+saying so. (The direct `CheckRunner.run(stages=())` contract is unchanged and
+selects **none**; the boundary is where the ambiguity is refused.)
 
 **Routes** (under `/api`):
 
@@ -449,6 +462,16 @@ appended to the proposal's append-only `audit.jsonl`, and announced as
 head at posting time. Noticing when those two have drifted apart is the gate's
 entire job.
 
+**A dirty working tree cannot be posted.** A working-tree run records the tree's
+current commit as `source.sha` *and* `dirty: true` beside it, so posting it
+would claim the committed bytes were measured when an uncommitted edit means
+they were not — commit `C` has the broken drawing, the local fix makes the run
+green, the gate passes, and the merge lands `C`. Posting such a report is
+refused (`validation_error`, CLI exit 2, nothing written and nothing audited);
+commit or stash and re-run. A `--ref` run is unaffected: it measured the commit
+it materialized, and its `dirty` flag describes a tree it deliberately did not
+measure. CI runners are always clean, so the Action path never meets this.
+
 `--auto-proposal` posts to the one **active** proposal whose source branch is
 the branch that was checked. No match is a warning and the check's own exit
 code; more than one match is exit 2 — guessing which proposal a verdict belongs
@@ -463,9 +486,23 @@ PRD-002's built-in placeholder of the same name and appears in
 
 | State | When |
 |---|---|
-| `skipped` | nothing was posted (byte-identical to the placeholder), or the posted report measured nothing at all |
+| `skipped` | **nothing was ever posted** — no record *and* no `checks_posted` line in the proposal's audit log (byte-identical to the placeholder) — or the posted report measured nothing at all |
 | `pass` | a **complete, green** report against the source branch's **current** head |
-| `fail` | the report is red · certifies a **different** head · did not finish (`complete: false`) · will not parse · could not be evaluated |
+| `fail` | the report is red · certifies a **different** head · did not finish (`complete: false`) · will not parse · **is not a valid record** · **is missing while the audit says it was posted** · could not be evaluated |
+
+**A deleted record is a `fail`, not a `skipped`.** `checks.json` is an ordinary
+file; the audit log is append-only and nothing in this feature can remove a line
+from it. So the gate asks the audit first: a proposal it names as checked is
+never merge-permissive again, and deleting a red report says *re-run*, not
+*nothing to see*. A proposal nobody ever posted to still skips — that is the one
+permissive branch, and it is what "posting is how a proposal opts in" means.
+
+**A posted record is validated before a verdict is derived from it** — against
+`CHECKS_SCHEMA`, against `validate_report` for the report it embeds, and
+field-by-field against that report: `status`, `exit_code`, `complete` and `head`
+are *copies* of the report's own values, so a mismatch means one of the two was
+edited. A hand-written `{"head": …, "status": "green"}` is a `fail`
+(`reason: invalid_record`), not a pass.
 
 **`pending` is deliberately absent.** `ProposalManager.merge()` blocks a gate
 whose state is `fail` and *nothing else*, so `pending` is merge-**permissive**:

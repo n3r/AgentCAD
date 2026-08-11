@@ -290,7 +290,12 @@ itself, so a simulation is still not the criterion.
    while the source moved on. A stale report is a `fail` naming both SHAs and
    saying re-run — PRD-003's X8 finding, closed the same way. The
    complementary asymmetry: **posting is how a proposal opts in**, so a
-   proposal nobody checked is `skipped` and blocks nothing.
+   proposal nobody checked is `skipped` and blocks nothing — "nobody checked"
+   meaning no record *and* no `checks_posted` line in the append-only audit, so
+   deleting a posted report is a `fail` rather than a way back to permissive.
+   A report that measured a **dirty working tree** is refused at the post: its
+   `head` is the committed sha, and uncommitted edits mean that is not what was
+   measured.
 5. **The drawings stage regenerates SVG only, and byte-stability lives in
    `--verify-determinism`.** DXF is excluded by name because `ezdxf` stamps
    `$TDCREATE` and fresh GUIDs into every document; it is one

@@ -29,7 +29,7 @@ methods instead. ``tests/test_checks_api.py`` pins both halves.
 from __future__ import annotations
 
 from .checks import STAGES, CheckRunner, _payload
-from .model import AppError
+from .model import AppError, ValidationError
 from .tools import Tool, schema
 
 _PROJ = {"type": "string", "description": "Project name"}
@@ -93,6 +93,17 @@ def register(registry, service) -> None:
                    stages: list | None = None, strict: bool = False,
                    budget: float | None = None,
                    proposal: str | None = None) -> dict:
+        if stages is not None and not stages:
+            # `stages: []` is FALSY, and `tuple(stages) if stages else STAGES`
+            # read it as "all four" — so a caller who asked for nothing got the
+            # whole multi-minute pipeline, while `--stages ''` on the CLI is a
+            # usage error and `CheckRunner.run(stages=())` selects none. One
+            # rule at the boundary: an explicit empty selection is a mistake,
+            # and it is named rather than guessed at (review C10).
+            raise ValidationError(
+                f"stages: [] selects no stage at all; omit 'stages' to run all "
+                f"four ({', '.join(STAGES)}) or name the subset you want",
+                {"stages": list(STAGES)})
         if proposal:
             # Resolved BEFORE the run: an unknown or already-merged proposal is
             # the caller's mistake, and finding it out after rebuilding every
@@ -102,7 +113,7 @@ def register(registry, service) -> None:
             service.checks.post_target(project, proposal)
         report = service.checks.run(
             project, ref=ref,
-            stages=tuple(stages) if stages else STAGES,
+            stages=STAGES if stages is None else tuple(stages),
             strict=bool(strict), budget_s=budget)
         if proposal:
             try:
@@ -177,12 +188,15 @@ def register(registry, service) -> None:
                 "stages": {"type": "array",
                            "description": "Subset of "
                                           f"{', '.join(STAGES)} to run "
-                                          "(omit for all four)"},
+                                          "(omit for all four; an EMPTY list "
+                                          "is a validation_error, never 'all')"},
                 "strict": {"type": "boolean",
                            "description": "Count every skipped row as a "
                                           "failure in the verdict"},
                 "budget": {"type": "number",
-                           "description": "Soft deadline in seconds"},
+                           "description": "Soft deadline in seconds (finite "
+                                          "and non-negative; NaN/inf are "
+                                          "refused — they bound nothing)"},
                 "proposal": {"type": "string",
                              "description": "Proposal id to post the report "
                                             "to (it becomes that proposal's "

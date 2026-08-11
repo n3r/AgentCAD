@@ -288,11 +288,16 @@ runs:
 
         printf 'agentcad'; printf ' %q' "${args[@]}"; printf '\n'
 
+        # This run's verdict is the file THIS run writes. Anything already at
+        # these paths — a restored cache, a report committed to the repository,
+        # a previous matrix leg — would otherwise be read as the answer by a
+        # check that exited before writing one.
+        rm -f "$REPORT_JSON" "$REPORT_MD"
+
         set +e
         "$BIN/agentcad" "${args[@]}"
         code=$?
         set -e
-        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
 
         if [ -f "$REPORT_JSON" ]; then
           echo "report=true" >> "$GITHUB_OUTPUT"
@@ -300,9 +305,19 @@ runs:
           echo "report=false" >> "$GITHUB_OUTPUT"
           echo "::warning::no report at $REPORT_JSON (exit $code)"
         fi
-        # Writes status= and failed-stages= to $GITHUB_OUTPUT; empty for a
-        # missing or unparseable report, and never a failure of its own.
-        "$BIN/python" "$ACTION_PATH/report_outputs.py" "$REPORT_JSON"
+        # Writes status= and failed-stages=; empty for a missing or unparseable
+        # report. It REFUSES a report whose values could forge a second
+        # $GITHUB_OUTPUT line (a status of "red\nexit-code=0" used to replace
+        # the real exit code and finish the job green) — and a refusal escalates
+        # a green run rather than being ignored.
+        if ! "$BIN/python" "$ACTION_PATH/report_outputs.py" "$REPORT_JSON"; then
+          echo "::error::the check report could not be turned into step" \
+               "outputs; treating this run as having produced no verdict"
+          if [ "$code" = "0" ]; then code=2; fi
+        fi
+        # LAST, and written by the step that owns it: no line any report
+        # contains can come after it and override it.
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
 
     - name: Write the job summary
       if: always()

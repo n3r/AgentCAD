@@ -449,17 +449,151 @@ def test_the_check_steps_argv_is_built_quoted_and_actually_runs(tmp_path):
     assert report_json.is_file() and report_md.is_file()
 
 
+STALE_REPORT = (
+    '{"status": "red\\nexit-code=0", "stages": '
+    '[{"name": "build", "status": "red"}]}'
+)
+
+
+def _stub_bin(tmp_path: Path, body: str) -> Path:
+    """A `bin/` whose `agentcad` is *this* shell body — for the paths where the
+    real CLI would only add minutes (a check that never writes a report, a
+    check that writes a hostile one)."""
+    bin_dir = tmp_path / "stub"
+    bin_dir.mkdir()
+    cli = bin_dir / "agentcad"
+    cli.write_text(f"#!/bin/sh\n{body}\n")
+    cli.chmod(0o755)
+    (bin_dir / "python").symlink_to(sys.executable)
+    return bin_dir
+
+
+def _check_env(tmp_path: Path, bin_dir: Path, out: Path, report_json: Path,
+               report_md: Path) -> dict[str, str]:
+    return {"BIN": str(bin_dir), "ACTION_PATH": str(ACTION_DIR),
+            "PROJECT": str(tmp_path), "PROJECTS_DIR": "",
+            "STAGES": ",".join(STAGES), "STRICT": "false", "BUDGET": "",
+            "VERIFY_DETERMINISM": "false", "PROPOSAL": "",
+            "AUTO_PROPOSAL": "false", "REPORT_JSON": str(report_json),
+            "REPORT_MD": str(report_md), "GITHUB_OUTPUT": str(out),
+            "AGENTCAD_KERNEL_POOL_SIZE": "1"}
+
+
+@needs_bash
+@pytest.mark.integration
+def test_a_stale_report_is_deleted_before_the_check_runs(tmp_path):
+    """Review C7: the check step read whatever was at ``$REPORT_JSON`` after the
+    run — including a report a *previous* run (a cached work dir, a restored
+    artifact) or the repository itself left there. A check that exits 2 without
+    writing one would then have its verdict read from a file it never wrote."""
+    out = tmp_path / "out"
+    out.write_text("")
+    report_json, report_md = tmp_path / "report.json", tmp_path / "report.md"
+    report_json.write_text(STALE_REPORT, encoding="utf-8")
+    report_md.write_text("# stale\n", encoding="utf-8")
+
+    proc = _run_body(_load(ACTION), "check",
+                     _check_env(tmp_path, _stub_bin(tmp_path, "exit 2"), out,
+                                report_json, report_md), cwd=tmp_path)
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert not report_json.exists() and not report_md.exists()
+    got = _outputs(out)
+    assert got["exit-code"] == "2"          # the check's own code, not the file's
+    assert got["report"] == "false"
+    assert got["status"] == "" and got["failed-stages"] == ""
+
+
+@needs_bash
+@pytest.mark.integration
+def test_a_report_the_parser_refuses_cannot_leave_the_job_green(tmp_path):
+    """The rest of C7: ``report_outputs.py`` wrote raw report strings into the
+    single-line ``$GITHUB_OUTPUT`` protocol, so a status of ``"red\\nexit-code=0"``
+    forged a second output line that replaced the real exit code — a job that
+    finishes **green** with no verdict at all. The parser refuses such a value,
+    and the step it runs in owns ``exit-code``: it is written last, and a
+    refused report turns a 0 into a 2."""
+    out = tmp_path / "out"
+    out.write_text("")
+    report_json, report_md = tmp_path / "report.json", tmp_path / "report.md"
+    hostile = _stub_bin(
+        tmp_path, f"cat > {report_json} <<'EOF'\n{STALE_REPORT}\nEOF\nexit 0")
+
+    proc = _run_body(_load(ACTION), "check",
+                     _check_env(tmp_path, hostile, out, report_json,
+                                report_md), cwd=tmp_path)
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    got = _outputs(out)
+    # The forged `exit-code=0` line never reaches $GITHUB_OUTPUT, and the real
+    # one is written after the parser — so it is the last word either way.
+    assert got["exit-code"] == "2"
+    assert "status" not in got and "failed-stages" not in got
+    assert "::error::" in proc.stdout
+
+
+def test_the_check_step_owns_the_exit_code_and_writes_it_last():
+    """The ordering that makes the above true, asserted on the file: nothing may
+    be appended to ``$GITHUB_OUTPUT`` after ``exit-code``."""
+    body = _step(_load(ACTION), "check")["run"]
+    assert "rm -f" in body, "a pre-existing report is not cleared"
+    lines = [line.strip() for line in body.splitlines()
+             if "$GITHUB_OUTPUT" in line or "report_outputs.py" in line]
+    assert lines[-1].startswith('echo "exit-code=$code"')
+    assert any("report_outputs.py" in line for line in lines[:-1])
+
+
 # --------------------------------------------------------------------------
 # report -> step outputs
 
 
-def _report_outputs(report_path: Path, out: Path) -> dict[str, str]:
-    proc = subprocess.run([sys.executable,
-                           str(ACTION_DIR / "report_outputs.py"), str(report_path)],
+def _parse(report_path: Path, out: Path) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable,
+                           str(ACTION_DIR / "report_outputs.py"),
+                           str(report_path)],
                           env={**os.environ, "GITHUB_OUTPUT": str(out)},
                           capture_output=True, text=True, timeout=60)
+
+
+def _report_outputs(report_path: Path, out: Path) -> dict[str, str]:
+    proc = _parse(report_path, out)
     assert proc.returncode == 0, proc.stderr
     return _outputs(out)
+
+
+@pytest.mark.parametrize("body,why", [
+    ('{"status": "red\\nexit-code=0", "stages": []}', "a newline in status"),
+    ('{"status": "red\\rexit-code=0", "stages": []}', "a carriage return"),
+    ('{"status": "red", "stages": [{"name": "build\\nexit-code=0",'
+     ' "status": "red"}]}', "a newline in a stage name"),
+    ('{"status": "red", "stages": [{"name": "b uild", "status": "red"}]}',
+     "a stage name that is not one"),
+])
+def test_report_outputs_refuses_a_value_that_could_forge_a_line(tmp_path, body,
+                                                                why):
+    """``$GITHUB_OUTPUT`` is a line protocol: ``key=value\\n``. A value carrying
+    a newline is a second line of the caller's choosing — and the line that
+    matters is ``exit-code``. Refused, loudly, and with nothing written."""
+    report = tmp_path / "report.json"
+    report.write_text(body)
+    out = tmp_path / "out"
+    out.write_text("")
+
+    proc = _parse(report, out)
+
+    assert proc.returncode != 0, why
+    assert "::error::" in proc.stdout
+    assert out.read_text() == "", "a refused report still wrote an output"
+
+
+def test_report_outputs_empties_a_status_outside_the_closed_enum(tmp_path):
+    """A status this version does not know is not a verdict — but it is not an
+    injection either, so it is the ordinary "no readable verdict" answer."""
+    report = tmp_path / "report.json"
+    report.write_text('{"status": "greenish", "stages": []}')
+    out = tmp_path / "out"
+    out.write_text("")
+    assert _report_outputs(report, out) == {"status": "", "failed-stages": ""}
 
 
 def test_report_outputs_names_the_red_stages(tmp_path):

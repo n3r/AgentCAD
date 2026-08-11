@@ -444,9 +444,11 @@ that tool's payload **verbatim**, including `details.line` and the Error Doctor
 without re-deriving anything.
 
 **A red check is data, never an error.** The call returns normally; only the
-harness raises — an unknown project is a `notfound_error`, an unknown stage or
-a `ref` on a project with no git is a `validation_error`, and an unknown or
-already-merged proposal is a `notfound_error` / `conflict_error` raised
+harness raises — an unknown project is a `notfound_error`; an unknown stage, an
+**empty** `stages` list (it is refused, never read as "all four"), a
+non-finite `budget`, a `ref` on a project with no git or a report that measured
+a **dirty** working tree being posted are all `validation_error`; and an unknown
+or already-merged proposal is a `notfound_error` / `conflict_error` raised
 **before** anything is measured.
 
 Four things about the payload:
@@ -504,15 +506,20 @@ traceability re-keyed to **this** report's item ids.
 **Posting to a proposal.** `proposal: "<id>"` stores the report durably as that
 proposal's `checks.json`, appends one audit line, publishes `proposal_changed
 {reason: "checks"}` and returns a `posted` receipt on the report. It is then
-read by the proposal's `checks` gate: nothing posted → `skipped` (blocks
-nothing); a **complete, green** report against the source branch's **current**
-head → `pass`; anything else — red, incomplete, unreadable, or certifying a
-head the branch has moved past — → `fail`, which **does** block
-`proposal_merge`. A stale green is a `fail` saying to re-run, never a soft
-`pending`: a merge blocks on `fail` and nothing else, so a `pending` would wave
-through commits nobody measured. Posting is how a proposal opts in — this gate
-is **evidence**, while the `specs` and `validation` gates are enforcement and
-re-measure on every merge.
+read by the proposal's `checks` gate: nothing **ever** posted (no record *and*
+no `checks_posted` audit line) → `skipped` (blocks nothing); a **complete,
+green** report against the source branch's **current** head → `pass`; anything
+else — red, incomplete, unreadable, not a valid record, *deleted after being
+posted*, or certifying a head the branch has moved past — → `fail`, which
+**does** block `proposal_merge`. A stale green is a `fail` saying to re-run,
+never a soft `pending`: a merge blocks on `fail` and nothing else, so a
+`pending` would wave through commits nobody measured. Posting is how a proposal
+opts in — this gate is **evidence**, while the `specs` and `validation` gates
+are enforcement and re-measure on every merge.
+
+A report that measured a **dirty working tree** cannot be posted at all
+(`validation_error`): its `head` is the *committed* sha, so the gate would read
+it as certifying bytes the run never measured. Commit or stash, then re-run.
 
 **Routes** (under `/api`): `POST /projects/{proj}/checks` (body whitelisted to
 `{ref, stages, strict, budget, proposal}`; a red project is an ordinary **200**

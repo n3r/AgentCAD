@@ -410,6 +410,68 @@ def test_a_post_run_failure_is_exit_two_with_a_message_not_a_traceback(
     assert "index.json" in err and "agentcad check" in err
 
 
+@pytest.mark.portability
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
+                    reason="needs an unwritable directory")
+def test_an_unwritable_work_dir_is_exit_two_not_a_traceback(wired, tmp_path,
+                                                             capsys):
+    """Review C8: the work-dir ``mkdir`` and ``_build_service`` ran **before**
+    the try/except that maps a harness failure to exit 2, so a ``--work-dir``
+    the user cannot create escaped as a traceback and process exit **1** — the
+    code reserved for "the model is wrong", which automation reads as red
+    geometry."""
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    blocked.chmod(0o500)
+    try:
+        assert cli.cmd_check(_args(work_dir=str(blocked / "wd"))) == 2
+    finally:
+        blocked.chmod(0o700)
+
+    err = capsys.readouterr().err
+    assert "agentcad check" in err and "PermissionError" in err
+    # Nothing was started, so nothing had to be stopped.
+    assert wired.stopped is False
+
+
+def test_a_failure_after_the_kernel_starts_does_not_leak_workers(fake_kernel,
+                                                                  tmp_path,
+                                                                  monkeypatch):
+    """The other half of C8: ``_build_service`` starts the pool and *then*
+    constructs the service and registers the examples. Anything that raises in
+    between used to leave the workers running — every one of them a process
+    holding ~0.5 GB."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("the projects dir is not a directory")
+
+    monkeypatch.setattr("agentcad.core.service.AgentCADService", boom)
+
+    with pytest.raises(RuntimeError):
+        cli._build_service(tmp_path / "projects")
+
+    assert fake_kernel.stopped == [True], "the kernel pool was left running"
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--budget", "nan"), ("--budget", "inf"), ("--budget", "-1"),
+    ("--min-volume", "nan"), ("--min-volume", "-inf"),
+])
+def test_a_non_finite_budget_or_min_volume_exits_two_at_the_parser(tmp_path,
+                                                                    flag,
+                                                                    value):
+    """Review C9: ``argparse``'s ``type=float`` happily returns ``nan``, and
+    every comparison with NaN is false — a NaN ``--budget`` switches the
+    deadline off and a NaN ``--min-volume`` makes a real overlap report green.
+    Refused at the parser, before the kernel spawns."""
+    # `--flag=value`, because argparse reads a bare `-inf` as an option.
+    res = _cli("check", "--project", "whatever", f"{flag}={value}",
+               "--projects-dir", str(tmp_path / "projects"))
+
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert flag in res.stderr and "finite" in res.stderr
+    assert "Traceback" not in res.stderr
+
+
 def test_proposal_flags_are_accepted_and_warn_until_slice_six(wired, capsys):
     assert cli.cmd_check(_args(proposal="pr-1")) == 0
     assert "--proposal" in capsys.readouterr().err
@@ -419,9 +481,10 @@ def test_proposal_flags_are_accepted_and_warn_until_slice_six(wired, capsys):
 
 class _FakeKernel:
     """Stands in for KernelClient/KernelPool: records what it was told it may
-    write to, and starts nothing."""
+    write to, whether it was ever stopped, and starts nothing."""
 
     seen: list[list[str]] = []
+    stopped: list[bool] = []
 
     def __init__(self, *, writable_dirs=None, **kwargs):
         self.writable_dirs = list(writable_dirs or [])
@@ -431,7 +494,7 @@ class _FakeKernel:
         pass
 
     def stop(self) -> None:
-        pass
+        _FakeKernel.stopped.append(True)
 
 
 @pytest.fixture
@@ -440,6 +503,7 @@ def fake_kernel(monkeypatch):
     import agentcad.kernel.pool as pool_mod
 
     _FakeKernel.seen = []
+    _FakeKernel.stopped = []
     monkeypatch.setattr(client_mod, "KernelClient", _FakeKernel)
     monkeypatch.setattr(pool_mod, "KernelPool", _FakeKernel)
     return _FakeKernel

@@ -170,6 +170,48 @@ def test_an_unknown_stage_is_a_validation_error(demo):
     assert "bogus" in result["error"]["message"]
 
 
+def test_an_explicitly_empty_stage_list_is_a_validation_error(demo):
+    """Review C10: ``stages: []`` is falsy, so ``tuple(stages) if stages else
+    STAGES`` read an explicit "nothing" as "everything" and launched the whole
+    multi-minute pipeline — while the CLI rejected an empty ``--stages`` and the
+    runner's own contract is that an empty tuple selects **none**. Three answers
+    to one question; the boundary now gives the CLI's."""
+    _service, registry = demo
+
+    result = registry.call("run_checks", {"project": "demo", "stages": []})
+
+    assert result["error"]["type"] == "validation_error"
+    assert "stages" in result["error"]["message"]
+    for stage in STAGES:
+        assert stage in result["error"]["message"]
+
+
+def test_the_runner_itself_still_lets_an_empty_selection_select_nothing(demo):
+    """The direct caller's contract, stated so the boundary rule above reads as
+    a decision rather than an inconsistency: ``CheckRunner.run(stages=())``
+    measures nothing and reports all four stages as ``not_selected``."""
+    service, _registry = demo
+
+    report = service.checks.run("demo", stages=())
+
+    assert [s["reason"] for s in report["stages"]] == ["not_selected"] * 4
+    assert report["summary"]["total"] == 0
+
+
+@pytest.mark.parametrize("budget", [float("nan"), float("inf"), -1.0])
+def test_the_tool_refuses_a_non_finite_budget(demo, budget):
+    """Review C9 at the boundary an agent uses: ``json.loads`` accepts the bare
+    ``NaN`` literal, so a REST or MCP caller can send one — and a NaN deadline
+    is never in the past, so it bounds nothing while the report still claims
+    ``complete: true``."""
+    _service, registry = demo
+
+    result = registry.call("run_checks", {"project": "demo", "budget": budget})
+
+    assert result["error"]["type"] == "validation_error"
+    assert "finite" in result["error"]["message"]
+
+
 @pytest.mark.portability
 def test_the_pack_does_not_self_disable_without_git(kernel, tmp_path,
                                                     monkeypatch):

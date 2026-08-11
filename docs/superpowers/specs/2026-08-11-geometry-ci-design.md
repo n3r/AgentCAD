@@ -961,3 +961,76 @@ read with these amendments:
    over a project path containing a space, and asserts the argv, the quoting
    and the `set +e` capture. Two input guards came with it: a requirement
    starting with `-` and a newline in any `$GITHUB_OUTPUT` value are refused.
+
+---
+
+## As built — the third review (C3–C10)
+
+A second independent review, over the fixed branch, found six more defects and
+one gap. All of them are places where a *promise* — a budget, a certified head,
+a gate, an exit code — was made out of state that could be overwritten, deleted
+or forged. The design text above is read with these amendments too:
+
+1. **A run's policy belongs to the run, not to the runner (C3).**
+   `service.checks` is a singleton: one `CheckRunner` answers the CLI, the chat
+   agent, the MCP tool and the route, and `run()` wrote the deadline, the
+   truncation flag and `min_volume` onto it with no serialization. Two
+   concurrent callers therefore overwrote each other's execution policy — a
+   short-budget run whose deadline a second run nulled measured everything and
+   still reported `complete: true`. `run()` now builds a **per-run context**
+   (`_run_context`) and measures through it; nothing writes to `self`. The
+   context *is* a runner, so no stage signature, caller or test changed. A lock
+   around whole runs was the alternative and is worse: a ten-minute CI run would
+   block the UI's own check.
+2. **A dirty tree cannot certify a commit (C4).** A working-tree report records
+   the committed head as `source.sha` **and** `dirty: true`; posting ignored the
+   flag, so an uncommitted fix could post a green against the commit that still
+   holds the bug and the gate would wave the merge through. Posting such a
+   report is refused (`ValidationError`, CLI exit 2, nothing written and nothing
+   audited). A `--ref` report is untouched: it measured the commit it
+   materialized, and its `dirty` flag describes a tree it deliberately did not
+   measure.
+3. **The gate consults the audit, and validates what it reads (C5).** Deleting
+   `checks.json` restored the *permissive* `skipped` verdict while the
+   append-only audit went on recording the post. The gate now asks the audit
+   first: a proposal with a `checks_posted` line and no readable record is a
+   `fail` saying *re-run*, and only a genuinely never-posted proposal skips.
+   The record itself is validated (`validate_record`) against `CHECKS_SCHEMA`,
+   against `validate_report` for the report it embeds, and field-by-field
+   against that report — `status`/`exit_code`/`complete`/`head` are copies, so a
+   mismatch means one of the two was hand-edited. An unvalidatable record is a
+   `fail`.
+4. **The action's verdict cannot come from a file the run did not write (C7).**
+   The check step did not clear a pre-existing report, and `report_outputs.py`
+   wrote raw report strings into the single-line `$GITHUB_OUTPUT` protocol
+   *after* the real exit code — so a status of `"red\nexit-code=0"` forged a
+   second line and the job finished green with no verdict. Three changes: the
+   report paths are deleted before the check runs; the parser validates every
+   value against a closed set and refuses newlines and carriage returns; and
+   `exit-code` is written by the step that owns it, **last**, with a refused
+   report escalating a `0` to a `2`.
+5. **CLI setup is inside the exit-code mapping (C8).** The work-dir `mkdir` and
+   `_build_service` ran before the `try`, so an unwritable `--work-dir` escaped
+   as a traceback and exit **1** — the code reserved for red geometry. Setup is
+   inside the mapping, the kernel stop tolerates a partial construction, and
+   `_build_service` stops the pool it just started if the service will not
+   construct (one process per worker, ~0.5 GB each, otherwise leaked).
+6. **A limit must be a number (C9).** `argparse`'s `type=float` returns `nan`
+   and `inf` happily, and `json.loads` reads the bare `NaN` literal. Every
+   comparison with NaN is false, so a NaN `--budget` disabled the deadline it
+   configures and a NaN `--min-volume` reported a genuinely interfering assembly
+   as green. Both are refused at the parser (exit 2) **and** in
+   `CheckRunner.run`, which is what covers the tool and the route.
+7. **One rule for an empty stage list (C10).** `stages: []` was falsy and became
+   "all four" at the tool boundary, while the CLI rejected it and the runner
+   treats an empty tuple as selecting none. The boundary now gives the CLI's
+   answer — a `validation_error` — and `CheckRunner.run(stages=())` keeps its
+   documented "selects none" contract for the direct caller.
+8. **The overshoot after the last item is named (finding 2's tail).** The
+   deadline is read before each item, so an expiry *inside the last one* is seen
+   by nobody. It stays `complete: true` — everything selected was measured, and
+   `complete: false` means "something was not measured", not "this took longer
+   than you asked"; flipping it would turn a fully measured green run into exit
+   2 and a gate `fail` for the one-in-flight-call overshoot the contract already
+   allows. The overshoot is recorded in `warnings[]` instead, so the report
+   never silently claims it stayed inside its budget.

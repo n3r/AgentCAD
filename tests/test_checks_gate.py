@@ -47,6 +47,8 @@ from agentcad.core.proposals import ProposalManager
 from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
 
+from .conftest import BOX_SCRIPT
+
 _GIT = [
     pytest.mark.integration,
     pytest.mark.portability,
@@ -115,14 +117,15 @@ def _move_head(service, branch: str = "feat") -> str:
 
 
 def _report(head: str | None, *, row: str = "pass", complete: bool = True,
-            branch: str = "feat", items: bool = True) -> dict:
+            branch: str = "feat", items: bool = True, dirty: bool = False,
+            kind: str = "branch") -> dict:
     """A valid ``schema: 1`` report certifying *head* — the shape a real run
     produces, without paying for a real run."""
     rows = [make_item("build", "part", "widget", row, "…")] if items else []
     return finalize_report(
         "demo", [make_stage("build", rows)],
-        source={"kind": "branch", "ref": branch, "sha": head, "label": None,
-                "host_sha": None, "dirty": False},
+        source={"kind": kind, "ref": branch if kind == "branch" else None,
+                "sha": head, "label": None, "host_sha": None, "dirty": dirty},
         host={"platform": "test"}, started="2026-01-01T00:00:00Z",
         complete=complete)
 
@@ -288,6 +291,47 @@ def test_the_write_and_the_audit_line_land_together_or_not_at_all(demo,
     assert not _slot(service, pid).exists()
 
 
+def test_posting_a_report_that_measured_a_dirty_tree_is_refused(demo):
+    """Review C4: a working-tree report records ``source.sha`` — the *committed*
+    head — **and** ``dirty: true``, and both posting and the gate ignored the
+    flag. So an uncommitted local fix could be measured, posted as a green
+    against the commit that still holds the bug, and merged: the gate would pass
+    on bytes nothing ever measured.
+
+    Posting is refused instead, fail-closed, and the refusal names the dirty
+    tree. CI runners are always clean (`actions/checkout` materializes the
+    commit), so the Action path is untouched.
+    """
+    service, _registry, manager = demo
+    pid = _create(manager)
+    head = _head(service)
+
+    with pytest.raises(ValidationError) as exc:
+        _post(service, pid, _report(head, kind="worktree", dirty=True))
+
+    assert "dirty" in str(exc.value).lower()
+    assert not _slot(service, pid).exists()
+    assert not any(entry["action"] == "checks_posted"
+                   for entry in _audit(service, pid))
+    # The same measurement of a CLEAN tree posts.
+    assert _post(service, pid, _report(head, kind="worktree"))["ok"] is True
+
+
+def test_a_ref_report_whose_branch_is_dirty_still_posts(demo):
+    """The flag means two different things and only one of them is a lie. A
+    ``--ref`` run measures the **commit** it materialized, so ``dirty`` there
+    describes a tree that was never measured — it is provenance, and refusing it
+    would refuse the one mode that cannot possibly mis-certify."""
+    service, _registry, manager = demo
+    pid = _create(manager)
+
+    receipt = _post(service, pid, _report(_head(service), kind="branch",
+                                          dirty=True))
+
+    assert receipt["ok"] is True
+    assert _gate(manager, pid)["state"] == "pass"
+
+
 def test_posting_to_an_unknown_proposal_is_not_found(demo):
     service, _registry, _manager = demo
     with pytest.raises(NotFoundError):
@@ -425,6 +469,74 @@ def test_an_unreadable_posted_report_fails_rather_than_disappearing(demo):
     assert gate["state"] == "fail"
     assert gate["details"]["posted"] is True
     assert gate["details"]["reason"] == "unreadable"
+
+
+def test_deleting_the_posted_record_is_a_fail_not_a_permissive_skip(demo):
+    """Review C5: ``checks.json`` is an ordinary file in the proposal's
+    directory, and its absence read as "nothing was posted" — the *permissive*
+    verdict. Deleting a red report therefore unblocked the merge, while the
+    append-only audit log went on recording that a check had been posted.
+
+    The audit is the evidence that evidence existed: a proposal it names is
+    never `skipped` again.
+    """
+    service, _registry, manager = demo
+    pid = _create(manager)
+    _post(service, pid, _report(_head(service), row="fail"))
+    assert _gate(manager, pid)["state"] == "fail"
+
+    _slot(service, pid).unlink()
+
+    gate = _gate(manager, pid)
+    assert gate["state"] == "fail", "a deleted record restored a permissive gate"
+    assert gate["details"]["posted"] is True
+    assert gate["details"]["reason"] == "missing"
+    assert "re-run" in gate["summary"]
+    with pytest.raises(ConflictError):
+        manager.merge("demo", pid)
+
+
+def test_a_proposal_nobody_ever_posted_to_is_still_skipped(demo):
+    """The other half of the same rule: the audit must distinguish "the record
+    is gone" from "there never was one", or the gate would block every proposal
+    in the project."""
+    service, _registry, manager = demo
+    pid = _create(manager)
+    assert not _slot(service, pid).exists()
+
+    gate = _gate(manager, pid)
+
+    assert gate["state"] == "skipped"
+    assert gate["details"]["posted"] is False
+
+
+@pytest.mark.parametrize("record", [
+    {},
+    {"head": "0" * 40, "status": "green"},          # hand-written "green"
+    {"schema": 99, "status": "green", "head": "0" * 40, "report": {}},
+    {"schema": CHECKS_SCHEMA, "status": "green", "head": "0" * 40,
+     "exit_code": 0, "complete": True, "summary": {}, "stages": [],
+     "report": {"schema": 1, "status": "red"}},     # envelope ≠ report
+])
+def test_a_record_that_does_not_validate_is_a_fail(demo, record):
+    """The second half of C5: a posted record was never schema-checked, so a
+    hand-written ``{"head": …, "status": "green"}`` passed the gate — and so did
+    an envelope whose verdict disagreed with the report it wraps. The record is
+    validated against ``CHECKS_SCHEMA`` and cross-checked against its own
+    embedded report before any verdict is derived from it."""
+    service, _registry, manager = demo
+    pid = _create(manager)
+    _post(service, pid, _report(_head(service)))
+    if "head" in record and record["head"] == "0" * 40:
+        record = {**record, "head": _head(service)}
+    _slot(service, pid).write_text(json.dumps(record), encoding="utf-8")
+
+    gate = _gate(manager, pid)
+
+    assert gate["state"] == "fail"
+    assert gate["details"]["posted"] is True
+    assert gate["details"]["reason"] == "invalid_record"
+    assert gate["details"]["error"]["details"]["problems"]
 
 
 def test_the_provider_never_raises_and_never_answers_pending(demo,
@@ -625,6 +737,37 @@ def test_an_explicit_terminal_proposal_fails_fast(wired_cli, capsys):
 
     assert not _slot(service, pid).exists()
     assert "merged" in capsys.readouterr().err
+
+
+def test_a_dirty_tree_cannot_certify_the_commit_it_did_not_measure(wired_cli,
+                                                                    capsys):
+    """Review C4 end to end, on a real store: measure a tree with uncommitted
+    edits, try to post, and be refused with exit 2 and no ``checks.json`` —
+    then commit the very same bytes and watch the same command post and the
+    gate go green."""
+    service, manager = wired_cli
+    pid = _create(manager)
+    # One part, so the run has something to measure and a green is a green.
+    service.create_part("demo", "cube", script=BOX_SCRIPT)
+    tree = service.branches.tree_of("demo", "feat")
+    (tree / "scratch.txt").write_text("uncommitted\n", encoding="utf-8")
+
+    assert cli.cmd_check(_args(proposal=pid)) == 2
+
+    assert not _slot(service, pid).exists()
+    err = capsys.readouterr().err
+    assert "dirty" in err.lower() and f"proposal {pid}" in err
+    assert _gate(manager, pid)["state"] == "skipped"
+
+    service.history.snapshot(tree, "commit the scratch file")
+
+    assert cli.cmd_check(_args(proposal=pid)) == 0
+
+    record = json.loads(_slot(service, pid).read_text())
+    assert record["head"] == _head(service)
+    assert record["status"] == "green"
+    assert record["report"]["source"]["dirty"] is False
+    assert _gate(manager, pid)["state"] == "pass"
 
 
 def test_an_explicit_proposal_posts_and_the_report_is_written(wired_cli,

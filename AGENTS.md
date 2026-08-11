@@ -388,7 +388,23 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   take no `timeout_s`, so the worst case is **one** call's overshoot. An item
   the deadline stopped is a `skip`/`budget_exceeded`, never an `error`: a blown
   budget is `complete: false` → exit **2**, with the partial report kept as
-  evidence, and never a red.
+  evidence, and never a red. An overshoot *inside the last item* keeps
+  `complete: true` (everything was measured) and is named in `warnings[]`.
+  `--budget`/`--min-volume` must be **finite and non-negative**: NaN compares
+  false against everything, so it switches off the limit it configures.
+- **A run's policy lives on a per-run runner, not on `service.checks`.** That is
+  one shared object; `run()` builds a context with `_run_context` and never
+  assigns to `self`, or two concurrent runs (chat + route + CLI) overwrite each
+  other's deadline and interference threshold.
+- **A check that measured a dirty tree may not be posted.** Its `source.sha` is
+  the *committed* head, so the gate would read it as certifying bytes it never
+  measured. Refused at `post_to_proposal` (exit 2); a `--ref` report's `dirty`
+  flag is provenance about a tree it did not measure, and still posts.
+- **The `checks` gate asks the audit before it answers `skipped`.** A
+  `checks_posted` line with no readable record is a `fail` ("re-run"), never the
+  permissive "nothing posted" — deleting `checks.json` must not unblock a merge.
+  The record is validated (`validate_record`) against `CHECKS_SCHEMA`, against
+  `validate_report`, and field-by-field against the report it wraps.
 - **A check may not write anywhere but its own throwaway cell.** `--work-dir`
   that is, holds or sits inside the project (or the projects root) is refused;
   a run materializes into `<work-dir>/agentcad-check-<pid>-<rand>/` and deletes

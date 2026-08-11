@@ -50,6 +50,7 @@ import ast
 import contextlib
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -163,6 +164,37 @@ def _within(inner: Path, outer: Path) -> bool:
         return Path(inner).is_relative_to(Path(outer))
     except (TypeError, ValueError):     # pragma: no cover — defensive
         return False
+
+
+def _finite(value, label: str, flag: str) -> float:
+    """*value* as a float that a comparison can actually be made against.
+
+    ``float('nan')`` and ``float('inf')`` are accepted by ``argparse`` and by
+    ``json.loads`` (Python's decoder reads the bare ``NaN`` literal), and both
+    are silently catastrophic here: **every** comparison with NaN is false, so a
+    NaN budget disables the deadline it was supposed to enforce and a NaN
+    ``min_volume`` makes ``volume > min_volume`` false for a real overlap — a
+    green report on an interfering assembly. Negative is refused for the same
+    reason a negative timeout is: it is not a value, it is a typo.
+
+    The offending value travels as a **string**: a NaN in an error's ``details``
+    would be the literal ``NaN`` in the JSON payload this becomes, which no
+    strict JSON parser accepts.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(
+            f"{label} must be a number ({flag}); got {value!r}",
+            {"field": label, "value": repr(value)}) from exc
+    if not math.isfinite(number) or number < 0:
+        raise ValidationError(
+            f"{label} must be a finite, non-negative number ({flag}); got "
+            f"{number!r}. A non-finite value is not a limit: every comparison "
+            f"with NaN is false, so it would silently switch off the very "
+            f"check it configures",
+            {"field": label, "value": repr(number)})
+    return number
 
 
 def _now() -> str:
@@ -979,6 +1011,67 @@ class CheckStore:
         return path
 
 
+#: The keys a posted record must carry a *usable* value for, with the type the
+#: gate's verdict reads them as. ``head`` and ``source`` may be null (a project
+#: with no branch layer, a bare commit); the verdict has a branch for that.
+_RECORD_TYPES = (("posted_at", str), ("status", str), ("complete", bool),
+                 ("stages", list), ("report", dict))
+
+
+def validate_record(record) -> list[str]:
+    """Every problem with a **posted record** (empty = valid).
+
+    ``validate_report``'s counterpart for the envelope, and the reason the gate
+    can trust what it reads. Two families of problem, both real (review C5):
+
+    * the record is not the document this version writes — a different
+      ``CHECKS_SCHEMA``, a missing field, a hand-written
+      ``{"head": …, "status": "green"}`` that never came from a run at all;
+    * the envelope **disagrees with the report it wraps**. Every derived field
+      here is copied from the report by :meth:`CheckRunner.post_to_proposal`, so
+      a mismatch means one of the two was edited — and the edited one is
+      whichever says something more convenient.
+
+    An unvalidatable record is a ``fail``, never a ``skipped``: we are holding
+    evidence, and evidence we cannot read is not the absence of evidence.
+    """
+    if not isinstance(record, dict):
+        return ["the posted record is not an object"]
+    problems: list[str] = []
+    if record.get("schema") != CHECKS_SCHEMA:
+        problems.append(f"schema is {record.get('schema')!r}, expected "
+                        f"{CHECKS_SCHEMA}")
+    for key, kind in _RECORD_TYPES:
+        if key not in record:
+            problems.append(f"missing key {key!r}")
+        elif not isinstance(record[key], kind):
+            problems.append(f"{key} is {record[key]!r}, expected "
+                            f"{kind.__name__}")
+    if record.get("exit_code") not in (0, 1, 2):
+        problems.append(f"exit_code is {record.get('exit_code')!r}, expected "
+                        f"0, 1 or 2")
+    for key in ("head", "source"):
+        if record.get(key) is not None and not isinstance(record.get(key), str):
+            problems.append(f"{key} is {record.get(key)!r}, expected a string "
+                            f"or null")
+    problems += _summary_problems(record.get("summary"), "summary")
+    report = record.get("report")
+    if not isinstance(report, dict):
+        return problems              # already reported; nothing to cross-check
+    problems += [f"report: {problem}" for problem in validate_report(report)]
+    if problems:
+        return problems
+    source = report.get("source") or {}
+    for key, value in (("status", report.get("status")),
+                       ("exit_code", report.get("exit_code")),
+                       ("complete", bool(report.get("complete", True))),
+                       ("head", source.get("sha"))):
+        if record.get(key) != value:
+            problems.append(f"{key} is {record.get(key)!r}, but the report it "
+                            f"wraps says {value!r}")
+    return problems
+
+
 def _gate(state: str, summary: str, details: dict) -> dict:
     """One ``checks`` gate object. The name is fixed here, in one place, so a
     provider bug can never emit a differently named gate and quietly leave
@@ -1059,7 +1152,15 @@ class CheckRunner:
     something the budget did. The honest limitation, which is also in
     ``--help`` and the docs: ``service._ensure_built`` hard-codes 300 s and the
     drawing tools 120 s, neither taking a ``timeout_s``, so the worst-case
-    overshoot is **one in-flight kernel call**.
+    overshoot is **one in-flight kernel call** — and when that call is the
+    *last* item, the report stays complete and says so in ``warnings``
+    (:meth:`_note_overshoot`).
+
+    An instance is either **shared** (``service.checks``, which the CLI, the
+    chat agent, the tool and the route all reach for) or a **run context**
+    (:meth:`_run_context`). Only the second one carries a deadline, and only
+    the second one is ever mutated: sharing execution policy between concurrent
+    runs is what review C3 was.
     """
 
     def __init__(self, service, registry=None):
@@ -1067,8 +1168,11 @@ class CheckRunner:
         # docstring; the pack that builds this loads before both of theirs.
         self.service = service
         self._registry = registry
-        # Per-run state, reset by `run`: the deadline and whether anything was
-        # cut short by it (which is what `complete: false` means).
+        # THIS runner's execution policy — the deadline, whether anything was
+        # cut short by it (which is what `complete: false` means) and the
+        # interference noise floor. On the shared `service.checks` instance
+        # these keep their defaults forever: `run` measures through a per-run
+        # runner it creates (see `_run_context`), and never assigns to them.
         self._deadline: float | None = None
         self._truncated = False
         self._min_volume = 0.001
@@ -1077,6 +1181,49 @@ class CheckRunner:
         self.last: dict[str, dict] = {}
 
     # ------------------------------------------------------------- the budget
+
+    def _run_context(self, budget_s: float | None, min_volume: float,
+                     started: float) -> "CheckRunner":
+        """A runner that holds **this** run's policy and no other's.
+
+        ``service.checks`` is a singleton: one instance answers the CLI, the
+        chat agent, the ``run_checks`` tool and the route, and a check runs for
+        minutes. Storing the deadline, the truncation flag and the interference
+        threshold on it made them shared mutable state with no serialization —
+        so a second run starting mid-flight rewrote the first one's budget and
+        the first one could still report ``complete: true`` (review C3).
+
+        The fix is a per-run *context*, and the context is a runner: the stage
+        methods already take their policy from ``self``, so binding them to a
+        throwaway instance changes no signature, no caller and no test that
+        drives a stage directly. A lock around whole runs was the alternative
+        and is worse — a ten-minute CI run would block the UI's own check.
+        """
+        run = CheckRunner(self.service, self._registry)
+        run._deadline = None if budget_s is None else started + budget_s
+        run._min_volume = min_volume
+        return run
+
+    def _note_overshoot(self, budget_s: float | None,
+                        warnings: list[str]) -> None:
+        """Say so when the run finished *past* its deadline.
+
+        The deadline is read before every item, so an expiry inside the **last**
+        one is checked by nobody. Everything selected was still measured, so the
+        report stays ``complete`` — ``complete: false`` means "something was not
+        measured", and flipping it here would turn a fully measured green run
+        into exit 2 for the one-in-flight-call overshoot the contract already
+        allows. What it may not do is stay silent about it.
+        """
+        if budget_s is None or self._deadline is None or self._truncated \
+                or not self._out_of_budget():
+            return
+        warnings.append(
+            f"the run overshot its {budget_s:g} s --budget by "
+            f"{time.monotonic() - self._deadline:.1f} s: a kernel call already "
+            f"in flight cannot be preempted (a build hard-codes 300 s, a "
+            f"drawing 120 s). Everything selected was still measured, so this "
+            f"report is complete")
 
     def _remaining(self) -> float | None:
         """Seconds left, or None when the run is unbounded — the value the
@@ -1156,13 +1303,26 @@ class CheckRunner:
         cache. *verify_determinism* appends the ``determinism`` pseudo-stage:
         every part built a second time into a fresh cache and compared byte
         for byte.
+
+        An **empty** *stages* tuple selects no stage at all (all four are
+        reported ``skip``/``not_selected``). That is this method's contract and
+        it is deliberate; the tool and the route refuse an explicitly empty
+        list instead, because a caller who sends ``stages: []`` meant
+        something, and neither "nothing" nor "everything" is it.
+
+        **Nothing here writes to ``self``.** ``service.checks`` is one runner
+        shared by the CLI, the chat agent, the MCP tool and the route, so this
+        run's deadline, truncation flag and interference threshold live on a
+        per-run runner created by :meth:`_run_context` (review C3): two
+        concurrent runs cannot see, let alone overwrite, each other's policy.
         """
         selected = self._selected(stages)
+        budget = (None if budget_s is None
+                  else _finite(budget_s, "budget_s", "--budget"))
+        volume = _finite(min_volume, "min_volume", "--min-volume")
         started_at = _now()
         started = time.monotonic()
-        self._deadline = None if budget_s is None else started + float(budget_s)
-        self._truncated = False
-        self._min_volume = float(min_volume)
+        run = self._run_context(budget, volume, started)
 
         seen: set[str] = set()
         warnings: list[str] = []
@@ -1170,24 +1330,25 @@ class CheckRunner:
         # Validated ONCE, here, before anything is built or materialized: a
         # work dir that overlaps the project is refused rather than written to
         # (and never created as a side effect of being refused).
-        root = self._work_dir(proj, work_dir)
+        root = run._work_dir(proj, work_dir)
         if ref is None:
-            manifest = self.service.store.manifest(proj)  # NotFoundError: → 2
+            manifest = run.service.store.manifest(proj)  # NotFoundError: → 2
             project = manifest.get("name") or proj
-            source = self._source(proj, sha, ref_label)
-            blocks = self._measure(self, proj, selected, seen, warnings, errors)
+            source = run._source(proj, sha, ref_label)
+            blocks = run._measure(run, proj, selected, seen, warnings, errors)
             if verify_determinism:
-                blocks.append(self._determinism_stage(
-                    self, proj, root, seen, warnings, errors))
+                blocks.append(run._determinism_stage(
+                    run, proj, root, seen, warnings, errors))
         else:
-            project, source, blocks = self._run_ref(
+            project, source, blocks = run._run_ref(
                 proj, ref, selected, seen, warnings, errors, sha=sha,
                 ref_label=ref_label, work_dir=root,
                 verify_determinism=verify_determinism)
+        run._note_overshoot(budget, warnings)
         report = finalize_report(
             project, blocks, source=source, host=self._host(),
             started=started_at, duration_s=time.monotonic() - started,
-            strict=strict, complete=not self._truncated, warnings=warnings,
+            strict=strict, complete=not run._truncated, warnings=warnings,
             errors=errors)
         # Both are here rather than in the tool pack so that the CLI, the tool
         # and the route emit the same event and fill the same cache — one run,
@@ -2309,6 +2470,7 @@ class CheckRunner:
         """
         actor = locks.current_client_id()
         source = (report.get("source") or {})
+        self._refuse_dirty(proj, pid, source)
         record = {
             "schema": CHECKS_SCHEMA,
             "posted_at": _now(),
@@ -2372,6 +2534,36 @@ class CheckRunner:
                 "status": record["status"], "exit_code": record["exit_code"],
                 "posted_at": record["posted_at"], "path": str(path),
                 "audit_seq": entry.get("seq")}
+
+    def _refuse_dirty(self, proj: str, pid: str, source: dict) -> None:
+        """Refuse to certify a commit with a measurement of something else.
+
+        A **working-tree** report records the tree's ``.history`` head as
+        ``source.sha`` and ``dirty: true`` beside it. The gate compares that sha
+        with the proposal's source head, so posting one is a claim about the
+        *committed* bytes — bytes an uncommitted edit means we never measured
+        (review C4): commit C has the broken drawing, the local fix makes the
+        run green, the gate passes, and the merge lands C.
+
+        Fail-closed, at the post rather than at the gate, because the honest
+        report should never become a record at all: the CLI prints the refusal
+        beside its other post notes and exits 2, and a CI runner — where
+        ``actions/checkout`` materializes the commit — is never dirty.
+
+        A ``--ref`` run is untouched: it measured the **commit** it
+        materialized, and its ``dirty`` flag describes a working tree that was
+        deliberately not measured.
+        """
+        if source.get("kind") != "worktree" or not source.get("dirty"):
+            return
+        raise ValidationError(
+            f"this report measured a DIRTY working tree, so it cannot certify "
+            f"{_short(source.get('sha')) or 'a commit'}: the gate reads the "
+            f"posted head as the commit that was measured, and uncommitted "
+            f"edits mean it was not. Commit (or stash) the changes and re-run "
+            f"`agentcad check --proposal {pid}`",
+            {"project": proj, "id": pid, "head": source.get("sha"),
+             "dirty": True, "source": source.get("kind")})
 
     def posted_report(self, proj: str, pid: str) -> dict:
         """The record posted to a proposal, or a 404 — the durable counterpart
@@ -2491,6 +2683,18 @@ class CheckRunner:
                              _gate_details(posted=True, reason="unreadable",
                                            error=_payload(exc)))
             if record is None:
+                if runner._was_posted(project, pid):
+                    # The audit says a report WAS posted here, so its absence
+                    # is deleted evidence — not an unchecked proposal, and
+                    # never the permissive verdict (review C5).
+                    return _gate("fail",
+                                 f"a check report was posted to proposal {pid} "
+                                 f"and its record is gone: the audit log "
+                                 f"records the post, so this is missing "
+                                 f"evidence rather than an unchecked "
+                                 f"proposal — re-run `agentcad check "
+                                 f"--proposal {pid}` and post it again",
+                                 _gate_details(posted=True, reason="missing"))
                 # Byte-identical to PRD-002's placeholder: installing this
                 # feature changes nothing until a report is actually posted.
                 return _gate("skipped", "no checks posted",
@@ -2509,10 +2713,43 @@ class CheckRunner:
 
         return checks
 
+    def _was_posted(self, proj: str, pid: str) -> bool:
+        """Whether the **audit log** says a check was ever posted to *pid*.
+
+        ``audit.jsonl`` is append-only (FR14) and nothing in this feature can
+        remove a line from it, so it outlives the record it describes. That is
+        what lets the gate tell "the evidence was deleted" from "there never was
+        any" — the difference between a fail and a merge-permissive skip.
+
+        Fail-closed on its own failure: an audit we cannot read cannot prove
+        that nothing was posted. (``ProposalStore.audit`` already answers ``[]``
+        for a log that does not exist, which is the ordinary never-posted case.)
+        """
+        try:
+            entries = self._check_store()._store().audit(proj, pid)
+        except Exception:  # noqa: BLE001 — see the docstring: unknown is posted
+            return True
+        return any(isinstance(entry, dict)
+                   and entry.get("action") == "checks_posted"
+                   for entry in entries)
+
     def _checks_verdict(self, project: str, proposal: dict,
                         record: dict) -> dict:
         """The posted record read against the proposal as it is *now*."""
         pid = proposal.get("id")
+        problems = validate_record(record)
+        if problems:
+            # A record that is not the document a run writes says nothing about
+            # any geometry, whoever wrote it (review C5).
+            return _gate("fail",
+                         f"the check report posted to proposal {pid} is not a "
+                         f"valid record ({problems[0]}); run the check again "
+                         f"with this version of agentcad and post it",
+                         _gate_details(
+                             posted=True, reason="invalid_record",
+                             error={"type": "validation_error",
+                                    "message": "; ".join(problems[:5]),
+                                    "details": {"problems": problems[:5]}}))
         source = proposal.get("source")
         head = record.get("head")
         current = self._source_head(project, source)

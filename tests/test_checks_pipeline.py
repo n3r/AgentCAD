@@ -22,6 +22,7 @@ byte of ``examples/``.
 from __future__ import annotations
 
 import shutil
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -810,6 +811,172 @@ def test_a_kernel_timeout_the_deadline_caused_is_a_budget_skip(
     stage = runner._stage("assembly", "assy2", {"assembly"}, set(), [], [])
     row = next(item for item in stage["items"] if item["id"] == subject)
     assert row["status"] == "error" and runner._truncated is False
+
+
+@pytest.mark.parametrize("kwargs,named", [
+    ({"budget_s": float("nan")}, "budget"),
+    ({"budget_s": float("inf")}, "budget"),
+    ({"budget_s": -1.0}, "budget"),
+    ({"min_volume": float("nan")}, "min_volume"),
+    ({"min_volume": float("-inf")}, "min_volume"),
+    ({"min_volume": -0.5}, "min_volume"),
+])
+def test_a_non_finite_budget_or_threshold_is_refused_before_anything_runs(
+        stack, kwargs, named):
+    """Review C9: ``argparse`` accepts ``nan``/``inf`` and the runner checked
+    neither. A NaN deadline makes **every** ``time.monotonic() > deadline``
+    comparison false, so the budget silently disappears; a NaN ``min_volume``
+    makes every ``volume > min_volume`` false, so a real overlap reports green.
+    Both are refused where the run starts, so no surface can pass one on."""
+    service, _registry, runner = stack
+    service.create_project("finite")
+
+    with pytest.raises(ValidationError) as excinfo:
+        runner.run("finite", stages=("build",), **kwargs)
+
+    assert named in str(excinfo.value)
+    # The offending value travels as a STRING: a NaN in `details` would be
+    # `NaN` in the JSON payload this error becomes, which is not valid JSON.
+    assert isinstance(excinfo.value.details.get("value"), str)
+
+
+def test_an_overshoot_after_the_last_item_is_named_rather_than_silent(
+        stack, monkeypatch):
+    """The tail of review C2/finding 2: the deadline is read *before* each item,
+    so an expiry that happens **inside the last one** is checked by nobody.
+
+    Everything selected was still measured, so the report stays ``complete``
+    (``complete: false`` means "something was not measured", and flipping it
+    here would turn a fully-measured green run into exit 2 for an overshoot the
+    docs already allow). What it must not do is claim, silently, that it stayed
+    inside its budget: the overshoot is a warning, in both renderings.
+    """
+    service, _registry, runner = stack
+    service.create_project("overshoot")
+    service.create_part("overshoot", "cube", script=BOX_SCRIPT)
+
+    def slow_build(proj, part_id):
+        time.sleep(2.0)                    # longer than the whole budget
+        return {"ok": True, "cache_key": "k", "metrics": {}}
+
+    monkeypatch.setattr(service, "_ensure_built", slow_build)
+
+    # Above the one-second floor, so the call IS issued — and then it runs past
+    # the deadline, with no later item to notice.
+    report = runner.run("overshoot", stages=("build",), budget_s=1.05)
+
+    assert [item["status"] for item in _stage(report, "build")["items"]] == \
+        ["pass"]
+    assert report["complete"] is True and report["exit_code"] == 0
+    assert any("budget" in warning and "overshot" in warning
+               for warning in report["warnings"]), report["warnings"]
+    assert "overshot" in render_markdown(report)
+
+
+def _interleaved(monkeypatch, run, first: dict, second: dict) -> dict:
+    """Two ``CheckRunner.run`` calls forced to overlap, at the exact seam the
+    singleton's per-run fields used to be shared in.
+
+    ``_source`` runs after ``run`` has fixed this run's policy and before the
+    first stage reads it, so pausing the first run there and letting the second
+    one start is the review's own scenario ("session B starts an unbounded
+    check and sets ``_deadline = None``") made deterministic.
+    """
+    ready, released = threading.Event(), threading.Event()
+    original = CheckRunner._source
+
+    def sequenced(self, proj, sha, ref_label):
+        if threading.current_thread().name == "first":
+            ready.set()
+            released.wait(30)
+        else:
+            released.set()
+        return original(self, proj, sha, ref_label)
+
+    monkeypatch.setattr(CheckRunner, "_source", sequenced)
+    reports: dict = {}
+    failures: list = []
+
+    def go(name: str, kwargs: dict) -> None:
+        try:
+            reports[name] = run(**kwargs)
+        except BaseException as exc:  # noqa: BLE001 — re-raised by the caller
+            failures.append(exc)
+            ready.set()
+            released.set()
+
+    threads = [threading.Thread(target=go, name=name, args=(name, kwargs))
+               for name, kwargs in (("first", first), ("second", second))]
+    threads[0].start()
+    assert ready.wait(30), "the first run never reached the seam"
+    threads[1].start()
+    for thread in threads:
+        thread.join(300)
+        assert not thread.is_alive()
+    assert not failures, failures
+    return reports
+
+
+def test_two_concurrent_runs_never_share_a_budget(stack, monkeypatch):
+    """Review C3: ``service.checks`` is **one** runner, and ``run`` wrote the
+    deadline and the truncation flag onto it. Two concurrent callers — a chat
+    session and a route, an MCP client and the CLI — therefore overwrote each
+    other's execution policy: the short-budget run below went on to measure
+    everything against the *other* run's null deadline and reported
+    ``complete: true``, which is a promise it never kept.
+    """
+    service, _registry, runner = stack
+    service.create_project("shared")
+    service.create_part("shared", "cube", script=BOX_SCRIPT)
+    monkeypatch.setattr(service, "_ensure_built",
+                        lambda proj, part_id: {"ok": True, "cache_key": "k",
+                                               "metrics": {}})
+
+    reports = _interleaved(
+        monkeypatch, lambda **kwargs: runner.run("shared", stages=("build",),
+                                                 **kwargs),
+        {"budget_s": 0.0001}, {"budget_s": None})
+
+    # Each report honours the budget ITS caller asked for.
+    assert reports["first"]["complete"] is False
+    assert reports["first"]["exit_code"] == 2
+    assert _stage(reports["first"], "build")["reason"] == "budget_exceeded"
+    assert _stage(reports["first"], "build")["items"] == []
+    assert reports["second"]["complete"] is True
+    assert [item["status"] for item
+            in _stage(reports["second"], "build")["items"]] == ["pass"]
+    # And the shared runner is left holding no run's policy at all.
+    assert runner._deadline is None and runner._truncated is False
+
+
+def test_two_concurrent_runs_never_share_the_interference_threshold(
+        stack, monkeypatch):
+    """The same defect on ``--min-volume``: the threshold was an instance field,
+    so one run could hand the kernel another run's noise floor — and a NaN or
+    simply larger threshold makes a real overlap report green."""
+    service, _registry, runner = stack
+    service.create_project("shared2")
+    service.create_part("shared2", "cube", script=BOX_SCRIPT)
+    service.set_assembly("shared2", [
+        {"id": "cube_1", "part": "cube"},
+        {"id": "cube_2", "part": "cube", "position": [50.0, 0.0, 0.0]}])
+    seen: dict[str, float] = {}
+    monkeypatch.setattr(service, "_resolved_instances",
+                        lambda proj, timeout_s=None: [])
+
+    def interference(proj, min_volume, timeout_s=None):
+        seen[threading.current_thread().name] = min_volume
+        return {"pairs": [], "skipped_mesh": []}
+
+    monkeypatch.setattr(service, "check_interference", interference)
+
+    _interleaved(monkeypatch,
+                 lambda **kwargs: runner.run("shared2", stages=("assembly",),
+                                             **kwargs),
+                 {"min_volume": 1.0}, {"min_volume": 2.0})
+
+    assert seen == {"first": 1.0, "second": 2.0}
+    assert runner._min_volume == 0.001
 
 
 def test_a_generous_budget_does_not_truncate_anything(stack, tmp_path):

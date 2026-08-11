@@ -48,8 +48,18 @@ def _build_service(projects_dir: Path, extra_writable: list[str] | None = None):
     else:
         kernel = KernelPool(size=size, writable_dirs=writable)
     kernel.start()
-    service = AgentCADService(projects_dir, kernel, EventBus())
-    _register_examples(service)
+    try:
+        service = AgentCADService(projects_dir, kernel, EventBus())
+        _register_examples(service)
+    except BaseException:
+        # The workers are already running: anything that raises between here
+        # and the return would leave one process per worker (~0.5 GB each)
+        # behind, with nobody holding a reference to stop them.
+        try:
+            kernel.stop()
+        except Exception:  # noqa: BLE001 — the original failure is the answer
+            pass
+        raise
     return service
 
 
@@ -181,6 +191,37 @@ def _check_stages(value: str | None) -> tuple[str, ...]:
         raise ValueError(f"unknown --stages value: {named}; expected a "
                          f"comma-separated subset of {', '.join(STAGES)}")
     return names
+
+
+def _finite_arg(flag: str, why: str):
+    """An ``argparse`` ``type`` for a limit: finite, non-negative, or exit 2.
+
+    ``type=float`` accepts ``nan`` and ``inf``, and a non-finite limit is not a
+    loose limit — it is **no limit at all**, silently: every comparison with
+    NaN is false, so ``--budget nan`` switches off the deadline it configures
+    and ``--min-volume nan`` makes every ``volume > min_volume`` false, which
+    reports a genuinely interfering assembly as green (review C9).
+
+    Refused here, before the kernel starts, because an invocation the user can
+    still fix should cost a usage line rather than three seconds of worker
+    spawn. ``core.checks`` refuses the same values again, for the tool and the
+    route.
+    """
+    import math
+
+    def parse(value: str) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise argparse.ArgumentTypeError(
+                f"{flag} must be a number; got {value!r}") from None
+        if not math.isfinite(number) or number < 0:
+            raise argparse.ArgumentTypeError(
+                f"{flag} must be a finite, non-negative number; got {value!r} "
+                f"({why})")
+        return number
+
+    return parse
 
 
 def _write_check_outputs(args, report: dict) -> list[str] | None:
@@ -396,27 +437,35 @@ def cmd_check(args) -> int:
         print(f"agentcad check: {exc}", file=sys.stderr)
         return 2
 
-    # Absolute, and known before the kernel spawns: `history._run` runs git with
-    # cwd set to the project, so a relative work dir would materialize a `--ref`
-    # worktree *inside* the project — and the seatbelt profile is fixed at spawn.
-    work_dir = None
-    extra_writable: list[str] = []
-    if args.work_dir:
-        work_dir = str(Path(args.work_dir).expanduser().resolve())
-        Path(work_dir).mkdir(parents=True, exist_ok=True)
-        extra_writable.append(work_dir)
-    # A project given as a path is the CI case (`--project .` on a checkout) and
-    # it lives nowhere `_writable_roots` guessed, so the kernel could not write
-    # its `.cache/` — every part would fail to build with a PermissionError
-    # instead of a verdict. It is known here, before the workers spawn, which is
-    # the only moment the seatbelt profile can still be widened.
-    if _is_path(args.project):
-        extra_writable.append(str(Path(args.project).expanduser().resolve()))
-
-    service = _build_service(Path(args.projects_dir or DEFAULT_PROJECTS_DIR),
-                             extra_writable=extra_writable or None)
+    # Setup is INSIDE the mapping: creating the work dir and starting the kernel
+    # are as able to fail as the run itself (an unwritable --work-dir, a
+    # projects dir that is a file), and a traceback out of here would be process
+    # exit 1 — the code reserved for "the model is wrong".
+    service = None
     post_to = args.proposal
     try:
+        # Absolute, and known before the kernel spawns: `history._run` runs git
+        # with cwd set to the project, so a relative work dir would materialize
+        # a `--ref` worktree *inside* the project — and the seatbelt profile is
+        # fixed at spawn.
+        work_dir = None
+        extra_writable: list[str] = []
+        if args.work_dir:
+            work_dir = str(Path(args.work_dir).expanduser().resolve())
+            Path(work_dir).mkdir(parents=True, exist_ok=True)
+            extra_writable.append(work_dir)
+        # A project given as a path is the CI case (`--project .` on a checkout)
+        # and it lives nowhere `_writable_roots` guessed, so the kernel could not
+        # write its `.cache/` — every part would fail to build with a
+        # PermissionError instead of a verdict. It is known here, before the
+        # workers spawn, which is the only moment the seatbelt profile can still
+        # be widened.
+        if _is_path(args.project):
+            extra_writable.append(str(Path(args.project).expanduser().resolve()))
+
+        service = _build_service(
+            Path(args.projects_dir or DEFAULT_PROJECTS_DIR),
+            extra_writable=extra_writable or None)
         locks.set_client_id("ci")
         registry = build_registry(service)
         project = args.project
@@ -449,7 +498,15 @@ def cmd_check(args) -> int:
         print(f"agentcad check: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
     finally:
-        service.kernel.stop()
+        # Tolerant of a partial construction: setup may have failed before
+        # there was a kernel to stop, and a kernel that will not stop must not
+        # replace the verdict with its own traceback.
+        if service is not None:
+            try:
+                service.kernel.stop()
+            except Exception as exc:  # noqa: BLE001
+                print(f"agentcad check: the kernel did not stop cleanly: "
+                      f"{exc}", file=sys.stderr)
 
     # Everything after the run is under the SAME exit-code mapping as the run
     # itself: writing the report, posting it and printing it can all fail (an
@@ -532,12 +589,18 @@ def main() -> None:
     p.add_argument("--verify-determinism", action="store_true",
                    help="build every part a second time on a cold cache and "
                         "compare the artefacts byte for byte")
-    p.add_argument("--budget", type=float, default=None, metavar="SECONDS",
+    p.add_argument("--budget", default=None, metavar="SECONDS",
+                   type=_finite_arg("--budget",
+                                    "a NaN deadline is never in the past, so "
+                                    "it bounds nothing"),
                    help="deadline read before every item and every kernel "
                         "call; a build (300 s) or drawing (120 s) already in "
                         "flight cannot be preempted, so the worst case is one "
                         "such call")
-    p.add_argument("--min-volume", type=float, default=0.001, metavar="MM3",
+    p.add_argument("--min-volume", default=0.001, metavar="MM3",
+                   type=_finite_arg("--min-volume",
+                                    "every comparison with NaN is false, so a "
+                                    "real overlap would report green"),
                    help="interference volume below which an overlap is noise")
     p.add_argument("--work-dir", default=None, metavar="DIR",
                    help="where --ref materializes its worktree, in a unique "
