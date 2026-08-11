@@ -49,7 +49,9 @@ are restricted to a comment's own author as an honesty check, and anyone may
 resolve or reopen anything, because there is no authentication to base a rule
 on. The audit says who did.
 
-Slices that extend this module: ``face``/``script_range`` anchors (2),
+``face`` and ``script_range`` anchors landed with ``core/anchors.py`` (slice
+2), which also annotates every *view* — never the document — with a
+``resolution`` block. Slices that still extend this module:
 ``comment_changed`` events published from the manager (3), ``proposal_hunk``
 anchors (4), mentions and ``notifications.jsonl`` (5).
 """
@@ -64,7 +66,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import locks
+from . import anchors, locks
 from .model import NotFoundError, ValidationError
 from .project import ProjectStore
 from .proposals import actor_kind
@@ -92,6 +94,16 @@ _ANCHOR_FIELDS: dict[str, tuple[str, ...]] = {
     "script_range": ("part", "start", "end"),
     "instance": ("instance",),
     "proposal_hunk": ("proposal", "file", "hunk"),
+}
+
+# The evidence each kind captures AT CREATION, from the geometry or the script
+# itself. Like ``_PROVENANCE`` below these are stamped here and refused from a
+# caller: a signature a client can assert is not evidence of anything, and an
+# anchor whose snippet does not match the script it names would resolve against
+# a fiction. They are stored on the anchor beside the required fields.
+_ANCHOR_EVIDENCE: dict[str, tuple[str, ...]] = {
+    "face": ("signature",),
+    "script_range": ("snippet", "snippet_sha256", "before", "after"),
 }
 
 # The tool/REST surface says ``part_id``/``instance_id`` (FR1's wording); the
@@ -487,12 +499,18 @@ class CommentManager:
 
     def list(self, proj: str, state: str | None = None,
              kind: str | None = None, part_id: str | None = None,
-             branch: str | None = None) -> dict:
-        """``{threads, counts}``. Anchor *resolution* is slice 2, so a listing
-        here is a manifest-free read of the thread documents.
+             branch: str | None = None, anchor_status: str | None = None,
+             resolve_anchors: bool = True) -> dict:
+        """``{threads, counts}``, each thread carrying its live ``resolution``.
 
         ``counts`` describes the whole project, not the filtered page — a
-        badge saying "2 open" must not change because a filter is applied.
+        badge saying "2 open" must not change because a filter is applied — so
+        every thread is resolved even when the page shows a few. That stays
+        cheap by construction: resolution reads the manifest, at most one
+        cached face table per part and at most one git blob per anchor, and
+        **never builds** (design Decision 4). ``resolve_anchors=False`` is the
+        cheapest possible listing: no ``resolution`` block at all, and no
+        ``orphaned`` count, because nothing was looked at.
         """
         self.service.store.manifest(proj)  # existence check -> notfound_error
         if state is not None and state not in STATES:
@@ -501,21 +519,39 @@ class CommentManager:
         if kind is not None and kind not in ANCHOR_KINDS:
             raise ValidationError(f"unknown anchor kind {kind!r}",
                                   {"allowed": list(ANCHOR_KINDS)})
+        if anchor_status is not None and anchor_status not in anchors.RESOLUTION:
+            raise ValidationError(f"unknown anchor status {anchor_status!r}",
+                                  {"allowed": list(anchors.RESOLUTION)})
+        if anchor_status is not None and not resolve_anchors:
+            raise ValidationError(
+                "anchor_status filters on a resolution that "
+                "resolve_anchors=false never computes",
+                {"anchor_status": anchor_status})
         threads = self.store.list(proj)
         counts = {name: 0 for name in STATES}
+        if resolve_anchors:
+            counts["orphaned"] = 0
+        # One branch/head resolution for the whole page, not one per thread.
+        context = self._context(proj)
+        rows = []
         for thread in threads:
-            if thread.get("state") in counts:
+            # ``STATES``, not ``counts``: ``orphaned`` is an anchor's status,
+            # not a thread's state, and a hand-edited document must not be able
+            # to increment it by claiming to be in it.
+            if thread.get("state") in STATES:
                 counts[thread["state"]] += 1
-        # One branch resolution for the whole page, not one per thread.
-        root = self.service.store.path_of(proj)
-        rows = [
-            self._view(proj, thread, root=root) for thread in threads
-            if (state is None or thread.get("state") == state)
-            and (kind is None or (thread.get("anchor") or {}).get("kind") == kind)
-            and (part_id is None
-                 or (thread.get("anchor") or {}).get("part") == part_id)
-            and (branch is None or thread.get("branch") == branch)
-        ]
+            view = self._view(proj, thread, context=context,
+                              resolve_anchors=resolve_anchors)
+            status = (view.get("resolution") or {}).get("status")
+            if status == "orphaned":
+                counts["orphaned"] += 1
+            anchor = thread.get("anchor") or {}
+            if ((state is None or thread.get("state") == state)
+                    and (kind is None or anchor.get("kind") == kind)
+                    and (part_id is None or anchor.get("part") == part_id)
+                    and (branch is None or thread.get("branch") == branch)
+                    and (anchor_status is None or status == anchor_status)):
+                rows.append(view)
         return {"threads": rows, "counts": counts}
 
     def audit(self, proj: str, tid: str) -> list[dict]:
@@ -551,15 +587,33 @@ class CommentManager:
             })
         return self._view(proj, thread)
 
-    def _view(self, proj: str, thread: dict, root: Path | None = None) -> dict:
+    def _context(self, proj: str) -> dict:
+        """What one page of threads is read against: the project root, the
+        reader's branch and its head. Resolved once and passed down, never
+        once per thread."""
+        return anchors.read_context(self.service, proj)
+
+    def _view(self, proj: str, thread: dict, root: Path | None = None,
+              context: dict | None = None,
+              resolve_anchors: bool = True) -> dict:
         """A copy annotated for readers: each attachment carries ``available``
-        against the caller's branch.
+        against the caller's branch, and the anchor carries where it points
+        *now*.
 
         A missing file is reported, never raised: ``exports/`` is
         branch-scoped, so a render made on another branch legitimately is not
         here, and a thread must stay readable regardless.
+
+        ``resolution`` is computed here and **only here** — it belongs to the
+        view, never to storage. The stored anchor is evidence of what the
+        author pointed at, and evidence that rewrites itself is not evidence;
+        ``core/anchors.py`` owns the four states and the rule that an
+        ambiguous match is an orphan, not a guess.
         """
         view = copy.deepcopy(thread)
+        if context is None and root is None:
+            context = self._context(proj)
+        root = (context or {}).get("root") if root is None else root
         root = self.service.store.path_of(proj) if root is None else root
         for comment in view.get("comments") or []:
             comment["attachments"] = [
@@ -567,6 +621,9 @@ class CommentManager:
                 for path in comment.get("attachments") or []
                 if isinstance(path, str)
             ]
+        if resolve_anchors:
+            view["resolution"] = anchors.resolve(
+                self.service, proj, view.get("anchor"), context)
         return view
 
     # --------------------------------------------------------------- anchors
@@ -590,11 +647,12 @@ class CommentManager:
                 {"kind": kind, "allowed": list(ANCHOR_KINDS)},
             )
         allowed = _ANCHOR_FIELDS[kind]
+        evidence = _ANCHOR_EVIDENCE.get(kind, ())
         fields: dict[str, object] = {}
         for key, value in anchor.items():
             key = _ANCHOR_ALIASES.get(key, key)
-            if key == "kind" or key in _PROVENANCE:
-                continue  # provenance is stamped here, never taken
+            if key == "kind" or key in _PROVENANCE or key in evidence:
+                continue  # provenance and evidence are derived here, never taken
             if key not in allowed:
                 raise ValidationError(
                     f"anchor kind {kind!r} does not take {key!r}",
@@ -682,16 +740,15 @@ class CommentManager:
         return {"instance": instance}
 
     def _validate_face(self, proj: str, fields: dict) -> dict:
-        raise NotImplementedError(
-            "face anchors validate against the <key>.faces.u32 sidecar, which "
-            "lands with core/anchors.py"
-        )
+        """Against ``max(sidecar) + 1`` — never ``metrics.n_faces``, which
+        build123d deduplicates (PRD-008 R2). Captures the signature the
+        matcher re-identifies the face by."""
+        return anchors.validate_face(self.service, proj, fields)
 
     def _validate_script_range(self, proj: str, fields: dict) -> dict:
-        raise NotImplementedError(
-            "script_range anchors store a snippet and its context, which land "
-            "with core/anchors.py"
-        )
+        """Against the current script's line count, capturing the exact
+        snippet and its context — the evidence tier 1 resolves with."""
+        return anchors.validate_script_range(self.service, proj, fields)
 
     def _validate_proposal_hunk(self, proj: str, fields: dict) -> dict:
         raise NotImplementedError(
@@ -773,7 +830,7 @@ _VALIDATORS = {
     "instance": CommentManager._validate_instance,
     "proposal_hunk": CommentManager._validate_proposal_hunk,
 }
-_SUPPORTED = ("part", "param", "instance")
+_SUPPORTED = ("part", "face", "param", "script_range", "instance")
 
 
 def _comment(cid: str, actor: str, ts: str, body: str,

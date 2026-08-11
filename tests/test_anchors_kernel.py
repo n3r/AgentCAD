@@ -1,0 +1,308 @@
+"""PRD-008 slice 2 against real geometry: AC2, R2 and R3.
+
+Everything here needs a kernel build, so the module is ``slow`` (and
+``integration``: it crosses the worker process boundary). The pure logic —
+``face_table``, the matcher, both script_range tiers, the four-state
+constructor — is in ``tests/test_anchors.py`` and needs none of this.
+
+Sections: 1. AC2, a face anchor across a parameter change · 2. AC2, a face
+that was cut away · 3. R2, the two meanings of ``n_faces`` · 4. R3, a
+mesh-derived signature versus ``face_info``.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from agentcad.core import anchors
+from agentcad.core.comments import CommentManager
+from agentcad.core.service import AgentCADService, EventBus
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
+
+BOSS = '''\
+import build123d as b3d
+
+PARAMS = {
+    "plate_w": {"default": 40.0, "min": 20.0, "max": 80.0, "unit": "mm"},
+    "boss_h":  {"default": 10.0, "min": 4.0,  "max": 20.0, "unit": "mm"},
+}
+
+
+def build(p):
+    plate = b3d.Box(p.plate_w, 40, 10)
+    boss = b3d.Cylinder(radius=8, height=p.boss_h).moved(
+        b3d.Location((0, 0, 5 + p.boss_h / 2)))
+    return plate + boss
+'''
+
+NO_BOSS = '''\
+import build123d as b3d
+
+PARAMS = {
+    "plate_w": {"default": 40.0, "min": 20.0, "max": 80.0, "unit": "mm"},
+    "boss_h":  {"default": 10.0, "min": 4.0,  "max": 20.0, "unit": "mm"},
+}
+
+
+def build(p):
+    return b3d.Box(p.plate_w, 40, 10)
+'''
+
+TWO_SOLIDS = '''\
+import build123d as b3d
+
+PARAMS = {"size": {"default": 10.0}}
+
+
+def build(p):
+    a = b3d.Box(p.size, p.size, p.size)
+    b = b3d.Box(p.size, p.size, p.size).moved(b3d.Location((p.size * 2, 0, 0)))
+    return b3d.Compound(children=[a, b])
+'''
+
+COINCIDENT = '''\
+import build123d as b3d
+
+PARAMS = {"size": {"default": 10.0}}
+
+
+def build(p):
+    return b3d.Compound(children=[b3d.Box(p.size, p.size, p.size),
+                                  b3d.Box(p.size, p.size, p.size)])
+'''
+
+CYLINDER = '''\
+import build123d as b3d
+
+PARAMS = {"d": {"default": 20.0}}
+
+
+def build(p):
+    return b3d.Cylinder(radius=p.d / 2, height=30)
+'''
+
+
+@pytest.fixture
+def demo(kernel, tmp_path):
+    bus = EventBus()
+    service = AgentCADService(tmp_path / "projects", kernel, bus)
+    bus.on_publish = None                 # no git snapshots: not what this tests
+    service.create_project("demo")
+    service.store.add_part("demo", "boss", "Boss", "al6061", BOSS)
+    assert service.get_part("demo", "boss")["status"]["state"] == "ok"
+    anchors.forget_tables()
+    return service, CommentManager(service)
+
+
+def _top_of_boss(service, part="boss"):
+    """The boss's top face, identified the way ``tests/test_facemod.py``
+    identifies a face — by normal and position, never by a hardcoded ordinal,
+    because an ordinal is exactly what this slice proved unstable."""
+    _key, table = anchors.signature_table(service, "demo", part)
+    up = [row for row in table
+          if row["present"] and row["normal"][2] > 0.99]
+    return max(up, key=lambda row: row["centroid"][2])
+
+
+# ------------------------- 1. AC2: a face anchor across a parameter change
+
+
+def test_a_face_anchor_survives_a_parameter_change(demo):
+    """**AC2**, first half. ``plate_w`` widens the plate without touching the
+    boss; the thread must still point at the boss's top face, whether or not
+    the ordinal survived — and the identity is checked geometrically, not by
+    trusting the resolver's own answer."""
+    service, manager = demo
+    face = _top_of_boss(service)
+    thread = manager.create(
+        "demo", {"kind": "face", "part": "boss", "face_index": face["index"]},
+        "this boss needs a fillet")
+    assert thread["resolution"]["status"] == "ok"
+
+    service.set_params("demo", "boss", {"plate_w": 60.0})
+    view = manager.get("demo", thread["id"])
+    resolution = view["resolution"]
+
+    assert resolution["status"] in ("ok", "moved"), resolution
+    _key, table = anchors.signature_table(service, "demo", "boss")
+    resolved = table[resolution["face_index"]]
+    expected = _top_of_boss(service)
+    assert resolved["index"] == expected["index"], resolution
+    # and the stored anchor is untouched: it is evidence, not a cursor
+    stored = manager.store.load("demo", thread["id"])["anchor"]
+    assert stored["face_index"] == face["index"]
+    assert "resolution" not in stored
+
+
+def test_a_moved_ordinal_is_reported_as_moved_not_ok(demo):
+    """The status is about identity, not about the number: the same face at a
+    new ordinal is ``moved``, and the payload carries the new ordinal so a pin
+    is drawn in the right place."""
+    service, manager = demo
+    face = _top_of_boss(service)
+    thread = manager.create(
+        "demo", {"kind": "face", "part": "boss", "face_index": face["index"]},
+        "look")
+
+    service.set_params("demo", "boss", {"boss_h": 16.0})
+    resolution = manager.get("demo", thread["id"])["resolution"]
+
+    assert resolution["status"] in ("ok", "moved")
+    if resolution["status"] == "moved":
+        assert resolution["face_index"] != face["index"]
+        assert resolution["reason"] == "rematched_by_signature"
+    assert resolution["confidence"] > 0.5
+
+
+def test_an_unchanged_part_takes_the_byte_identical_fast_path(demo):
+    """The cache key is content-addressed, so an unchanged part needs no
+    matching at all — and no face table."""
+    service, manager = demo
+    face = _top_of_boss(service)
+    thread = manager.create(
+        "demo", {"kind": "face", "part": "boss", "face_index": face["index"]},
+        "look")
+
+    resolution = manager.get("demo", thread["id"])["resolution"]
+    assert resolution == {"status": "ok", "confidence": 1.0,
+                          "face_index": face["index"],
+                          "n_faces": resolution["n_faces"],
+                          "against": resolution["against"]}
+
+
+# ---------------------------------------- 2. AC2: a face that was cut away
+
+
+def test_a_face_that_was_cut_away_is_orphaned(demo):
+    """**AC2**, second half. The boss is deleted from the script; the thread
+    stays readable, keeps its last-known anchor, and says so."""
+    service, manager = demo
+    face = _top_of_boss(service)
+    thread = manager.create(
+        "demo", {"kind": "face", "part": "boss", "face_index": face["index"]},
+        "this boss needs a fillet")
+
+    service.update_part("demo", "boss", script=NO_BOSS)
+    view = manager.get("demo", thread["id"])
+
+    assert view["resolution"]["status"] == "orphaned"
+    assert view["resolution"]["reason"] in ("no_candidate", "ambiguous",
+                                            "area_mismatch")
+    assert view["resolution"]["hint"]
+    assert view["anchor"]["face_index"] == face["index"]   # last-known anchor
+    assert view["comments"][0]["body"] == "this boss needs a fillet"
+    assert manager.list("demo")["counts"]["orphaned"] == 1
+
+
+def test_an_orphaned_thread_is_still_listable_and_resolvable(demo):
+    """FR3: never silently dropped, never re-pointed."""
+    service, manager = demo
+    face = _top_of_boss(service)
+    thread = manager.create(
+        "demo", {"kind": "face", "part": "boss", "face_index": face["index"]},
+        "look")
+    service.update_part("demo", "boss", script=NO_BOSS)
+
+    listed = manager.list("demo", anchor_status="orphaned")
+    assert [row["id"] for row in listed["threads"]] == [thread["id"]]
+    assert manager.resolve("demo", thread["id"])["state"] == "resolved"
+    assert manager.reply("demo", thread["id"], "fixed")["comments"][1]["body"] \
+        == "fixed"
+
+
+def test_a_face_index_out_of_range_is_refused_at_creation(demo):
+    """FR1: a bad anchor is a validation_error, never a stored orphan."""
+    from agentcad.core.model import ValidationError
+
+    service, manager = demo
+    _key, table = anchors.signature_table(service, "demo", "boss")
+    with pytest.raises(ValidationError) as exc:
+        manager.create("demo", {"kind": "face", "part": "boss",
+                                "face_index": len(table)}, "look")
+    assert exc.value.details["n_faces"] == len(table)
+
+
+# ------------------------------------- 3. R2: the two meanings of n_faces
+
+
+def test_the_sidecar_is_the_face_index_authority(demo):
+    """R2, measured. ``metrics.n_faces`` is ``len(shape.faces())``, which
+    build123d deduplicates by hash, and the design warns it can be smaller
+    than the sidecar's count on a compound or a shared-face shape.
+
+    **We could not reproduce a divergence.** Across the 11 bundled example
+    parts, a two-solid compound and a compound of two *coincident* boxes, the
+    two numbers agreed every time (see changelog 0113). The sidecar stays the
+    authority because it is what a face ordinal is *defined* by — the explorer
+    walk `mesh.py` tessellates in — not because the metric was observed to
+    disagree. This test documents the measurement rather than the folklore.
+    """
+    service, manager = demo
+    service.store.add_part("demo", "two", "Two", "al6061", TWO_SOLIDS)
+    service.store.add_part("demo", "twin", "Twin", "al6061", COINCIDENT)
+
+    for part, solids in (("boss", 1), ("two", 2), ("twin", 2)):
+        detail = service.get_part("demo", part)
+        assert detail["status"]["state"] == "ok", detail["status"]["error"]
+        _key, table = anchors.signature_table(service, "demo", part)
+        assert detail["metrics"]["n_solids"] == solids
+        assert len(table) == detail["metrics"]["n_faces"], part
+        # and an index at the top of the sidecar's range is anchorable
+        assert manager.create(
+            "demo", {"kind": "face", "part": part,
+                     "face_index": len(table) - 1}, "edge case")
+
+
+# --------------------------- 4. R3: the mesh signature versus face_info
+
+
+def test_a_planar_face_signature_agrees_with_face_info(demo, kernel):
+    """R3, planar. The mesh-derived normal and centroid are the B-rep's, and
+    the tessellated area is within the chord error."""
+    service, _manager = demo
+    service.store.add_part("demo", "cyl", "Cyl", "al6061", CYLINDER)
+    assert service.get_part("demo", "cyl")["status"]["state"] == "ok"
+    _key, table = anchors.signature_table(service, "demo", "cyl")
+
+    cap = next(row for row in table if row["normal"][2] > 0.99)
+    info = kernel.request("face_info", {"script": CYLINDER, "params": {},
+                                        "face_index": cap["index"]})
+    assert info["normal"] == pytest.approx(cap["normal"], abs=1e-6)
+    assert info["center"] == pytest.approx(cap["centroid"], abs=1e-3)
+    # 314.159 mm^2 of circle, tessellated by chords: ~0.5% low, never high
+    assert cap["area"] < info["area_mm2"]
+    assert abs(cap["area"] - info["area_mm2"]) / info["area_mm2"] < 0.01
+
+
+def test_a_closed_curved_face_diverges_and_the_matcher_knows_it(demo, kernel):
+    """R3, curved — the divergence the design predicted, measured.
+
+    On the *closed* side face of a cylinder the area-weighted normal very
+    nearly cancels (the surface wraps a full turn), so its direction is
+    numerically meaningless, while ``face_info`` reports ``normal_at(0.5,
+    0.5)`` — a single sample. The two disagree completely, and no tolerance
+    could reconcile them.
+
+    That is survivable exactly because the matcher only ever compares a
+    mesh-derived signature with another mesh-derived signature at the same
+    ``MESH_TOLERANCE``: a consistent estimator beats an accurate one. Its
+    failure mode on such faces is a wobbly normal, which costs candidacy and
+    produces an *orphan* — never a mis-pin. The absolute numbers in the
+    payload are labelled mesh-derived for this reason.
+    """
+    import numpy as np
+
+    service, _manager = demo
+    service.store.add_part("demo", "cyl", "Cyl", "al6061", CYLINDER)
+    assert service.get_part("demo", "cyl")["status"]["state"] == "ok"
+    _key, table = anchors.signature_table(service, "demo", "cyl")
+
+    side = next(row for row in table if abs(row["normal"][2]) < 0.5)
+    info = kernel.request("face_info", {"script": CYLINDER, "params": {},
+                                        "face_index": side["index"]})
+    assert abs(float(np.dot(side["normal"], info["normal"]))) < 0.95
+    # the areas still agree: a tessellated cylinder is a hair small, not wrong
+    assert abs(side["area"] - info["area_mm2"]) / info["area_mm2"] < 0.01
+    # and the mesh centroid is on the axis, where a closed face's really is
+    assert side["centroid"][0] == pytest.approx(0.0, abs=1e-3)

@@ -244,12 +244,12 @@ def test_an_unknown_target_is_a_validation_error_carrying_the_known_set(demo):
 
 
 def test_an_unknown_or_unsupported_kind_is_a_validation_error(demo):
-    """Slice 2's and slice 4's kinds are registered but not yet reachable —
-    and a NotImplementedError must never escape a public API."""
+    """Slice 4's kind is registered but not yet reachable — and a
+    NotImplementedError must never escape a public API. (``face`` and
+    ``script_range`` became reachable with slice 2's ``core/anchors.py``;
+    ``tests/test_anchors.py`` owns their rules.)"""
     _service, _registry, manager = demo
     for anchor in (
-        {"kind": "face", "part": "box", "face_index": 0},
-        {"kind": "script_range", "part": "box", "start": 1, "end": 2},
         {"kind": "proposal_hunk", "proposal": "1",
          "file": "parts/box.py", "hunk": 0},
         {"kind": "nonsense", "part": "box"},
@@ -481,7 +481,9 @@ def test_list_filters_and_counts(demo):
 
     everything = manager.list("demo")
     assert [t["id"] for t in everything["threads"]] == ["1", "2", "3"]
-    assert everything["counts"] == {"open": 2, "resolved": 1}
+    # ``orphaned`` joins the counts once slice 2's resolution runs; it counts
+    # the whole project, like the other two.
+    assert everything["counts"] == {"open": 2, "resolved": 1, "orphaned": 0}
     assert [t["id"] for t in manager.list("demo", state="open")["threads"]] == [
         "1", "2",
     ]
@@ -500,8 +502,8 @@ def test_list_filters_and_counts(demo):
 
 def test_listing_an_empty_project_is_empty_not_an_error(demo):
     _service, _registry, manager = demo
-    assert manager.list("demo") == {"threads": [],
-                                    "counts": {"open": 0, "resolved": 0}}
+    assert manager.list("demo") == {
+        "threads": [], "counts": {"open": 0, "resolved": 0, "orphaned": 0}}
 
 
 # --------------------------------------------- 8. durability (AC8)
