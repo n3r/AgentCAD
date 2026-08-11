@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import stat
 from pathlib import Path
 
 import pytest
@@ -437,13 +438,27 @@ def test_a_tag_and_a_bare_commit_id_both_resolve(stack):
     assert by_commit["source"]["dirty"] is False
 
 
+def _rmtree_repo(path: Path) -> None:
+    """Delete a git directory on any OS.
+
+    Git marks everything under ``objects/`` read-only, and Windows refuses to
+    unlink a read-only file (``WinError 5``) where POSIX only consults the
+    parent directory. Clear the bit and retry.
+    """
+    def _retry(func, target, _exc):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    shutil.rmtree(path, onexc=_retry)
+
+
 def test_a_ref_without_git_is_a_validation_error_naming_git(stack,
                                                             monkeypatch):
     """Two ways to have no git, both exit 2 with a message that says so."""
     service, _registry, runner = stack
     proj = _tiny(service)
 
-    shutil.rmtree(service.store.canonical_path_of(proj) / ".history")
+    _rmtree_repo(service.store.canonical_path_of(proj) / ".history")
     with pytest.raises(ValidationError) as no_repo:
         runner.run(proj, ref="main")
     assert "git" in str(no_repo.value)
