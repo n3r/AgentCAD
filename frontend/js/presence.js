@@ -212,6 +212,42 @@ export function handleEvent(ev) {
   });
 }
 
+/** `claim_changed {project, part, holder, holder_kind, expires_at,
+ *  overridden_by?}` — one part changing hands, or being let go (`holder`
+ *  null). Merged into the roster's claims rather than triggering a fetch: the
+ *  next heartbeat's response is the authority and will correct any drift. */
+export function handleClaim(ev) {
+  const base = state.presence || { you: clientId, clients: [] };
+  const claims = { ...(base.claims || {}) };
+  if (ev.holder) {
+    claims[ev.part] = {
+      part: ev.part,
+      holder: ev.holder,
+      holder_kind: ev.holder_kind,
+      expires_at: ev.expires_at,
+    };
+  } else {
+    delete claims[ev.part];
+  }
+  setState({ presence: { ...base, claims } });
+}
+
+/** The claim on `partId` held by SOMEBODY ELSE, or null. Our own claim is not
+ *  a conflict and is never shown as one. */
+export function otherClaim(partId) {
+  const claims = (state.presence && state.presence.claims) || {};
+  const claim = claims[partId];
+  return claim && claim.holder !== clientId ? claim : null;
+}
+
+/** The display label a client is heartbeating under, falling back to its
+ *  identity. Labels are presence data — never persisted into a thread, an
+ *  audit line or a lock — so this is the only place they come from. */
+export function labelFor(id) {
+  const found = roster().find((client) => client.id === id);
+  return (found && found.label) || id || "someone";
+}
+
 export function stop() {
   if (timer) clearInterval(timer);
   timer = null;

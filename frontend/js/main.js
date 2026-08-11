@@ -1,7 +1,7 @@
 // Boot + orchestration: project loading, selection, mesh routing between
 // the API and the viewport, WebSocket event stream, toolbar.
 
-import { api, ApiError } from "./api.js";
+import { api, ApiError, clientId } from "./api.js";
 import { state, setState, onKeys } from "./state.js";
 import * as viewport from "./viewport.js";
 import * as tree from "./tree.js";
@@ -16,6 +16,7 @@ import * as versions from "./versions.js";
 import * as merge from "./merge.js";
 import * as proposals from "./proposals.js";
 import * as presence from "./presence.js";
+import * as comments from "./comments.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 const BRANCH_RE = /^[a-z0-9][a-z0-9_/-]{0,63}$/;
@@ -43,6 +44,11 @@ const actions = {
   toast,
   refreshProject,
   loadProject,
+  // A thread anchored to a proposal hunk focuses by opening that proposal's
+  // Files tab; comments.js reaches it through the same actions object every
+  // other panel uses rather than importing proposals.js and closing a cycle.
+  openProposal: (id, tab) => proposals.openTo(id, tab),
+  handleWriteConflict,
 };
 
 // ------------------------------------------------------------------ project
@@ -362,6 +368,9 @@ async function loadFaceMap(partId, meshKey) {
   }
   if (res.key !== meshKey) return; // a rebuild landed mid-flight
   viewport.setFaceMap(partId, `${meshKey}:full`, new Uint32Array(res.buffer));
+  // Face pins can now read the resolved face off the geometry on screen
+  // instead of the centroid the anchor recorded at creation.
+  comments.meshChanged();
 }
 
 async function refreshPartDetail(partId) {
@@ -688,6 +697,10 @@ function handleEvent(ev) {
       if (!partKnown(ev.part)) scheduleProjectRefresh();
       reloadMesh(ev.part);
       if (state.mode === "assembly") scheduleAssemblyRefresh();
+      // New geometry means new face ordinals and possibly a new script: an
+      // anchor's status is computed on every read, so the only way to keep
+      // the pins and chips honest is to re-read them here.
+      comments.scheduleRefresh();
       return;
     }
     case "rebuild_failed": {
@@ -702,6 +715,11 @@ function handleEvent(ev) {
         inspector.showBanner(ev.error);
       }
       if (!partKnown(ev.part)) scheduleProjectRefresh();
+      // A failed rebuild moves anchors too, and in the honest direction: there
+      // is now no mesh at the part's current parameters, so its face anchors
+      // are `unverified`. Not re-reading here would leave them showing `ok`,
+      // which is the one thing the four states exist to prevent.
+      comments.scheduleRefresh();
       return;
     }
     case "project_changed": {
@@ -712,6 +730,7 @@ function handleEvent(ev) {
       if (ev.project !== state.projectName) return;
       if (Date.now() < localPatchUntil) return;
       scheduleProjectRefresh();
+      comments.scheduleRefresh(); // a removed part orphans its threads' anchors
       return;
     }
     case "branch_changed": {
@@ -755,6 +774,31 @@ function handleEvent(ev) {
       if (ev.branch && state.branch && ev.branch !== state.branch) return;
       lockHolder = ev.holder || null;
       renderLockIndicator();
+      return;
+    }
+    case "comment_changed": {
+      // A POINTER, deliberately: {thread, state, action, part} and no body, so
+      // no comment text is fanned out to every connected client. The panel,
+      // the pins, the gutter and the badges all re-read from list_comments.
+      if (ev.project !== state.projectName) return;
+      comments.handleEvent(ev);
+      return;
+    }
+    case "claim_changed": {
+      // Who holds a part, not a change to the model — so it never snapshots
+      // history and never refreshes geometry. The tree chip and the editor
+      // chip both render from the roster this merges into.
+      if (ev.project !== state.projectName) return;
+      presence.handleClaim(ev);
+      return;
+    }
+    case "notification": {
+      // The bus is a BROADCAST: every /ws client gets every notification and
+      // filters on `to` here. That is honest on a single-node, unauthenticated,
+      // 127.0.0.1-only server — per-principal delivery is PRD-005 — and it is
+      // said out loud in the docs rather than implied.
+      if (ev.to !== (state.clientId || clientId)) return;
+      comments.notified(ev);
       return;
     }
     case "presence_changed": {
@@ -1473,6 +1517,24 @@ function renderFaceCard() {
   row.append(input, apply);
   body.appendChild(row);
 
+  const comment = document.createElement("button");
+  comment.type = "button";
+  comment.className = "tb-btn facecard-comment";
+  comment.textContent = "💬 Comment";
+  comment.title =
+    "Open a review thread anchored to this face. The anchor records the " +
+    "face's signature now; its status is recomputed on every read.";
+  comment.addEventListener("click", (e) => {
+    comments.openComposer(
+      { kind: "face", part_id: faceSel.partId, face_index: faceSel.faceIndex },
+      {
+        label: `${faceSel.partId} · face ${faceSel.faceIndex}`,
+        at: { x: e.clientX, y: e.clientY },
+      }
+    );
+  });
+  row.appendChild(comment);
+
   const hint = document.createElement("div");
   hint.className = "placement-hint";
   hint.textContent = planar
@@ -1573,8 +1635,16 @@ function renderLockIndicator() {
       "opacity:0.85;margin-right:8px;white-space:nowrap;";
     connDot.parentNode.insertBefore(lockEl, connDot);
   }
-  if (lockHolder && lockHolder !== "browser") {
-    lockEl.textContent = `🔒 ${lockHolder}`;
+  // Compare against OUR identity, not the literal string "browser". Until
+  // PRD-008 slice 6 every browser in the world was the identity `browser`, so
+  // that constant was our name; now it is `browser:<8 hex>` and the badge
+  // would have announced our own turn back to us. `state.clientId` is the
+  // server's echo (branch_list's `you`) and is null without git, so the minted
+  // id from api.js is the fallback.
+  const me = state.clientId || clientId;
+  if (lockHolder && lockHolder !== me) {
+    const label = presence.labelFor(lockHolder);
+    lockEl.textContent = `🔒 ${label}`;
     lockEl.title =
       `${lockHolder} holds the editing turn — ` +
       "changes by others are rejected until release or expiry";
@@ -1582,6 +1652,75 @@ function renderLockIndicator() {
   } else {
     lockEl.style.display = "none";
   }
+}
+
+// ------------------------------------------------------- claim conflicts
+// A 409 arrives in two flavours and they must not be confused:
+//
+//   * the PROJECT TURN LOCK — `details.holder`, no `overridable`. Today's
+//     message, and deliberately NO override button: a turn is asked for and
+//     released explicitly, and there is nothing here that could grant one.
+//   * a per-part SOFT CLAIM — `details.claim` and `details.overridable: true`.
+//     Somebody else has this part open. Offer exactly one button, because a
+//     claim exists to stop a silent clobber, not to be a permission system.
+
+let claimResolve = null;
+
+function setupClaimDialog() {
+  const overlay = document.getElementById("claim-modal");
+  const done = (ok) => {
+    overlay.classList.add("hidden");
+    const resolve = claimResolve;
+    claimResolve = null;
+    if (resolve) resolve(ok);
+  };
+  document.getElementById("claim-cancel").addEventListener("click", () => done(false));
+  document.getElementById("claim-override").addEventListener("click", () => done(true));
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) done(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && claimResolve) done(false);
+  });
+}
+
+function askOverride(claim, partId) {
+  const overlay = document.getElementById("claim-modal");
+  const body = document.getElementById("claim-body");
+  const label = presence.labelFor(claim.holder);
+  document.getElementById("claim-title").textContent = `${label} is editing ${partId}`;
+  body.textContent = "";
+  const line = document.createElement("div");
+  line.textContent =
+    `${label} (${claim.holder}) has ${partId} open. Overriding takes the ` +
+    "part, lands your change, and tells them it happened — their unsaved " +
+    "edits are still theirs, and the next save wins.";
+  const meta = document.createElement("div");
+  meta.className = "claim-meta";
+  meta.textContent =
+    `holder ${claim.holder} · ${claim.holder_kind} · claim expires on its own`;
+  body.append(line, meta);
+  overlay.classList.remove("hidden");
+  return new Promise((resolve) => {
+    claimResolve = resolve;
+  });
+}
+
+/** Offer the override for a refused part write. Resolves true when the caller
+ *  should retry the write ONCE — the arming route is single-use and 30 s. */
+async function handleWriteConflict(err, partId) {
+  if (!(err instanceof ApiError) || err.status !== 409 || !partId) return false;
+  const details = (err.error && err.error.details) || {};
+  if (!details.overridable || !details.claim) return false; // a turn lock: no override
+  const wants = await askOverride(details.claim, partId);
+  if (!wants) return false;
+  try {
+    await api.overrideClaim(state.projectName, partId);
+  } catch (e) {
+    toast(`Override failed: ${e.message}`, "error");
+    return false;
+  }
+  return true;
 }
 
 // -------------------------------------------------------------------- boot
@@ -1599,10 +1738,15 @@ async function boot() {
   merge.init(actions);
   proposals.init(actions);
   presence.init();
+  // After inspector.init: comments.js registers inspector's param decorator
+  // and subscribes to `part` behind it, so a badge is applied to rows the
+  // inspector has already built.
+  comments.init(actions);
   setupMenus();
   setupProjectMenu();
   setupBranchMenu();
   setupProposals();
+  setupClaimDialog();
   setupExportMenu();
   setupImport();
   setupUndo();

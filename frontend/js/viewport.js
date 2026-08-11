@@ -53,6 +53,16 @@ let sceneTheme = {
 let gridSize = 400;
 let gridDivisions = 40;
 
+// Per-frame subscribers (PRD-008's comment pins). They run inside the existing
+// animation loop rather than in a timer of their own, because an HTML overlay
+// that is projected with camera.project() must move on exactly the frames the
+// camera does. Kept tiny and side-effect-only: this is not a place to fetch.
+const frameHooks = new Set();
+// The canvas box in CSS pixels, tracked by the ResizeObserver so projecting a
+// world point costs no layout read.
+let viewSize = { w: 1, h: 1 };
+const _projectV = new THREE.Vector3();
+
 const edgeMaterial = new THREE.LineBasicMaterial({
   color: sceneTheme.edge,
   transparent: true,
@@ -180,9 +190,11 @@ export function init(container, { onPick } = {}) {
   contentGroup = new THREE.Group();
   scene.add(contentGroup);
 
+  viewSize = { w: container.clientWidth, h: Math.max(1, container.clientHeight) };
   const ro = new ResizeObserver(() => {
     const w = container.clientWidth;
     const h = Math.max(1, container.clientHeight);
+    viewSize = { w, h };
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
@@ -209,7 +221,68 @@ export function init(container, { onPick } = {}) {
   renderer.setAnimationLoop(() => {
     controls.update();
     renderer.render(scene, camera);
+    for (const hook of frameHooks) {
+      // A hook that throws would silently kill the render loop for the rest
+      // of the session — the one place in this module where swallowing is the
+      // safer failure.
+      try {
+        hook();
+      } catch (err) {
+        console.error("viewport frame hook failed", err);
+      }
+    }
   });
+}
+
+/** Run `fn` after every rendered frame. Returns an unsubscribe function. */
+export function onFrame(fn) {
+  frameHooks.add(fn);
+  return () => frameHooks.delete(fn);
+}
+
+/** Project a world point [x,y,z] to CSS pixels inside the viewport box, or
+ *  null when it is behind the camera. The overlay host is a sibling of the
+ *  canvas filling the same box, so these coordinates need no further offset —
+ *  the #facecard/#hud pattern, with no CSS2DRenderer vendored. */
+export function projectPoint(point) {
+  if (!camera || !point) return null;
+  const v = _projectV.set(point[0], point[1], point[2]).project(camera);
+  if (!Number.isFinite(v.x) || !Number.isFinite(v.y) || v.z > 1) return null;
+  return {
+    x: (v.x * 0.5 + 0.5) * viewSize.w,
+    y: (-v.y * 0.5 + 0.5) * viewSize.h,
+  };
+}
+
+/** The mean vertex position of one B-rep face of the displayed part, in world
+ *  space — where a pin for that face belongs. null when that part is not on
+ *  stage or its triangle->face sidecar has not loaded yet (the caller then
+ *  falls back to the centroid the anchor recorded at creation).
+ *
+ *  Read against the CURRENT geometry and the ordinal the server RESOLVED, not
+ *  the one the anchor stored: after a rebuild the two need not be the same
+ *  face, and a pin drawn on the stored ordinal is the mis-pin this feature
+ *  exists to avoid. */
+export function faceCentroid(partId, faceIndex) {
+  if (faceIndex == null) return null;
+  if (current.mode !== "part" || current.partId !== partId) return null;
+  const entry = geomCache.get(`${partId}:${current.key}`);
+  if (!entry || !entry.faceMap || !entry.geometry.index) return null;
+  const idx = entry.geometry.index.array;
+  const pos = entry.geometry.getAttribute("position").array;
+  const map = entry.faceMap;
+  let x = 0, y = 0, z = 0, n = 0;
+  for (let t = 0; t < map.length; t++) {
+    if (map[t] !== faceIndex) continue;
+    for (let corner = 0; corner < 3; corner++) {
+      const v = idx[t * 3 + corner] * 3;
+      x += pos[v];
+      y += pos[v + 1];
+      z += pos[v + 2];
+      n += 1;
+    }
+  }
+  return n ? [x / n, y / n, z / n] : null;
 }
 
 function setGrid(size, divisions) {

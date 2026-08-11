@@ -15,6 +15,15 @@ export class ApiError extends Error {
 
 const enc = encodeURIComponent;
 
+/** `?a=1&b=2` from a plain object, skipping null/undefined. Booleans go out
+ *  lowercase because FastAPI's bool parser reads "true"/"false", not "True". */
+function query(params) {
+  const pairs = Object.entries(params || {})
+    .filter(([, v]) => v != null)
+    .map(([k, v]) => `${enc(k)}=${enc(typeof v === "boolean" ? String(v) : v)}`);
+  return pairs.length ? `?${pairs.join("&")}` : "";
+}
+
 // ---- client identity -------------------------------------------------------
 // Every request carries one identity, minted once per browser profile and kept
 // in localStorage. Two TABS of one profile stay one client — which is what
@@ -289,6 +298,63 @@ export const api = {
   heartbeat: (proj, body) =>
     request("POST", `/api/projects/${enc(proj)}/presence`, body || {}),
   presence: (proj) => request("GET", `/api/projects/${enc(proj)}/presence`),
+
+  /** Arm a single-use, 30-second claim override for this identity and one
+   *  part, then retry the write. It has to be out of band: the two part-write
+   *  routes live in app.py, which PRD-008 may not edit, so the override cannot
+   *  ride on the write itself. Arming publishes claim_changed. */
+  overrideClaim: (proj, part) =>
+    request("POST", `/api/projects/${enc(proj)}/claims/override`, { part }),
+
+  // ---- review threads ----
+  // Every mutation returns the post-state thread, and `comment_changed` is a
+  // POINTER carrying no body — so the UI re-reads with listComments rather
+  // than patching locally. That is not laziness: `resolution` (ok / moved /
+  // orphaned / unverified) is computed on the server on EVERY read and is
+  // never stored, so a stale list is a list that lies about where a thread
+  // points.
+  /** params: {part_id?, state?, kind?, branch?, proposal?, anchor_status?,
+   *  resolve_anchors?} -> {threads, counts: {open, resolved, orphaned}} */
+  listComments: (proj, params) =>
+    request("GET", `/api/projects/${enc(proj)}/comments${query(params)}`),
+  /** body: {anchor|thread, body, attachments?} — exactly one of anchor/thread. */
+  addComment: (proj, body) =>
+    request("POST", `/api/projects/${enc(proj)}/comments`, body),
+  getThread: (proj, tid) =>
+    request("GET", `/api/projects/${enc(proj)}/comments/${enc(tid)}`),
+  resolveThread: (proj, tid) =>
+    request("POST", `/api/projects/${enc(proj)}/comments/${enc(tid)}/resolve`),
+  reopenThread: (proj, tid) =>
+    request("POST", `/api/projects/${enc(proj)}/comments/${enc(tid)}/reopen`),
+  /** Author-only, server-enforced; the root comment can never be deleted. */
+  editComment: (proj, tid, cid, body) =>
+    request(
+      "PATCH",
+      `/api/projects/${enc(proj)}/comments/${enc(tid)}/comments/${enc(cid)}`,
+      { body }
+    ),
+  deleteComment: (proj, tid, cid) =>
+    request(
+      "DELETE",
+      `/api/projects/${enc(proj)}/comments/${enc(tid)}/comments/${enc(cid)}`
+    ),
+  threadAudit: (proj, tid) =>
+    request("GET", `/api/projects/${enc(proj)}/comments/${enc(tid)}/audit`),
+
+  // The inbox answers for the identity of the REQUEST — never for an identity
+  // passed as an argument — so these take no `to`.
+  listNotifications: (proj, unread) =>
+    request(
+      "GET",
+      `/api/projects/${enc(proj)}/notifications${query({ unread })}`
+    ),
+  /** Omitting `ids` marks every unread one. */
+  markNotificationsRead: (proj, ids) =>
+    request(
+      "POST",
+      `/api/projects/${enc(proj)}/notifications/read`,
+      ids ? { ids } : {}
+    ),
 
   chat: (project, message) => request("POST", "/api/chat", { project, message }),
   chatHistory: (project) =>

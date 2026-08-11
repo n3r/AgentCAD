@@ -1884,3 +1884,420 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
 @media (prefers-reduced-motion: reduce) {
   .row-dot.building, .msg.assistant.streaming::after { animation: none; }
 }
+
+/* ================================================== review threads (PRD-008)
+   Four anchor statuses, four looks. `ok` is quiet by design (a healthy anchor
+   deserves no chrome), `moved` is amber (something changed and the anchor
+   followed), `orphaned` is red (the target is gone), and `unverified` is a
+   dashed outline in the neutral tone — "we did not look" must not read as
+   "fine", and must not read as an error either. */
+
+#pane-threads { padding: 0; }
+
+.th-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--hairline-soft);
+  flex-wrap: wrap;
+}
+.th-bar-spacer { flex: 1; }
+.th-filter {
+  height: 21px;
+  padding: 0 8px;
+  border-radius: 10px;
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  color: var(--dim);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.th-filter:hover { background: var(--raised-2); color: var(--text); }
+.th-filter.active {
+  color: var(--text);
+  border-color: var(--accent-ring);
+  background: var(--accent-soft);
+}
+.th-orphan-count {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--err-text);
+  border: 1px solid var(--err-ring);
+  background: var(--err-soft);
+  border-radius: 9px;
+  padding: 1px 7px;
+}
+.th-new {
+  height: 21px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  color: var(--dim);
+  font-size: 11px;
+}
+.th-new:hover { background: var(--raised-2); color: var(--text); }
+
+.th-list { padding: 4px 0 12px; }
+.th-row {
+  border-bottom: 1px solid var(--hairline-soft);
+  padding: 7px 10px 8px;
+  border-left: 2px solid transparent;
+}
+.th-row.st-moved { border-left-color: var(--accent); }
+.th-row.st-orphaned { border-left-color: var(--err); }
+.th-row.st-unverified { border-left-color: var(--faint); }
+.th-row.th-resolved .th-crumb,
+.th-row.th-resolved .th-preview { opacity: 0.6; }
+
+.th-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+}
+.th-crumb {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.th-meta {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.th-preview {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--dim);
+  line-height: 1.45;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.anchor-chip {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  border-radius: 9px;
+  padding: 1px 6px;
+  border: 1px solid var(--hairline);
+  color: var(--dim);
+}
+.anchor-chip.st-ok { color: var(--ok); border-color: var(--ok); }
+.anchor-chip.st-moved {
+  color: var(--accent-bright);
+  border-color: var(--accent-ring);
+  background: var(--accent-soft);
+}
+.anchor-chip.st-orphaned {
+  color: var(--err-text);
+  border-color: var(--err-ring);
+  background: var(--err-soft);
+}
+.anchor-chip.st-unverified {
+  color: var(--dim);
+  border-style: dashed;
+  border-color: var(--faint);
+}
+
+.th-body { margin-top: 8px; }
+.th-why {
+  font-size: 11px;
+  line-height: 1.5;
+  border-radius: 6px;
+  padding: 5px 7px;
+  margin-bottom: 6px;
+  color: var(--dim);
+  background: var(--raised);
+  border: 1px solid var(--hairline-soft);
+}
+.th-why.st-orphaned { color: var(--err-text); border-color: var(--err-ring); background: var(--err-soft); }
+.th-why.st-moved { color: var(--text); border-color: var(--accent-ring); background: var(--accent-soft); }
+.th-why.st-unverified { border-style: dashed; }
+.th-nums {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  margin-bottom: 7px;
+}
+
+.th-comment {
+  position: relative;
+  padding: 5px 0 6px;
+  border-top: 1px solid var(--hairline-soft);
+}
+.th-comment-head { display: flex; align-items: baseline; gap: 6px; }
+.th-who { font-family: var(--mono); font-size: 10.5px; color: var(--text); }
+.th-who.agent { color: var(--accent-bright); }
+.th-when { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+.th-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-top: 2px;
+}
+.th-text.deleted { color: var(--faint); font-style: italic; }
+.th-attach {
+  display: inline-block;
+  margin-top: 4px;
+  margin-right: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.th-attach.missing { color: var(--faint); border-style: dashed; text-decoration: line-through; }
+.th-del {
+  position: absolute;
+  top: 4px;
+  right: 0;
+  color: var(--faint);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 3px;
+  opacity: 0;
+}
+.th-comment:hover .th-del, .th-comment:focus-within .th-del { opacity: 1; }
+.th-del:hover { color: var(--err); }
+
+.th-reply {
+  width: 100%;
+  margin-top: 7px;
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12px;
+  padding: 5px 7px;
+  resize: vertical;
+}
+.th-reply:focus { outline: none; border-color: var(--accent); }
+.th-foot { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.th-action {
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  color: var(--dim);
+  font-size: 11px;
+}
+.th-action:hover:not(:disabled) { background: var(--raised-2); color: var(--text); }
+.th-action:disabled { opacity: 0.45; cursor: default; }
+
+/* --- per-param badge, applied by comments.js through inspector's decorator */
+.param-badge {
+  margin-left: auto;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.param-badge:hover { color: var(--text); border-color: var(--accent-ring); }
+.param-badge.empty {
+  border-color: transparent;
+  background: none;
+  font-size: 10px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.param:hover .param-badge.empty,
+.param:focus-within .param-badge.empty,
+.param-badge.empty:focus-visible { opacity: 0.75; }
+.param-badge.st-orphaned { color: var(--err-text); border-color: var(--err-ring); }
+.param.th-flash { outline: 1.5px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+
+/* --- editor gutter markers */
+.CodeMirror .agentcad-comments { width: 14px; }
+.cm-thread-mark {
+  display: block;
+  width: 14px;
+  text-align: center;
+  font-size: 9px;
+  line-height: 1.55;
+  color: var(--accent);
+  cursor: pointer;
+}
+.cm-thread-mark.st-moved { color: var(--accent-bright); }
+.cm-thread-mark.st-unverified { color: var(--faint); }
+
+/* --- face pins: an HTML overlay over the canvas, positioned by
+       camera.project() inside the render loop (no CSS2DRenderer vendored) */
+#pins {
+  position: absolute;
+  inset: 0;
+  z-index: 6;   /* over the canvas, under #facecard/#hud/#sketcher */
+  pointer-events: none;
+  overflow: hidden;
+}
+.pin {
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin: -11px 0 0 -11px;   /* centre on the projected point */
+  width: 22px;
+  height: 22px;
+  border-radius: 50% 50% 50% 2px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text);
+  background: var(--overlay-strong);
+  border: 1px solid var(--accent-ring);
+  box-shadow: var(--shadow-pop);
+}
+.pin:hover { border-color: var(--accent); color: var(--accent-bright); }
+.pin.st-moved { border-color: var(--accent); border-style: dashed; }
+
+.facecard-comment { flex: none; }
+
+/* --- the one composer, a fixed popover so it works over the modals too */
+#comment-pop {
+  position: fixed;
+  z-index: 95;   /* above #toasts (90) and .modal-overlay (80) */
+  width: 300px;
+  max-width: calc(100vw - 20px);
+  padding: 9px;
+  border-radius: 9px;
+  background: var(--overlay-strong);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--shadow-modal);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.cmt-anchor {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#comment-pop textarea {
+  width: 100%;
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12px;
+  padding: 5px 7px;
+  resize: vertical;
+}
+#comment-pop textarea:focus { outline: none; border-color: var(--accent); }
+.cmt-pop-foot { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
+.cmt-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --------------------------------------- presence chips, claims, the inbox */
+
+.row-dot.presence { background: var(--dim); box-shadow: 0 0 0 2px var(--panel); }
+.row-claim {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--accent-bright);
+  border: 1px solid var(--accent-ring);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 0 5px;
+  line-height: 1.5;
+}
+
+#editor-claim {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--accent-bright);
+  border: 1px solid var(--accent-ring);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 1px 7px;
+  margin-right: 8px;
+  white-space: nowrap;
+}
+
+.claim-meta {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.notif-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--hairline-soft);
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
+}
+.notif-row.read { border-left-color: transparent; opacity: 0.6; }
+.notif-row:hover { background: var(--raised); }
+.notif-from { font-family: var(--mono); font-size: 11px; color: var(--text); }
+.notif-what { flex: 1; font-size: 12px; color: var(--dim); }
+.notif-when { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+
+/* --- diff-row comment affordances (PRD-002 stamped the anchors for these) */
+.diff-line { position: relative; }
+.diff-comment-btn {
+  position: absolute;
+  right: 4px;
+  top: 0;
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  opacity: 0;
+}
+.diff-line:hover .diff-comment-btn { opacity: 1; }
+.diff-comment-btn:hover { border-color: var(--accent-ring); }
+.diff-thread-chip {
+  margin-left: 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--accent-bright);
+  border: 1px solid var(--accent-ring);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  padding: 0 6px;
+}
