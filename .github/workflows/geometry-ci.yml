@@ -1,0 +1,67 @@
+name: Geometry CI
+
+# Dogfood: every bundled example is certified by the same composite action a
+# user's CAD repository consumes (.github/actions/agentcad-check). The action
+# checks the WORKING TREE — actions/checkout has already materialized the ref —
+# and takes $GITHUB_SHA as provenance, never as `--ref`.
+#
+# `pull_request`, never `pull_request_target`, and no secrets: a part script is
+# arbitrary Python and Linux has no seatbelt (see docs/geometry-ci.md).
+on:
+  push:
+    branches: [main, roadmap]
+  pull_request:
+  schedule:
+    - cron: "37 4 * * *"
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: Also check the engine example (33 parts, 65 instances)
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: geometry-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The light examples run on every push and pull request.
+  examples:
+    if: github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.engine)
+    name: check (${{ matrix.example }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [construction, prototyping, rocketry, fasteners]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Certify examples/${{ matrix.example }}
+        uses: ./.github/actions/agentcad-check
+        with:
+          project: examples/${{ matrix.example }}
+          agentcad: .
+          pool-size: "1"
+
+  # The engine example is minutes of kernel time, so it runs nightly — the same
+  # split ci.yml already makes for its exhaustive suite.
+  engine:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.engine)
+    name: check (engine)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Certify examples/engine
+        uses: ./.github/actions/agentcad-check
+        with:
+          project: examples/engine
+          agentcad: .
+          pool-size: "1"

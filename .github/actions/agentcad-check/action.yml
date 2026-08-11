@@ -1,0 +1,330 @@
+name: AgentCAD geometry check
+description: >-
+  Rebuild every part, re-resolve the assembly, evaluate the design specs and
+  regenerate the drawings of an AgentCAD project, and answer with a JSON
+  report, a job summary and an exit code.
+author: AgentCAD
+
+branding:
+  icon: check-square
+  color: blue
+
+# The action checks the WORKING TREE — `actions/checkout` has already
+# materialized $GITHUB_SHA into it, and a runner has no AgentCAD `.history/`
+# repo to resolve a ref against. The host SHA is passed as *provenance*
+# (`--sha` / `--ref-label`), never as `--ref`. See docs/geometry-ci.md.
+inputs:
+  project:
+    description: Project directory (a path) or project name (with projects-dir).
+    required: false
+    default: "."
+  projects-dir:
+    description: Projects root, for a repository that holds several projects.
+    required: false
+    default: ""
+  stages:
+    description: Comma-separated subset of the stages to run.
+    required: false
+    default: build,assembly,specs,drawings
+  strict:
+    description: >-
+      Count skipped rows as failures. Rows keep their status; only the verdict
+      moves.
+    required: false
+    default: "false"
+  budget:
+    description: Wall-clock budget in seconds (empty means unbounded).
+    required: false
+    default: ""
+  verify-determinism:
+    description: Build every part a second time on a cold cache and compare.
+    required: false
+    default: "false"
+  proposal:
+    description: Post the report to this proposal id (needs a project history).
+    required: false
+    default: ""
+  auto-proposal:
+    description: Post to the one active proposal whose source is the branch checked.
+    required: false
+    default: "false"
+  report-json:
+    description: "Where to write the JSON report (default: under RUNNER_TEMP)."
+    required: false
+    default: ""
+  report-md:
+    description: "Where to write the markdown summary (default: under RUNNER_TEMP)."
+    required: false
+    default: ""
+  pool-size:
+    description: >-
+      Kernel workers (AGENTCAD_KERNEL_POOL_SIZE). Each costs ~0.5 GB RAM, so 1
+      on a standard 2-core runner.
+    required: false
+    default: "1"
+  agentcad:
+    description: >-
+      The agentcad requirement to install. "." installs the checked-out
+      repository (and uses its uv.lock when there is one).
+    required: false
+    default: agentcad
+  python-version:
+    description: Python interpreter version.
+    required: false
+    default: "3.12"
+  fem:
+    description: Install the [fem] extra, so FEM-backed specs measure rather than skip.
+    required: false
+    default: "false"
+  upload-artifacts:
+    description: Upload report.json and report.md as a workflow artifact.
+    required: false
+    default: "true"
+  artifact-name:
+    description: "Artifact name (default: derived from the runner OS and project)."
+    required: false
+    default: ""
+  github-token:
+    description: >-
+      Reserved for phase 2 (a commit status). Ignored in v1 — the job summary
+      and the exit code are the report surfaces today.
+    required: false
+    default: ""
+
+outputs:
+  status:
+    description: 'green, red, or skip — the report''s own verdict (empty if no report).'
+    value: ${{ steps.check.outputs.status }}
+  exit-code:
+    description: "0 green, 1 red (the model is wrong), 2 harness (no verdict)."
+    value: ${{ steps.check.outputs.exit-code }}
+  report-json:
+    description: Path to the JSON report.
+    value: ${{ steps.plan.outputs.report-json }}
+  report-md:
+    description: Path to the markdown summary.
+    value: ${{ steps.plan.outputs.report-md }}
+  failed-stages:
+    description: Comma-separated names of the stages that came back red.
+    value: ${{ steps.check.outputs.failed-stages }}
+
+runs:
+  using: composite
+  steps:
+    # Inputs are read through `env:`, never interpolated into a script body:
+    # a project name is attacker-controlled on a fork's pull request.
+    - name: Resolve inputs
+      id: plan
+      shell: bash
+      env:
+        INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_REPORT_JSON: ${{ inputs.report-json }}
+        INPUT_REPORT_MD: ${{ inputs.report-md }}
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        INPUT_AGENTCAD: ${{ inputs.agentcad }}
+        INPUT_FEM: ${{ inputs.fem }}
+        INPUT_PROPOSAL: ${{ inputs.proposal }}
+        INPUT_AUTO_PROPOSAL: ${{ inputs.auto-proposal }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        RUNNER_OS_LOWER: ${{ runner.os }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "$INPUT_PROJECT" ]; then
+          echo "::error::project must not be empty" >&2
+          exit 2
+        fi
+        # argparse makes these mutually exclusive; catch it before the kernel
+        # spawns so the failure names the action input, not a usage string.
+        if [ -n "$INPUT_PROPOSAL" ] && [ "$INPUT_AUTO_PROPOSAL" = "true" ]; then
+          echo "::error::proposal and auto-proposal are mutually exclusive" >&2
+          exit 2
+        fi
+        if [ -n "$INPUT_GITHUB_TOKEN" ]; then
+          echo "::warning::github-token is reserved for phase 2 and is ignored"
+        fi
+
+        out_dir="${RUNNER_TEMP:-/tmp}/agentcad-check"
+        mkdir -p "$out_dir"
+        report_json="${INPUT_REPORT_JSON:-$out_dir/report.json}"
+        report_md="${INPUT_REPORT_MD:-$out_dir/report.md}"
+        mkdir -p "$(dirname "$report_json")" "$(dirname "$report_md")"
+
+        # The requirement, with the [fem] extra spliced in before any version
+        # specifier or marker ("agentcad==1.2" -> "agentcad[fem]==1.2").
+        requirement="$INPUT_AGENTCAD"
+        if [ "$INPUT_FEM" = "true" ]; then
+          case "$requirement" in
+            *'['*) : ;;  # the caller already named its extras
+            *)
+              name="${requirement%%[=<>!~;@ ]*}"
+              requirement="${name}[fem]${requirement#"$name"}"
+              ;;
+          esac
+        fi
+
+        slug="$(printf '%s' "$INPUT_PROJECT" | tr -c 'A-Za-z0-9_-' '-' | tr -s '-')"
+        slug="${slug#-}"
+        slug="${slug%-}"
+        os="$(printf '%s' "${RUNNER_OS_LOWER:-unknown}" | tr '[:upper:]' '[:lower:]')"
+        artifact_name="${INPUT_ARTIFACT_NAME:-agentcad-check-$os-${slug:-project}}"
+
+        {
+          echo "report-json=$report_json"
+          echo "report-md=$report_md"
+          echo "requirement=$requirement"
+          echo "artifact-name=$artifact_name"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+        cache-dependency-glob: uv.lock
+
+    # OCCT needs an X/GL stack even headless on Linux. This list is the exact
+    # one .github/workflows/ci.yml installs; it is hard-won, keep them in sync.
+    - name: Install OCCT system libraries (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          libgl1 libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1
+
+    - name: Install agentcad
+      id: install
+      shell: bash
+      env:
+        REQUIREMENT: ${{ steps.plan.outputs.requirement }}
+        PYTHON_VERSION: ${{ inputs.python-version }}
+        FEM: ${{ inputs.fem }}
+      run: |
+        set -euo pipefail
+
+        # A venv's console scripts live in bin/ everywhere but Windows.
+        bin_dir() {
+          if [ -d "$1/bin" ]; then printf '%s' "$1/bin"
+          else printf '%s' "$1/Scripts"; fi
+        }
+
+        if { [ "$REQUIREMENT" = "." ] || [ "$REQUIREMENT" = ".[fem]" ]; } \
+           && [ -f uv.lock ]; then
+          # Dogfooding this repository: install the pinned graph ci.yml already
+          # proves, not a fresh resolution.
+          extra=()
+          if [ "$FEM" = "true" ]; then extra=(--extra fem); fi
+          uv sync --locked --no-dev --python "$PYTHON_VERSION" "${extra[@]}"
+          venv="$(pwd)/.venv"
+        else
+          venv="${RUNNER_TEMP:-/tmp}/agentcad-venv"
+          uv venv --python "$PYTHON_VERSION" "$venv"
+          uv pip install --python "$(bin_dir "$venv")/python" "$REQUIREMENT"
+        fi
+
+        bin="$(bin_dir "$venv")"
+        "$bin/agentcad" --help > /dev/null
+        echo "bin=$bin" >> "$GITHUB_OUTPUT"
+
+    # This step never fails: the summary and the artifact are written from the
+    # report even when the verdict is red, and the saved code is re-raised by
+    # the last step. `agentcad check` treats a failing part as *payload*.
+    - name: Run agentcad check
+      id: check
+      shell: bash
+      env:
+        BIN: ${{ steps.install.outputs.bin }}
+        ACTION_PATH: ${{ github.action_path }}
+        PROJECT: ${{ inputs.project }}
+        PROJECTS_DIR: ${{ inputs.projects-dir }}
+        STAGES: ${{ inputs.stages }}
+        STRICT: ${{ inputs.strict }}
+        BUDGET: ${{ inputs.budget }}
+        VERIFY_DETERMINISM: ${{ inputs.verify-determinism }}
+        PROPOSAL: ${{ inputs.proposal }}
+        AUTO_PROPOSAL: ${{ inputs.auto-proposal }}
+        REPORT_JSON: ${{ steps.plan.outputs.report-json }}
+        REPORT_MD: ${{ steps.plan.outputs.report-md }}
+        AGENTCAD_KERNEL_POOL_SIZE: ${{ inputs.pool-size }}
+      run: |
+        set -euo pipefail
+
+        args=(check --project "$PROJECT" --report "$REPORT_JSON" --md "$REPORT_MD")
+        if [ -n "$PROJECTS_DIR" ]; then args+=(--projects-dir "$PROJECTS_DIR"); fi
+        if [ -n "$STAGES" ]; then args+=(--stages "$STAGES"); fi
+        if [ -n "$BUDGET" ]; then args+=(--budget "$BUDGET"); fi
+        if [ "$STRICT" = "true" ]; then args+=(--strict); fi
+        if [ "$VERIFY_DETERMINISM" = "true" ]; then args+=(--verify-determinism); fi
+        if [ -n "$PROPOSAL" ]; then args+=(--proposal "$PROPOSAL"); fi
+        if [ "$AUTO_PROPOSAL" = "true" ]; then args+=(--auto-proposal); fi
+        # Provenance, never a ref: the working tree already *is* $GITHUB_SHA.
+        if [ -n "${GITHUB_SHA:-}" ]; then args+=(--sha "$GITHUB_SHA"); fi
+        if [ -n "${GITHUB_REF_NAME:-}" ]; then args+=(--ref-label "$GITHUB_REF_NAME"); fi
+
+        printf 'agentcad'; printf ' %q' "${args[@]}"; printf '\n'
+
+        set +e
+        "$BIN/agentcad" "${args[@]}"
+        code=$?
+        set -e
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+        if [ -f "$REPORT_JSON" ]; then
+          echo "report=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "report=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::no report at $REPORT_JSON (exit $code)"
+        fi
+        # Writes status= and failed-stages= to $GITHUB_OUTPUT; empty for a
+        # missing or unparseable report, and never a failure of its own.
+        "$BIN/python" "$ACTION_PATH/report_outputs.py" "$REPORT_JSON"
+
+    - name: Write the job summary
+      if: always()
+      shell: bash
+      env:
+        REPORT_MD: ${{ steps.plan.outputs.report-md }}
+        EXIT_CODE: ${{ steps.check.outputs.exit-code }}
+      run: |
+        set -euo pipefail
+        if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
+          echo "no \$GITHUB_STEP_SUMMARY; skipping" >&2
+          exit 0
+        fi
+        if [ -f "$REPORT_MD" ]; then
+          cat "$REPORT_MD" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "## AgentCAD check" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "No markdown summary was produced (exit \`${EXIT_CODE:-?}\`) —" \
+               "see the step log." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Upload the report
+      if: always() && inputs.upload-artifacts == 'true' && steps.check.outputs.report == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.plan.outputs.artifact-name }}
+        path: |
+          ${{ steps.plan.outputs.report-json }}
+          ${{ steps.plan.outputs.report-md }}
+        if-no-files-found: warn
+
+    - name: Re-raise the check's exit code
+      if: always() && steps.check.outputs.exit-code != '0'
+      shell: bash
+      env:
+        EXIT_CODE: ${{ steps.check.outputs.exit-code }}
+        STATUS: ${{ steps.check.outputs.status }}
+        FAILED_STAGES: ${{ steps.check.outputs.failed-stages }}
+      run: |
+        set -euo pipefail
+        code="${EXIT_CODE:-1}"
+        if [ "$code" = "1" ]; then
+          echo "::error::agentcad check: ${STATUS:-red} — failed stages:" \
+               "${FAILED_STAGES:-unknown}"
+        else
+          echo "::error::agentcad check could not produce a verdict (exit $code)"
+        fi
+        exit "$code"
