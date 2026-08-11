@@ -131,8 +131,10 @@ def build(p):
     return Box(p.size, p.size, p.size)
 '''
 
-# A primitive with a non-positive dimension: an OCCT failure the Error Doctor
-# has a catalogued fix for, so AC4 can prove BOTH halves (line and hint).
+# A fillet whose rolling ball cannot fit. build123d raises this from its own
+# (pinned) Python code, so the wording — and therefore the Error Doctor's
+# match — is identical on every platform, unlike OCCT's C++ messages. That is
+# what lets AC4 prove BOTH halves (line and hint) in CI as well as locally.
 BROKEN_BUILD = '''\
 from build123d import *
 
@@ -140,8 +142,8 @@ PARAMS = {"size": {"default": 10.0, "min": 1.0, "max": 100.0, "unit": "mm",
                    "description": "edge"}}
 
 def build(p):
-    Box(0, 0, 0)
-    return Box(p.size, p.size, p.size)
+    part = Box(p.size, p.size, p.size)
+    return fillet(part.edges(), radius=p.size * 0.9)
 '''
 
 
@@ -381,9 +383,7 @@ def test_ac4_a_script_error_carries_the_update_part_script_payload(stack):
     """AC4 — a script error in one part fails the build stage carrying
     ``details.line`` and the Error Doctor hint: **the same payload**
     ``update_part_script`` returns, asserted by comparing the two side by side
-    rather than by asserting each field is merely present. The hint itself is
-    optional — the doctor attaches one only when a pattern matches the OCCT
-    message — so it is compared, never required.
+    rather than by asserting each field is merely present.
     """
     service, registry = stack
     assert "error" not in registry.call("create_project", {"name": "broken"})
@@ -399,6 +399,7 @@ def test_ac4_a_script_error_carries_the_update_part_script_payload(stack):
     assert edited["ok"] is False, edited
     payload = edited["error"]
     assert payload["details"]["line"], payload
+    assert payload["details"]["hint"], "the Error Doctor hint"
 
     report = registry.call("run_checks",
                            {"project": "broken", "stages": ["build"]})
@@ -410,10 +411,7 @@ def test_ac4_a_script_error_carries_the_update_part_script_payload(stack):
     assert row["kind"] == "part" and row["status"] == "fail"
     assert row["error"]["type"] == payload["type"]
     assert row["error"]["details"]["line"] == payload["details"]["line"]
-    # The Error Doctor only attaches a hint when one of its patterns matches
-    # the OCCT message, and that text varies by platform build — so the claim
-    # is that both surfaces carry the *same* hint, not that one exists.
-    assert row["error"]["details"].get("hint") == payload["details"].get("hint")
+    assert row["error"]["details"]["hint"] == payload["details"]["hint"]
     assert report["exit_code"] == 1
 
     # Both halves reach the markdown, which is what a reviewer reads first.
