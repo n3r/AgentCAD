@@ -37,6 +37,40 @@ used uniformly — MINPACK's `lm` requires `m >= n`, which an under-constrained
 sketch violates, and the measurement shows the method is noise next to the
 Jacobian. Residuals are scaled so lengths and unit-vector cross products mix
 reasonably.
+
+## Diagnostics
+
+Every solve returns a `diagnostics` block (design Decision 6/7):
+
+- `rank` comes from the SVD of the Jacobian and **`dof = n_params - rank`**,
+  never `n_params - n_residuals` (the row count reports a *negative* dof for
+  any redundant constraint).
+- `free_entities` is read off the null space, so an under-constrained sketch
+  says *which* entities can still move rather than only how many DOF remain.
+- The dependent set is found by **declaration-order greedy forward
+  selection**, not by column-pivoted QR. Measured (design spec, Decision 6):
+  pivoted QR blamed an innocent *original* `vertical` constraint in 2 of 3
+  cases, because column pivoting selects by column norm — an artifact of
+  residual scaling, not of intent. Greedy in declaration order was correct 4
+  of 4, because it blames the *later* constraint, which is the one the user
+  just added. `tests/test_sketch_diagnostics.py` pins both behaviours so a
+  "simplification" back to QR fails loudly.
+- A dependent row satisfied at the solution is **redundant**; a violated one
+  is **conflicting**. `over_constrained` alone is *not* an error — only a
+  non-empty `conflicting` set is (`core/tools_sketch.py` holds that contract).
+- The greedy pass is bounded by `ANALYSIS_BUDGET_MS`; exhausting it yields
+  `analysis_complete: false` with the two sets **omitted**. "We did not look"
+  is never rendered as "nothing found".
+
+## `initial`
+
+`spec["initial"]` seeds the starting parameter vector — it **selects the
+solution branch**, and it is not the speed mechanism (measured: the v1 solver
+cost 20 ms seeded exactly at the solution and 51 ms seeded 0.4 mm away; the
+Jacobian was always the cost). It can never change the spec: it cannot fix a
+point, cannot override `fixed_r` and cannot introduce an entity. An unknown
+name is an error; a stale or partial `initial` degrades to a cold start with
+`warm_started: false` and an `initial_incomplete` warning.
 """
 from __future__ import annotations
 
@@ -51,6 +85,25 @@ from scipy.optimize import least_squares
 # Singular values below `max(m, n) * s0 * RANK_TOL_REL` are treated as zero
 # when ranking the Jacobian (design Decision 6).
 RANK_TOL_REL = 1e-10
+
+# A residual row is kept by the greedy forward selection when the part of it
+# orthogonal to the rows declared *before* it is this large relative to the
+# row's own norm; below it, the row adds no rank and is dependent.
+GREEDY_TOL_REL = 1e-8
+
+# A dependent row whose residual is this small at the solution is redundant
+# (measured on a duplicate `distance`: max|f| = 3.6e-18); a larger one is
+# conflicting (measured on a contradictory `distance`: 2.50).
+SATISFIED_TOL = 1e-7
+
+# FR5's documented time budget for the dependent-set analysis. Measured cost
+# is well under it below ~300 constraints; exhausting it degrades to
+# `analysis_complete: false` with the sets omitted, never to a silent "none".
+ANALYSIS_BUDGET_MS = 50.0
+
+# A parameter slot counts as free when its column of the null-space basis is
+# this large relative to the largest such column.
+NULLSPACE_TOL_REL = 1e-6
 
 # Every residual kind this module can emit. `tests/test_sketch_jacobian.py`
 # asserts it has a central-difference case for each one, so adding a kind
@@ -247,6 +300,11 @@ class Sketch:
         self.n_res = 0
         self.n_par = 0
         self.con_types: list[str] = []   # spec-order constraint types
+        # parameter slot -> the entity that owns it, so a null-space vector can
+        # be reported as "p7, c3" rather than as a list of column indices.
+        self.slot_owner: list[str] = []
+        self.warm_started = False
+        self.warnings: list[dict] = []
         self._refs: dict[str, PointRef] = {}
         self._rads: dict[str, ScalarRef] = {}
         self._con_index = -1
@@ -261,6 +319,7 @@ class Sketch:
         else:
             p.ix = self.n_par
             self.n_par += 2
+            self.slot_owner += [name, name]
             self._refs[name] = _FreePoint(name, p.ix)
         self.points[name] = p
         return name
@@ -278,6 +337,7 @@ class Sketch:
         else:
             c.ir = self.n_par
             self.n_par += 1
+            self.slot_owner.append(name)
             self._rads[name] = _FreeScalar(name, c.ir)
         self.circles[name] = c
         return name
@@ -669,6 +729,79 @@ class Sketch:
         self._add(Residual(self._begin("tangent_circles"), "tangent_circles", 1,
                            self._params(ra, rb, r1, r2), f, df))
 
+    # ---------------- warm start ----------------
+    def seed(self, initial: dict | None) -> bool:
+        """Seed the starting parameter vector from an `initial` block (FR4).
+
+        `initial` **selects the solution branch** — it is not the speed
+        mechanism (measured: the v1 solver cost 20 ms seeded exactly at the
+        solution and 51 ms seeded 0.4 mm away; the Jacobian was the cost). It
+        overrides starting values only: it cannot fix a point, cannot override
+        `fixed_r` and cannot introduce an entity, so a value given for a fixed
+        entity is accepted and has no effect.
+
+        An unknown name raises — a silent ignore turns a client desync into a
+        sketch that mysteriously stops warm-starting. A stale or partial
+        `initial` (an entity it does not cover, or one it covers only
+        halfway) **degrades to a cold start** with an `initial_incomplete`
+        warning; it never raises and never seeds half a sketch.
+        """
+        self.warm_started = False
+        if not initial:
+            return False
+        if not isinstance(initial, dict):
+            raise SketchError("initial must be an object with 'points' and/or "
+                              "'circles' entries")
+        unknown_sections = set(initial) - {"points", "circles"}
+        if unknown_sections:
+            raise SketchError(
+                f"initial has unknown section(s) {sorted(unknown_sections)}; "
+                "known: ['circles', 'points']")
+        pts = initial.get("points") or {}
+        circs = initial.get("circles") or {}
+        for name in pts:
+            if name not in self.points:
+                raise SketchError(f"initial names unknown point {name!r}")
+        for name in circs:
+            if name not in self.circles:
+                raise SketchError(f"initial names unknown circle {name!r}")
+
+        missing: list[str] = []
+        seeds: list[tuple] = []
+        for name, p in self.points.items():
+            if p.fixed:
+                continue            # not a parameter; `initial` cannot un-fix it
+            given = pts.get(name)
+            if not isinstance(given, dict) or given.get("x") is None \
+                    or given.get("y") is None:
+                missing.append(name)
+                continue
+            seeds.append((p, float(given["x"]), float(given["y"])))
+        for name, c in self.circles.items():
+            if c.fixed_r:
+                continue            # `initial` cannot override a fixed radius
+            given = circs.get(name)
+            if not isinstance(given, dict) or given.get("r") is None:
+                missing.append(name)
+                continue
+            seeds.append((c, float(given["r"]), None))
+
+        if missing:
+            self.warnings.append({
+                "code": "initial_incomplete",
+                "message": ("initial does not cover " + ", ".join(sorted(missing))
+                            + "; solving from the spec's own coordinates instead"),
+                "entities": sorted(missing),
+            })
+            return False
+        for entity, a, b in seeds:
+            if b is None:
+                entity.r0 = a
+            else:
+                entity.x0, entity.y0 = a, b
+        self.warm_started = True
+        return True
+
     # ---------------- assembly ----------------
     def initial_vector(self) -> np.ndarray:
         """The starting parameter vector, in slot order."""
@@ -726,8 +859,153 @@ class Sketch:
             return 0
         return int((s > max(J.shape) * s[0] * RANK_TOL_REL).sum())
 
+    # ---------------- diagnostics ----------------
+    def row_owners(self) -> list[Residual]:
+        """The `Residual` record behind each assembled row."""
+        return [res for res in self.residuals for _ in range(res.rows)]
+
+    def free_entities(self, J: np.ndarray, rank: int) -> list[str]:
+        """The entities the null space can still move (design Decision 7).
+
+        Read off the *column norms* of the null-space basis rather than off one
+        singular vector at a time: any orthonormal basis of the null space
+        spans the same subspace, so a per-vector reading depends on an
+        arbitrary rotation while a column norm does not.
+        """
+        if self.n_par == 0 or rank >= self.n_par:
+            return []
+        if J.size == 0:
+            slots = range(self.n_par)          # nothing constrains anything
+        else:
+            # `full_matrices` only matters when the system has fewer rows than
+            # parameters; otherwise Vt is already the full n x n basis.
+            vt = np.linalg.svd(J, full_matrices=J.shape[0] < J.shape[1])[2]
+            null = vt[rank:]
+            if null.size == 0:
+                return []
+            col = np.linalg.norm(null, axis=0)
+            thresh = max(NULLSPACE_TOL_REL * float(col.max()), 1e-12)
+            slots = [i for i in range(self.n_par) if col[i] > thresh]
+        out: list[str] = []
+        for i in slots:
+            owner = self.slot_owner[i]
+            if owner not in out:
+                out.append(owner)
+        return out
+
+    def dependent_rows(self, J: np.ndarray,
+                       budget_ms: float = ANALYSIS_BUDGET_MS
+                       ) -> tuple[list[int], bool]:
+        """Rows that add no rank to the rows declared **before** them.
+
+        Greedy forward selection in declaration order, so the blame lands on
+        the later constraint — the one the user just added. **Do not replace
+        this with column-pivoted QR**: measured, QR blamed an innocent original
+        constraint in 2 of 3 cases (design Decision 6).
+
+        Orthogonalization is classical Gram-Schmidt run twice, which is as
+        stable as modified Gram-Schmidt and lets each row cost two
+        matrix-vector products instead of a Python loop over the basis.
+
+        Returns `(rows, complete)`; on an exhausted budget the row list is
+        empty and `complete` is False — a partial answer is never reported as
+        a whole one.
+        """
+        m, n = J.shape
+        basis = np.empty((min(m, n), n))
+        kept = 0
+        dependent: list[int] = []
+        deadline = time.monotonic() + budget_ms / 1e3
+        for i in range(m):
+            if time.monotonic() > deadline:
+                return [], False
+            w = np.array(J[i], dtype=float)
+            n0 = float(np.linalg.norm(w))
+            if n0 <= 0.0:
+                dependent.append(i)      # an all-zero row constrains nothing
+                continue
+            if kept:
+                b = basis[:kept]
+                w -= b.T @ (b @ w)
+                w -= b.T @ (b @ w)
+            nw = float(np.linalg.norm(w))
+            if nw > n0 * GREEDY_TOL_REL and kept < basis.shape[0]:
+                basis[kept] = w / nw
+                kept += 1
+            else:
+                dependent.append(i)
+        return dependent, True
+
+    def analyze(self, J: np.ndarray, f: np.ndarray, *, ok: bool,
+                budget_ms: float = ANALYSIS_BUDGET_MS) -> dict:
+        """The `diagnostics` block returned on every solve (FR5)."""
+        t0 = time.perf_counter()
+        n_par, n_res = self.n_par, self.n_res
+        rank = self.rank(J) if (n_par and n_res) else 0
+        dof = n_par - rank
+        free = self.free_entities(J, rank) if dof > 0 else []
+
+        # Only a rank-deficient system has dependent rows at all, so a
+        # well-constrained sketch — the drag-path case — never pays for the
+        # greedy pass.
+        dependent: list[int] = []
+        complete = True
+        if rank < n_res:
+            dependent, complete = self.dependent_rows(J, budget_ms)
+
+        redundant, conflicting = [], []
+        if complete and dependent:
+            owners = self.row_owners()
+            entries: dict[tuple[int, str | None], dict] = {}
+            for row in dependent:
+                res = owners[row]
+                key = (res.con_index, res.origin)
+                entry = entries.get(key)
+                if entry is None:
+                    entry = entries[key] = {
+                        "index": res.con_index,
+                        # the type the caller *wrote*, not the compiled row's
+                        # kind: a diagnostic never names a constraint the user
+                        # did not write.
+                        "type": self.con_types[res.con_index],
+                        "origin": res.origin,
+                        "violated": False,
+                    }
+                if abs(float(f[row])) > SATISFIED_TOL:
+                    entry["violated"] = True
+            for entry in entries.values():
+                violated = entry.pop("violated")
+                (conflicting if violated else redundant).append(entry)
+
+        if rank < n_res:
+            status = "over_constrained"
+        elif not ok:
+            status = "did_not_converge"
+        elif dof > 0:
+            status = "under_constrained"
+        else:
+            status = "well_constrained"
+
+        diag = {
+            "status": status,
+            "dof": dof,
+            "rank": rank,
+            "n_params": n_par,
+            "n_residuals": n_res,
+            "free_entities": free,
+            "analysis_ms": (time.perf_counter() - t0) * 1e3,
+            "analysis_complete": complete,
+        }
+        if complete:
+            # `conflicting` is *a* dependent set, not the unique culprit:
+            # removing any one member resolves the dependency.
+            diag["redundant"] = redundant
+            diag["conflicting"] = conflicting
+        return diag
+
     # ---------------- solve ----------------
-    def solve(self, tol: float = 1e-10, max_nfev: int = 2000) -> dict:
+    def solve(self, tol: float = 1e-10, max_nfev: int = 2000, *,
+              analysis_budget_ms: float = ANALYSIS_BUDGET_MS) -> dict:
         t0 = time.perf_counter()
         n_par, n_res = self.n_par, self.n_res
         x0 = self.initial_vector()
@@ -737,16 +1015,21 @@ class Sketch:
             # Nothing to solve: least_squares rejects an empty problem, and
             # "no free parameters" is a legitimate (fully fixed) sketch.
             xs = x0
-            max_err = float(np.max(np.abs(fun(xs)))) if n_res else 0.0
+            fs = fun(xs) if n_res else np.zeros(0)
+            max_err = float(np.max(np.abs(fs))) if n_res else 0.0
             success, nfev = True, 0
         else:
             res = least_squares(fun, x0, jac=jac, method="trf",
                                 xtol=tol, ftol=tol, gtol=tol, max_nfev=max_nfev)
             xs = res.x
-            max_err = float(np.max(np.abs(res.fun))) if n_res else 0.0
+            fs = np.asarray(res.fun, dtype=float)
+            max_err = float(np.max(np.abs(fs))) if n_res else 0.0
             success, nfev = bool(res.success), int(res.nfev)
 
-        rank = self.rank(jac(xs)) if (n_par and n_res) else 0
+        ok = success and max_err < 1e-7
+        diag = self.analyze(jac(xs) if (n_par and n_res) else np.zeros((n_res, n_par)),
+                            fs, ok=ok, budget_ms=analysis_budget_ms)
+        rank = diag["rank"]
         t1 = time.perf_counter()
         out_pts = {}
         for name in self.points:
@@ -758,7 +1041,7 @@ class Sketch:
             out_circ[name] = {"cx": float(cx), "cy": float(cy),
                               "r": float(self._rads[name].value(xs))}
         return {
-            "ok": success and max_err < 1e-7,
+            "ok": ok,
             "max_residual": max_err,
             "n_params": n_par,
             "n_residuals": n_res,
@@ -770,19 +1053,27 @@ class Sketch:
             "solve_ms": (t1 - t0) * 1e3,
             "points": out_pts,
             "circles": out_circ,
+            "diagnostics": diag,
+            "warm_started": self.warm_started,
+            "warnings": list(self.warnings),
         }
 
 
 # ---------------- JSON front-end (agent tool shape) ----------------
-def solve_sketch(spec: dict) -> dict:
-    """Solve a sketch from a JSON-shaped spec.
+def parse_sketch(spec: dict) -> Sketch:
+    """Compile a JSON-shaped spec into a `Sketch` (no solve).
 
     spec = {
       "points":  [{"name","x","y","fixed"?}, ...],
       "lines":   [{"name","p1","p2"}, ...],
       "circles": [{"name","center","r","fixed_r"?}, ...],
-      "constraints": [{"type": <name>, ...kwargs}, ...]
+      "constraints": [{"type": <name>, ...kwargs}, ...],
+      "initial": {"points": {name: {"x","y"}}, "circles": {name: {"r"}}}
     }
+
+    Split out from `solve_sketch` so callers that need the compiled residuals
+    or the Jacobian — the diagnostics tests, and the drag path — do not have to
+    re-implement ingestion.
     """
     sk = Sketch()
     for p in spec.get("points", []):
@@ -810,4 +1101,11 @@ def solve_sketch(spec: dict) -> dict:
             raise SketchError(f"unknown constraint type {c.get('type')!r}; "
                               f"known: {sorted(dispatch)}")
         fn(**kw)
-    return sk.solve()
+    sk.seed(spec.get("initial"))
+    return sk
+
+
+def solve_sketch(spec: dict, *,
+                 analysis_budget_ms: float = ANALYSIS_BUDGET_MS) -> dict:
+    """Compile and solve a sketch from a JSON-shaped spec (see `parse_sketch`)."""
+    return parse_sketch(spec).solve(analysis_budget_ms=analysis_budget_ms)

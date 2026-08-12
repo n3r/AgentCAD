@@ -189,7 +189,19 @@ sol = sketch.solve_sketch(spec)      # {"ok": True, "points": {"c": {"x": 40.0, 
 ```
 
 The solver converges to the solution *nearest the initial guess*, so seed the
-rough shape you actually want — a mirrored guess yields a mirrored result.
+rough shape you actually want — a mirrored guess yields a mirrored result. Pass
+`"initial": {"points": {"c": {"x": …, "y": …}}, "circles": {"C": {"r": …}}}` to
+seed it explicitly (branch selection, not speed); it never edits the spec, and
+an `initial` that does not cover every free entity falls back to a cold start
+with `warm_started: False` and an `initial_incomplete` warning.
+
+Every result carries a `diagnostics` block: `status`
+(`well_constrained`/`under_constrained`/`over_constrained`/`did_not_converge`),
+`dof` (= `n_params − rank(J)`, never negative), `free_entities` for an
+under-constrained sketch, and `redundant`/`conflicting` naming the dependent
+constraints by their index in `constraints`. A redundant but consistent
+constraint still solves; only a `conflicting` one is an error.
+
 Constraint types: `fixed, coincident, distance, distance_x, distance_y,
 horizontal, vertical, parallel, perpendicular, angle, point_on_line,
 point_on_circle, radius, equal_radius, midpoint, tangent_line_circle,
