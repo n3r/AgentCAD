@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from ..toolkit.sketch import SketchError, solve_sketch
 from .model import ValidationError
+from .sketch_emit import EmitError
+from .sketch_emit import emit as emit_code
 from .tools import Tool, schema
 
 _USAGE = (
@@ -107,8 +109,50 @@ _SPLINES_AND_SLOTS = (
 )
 
 
+_DRAG = (
+    "Optional drag frame: {point, x, y, weight?} pulls `point` (any point "
+    "name or virtual handle) toward the cursor. It is an **objective, not a "
+    "constraint** — excluded from `ok`, `max_residual`, `n_residuals`, `rank`, "
+    "`dof` and `diagnostics`, all of which describe the constraint rows alone; "
+    "the pull's own slack is reported as `drag.gap`. Default weight 0.05, "
+    "measured. Send it with `initial` seeded from the **previous frame's "
+    "solution**, never from the cursor: seeding the dragged point at the "
+    "cursor is what causes a mirror-branch flip when the cursor crosses the "
+    "boundary, and the weak pull is what prevents one. Dragging a "
+    "fully-constrained entity moves it (almost) not at all — that is correct, "
+    "and the old behaviour that looked responsive was it teleporting to "
+    "another solution."
+)
+
+_DIAGNOSTICS_MODE = (
+    "Optional: 'auto' (default) computes the diagnostics block, except on a "
+    "drag frame, where the constraint set cannot have changed and the cached "
+    "block is served; 'full' always recomputes; 'cached' prefers the cache. "
+    "The cache is keyed on the compiled residual structure and the constraint "
+    "targets, so any constraint edit invalidates it. `diagnostics_source` in "
+    "the result says which you got — a cached block reports the "
+    "`analysis_ms` of the solve that produced it."
+)
+
+_EMIT = (
+    "Optional: also return idiomatic build123d source for the solved sketch, "
+    "as `emit: {code, warnings, style}`. `\"function\"` wraps it in a "
+    "`sketch_profile()` you call from `build(p)`; `\"buildline\"` is the bare "
+    "`with BuildSketch(...)` block. Omit it (or send null/false) to skip "
+    "emission. The GUI and agents share **this** emitter, so the same spec "
+    "produces byte-identical code either way. Curves are anchored on their "
+    "shared solved endpoints at 9 decimals behind a 1e-8 mm closure gate: "
+    "measured, a centre-parametrized arc chain at 6 decimals leaves a 7.58e-7 "
+    "mm gap and `make_face()` refuses it, so an emission that would not "
+    "rebuild is a validation_error naming the junction rather than code you "
+    "find out about later."
+)
+
+
 def register(registry, service) -> None:
-    def solve(entities: dict, constraints: list, initial: dict | None = None) -> dict:
+    def solve(entities: dict, constraints: list, initial: dict | None = None,
+              emit: str | bool | None = None, drag: dict | None = None,
+              diagnostics: str | None = None) -> dict:
         spec = {
             "points": entities.get("points", []),
             "lines": entities.get("lines", []),
@@ -118,6 +162,8 @@ def register(registry, service) -> None:
             "slots": entities.get("slots", []),
             "constraints": constraints,
             "initial": initial,
+            "drag": drag,
+            "diagnostics": diagnostics,
         }
         try:
             result = solve_sketch(spec)
@@ -156,13 +202,22 @@ def register(registry, service) -> None:
                 f"check the starting coordinates and the targets. {_USAGE}",
                 details,
             )
+        if emit:
+            # After the conflict/convergence gates: emitting code for a sketch
+            # that did not solve would be emitting the wrong geometry.
+            try:
+                result["emit"] = emit_code(
+                    result, spec, style="function" if emit is True else emit)
+            except EmitError as exc:
+                raise ValidationError(str(exc), details) from exc
         return result
 
     registry.register(Tool(
         "solve_sketch",
         "Solve a 2D constrained sketch to exact coordinates you can feed into "
         "build123d BuildLine/BuildSketch. " + _USAGE + " " + _ARCS + " "
-        + _SPLINES_AND_SLOTS + " " + _NEW_CONSTRAINTS + " " + _DIAGNOSTICS,
+        + _SPLINES_AND_SLOTS + " " + _NEW_CONSTRAINTS + " " + _DIAGNOSTICS
+        + " " + _DRAG + " " + _DIAGNOSTICS_MODE + " " + _EMIT,
         schema(
             {
                 "entities": {"type": "object", "description":
@@ -175,6 +230,10 @@ def register(registry, service) -> None:
                 "constraints": {"type": "array", "description":
                                 "[{type, ...kwargs}] — see tool description"},
                 "initial": {"type": "object", "description": _INITIAL},
+                "drag": {"type": "object", "description": _DRAG},
+                "diagnostics": {"type": "string",
+                                "description": _DIAGNOSTICS_MODE},
+                "emit": {"type": "string", "description": _EMIT},
             },
             ["entities", "constraints"],
         ),

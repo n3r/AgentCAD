@@ -145,9 +145,42 @@ Jacobian was always the cost). It can never change the spec: it cannot fix a
 point, cannot override `fixed_r` and cannot introduce an entity. An unknown
 name is an error; a stale or partial `initial` degrades to a cold start with
 `warm_started: false` and an `initial_incomplete` warning.
+
+## `drag` (PRD-009 slice 8)
+
+`spec["drag"] = {point, x, y, weight?}` compiles to a **weighted soft residual
+block appended after the constraint rows**, and it is an **objective, not a
+constraint**: excluded from `ok`, `max_residual`, `n_residuals`, `rank`, `dof`
+and `diagnostics`, every one of which is computed over `[:n_res]`. Measured,
+counting it makes every drag of a fully-constrained entity report `ok: false`
+with `max_residual` 2.43 over a 48 mm drag — a verdict about the cursor.
+
+The two halves are separate and both are needed. Seeding is `initial`, from the
+**previous frame's solution**; the cursor enters only through the objective.
+Measured on the mirror triangle (a, b pinned, c held by two distances, two
+solutions at `(23.4375, +-18.7265)`): seeding c *at the cursor* flips the branch
+the moment the cursor crosses the boundary, while the weak pull seeded from the
+previous frame holds `+18.7265` through a sweep to `y = -30`.
+
+The soft pull is a compromise, so a frame ends with one **constraint-only
+re-solve seeded at the drag's answer** (`_settle`). Without it a
+fully-constrained point lands `w^2` of the drag distance off its constraints
+(measured 0.170 mm, `max_residual` 0.104) and `ok` would be false for the
+honest reason that the coordinates really are off. With it the point returns to
+where its constraints put it — which is what dragging a fully-constrained
+entity should do — and it costs nothing when the drag moved only free DOF,
+because the constraint rows are already satisfied there.
+
+Diagnostics stay **off the drag path**: `analyze` is cached against a hash of
+the compiled residual structure *and the constraint targets*, and
+`spec["diagnostics"] in {"auto", "full", "cached"}` chooses. `auto` recomputes
+except on a drag frame. `diagnostics_source` reports which block you got, so a
+cached measurement is never presented as a fresh one.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import time
 from collections.abc import Callable, Sequence
@@ -200,6 +233,26 @@ RESERVED_NAME_CHAR = "."
 # index" — distinct from an explicit `None`, which means "compiled, the caller
 # never wrote it".
 _AUTO_INDEX = object()
+
+# The weight of a drag's soft pull, relative to constraint rows scaled to
+# millimetres. Measured (design Decision 9d, the mirror-flip probe): at 0.05 a
+# 48 mm drag of a fully-constrained point never flips the branch and leaves the
+# point where its constraints put it, while seeding the point *at the cursor* —
+# the naive "warm start from the on-screen state" — flips it the moment the
+# cursor crosses the branch boundary.
+DRAG_WEIGHT = 0.05
+
+# What `diagnostics` may ask for. `auto` recomputes, except on a drag frame,
+# where the constraint set cannot have changed.
+DIAGNOSTICS_MODES = ("auto", "full", "cached")
+
+# Diagnostics are a function of the compiled residual *structure*, and a drag
+# frame changes no constraints, so a frame can serve the previous block instead
+# of paying ~6.4 ms for the greedy dependent-set pass (design Decision 9c: this
+# is what turns an ~8 ms frame into ~1.5 ms). The cache is module-level because
+# the route is stateless — every frame compiles a fresh `Sketch`.
+DIAG_CACHE_MAX = 32
+_DIAG_CACHE: dict[str, dict] = {}
 
 
 class SketchError(ValueError):
@@ -517,6 +570,21 @@ class Sketch:
         self.slot_owner: list[str] = []
         self.warm_started = False
         self.warnings: list[dict] = []
+        # The drag objective (slice 8). It is **not** in `self.residuals`: it
+        # is excluded from `ok`, `max_residual`, `n_residuals`, the rank, the
+        # DOF and the diagnostics, so it must not be in the structure every
+        # one of those is computed from.
+        self.drag_res: Residual | None = None
+        self.n_drag = 0
+        self.drag_info: dict | None = None
+        self.diagnostics_mode = "auto"
+        # The constraints as the caller declared them. `parse_sketch` fills
+        # this in; it is what makes the diagnostics cache key distinguish a
+        # duplicate `distance 50` (redundant) from a contradictory `distance
+        # 60` (conflicting) — two specs with an identical residual structure
+        # and opposite verdicts. A `Sketch` built by hand leaves it None, and
+        # then nothing is cached.
+        self.con_args: list[dict] | None = None
         self._refs: dict[str, PointRef] = {}
         self._rads: dict[str, ScalarRef] = {}
         self._con_index = -1
@@ -1357,6 +1425,85 @@ class Sketch:
         rb, _ = self._circle_refs(b)
         self._coincident(self._begin("concentric"), ra, rb)
 
+    # ---------------- the drag objective ----------------
+    def drag(self, point: str, x: float, y: float,
+             weight: float | None = None) -> None:
+        """A weighted soft pull of `point` toward the cursor (design 9d).
+
+        **This is an objective, not a constraint.** It occupies its own
+        weighted block *after* the constraint rows and is excluded from every
+        reported quantity: `ok`, `max_residual`, `n_residuals`, `rank`, `dof`
+        and the whole `diagnostics` block. Measured, including it makes every
+        drag of a fully-constrained entity report `ok: false` with
+        `max_residual` climbing to 2.43 (= weight x a 48 mm drag) — a verdict
+        about the cursor, not about the sketch.
+
+        Seeding is the other half and it belongs to `initial`: every parameter
+        starts at the **previous frame's solution**, never at the cursor.
+        Measured, seeding the dragged point at the cursor is not a warm start
+        that happens to flip the branch — it is what *causes* the flip, because
+        the on-screen state includes the cursor and the cursor crossed the
+        branch boundary.
+        """
+        if self.drag_res is not None:
+            raise SketchError("only one drag block per solve")
+        rp = self._pref(point)
+        if not rp.params:
+            raise SketchError(
+                f"cannot drag {point!r}: it has no free parameters (it is "
+                "fixed, or derived entirely from fixed entities)")
+        x, y = float(x), float(y)
+        w = DRAG_WEIGHT if weight is None else float(weight)
+        if not (w > 0.0) or not math.isfinite(w):
+            raise SketchError(f"drag weight must be finite and positive, got {w}")
+
+        def f(v):
+            px, py = rp.value(v)
+            return (w * (px - x), w * (py - y))
+
+        def df(v, J, r):
+            rp.accum(v, J, r, w, 0.0)
+            rp.accum(v, J, r + 1, 0.0, w)
+
+        self.drag_res = Residual(-1, "drag", 2, self._params(rp), f, df)
+        self.n_drag = 2
+        self.drag_info = {"point": point, "x": x, "y": y, "weight": w}
+
+    # ---------------- diagnostics cache ----------------
+    def structure_key(self) -> str | None:
+        """A hash of the compiled residual structure and the constraint targets.
+
+        Two frames of one drag hash the same: a drag changes `initial` and the
+        cursor, and neither is in here. A changed constraint — including one
+        whose *target* moved, which is the difference between a redundant and a
+        conflicting duplicate — does not. Coordinates are deliberately absent:
+        the GUI resends the whole spec every frame with its points at the last
+        solution, so keying on them would miss every time.
+        """
+        if self.con_args is None:
+            return None
+        payload = {
+            "n_par": self.n_par,
+            "n_res": self.n_res,
+            "rows": [[r.con_index, r.kind, r.rows, list(r.params), r.origin]
+                     for r in self.residuals],
+            "types": self.con_types,
+            "report": self.con_report,
+            "owners": self.slot_owner,
+            "cons": self.con_args,
+            # A fixed entity's value is baked into its residuals, so it is part
+            # of the structure even though it is a coordinate.
+            "fixed_points": sorted((n, p.x0, p.y0)
+                                   for n, p in self.points.items() if p.fixed),
+            "fixed_radii": sorted(
+                [(n, c.r0) for n, c in self.circles.items() if c.fixed_r]
+                + [(n, a.r0) for n, a in self.arcs.items()
+                   if a.fixed_r and a.owner is None]),
+            "slots": sorted((n, s.width) for n, s in self.slots.items()),
+        }
+        blob = json.dumps(payload, sort_keys=True, default=str).encode()
+        return hashlib.sha256(blob).hexdigest()
+
     # ---------------- warm start ----------------
     def seed(self, initial: dict | None) -> bool:
         """Seed the starting parameter vector from an `initial` block (FR4).
@@ -1508,16 +1655,22 @@ class Sketch:
         enough through 400 parameters, and it keeps `numpy.linalg` (and the
         SVD the rank analysis needs) in play with no `scipy.sparse` plumbing.
         """
-        residuals = self.residuals
+        residuals = list(self.residuals)
         offsets = self._row_offsets()
         n_res, n_par = self.n_res, self.n_par
-        jac_buf = np.zeros((n_res, n_par))
+        # The drag block is appended **after** the constraint rows, so every
+        # reported quantity is `[:n_res]` of what these functions return.
+        if self.drag_res is not None:
+            residuals.append(self.drag_res)
+            offsets.append(n_res)
+        m = n_res + self.n_drag
+        jac_buf = np.zeros((m, n_par))
 
         def fun(v):
             # A fresh array every call: least_squares holds on to the previous
             # residual vector across an iteration and would compare it against
             # itself if we handed out one buffer.
-            out = np.empty(n_res)
+            out = np.empty(m)
             for res, row in zip(residuals, offsets):
                 out[row:row + res.rows] = res.f(v)
             return out
@@ -1686,31 +1839,110 @@ class Sketch:
         return diag
 
     # ---------------- solve ----------------
+    # A note for whoever owns the drag budget next: `tr_solver="lsmr"` was
+    # measured on the drag path and **rejected**. Over a 100-frame scripted
+    # drag with warm caches it is faster on an arc-heavy sketch (50-entity ring
+    # + slot, 132 parameters: p50 9.09 -> 6.28 ms) and much slower on a
+    # line-heavy one (50-segment staircase, 100 parameters: p50 6.27 -> 11.63
+    # ms, max 6.77 -> 23.69 — over the FR6 budget). It is not a free win; the
+    # default `exact` clears the budget on both.
+    def _settle(self, fun, jac, xs, max_err, success, tol, max_nfev):
+        """Project a dragged solution back onto the constraint manifold.
+
+        The soft pull is a *compromise*: minimizing ``|f|^2 + w^2 |p - cursor|^2``
+        leaves a fully-constrained point about ``w^2`` of the drag distance off
+        its own constraints. Measured on the mirror triangle over a 48.7 mm
+        drag: the point lands **0.170 mm** away with `max_residual` **0.104**,
+        so `ok` is false for the honest reason that the coordinates really are
+        off. Reporting the cursor's opinion as geometry is not the answer, so
+        the frame ends with one constraint-only re-solve **seeded at the drag's
+        answer** — which keeps the branch the drag chose (it starts 0.17 mm
+        from it) and returns the coordinates the constraints imply: exactly
+        `(23.4375, 18.7265)` again, `max_residual` 3.6e-15.
+
+        It costs nothing in the case that matters: when the drag moved only
+        free DOF the constraint rows are already satisfied and this returns
+        immediately. Measured on the same triangle, for a frame that does need
+        it: **0.24 ms -> 0.42 ms**, against a 16 ms budget.
+        """
+        n_res = self.n_res
+        if max_err <= SATISFIED_TOL:
+            return xs, np.asarray(fun(xs)[:n_res], dtype=float), max_err, success
+
+        def cfun(v):
+            return fun(v)[:n_res]
+
+        def cjac(v):
+            return jac(v)[:n_res]
+
+        res = least_squares(cfun, xs, jac=cjac, method="trf",
+                            xtol=tol, ftol=tol, gtol=tol, max_nfev=max_nfev)
+        fs = np.asarray(res.fun, dtype=float)
+        return (res.x, fs, float(np.max(np.abs(fs))) if n_res else 0.0,
+                success and bool(res.success))
+
+    def _diagnostics(self, J: np.ndarray, f: np.ndarray, *, ok: bool,
+                     budget_ms: float) -> tuple[dict, str]:
+        """`analyze`, behind the structure cache (design Decision 9c).
+
+        A drag frame changes no constraints, so `auto` serves the block the
+        previous solve computed rather than paying for an SVD and the greedy
+        dependent-set pass on every frame. `full` always recomputes; `cached`
+        prefers the cache whatever the frame is. The served block is the one
+        that was computed — including its `analysis_ms` — and
+        `diagnostics_source` says which it is, because a cached measurement
+        presented as a fresh one is exactly the kind of quiet lie this
+        codebase's `unverified` rule exists to prevent.
+        """
+        mode = self.diagnostics_mode
+        key = self.structure_key()
+        prefer_cache = key is not None and (
+            mode == "cached" or (mode == "auto" and self.drag_res is not None))
+        if prefer_cache:
+            cached = _DIAG_CACHE.get(key)
+            if cached is not None:
+                return dict(cached), "cached"
+        diag = self.analyze(J, f, ok=ok, budget_ms=budget_ms)
+        if key is not None:
+            _DIAG_CACHE[key] = dict(diag)
+            while len(_DIAG_CACHE) > DIAG_CACHE_MAX:
+                _DIAG_CACHE.pop(next(iter(_DIAG_CACHE)))
+        return diag, "computed"
+
     def solve(self, tol: float = 1e-10, max_nfev: int = 2000, *,
               analysis_budget_ms: float = ANALYSIS_BUDGET_MS) -> dict:
         t0 = time.perf_counter()
         n_par, n_res = self.n_par, self.n_res
+        m = n_res + self.n_drag
         x0 = self.initial_vector()
         fun, jac = self.make_functions()
 
-        if n_par == 0 or n_res == 0:
+        if n_par == 0 or m == 0:
             # Nothing to solve: least_squares rejects an empty problem, and
             # "no free parameters" is a legitimate (fully fixed) sketch.
             xs = x0
-            fs = fun(xs) if n_res else np.zeros(0)
+            fs = fun(xs)[:n_res] if n_res else np.zeros(0)
             max_err = float(np.max(np.abs(fs))) if n_res else 0.0
             success, nfev = True, 0
         else:
             res = least_squares(fun, x0, jac=jac, method="trf",
-                                xtol=tol, ftol=tol, gtol=tol, max_nfev=max_nfev)
+                                xtol=tol, ftol=tol, gtol=tol,
+                                max_nfev=max_nfev)
             xs = res.x
-            fs = np.asarray(res.fun, dtype=float)
+            # `[:n_res]`, everywhere: the drag block is an objective, and a
+            # verdict computed over it is a verdict about the cursor.
+            fs = np.asarray(res.fun, dtype=float)[:n_res]
             max_err = float(np.max(np.abs(fs))) if n_res else 0.0
             success, nfev = bool(res.success), int(res.nfev)
+            if self.drag_res is not None and n_res:
+                xs, fs, max_err, success = self._settle(
+                    fun, jac, xs, max_err, success, tol, max_nfev)
 
         ok = success and max_err < 1e-7
-        diag = self.analyze(jac(xs) if (n_par and n_res) else np.zeros((n_res, n_par)),
-                            fs, ok=ok, budget_ms=analysis_budget_ms)
+        J = (jac(xs)[:n_res] if (n_par and n_res)
+             else np.zeros((n_res, n_par)))
+        diag, source = self._diagnostics(J, fs, ok=ok,
+                                         budget_ms=analysis_budget_ms)
         rank = diag["rank"]
         t1 = time.perf_counter()
         out_pts = {}
@@ -1780,7 +2012,7 @@ class Sketch:
                 "arcs": [f"{name}.arc_a", f"{name}.arc_b"],
                 "sides": [f"{name}.side_1", f"{name}.side_2"],
             }
-        return {
+        out = {
             "ok": ok,
             "max_residual": max_err,
             "n_params": n_par,
@@ -1797,9 +2029,23 @@ class Sketch:
             "splines": out_splines,
             "slots": out_slots,
             "diagnostics": diag,
+            # "computed" or "cached": a drag frame serves the block the
+            # constraint set already produced (Decision 9c).
+            "diagnostics_source": source,
             "warm_started": self.warm_started,
             "warnings": list(self.warnings),
         }
+        if self.drag_info is not None:
+            px, py = self._refs[self.drag_info["point"]].value(xs)
+            out["drag"] = {
+                **self.drag_info,
+                # How far the constraints kept the point from the cursor. It is
+                # reported here and **nowhere else**: it is not a residual of
+                # this sketch.
+                "gap": float(math.hypot(px - self.drag_info["x"],
+                                        py - self.drag_info["y"])),
+            }
+        return out
 
 
 # ---------------- JSON front-end (agent tool shape) ----------------
@@ -1817,7 +2063,9 @@ def parse_sketch(spec: dict) -> Sketch:
       "constraints": [{"type": <name>, ...kwargs}, ...],
       "initial": {"points": {name: {"x","y"}}, "circles": {name: {"r"}},
                   "arcs": {name: {"r","start_deg","end_deg"}},
-                  "slots": {name: {"r"}}}
+                  "slots": {name: {"r"}}},
+      "drag":    {"point": <handle>, "x": .., "y": .., "weight"?: ..},
+      "diagnostics": "auto" | "full" | "cached"
     }
 
     Split out from `solve_sketch` so callers that need the compiled residuals
@@ -1876,7 +2124,26 @@ def parse_sketch(spec: dict) -> Sketch:
             fn(**kw)
         finally:
             sk._spec_index = _AUTO_INDEX
+    sk.con_args = [dict(c) for c in spec.get("constraints", [])]
+    mode = spec.get("diagnostics") or "auto"
+    if mode not in DIAGNOSTICS_MODES:
+        raise SketchError(f"diagnostics must be one of "
+                          f"{list(DIAGNOSTICS_MODES)}, not {mode!r}")
+    sk.diagnostics_mode = mode
     sk.seed(spec.get("initial"))
+    drag = spec.get("drag")
+    if drag:
+        if not isinstance(drag, dict):
+            raise SketchError("drag must be {point, x, y, weight?}")
+        unknown = set(drag) - {"point", "x", "y", "weight"}
+        if unknown:
+            raise SketchError(
+                f"drag has unknown key(s) {sorted(unknown)}; "
+                "known: ['point', 'x', 'y', 'weight']")
+        for key in ("point", "x", "y"):
+            if drag.get(key) is None:
+                raise SketchError(f"drag needs {key!r}")
+        sk.drag(drag["point"], drag["x"], drag["y"], drag.get("weight"))
     return sk
 
 

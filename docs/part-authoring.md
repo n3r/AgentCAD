@@ -238,6 +238,40 @@ kind?}` dispatches on what `a` and `b` are (line+circle/arc, or curve+curve);
 `symmetric {a, b, about}` mirrors two points or two lines about a line in two
 rows (midpoint on the axis **and** perpendicular to it).
 
+#### Emitting build123d source
+
+`"emit": "function" | "buildline"` (or `agentcad.core.sketch_emit.emit(solution,
+spec)`) returns `{code, warnings, style}` — the **one** emitter the GUI and
+agents share, so the same spec produces byte-identical code either way. The
+mapping: a line chain becomes `Polyline`/`Line`, an arc becomes an
+**endpoint-anchored** `RadiusArc` (or `ThreePointArc` when the arc was authored
+3-point), a spline becomes `Spline(..., tangents=…)` when an end tangent is
+pinned, a circle keeps its `Locations` + `Circle` form, and a slot emits as
+`SlotCenterToCenter` when it stands alone or as its compiled primitives when it
+carries constraints of its own (`SlotCenterToCenter` is a face, not a curve
+that can join a `BuildLine`).
+
+Every junction is emitted **once**, as a shared `v<n>` literal at **9
+decimals**, and a closure gate refuses to emit `make_face()` when a junction's
+shared literal is more than **1e-8 mm** from any endpoint it stands for.
+Measured: a centre-parametrized arc chain at 6 decimals — what the GUI used to
+write — leaves a 7.58e-7 mm gap and `make_face()` raises *"Face can only be
+created with closed wires"*, and the failure only appears on non-round
+coordinates.
+
+#### Dragging
+
+`"drag": {point, x, y, weight?}` pulls a point (or a virtual handle) toward a
+cursor as a **weighted soft objective, not a constraint**: it is excluded from
+`ok`, `max_residual`, `n_residuals`, `rank`, `dof` and `diagnostics`, and its
+own slack comes back as `drag.gap`. Send it with `initial` seeded from the
+**previous frame's solution** — seeding the dragged point at the cursor is what
+causes a mirror-branch flip, not what prevents one. Dragging a fully
+constrained entity moves it (almost) not at all; that is correct.
+`"diagnostics": "auto" | "full" | "cached"` controls the diagnostics cache
+(`auto` serves the cached block on a drag frame, since a drag changes no
+constraints), and `diagnostics_source` in the result says which you got.
+
 ### Threads and fasteners
 
 `agentcad.toolkit.threads` wraps `bd_warehouse` (Apache-2.0) with real ISO
