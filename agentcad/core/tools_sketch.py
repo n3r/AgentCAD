@@ -24,7 +24,36 @@ _USAGE = (
     "mirrored result. Constraint types: fixed, coincident, distance, "
     "distance_x, distance_y, horizontal, vertical, parallel, perpendicular, "
     "angle, point_on_line, point_on_circle, radius, equal_radius, midpoint, "
-    "tangent_line_circle, tangent_circles."
+    "tangent_line_circle, tangent_circles, tangent, symmetric, equal_length, "
+    "concentric."
+)
+
+_ARCS = (
+    "Arcs are authored either centre-form ({name, center: <point>, r, "
+    "start_deg, end_deg, fixed_r?}) or 3-point ({name, start: [x,y], mid: "
+    "[x,y], end: [x,y]}, compiled to the centre form at ingestion). Angles "
+    "are **degrees, counter-clockwise**, and an arc adds exactly three "
+    "parameters — r, start, end — plus the two its centre point costs. Its "
+    "endpoints are the **virtual handles** `<name>.start` and `<name>.end`: "
+    "write them anywhere a point name goes (`{type: coincident, p: "
+    "\"arc1.end\", q: \"p3\"}`) and the whole point vocabulary applies to "
+    "them for free. `radius`, `equal_radius`, `point_on_circle` and both v1 "
+    "tangency types accept an arc wherever they accept a circle. Entity names "
+    "may not contain a '.' — that namespace belongs to handles and compiled "
+    "sub-entities. Reported angles are normalized so start is in [0, 360) and "
+    "end carries the full signed sweep."
+)
+
+_NEW_CONSTRAINTS = (
+    "`tangent {a, b, at?, kind?}` is one constraint dispatched on what a and b "
+    "are: line+circle/arc (1 row, or 3 when `at` names the tangency point), or "
+    "curve+curve (1 row, kind external|internal). `symmetric {a, b, about}` "
+    "mirrors two points — or two lines, endpoint-for-endpoint in declaration "
+    "order — about a line, in **two rows**: the midpoint lies on the axis and "
+    "the pair is perpendicular to it. `equal_length {l1, l2}` and `concentric "
+    "{a, b}` (2 rows, centre coincidence) complete the set. The v1 names "
+    "`tangent_line_circle` and `tangent_circles` keep working unchanged — "
+    "`tangent` is a new front door, not a rename."
 )
 
 _DIAGNOSTICS = (
@@ -45,7 +74,8 @@ _DIAGNOSTICS = (
 )
 
 _INITIAL = (
-    "Optional warm start: {points:{name:{x,y}}, circles:{name:{r}}}. It seeds "
+    "Optional warm start: {points:{name:{x,y}}, circles:{name:{r}}, "
+    "arcs:{name:{r,start_deg,end_deg}}, slots:{name:{r}}}. It seeds "
     "the starting coordinates only — it cannot fix a point, override fixed_r "
     "or introduce an entity — so its job is to **select the solution branch** "
     "(which side of a mirror pair you land on), not to make the solve faster. "
@@ -55,12 +85,37 @@ _INITIAL = (
 )
 
 
+_SPLINES_AND_SLOTS = (
+    "A **spline** is an ordered list of named points, degree 3, non-periodic, "
+    "and it owns no parameters: its points are ordinary points, so every "
+    "point constraint works on them. It emits as build123d `Spline`, which "
+    "interpolates them (measured to 7.1e-15 mm, well inside the emission "
+    "tolerance), so the solved coordinates *are* the curve's. Constraints "
+    "apply to the control points and to the **end tangents** (`{type: "
+    "tangent, a: \"sp1.start\", b: \"ln4\"}`, a direction residual against "
+    "the first control-polygon leg); **on-curve point constraints are out of "
+    "scope** — say what you mean with a control point. A **slot** {name, c1, "
+    "c2, width} compiles at ingestion into two arcs and two lines with **one "
+    "shared radius** and structural junctions, so it contributes exactly five "
+    "rows: radius = width/2 and four tangencies. Its sub-entities are named "
+    "`<name>.arc_a`, `<name>.arc_b`, `<name>.side_1`, `<name>.side_2`; you "
+    "may reference them in constraints but not declare them, and a diagnostic "
+    "reports the slot with `origin: \"slot:<name>\"` and `index: null` "
+    "rather than blaming a constraint you did not write. `initial` seeds a "
+    "slot by its radius alone (`slots: {name: {r}}`) — the caps' angles are "
+    "re-derived from the seeded centres."
+)
+
+
 def register(registry, service) -> None:
     def solve(entities: dict, constraints: list, initial: dict | None = None) -> dict:
         spec = {
             "points": entities.get("points", []),
             "lines": entities.get("lines", []),
             "circles": entities.get("circles", []),
+            "arcs": entities.get("arcs", []),
+            "splines": entities.get("splines", []),
+            "slots": entities.get("slots", []),
             "constraints": constraints,
             "initial": initial,
         }
@@ -76,8 +131,13 @@ def register(registry, service) -> None:
         conflicting = diag.get("conflicting") or []
         if conflicting:
             named = ", ".join(
-                f"#{c['index']} {c['type']}"
-                + (f" (from {c['origin']})" if c.get("origin") else "")
+                # `index` is None for a constraint compiled from an entity (a
+                # slot's internal machinery): there is no entry of
+                # `constraints` to point at, so name the origin instead.
+                (f"#{c['index']} {c['type']}" if c.get("index") is not None
+                 else f"{c['type']} compiled from {c['origin']}")
+                + (f" (from {c['origin']})"
+                   if c.get("origin") and c.get("index") is not None else "")
                 for c in conflicting)
             raise ValidationError(
                 f"sketch is over-constrained and cannot be satisfied (max "
@@ -101,12 +161,17 @@ def register(registry, service) -> None:
     registry.register(Tool(
         "solve_sketch",
         "Solve a 2D constrained sketch to exact coordinates you can feed into "
-        "build123d BuildLine/BuildSketch. " + _USAGE + " " + _DIAGNOSTICS,
+        "build123d BuildLine/BuildSketch. " + _USAGE + " " + _ARCS + " "
+        + _SPLINES_AND_SLOTS + " " + _NEW_CONSTRAINTS + " " + _DIAGNOSTICS,
         schema(
             {
                 "entities": {"type": "object", "description":
                              "{points:[{name,x,y,fixed?}], lines:[{name,p1,p2}], "
-                             "circles:[{name,center,r,fixed_r?}]}"},
+                             "circles:[{name,center,r,fixed_r?}], "
+                             "arcs:[{name,center,r,start_deg,end_deg,fixed_r?}], "
+                             "splines:[{name,points:[<point names>]}], "
+                             "slots:[{name,c1,c2,width}]}"
+                             + " " + _ARCS + " " + _SPLINES_AND_SLOTS},
                 "constraints": {"type": "array", "description":
                                 "[{type, ...kwargs}] — see tool description"},
                 "initial": {"type": "object", "description": _INITIAL},

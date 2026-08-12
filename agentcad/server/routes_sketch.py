@@ -14,6 +14,9 @@ def build_router(service, registry) -> APIRouter:
         # Explicit keys, never **body: the registry rejects unknown arguments,
         # so a key that is not whitelisted here simply never reaches the
         # solver — which is how `initial` was dead until PRD-009 slice 4.
+        # Entity *kinds* (`arcs`, and slice 6's `splines`/`slots`) travel
+        # inside `entities` and are whitelisted in `core/tools_sketch.py`,
+        # which is what unpacks that dict; only new top-level keys belong here.
         return registry.call("solve_sketch", {
             "entities": body.get("entities", {}),
             "constraints": body.get("constraints", []),

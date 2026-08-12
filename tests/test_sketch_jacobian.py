@@ -8,9 +8,14 @@ central difference of *its own* `f` — including the columns it did not
 declare, which is how an under-declared `params` tuple is caught.
 
 `RESIDUAL_KINDS` is the coverage gate: a kind added to the solver without a
-case here fails `test_every_registered_residual_kind_is_covered`.
+case in *some* derivative harness fails
+`test_every_registered_residual_kind_is_covered`. Later slices add their kinds
+in their own modules (`test_sketch_arcs.py`, ...); each exports a module-level
+`DERIV_BUILDERS` mapping and the gate unions every one it can find, so the
+coverage requirement travels with the kind rather than with this file.
 """
 
+import importlib
 import subprocess
 import sys
 from pathlib import Path
@@ -109,6 +114,10 @@ BUILDERS = {
     "fixed_entities": _fixed_entity_sketch,
 }
 
+# The coverage gate below unions this mapping across every `test_sketch_*.py`
+# module that exports one.
+DERIV_BUILDERS = BUILDERS
+
 
 def _draws(sk: Sketch, seed: int) -> list[np.ndarray]:
     rng = np.random.default_rng(seed)
@@ -125,10 +134,12 @@ def _central(res: Residual, v: np.ndarray, ix: int) -> np.ndarray:
     return (np.asarray(res.f(vp), float) - np.asarray(res.f(vm), float)) / (2 * h)
 
 
-@pytest.mark.parametrize("name", sorted(BUILDERS))
-def test_every_df_matches_a_central_difference_of_its_own_f(name):
-    """The gate on every analytic derivative in the solver."""
-    sk = BUILDERS[name]()
+def assert_df_matches_central_difference(name, sk):
+    """The gate on every analytic derivative in the solver.
+
+    Public so the slices that add residual kinds can reuse the harness from
+    their own test modules instead of copying it.
+    """
     n_par = sk.n_par
     for v in _draws(sk, seed=sum(bytearray(name.encode()))):
         for k, res in enumerate(sk.residuals):
@@ -142,10 +153,8 @@ def test_every_df_matches_a_central_difference_of_its_own_f(name):
                     f"analytic={got} central-difference={want}")
 
 
-@pytest.mark.parametrize("name", sorted(BUILDERS))
-def test_df_writes_only_inside_its_declared_params(name):
+def assert_df_stays_inside_params(name, sk):
     """`params` is what the rank analysis and future sparsity rely on."""
-    sk = BUILDERS[name]()
     for k, res in enumerate(sk.residuals):
         assert len(set(res.params)) == len(res.params), f"{res.kind} params dupes"
         assert all(0 <= ix < sk.n_par for ix in res.params), res.kind
@@ -158,11 +167,30 @@ def test_df_writes_only_inside_its_declared_params(name):
                 f"{res.params}")
 
 
+@pytest.mark.parametrize("name", sorted(BUILDERS))
+def test_every_df_matches_a_central_difference_of_its_own_f(name):
+    assert_df_matches_central_difference(name, BUILDERS[name]())
+
+
+@pytest.mark.parametrize("name", sorted(BUILDERS))
+def test_df_writes_only_inside_its_declared_params(name):
+    assert_df_stays_inside_params(name, BUILDERS[name]())
+
+
+def _covered_kinds() -> set[str]:
+    """Every residual kind built by any derivative harness in the suite."""
+    seen: set[str] = set()
+    for path in sorted(Path(__file__).parent.glob("test_sketch_*.py")):
+        mod = importlib.import_module(f"{__package__}.{path.stem}")
+        for build in getattr(mod, "DERIV_BUILDERS", {}).values():
+            seen |= {res.kind for res in build().residuals}
+    return seen
+
+
 def test_every_registered_residual_kind_is_covered():
     """A new residual kind without a derivative test is the failure mode this
     whole file exists to prevent."""
-    seen = {res.kind for build in BUILDERS.values() for res in build().residuals}
-    assert seen == set(RESIDUAL_KINDS)
+    assert _covered_kinds() == set(RESIDUAL_KINDS)
 
 
 @pytest.mark.parametrize("name", sorted(BUILDERS))

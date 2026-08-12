@@ -164,7 +164,8 @@ def build(p):
 ### Constraint-solved sketches
 
 `agentcad.toolkit.sketch.solve_sketch(spec)` runs a first-party scipy
-least-squares solver over points/lines/circles and a constraint list, and
+least-squares solver over points/lines/circles/arcs/splines/slots and a
+constraint list, and
 returns exact coordinates you can feed straight into a `BuildLine`/`BuildSketch`.
 The same solver is exposed to agents as the `solve_sketch` tool (see
 [agent-api.md](agent-api.md)); the spec shape and constraint vocabulary are
@@ -205,7 +206,37 @@ constraint still solves; only a `conflicting` one is an error.
 Constraint types: `fixed, coincident, distance, distance_x, distance_y,
 horizontal, vertical, parallel, perpendicular, angle, point_on_line,
 point_on_circle, radius, equal_radius, midpoint, tangent_line_circle,
-tangent_circles`.
+tangent_circles, tangent, symmetric, equal_length, concentric`.
+
+**Splines** (`"splines": [{name, points:[<point names>]}]`) are ordered lists
+of named points, degree 3, non-periodic; the points are ordinary points, so
+every point constraint applies to them, and the emitted build123d `Spline`
+interpolates them (measured to 7.1e-15 mm). Constraints reach the curve only
+through its control points and its **end tangents** (`{"type": "tangent", "a":
+"sp1.start", "b": "ln4"}`); on-curve point constraints are out of scope. A
+pinned end tangent needs `tangents=` at emission — a free-end `Spline` drifts
+up to 44.6 deg from the control-polygon leg — and the result reports
+`splines[name]["end_tangent"]` and the solved directions to say so.
+
+**Slots** (`"slots": [{name, c1, c2, width}]`) compile at ingestion into
+`<name>.arc_a`, `<name>.arc_b`, `<name>.side_1`, `<name>.side_2` with **one
+shared radius** and structural junctions, contributing five rows in total
+(`radius = width/2` plus four tangencies). Sub-entities may be referenced in
+constraints but not declared; a diagnostic reports the slot with `origin:
+"slot:<name>"` and `index: null` rather than a constraint you did not write.
+
+**Arcs** (`"arcs": [{name, center, r, start_deg, end_deg, fixed_r?}]`, or the
+3-point form `{name, start:[x,y], mid:[x,y], end:[x,y]}`) add three parameters
+each — radius and the two angles, counter-clockwise degrees — and expose their
+endpoints as the **virtual handles** `<name>.start` / `<name>.end`, which can
+be written wherever a point name is accepted, so `{"type": "coincident", "p":
+"arc1.end", "q": "p3"}` closes a chain with no extra entities. `radius`,
+`equal_radius`, `point_on_circle` and both tangency constraints accept an arc
+wherever they accept a circle. Entity names may not contain a `.` — that
+namespace belongs to handles and compiled sub-entities. `tangent {a, b, at?,
+kind?}` dispatches on what `a` and `b` are (line+circle/arc, or curve+curve);
+`symmetric {a, b, about}` mirrors two points or two lines about a line in two
+rows (midpoint on the axis **and** perpendicular to it).
 
 ### Threads and fasteners
 
