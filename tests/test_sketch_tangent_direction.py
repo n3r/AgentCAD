@@ -12,6 +12,8 @@ new kind against a central difference of its own `f`.
 """
 
 import math
+import statistics
+import time
 
 import numpy as np
 import pytest
@@ -380,33 +382,11 @@ CLASS_SPECS = {
     "line_circle_midpoint": midpoint_spec,
     "line_circle_coincident_relay": coincident_relay_spec,
 }
-
-
-@pytest.mark.parametrize("name", sorted(CLASS_SPECS))
-def test_a_pinned_junction_never_compiles_to_a_distance_residual(name):
-    """The class-level property. **Not** "these six specs are fixed": the
-    distance forms exist only for curves the sketch does not already hold
-    together, so a pinned junction that still reaches them is the bug."""
-    sk = parse_sketch(CLASS_SPECS[name]())
-    kinds = [r.kind for r in sk.residuals]
-    assert "tangent_line_circle" not in kinds, kinds
-    assert "tangent_circles" not in kinds, kinds
-    assert "tangent_dir" in kinds, kinds
-
-
-@pytest.mark.parametrize("name", sorted(CLASS_SPECS))
-def test_a_pinned_junction_has_full_row_rank_and_an_honest_dof(name):
-    """Every row is doing work, so the rank is the row count and nothing is
-    blamed. Before the fix each of these reported `over_constrained` with
-    `redundant: [tangent]` against a constraint reaching tangency to 1e-11."""
-    spec = CLASS_SPECS[name]()
-    res = solve_sketch(spec)
-    diag = res["diagnostics"]
-    assert res["rank"] == res["n_residuals"], diag
-    assert res["dof"] == res["n_params"] - res["n_residuals"]
-    assert diag["status"] != "over_constrained", diag
-    assert diag["redundant"] == []
-    assert diag["conflicting"] == []
+# The class tests that sweep `CLASS_SPECS` live at the **bottom** of this file,
+# after every configuration has registered itself. `@parametrize` is evaluated
+# when the decorator runs, so a spec added to the dict further down the module
+# is silently outside it: 0143 added three and the two sweeps kept collecting
+# six ids. `test_every_class_spec_is_parametrized` is the guard that says so.
 
 
 def test_the_order_of_the_pinning_constraint_does_not_matter():
@@ -577,9 +557,17 @@ CLASS_SPECS["line_circle_measured"] = measured_on_curve_spec
 def test_a_dimensionally_pinned_junction_is_recognised():
     """Review 2, C4 — the exact configuration and the exact numbers.
 
-    Before: singular values `12.04, 1.41, 4.3e-17`, rank 2 of 3, `dof 2` too
-    high and `redundant: [tangent]` against a row doing real work. The correct
-    rank is 3.
+    Measured on this spec, `n_params 6`, with the junction pass switched off
+    and back on (0143 printed a different table here; these reproduce — 0144):
+
+    | | singular values | rank | dof | status | blame |
+    |---|---|---|---|---|---|
+    | distance form | 10.05, 1.414, **4.3e-17** | 2/3 | 4 | over_constrained | `redundant: [tangent]` |
+    | direction form | 10.05, 1.005, **0.1404** | 3/3 | 3 | under_constrained | none |
+
+    The third singular value is the whole finding: 4.3e-17 is the tangency row
+    lying in the span of the two dimensional rows, and the constraint being
+    blamed for it.
     """
     spec = dimensional_junction_spec()
     sk = parse_sketch(spec)
@@ -623,19 +611,349 @@ def test_a_pinned_but_offset_junction_is_not_a_junction():
     assert "tangent_dir" not in kinds, kinds
 
 
-@pytest.mark.parametrize("off", [0.0, 0.5, 3.0, 12.0, 60.0, -25.0])
+@pytest.mark.parametrize("off", [0.0, 0.5, 3.0, 12.0, 60.0, -25.0,
+                                 275.0, 400.0, 575.0, -575.0])
 def test_the_junction_is_found_however_far_the_seed_is_from_it(off):
     """The criterion is about the **solution**, so the seed must not decide it.
 
-    That is why the non-tangency rows are projected onto their own manifold
-    before the question is asked — and why the row-space test has an absolute
-    floor: a *structural* incidence has an analytically zero gradient and a
-    numerically 1e-16 one, which a purely relative test reads as a full-size
-    vector pointing somewhere random. Measured without the floor: found at
-    0 mm and 0.5 mm, missed at 3 mm, found again at 12 mm.
+    0143 manufactured that solution with a budgeted `least_squares` projection
+    of the non-tangency rows and read `fit.x` without reading `fit.status`. The
+    seeds beyond 250 mm are the ones that exposed it: at 275 mm the projection
+    stopped 76 mm short, `phi_arc` read 76 instead of 0, and the tangency
+    quietly compiled to the degenerate distance form. Swept 0..1000 mm in
+    25 mm steps, **21 of 41 seeds** got the flat form, and non-monotonically
+    (275 flat, 575 direction, 600 direction, 650 flat) — numerical noise, not
+    geometry. There is no projection now: the criterion is read at the
+    provisional system's own solution, so the seed cannot decide it.
+
+    The row-space half keeps its absolute floor: a *structural* incidence has
+    an analytically zero gradient and a numerically 1e-16 one, which a purely
+    relative test reads as a full-size vector pointing somewhere random.
     """
     spec = dimensional_junction_spec(off=off)
     assert [r.kind for r in parse_sketch(spec).residuals][-1] == "tangent_dir"
     res = solve_sketch(spec)
     assert res["ok"] is True, res["diagnostics"]
     assert res["rank"] == res["n_residuals"]
+
+
+def test_the_seed_never_changes_which_residual_a_junction_compiles_to():
+    """The sweep itself, as one assertion: **one** compiled form over the whole
+    range, not 21 of one and 20 of the other."""
+    forms = {off: [r.kind for r in
+                   parse_sketch(dimensional_junction_spec(off=off)).residuals
+                   if r.kind.startswith("tangent")]
+             for off in range(0, 525, 25)}
+    assert {tuple(v) for v in forms.values()} == {("tangent_dir",)}, forms
+
+
+def test_an_undecidable_junction_says_so_instead_of_falling_back_quietly():
+    """**The hard requirement.** When the rows the criterion is about cannot be
+    solved, the question has no answer — and the one thing this pass may never
+    do is answer it "no" in silence, because "no" compiles the residual that is
+    rank-deficient at a junction. Here `distance_x` is written twice with
+    contradictory values, so there is no configuration to read the criterion
+    at."""
+    spec = dimensional_junction_spec()
+    spec["constraints"].insert(1, {"type": "distance_x", "p": "p2",
+                                   "q": "a1.start", "d": 40.0})
+    res = solve_sketch(spec)
+    codes = [w["code"] for w in res["warnings"]]
+    assert "tangency_junction_undecided" in codes, res["warnings"]
+    warning = res["warnings"][codes.index("tangency_junction_undecided")]
+    assert warning["entities"] == ["l1/a1"], warning
+    assert "distance form" in warning["message"]
+
+
+def test_the_undecided_warning_survives_the_tools_error_path():
+    """`tangency_junction_undecided` is raised on exactly the sketches that do
+    not converge, and `solve_sketch` (the tool) turns those into a
+    `ValidationError` instead of returning the result — so the warning has to
+    ride in the error's `details` or no caller ever sees it."""
+    from agentcad.core.tools import ToolRegistry
+    from agentcad.core.tools_sketch import register as register_sketch
+
+    registry = ToolRegistry()
+    register_sketch(registry, None)
+    spec = dimensional_junction_spec(off=590.0)
+    out = registry.call("solve_sketch", {
+        "entities": {"points": spec["points"], "lines": spec["lines"],
+                     "arcs": spec["arcs"]},
+        "constraints": spec["constraints"]})
+    details = out["error"]["details"]
+    assert out["error"]["type"] == "validation_error", out["error"]
+    assert [w["code"] for w in details["warnings"]] == [
+        "tangency_junction_undecided"], details["warnings"]
+
+
+def test_detection_reaches_exactly_as_far_as_the_solve_does():
+    """**The honest limit, stated as a test.** There is no seed distance gate
+    any more — the criterion is read at the provisional system's solution, so
+    detection is attempted whenever that system has one and refused, out loud,
+    whenever it does not.
+
+    Swept -1000..1000 mm in 25 mm steps on this configuration (only `p2`
+    moves, so the line grows with the offset): 59 seeds compile the direction
+    form and 22 the distance form — and those 22 are **exactly** the 22 the
+    sketch does not solve at all, each carrying the warning. Not one seed both
+    solves and gets the flat form.
+    """
+    flat, undecided, unsolved = [], [], []
+    for off in range(-1000, 1025, 25):
+        sk = parse_sketch(dimensional_junction_spec(off=float(off)))
+        res = sk.solve()
+        if "tangent_line_circle" in [r.kind for r in sk.residuals]:
+            flat.append(off)
+        if "tangency_junction_undecided" in [w["code"] for w in
+                                             res["warnings"]]:
+            undecided.append(off)
+        if not res["ok"]:
+            unsolved.append(off)
+    assert flat == undecided == unsolved, (flat, undecided, unsolved)
+    assert len(flat) == 22, flat
+
+
+def test_a_tangency_seeded_at_the_direction_residuals_own_stationary_point():
+    """`t_L x t_C` has a stationary point of its own, and 0143 drove into it.
+
+    A horizontal line tangent to a circle with the junction seeded at the
+    3 o'clock point: the cross product is 1, its gradient there is parallel to
+    the `point_on_circle` row, Gauss-Newton cannot move and the row that gets
+    blamed is the one doing the work — measured `ok: false`, `max_residual 1`,
+    `conflicting: [tangent]` against 3.8e-11 from the same sketch before 0143.
+    The re-solve starts from the provisional system's own solution, which the
+    distance form (no stationary point there) walks to the tangency first.
+    """
+    spec = {
+        "points": [{"name": "c", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "t", "x": 10.0, "y": 0.0},
+                   {"name": "p", "x": 10.0, "y": 0.0},
+                   {"name": "q", "x": 30.0, "y": 0.0}],
+        "circles": [{"name": "C", "center": "c", "r": 10.0, "fixed_r": True}],
+        "lines": [{"name": "L", "p1": "p", "p2": "q"}],
+        "constraints": [
+            {"type": "horizontal", "ln": "L"},
+            {"type": "distance_y", "p": "t", "q": "p", "d": 0.0},
+            {"type": "point_on_circle", "p": "t", "c": "C"},
+            {"type": "tangent", "a": "L", "b": "C"},
+        ],
+    }
+    assert "tangent_dir" in [r.kind for r in parse_sketch(spec).residuals]
+    res = solve_sketch(spec)
+    assert res["ok"] is True, res["diagnostics"]
+    assert res["max_residual"] < 1e-7, res["max_residual"]
+    assert res["diagnostics"]["conflicting"] == [], res["diagnostics"]
+    # the junction ended up at the top of the circle, where a horizontal line
+    # is tangent to it — not at the 3 o'clock point it was seeded at
+    assert abs(res["points"]["t"]["y"] - 10.0) < 1e-6, res["points"]["t"]
+
+
+@pytest.mark.parametrize("scale", [1e-3, 1.0, 1e3])
+@pytest.mark.parametrize("rel_delta,form", [(0.0, "tangent_dir"),
+                                            (1e-9, "tangent_dir"),
+                                            (1e-8, "tangent_dir"),
+                                            (1e-6, "tangent_line_circle"),
+                                            (1e-4, "tangent_line_circle"),
+                                            (1e-2, "tangent_line_circle")])
+def test_the_junction_verdict_does_not_depend_on_the_unit_it_was_drawn_in(
+        scale, rel_delta, form):
+    """**A sketch has no units.** `distance(p, c, r(1 + d))` + `radius(C, r)`
+    puts `p` a *relative* `d` off the circle, so the verdict must be a function
+    of `d` alone. It was a function of the millimetre: `max(1.0, curve_scale)`
+    in the value gate meant the same drawing authored in metres and in
+    millimetres disagreed at 1e-7..1e-6 of relative offset."""
+    r = 10.0 * scale
+    spec = {
+        "points": [{"name": "c", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "p", "x": r, "y": 0.0},
+                   {"name": "q", "x": r, "y": 20.0 * scale}],
+        "circles": [{"name": "C", "center": "c", "r": r}],
+        "lines": [{"name": "L", "p1": "p", "p2": "q"}],
+        "constraints": [
+            {"type": "distance", "p": "p", "q": "c", "d": r * (1 + rel_delta)},
+            {"type": "radius", "c": "C", "r": r},
+            {"type": "tangent", "a": "L", "b": "C"}],
+    }
+    kinds = [k for k in (r.kind for r in parse_sketch(spec).residuals)
+             if k.startswith("tangent")]
+    assert kinds == [form], (scale, rel_delta, kinds)
+
+
+def test_a_curve_with_no_size_holds_nothing_on_it():
+    """A zero-length line: `cross(h - a, u)` is identically zero with an
+    identically zero gradient, which is "carries no information" and not
+    "fully determined". The gradient floor read it as the latter and compiled
+    the direction form on a line that has no direction."""
+    def spec(dx):
+        return {
+            "points": [{"name": "c", "x": 0.0, "y": 0.0},
+                       {"name": "q", "x": 0.0, "y": 10.0},
+                       {"name": "a", "x": 50.0, "y": 50.0, "fixed": True},
+                       {"name": "b", "x": 50.0 + dx, "y": 50.0,
+                        "fixed": True}],
+            "circles": [{"name": "C", "center": "c", "r": 10.0,
+                         "fixed_r": True}],
+            "lines": [{"name": "L", "p1": "a", "p2": "b"}],
+            "constraints": [{"type": "point_on_circle", "p": "q", "c": "C"},
+                            {"type": "tangent", "a": "L", "b": "C"}],
+        }
+    for dx in (0.0, 1.0):
+        kinds = [r.kind for r in parse_sketch(spec(dx)).residuals]
+        assert kinds == ["point_on_circle", "tangent_line_circle"], (dx, kinds)
+
+
+def test_a_symmetric_pair_the_axis_runs_through_is_not_a_conflict():
+    """`symmetric` normalized `q - p`, which is review 2's finding C2 again:
+    the 6.1e-16 mm between a pair the constraint itself holds together became a
+    full unit vector and the row read 1.0. Measured `ok: false`, rank 2 of 3,
+    `conflicting: [symmetric]` on geometry that was already right."""
+    res = solve_sketch(symmetric_junction_spec())
+    assert res["ok"] is True, res["diagnostics"]
+    assert res["diagnostics"]["conflicting"] == [], res["diagnostics"]
+    p2, start = res["points"]["p2"], res["arcs"]["a1"]["start"]
+    assert math.dist((p2["x"], p2["y"]), (start["x"], start["y"])) < 1e-7
+
+
+def test_symmetric_is_smooth_where_the_pair_meets():
+    """The row is `(q - p) . u` in millimetres now, not the sine of an angle:
+    same zero set, and a derivative that exists at `p == q`."""
+    sk = Sketch()
+    sk.point("x1", 0.0, 0.0, fixed=True)
+    sk.point("x2", 10.0, 0.0, fixed=True)
+    sk.point("p", 3.0, 0.0)
+    sk.point("q", 3.0, 0.0)                  # the degenerate pair
+    sk.line("AX", "x1", "x2")
+    sk.symmetric("p", "q", "AX")
+    v = sk.initial_vector()
+    assert max(abs(x) for x in sk.residuals[-1].f(v)) < 1e-15
+    row = np.zeros((2, sk.n_par))
+    sk.residuals[-1].df(v, row, 0)
+    assert np.all(np.isfinite(row))
+    assert np.linalg.norm(row[1]) == pytest.approx(math.sqrt(2.0), abs=1e-9)
+
+
+# --------------------------------------------------------------------------
+# FR6: what the junction pass costs on a drag frame (review 3, H3)
+# --------------------------------------------------------------------------
+FR6_WARM_MS = 16.0
+
+
+def _staircase_with_dimensional_junction(n: int = 50) -> dict:
+    """0142's 50-segment bench staircase, plus one arc and one tangency whose
+    junction is written **dimensionally** — the spelling that reaches the
+    Jacobian pass instead of the symbolic detector."""
+    pts = [{"name": f"p{i}", "x": float(i * 5), "y": float((i % 2) * 5)}
+           for i in range(n + 1)]
+    lines, cons = [], []
+    for i in range(n):
+        lines.append({"name": f"l{i}", "p1": f"p{i}", "p2": f"p{i+1}"})
+        cons.append({"type": "horizontal" if i % 2 == 0 else "vertical",
+                     "ln": f"l{i}"})
+    cons.append({"type": "fixed", "p": "p0", "x": 0.0, "y": 0.0})
+    pts += [{"name": "ct", "x": 400.0, "y": -60.0, "fixed": True},
+            {"name": "t1", "x": 400.0, "y": -50.0},
+            {"name": "t2", "x": 430.0, "y": -50.0}]
+    lines.append({"name": "tl", "p1": "t1", "p2": "t2"})
+    cons += [{"type": "distance_x", "p": "t1", "q": "a1.start", "d": 0.0},
+             {"type": "distance_y", "p": "t1", "q": "a1.start", "d": 0.0},
+             {"type": "tangent", "a": "tl", "b": "a1"}]
+    return {"points": pts, "lines": lines,
+            "arcs": [{"name": "a1", "center": "ct", "r": 10.0,
+                      "start_deg": 90.0, "end_deg": 0.0, "fixed_r": True}],
+            "constraints": cons}
+
+
+@pytest.mark.slow
+def test_the_junction_pass_costs_a_drag_frame_nothing(capsys):
+    """**FR6 with a junction present**, and the whole frame — compile *and*
+    solve, because the junction pass runs at compile time.
+
+    0143 ran an unconditional `least_squares` projection on every compile:
+    measured 8.52 ms compile + 16.53 ms solve on this bench, and 109.77 +
+    516.72 ms when the seed was 300 mm out and the projection budget was
+    exhausted. Nothing here projects. A drag frame arrives warm-started from
+    the previous solution, which already solves the rows the criterion is
+    about, so the criterion is read at the seed and no extra solve happens at
+    all — measured p50 6.3 ms for the whole frame against 5.8 ms for the same
+    staircase with no tangency in it.
+    """
+    spec = _staircase_with_dimensional_junction()
+    first = solve_sketch(spec)
+    assert first["ok"] is True, first["diagnostics"]
+    assert "tangent_dir" in [r.kind for r in parse_sketch(spec).residuals]
+
+    prev, frames = first, []
+    for i in range(9):
+        seed = {"points": {n: {"x": p["x"], "y": p["y"]}
+                           for n, p in prev["points"].items()},
+                "arcs": {n: {"r": a["r"], "start_deg": a["start_deg"],
+                             "end_deg": a["end_deg"]}
+                         for n, a in prev["arcs"].items()}}
+        frame = dict(spec, initial=seed,
+                     drag={"point": "p25", "x": 125.0 + 0.2 * i, "y": 5.0})
+        t0 = time.perf_counter()
+        sk = parse_sketch(frame)
+        res = sk.solve()
+        frames.append((time.perf_counter() - t0) * 1e3)
+        assert res["ok"] is True, (i, res["diagnostics"])
+        assert res["warnings"] == [], res["warnings"]
+        assert "tangent_dir" in [r.kind for r in sk.residuals]
+        prev = res
+    p50 = statistics.median(frames)
+    with capsys.disabled():
+        print(f"\nstaircase-50 + dimensional junction: whole warm frame "
+              f"(compile+solve) p50={p50:.2f} ms, best={min(frames):.2f} ms, "
+              f"budget {FR6_WARM_MS} ms")
+    # The budget is asserted on the fastest frame for the reason AC2 gives:
+    # wall-clock on a shared machine, where the median is a flake and the best
+    # frame is the measurement scheduler noise can only make worse.
+    assert 0.0 < min(frames) <= FR6_WARM_MS, sorted(frames)
+    assert p50 <= FR6_WARM_MS * 4.0, sorted(frames)
+
+
+# --------------------------------------------------------------------------
+# the class sweeps — LAST, so that every configuration is registered
+# --------------------------------------------------------------------------
+# `@parametrize` is evaluated where it is written. These two sweeps sat above
+# the three review-2 configurations and collected six ids for nine specs, so
+# the newest members of the class — the ones the criterion was rewritten for —
+# were never rank-tested at all. Anything added to `CLASS_SPECS` from here on
+# must go **above** this line; `test_every_class_spec_is_parametrized` fails if
+# it does not.
+CLASS_SPEC_IDS = sorted(CLASS_SPECS)
+
+
+def test_every_class_spec_is_parametrized():
+    """The guard on the guard: the two sweeps below cover the whole class."""
+    assert CLASS_SPEC_IDS == sorted(CLASS_SPECS), (
+        "a CLASS_SPECS entry was registered after the parametrized sweeps "
+        "were collected, so it is not being tested: "
+        f"{sorted(set(CLASS_SPECS) - set(CLASS_SPEC_IDS))}")
+    assert len(CLASS_SPEC_IDS) == 9, CLASS_SPEC_IDS
+
+
+@pytest.mark.parametrize("name", CLASS_SPEC_IDS)
+def test_a_pinned_junction_never_compiles_to_a_distance_residual(name):
+    """The class-level property. **Not** "these nine specs are fixed": the
+    distance forms exist only for curves the sketch does not already hold
+    together, so a pinned junction that still reaches them is the bug."""
+    sk = parse_sketch(CLASS_SPECS[name]())
+    kinds = [r.kind for r in sk.residuals]
+    assert "tangent_line_circle" not in kinds, kinds
+    assert "tangent_circles" not in kinds, kinds
+    assert "tangent_dir" in kinds, kinds
+
+
+@pytest.mark.parametrize("name", CLASS_SPEC_IDS)
+def test_a_pinned_junction_has_full_row_rank_and_an_honest_dof(name):
+    """Every row is doing work, so the rank is the row count and nothing is
+    blamed. Before the fix each of these reported `over_constrained` with
+    `redundant: [tangent]` against a constraint reaching tangency to 1e-11."""
+    spec = CLASS_SPECS[name]()
+    res = solve_sketch(spec)
+    diag = res["diagnostics"]
+    assert res["rank"] == res["n_residuals"], diag
+    assert res["dof"] == res["n_params"] - res["n_residuals"]
+    assert diag["status"] != "over_constrained", diag
+    assert diag["redundant"] == []
+    assert diag["conflicting"] == []

@@ -383,6 +383,8 @@ def test_symmetric_is_the_midpoint_offset_and_the_off_perpendicular():
     sk2.symmetric("p", "q", "AX")
     rows = list(sk2.residuals[-1].f(sk2.initial_vector()))
     assert abs(rows[0]) < 1e-12                # still centred on the axis
-    # `sin` of the angle between `pq` and the axis normal: 0.447 here, and the
-    # point is that the second row sees what the first cannot.
-    assert abs(rows[1]) == pytest.approx(4.0 / math.sqrt(80.0), abs=1e-9)
+    # `(q - p) . u` — how far along the axis the pair is offset, 4 mm here, and
+    # the point is that the second row sees what the first cannot. Not the
+    # *sine* of that angle: normalizing `q - p` is review 2's finding C2, and
+    # it made a pair the constraint itself holds together read 1.0 (0144).
+    assert abs(rows[1]) == pytest.approx(4.0, abs=1e-9)

@@ -304,23 +304,35 @@ ANALYSIS_BUDGET_MS = 50.0
 # this large relative to the largest such column.
 NULLSPACE_TOL_REL = 1e-6
 
-# How far a candidate junction may sit off a curve, on the configuration the
-# non-tangency rows project to, and still count as held on it; and how much of
-# a probe gradient may fall outside those rows' row space. Both are the
-# junction detector's tolerances (`_held_on`, `resolve_tangencies`). They are
-# far tighter than any drawing tolerance on purpose: the question is not "are
-# these near each other" but "do the other constraints *say* they meet".
-JUNCTION_TOL_MM = 1e-7
+# How far a candidate junction may sit off a curve, **as a fraction of that
+# curve's own size**, and still count as held on it; and how much of a probe
+# gradient may fall outside the other rows' row space. Both are the junction
+# detector's tolerances (`_held_on`, `resolve_tangencies`). They are far
+# tighter than any drawing tolerance on purpose: the question is not "are these
+# near each other" but "do the other constraints *say* they meet".
+#
+# The value gate is **relative** because a sketch has no units. `max(1.0, r)`
+# millimetres was the same question with a millimetre baked into it: the same
+# drawing authored in metres and in millimetres disagreed about its own
+# junctions at 1e-7..1e-6 of relative offset (measured, changelog 0144). The
+# row-space gate keeps its absolute floor (see `_held_on`) — gradients here are
+# built from *unit* vectors and are already dimensionless.
+JUNCTION_TOL_REL = 1e-7
 JUNCTION_ROWSPACE_TOL = 1e-7
 
-# Residual evaluations allowed for projecting the seed onto the manifold the
-# non-tangency rows cut out, before the junction question is asked. A seed is
-# whatever the caller drew; the criterion is about the *solution*. Measured: an
-# under-determined projection is not fast — the dimensional junction seeded
-# 60 mm away needed 137 evaluations, and at 60 it stopped 21.8 mm short and the
-# junction was missed for a purely numerical reason. This budget is only spent
-# on tangencies the symbolic detector did **not** resolve.
-JUNCTION_PROJECT_NFEV = 500
+# How well the non-tangency rows must be satisfied for the configuration to
+# count as a point of their manifold, i.e. for the junction question to have an
+# answer at all — as a fraction of the sketch's own largest length, for the
+# same reason as `JUNCTION_TOL_REL`. At millimetre sizes it is `solve`'s own
+# `ok` threshold to within the drawing's aspect ratio.
+JUNCTION_MANIFOLD_TOL = 1e-7
+
+# `least_squares` settings for the main solve, named because the junction
+# criterion's provisional solve must be **the same solve**: a configuration
+# reached under a smaller budget is not the one the caller will be shown, and a
+# criterion read at a different point than the answer is the bug 0143 shipped.
+SOLVE_TOL = 1e-10
+SOLVE_MAX_NFEV = 2000
 
 # Two slot centres closer than this are the same point: the slot has no
 # direction, its caps have no angles and its emission is not a slot. Checked at
@@ -1073,6 +1085,17 @@ class Sketch:
         # blame is untouched.
         self._pending_tangency: list[dict] = []
         self._tangencies_resolved = False
+        # The configuration the junction criterion was read at, kept **only**
+        # when a tangency row was actually swapped for the direction form: the
+        # re-solve then starts from a solution instead of from the seed. That
+        # is what keeps `t_L x t_C` off its own stationary point — seeded at a
+        # circle's 3 o'clock the cross product is parallel to the
+        # `point_on_circle` row, Gauss-Newton cannot move, and the row that
+        # gets blamed is the one doing the work (0144).
+        self._junction_x0: np.ndarray | None = None
+        # The provisional (distance-form) system's solution, computed at most
+        # once and only when the seed is not already one.
+        self._provisional_x: np.ndarray | None = None
         self._con_index = -1
         self._spec_index: object = _AUTO_INDEX
         self._origin: str | None = None
@@ -2070,9 +2093,9 @@ class Sketch:
 
         **The criterion.** Let `R` be every residual row *except* the tangency
         rows being decided, and let `x*` be a configuration those rows solve
-        (they are projected onto their own manifold first, so a rough seed is
-        not mistaken for a rough sketch). A point handle `h` is **held on**
-        curve `c` when both of these hold at `x*`:
+        (the criterion is about the *solution*, so a rough seed must not decide
+        it). A point handle `h` is **held on** curve `c` when both of these
+        hold at `x*`:
 
         1. `phi_c(h) = 0` — `h` is on `c` there (`phi` is the curve's own
            on-curve function: `|h - centre| - r`, or `cross(h - a, u_line)`);
@@ -2095,15 +2118,49 @@ class Sketch:
         - **Value, not just rank.** `distance_x(p, a1.start, 5)` pins the
           offset just as firmly, to a point that is *not* on the arc. That is
           an ordinary tangency, and condition (1) is what keeps it one.
-        - **Ellipses and splines are out.** Neither has a closed-form on-curve
-          function here, so they keep the symbolic detector. An elliptical
-          tangency's fallback is the auxiliary-anomaly form, which is already a
-          pair of direction residuals and was never in this class; the cost of
-          a missed junction there is one extra parameter, not a wrong answer.
+        - **Ellipses and splines are out**, and that is a coverage gap, not a
+          proof. Neither has a closed-form on-curve function here, so
+          `_on_curve_residual` returns None for them and only the symbolic
+          detector can find a junction on one. 0142 and 0143 both wrote that
+          the elliptical fallback is "already a pair of direction residuals",
+          which is false either way round (measured 0144): against a line it
+          compiles `point_on_line(P(t))` + `tangent_dir`, and against a circle
+          or arc `point_on_circle(P(t))` + `tangent_point_perp` — two *length*
+          residuals and no direction row at all. What actually keeps it out of
+          this class is the auxiliary anomaly, which makes the touch point a
+          free parameter instead of a point the sketch pins. Ellipse-to-ellipse
+          is refused outright.
+
+        **Where `x*` comes from, and why not a projection.** 0143 manufactured
+        `x*` by running `least_squares` on `R` alone from the caller's seed,
+        under an evaluation budget. That was wrong three ways, all measured
+        (0144): it read `fit.x` without reading `fit.status`, so a projection
+        that stopped 76 mm short was used as if it were a solution and the
+        junction was silently missed; the miss was a function of *seed
+        distance*, so the same sketch drawn 275 mm off its junction compiled a
+        different residual than one drawn 250 mm off; and it ran on every
+        compile, i.e. on every drag frame, for 109 ms of it when the budget was
+        exhausted.
+
+        The solver already produces a configuration that solves `R` — the
+        solution. So: compile the provisional (distance) form, **solve**, and
+        ask the criterion there. There is no projection, no evaluation budget
+        and no seed sensitivity; `x*` satisfies `R` by construction or the
+        question is not asked at all. A junction that is found costs one extra
+        solve, started from a configuration that is already a solution rather
+        than from whatever the caller drew — which is also what keeps the
+        direction residual off its own stationary point (see below).
+
+        And when `R` cannot be solved, **nothing is assumed**: the tangency
+        keeps the provisional form and the result carries a
+        `tangency_junction_undecided` warning naming the constraint. The one
+        thing this pass must never do is quietly compile the degenerate form.
 
         The symbolic detector runs first and is unchanged, so every sketch it
         already resolved costs nothing here (measured: the slot ring and the
-        50-segment staircase never reach this pass).
+        50-segment staircase never reach this pass). Neither does a sketch
+        whose seed already solves `R` — a drag frame warm-started from the
+        previous frame — because that seed *is* an `x*`.
         """
         if self._tangencies_resolved:
             return
@@ -2116,21 +2173,63 @@ class Sketch:
         others = [r for i, r in enumerate(self.residuals) if i not in rows]
         probe = self._junction_probe(others)
         if probe is None:
+            self._warn_undecided(pending)
             return
+        xs, _ = probe
+        # Built but not installed yet: the provisional (distance) system has to
+        # stay compiled until the start point below has been chosen from it.
+        plan: list[tuple[int, Residual]] = []
         for entry in pending:
             joined = self._probe_junction(entry["a"], entry["b"], probe)
             if joined is None:
                 continue
             handle, ta, tb = joined
-            self.residuals[entry["row"]] = self._tangent_dir_residual(
-                entry["ci"], ta, tb)
+            plan.append((entry["row"],
+                         self._tangent_dir_residual(entry["ci"], ta, tb)))
+        if not plan:
+            # Nothing changed, so nothing about the solve may change either.
+            return
+        # Where the re-solve starts. `xs` normally, and that is the whole point
+        # — it is a solution, not a seed. But `t_a x t_b` has a stationary
+        # point of its own at *perpendicular*: seeded at a circle's 3 o'clock
+        # with a horizontal line the cross product is 1, its gradient along the
+        # circle is zero, and Gauss-Newton cannot move (0144, and the reason
+        # that configuration solved before 0143 and stopped after it). When the
+        # direction rows are not already satisfied at `xs`, start from the
+        # provisional system's own solution instead: the distance form has no
+        # stationary point there, so it walks the junction to the tangency and
+        # the direction form only has to sharpen it. A drag frame warm-started
+        # from the previous solution takes the first branch and pays nothing.
+        start = xs
+        if max(abs(float(res.f(xs)[0])) for _, res in plan) \
+                > JUNCTION_MANIFOLD_TOL:
+            start = self._provisional_solution()
+            if start is None:
+                start = xs
+        for row, res in plan:
+            self.residuals[row] = res
+        self._junction_x0 = np.asarray(start, dtype=float)
+
+    def _warn_undecided(self, pending: list[dict]) -> None:
+        """Say that the junction question had no answer, and on which rows."""
+        pairs = sorted({f"{p['a']}/{p['b']}" for p in pending})
+        self.warnings.append({
+            "code": "tangency_junction_undecided",
+            "message": (
+                "the constraints other than the tangency (" + ", ".join(pairs)
+                + ") could not be solved, so whether the two curves already "
+                "meet is unknown; the tangency keeps its distance form, which "
+                "is rank-deficient at a junction"),
+            "entities": pairs,
+        })
 
     def _junction_probe(self, others: list[Residual]):
-        """`(x*, Vr, Ur_scaled, f_scaled)` for the non-tangency rows, or None.
+        """`(x*, Vr)` for the non-tangency rows, or None if there is no `x*`.
 
-        `x*` is the seed projected onto the manifold those rows cut out — the
-        junction question is about the *solution*, and a caller's seed may be
-        millimetres away from one. `Vr` spans their row space at `x*`.
+        `x*` is a configuration those rows **solve** — the seed itself when it
+        already is one (a warm-started drag frame), otherwise the provisional
+        system's own solution. `Vr` spans their row space at `x*`. None means
+        the question has no answer here, and the caller must say so.
         """
         x0 = self.initial_vector()
         n_rows = sum(r.rows for r in others)
@@ -2156,13 +2255,17 @@ class Sketch:
                 res.df(v, buf, r0)
             return buf
 
-        try:
-            fit = least_squares(fun, x0, jac=jac, method="trf",
-                                xtol=1e-12, ftol=1e-12, gtol=1e-12,
-                                max_nfev=JUNCTION_PROJECT_NFEV)
-            xs = fit.x
-        except Exception:                       # pragma: no cover - defensive
-            xs = x0
+        xs = x0
+        tol = JUNCTION_MANIFOLD_TOL * self._configuration_scale(x0)
+        if float(np.max(np.abs(fun(x0)))) > tol:
+            # The seed is not on the manifold, so it cannot answer the
+            # question. The solution is.
+            xs = self._provisional_solution()
+            if xs is None:
+                return None
+            tol = JUNCTION_MANIFOLD_TOL * self._configuration_scale(xs)
+            if float(np.max(np.abs(fun(xs)))) > tol:
+                return None
         J = jac(xs)
         norms = np.linalg.norm(J, axis=1)
         Js = J / np.where(norms > 0.0, norms, 1.0)[:, None]
@@ -2174,6 +2277,49 @@ class Sketch:
             return (xs, np.zeros((self.n_par, 0)))
         keep = int((s > max(Js.shape) * s[0] * RANK_TOL_REL).sum())
         return (xs, Vt[:keep].T)
+
+    def _provisional_solution(self) -> np.ndarray | None:
+        """Solve the sketch **as compiled** — every tangency still in its
+        distance form — and return the solution, or None if it did not.
+
+        Not `solve()`: no diagnostics, no drag block (the drag is an objective,
+        and a configuration pulled towards a cursor is not the one the
+        criterion asks about), no output marshalling. Just the configuration —
+        under `solve`'s own tolerance and evaluation budget, so that "the
+        provisional system solves" means the same thing in both places.
+
+        Computed at most once per `Sketch`, and only for a sketch whose seed
+        does not already solve the rows the criterion is about.
+        """
+        if self._provisional_x is not None:
+            return self._provisional_x
+        n_res, n_par = self.n_res, self.n_par
+        if not n_res or not n_par:
+            return self.initial_vector()
+        residuals = list(self.residuals)
+        offsets = self._row_offsets()
+        buf = np.zeros((n_res, n_par))
+
+        def fun(v):
+            out = np.empty(n_res)
+            for res, row in zip(residuals, offsets):
+                out[row:row + res.rows] = res.f(v)
+            return out
+
+        def jac(v):
+            buf.fill(0.0)
+            for res, row in zip(residuals, offsets):
+                res.df(v, buf, row)
+            return buf
+
+        try:
+            fit = least_squares(fun, self.initial_vector(), jac=jac,
+                                method="trf", xtol=SOLVE_TOL, ftol=SOLVE_TOL,
+                                gtol=SOLVE_TOL, max_nfev=SOLVE_MAX_NFEV)
+        except Exception:                       # pragma: no cover - defensive
+            return None
+        self._provisional_x = np.asarray(fit.x, dtype=float)
+        return self._provisional_x
 
     def _probe_junction(self, a: str, b: str, probe):
         """`(handle, t_a, t_b)` where the sketch holds a point on both, or None."""
@@ -2204,12 +2350,21 @@ class Sketch:
         res = self._on_curve_residual(curve, handle)
         if res is None:
             return False
+        scale = self._curve_scale(curve, xs)
+        if not scale > 0.0:
+            # A zero-length line (two fixed points on the same spot) has no
+            # direction, so `cross(h - a, u)` is identically zero with an
+            # identically zero gradient — "carries no information", which the
+            # gradient floor below would otherwise read as "fully determined"
+            # and answer *every* handle is on it. A curve with no size holds
+            # nothing on it (0144).
+            return False
         # The value first: it is one hypot and it rejects almost every
-        # candidate, so the gradient and the projection are only paid for the
-        # handles that are actually sitting on the curve.
-        value = float(res.f(xs)[0])
-        scale = max(1.0, self._curve_scale(curve, xs))
-        if abs(value) > JUNCTION_TOL_MM * scale:
+        # candidate, so the gradient is only paid for the handles that are
+        # actually sitting on the curve. Relative to the curve's own size: the
+        # same drawing must not change its mind about its junctions when it is
+        # authored in metres instead of millimetres.
+        if abs(float(res.f(xs)[0])) > JUNCTION_TOL_REL * scale:
             return False
         row = np.zeros((1, self.n_par))
         res.df(xs, row, 0)
@@ -2237,6 +2392,22 @@ class Sketch:
         if curve in self.circles or curve in self.arcs:
             return self._on_circle_residual(-1, rp, curve)
         return None
+
+    def _configuration_scale(self, xs: np.ndarray) -> float:
+        """The sketch's own largest **length** at `xs`, never zero.
+
+        Coordinates and radii only — not the raw parameter vector, whose angle
+        slots are radians and would put a floor of ~pi under a sketch drawn in
+        metres. A sketch with no lengths at all reads 1.0, which is the only
+        number left when there is nothing to be relative to.
+        """
+        best = 0.0
+        for ref in self._refs.values():
+            x, y = ref.value(xs)
+            best = max(best, abs(float(x)), abs(float(y)))
+        for rad in self._rads.values():
+            best = max(best, abs(float(rad.value(xs))))
+        return best if best > 0.0 else 1.0
 
     def _curve_scale(self, curve: str, xs: np.ndarray) -> float:
         """A length the curve's on-curve function is measured against."""
@@ -2439,8 +2610,17 @@ class Sketch:
         # `_tangent_at` returns None for a generic point on an ellipse — its
         # anomaly is not a function of the point — so only a junction at one of
         # the ellipse's own handles takes this branch, and everything else
-        # falls through to the auxiliary-anomaly form, which is already a
-        # direction residual and so is not the degenerate case at all.
+        # falls through to the auxiliary-anomaly form. That form is **not** "a
+        # pair of direction residuals" (0142 and 0143 both said so; measured
+        # 0144): against a line it is `point_on_line(P(t))` + `tangent_dir`,
+        # one of each, and against a circle or arc it is `point_on_circle(P(t))`
+        # + `tangent_point_perp`, two *length* residuals and no direction row at
+        # all. What keeps it out of this class is the auxiliary anomaly: the
+        # touch point is a free parameter rather than a point the rest of the
+        # sketch pins, so there is no junction for the distance form to go flat
+        # at. A junction on an ellipse **is** a coverage gap — `_on_curve_
+        # residual` has no closed form for an ellipse, so the Jacobian
+        # criterion cannot see one and only the symbolic path below catches it.
         pinned = self._junction_tangents(other, ename)
         if pinned is not None:
             # The junction is pinned: the tangency point is a handle, not an
@@ -2494,6 +2674,17 @@ class Sketch:
         For a line pair the endpoints are paired **in declaration order**
         (`a.p1` with `b.p1`, `a.p2` with `b.p2`), so a line drawn in the
         opposite direction mirrors its ends the way it was written.
+
+        The second row is `(q - p) . u` in millimetres, **not** the sine of the
+        angle between `pq` and the axis: normalizing `q - p` is review 2's
+        finding C2 all over again. A pair that a `symmetric` about an axis
+        *through* them holds together is a legitimate, fully constrained
+        configuration — and `_unit` turned the 6.1e-16 mm between them into a
+        full unit vector, so the row read 1.0 and the solve came back
+        `over_constrained` with `conflicting: [symmetric]` on geometry that was
+        already right (0144). The zero set is identical (`q - p` perpendicular
+        to `u` either way), and unnormalized it is smooth at `p == q` and in
+        the same unit as the midpoint row above it.
         """
         self._need_line(about)
         ci = self._begin("symmetric")
@@ -2517,9 +2708,8 @@ class Sketch:
             cx, cy = rc.value(v)
             ux, uy, _ = _unit(cx, cy, *rd.value(v))
             mx, my = (px + qx) / 2, (py + qy) / 2
-            sx, sy, _ = _unit(px, py, qx, qy)
             return ((mx - cx) * uy - (my - cy) * ux,   # midpoint on the axis
-                    sx * ux + sy * uy)                 # and perpendicular to it
+                    (qx - px) * ux + (qy - py) * uy)   # and perpendicular to it
 
         def df(v, J, r):
             px, py = rp.value(v)
@@ -2531,9 +2721,9 @@ class Sketch:
             rq.accum(v, J, r, 0.5 * uy, -0.5 * ux)
             rc.accum(v, J, r, -uy, ux)
             _accum_dir(v, J, r, rc, rd, ux, uy, n, -wy, wx)
-            sx, sy, ns = _unit(px, py, qx, qy)
-            _accum_dir(v, J, r + 1, rp, rq, sx, sy, ns, ux, uy)
-            _accum_dir(v, J, r + 1, rc, rd, ux, uy, n, sx, sy)
+            rq.accum(v, J, r + 1, ux, uy)
+            rp.accum(v, J, r + 1, -ux, -uy)
+            _accum_dir(v, J, r + 1, rc, rd, ux, uy, n, qx - px, qy - py)
 
         self._add(Residual(ci, "symmetric", 2,
                            self._params(rp, rq, rc, rd), f, df))
@@ -3235,7 +3425,7 @@ class Sketch:
                 _DIAG_CACHE.pop(next(iter(_DIAG_CACHE)))
         return diag, ("cached" if reused else "computed")
 
-    def solve(self, tol: float = 1e-10, max_nfev: int = 2000, *,
+    def solve(self, tol: float = SOLVE_TOL, max_nfev: int = SOLVE_MAX_NFEV, *,
               analysis_budget_ms: float = ANALYSIS_BUDGET_MS) -> dict:
         t0 = time.perf_counter()
         # Idempotent, and `parse_sketch` has normally already run it: a
@@ -3243,7 +3433,11 @@ class Sketch:
         self.resolve_tangencies()
         n_par, n_res = self.n_par, self.n_res
         m = n_res + self.n_drag
-        x0 = self.initial_vector()
+        # The junction criterion's own configuration when it swapped a row in
+        # (see `resolve_tangencies`); the seed otherwise, which is every other
+        # sketch in the suite.
+        x0 = (self.initial_vector() if self._junction_x0 is None
+              else self._junction_x0)
         fun, jac = self.make_functions()
 
         if n_par == 0 or m == 0:

@@ -391,7 +391,13 @@ def register(registry, service) -> None:
             raise ValidationError(str(exc)) from exc
 
         diag = result["diagnostics"]
+        # `warnings` too: the failure paths below raise instead of returning
+        # the result, and a warning that only survives on the happy path is a
+        # warning nobody sees when it matters most. `tangency_junction_undecided`
+        # is emitted exactly when the sketch also fails to converge (changelog
+        # 0144), so without this it would never reach a caller at all.
         details = {"diagnostics": diag,
+                   "warnings": result["warnings"],
                    "max_residual": result["max_residual"],
                    "dof": result["dof"]}
         conflicting = diag.get("conflicting") or []
