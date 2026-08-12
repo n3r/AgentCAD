@@ -418,3 +418,210 @@ def test_the_analysis_never_touches_the_solved_coordinates():
     assert starved["diagnostics"]["analysis_complete"] is False
     assert full["points"] == starved["points"]
     assert np.isclose(full["max_residual"], starved["max_residual"])
+
+
+# --------------------------------------------------------------------------
+# row scale must not decide the rank (review P3)
+# --------------------------------------------------------------------------
+# Every residual that normalizes a direction (`parallel`, `perpendicular`,
+# `angle`, `point_on_line`, the line-circle tangency, `_LineTangent`) divides
+# its derivative by the segment's length, so a **1e-9 mm line** — one GUI
+# double-click on the same spot — writes 1.4e+09 into the Jacobian. The rank
+# threshold was `max(m, n) * s0 * RANK_TOL_REL` with `s0` the largest singular
+# value of the whole matrix, so that one row raised the threshold to ~0.28 and
+# every honest row fell under it:
+#
+#     rank 3 of 7, dof 7 (true 3), status over_constrained,
+#     redundant [] conflicting [], free_entities ['b','c','d','z','z2']
+#
+# — a pinned rectangle reported as free, and a status contradicting its own
+# blame set. The greedy pass never agreed, because it measures each row
+# against that row's own norm. The rank is now read off the same row-scaled
+# matrix, and where the greedy pass runs to completion its own count *is* the
+# rank, so the two halves of the block cannot disagree.
+
+def rect_with_degenerate_line(extra: dict) -> dict:
+    spec = rectangle()
+    spec["points"] += [{"name": "z", "x": 100.0, "y": 100.0},
+                       {"name": "z2", "x": 100.0 + 1e-9, "y": 100.0}]
+    spec["lines"] += [{"name": "zz", "p1": "z", "p2": "z2"}]
+    spec["constraints"] = list(spec["constraints"]) + [extra]
+    return spec
+
+
+def test_one_degenerate_row_does_not_destroy_the_rank_analysis():
+    """**The regression.** The rectangle is pinned either way; the 1e-9 line
+    is the only thing that can still move."""
+    spec = rect_with_degenerate_line({"type": "parallel", "l1": "zz",
+                                      "l2": "ab"})
+    diag = solve_sketch(spec)["diagnostics"]
+    assert diag["n_params"] == 10 and diag["n_residuals"] == 7
+    assert diag["rank"] == 7, diag
+    assert diag["dof"] == 3, diag
+    assert diag["status"] == "under_constrained", diag
+    # and the pinned rectangle is not reported as free geometry
+    assert set(diag["free_entities"]) == {"z", "z2"}, diag
+
+
+def test_the_rank_is_free_of_row_scale():
+    """Scaling a row changes nothing about which rows are independent, so it
+    must change nothing about the rank — the property the threshold broke."""
+    spec = rectangle({"type": "parallel", "l1": "ab", "l2": "cd"})
+    sk, J = jacobian_at_solution(spec)
+    base = sk.rank(J)
+    scaled = np.array(J, dtype=float)
+    scaled[0] *= 1e9
+    scaled[3] *= 1e-9
+    assert sk.rank(scaled) == base
+
+
+def test_the_status_and_the_blame_set_can_never_disagree():
+    """`over_constrained` with an empty blame set is a bug, not a display
+    problem: the status is derived from the same dependent-row count the sets
+    are. Asserted over the whole diagnostics corpus, including the degenerate
+    row that produced the contradiction."""
+    specs = [rectangle(), *(rectangle(TABLE[k][0]) for k in sorted(TABLE)),
+             rect_with_degenerate_line({"type": "parallel", "l1": "zz",
+                                        "l2": "ab"}),
+             rect_with_degenerate_line({"type": "perpendicular", "l1": "zz",
+                                        "l2": "ab"}),
+             rect_with_degenerate_line({"type": "point_on_line", "p": "a",
+                                        "ln": "zz"})]
+    for spec in specs:
+        diag = solve_sketch(spec)["diagnostics"]
+        if not diag.get("analysis_complete", True):
+            continue
+        blamed = len(diag["redundant"]) + len(diag["conflicting"])
+        assert (diag["status"] == "over_constrained") == (blamed > 0), diag
+        assert (diag["rank"] < diag["n_residuals"]) == (blamed > 0), diag
+
+
+# --------------------------------------------------------------------------
+# the audit: no residual is stationary where the sketch pins its arguments
+# --------------------------------------------------------------------------
+# The tangency degeneracy was found three times because it was hunted one
+# instance at a time. The property behind it is general and testable: a
+# residual whose value sits at an extremum of the manifold the *other*
+# constraints cut out has a gradient in their span, so it reports itself
+# redundant while removing a real degree of freedom.
+#
+# `dof` is `n_params - rank(J)` and removing a constraint cannot change
+# `n_params`, so "this constraint removes a DOF" is exactly "dropping it
+# raises `dof`" — measurable without knowing anything about the residual's
+# algebra. Every constraint in the corpus below removes a DOF, so none of them
+# may be blamed. Audited by hand at the same time, and the two agree: the only
+# residuals in the vocabulary whose value is a *distance at an extremum* are
+# `tangent_line_circle` and `tangent_circles`, and both are now unreachable at
+# a pinned junction. Everything else is linear in its arguments (`fixed`,
+# `coincident`, `distance_x/y`, `horizontal`, `vertical`, `radius`,
+# `equal_radius`, `midpoint`), a unit-vector product (`parallel`,
+# `perpendicular`, `tangent_point_perp`, `tangent_dir`, `symmetric`) or an
+# angle (`angle`) — all first-order where they hold.
+
+AUDIT: dict[str, dict] = {
+    # line/point vocabulary
+    "lines": {
+        "points": [{"name": "a", "x": 0.0, "y": 0.0},
+                   {"name": "b", "x": 50.0, "y": 1.0},
+                   {"name": "c", "x": 51.0, "y": 30.0},
+                   {"name": "m", "x": 25.0, "y": 0.5},
+                   {"name": "q", "x": 50.5, "y": 15.0}],
+        "lines": [{"name": "ab", "p1": "a", "p2": "b"},
+                  {"name": "bc", "p1": "b", "p2": "c"}],
+        "constraints": [
+            {"type": "fixed", "p": "a", "x": 0.0, "y": 0.0},
+            {"type": "horizontal", "ln": "ab"},
+            {"type": "distance", "p": "a", "q": "b", "d": 50.0},
+            {"type": "perpendicular", "l1": "ab", "l2": "bc"},
+            {"type": "distance_y", "p": "b", "q": "c", "d": 30.0},
+            {"type": "midpoint", "p": "m", "ln": "ab"},
+            {"type": "point_on_line", "p": "q", "ln": "bc"},
+            {"type": "distance", "p": "b", "q": "q", "d": 15.0},
+        ],
+    },
+    "angles_and_mirrors": {
+        "points": [{"name": "o", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "p", "x": 30.0, "y": 0.0},
+                   {"name": "r", "x": 0.0, "y": 20.0},
+                   {"name": "s", "x": 18.0, "y": 9.0},
+                   {"name": "t", "x": 18.0, "y": -9.0}],
+        "lines": [{"name": "op", "p1": "o", "p2": "p"},
+                  {"name": "or_", "p1": "o", "p2": "r"},
+                  {"name": "axis", "p1": "o", "p2": "p"}],
+        "constraints": [
+            {"type": "horizontal", "ln": "op"},
+            {"type": "distance", "p": "o", "q": "p", "d": 30.0},
+            {"type": "angle", "l1": "op", "l2": "or_", "deg": 70.0},
+            {"type": "equal_length", "l1": "op", "l2": "or_"},
+            {"type": "symmetric", "a": "s", "b": "t", "about": "axis"},
+            {"type": "distance_x", "p": "o", "q": "s", "d": 18.0},
+        ],
+    },
+    "radial": {
+        "points": [{"name": "c1", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "c2", "x": 40.0, "y": 3.0},
+                   {"name": "c3", "x": 40.0, "y": 3.0},
+                   {"name": "p", "x": 0.0, "y": 12.0},
+                   {"name": "u", "x": -30.0, "y": 12.0},
+                   {"name": "w", "x": 30.0, "y": 12.0}],
+        "circles": [{"name": "C1", "center": "c1", "r": 12.0},
+                    {"name": "C2", "center": "c2", "r": 12.0},
+                    {"name": "C3", "center": "c3", "r": 5.0}],
+        "lines": [{"name": "top", "p1": "u", "p2": "w"}],
+        "constraints": [
+            {"type": "radius", "c": "C1", "r": 12.0},
+            {"type": "equal_radius", "c1": "C1", "c2": "C2"},
+            {"type": "concentric", "a": "C2", "b": "C3"},
+            {"type": "point_on_circle", "p": "p", "c": "C1"},
+            {"type": "vertical", "ln": "top"},
+            {"type": "distance_x", "p": "c1", "q": "c2", "d": 40.0},
+            {"type": "distance_y", "p": "c1", "q": "c2", "d": 3.0},
+            {"type": "radius", "c": "C3", "r": 5.0},
+        ],
+    },
+    # every tangency form, each at a junction the sketch pins a different way
+    "tangencies": {
+        "points": [{"name": "c", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "j", "x": 12.0, "y": 0.0},
+                   {"name": "k", "x": 12.0, "y": 25.0},
+                   {"name": "e1", "x": -40.0, "y": 6.0},
+                   {"name": "e2", "x": -20.0, "y": 6.0},
+                   {"name": "ac", "x": -30.0, "y": 18.0}],
+        "circles": [{"name": "C", "center": "c", "r": 12.0}],
+        "arcs": [{"name": "A", "center": "ac", "r": 12.0,
+                  "start_deg": 180.0, "end_deg": 300.0}],
+        "lines": [{"name": "L", "p1": "j", "p2": "k"},
+                  {"name": "M", "p1": "e1", "p2": "e2"}],
+        "constraints": [
+            {"type": "radius", "c": "C", "r": 12.0},
+            {"type": "point_on_circle", "p": "j", "c": "C"},
+            {"type": "tangent", "a": "L", "b": "C"},
+            {"type": "coincident", "p": "A.start", "q": "e1"},
+            {"type": "tangent", "a": "M", "b": "A"},
+            {"type": "radius", "c": "A", "r": 12.0},
+            {"type": "distance", "p": "j", "q": "k", "d": 25.0},
+            {"type": "distance", "p": "e1", "q": "e2", "d": 20.0},
+        ],
+    },
+}
+
+
+@pytest.mark.parametrize("case", sorted(AUDIT))
+def test_no_constraint_that_removes_a_dof_is_ever_blamed(case):
+    """The audit, run rather than asserted. Every constraint in the corpus
+    removes at least one degree of freedom, so nothing may be reported
+    redundant — and each removal is *checked* by dropping the constraint and
+    watching `dof` rise, so the corpus cannot rot into one of over-constrained
+    sketches that pass vacuously."""
+    spec = AUDIT[case]
+    full = solve_sketch(spec)
+    diag = full["diagnostics"]
+    assert diag["redundant"] == [], diag
+    assert diag["conflicting"] == [], diag
+    assert diag["rank"] == diag["n_residuals"], diag
+    cons = spec["constraints"]
+    for i, con in enumerate(cons):
+        without = solve_sketch({**spec, "constraints": cons[:i] + cons[i + 1:]})
+        assert without["dof"] > full["dof"], (
+            f"{case}[{i}] {con['type']} removes no DOF, so it is genuinely "
+            f"dependent and does not belong in the audit corpus")

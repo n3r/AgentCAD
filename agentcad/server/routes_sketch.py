@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body
 
 from ..core import sketch_emit
+from ..core.model import ValidationError
 
 
 def build_router(service, registry) -> APIRouter:
@@ -58,7 +59,16 @@ def build_router(service, registry) -> APIRouter:
 
         Sync `def` for the same reason `/sketch/solve` is one.
         """
-        script = body.get("script") or ""
+        # This route bypasses the registry (see above), so it also bypasses
+        # the registry's type check — and `parse_blocks` is a *text* function:
+        # `{"script": 123}` reached `str.replace` and came back a 500 instead
+        # of the `validation_error` contract. One argument, typed here.
+        script = body.get("script")
+        if script is not None and not isinstance(script, str):
+            raise ValidationError(
+                "sketch blocks are read out of a part script, so `script` "
+                f"must be a string; got {type(script).__name__}")
+        script = script or ""
         return {"blocks": sketch_emit.parse_blocks(script),
                 "next_name": sketch_emit.next_name(script)}
 

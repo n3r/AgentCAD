@@ -480,3 +480,87 @@ def test_the_tool_description_documents_the_block_and_its_divergence_rule():
     assert "agentcad-sketch-spec" in text
     for phrase in ("hash", "diverg", "source of truth"):
         assert phrase in text.lower(), f"the description never mentions {phrase}"
+
+
+# --------------------------------------------------------------------------
+# the error contract on the two remaining raw paths (review P7)
+# --------------------------------------------------------------------------
+def test_a_constraint_with_the_wrong_kwargs_is_a_validation_error():
+    """`parse_sketch` calls `fn(**kw)`, so a missing or misspelled keyword
+    escaped as a bare `TypeError` — an HTTP 500 — instead of the
+    `validation_error` every other malformed spec gets. The kwarg surface
+    roughly doubled when `tangent`, `symmetric`, `equal_length` and
+    `concentric` landed, so this is the most likely spec mistake there is."""
+    from agentcad.core.model import ValidationError
+    from agentcad.toolkit.sketch import SketchError, solve_sketch
+    cases = [
+        {"type": "concentric", "c1": "C1", "c2": "C2"},   # a/b, not c1/c2
+        {"type": "distance", "p": "a", "q": "b"},         # no `d`
+        {"type": "horizontal", "line": "l1"},             # `ln`
+    ]
+    for con in cases:
+        spec = {"points": [{"name": "a", "x": 0.0, "y": 0.0},
+                           {"name": "b", "x": 10.0, "y": 0.0}],
+                "lines": [{"name": "l1", "p1": "a", "p2": "b"}],
+                "circles": [{"name": "C1", "center": "a", "r": 4.0},
+                            {"name": "C2", "center": "b", "r": 4.0}],
+                "constraints": [con]}
+        with pytest.raises(SketchError) as exc:
+            solve_sketch(spec)
+        assert con["type"] in str(exc.value)
+        assert "constraint 0" in str(exc.value)
+        with pytest.raises(ValidationError):
+            _tool(spec)
+
+
+@pytest.mark.integration
+def test_the_blocks_route_types_its_one_argument(tmp_path):
+    """`/api/sketch/blocks` bypasses the registry (`parse_blocks` is a pure
+    text function), so it also bypassed the registry's type check: a
+    `{"script": 123}` reached `str.replace` and came back as a 500."""
+    service = make_test_service(tmp_path / "projects", None)
+    client = TestClient(create_app(service, build_registry(service)),
+                        base_url="http://127.0.0.1")
+    for bad in (123, {"a": 1}, ["def f(): pass"]):
+        res = client.post("/api/sketch/blocks", json={"script": bad})
+        assert res.status_code == 422, (bad, res.status_code, res.text)
+        assert res.json()["error"]["type"] == "ValidationError"
+    # and the shapes that are not an error stay that way
+    assert client.post("/api/sketch/blocks", json={"script": None}).json() == {
+        "blocks": [], "next_name": "profile"}
+
+
+# --------------------------------------------------------------------------
+# `parse_blocks` is a text scanner, and text has string literals (review P13)
+# --------------------------------------------------------------------------
+def test_a_marker_inside_a_string_literal_is_not_a_block():
+    """A docstring or a string constant that *quotes* the marker produced a
+    phantom `diverged` block and shifted `next_name`, so the next insert was
+    named around a sketch that does not exist."""
+    from agentcad.core.sketch_emit import next_name, parse_blocks
+    script = '\n'.join([
+        "HELP = '''",
+        '# --- agentcad sketch "profile" (auto-generated; edit or remove freely) ---',
+        "how a sketch block looks",
+        "'''",
+        "",
+        "def build(p):",
+        "    return None",
+    ])
+    assert parse_blocks(script) == []
+    assert next_name(script) == "profile"
+
+
+def test_a_blank_line_between_the_marker_and_the_spec_is_tolerated():
+    """`_norm` deliberately forgives an editor that rewrites whitespace; the
+    block scanner was stricter than the hash it protects, so one blank line
+    downgraded an intact block to `unverified`."""
+    from agentcad.core.sketch_emit import parse_blocks
+    spec = square_spec()
+    code = _tool(spec, emit="function", persist="profile")["emit"]["code"]
+    assert parse_blocks(code)[0]["status"] == "ok"
+    lines = code.split("\n")
+    at = next(i for i, line in enumerate(lines)
+              if line.startswith("# --- agentcad sketch"))
+    spaced = "\n".join(lines[:at + 1] + [""] + lines[at + 1:])
+    assert parse_blocks(spaced)[0]["status"] == "ok", parse_blocks(spaced)[0]

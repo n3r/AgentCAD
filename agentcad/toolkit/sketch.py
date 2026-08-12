@@ -57,10 +57,26 @@ from a constraint; they may not be *declared*.
 **Tangency has three residual forms, and the choice is not cosmetic.** When
 the two curves do not otherwise meet, tangency is a distance:
 `dist(centre, line) - r`, or `d(c1,c2) - (r1 +- r2)`. When they already meet at
-a point, that form is second-order flat there and the row falls into the span
-of the rows that pin the junction, so the Jacobian is **rank-deficient at the
-solution** and the constraint reports itself as redundant while doing real
-work. Two ways a junction is pinned, and both are handled:
+a point, that form sits at an **extremum of the manifold the other constraints
+cut out** — on that manifold `dist(centre, line) <= |centre - P| = r`, with
+equality exactly at tangency — so its gradient falls into the span of the rows
+that pin the junction. The Jacobian is **rank-deficient at the solution**, the
+constraint reports itself redundant while doing real work, and `max_residual`
+measures the *square* of the geometric error instead of the error.
+
+**A junction is pinned by the CONSTRAINT GRAPH, not by a list of handles.**
+This bug was fixed twice against a hardcoded handle list and came back a third
+time anyway, because that list could not see a junction held by
+`point_on_circle` — a circle has no handles at all. The detector now reads two
+things together: the union-find over every declared `coincident`, and the
+incidence graph `note_incidence` builds from `ON_CURVE_ARGS` (every constraint
+type that ties a point to a curve, plus the structural incidences — an arc's
+handles, a line's endpoints). `_junction_handles` finds the point both curves
+hold; `_tangent_at` builds each curve's tangent reference there. **Adding a
+constraint kind without classifying it fails a test**, which is what stops a
+fourth instance.
+
+The measured history, all three instances:
 
 - **structurally** — the line is built on `arc1.end` (a closed chain, a slot's
   side). `_shared_endpoint` detects it and uses the perpendicular form
@@ -69,17 +85,28 @@ work. Two ways a junction is pinned, and both are handled:
   the perpendicular form `dof 0`, and a 50-entity ring of arcs and lines went
   11.5 ms -> 6.1 ms warm (nfev 7 -> 4), `max_residual` 3.6e-8 -> 2.8e-14.
 - **by a `coincident` constraint** — a junction *point* tied to the handle,
-  which is what the GUI and most agents write. `_joined_handle` /
-  `_joined_handles` detect it (union-find over every declared coincidence) and
-  use the **direction** form `t_a x t_b` (`tangent_dir`). Measured in slice 10
-  and fixed here: on the GUI's line -> tangent-arc chain the singular values
-  were `1.21e+1  2.45e+0  1.84e-16` against a `8.46e-9` rank tolerance —
-  rank 2 of 3, `dof 5` instead of 4, chip reading `over-constrained (1)` — and
-  the arc-arc form is *exactly* dependent there (`4.70e-16`). With the
-  direction form: `1.21e+1  1.73e+0  1.20e-01`, `dof 4`, nothing redundant.
+  which is what the GUI and most agents write. Measured in slice 10: on the
+  GUI's line -> tangent-arc chain the singular values were
+  `1.21e+1  2.45e+0  1.84e-16` against a `8.46e-9` rank tolerance — rank 2 of
+  3, `dof 5` instead of 4, chip reading `over-constrained (1)` — and the
+  arc-arc form is *exactly* dependent there (`4.70e-16`). With the direction
+  form `t_a x t_b` (`tangent_dir`): `1.21e+1  1.73e+0  1.20e-01`, `dof 4`,
+  nothing redundant.
+- **by any on-curve constraint** — `point_on_circle`, `point_on_line`,
+  `midpoint`, a `tangent`'s own `at`, or a coincidence chain reaching one.
+  Measured in review: `point_on_circle(p, C) + tangent(L, C)` with `p = L.p1`
+  gave J = [[0,1,0,0],[0,1,0,0]], svals `1.41  0.0`, rank 1 of 2, `dof 3`
+  (true 2), `redundant: [tangent]` — and the same on the arc pair (1/2, dof 5)
+  and the circle pair (2/3, dof 2). With a third constraint the solve reported
+  `max_residual` 8.11e-11 / `ok: true` on a sketch whose true tangency error
+  was **4.97e-05 mm**. With the direction form the residual is the *sine* of
+  that error, so the ratio between them is the radius: measured 10.0, against
+  6.1e+05 for the distance form.
+  A circle has no handles, so its tangent at a pinned point comes from
+  `_RadialTangent` — `rot90(unit(p - centre))`.
 
 The three are the same geometry; only their linearizations differ. A junction
-in a chain always has one of the two well-conditioned forms.
+the sketch pins always has one of the two well-conditioned forms.
 
 ## Splines and slots (PRD-009 slice 6)
 
@@ -130,9 +157,22 @@ reasonably.
 
 Every solve returns a `diagnostics` block (design Decision 6/7):
 
-- `rank` comes from the SVD of the Jacobian and **`dof = n_params - rank`**,
-  never `n_params - n_residuals` (the row count reports a *negative* dof for
-  any redundant constraint).
+- `rank` comes from the SVD of the **row-scaled** Jacobian and
+  **`dof = n_params - rank`**, never `n_params - n_residuals` (the row count
+  reports a *negative* dof for any redundant constraint). Row scaling is not
+  cosmetic either: scaling a row changes neither the row space nor the null
+  space, but a relative singular-value threshold reads it as if it did, and one
+  1e-9 mm line (a GUI double-click on the same spot) writes 1.4e+09 into the
+  matrix through `_accum_dir`'s `1/n`. Measured: a pinned rectangle plus that
+  one line reported rank 3 of 7, `dof 7`, `free_entities ['b','c','d','z','z2']`
+  and `status: over_constrained` with **empty** `redundant` and `conflicting`
+  sets — a block contradicting itself.
+- **Where the greedy pass runs to completion, its count *is* the rank.** Greedy
+  forward selection in declaration order is a rank-revealing factorization, so
+  taking the rank from it is what makes `status`, `dof` and the blame sets
+  agree by construction: `over_constrained` with an empty blame set is a bug,
+  not a display problem, and `frontend/js/sketcher.js`'s chip branches on
+  `status` for the same reason.
 - `free_entities` is read off the null space, so an under-constrained sketch
   says *which* entities can still move rather than only how many DOF remain.
 - The dependent set is found by **declaration-order greedy forward
@@ -159,6 +199,13 @@ Jacobian was always the cost). It can never change the spec: it cannot fix a
 point, cannot override `fixed_r` and cannot introduce an entity. An unknown
 name is an error; a stale or partial `initial` degrades to a cold start with
 `warm_started: false` and an `initial_incomplete` warning.
+
+It is **all-or-nothing**, so what counts as "all" has to be something a caller
+can actually send: a **compiled** point (a 3-point arc's `<name>.center`) is
+excluded from the coverage requirement. Requiring it made `initial` impossible
+to satisfy for any sketch containing a 3-point arc — every frame reported
+`initial_incomplete` and cold started, silently losing the branch stability the
+seed exists for. It may still be seeded by name.
 
 ## `drag` (PRD-009 slice 8)
 
@@ -194,11 +241,13 @@ cached measurement is never presented as a fresh one.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -235,6 +284,32 @@ RESIDUAL_KINDS = frozenset({
     "point_on_line", "point_on_circle", "radius", "equal_radius", "midpoint",
     "tangent_line_circle", "tangent_point_perp", "tangent_dir",
     "tangent_circles", "symmetric", "equal_length",
+})
+
+# Which constraints put a point **on a curve**, as `(point key, curve key)`
+# into the spec's own kwargs. This is the classification the tangency
+# degeneracy turns on: a junction is pinned wherever some constraint holds a
+# point on each of two curves, so the detector reads this table rather than a
+# hardcoded list of entity handles (which missed `point_on_circle` twice — see
+# `_tangent_dir`). `tangent`'s optional `at` is handled separately because it
+# names a point on *both* of its curves.
+ON_CURVE_ARGS: dict[str, tuple[str, str]] = {
+    "point_on_line": ("p", "ln"),
+    "point_on_circle": ("p", "c"),
+    "midpoint": ("p", "ln"),
+}
+
+# The rest of the vocabulary, listed rather than implied: a constraint type is
+# either an incidence or explicitly not one, and
+# `tests/test_sketch_tangent_direction.py` fails when a new type is added
+# without that decision. "Not on a curve" includes `coincident` (it ties two
+# *points*, which the union-find already carries) and `concentric` (it ties two
+# centres, and a centre is not on its own circle).
+NOT_ON_CURVE: frozenset[str] = frozenset({
+    "fixed", "coincident", "distance", "distance_x", "distance_y",
+    "horizontal", "vertical", "parallel", "perpendicular", "angle",
+    "radius", "equal_radius", "tangent_line_circle", "tangent_circles",
+    "tangent", "symmetric", "equal_length", "concentric",
 })
 
 # Entity names are the user's namespace; dotted names are the solver's. A
@@ -281,6 +356,11 @@ class _Point:
     y0: float
     fixed: bool = False
     ix: int = -1  # index into free-parameter vector (x at ix, y at ix+1)
+    # Compiled from an entity rather than declared (a 3-point arc's
+    # circumcentre `a1.center`). `seed` does not *require* one to be covered:
+    # a caller cannot send a point it never wrote, and `initial` is
+    # all-or-nothing.
+    internal: bool = False
 
 
 @dataclass
@@ -641,6 +721,37 @@ class _ArcTangent(TangentRef):
         J[row, self.it] += -dfdtx * math.cos(t) - dfdty * math.sin(t)
 
 
+class _RadialTangent(TangentRef):
+    """The unit tangent of a circle or arc at a point held **on** it.
+
+    `_ArcTangent` covers a *handle* (`arc1.end`), where the anomaly is a
+    parameter. This covers the other way a sketch holds a point on a radial
+    curve — `point_on_circle`, or a chain of coincidences reaching one — where
+    the point is its own pair of parameters and the tangent is
+    `rot90(unit(p - centre))`. A circle has no handles at all, so without this
+    reference a junction on one is invisible and its tangency falls back to
+    the rank-deficient distance form (see `_tangent_dir`).
+
+    `rot90` commutes with the normalization, so the derivative is the proven
+    unit-direction chain rule with the two partials rotated.
+    """
+
+    __slots__ = ("rp", "rc")
+
+    def __init__(self, name: str, rp: PointRef, rc: PointRef) -> None:
+        self.name, self.rp, self.rc = name, rp, rc
+        self.params = tuple(dict.fromkeys(rp.params + rc.params))
+
+    def value(self, v):
+        ex, ey, _ = _unit(*self.rc.value(v), *self.rp.value(v))
+        return -ey, ex
+
+    def accum(self, v, J, row, dfdtx, dfdty):
+        ex, ey, n = _unit(*self.rc.value(v), *self.rp.value(v))
+        # t = (-e_y, e_x), so d f/d e = (dfdty, -dfdtx).
+        _accum_dir(v, J, row, self.rc, self.rp, ex, ey, n, dfdty, -dfdtx)
+
+
 class _EllipseTangent(TangentRef):
     """The unit tangent of an ellipse at anomaly `t`.
 
@@ -813,10 +924,17 @@ class Sketch:
         self._refs: dict[str, PointRef] = {}
         self._rads: dict[str, ScalarRef] = {}
         # Union-find over handle names, fed by every `coincident` constraint.
-        # `tangent` consults it to find out whether the two curves already meet
-        # at a point — the difference between a well-conditioned direction
-        # residual and a rank-deficient distance one (`_junction`).
+        # `tangent` consults it — together with `_incident` — to find out
+        # whether the two curves already meet at a point: the difference
+        # between a well-conditioned direction residual and a rank-deficient
+        # distance one (`_junction_handles`, `_tangent_dir`).
         self._coin: dict[str, str] = {}
+        # curve name -> point handles the sketch holds **on** that curve, fed
+        # by every constraint in `ON_CURVE_ARGS`. Together with `_coin` this is
+        # the incidence graph `_junction_handles` reads; it is what makes
+        # junction detection a property of the constraint set rather than of a
+        # hardcoded list of entity handles (see `_tangent_dir`).
+        self._incident: dict[str, list[str]] = {}
         # Auxiliary anomaly slots created by elliptical tangencies, with the
         # curve each one touches: `initial_vector` seeds them geometrically,
         # **after** `initial` has moved the entities, because a client cannot
@@ -850,7 +968,8 @@ class Sketch:
     def point(self, name: str, x0: float, y0: float, fixed: bool = False, *,
               internal: bool = False) -> str:
         self._claim(name, internal=internal)
-        p = _Point(name, float(x0), float(y0), bool(fixed))
+        p = _Point(name, float(x0), float(y0), bool(fixed),
+                   internal=bool(internal))
         if p.fixed:
             self._refs[name] = _FixedPoint(name, p.x0, p.y0)
         else:
@@ -1233,6 +1352,20 @@ class Sketch:
         """
         self._union(p, q)
 
+    def note_incidence(self, p: str, curve: str) -> None:
+        """Record that a point handle lies **on** a curve, without adding rows.
+
+        The incidence half of `note_coincidence`, and the reason the tangency
+        degeneracy is now a class rather than a list of cases: a junction is
+        pinned whenever *some* constraint holds a point on each of the two
+        curves, whatever that constraint is called. Every on-curve constraint
+        calls this, and `parse_sketch` calls it for all of them **before**
+        compiling anything, so a `tangent` written ahead of the constraint
+        that pins its junction still sees it. Through the direct `Sketch` API
+        the order matters, exactly as it does for coincidences.
+        """
+        self._incident.setdefault(curve, []).append(p)
+
     def _root(self, h: str) -> str:
         parent = self._coin
         while parent.get(h, h) != h:
@@ -1409,6 +1542,7 @@ class Sketch:
 
     def point_on_line(self, p: str, ln: str) -> None:
         self._need_line(ln)
+        self.note_incidence(p, ln)
         self._on_line(self._begin("point_on_line"), p, ln)
 
     def _on_line(self, ci: int, p: str, ln: str) -> None:
@@ -1437,6 +1571,7 @@ class Sketch:
 
     def point_on_circle(self, p: str, c: str) -> None:
         self._need_circle(c)
+        self.note_incidence(p, c)
         self._on_circle(self._begin("point_on_circle"), p, c)
 
     def _on_circle(self, ci: int, p: str, c: str) -> None:
@@ -1505,6 +1640,9 @@ class Sketch:
 
     def midpoint(self, p: str, ln: str) -> None:
         self._need_line(ln)
+        # A midpoint is on the line as surely as `point_on_line` puts it there,
+        # and a tangency at it is degenerate for the same reason.
+        self.note_incidence(p, ln)
         rp = self._pref(p)
         ra, rb = self._line_refs(ln)
 
@@ -1543,12 +1681,11 @@ class Sketch:
         if at is None:
             at = self._shared_endpoint(ln, c)
         if at is None:
-            handle = self._joined_handle(ln, c)
-            if handle is not None:
-                # The junction is already pinned by a coincidence, so tangency
+            pinned = self._junction_tangents(ln, c)
+            if pinned is not None:
+                # The sketch already holds a point on both curves, so tangency
                 # is a *direction* condition. See `_tangent_dir`.
-                self._tangent_dir(ci, self._line_tangent(ln),
-                                  self._curve_tangent(handle))
+                self._tangent_dir(ci, *pinned)
                 return
             def f(v):
                 ax, ay = ra.value(v)
@@ -1571,6 +1708,9 @@ class Sketch:
                                self._params(ra, rb, rc, rr), f, df))
             return
 
+        # Named or structural, `at` is a point on both curves — so a *second*
+        # tangency through it sees a pinned junction, like any other incidence.
+        self.note_incidence(at, ln), self.note_incidence(at, c)
         if self._shared_endpoint(ln, c) != at:
             # The tangency point is a point of its own: say so, in rows.
             self._on_circle(ci, at, c)
@@ -1601,39 +1741,84 @@ class Sketch:
         return None
 
     def _handles_of(self, c: str) -> tuple[str, ...]:
-        """A curve's endpoint handles: an arc's, or a bounded ellipse's.
+        """A curve's **structural** endpoint handles: an arc's, or a bounded
+        ellipse's.
 
-        A circle and a full ellipse have none — they have no endpoints, so
-        they can never share a junction, which is exactly the case that keeps
-        the v1 distance residual.
+        A circle and a full ellipse have none — they have no endpoints. That is
+        not the same as "they can never share a junction", which is what this
+        was read as twice: a `point_on_circle` holds a point on a circle just
+        as firmly as a handle does. `_on_curve_handles` is the question the
+        tangency compiler actually asks.
         """
         if c in self.arcs or (c in self.ellipses and self.ellipses[c].bounded):
             return (f"{c}.start", f"{c}.end")
         return ()
 
-    def _joined_handle(self, ln: str, c: str) -> str | None:
-        """The curve handle a line endpoint already meets by a *coincidence*.
+    def _on_curve_handles(self, c: str) -> tuple[str, ...]:
+        """Every point handle the sketch holds **on** curve `c`.
 
-        `_shared_endpoint` is the structural case (the line is literally built
-        on `arc1.end`); this is the same junction expressed the way the GUI and
-        most agents write it — a junction *point* tied to the handle by a
-        `coincident` constraint — and it needs the same treatment for the same
-        reason (`_tangent_dir`).
+        Two sources, and reading only the first is what let the tangency
+        degeneracy reopen three times:
+
+        - **structural** — an arc's or a bounded ellipse's own endpoint
+          handles, and a line's two endpoints;
+        - **the constraint set** — every `ON_CURVE_ARGS` constraint written
+          against `c`, recorded by `note_incidence`. `point_on_circle` is the
+          one that bit: a circle has *no* structural handles, so a junction on
+          one is invisible without it.
+
+        Structural handles come first because they carry the better-conditioned
+        tangent reference (`_ArcTangent` touches only the angle slot). Handles
+        that never resolved to a point are dropped rather than raising: a
+        recorded incidence is a hint, and its constraint reports its own errors.
         """
-        line = self.lines[ln]
-        for handle in self._handles_of(c):
-            for end in (line.p1, line.p2):
-                if self._same_point(end, handle):
-                    return handle
+        out: list[str] = list(self._handles_of(c))
+        line = self.lines.get(c)
+        if line is not None:
+            out += [line.p1, line.p2]
+        out += self._incident.get(c, ())
+        return tuple(h for h in dict.fromkeys(out) if h in self._refs)
+
+    def _junction_handles(self, a: str, b: str) -> tuple[str, str] | None:
+        """The point where the sketch already holds curves `a` and `b` together.
+
+        Returns the handle naming that point **on each curve** (they differ:
+        `a1.end` on the arc, `p3` on the line that meets it), or None. The
+        union-find over coincidences and the incidence graph are one lookup
+        here, because a junction can reach the curve through either.
+        """
+        for ha in self._on_curve_handles(a):
+            for hb in self._on_curve_handles(b):
+                if self._same_point(ha, hb):
+                    return ha, hb
         return None
 
-    def _joined_handles(self, c1: str, c2: str) -> tuple[str, str] | None:
-        """The pair of arc handles where two curves already meet, if any."""
-        for h1 in self._handles_of(c1):
-            for h2 in self._handles_of(c2):
-                if self._same_point(h1, h2):
-                    return h1, h2
+    def _tangent_at(self, curve: str, handle: str) -> TangentRef | None:
+        """The curve's tangent direction at a point held on it, or None.
+
+        None means "this junction has no closed-form tangent reference" — a
+        generic point on an ellipse, whose anomaly is not a function of the
+        point — and the caller falls back to the form that does not need one.
+        """
+        if curve in self.lines:
+            return self._line_tangent(curve)
+        base, _, which = handle.rpartition(RESERVED_NAME_CHAR)
+        if base == curve and which in ("start", "end"):
+            return self._curve_tangent(handle)
+        if curve in self.circles or curve in self.arcs:
+            return _RadialTangent(handle, self._pref(handle),
+                                  self._circle_refs(curve)[0])
         return None
+
+    def _junction_tangents(
+            self, a: str, b: str) -> tuple[TangentRef, TangentRef] | None:
+        """`(t_a, t_b)` at the junction the sketch pins, or None."""
+        joined = self._junction_handles(a, b)
+        if joined is None:
+            return None
+        ta = self._tangent_at(a, joined[0])
+        tb = self._tangent_at(b, joined[1])
+        return None if (ta is None or tb is None) else (ta, tb)
 
     def _line_tangent(self, ln: str) -> TangentRef:
         ra, rb = self._line_refs(ln)
@@ -1653,7 +1838,7 @@ class Sketch:
     def _tangent_dir(self, ci: int, ta: TangentRef, tb: TangentRef) -> None:
         """Tangency at a junction the sketch already pins: `t_a x t_b == 0`.
 
-        **The residual form is not cosmetic, and this is the second time this
+        **The residual form is not cosmetic, and this is the third time this
         plan has had to say so.** Slice 6 measured it for a junction the
         geometry shares *structurally* (a slot's side built on its cap's
         handle); slice 10 measured the same collapse for a junction shared by a
@@ -1735,17 +1920,16 @@ class Sketch:
         if kind not in ("external", "internal"):
             raise SketchError(
                 f"tangent kind must be 'external' or 'internal', not {kind!r}")
-        joined = self._joined_handles(c1, c2)
-        if joined is not None:
-            # Two arcs meeting at a coincident junction: the distance form is
-            # *exactly* dependent on the coincidence rows there (measured
+        pinned = self._junction_tangents(c1, c2)
+        if pinned is not None:
+            # Two curves meeting at a junction the sketch pins: the distance
+            # form is *exactly* dependent on the pinning rows there (measured
             # singular value 4.70e-16), so tangency compiles to the direction
             # residual. `kind` has no meaning at a shared point — external and
             # internal are the two ways two circles can touch *without* one,
-            # and the coincidence has already chosen the touching point — so it
+            # and the junction has already chosen the touching point — so it
             # is accepted and unused, which the tool description states.
-            self._tangent_dir(ci, self._curve_tangent(joined[0]),
-                              self._curve_tangent(joined[1]))
+            self._tangent_dir(ci, *pinned)
             return
         ra, r1 = self._circle_refs(c1)
         rb, r2 = self._circle_refs(c2)
@@ -1858,15 +2042,16 @@ class Sketch:
             raise SketchError(
                 f"tangent cannot constrain ellipse {ename!r} to {other_kind} "
                 f"{other!r}")
-        joined = (self._joined_handle(other, ename) if other_kind == "line"
-                  else (self._joined_handles(other, ename) or (None, None))[1])
-        if joined is not None:
+        # `_tangent_at` returns None for a generic point on an ellipse — its
+        # anomaly is not a function of the point — so only a junction at one of
+        # the ellipse's own handles takes this branch, and everything else
+        # falls through to the auxiliary-anomaly form, which is already a
+        # direction residual and so is not the degenerate case at all.
+        pinned = self._junction_tangents(other, ename)
+        if pinned is not None:
             # The junction is pinned: the tangency point is a handle, not an
             # unknown, and the direction residual is first-order there.
-            far = (self._line_tangent(other) if other_kind == "line"
-                   else self._curve_tangent(
-                       self._joined_handles(other, ename)[0]))
-            self._tangent_dir(ci, far, self._curve_tangent(joined))
+            self._tangent_dir(ci, *pinned)
             return
 
         it = self.n_par
@@ -2134,6 +2319,15 @@ class Sketch:
             given = pts.get(name)
             if not isinstance(given, dict) or given.get("x") is None \
                     or given.get("y") is None:
+                if p.internal:
+                    # A compiled sub-entity (a 3-point arc's `a1.center`) is
+                    # not the caller's to send: requiring it made `initial`
+                    # **impossible** to satisfy for any sketch containing one,
+                    # so every frame reported `initial_incomplete` and cold
+                    # started — the all-or-nothing trap, sprung by machinery
+                    # the caller never wrote. It may still be seeded by name;
+                    # it is only excluded from the coverage requirement.
+                    continue
                 missing.append(name)
                 continue
             seeds.append((p, {"x0": float(given["x"]), "y0": float(given["y"])}))
@@ -2329,11 +2523,32 @@ class Sketch:
 
         return fun, jac
 
+    @staticmethod
+    def row_scaled(J: np.ndarray) -> np.ndarray:
+        """`J` with every non-zero row scaled to unit norm.
+
+        **The rank must not be a function of row scale.** Scaling a row by a
+        positive number changes neither the row space nor the null space, so it
+        cannot change which rows are independent — but a *relative* singular
+        value threshold reads it as if it did. Measured: one 1e-9 mm line (a
+        GUI double-click on the same spot) puts 1.4e+09 into a row through
+        `_accum_dir`'s `1/n`, lifting `max(m, n) * s0 * RANK_TOL_REL` to ~0.28
+        so that every honest row of a pinned rectangle fell under it — rank 3
+        of 7, `dof 7`, `free_entities ['b','c','d','z','z2']` on geometry that
+        cannot move. The greedy dependent-row pass never agreed, because it
+        measures each row against that row's own norm; scaling here is what
+        makes the two halves of the diagnostics block measure the same thing.
+        A row of exact zeros is left alone: it has no direction to normalize
+        and contributes no rank either way.
+        """
+        norms = np.linalg.norm(J, axis=1)
+        return J / np.where(norms > 0.0, norms, 1.0)[:, None]
+
     def rank(self, J: np.ndarray) -> int:
         """Numerical rank of the Jacobian (design Decision 6)."""
         if J.size == 0:
             return 0
-        s = np.linalg.svd(J, compute_uv=False)
+        s = np.linalg.svd(self.row_scaled(J), compute_uv=False)
         if s.size == 0 or s[0] <= 0.0:
             return 0
         return int((s > max(J.shape) * s[0] * RANK_TOL_REL).sum())
@@ -2356,6 +2571,10 @@ class Sketch:
         if J.size == 0:
             slots = range(self.n_par)          # nothing constrains anything
         else:
+            # Row-scaled, for the reason `row_scaled` gives: the null space is
+            # the same subspace either way, and reading it off the unscaled
+            # matrix reported a pinned rectangle's corners as free.
+            J = self.row_scaled(J)
             # `full_matrices` only matters when the system has fewer rows than
             # parameters; otherwise Vt is already the full n x n basis.
             vt = np.linalg.svd(J, full_matrices=J.shape[0] < J.shape[1])[2]
@@ -2421,8 +2640,6 @@ class Sketch:
         t0 = time.perf_counter()
         n_par, n_res = self.n_par, self.n_res
         rank = self.rank(J) if (n_par and n_res) else 0
-        dof = n_par - rank
-        free = self.free_entities(J, rank) if dof > 0 else []
 
         # Only a rank-deficient system has dependent rows at all, so a
         # well-constrained sketch — the drag-path case — never pays for the
@@ -2430,7 +2647,20 @@ class Sketch:
         dependent: list[int] = []
         complete = True
         if rank < n_res:
-            dependent, complete = self.dependent_rows(J, budget_ms)
+            dependent, complete = self.dependent_rows(self.row_scaled(J),
+                                                      budget_ms)
+            if complete:
+                # **The rank is the greedy pass's own count where it ran.**
+                # Greedy forward selection in declaration order is a
+                # rank-revealing factorization: the rows it keeps are exactly
+                # an independent set. Taking the rank from it is what makes
+                # `status`, `dof` and the blame sets agree *by construction* —
+                # `over_constrained` with an empty `redundant` and an empty
+                # `conflicting` is a contradiction, and it was reachable while
+                # the two used different criteria.
+                rank = n_res - len(dependent)
+        dof = n_par - rank
+        free = self.free_entities(J, rank) if dof > 0 else []
 
         redundant, conflicting = [], []
         if complete and dependent:
@@ -2729,6 +2959,47 @@ class Sketch:
 
 
 # ---------------- JSON front-end (agent tool shape) ----------------
+def _dispatch(sk: Sketch) -> dict[str, Callable]:
+    """The constraint vocabulary a spec may name, bound to one `Sketch`.
+
+    Module level so `constraint_types()` can enumerate it without compiling a
+    spec — `ON_CURVE_ARGS` / `NOT_ON_CURVE` are checked against exactly this
+    set, which is what makes "every constraint type is classified" a test
+    rather than a convention.
+    """
+    return {
+        "fixed": sk.fixed, "coincident": sk.coincident, "distance": sk.distance,
+        "distance_x": sk.distance_x, "distance_y": sk.distance_y,
+        "horizontal": sk.horizontal, "vertical": sk.vertical,
+        "parallel": sk.parallel, "perpendicular": sk.perpendicular,
+        "angle": sk.angle, "point_on_line": sk.point_on_line,
+        "point_on_circle": sk.point_on_circle, "radius": sk.radius,
+        "equal_radius": sk.equal_radius, "midpoint": sk.midpoint,
+        "tangent_line_circle": sk.tangent_line_circle,
+        "tangent_circles": sk.tangent_circles,
+        "tangent": sk.tangent, "symmetric": sk.symmetric,
+        "equal_length": sk.equal_length, "concentric": sk.concentric,
+    }
+
+
+def constraint_types() -> frozenset[str]:
+    """Every constraint type `parse_sketch` accepts."""
+    return frozenset(_dispatch(Sketch()))
+
+
+@lru_cache(maxsize=1)
+def _signatures() -> dict[str, inspect.Signature]:
+    """The keywords each constraint type takes, read off `_dispatch` itself.
+
+    From the dispatch table rather than from `Sketch` by name, so the two can
+    never disagree; from *bound* methods, so `self` is already gone. Cached
+    because a drag frame recompiles the whole spec, and `inspect.signature` at
+    ~10 us x 150 constraints x 60 Hz is not where that time belongs.
+    """
+    return {name: inspect.signature(fn)
+            for name, fn in _dispatch(Sketch()).items()}
+
+
 def parse_sketch(spec: dict) -> Sketch:
     """Compile a JSON-shaped spec into a `Sketch` (no solve).
 
@@ -2787,27 +3058,25 @@ def parse_sketch(spec: dict) -> Sketch:
         for entity in spec.get(kind, []):
             if entity.get("construction"):
                 sk.mark_construction(entity["name"])
-    dispatch = {
-        "fixed": sk.fixed, "coincident": sk.coincident, "distance": sk.distance,
-        "distance_x": sk.distance_x, "distance_y": sk.distance_y,
-        "horizontal": sk.horizontal, "vertical": sk.vertical,
-        "parallel": sk.parallel, "perpendicular": sk.perpendicular,
-        "angle": sk.angle, "point_on_line": sk.point_on_line,
-        "point_on_circle": sk.point_on_circle, "radius": sk.radius,
-        "equal_radius": sk.equal_radius, "midpoint": sk.midpoint,
-        "tangent_line_circle": sk.tangent_line_circle,
-        "tangent_circles": sk.tangent_circles,
-        "tangent": sk.tangent, "symmetric": sk.symmetric,
-        "equal_length": sk.equal_length, "concentric": sk.concentric,
-    }
-    # Coincidences are registered **before** anything compiles, so a `tangent`
-    # written ahead of the `coincident` that joins its two curves still sees
-    # the junction and compiles to the well-conditioned direction residual
-    # (`Sketch._tangent_dir`). A spec is a set, not a program; only the direct
-    # `Sketch` API is order-sensitive here, and its docstring says so.
+    dispatch = _dispatch(sk)
+    # Coincidences **and incidences** are registered before anything compiles,
+    # so a `tangent` written ahead of the constraint that pins its junction
+    # still sees the junction and compiles to the well-conditioned direction
+    # residual (`Sketch._tangent_dir`). A spec is a set, not a program; only
+    # the direct `Sketch` API is order-sensitive here, and its docstring says
+    # so.
     for c in spec.get("constraints", []):
-        if c.get("type") == "coincident" and c.get("p") and c.get("q"):
+        ctype = c.get("type")
+        if ctype == "coincident" and c.get("p") and c.get("q"):
             sk.note_coincidence(c["p"], c["q"])
+        keys = ON_CURVE_ARGS.get(ctype)
+        if keys and c.get(keys[0]) and c.get(keys[1]):
+            sk.note_incidence(c[keys[0]], c[keys[1]])
+        if c.get("at"):
+            # `tangent {a, b, at}` names a point on both of its curves.
+            for key in ("a", "b", "ln", "c"):
+                if c.get(key):
+                    sk.note_incidence(c["at"], c[key])
     for i, c in enumerate(spec.get("constraints", [])):
         kw = {k: v for k, v in c.items() if k != "type"}
         try:
@@ -2818,6 +3087,21 @@ def parse_sketch(spec: dict) -> Sketch:
         # The caller-visible index is this constraint's position in the spec,
         # so entity-compiled constraints (a slot's, declared first) cannot
         # shift what a diagnostic points at.
+        # Bind the keywords *before* calling. `fn(**kw)` on a caller's dict
+        # turns a misspelled or missing key into a bare `TypeError` — an HTTP
+        # 500 rather than the `validation_error` every other malformed spec
+        # gets — and the kwarg surface roughly doubled with `tangent`,
+        # `symmetric`, `equal_length` and `concentric`. Binding first also
+        # keeps a genuine `TypeError` from inside a constraint from being
+        # mislabelled as a spec error.
+        sig = _signatures()[c["type"]]
+        try:
+            sig.bind(**kw)
+        except TypeError as exc:
+            raise SketchError(
+                f"constraint {i} ({c['type']!r}) has the wrong arguments "
+                f"{sorted(kw)}: {exc}. It takes {list(sig.parameters)}."
+            ) from exc
         sk._spec_index = i
         try:
             fn(**kw)

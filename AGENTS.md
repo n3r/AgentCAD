@@ -578,9 +578,11 @@ Every item is traceable to a measurement in `docs/changelog/0127`–`0141`.
   that property (`facemod`, `fillet`, `shell`, `surfacing`, `sheetmetal`,
   `threads` all import `b3d` and run kernel-side). `core/sketch_emit.py` is
   OCP-free for the same reason: emitting build123d *source* is not importing
-  build123d. Both are asserted in a fresh interpreter with `OCP` blocked at
-  `sys.meta_path`. `numpy`/`scipy` are **declared** dependencies now, because
-  they used to arrive only transitively through build123d.
+  build123d. `toolkit/sketch.py` is asserted in a fresh interpreter with `OCP`
+  blocked at `sys.meta_path`; `core/sketch_emit.py` is asserted by importing it
+  in a fresh interpreter and checking `sys.modules` afterwards — the same
+  property, one check weaker. `numpy`/`scipy` are **declared** dependencies
+  now, because they used to arrive only transitively through build123d.
 - **The solver's cost is the Jacobian, not the iterations.** A finite-
   difference Jacobian costs `n_par + 1` residual evaluations — 92% of the old
   51 ms solve. Every residual ships an analytic `df`, and `Residual` **refuses
@@ -636,14 +638,40 @@ Every item is traceable to a measurement in `docs/changelog/0127`–`0141`.
 - **`EllipticalCenterArc` takes `arc_size`, not `end_angle`, in the pinned
   build123d 0.11.1**: `end_angle` raises `UnboundLocalError` because the
   deprecation branch reads a name only the *other* deprecated parameter binds.
-  There is also **no endpoint-anchored elliptical constructor**, so an
-  elliptical arc's endpoints are always derived by the reader from rounded
-  literals — the closure gate measures that derivation unconditionally.
+  There is also **no start-AND-end anchored elliptical constructor**
+  (`EllipticalStartArc` exists, but it anchors the *start* point and derives
+  the other end from `start_tangent` + `arc_size`), so an elliptical arc's
+  endpoints are always derived by the reader from rounded literals — the
+  closure gate measures that derivation unconditionally.
 - **`SlotCenterToCenter` is a BuildSketch face at the origin, not a BuildLine
   curve.** A slot tied into a larger profile emits as its compiled primitives.
-- **A compiled sub-entity never gets blamed.** Slot machinery carries the
-  slot's own `con_index` and `origin: "slot:<name>"`, and `con_report` holds
-  `None` where there is no caller-visible index.
+- **A compiled sub-entity never gets blamed, and never has to be sent
+  back.** Slot machinery carries the slot's own `con_index` and
+  `origin: "slot:<name>"`, and `con_report` holds `None` where there is no
+  caller-visible index; a 3-point arc's `<name>.center` is excluded from
+  `initial`'s coverage requirement, because requiring a point the caller never
+  wrote made the all-or-nothing seed impossible to satisfy.
+- **Tangency at a junction the sketch pins is a DIRECTION residual, and the
+  detector reads the CONSTRAINT GRAPH.** `dist(centre, line) - r` and
+  `d(c1,c2) - (r1 ± r2)` sit at an extremum of the manifold the pinning rows
+  cut out, so their gradient falls into that span: the row reports itself
+  redundant while removing a real DOF, and `max_residual` reports the *square*
+  of the geometric error (measured 8.11e-11 reported against a true
+  4.97e-05 mm before the fix — a ratio of 6.1e+05; 10.0 after it, which is
+  the radius). This has been found three times — structurally shared handles
+  (slice 6), a `coincident` junction
+  (slice 10), a `point_on_circle` junction (review) — because each fix keyed
+  off a hardcoded handle list. It is now derived from `ON_CURVE_ARGS`:
+  **every constraint type is classified as an incidence or explicitly not one,
+  and a test fails when a new type is added without that decision.**
+- **The rank must not be a function of row scale.** One 1e-9 mm line (a GUI
+  double-click) writes 1.4e+09 into the Jacobian through `_accum_dir`'s `1/n`,
+  and a relative singular-value threshold then reads every honest row as zero:
+  measured rank 3 of 7 and `dof 7` on a pinned rectangle. `Sketch.row_scaled`
+  normalizes rows before the SVD, and where the greedy dependent-row pass runs
+  to completion **its count is the rank**, so `status`, `dof` and the blame
+  sets agree by construction — `over_constrained` with an empty blame set is a
+  bug, not a display problem, and the chip branches on `status`.
 - **For a face: the basis is stable, the ordinal is not.** `Plane(face).x_dir`
   is **bit-identical** across rebuilds, across a fresh worker and across
   parameter changes that do not renumber faces — so sketch-on-face coordinates
@@ -662,7 +690,19 @@ Every item is traceable to a measurement in `docs/changelog/0127`–`0141`.
   provenance.** A hash mismatch is `diverged` and is never repaired; an
   unreadable spec is `unverified`, which is "we cannot tell", not "no sketch".
   The block name is the emitted function's name, so a second block in one
-  script must take the next free name or it silently shadows the first.
+  script must take the next free name or it silently shadows the first —
+  `next_name` is the server's answer and Insert asks for it. The block scanner
+  reads `tokenize`'s COMMENT tokens, so a docstring quoting the marker is not
+  a block.
+- **The face's identity is recorded, not just its ordinal.** `sketch_plane`
+  returns `face_id` (`area_mm2`, `normal`, `origin`) and accepts it back as
+  `expect`; reopening a saved sketch-on-face gets
+  `face_check: ok | moved | unchecked` **with both measurements**. Never
+  repaired — which face the user meant is not something the code can guess.
+- **`plane` is caller data, not source.** `face_index` and `part` are
+  validated (an int, and an identifier-ish expression) before they reach the
+  generated header, and the basis vectors go through `fmt`: a crafted `part`
+  put `import os` on line 2 of a generated script.
 
 ## Conventions (match these)
 

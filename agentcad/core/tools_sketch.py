@@ -25,6 +25,73 @@ FACE_INDEX_CAVEAT = (
     "part's topology can renumber them. Re-pick the face if the rebuild moves."
 )
 
+# The face properties that identify it across a rebuild. Both come back from
+# `sketch_plane` already; recording them is what turns the caveat above from a
+# warning into a *check*.
+FACE_ID_KEYS = ("area_mm2", "normal", "origin")
+
+# How far a face's area may move before the ordinal is reported as pointing
+# somewhere else. A renumber changes it by orders of magnitude — measured on
+# the prototyping enclosure, `corner_r: 6.0` turns ordinal 37 from a 5989 mm^2
+# base plate into a 51 mm^2 sliver, a 99% drop — while an ordinary resize
+# (`wall`, `length`) moves it a few percent and must not raise an alarm. The
+# threshold sits between the two, and **both numbers are in the payload**, so a
+# caller never has to trust it: the verdict is a summary of a measurement it
+# also reports.
+FACE_MOVED_AREA_REL = 0.25
+
+# Two unit normals this far apart in any component are not the same direction.
+# `Plane(face)` is measured bit-identical across rebuilds, so this is slack.
+FACE_NORMAL_TOL = 1e-6
+
+
+def face_id(info: dict) -> dict:
+    """The identity of the face `sketch_plane` just measured."""
+    return {key: info[key] for key in FACE_ID_KEYS}
+
+
+def face_check(info: dict, expect: dict | None) -> dict:
+    """Is the face at this ordinal still the face the sketch was taken on?
+
+    `unchecked` when the caller recorded nothing (every sketch saved before
+    the identity was recorded), `ok` when the area and the normal still match,
+    `moved` otherwise — with both measurements, because "the ordinal moved" is
+    a claim a user has to be able to see for themselves. Never repaired: which
+    face the user meant is not something this can know (the PRD-008 rule).
+    """
+    if not isinstance(expect, dict) or not expect:
+        return {"status": "unchecked", "message":
+                "no recorded face identity to compare against; " +
+                FACE_INDEX_CAVEAT}
+    actual = face_id(info)
+    want_area = expect.get("area_mm2")
+    want_normal = expect.get("normal") or []
+    turned = (len(want_normal) != 3
+              or any(abs(float(a) - float(b)) > FACE_NORMAL_TOL
+                     for a, b in zip(actual["normal"], want_normal)))
+    resized = (not isinstance(want_area, (int, float)) or want_area <= 0.0
+               or abs(actual["area_mm2"] - want_area) / want_area
+               > FACE_MOVED_AREA_REL)
+    if not turned and not resized:
+        return {"status": "ok", "expected": expect, "actual": actual,
+                "message": (f"face {info['face_index']} is still the face "
+                            "this sketch was taken on")}
+    why = []
+    if turned:
+        why.append(f"its normal is {actual['normal']} and was {want_normal}")
+    if resized:
+        why.append(f"its area is {actual['area_mm2']:.4g} mm^2 and was "
+                   f"{float(want_area):.4g} mm^2")
+    return {
+        "status": "moved", "expected": expect, "actual": actual,
+        "message": (
+            f"face {info['face_index']} is not the face this sketch was taken "
+            f"on: {'; '.join(why)}. Face indices are mesh-order ordinals and a "
+            "topology change renumbers them, so re-pick the face — the sketch "
+            "is left exactly as it was, because which face you meant is not "
+            "something this can guess."),
+    }
+
 
 def reference_entities(refs: list[dict]) -> dict:
     """Projected boundary edges, in `solve_sketch`'s entity shape.
@@ -260,6 +327,19 @@ _PLANE = (
     "the basis goes in the script."
 )
 
+_EXPECT = (
+    "Optional: the `face_id` a previous `sketch_plane` returned for this "
+    "sketch ({area_mm2, normal, origin}). Face indices are mesh-order ordinals "
+    "and a topology-changing parameter edit renumbers them, so reopening a "
+    "saved sketch-on-face can land on a different face with the same number — "
+    "measured: `corner_r: 6.0` turns the prototyping enclosure's face 37 from "
+    "a 5989 mm^2 base plate into a 51 mm^2 sliver. Pass it and `face_check` "
+    "comes back `ok` or `moved` **with both measurements**; omit it and "
+    "`face_check` is `unchecked`, which is what every sketch saved before this "
+    "existed gets. Nothing is ever repaired: which face you meant is not "
+    "something this can guess."
+)
+
 _SKETCH_PLANE = (
     "Return the sketch plane of a planar B-rep face of a script part, plus "
     "that face's own boundary edges expressed **in the plane's 2D "
@@ -278,7 +358,10 @@ _SKETCH_PLANE = (
     "construction-marked**: they add no parameters, cannot be dragged, cannot "
     "appear in a conflict report, and are not emitted as geometry. Face "
     "indices are mesh-order ordinals and a topology-changing parameter edit "
-    "can renumber them — the emitted script says so inline."
+    "can renumber them — the emitted script says so inline, and `face_id` "
+    "(`{area_mm2, normal, origin}`) plus the `expect` argument turn that "
+    "caveat into a check: store `face_id` with the sketch and pass it back as "
+    "`expect` on reopen to get `face_check: ok | moved | unchecked`."
 )
 
 
@@ -385,7 +468,8 @@ def register(registry, service) -> None:
         solve,
     ))
 
-    def sketch_plane(project: str, part_id: str, face_index: int) -> dict:
+    def sketch_plane(project: str, part_id: str, face_index: int,
+                     expect: dict | None = None) -> dict:
         record = service.store.get_part(project, part_id)
         if record.kind != "script":
             raise ValidationError(
@@ -403,6 +487,11 @@ def register(registry, service) -> None:
             **info,
             "entities": reference_entities(info["refs"]),
             "caveat": FACE_INDEX_CAVEAT,
+            # Record it with the sketch and send it back on reopen: that is
+            # what turns the caveat into a check instead of a warning nobody
+            # can act on.
+            "face_id": face_id(info),
+            "face_check": face_check(info, expect),
         }
 
     registry.register(Tool("sketch_plane", _SKETCH_PLANE, schema(
@@ -412,6 +501,7 @@ def register(registry, service) -> None:
             "face_index": {"type": "integer",
                            "description": "Mesh-order B-rep face index "
                                           "(must be planar)"},
+            "expect": {"type": "object", "description": _EXPECT},
         },
         ["project", "part_id", "face_index"],
     ), sketch_plane))

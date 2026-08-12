@@ -196,3 +196,69 @@ def test_the_route_forwards_initial_to_the_solver(kernel, tmp_path):
         **body, "initial": {"points": {"nope": {"x": 0, "y": 0}}}}).json()
     assert bad["error"]["type"] == "validation_error"
     assert "unknown point" in bad["error"]["message"]
+
+
+# --------------------------------------------------------------------------
+# a compiled sub-entity is not the client's to seed (review P6)
+# --------------------------------------------------------------------------
+def three_point_arc_spec(initial=None) -> dict:
+    """A 3-point-authored arc, whose circumcentre becomes the compiled point
+    `a1.center`. A client that never wrote that point cannot send it."""
+    spec = {
+        "points": [{"name": "p", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "q", "x": 40.0, "y": 0.0}],
+        "arcs": [{"name": "a1", "start": [0.0, 0.0], "mid": [12.0, 9.0],
+                  "end": [24.0, 0.0]}],
+        "lines": [{"name": "l1", "p1": "p", "p2": "q"}],
+        "constraints": [{"type": "distance", "p": "p", "q": "q", "d": 40.0}],
+    }
+    if initial is not None:
+        spec["initial"] = initial
+    return spec
+
+
+def test_a_three_point_arc_can_be_warm_started():
+    """**The all-or-nothing trap AGENTS.md warns about.** `seed()` required
+    every free point to be covered, and the internal `a1.center` is a point
+    the caller never declared and cannot name from its own model — so every
+    frame of a drag over a 3-point arc reported `initial_incomplete` and cold
+    started, silently losing the branch stability the seed exists for."""
+    res = solve_sketch(three_point_arc_spec())
+    seed = {
+        "points": {"q": {"x": res["points"]["q"]["x"],
+                         "y": res["points"]["q"]["y"]}},
+        "arcs": {"a1": {"r": res["arcs"]["a1"]["r"],
+                        "start_deg": res["arcs"]["a1"]["start_deg"],
+                        "end_deg": res["arcs"]["a1"]["end_deg"]}},
+    }
+    warm = solve_sketch(three_point_arc_spec(seed))
+    assert warm["warm_started"] is True, warm["warnings"]
+    assert warm["warnings"] == []
+
+
+def test_a_compiled_point_may_still_be_seeded_by_name():
+    """Excluded from the *requirement*, not from the mechanism: a caller that
+    does know the handle can still pin it."""
+    res = solve_sketch(three_point_arc_spec())
+    centre = res["points"]["a1.center"]
+    seed = {
+        "points": {"q": {"x": 40.0, "y": 0.0},
+                   "a1.center": {"x": centre["x"], "y": centre["y"]}},
+        "arcs": {"a1": {"r": res["arcs"]["a1"]["r"],
+                        "start_deg": res["arcs"]["a1"]["start_deg"],
+                        "end_deg": res["arcs"]["a1"]["end_deg"]}},
+    }
+    warm = solve_sketch(three_point_arc_spec(seed))
+    assert warm["warm_started"] is True, warm["warnings"]
+
+
+def test_a_user_point_left_out_is_still_incomplete():
+    """The rule narrows to *compiled* points only — a real point the caller
+    declared and then forgot is still a cold start with the warning."""
+    res = solve_sketch(three_point_arc_spec())
+    seed = {"arcs": {"a1": {"r": res["arcs"]["a1"]["r"],
+                            "start_deg": res["arcs"]["a1"]["start_deg"],
+                            "end_deg": res["arcs"]["a1"]["end_deg"]}}}
+    cold = solve_sketch(three_point_arc_spec(seed))
+    assert cold["warm_started"] is False
+    assert cold["warnings"][0]["entities"] == ["q"]

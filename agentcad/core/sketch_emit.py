@@ -88,9 +88,11 @@ never rendered as "there is no sketch" (the PRD-008 rule).
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import re
+import tokenize
 
 # Emission precision. `fmtNum`'s 6 is measured unsafe; 7 is the first that
 # closes; 9 keeps two orders of margin.
@@ -135,6 +137,13 @@ _MARKER_RE = re.compile(
 _END_RE = re.compile(
     r'^#\s*---\s*end agentcad sketch "([A-Za-z_][A-Za-z0-9_]*)"')
 _DEF_RE = re.compile(r"^def sketch_([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.M)
+# What `plane["part"]` may say. It goes into the provenance comment naming the
+# part a sketch-on-face was taken from, and the GUI sends `build(p)`; dotted
+# attribute access and a bare name are the other shapes a caller has reason to
+# send. Anything else — in particular anything with a newline or a quote in it
+# — is refused rather than written (see `_plane_header`).
+_PART_REF_ATOM = r"[A-Za-z_][A-Za-z0-9_]*(?:\([A-Za-z_][A-Za-z0-9_]*\))?"
+_PART_REF_RE = re.compile(rf"^{_PART_REF_ATOM}(?:\.{_PART_REF_ATOM})*$")
 
 
 class EmitError(ValueError):
@@ -226,6 +235,11 @@ def _members(solution: dict, spec: dict) -> list[dict]:
     for name, slot in slots.items():
         for sub in list(slot["arcs"]) + list(slot["sides"]):
             owner[sub] = name
+    # A compiled sub-entity inherits its owner's flag. A slot marked
+    # construction is listed under its **own** name (`slot1`), and its caps and
+    # sides are `slot1.arc_a` / `slot1.side_1`, so without this a construction
+    # slot dropped its face form and emitted its curve form instead.
+    skip |= {sub for sub, name in owner.items() if name in skip}
 
     members: list[dict] = []
     for line in spec.get("lines") or []:
@@ -617,10 +631,23 @@ def _plane_expr(plane: dict, decimals: int) -> str:
     in the script or the coordinates the emitter just wrote mean nothing. The
     basis is the one `kernel/handlers/sketchplane.py` measured with, and the
     caveat above the block says what can move it.
+
+    Every component goes through `fmt`, so nothing but a number can reach the
+    output — but a non-numeric one used to escape as a bare `ValueError` (an
+    HTTP 500) instead of the `validation_error` contract every other bad input
+    gets.
     """
     def vec(key, default):
         v = plane.get(key) or default
-        return ("(" + ", ".join(fmt(float(c), decimals) for c in v) + ")")
+        if isinstance(v, (str, bytes)) or len(v) != 3:
+            raise EmitError(
+                f"plane[{key!r}] must be three numbers, got {v!r}")
+        try:
+            comps = [fmt(float(c), decimals) for c in v]
+        except (TypeError, ValueError) as exc:
+            raise EmitError(
+                f"plane[{key!r}] must be three numbers, got {v!r}") from exc
+        return "(" + ", ".join(comps) + ")"
 
     return (f"Plane(origin={vec('origin', (0, 0, 0))}, "
             f"x_dir={vec('x_dir', (1, 0, 0))}, "
@@ -639,7 +666,23 @@ def _plane_header(plane: dict) -> list[str]:
     index = plane.get("face_index")
     if index is None:
         return []
+    # **The emitter writes only what it formatted.** Both of these come
+    # straight from a caller (any agent, MCP or HTTP client) and were
+    # interpolated raw: a `part` of `build(p) ---\nimport os\n# ---` put
+    # `import os` on line 2 of the generated script, inside a comment that
+    # closed itself. A face ordinal is an int and a part reference is a small
+    # expression naming the part, so both are *validated* rather than escaped —
+    # an escaped newline in a comment would be honest but unreadable, and
+    # anything that is not one of these two shapes is a caller bug.
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise EmitError(
+            f"plane['face_index'] must be an integer face ordinal, got "
+            f"{index!r}")
     part = plane.get("part") or "build(p)"
+    if not isinstance(part, str) or not _PART_REF_RE.match(part):
+        raise EmitError(
+            f"plane['part'] must name the part the face belongs to (an "
+            f"expression like 'build(p)'), got {part!r}")
     return [
         f"# --- agentcad sketch on face {index} of {part} ---",
         "# NOTE: face indices are mesh-order ordinals; a parameter change that",
@@ -677,8 +720,15 @@ def emit(solution: dict, spec: dict, *, style: str = "function",
     junction_of, junctions = _junctions(solution, members, join_tol)
     chains = _chains(members, junction_of)
 
+    # `construction` first, `_slot_is_standalone` second: a construction slot
+    # emits nothing *at all*, and asking only whether it could be a face
+    # emitted it as one (docs/agent-api.md: "construction: true on ANY entity
+    # ... is never emitted"). `_members` drops the construction slot's curve
+    # form; this is the other exit.
+    construction = set(solution.get("construction") or ())
     face_slots = [name for name in (solution.get("slots") or {})
-                  if _slot_is_standalone(name, members, chains, spec)]
+                  if name not in construction
+                  and _slot_is_standalone(name, members, chains, spec)]
     # A slot emitted as a face is no longer a curve: drop the chain its
     # primitives formed (which, by `_slot_is_standalone`, holds nothing else).
     chains = [c for c in chains
@@ -707,13 +757,13 @@ def emit(solution: dict, spec: dict, *, style: str = "function",
                   closure_tol, warnings, refuse=False)
 
     for name, circle in (solution.get("circles") or {}).items():
-        if name in (solution.get("construction") or ()):
+        if name in construction:
             continue
         body.append(f"with Locations(({fmt(circle['cx'], decimals)}, "
                     f"{fmt(circle['cy'], decimals)})):")
         body.append(f"    Circle(radius={fmt(circle['r'], decimals)})")
     for name, e in (solution.get("ellipses") or {}).items():
-        if e.get("bounded") or name in (solution.get("construction") or ()):
+        if e.get("bounded") or name in construction:
             continue          # already emitted as a chain member
         body.append(f"with Locations(({fmt(e['cx'], decimals)}, "
                     f"{fmt(e['cy'], decimals)})):")
@@ -867,6 +917,24 @@ def wrap_block(name: str, spec: dict, code: str) -> str:
     ])
 
 
+def _comment_lines(text: str) -> set[int] | None:
+    """The 0-based lines of `text` that hold a real `#` comment, or None.
+
+    A block marker is a **comment**, and `parse_blocks` is a line scanner, so
+    a docstring that quotes the marker (this module's own, for one) produced a
+    phantom `diverged` block and shifted `next_name` — the next insert named
+    around a sketch that does not exist. `tokenize` answers the question
+    exactly; a script it cannot tokenize returns None and the scan falls back
+    to matching every line, which is the behaviour that shipped.
+    """
+    try:
+        return {tok.start[0] - 1
+                for tok in tokenize.generate_tokens(io.StringIO(text).readline)
+                if tok.type == tokenize.COMMENT}
+    except (SyntaxError, tokenize.TokenError, ValueError):
+        return None
+
+
 def parse_blocks(script: str) -> list[dict]:
     """Read every sketch block out of a part script.
 
@@ -887,10 +955,23 @@ def parse_blocks(script: str) -> list[dict]:
     """
     text = (script or "").replace("\r\n", "\n").replace("\r", "\n")
     lines = text.split("\n")
+    comments = _comment_lines(text)
+
+    def marker_at(k: int):
+        """The block marker on line `k`, if that line really is a comment."""
+        if comments is not None and k not in comments:
+            return None
+        return _MARKER_RE.match(lines[k].strip())
+
+    def end_at(k: int):
+        if comments is not None and k not in comments:
+            return None
+        return _END_RE.match(lines[k].strip())
+
     out: list[dict] = []
     i = 0
     while i < len(lines):
-        marker = _MARKER_RE.match(lines[i].strip())
+        marker = marker_at(i)
         if not marker:
             i += 1
             continue
@@ -900,6 +981,13 @@ def parse_blocks(script: str) -> list[dict]:
         spec_line = hash_line = None
         while j < len(lines):
             stripped = lines[j].strip()
+            if not stripped:
+                # A blank line between the marker and its spec is whitespace,
+                # and `_norm` deliberately forgives whitespace: being stricter
+                # here than the hash this header protects downgraded an intact
+                # block to `unverified` over one blank line.
+                j += 1
+                continue
             if spec_line is None and stripped.startswith(SPEC_PREFIX.strip()):
                 spec_line = stripped[len(SPEC_PREFIX.strip()):].strip()
             elif hash_line is None and stripped.startswith(HASH_PREFIX.strip()):
@@ -910,11 +998,11 @@ def parse_blocks(script: str) -> list[dict]:
         body_start = j
         end = None
         while j < len(lines):
-            done = _END_RE.match(lines[j].strip())
+            done = end_at(j)
             if done and done.group(1) == name:
                 end = j
                 break
-            if _MARKER_RE.match(lines[j].strip()):
+            if marker_at(j):
                 break              # the next block starts: this one is open
             j += 1
         body_end = end if end is not None else j

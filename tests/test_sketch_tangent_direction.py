@@ -264,3 +264,238 @@ def test_the_explicit_at_form_is_untouched():
     sk.tangent("l", "A", at="t")
     assert [r.kind for r in sk.residuals] == [
         "point_on_circle", "point_on_line", "tangent_point_perp"]
+
+
+# --------------------------------------------------------------------------
+# the CLASS, not the third instance (review P1)
+# --------------------------------------------------------------------------
+# Slices 6 and 10 fixed two *instances* of one bug: a tangency compiled to its
+# distance form at a junction the rest of the sketch already pins is
+# second-order flat there, so its row falls into the span of the pinning rows.
+# Both fixes keyed off a hardcoded handle list (`_handles_of`), which returns
+# `()` for a circle and only `.start`/`.end` for an arc — so a junction pinned
+# by `point_on_circle` (a line endpoint held on the curve) was invisible and
+# the bug reopened a third time. The detector now reads the **incidence
+# graph**: any constraint that ties a point to a curve pins a junction there.
+#
+# Measured before this fix, at the solution, on the six specs below (the
+# `before` column is the same solver with the incidence graph removed from
+# `_on_curve_handles`, which is exactly what the handle list saw):
+#
+# | configuration                          | rank      | dof     | blame       |
+# |----------------------------------------|-----------|---------|-------------|
+# | line+circle by `point_on_circle`        | 1/2 -> 2/2 | 3 -> 2 | `[tangent]` |
+# | line+arc   by `point_on_circle`         | 1/2 -> 2/2 | 5 -> 4 | `[tangent]` |
+# | circle+circle sharing that point        | 2/3 -> 3/3 | 2 -> 1 | `[tangent]` |
+# | line+circle by `point_on_line`          | 2/3 -> 3/3 | 4 -> 3 | `[tangent]` |
+# | line+circle by `midpoint`               | 3/4 -> 4/4 | 3 -> 2 | `[tangent]` |
+# | line+circle by a `coincident` relay     | 3/4 -> 4/4 | 3 -> 2 | `[tangent]` |
+#
+# and `max_residual` reported 8.11e-11 / `ok: true` on a sketch whose true
+# tangency error was 4.97e-05 mm (ratio 6.1e+05) — the distance residual is
+# the *square* of the geometric error near tangency, so it is not a
+# measurement of it. With the direction form the ratio is the radius: 10.0.
+
+def on_circle_line_spec(*, curve: str = "circles", off: float = 0.0) -> dict:
+    """A line tangent to a circle (or arc) whose junction is pinned by
+    `point_on_circle` — the idiom an agent writes when the touch point is a
+    point it already has, and the one `_handles_of` could never see."""
+    entity = ({"name": "C", "center": "c", "r": 10.0, "fixed_r": True}
+              if curve == "circles" else
+              {"name": "C", "center": "c", "r": 10.0, "start_deg": -80.0,
+               "end_deg": 80.0, "fixed_r": True})
+    return {
+        "points": [{"name": "c", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "p", "x": 10.0 + off, "y": 0.0 + off},
+                   {"name": "q", "x": 10.0, "y": 20.0}],
+        curve: [entity],
+        "lines": [{"name": "L", "p1": "p", "p2": "q"}],
+        "constraints": [{"type": "point_on_circle", "p": "p", "c": "C"},
+                        {"type": "tangent", "a": "L", "b": "C"}],
+    }
+
+
+def on_circle_circle_spec() -> dict:
+    """Two circles tangent at a point both hold by `point_on_circle`."""
+    return {
+        "points": [{"name": "c1", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "c2", "x": 25.0, "y": 0.0},
+                   {"name": "p", "x": 10.0, "y": 0.0}],
+        "circles": [{"name": "C1", "center": "c1", "r": 10.0, "fixed_r": True},
+                    {"name": "C2", "center": "c2", "r": 15.0, "fixed_r": True}],
+        "constraints": [{"type": "point_on_circle", "p": "p", "c": "C1"},
+                        {"type": "point_on_circle", "p": "p", "c": "C2"},
+                        {"type": "tangent", "a": "C1", "b": "C2"}],
+    }
+
+
+def on_line_spec() -> dict:
+    """The other half of the class: the junction is held on the *line* by
+    `point_on_line` rather than by being one of its endpoints."""
+    return {
+        "points": [{"name": "c", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "t", "x": 10.0, "y": 0.0},
+                   {"name": "p", "x": 10.0, "y": -14.0},
+                   {"name": "q", "x": 10.0, "y": 20.0}],
+        "circles": [{"name": "C", "center": "c", "r": 10.0, "fixed_r": True}],
+        "lines": [{"name": "L", "p1": "p", "p2": "q"}],
+        "constraints": [{"type": "point_on_circle", "p": "t", "c": "C"},
+                        {"type": "point_on_line", "p": "t", "ln": "L"},
+                        {"type": "tangent", "a": "L", "b": "C"}],
+    }
+
+
+def midpoint_spec() -> dict:
+    """`midpoint` puts a point on a line just as surely as `point_on_line`
+    does — a constraint kind the old detector had no idea about."""
+    return {
+        "points": [{"name": "c", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "m", "x": 10.0, "y": 0.0},
+                   {"name": "p", "x": 10.0, "y": -14.0},
+                   {"name": "q", "x": 10.0, "y": 14.0}],
+        "circles": [{"name": "C", "center": "c", "r": 10.0, "fixed_r": True}],
+        "lines": [{"name": "L", "p1": "p", "p2": "q"}],
+        "constraints": [{"type": "point_on_circle", "p": "m", "c": "C"},
+                        {"type": "midpoint", "p": "m", "ln": "L"},
+                        {"type": "tangent", "a": "L", "b": "C"}],
+    }
+
+
+def coincident_relay_spec() -> dict:
+    """The junction reaches the curve through a `coincident` *chain*: the
+    line's endpoint is coincident with a point that `point_on_circle` holds.
+    Union-find plus incidence, which is why they must be one lookup."""
+    spec = on_circle_line_spec()
+    spec["points"].append({"name": "j", "x": 10.0, "y": 0.0})
+    spec["lines"][0]["p1"] = "j"
+    spec["constraints"].insert(1, {"type": "coincident", "p": "j", "q": "p"})
+    return spec
+
+
+CLASS_SPECS = {
+    "line_circle_on_circle": lambda: on_circle_line_spec(),
+    "line_arc_on_circle": lambda: on_circle_line_spec(curve="arcs"),
+    "circle_circle_on_circle": on_circle_circle_spec,
+    "line_circle_on_line": on_line_spec,
+    "line_circle_midpoint": midpoint_spec,
+    "line_circle_coincident_relay": coincident_relay_spec,
+}
+
+
+@pytest.mark.parametrize("name", sorted(CLASS_SPECS))
+def test_a_pinned_junction_never_compiles_to_a_distance_residual(name):
+    """The class-level property. **Not** "these six specs are fixed": the
+    distance forms exist only for curves the sketch does not already hold
+    together, so a pinned junction that still reaches them is the bug."""
+    sk = parse_sketch(CLASS_SPECS[name]())
+    kinds = [r.kind for r in sk.residuals]
+    assert "tangent_line_circle" not in kinds, kinds
+    assert "tangent_circles" not in kinds, kinds
+    assert "tangent_dir" in kinds, kinds
+
+
+@pytest.mark.parametrize("name", sorted(CLASS_SPECS))
+def test_a_pinned_junction_has_full_row_rank_and_an_honest_dof(name):
+    """Every row is doing work, so the rank is the row count and nothing is
+    blamed. Before the fix each of these reported `over_constrained` with
+    `redundant: [tangent]` against a constraint reaching tangency to 1e-11."""
+    spec = CLASS_SPECS[name]()
+    res = solve_sketch(spec)
+    diag = res["diagnostics"]
+    assert res["rank"] == res["n_residuals"], diag
+    assert res["dof"] == res["n_params"] - res["n_residuals"]
+    assert diag["status"] != "over_constrained", diag
+    assert diag["redundant"] == []
+    assert diag["conflicting"] == []
+
+
+def test_the_order_of_the_pinning_constraint_does_not_matter():
+    """A spec is a set, not a program (the rule `note_coincidence` already
+    follows): a `tangent` written before the `point_on_circle` that pins its
+    junction sees the same junction."""
+    spec = on_circle_line_spec()
+    spec["constraints"] = spec["constraints"][::-1]
+    assert [r.kind for r in parse_sketch(spec).residuals] == [
+        "tangent_dir", "point_on_circle"]
+
+
+def test_the_reported_max_residual_measures_the_geometric_error():
+    """**`max_residual` lied.** With the distance form the residual near
+    tangency is the *square* of the geometric error: measured `ok: true`,
+    `max_residual` 1.76e-10 on a sketch whose touch point sat 7.9e-05 mm off
+    the tangency condition. Assert the two agree, not that one is small: with
+    the direction form the residual is the sine of the tangency error, so the
+    geometric error is `r` times it — measured ratio **10.0**, against 4.5e+05
+    for the distance form, whose residual is that error *squared*."""
+    spec = on_circle_line_spec(off=1.7)
+    spec["constraints"].append({"type": "distance", "p": "p", "q": "q",
+                                "d": 20.0})
+    res = solve_sketch(spec)
+    assert res["ok"] is True, res["diagnostics"]
+    p, q, c = res["points"]["p"], res["points"]["q"], res["points"]["c"]
+    ux, uy = q["x"] - p["x"], q["y"] - p["y"]
+    n = math.hypot(ux, uy)
+    # the true condition: the radius to the touch point meets the line square
+    true_err = abs((p["x"] - c["x"]) * ux + (p["y"] - c["y"]) * uy) / n
+    assert true_err < 1e-6, true_err
+    assert true_err <= 1e3 * max(res["max_residual"], 1e-12), (
+        true_err, res["max_residual"])
+
+
+def test_the_tangency_still_does_its_geometric_work_from_an_off_seed():
+    """It was never a no-op — assert the geometry, not the residual."""
+    res = solve_sketch(on_circle_line_spec(off=2.5))
+    assert res["ok"] is True, res["diagnostics"]
+    p, q, c = res["points"]["p"], res["points"]["q"], res["points"]["c"]
+    ux, uy = q["x"] - p["x"], q["y"] - p["y"]
+    n = math.hypot(ux, uy)
+    dist = abs((c["x"] - p["x"]) * uy - (c["y"] - p["y"]) * ux) / n
+    assert dist == pytest.approx(10.0, abs=1e-9)
+    assert math.hypot(p["x"] - c["x"], p["y"] - c["y"]) == pytest.approx(
+        10.0, abs=1e-9)
+
+
+def test_every_constraint_type_is_classified_as_on_curve_or_not():
+    """**The guard that keeps this from happening a fourth time.** The
+    detector is driven by `ON_CURVE_ARGS`, and every constraint the spec
+    front-end accepts must be in it or in the explicit "does not put a point
+    on a curve" set — so a new constraint kind cannot be added without a
+    decision about whether it pins a junction."""
+    from agentcad.toolkit.sketch import (NOT_ON_CURVE, ON_CURVE_ARGS,
+                                         constraint_types)
+    known = constraint_types()
+    assert set(ON_CURVE_ARGS) <= known
+    assert NOT_ON_CURVE <= known
+    assert set(ON_CURVE_ARGS) | NOT_ON_CURVE == known, sorted(
+        known - set(ON_CURVE_ARGS) - NOT_ON_CURVE)
+    assert not (set(ON_CURVE_ARGS) & NOT_ON_CURVE)
+
+
+# derivative coverage for the radial tangent reference the class fix adds
+def _radial_junction_sketch() -> Sketch:
+    sk = Sketch()
+    sk.point("c", 0.0, 0.0)
+    sk.point("p", 9.6, 2.8)
+    sk.point("q", 4.0, 21.0)
+    sk.circle("C", "c", 10.0)
+    sk.line("L", "p", "q")
+    sk.point_on_circle("p", "C")
+    sk.tangent("L", "C")
+    return sk
+
+
+def _radial_circle_circle_sketch() -> Sketch:
+    sk = Sketch()
+    sk.point("c1", 0.0, 0.0)
+    sk.point("c2", 25.0, 1.0)
+    sk.point("p", 9.6, 2.8)
+    sk.circle("C1", "c1", 10.0)
+    sk.circle("C2", "c2", 15.0)
+    sk.point_on_circle("p", "C1")
+    sk.point_on_circle("p", "C2")
+    sk.tangent("C1", "C2")
+    return sk
+
+
+DERIV_BUILDERS["tangent_dir_radial_line"] = _radial_junction_sketch
+DERIV_BUILDERS["tangent_dir_radial_circles"] = _radial_circle_circle_sketch

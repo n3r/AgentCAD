@@ -401,7 +401,10 @@ concentric**), and watch the constraint solver keep the sketch consistent live.
   ghosted as reference geometry you can constrain to (they are fixed, so they
   add no DOF and are never emitted). The inserted code carries the plane's
   basis and the face reference, with the caveat that face indices can be
-  renumbered by a topology-changing parameter edit.
+  renumbered by a topology-changing parameter edit — and reopening a saved
+  sketch-on-face **checks** it: if the ordinal now points at a different face
+  (a different area or normal), a toast says so with both measurements. It is
+  never repaired for you, because which face you meant is not guessable.
 - **Insert → script** appends a `sketch_profile()` build123d function to the
   code editor; call it from `build(p)` and save. The block it writes also
   carries the sketch's **constraint spec**, so reopening the sketcher on that
@@ -411,11 +414,16 @@ concentric**), and watch the constraint solver keep the sketch consistent live.
   function it just wrote, because two blocks of one name would define the same
   function twice. Nothing you wrote is ever removed for you: delete a
   superseded block yourself when you have pointed `build(p)` at the new one.
+- **A sketch belongs to its part.** Switching to another part (or another
+  project) starts a new sketch: the canvas, the plane and the block it came
+  from are cleared, so Insert can never append one part's profile into
+  another's script. Insert first if you want to keep what you drew.
 - **The divergence banner.** If you hand-edit the emitted code, reopening
   shows a red banner: the code no longer matches the saved spec. The sketch
-  opens **read-only** with two explicit choices — *Re-solve from the spec*
-  (edit the constraints again; inserting writes a new block and leaves your
-  edit in place) or *Discard the spec* (keep your code exactly as it is and
+  opens **read-only** — every tool, every constraint button and every
+  constraint chip is disabled — with two explicit choices: *Re-solve from the
+  spec* (edit the constraints again; inserting writes a new block and leaves
+  your edit in place) or *Discard the spec* (keep your code exactly as it is and
   drop the constraints). Nothing is ever silently overwritten.
 
 Clicking a face of a part also opens a small face card (area, normal) with a

@@ -600,3 +600,91 @@ def test_the_tool_turns_an_emit_failure_into_a_validation_error():
     with pytest.raises(ValidationError) as exc:
         _tool_emit(spec, emit="nope")
     assert "emit style" in str(exc.value)
+
+
+# --------------------------------------------------------------------------
+# `construction` is a contract over EVERY entity kind (review P2)
+# --------------------------------------------------------------------------
+# `docs/agent-api.md`: "construction: true on ANY entity ... is never emitted".
+# `_members` honoured it for chain members and the circle/ellipse loops honour
+# it for faces, but `face_slots` filtered on `_slot_is_standalone` alone — so a
+# construction-marked slot still emitted `SlotCenterToCenter(...)` as real
+# geometry. The contract is asserted per kind here, in the form that cannot be
+# missed by the *next* kind: a construction entity emits **exactly what its
+# absence emits**.
+
+# anchor geometry, so every case emits something either way
+ANCHOR = {"points": [{"name": "k", "x": 0.0, "y": 0.0}],
+          "circles": [{"name": "K", "center": "k", "r": 5.0}]}
+
+CONSTRUCTION_CASES: dict[str, dict] = {
+    "line": {"points": [{"name": "la", "x": 60.0, "y": 0.0},
+                        {"name": "lb", "x": 90.0, "y": 12.0}],
+             "lines": [{"name": "L", "p1": "la", "p2": "lb"}],
+             "mark": "L"},
+    "circle": {"points": [{"name": "cc", "x": 60.0, "y": 40.0}],
+               "circles": [{"name": "C", "center": "cc", "r": 9.0}],
+               "mark": "C"},
+    "arc": {"points": [{"name": "ac", "x": 60.0, "y": 80.0}],
+            "arcs": [{"name": "A", "center": "ac", "r": 11.0,
+                      "start_deg": 20.0, "end_deg": 200.0}],
+            "mark": "A"},
+    "ellipse": {"points": [{"name": "ec", "x": 60.0, "y": 120.0}],
+                "ellipses": [{"name": "E", "center": "ec", "a": 14.0,
+                              "b": 8.0, "rotation": 12.0}],
+                "mark": "E"},
+    "bounded_ellipse": {"points": [{"name": "bc", "x": 60.0, "y": 160.0}],
+                        "ellipses": [{"name": "B", "center": "bc", "a": 14.0,
+                                      "b": 8.0, "rotation": 0.0,
+                                      "start_deg": 10.0, "end_deg": 190.0}],
+                        "mark": "B"},
+    "spline": {"points": [{"name": "s0", "x": 60.0, "y": 200.0},
+                          {"name": "s1", "x": 75.0, "y": 214.0},
+                          {"name": "s2", "x": 92.0, "y": 203.0}],
+               "splines": [{"name": "S", "points": ["s0", "s1", "s2"]}],
+               "mark": "S"},
+    "slot": {"points": [{"name": "q1", "x": 60.0, "y": 240.0},
+                        {"name": "q2", "x": 88.0, "y": 246.0}],
+             "slots": [{"name": "SL", "c1": "q1", "c2": "q2",
+                        "width": 9.4271}],
+             "mark": "SL"},
+}
+
+
+def _construction_spec(case: dict, *, present: bool, marked: bool) -> dict:
+    spec = {kind: [dict(e) for e in ANCHOR.get(kind, [])]
+            for kind in ("points", "circles")}
+    if not present:
+        return spec
+    for kind, entities in case.items():
+        if kind == "mark":
+            continue
+        spec.setdefault(kind, [])
+        for entity in entities:
+            entry = dict(entity)
+            if marked and entry["name"] == case["mark"]:
+                entry["construction"] = True
+            spec[kind].append(entry)
+    return spec
+
+
+@pytest.mark.parametrize("kind", sorted(CONSTRUCTION_CASES))
+def test_a_construction_entity_of_any_kind_emits_nothing(kind):
+    """The documented contract, per kind. A construction-marked slot used to
+    emit `SlotCenterToCenter(...)` — real geometry from an entity the docs
+    promise is never written."""
+    case = CONSTRUCTION_CASES[kind]
+    spec = _construction_spec(case, present=True, marked=True)
+    code = emit(solved(spec), spec)["code"]
+    absent = _construction_spec(case, present=False, marked=False)
+    assert code == emit(solved(absent), absent)["code"], code
+
+
+@pytest.mark.parametrize("kind", sorted(CONSTRUCTION_CASES))
+def test_the_same_entity_unmarked_really_does_emit(kind):
+    """The other half: without the flag the case emits geometry, so the test
+    above cannot pass because the entity was never there."""
+    case = CONSTRUCTION_CASES[kind]
+    spec = _construction_spec(case, present=True, marked=False)
+    absent = _construction_spec(case, present=False, marked=False)
+    assert emit(solved(spec), spec)["code"] != emit(solved(absent), absent)["code"]

@@ -32,7 +32,7 @@ import math
 
 import pytest
 
-from agentcad.core.sketch_emit import emit
+from agentcad.core.sketch_emit import EmitError, emit
 from agentcad.core.tools import build_registry
 from agentcad.core.tools_sketch import reference_entities
 from agentcad.toolkit.sketch import solve_sketch
@@ -488,3 +488,148 @@ def test_the_route_carries_the_plane_through_to_emission(demo):
     assert "error" not in res, res
     assert "BuildSketch(Plane(origin=(0.0, 0.0, 20.0)" in res["emit"]["code"]
     assert "agentcad sketch on face 5" in res["emit"]["code"]
+
+
+# --------------------------------------------------------------------------
+# the plane is caller data, not source (review P5/P7)
+# --------------------------------------------------------------------------
+# `plane["part"]` and `plane["face_index"]` were interpolated raw into the
+# generated header, and `plane`'s vectors went through a bare `float()`. The
+# emitter's contract is that it produces only what it *formatted*: a crafted
+# `part` put `import os` on line 2 of a generated script, reachable from any
+# agent/MCP/HTTP caller, and defeating
+# `test_emitted_code_never_imports_agentcad`'s `assert "import" not in code`.
+
+INJECTED_PART = ('build(p) ---\nimport os\nos.system("id")\n'
+                 '# --- agentcad sketch on face 0 of build(p)')
+
+
+def _plane(**over) -> dict:
+    return {"origin": [0.0, 0.0, 20.0], "x_dir": [1.0, 0.0, 0.0],
+            "normal": [0.0, 0.0, 1.0], "face_index": 5, **over}
+
+
+@pytest.mark.parametrize("plane", [
+    _plane(part=INJECTED_PART),
+    _plane(part='x"""\nimport os'),
+    _plane(face_index="0 ---\nimport os\n# ---"),
+    _plane(face_index=1.5),
+    _plane(origin=["0.0); import os; Plane(origin=(0.0", 0.0, 0.0]),
+    _plane(x_dir="not a vector"),
+], ids=["part_newline", "part_quotes", "index_newline", "index_float",
+        "origin_expression", "x_dir_string"])
+def test_a_crafted_plane_is_refused_rather_than_written_into_the_script(plane):
+    """Strict validation, not escaping: an int is an int and a part reference
+    is an identifier-ish expression, so anything else is refused with an
+    `EmitError` (which the tool layer renders as `validation_error`)."""
+    spec, res = _profile_on(plane)
+    with pytest.raises(EmitError) as exc:
+        emit(res, spec, style="function")
+    assert "plane" in str(exc.value)
+
+
+def test_the_route_refuses_a_crafted_plane_with_the_validation_contract(demo):
+    """The same payload through the HTTP surface an agent uses: a
+    `validation_error` envelope, never a 500 and never a script with `import`
+    in it."""
+    from fastapi.testclient import TestClient
+
+    from agentcad.server.app import create_app
+
+    app = create_app(demo, build_registry(demo),
+                     extra_allowed_hosts={"testserver"})
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        body = {
+            "entities": {"points": [{"name": "a", "x": 0.0, "y": 0.0},
+                                    {"name": "b", "x": 10.0, "y": 0.0}],
+                         "lines": [{"name": "l1", "p1": "a", "p2": "b"}]},
+            "constraints": [], "emit": "function",
+            "plane": _plane(part=INJECTED_PART),
+        }
+        response = client.post("/api/sketch/solve", json=body)
+    assert response.status_code == 200, response.text
+    res = response.json()
+    assert res["error"]["type"] == "validation_error", res
+    assert "emit" not in res, res
+
+
+def test_a_valid_plane_still_writes_its_header():
+    """The guard must not cost the feature: the shapes the GUI and the
+    `sketch_plane` tool actually send keep working."""
+    for part in (None, "build(p)", "build(p).part", "p", "_sk"):
+        plane = _plane(part=part) if part else _plane()
+        spec, res = _profile_on(plane)
+        code = emit(res, spec, style="function")["code"]
+        assert "agentcad sketch on face 5 of " in code
+        assert "import" not in code
+
+
+# --------------------------------------------------------------------------
+# a stale face ordinal is surfaced on reopen, not silently accepted (P11)
+# --------------------------------------------------------------------------
+# `test_a_topology_changing_parameter_renumbers_the_faces` measures the
+# instability; nothing *checked* it. A persisted sketch-on-face block reopened
+# after a renumber re-solved on the old basis, emitted "on face 37" naming a
+# different face, and its hash still matched — so the block read `ok` while
+# standing on a 51 mm^2 sliver instead of the 5989 mm^2 plate it was drawn on.
+# The face's identity (area and normal) is already returned; it is now recorded
+# in the plane and re-checked.
+
+def test_the_plane_carries_the_face_identity_it_was_taken_with(demo):
+    registry = build_registry(demo)
+    info = registry.call("sketch_plane", {"project": "demo", "part_id": "box",
+                                          "face_index": 0})
+    assert info["face_check"]["status"] == "unchecked"
+    assert set(info["face_id"]) == {"area_mm2", "normal", "origin"}
+
+
+def test_reopening_on_the_same_face_checks_out(demo):
+    registry = build_registry(demo)
+    info = registry.call("sketch_plane", {"project": "demo", "part_id": "box",
+                                          "face_index": 0})
+    again = registry.call("sketch_plane", {"project": "demo",
+                                           "part_id": "box", "face_index": 0,
+                                           "expect": info["face_id"]})
+    assert again["face_check"]["status"] == "ok", again["face_check"]
+
+
+def test_a_renumbered_face_is_reported_moved_with_both_measurements(demo):
+    """The honest verdict names both numbers: a caller can see *how far* the
+    ordinal moved rather than being told a boolean."""
+    registry = build_registry(demo)
+    faces = registry.call("face_info", {"project": "demo", "part_id": "box",
+                                        "face_index": 0})["n_faces"]
+    infos = [registry.call("sketch_plane", {"project": "demo",
+                                            "part_id": "box",
+                                            "face_index": i})
+             for i in range(faces)]
+    top = next(i for i in infos if i["normal"] == [0.0, 0.0, 1.0])
+    side = next(i for i in infos if i["normal"] != [0.0, 0.0, 1.0]
+                and i["normal"] != [0.0, 0.0, -1.0])
+    check = registry.call("sketch_plane", {
+        "project": "demo", "part_id": "box",
+        "face_index": side["face_index"], "expect": top["face_id"]})["face_check"]
+    assert check["status"] == "moved", check
+    assert check["expected"]["area_mm2"] == top["face_id"]["area_mm2"]
+    assert check["actual"]["area_mm2"] == side["area_mm2"]
+    assert "face" in check["message"] and "re-pick" in check["message"].lower()
+
+
+@pytest.mark.slow
+def test_the_measured_enclosure_renumber_is_caught(kernel, tmp_path):
+    """The exact instability the caveat is about, end to end: `corner_r: 6.0`
+    turns face 37 from the 5989 mm^2 base plate into a 51 mm^2 sliver, and
+    reopening a sketch recorded on the plate now says so."""
+    from agentcad.core.tools_sketch import face_check
+    script = _read(ENCLOSURE)
+    base = kernel.request("sketch_plane", {"script": script, "params": {},
+                                           "face_index": 37})
+    moved = kernel.request("sketch_plane", {"script": script,
+                                            "params": {"corner_r": 6.0},
+                                            "face_index": 37})
+    expect = {k: base[k] for k in ("area_mm2", "normal", "origin")}
+    assert face_check(base, expect)["status"] == "ok"
+    check = face_check(moved, expect)
+    assert check["status"] == "moved", check
+    assert f"{base['area_mm2']:.4g}" in check["message"]
+    assert f"{moved['area_mm2']:.4g}" in check["message"]

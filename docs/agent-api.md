@@ -755,20 +755,27 @@ authentication or access control. That is honest for a single-node,
 | Tool | Arguments | Returns |
 |---|---|---|
 | `solve_sketch` | **entities, constraints**, initial, drag, diagnostics, emit, persist, plane | Solve a 2D constrained sketch to exact coordinates you can feed into a build123d `BuildLine`/`BuildSketch`. `entities = {points:[{name,x,y,fixed?}], lines:[{name,p1,p2}], circles:[{name,center,r,fixed_r?}], arcs:[{name,center,r,start_deg,end_deg,fixed_r?}], ellipses:[{name,center,a,b,rotation?,start_deg?,end_deg?}], splines:[{name,points}], slots:[{name,c1,c2,width}]}`; `constraints = [{type, …}]`; `initial = {points:{name:{x,y}}, circles:{name:{r}}, arcs:{name:{r,start_deg,end_deg}}}` seeds the starting coordinates to pick the solution *branch* (unknown name → validation error; incomplete → cold start with `warm_started:false` and an `initial_incomplete` warning). Returns `{ok, points, circles, arcs, splines, slots, dof, rank, max_residual, diagnostics, warnings, warm_started, …}` (each arc reporting `cx, cy, r, start_deg, end_deg, start, end, authored`, with `start_deg` normalized to [0, 360) and `end_deg` carrying the full signed sweep). `diagnostics = {status, dof, rank, free_entities, redundant, conflicting, analysis_complete, …}` — `dof` is `n_params − rank(J)`, so it is never negative, and `redundant`/`conflicting` are *a* dependent set (declaration order picks the member, so the later constraint is blamed), not the unique culprit. A redundant-but-consistent constraint is **not** an error; a non-empty `conflicting` set is, and it raises a validation error carrying `details.diagnostics`, as does a sketch that does not converge (the solver homes to the *nearest* solution, so a mirrored initial guess yields a mirrored result). `drag = {point, x, y, weight?}` is a **weighted soft objective, not a constraint**: it pulls a point (or a virtual handle) toward the cursor and is excluded from `ok`, `max_residual`, `n_residuals`, `rank`, `dof` and `diagnostics`, reporting its own slack as `drag.gap`. Seed it with `initial` from the **previous frame's solution** — seeding the dragged point at the cursor is what *causes* a mirror-branch flip. `diagnostics = "auto"|"full"|"cached"` controls the diagnostics cache (keyed on the compiled residual structure and the constraint targets; `auto` serves the cached block on a drag frame, since a drag changes no constraints), and the result's `diagnostics_source` says whether the block was `computed` or `cached`. `emit = "function"|"buildline"` additionally returns `emit = {code, warnings, style}`: idiomatic build123d from the **one** emitter the GUI and agents share, with shared vertex literals at 9 decimals, endpoint-anchored arcs, and a 1e-8 mm closure gate that turns an emission which would not rebuild into a validation error naming the junction. `persist = "<name>"` additionally wraps that code in the **round-trip block** (FR10) — a marker, an `# agentcad-sketch-spec:` line carrying this whole spec as JSON, an `# agentcad-sketch-hash:` line over the code, and an end marker — so the sketch can be reopened and re-solved from the script it was written into; the name becomes `def sketch_<name>()`, so pick one no block in that script already uses. |
-| `sketch_plane` | **project, part_id, face_index** | The sketch plane of a planar B-rep face, plus that face's own boundary edges in the plane's 2D coordinates. Returns `{origin, x_dir, y_dir, normal, refs, ref_kinds, entities, caveat, n_faces}`. `face_info` gives a normal and a centre — a plane but not a basis, and without a deterministic in-plane X axis every emitted coordinate is arbitrary; `x_dir` comes from build123d's `Plane(face)` and is measured stable across rebuilds, across a fresh worker and across parameter changes that do not renumber the faces. `refs` are `{name, kind: line|arc|circle|other, constrainable, …}`: **anything that is not a line or a circle comes back `other` with a polyline approximation and cannot be constrained to** — a documented gap, not a silent one. `entities` is the same references in `solve_sketch`'s entity shape, fixed and construction-marked: zero parameters, undraggable, never in a conflict report, never emitted. Face indices are mesh-order ordinals and a topology-changing parameter edit can renumber them; the emitted script says so inline. |
+| `sketch_plane` | **project, part_id, face_index**, expect | The sketch plane of a planar B-rep face, plus that face's own boundary edges in the plane's 2D coordinates. Returns `{origin, x_dir, y_dir, normal, refs, ref_kinds, entities, caveat, n_faces, face_id, face_check}`. `face_id` is `{area_mm2, normal, origin}` — the face's identity; store it with the sketch and pass it back as `expect` when you reopen, and `face_check` comes back `ok`, `moved` (**with both measurements**) or `unchecked`. A topology-changing parameter edit renumbers the ordinals — measured: `corner_r: 6.0` turns the prototyping enclosure's face 37 from a 5989 mm² base plate into a 51 mm² sliver — and a `moved` verdict is surfaced, never repaired. `face_info` gives a normal and a centre — a plane but not a basis, and without a deterministic in-plane X axis every emitted coordinate is arbitrary; `x_dir` comes from build123d's `Plane(face)` and is measured stable across rebuilds, across a fresh worker and across parameter changes that do not renumber the faces. `refs` are `{name, kind: line|arc|circle|other, constrainable, …}`: **anything that is not a line or a circle comes back `other` with a polyline approximation and cannot be constrained to** — a documented gap, not a silent one. `entities` is the same references in `solve_sketch`'s entity shape, fixed and construction-marked: zero parameters, undraggable, never in a conflict report, never emitted. Face indices are mesh-order ordinals and a topology-changing parameter edit can renumber them; the emitted script says so inline. |
 
 Constraint types: `fixed, coincident, distance, distance_x, distance_y,
 horizontal, vertical, parallel, perpendicular, angle, point_on_line,
 point_on_circle, radius, equal_radius, midpoint, tangent_line_circle,
 tangent_circles, tangent, symmetric, equal_length, concentric`.
 
-**Tangency at a junction is a *direction* residual.** When the two curves
-already meet — the line is built on `arc1.end`, or a `coincident` ties a
-junction point to it — `tangent` compiles to "the two tangents are parallel"
-instead of a distance. The distance form is second-order flat there and
-reports itself as redundant while doing real work (measured singular value
-1.8e-16 against a 8.5e-9 rank tolerance). At such a junction `kind` has no
-meaning and is unused.
+**Tangency at a junction is a *direction* residual.** When the sketch already
+holds a point on **both** curves — the line is built on `arc1.end`, a
+`coincident` ties a junction point to it, or a `point_on_circle`,
+`point_on_line`, `midpoint` or a `tangent`'s own `at` does — `tangent` compiles
+to "the two tangents are parallel" instead of to a distance. The distance form
+sits at an extremum of the manifold the pinning rows cut out, so its gradient
+falls into their span: it reports itself as redundant while doing real work
+(measured singular value 1.8e-16 against a 8.5e-9 rank tolerance), and
+`max_residual` measures the *square* of the geometric error rather than the
+error (measured 1.76e-10 reported on a sketch 7.9e-05 mm off tangency). You do
+not ask for this — the compiler reads it off the constraint graph — but you can
+rely on it: a tangency you wrote is never blamed for a redundancy it does not
+have, and `max_residual` stays proportional to the geometric error. At such a
+junction `kind` has no meaning and is unused.
 
 **Ellipses** (`"ellipses": [{name, center, a, b, rotation?, start_deg?,
 end_deg?}]`) cost 3 parameters (plus 2 when bounded by both angles). Angles are
@@ -784,8 +791,10 @@ freedom removed), unless the curves already meet at a pinned junction, where the
 direction residual applies. Ellipse-to-ellipse tangency, on-ellipse point
 constraints and parabolas/hyperbolas are out of scope.
 
-**Construction geometry** (`"construction": true` on any entity) constrains but
-is never emitted. Every projected reference from `sketch_plane` arrives that
+**Construction geometry** (`"construction": true` on **any** entity kind —
+line, circle, arc, ellipse, spline or slot) constrains but is never emitted, in
+any form: a construction slot emits neither its `SlotCenterToCenter` face nor
+its compiled `<name>.arc_a` / `<name>.side_1` primitives. Every projected reference from `sketch_plane` arrives that
 way, and fixed (`"fixed": true` on an arc pins its angles as well as its
 radius, so a reference costs **zero** parameters).
 
@@ -806,7 +815,13 @@ posting back your solved coordinates reopens on the same solution branch.
 **`plane`** (from `sketch_plane`) does not affect the solve — it is 2D — but
 emission writes `BuildSketch(Plane(origin=…, x_dir=…, z_dir=…))` instead of
 `Plane.XY`, with the face reference and its caveat as comments. Sketch-on-face
-coordinates are meaningless without the basis they were solved in.
+coordinates are meaningless without the basis they were solved in. It is
+**caller data, not source**: `face_index` must be an integer ordinal, `part`
+must be an expression naming the part (`build(p)`, `p`, `build(p).part`), and
+the three basis vectors must be three numbers each — anything else is a
+`validation_error` rather than text in your generated script. Carry
+`face_id` through as well (see `sketch_plane`) so a reopened sketch can check
+that the ordinal still points at the same face.
 
 **Splines** (`"splines": [{name, points:[<point names>]}]`) are ordered lists
 of named points, degree 3, non-periodic; the points are ordinary points, so

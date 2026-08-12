@@ -53,6 +53,18 @@ let pending = null; // multi-click tool state: {kind, ...}
 let cursor = null; // last pointer sketch coords (for previews)
 let scale = 4; // px per mm
 let solveSeq = 0;
+// Generation counter for the round-trip block lookup. `/api/sketch/blocks`
+// answers into a canvas the user may have started drawing on meanwhile, and
+// `openBlock` calls `resetModel()` — so a slow response used to discard
+// in-progress geometry with no undo. Every reset and every new lookup bumps
+// it; a response from an older generation is dropped.
+let blocksSeq = 0;
+// `"<project>::<part>"` the current model belongs to. A sketch is part-scoped:
+// switching parts (or projects) starts a new one rather than carrying the old
+// geometry, plane and block name across. See `init`.
+let sketchOwner = null;
+// Generation counter for the reopened-face check (see `checkReopenedFace`).
+let faceSeq = 0;
 // The face this sketch lives on: {origin, x_dir, y_dir, normal, face_index,
 // part} from the `sketch_plane` tool, plus the projected boundary edges. It
 // rides along to the server on every solve, because the *emitter* needs it —
@@ -89,6 +101,22 @@ export function init(a) {
     const partMode = state.mode === "part";
     btn.classList.toggle("hidden", !partMode);
     if (!partMode && open) close();
+    // **The sketch belongs to the part it was drawn on.** Nothing used to
+    // reset it: `model`, `plane`, `blockName`, `readOnly`, `selection` and the
+    // banner all survived a part switch, so Insert appended part A's
+    // `sketch_profile()` into part B's script — and if A was a sketch-on-face,
+    // every solve still shipped A's face basis. Switching parts starts a new
+    // sketch; the old one lives in whatever script it was inserted into.
+    const key = `${state.projectName || ""}::${state.selectedPart || ""}`;
+    if (key === sketchOwner) return;
+    sketchOwner = key;
+    resetModel();
+    if (!bannerEl) return;          // pre-`buildUI`: nothing on screen yet
+    hideBanner();
+    applyReadOnly();
+    render();
+    renderStatus();
+    if (open) refreshBlocks();
   });
   // The canvas palette comes from CSS custom properties, so a theme switch
   // has to invalidate it. theme.js flips `data-theme` on <html> and does not
@@ -114,10 +142,19 @@ export function init(a) {
  *  emitter never sees. */
 export function openOnFace(info) {
   resetModel();
+  // Claim the current part for this sketch, so a `selectedPart` event that
+  // arrives after the face pick cannot reset what was just opened.
+  sketchOwner = `${state.projectName || ""}::${state.selectedPart || ""}`;
   plane = {
     origin: info.origin, x_dir: info.x_dir, y_dir: info.y_dir,
     normal: info.normal, face_index: info.face_index,
     part: info.part_id ? `build(p)` : undefined,
+    // The face's own identity (area + normal + origin), so reopening this
+    // sketch can *check* that the ordinal still points at the same face
+    // instead of silently re-solving on a renumbered one. Measured on the
+    // prototyping enclosure: `corner_r: 6.0` turns face 37 from a 5989 mm^2
+    // base plate into a 51 mm^2 sliver. It rides in the persisted spec.
+    face_id: info.face_id,
   };
   const ents = info.entities || {};
   for (const p of ents.points || []) model.points.push({ ...p });
@@ -157,6 +194,10 @@ function resetModel() {
   press = null;
   clearHighlight();
   solveState = { ok: true, dof: 0, local: true };
+  // Anything in flight belongs to the model that just went away.
+  solveSeq++;
+  blocksSeq++;
+  faceSeq++;
 }
 
 function show() {
@@ -706,9 +747,17 @@ function renderChips() {
     chip.type = "button";
     chip.className = "sk-chip";
     if (highlight.constraints.has(i)) chip.classList.add("flagged");
-    chip.title = "Click to remove this constraint";
+    // Read-only (a diverged block) is a latch on **every** surface that could
+    // edit, and this one spliced `model.constraints` and re-solved. Every
+    // other mutating entry point checks it; so does this.
+    chip.disabled = readOnly;
+    chip.title = readOnly
+      ? "This sketch is open read-only: its code was hand-edited, so pick "
+        + "'Re-solve from the spec' or 'Discard the spec' first"
+      : "Click to remove this constraint";
     chip.textContent = `${constraintLabel(con)} ×`;
     chip.addEventListener("click", () => {
+      if (readOnly) return;
       model.constraints.splice(i, 1);
       clearHighlight();
       mutated();
@@ -1144,6 +1193,12 @@ function onPointerMove(e) {
     return;
   }
   if (press && !press.started) {
+    if (e.buttons === 0) {
+      // The button came up somewhere we never heard about. A press that
+      // outlived its pointer is not a drag.
+      press = null;
+      return;
+    }
     const dx = (e.clientX - press.clientX);
     const dy = (e.clientY - press.clientY);
     if (Math.hypot(dx, dy) > DRAG_PX) {
@@ -1293,12 +1348,18 @@ async function refreshBlocks() {
     hideBanner();
     return;
   }
+  const my = ++blocksSeq;
   let res = null;
   try {
     res = await api.sketchBlocks(script);
   } catch (err) {
     return;                       // an unreachable server is not a divergence
   }
+  // The entry guard, re-checked on arrival: a lookup that started against an
+  // empty canvas must not `resetModel()` over geometry the user drew while it
+  // was in flight — there is no undo for that. A newer generation (a part
+  // switch, a second open) supersedes this answer entirely.
+  if (my !== blocksSeq || hasEntities()) return;
   const blocks = (res && res.blocks) || [];
   if (!blocks.length) {
     hideBanner();
@@ -1330,10 +1391,46 @@ function openBlock(block) {
   if (block.spec) {
     render();
     solveAndRender("full");
+    checkReopenedFace();
   } else {
     render();
     renderStatus();
   }
+}
+
+/** Is the face this sketch was drawn on still at the ordinal it recorded?
+ *
+ *  Face indices are mesh-order ordinals and a topology-changing parameter edit
+ *  renumbers them, so a reopened sketch-on-face can re-solve on the *old*
+ *  basis, emit "on face 37" naming a different face, and still report `ok`
+ *  because its hash matches — the block is intact, the face under it is not.
+ *  The server compares the recorded identity with the face that is there now
+ *  and reports `ok` / `moved` / `unchecked`; a mismatch is **surfaced, never
+ *  repaired**, because which face the user meant is not something this can
+ *  guess. A sketch saved before the identity was recorded comes back
+ *  `unchecked`, which is honest and silent. */
+async function checkReopenedFace() {
+  const p = plane;
+  const project = state.projectName;
+  const part = state.selectedPart;
+  if (!p || !p.face_id || p.face_index === undefined || p.face_index === null) {
+    return;
+  }
+  if (!project || !part) return;
+  const my = ++faceSeq;
+  let res = null;
+  try {
+    res = await api.callTool("sketch_plane", {
+      project, part_id: part, face_index: p.face_index, expect: p.face_id,
+    });
+  } catch (err) {
+    return;              // an unreachable server is not a moved face
+  }
+  // `plane !== p` means a different sketch is on screen now.
+  if (my !== faceSeq || plane !== p || !res || res.error) return;
+  const check = res.face_check;
+  if (!check || check.status !== "moved") return;
+  actions.toast(check.message, "error");
 }
 
 const BANNER_TEXT = {
@@ -1661,12 +1758,23 @@ function chipState() {
         + `${DEPENDENT_NOTE} Click to highlight the set.`,
     };
   }
-  if (redundant.length) {
+  // **Branch on `status`, not on `redundant.length`.** The two agree by
+  // construction on the server (the rank *is* the dependent-row count), and
+  // reading only the blame set is how a sketch that reported
+  // `over_constrained` with an empty set rendered as "7 DOF, still free:
+  // b, c, d" over a pinned rectangle. If they ever disagree again, say so
+  // rather than reporting the freedom the DOF number claims.
+  if (s.status === "over_constrained" || redundant.length) {
     return {
       cls: "warn",
-      text: `over-constrained (${redundant.length})`,
-      title: `${redundant.length} constraint(s) add nothing — the sketch still `
-        + `solves. ${DEPENDENT_NOTE} Click to highlight the set.`,
+      text: redundant.length ? `over-constrained (${redundant.length})`
+                             : "over-constrained",
+      title: redundant.length
+        ? `${redundant.length} constraint(s) add nothing — the sketch still `
+          + `solves. ${DEPENDENT_NOTE} Click to highlight the set.`
+        : "the sketch has more constraints than independent ones, and the "
+          + "analysis named none of them — so the DOF count below is not "
+          + "trustworthy. Please report this.",
     };
   }
   if (s.complete === false) {
@@ -1995,6 +2103,16 @@ function onEntityPointerDown(e, kind, ref) {
   e.stopPropagation();
   press = { kind, ref, shift: e.shiftKey, clientX: e.clientX,
             clientY: e.clientY, started: false };
+  // Capture, like `startDrag` and the circle tool already do. Without it the
+  // `pointerup` can land on anything the pointer happens to be over — another
+  // element, the window chrome, a tab switch — and `press` stays armed, so the
+  // *next* pointer movement (with no button held) becomes a drag that POSTs a
+  // solve frame per animation frame.
+  try {
+    svg.setPointerCapture(e.pointerId);
+  } catch (err) {
+    /* a synthetic or already-released pointer: the buttons guard covers it */
+  }
 }
 
 function dashed(shape, attrs) {
@@ -2096,6 +2214,12 @@ async function insertSnippet() {
     .some((e) => !isConstruction(e));
   if (!anyCurve || readOnly) return;
   insertBtn.disabled = true;
+  // Same generation guard as every other round trip: two awaits stand between
+  // here and `applySolution`, and a model that changed under them (a part
+  // switch, a second Insert) must not have someone else's solution written
+  // into it. `solveSeq` is the counter `solveAndRender` already uses, so an
+  // insert also supersedes an in-flight background solve.
+  const my = ++solveSeq;
   // FR10: the round-trip block's name must shadow nothing already in the
   // script — two blocks of one name define `sketch_<name>()` twice and the
   // second silently wins. The server owns the naming rule (it also counts
@@ -2107,6 +2231,7 @@ async function insertSnippet() {
   } catch (err) {
     name = blockName || name;
   }
+  if (my !== solveSeq) return renderStatus();   // the model moved on
   let res = null;
   let thrown = null;
   try {
@@ -2119,6 +2244,7 @@ async function insertSnippet() {
   } catch (err) {
     thrown = err;
   }
+  if (my !== solveSeq) return renderStatus();   // do not paste a stale solve
   // An emission that would not rebuild comes back as a `validation_error`
   // naming the junction — surface it verbatim rather than pasting code the
   // kernel will refuse.

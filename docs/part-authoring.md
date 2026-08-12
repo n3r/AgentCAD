@@ -355,8 +355,12 @@ def sketch_profile():
 
 In the script, not a sidecar: the part script is the only artifact this
 project keeps, and a script-resident block gets branching, restore, undo,
-merge and the proposal diff for free. The block name becomes the function's
-name, so two sketches in one script never shadow each other.
+merge and the proposal diff for free. **The block name becomes the function's
+name, so two blocks of one name define `sketch_<name>()` twice and the second
+silently wins** — nothing prevents it. `sketch_emit.next_name(script)` returns
+the next name that shadows nothing (it counts pre-block `def sketch_*(`
+definitions too), the `/api/sketch/blocks` route returns it as `next_name`,
+and the sketcher's Insert asks for it rather than guessing.
 
 `agentcad.core.sketch_emit.parse_blocks(script)` reads them back —
 `{name, status, spec, code, hash, computed_hash, start_line, end_line,
