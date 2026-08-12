@@ -327,7 +327,19 @@ class ClaimRegistry:
 
     def _consume(self, key: str, part: str, client_id: str) -> bool:
         """Spend an armed override, if there is a live one. Single-use: the
-        dialog authorized *this* write, not a session of them."""
+        dialog authorized *this* write, not a session of them.
+
+        Called on **every** write this client makes on this part, not only on
+        one that turned out to hit a conflict. An arming that outlived the
+        write it was shown for is authorization for a write nobody was asked
+        about: the holder may release before the retry lands, in which case
+        the retry needs no override — and if the holder then takes the part
+        back inside the 30-second window, the *next* ordinary write would find
+        the old arming still sitting there and steal the new claim silently.
+        Spending it here and using it (:meth:`claim_write`) only against a
+        real conflict keeps both halves true: never a forced steal nobody
+        confirmed, and never a confirmation that outlives its write.
+        """
         slot = (key, part, client_id)
         with self._lock:
             expires_at = self._armed.pop(slot, None)
@@ -374,10 +386,14 @@ class ClaimRegistry:
         ``claim_override()`` all pass. The error names the holder and says
         ``overridable`` so a UI can offer the one button that resolves it.
         """
+        # Spent first and unconditionally (see :meth:`_consume`): an arming
+        # that survives the write it was shown for is a steal waiting for a
+        # claim to appear.
+        armed = part is not None and self._consume(key, part, client_id)
         claim = self._blocking(key, part, client_id)
         if claim is None:
             return
-        if override or override_var.get() or self._consume(key, part, client_id):
+        if override or override_var.get() or armed:
             return
         raise self._refusal(claim, part)
 
@@ -392,19 +408,22 @@ class ClaimRegistry:
         changes nothing, neither taking a free part nor evicting the human who
         is still typing.
 
-        An override is computed **only against a real conflict**. It is
-        single-use authorization for the one write a dialog was shown for, so
-        spending it on a write that would have succeeded anyway would both lose
-        that retry and force-steal a claim nobody was defending.
+        An arming is **spent by the first write it authorizes** and **used only
+        against a real conflict** — two rules that sound like one and are not.
+        Using it where nothing blocks would force-steal a claim nobody was
+        defending; leaving it armed because nothing blocked would let it steal
+        the *next* claim instead, with no second confirmation, which is exactly
+        what happens when the holder releases before the retry lands and takes
+        the part back a moment later.
         """
         if part is None:
             return None
         before = self.get(key, part)
+        armed = self._consume(key, part, client_id)
         blocking = self._blocking(key, part, client_id)
         overridden = False
         if blocking is not None:
-            overridden = bool(override_var.get()
-                              or self._consume(key, part, client_id))
+            overridden = bool(override_var.get() or armed)
             if not overridden:
                 raise self._refusal(blocking, part)
         elif before is not None and before["holder"] != client_id:

@@ -587,26 +587,54 @@ def snippet_of(text: str, start: int, end: int) -> dict:
 
 def find_snippet(lines: list[str], snippet: list[str], before: list[str],
                  after: list[str]) -> list[int]:
-    """Every 0-based offset where *snippet* occurs exactly, narrowed by the
-    stored context when it occurs more than once.
+    """Every 0-based offset where *snippet* occurs exactly, narrowed by — and
+    for a lone occurrence, gated on — the stored context.
 
     Exact string work only, no heuristics: this is where AC3 is won.
+
+    **A single surviving copy is not evidence that it is the right one.** The
+    context used to be consulted only to break a tie between two or more
+    copies, so deleting the anchored occurrence of a snippet that appeared
+    twice left the *other* one as "the only match", and the resolver reported
+    ``moved`` at confidence 1.0 — the script-anchor twin of the lone-candidate
+    face mis-pin, and refused here the same way: a lone hit must be
+    corroborated by the stored context, or it is not a hit.
+
+    "Corroborated" is deliberately **one side, not both**: a real edit around
+    a moved block routinely rewrites the line after it while the lines before
+    it stand (and the reverse), so demanding both would orphan the ordinary
+    case to catch the rare one. A side that stored nothing — the top or the
+    bottom of a file, or an anchor written before context existed — is not
+    checked, because there is nothing in it to check; such an anchor keeps the
+    old behavior and is the one shape this gate cannot speak about.
+
+    Refusing here is not the end of the line: :func:`_resolve_script_range`
+    falls through to the tier-2 line map against the blob at the anchor's own
+    head, which answers from the real diff rather than from a coincidence.
     """
     if not snippet:
         return []
     span = len(snippet)
     hits = [i for i in range(len(lines) - span + 1)
             if lines[i:i + span] == snippet]
-    if len(hits) <= 1:
-        return hits
+    if not hits:
+        return []
     scored = []
     for offset in hits:
         head = lines[max(0, offset - len(before)):offset]
         tail = lines[offset + span:offset + span + len(after)]
-        scored.append(((head == before) + (tail == after), offset))
+        # Only a side that HAS stored context can corroborate one; an empty
+        # side would otherwise score a free point on every candidate.
+        scored.append((bool(before and head == before)
+                       + bool(after and tail == after), offset))
     best = max(score for score, _ in scored)
     if best == 0:
-        return hits
+        # Nothing corroborates. With rivals that is the ambiguity the caller
+        # already treats as "no unique answer"; with a lone hit it means the
+        # stored context CONTRADICTS the only copy left, which is a different
+        # occurrence wearing the same text.
+        checked = bool(before) or bool(after)
+        return [] if (checked and len(hits) == 1) else hits
     return [offset for score, offset in scored if score == best]
 
 
@@ -925,7 +953,18 @@ def resolve(service, proj: str, anchor: object,
 
 def _elsewhere(anchor: dict, context: dict, what: str) -> dict | None:
     """Decision 7: a target missing here while the anchor names another branch
-    is ``unverified``, not ``orphaned``."""
+    is ``unverified``, not ``orphaned``.
+
+    **Every** absence verdict goes through here, not only a missing part. The
+    check used to run one level too shallow: it asked "is the parent part
+    gone?" first and only consulted the branch if it was, so a part that
+    exists on both branches while the *parameter*, the *lines* or the *face*
+    inside it exists on only one — which is the ordinary shape of a branch —
+    reported ``orphaned``/``param_removed``. That is a claim that somebody
+    deleted the target, made from an anchor that was never about the reader's
+    branch. The question "am I even looking at the anchor's branch?" has to be
+    answered before absence is classified, whatever is absent.
+    """
     authored = anchor.get("branch") or ""
     current = context.get("branch") or ""
     if authored and current and authored != current:
@@ -971,9 +1010,10 @@ def _resolve_param(service, proj, anchor, context) -> dict:
                  "and is not cached; open the part to load it")
     if param in names:
         return make_resolution("ok")
-    return make_resolution(
-        "orphaned", reason="param_removed",
-        hint=f"parameter {param!r} is no longer declared by part {part!r}")
+    return _elsewhere(anchor, context, f"parameter {param!r}") or \
+        make_resolution(
+            "orphaned", reason="param_removed",
+            hint=f"parameter {param!r} is no longer declared by part {part!r}")
 
 
 def _param_names(service, proj: str, part: str) -> set[str] | None:
@@ -1035,10 +1075,11 @@ def _resolve_face(service, proj, anchor, context) -> dict:
             hint=f"part {part!r} is no longer in this project")
     record = service.store.get_part(proj, part)
     if record.kind != "script":
-        return make_resolution(
-            "orphaned", reason="not_a_script_part",
-            hint=f"part {part!r} is now a {record.kind} part: an imported mesh "
-                 "carries no B-rep faces")
+        return _elsewhere(anchor, context, f"a B-rep face of part {part!r}") or \
+            make_resolution(
+                "orphaned", reason="not_a_script_part",
+                hint=f"part {part!r} is now a {record.kind} part: an imported "
+                     "mesh carries no B-rep faces")
     key, table = signature_table(service, proj, part)
     if not table:
         return make_resolution(
@@ -1060,11 +1101,13 @@ def _resolve_face(service, proj, anchor, context) -> dict:
     stored = index if isinstance(index, int) else -1
     row, score, margin, refusal = match_face(signature, table)
     if row is None:
-        return make_resolution("orphaned", reason=refusal,
-                               hint=_REFUSAL_HINTS[refusal],
-                               confidence=round(score, 4),
-                               margin=round(margin, 4),
-                               n_faces=len(table))
+        return _elsewhere(anchor, context, f"the face part {part!r} was "
+                          "commented on") or \
+            make_resolution("orphaned", reason=refusal,
+                            hint=_REFUSAL_HINTS[refusal],
+                            confidence=round(score, 4),
+                            margin=round(margin, 4),
+                            n_faces=len(table))
     status = "ok" if row["index"] == stored else "moved"
     return make_resolution(
         status, face_index=row["index"], confidence=round(score, 4),
@@ -1081,9 +1124,11 @@ def _resolve_script_range(service, proj, anchor, context) -> dict:
             hint=f"part {part!r} is no longer in this project")
     record = service.store.get_part(proj, part)
     if record.kind != "script":
-        return make_resolution(
-            "orphaned", reason="not_a_script_part",
-            hint=f"part {part!r} is now a {record.kind} part and has no script")
+        return _elsewhere(anchor, context, f"a script range of part {part!r}") \
+            or make_resolution(
+                "orphaned", reason="not_a_script_part",
+                hint=f"part {part!r} is now a {record.kind} part and has no "
+                     "script")
     text = service.store.read_script(proj, part)
     lines = text.splitlines()
     snippet = (anchor.get("snippet") or "").splitlines()
@@ -1121,15 +1166,16 @@ def _resolve_script_range(service, proj, anchor, context) -> dict:
             hint="the script as it was when this thread was opened is not "
                  "readable, so the range cannot be remapped — we did not look, "
                  "so this is not an orphan")
+    lost = f"lines {start}-{end} of part {part!r}"
     mapped = line_map(old, lines, start, end)
     if mapped is None:
-        return make_resolution(
+        return _elsewhere(anchor, context, lost) or make_resolution(
             "orphaned", reason="lines_removed",
-            hint=f"lines {start}-{end} of part {part!r} were deleted or "
-                 "rewritten; the thread keeps its last-known range")
+            hint=f"{lost} were deleted or rewritten; the thread keeps its "
+                 "last-known range")
     new_start, new_end, confidence = mapped
     if confidence < LINE_CONFIDENCE_MIN:
-        return make_resolution(
+        return _elsewhere(anchor, context, lost) or make_resolution(
             "orphaned", reason="low_confidence",
             hint=f"only {confidence:.0%} of lines {start}-{end} survive the "
                  "edit — a partial remap would point at the wrong code",

@@ -390,7 +390,30 @@ build — rather than through the unit seams (`tests/test_comments.py`,
     73 with the `[fem]` extra). Agents coordinate through `acquire_turn` and
     branches; claims are human-vs-human, because an agent blocked by a human's
     open editor would 409 on the first write of the loop this PRD exists for.
-11. **Three deliberate UI gaps**, named rather than left to be discovered: the
+11. **A lone survivor is not evidence, in the script matcher either.** A
+    second review round (`docs/changelog/0124-prd008-codex-fixes.md`) found
+    the same shape as divergence 1 in `find_snippet`: the stored context was
+    consulted only to break a tie between two or more copies, so deleting the
+    anchored one of two identical lines re-pinned the thread onto the
+    unrelated survivor and reported `moved` at **confidence 1.0**. A lone hit
+    must now be corroborated by at least one side of the stored context — not
+    both, because a real edit routinely rewrites one side, and demanding both
+    would orphan the ordinary case to catch the rare one. The uncovered shape
+    is stated rather than hidden: an anchor that stored **no** context has
+    nothing to corroborate. Related, same round: the cross-branch rule
+    (Decision 7) now runs before *every* absence verdict, not only a missing
+    part, so a parameter/range/face missing from a part that exists on both
+    branches is `unverified`/`other_branch` instead of a false "it was
+    removed".
+12. **Presence is bounded, and the bounds are part of the design.** Identity
+    is a self-asserted header on an unauthenticated server, so `MAX_ID_CHARS`
+    (refused, never truncated — truncation would merge two identities into one
+    roster/claim/mention key), `MAX_CLIENTS` (a full roster refuses a *new*
+    row rather than evicting an incumbent, because a rotating flood is by
+    construction the newest rows) and `MAX_BUCKETS` on the rate limiter, which
+    is what stops rotation bypassing the limit outright. The
+    `presence_changed` broadcast *is* the roster, so bounding one bounds both.
+13. **Three deliberate UI gaps**, named rather than left to be discovered: the
     assembly-`instance` anchor has no create affordance in the browser (it is
     creatable over tools/REST and focuses correctly); comment attachments have
     no file picker (an agent attaches a render from `exports/`, and the panel

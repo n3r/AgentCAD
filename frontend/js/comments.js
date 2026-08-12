@@ -758,12 +758,14 @@ function syncPins() {
   rows.forEach((thread, i) => {
     const res = resolutionOf(thread);
     const index = res.face_index != null ? res.face_index : thread.anchor.face_index;
-    // The centroid of the RESOLVED face on the geometry that is on screen,
-    // falling back to the one the anchor recorded when the triangle->face
-    // sidecar has not arrived yet.
-    const world =
-      viewport.faceCentroid(state.selectedPart, index) ||
-      ((thread.anchor.signature || {}).centroid ?? null);
+    // The centroid of the RESOLVED face on the geometry that is ON SCREEN, and
+    // nothing else. There used to be a fallback to the centroid the anchor
+    // recorded at creation, for the window before the triangle->face sidecar
+    // loads — but that is the anchor's OLD position on geometry that has since
+    // changed, which is a guessed pin: indistinguishable from a located one,
+    // wrong exactly when the thread `moved`, and permanent if the fetch fails.
+    // No centroid, no pin; `meshChanged()` re-runs this when the map arrives.
+    const world = viewport.faceCentroid(state.selectedPart, index);
     if (!world) return;
     const btn = document.createElement("button");
     btn.type = "button";

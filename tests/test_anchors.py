@@ -352,6 +352,40 @@ def test_a_deleted_snippet_is_found_nowhere():
     assert anchors.find_snippet(["a = 1"], ["gone"], [], []) == []
 
 
+def test_a_lone_survivor_the_context_contradicts_is_not_a_match():
+    """K3 — the same shape as the face matcher's lone-candidate mis-pin.
+
+    Two ``MARK`` lines, told apart only by their context; the thread anchors
+    the first; the first is deleted. "Exactly one copy left" used to skip the
+    context check entirely, so the surviving *unrelated* occurrence came back
+    as a verbatim hit and the resolver reported ``moved`` at confidence 1.0 —
+    a wrong pin with maximal confidence, which is precisely the outcome this
+    module exists to refuse.
+    """
+    before, after = ["b = 2"], ["c = 3"]
+    body = ["a = 1", "b = 2", "MARK", "c = 3", "z = 9", "y = 8", "MARK", "c = 4"]
+    assert anchors.find_snippet(body, ["MARK"], before, after) == [2]
+
+    body.pop(2)                                   # delete the anchored one
+    assert anchors.find_snippet(body, ["MARK"], before, after) == []
+
+
+def test_a_lone_survivor_one_side_of_the_context_corroborates_is_a_match():
+    """The other half: a real move keeps at least one side of its context, and
+    orphaning that would trade one wrong answer for a hundred missing ones."""
+    body = ["a = 1", "b = 2", "MARK", "c = 3"]
+    moved = ["x = 0", "y = 0", "a = 1", "b = 2", "MARK", "print('new')"]
+    assert anchors.find_snippet(moved, ["MARK"], ["b = 2"], ["c = 3"]) == [4]
+
+
+def test_a_lone_survivor_with_no_stored_context_is_still_a_match():
+    """An anchor at the very top and bottom of a file stores no context, and
+    an anchor written before context existed stores none either. There is
+    nothing to corroborate, and inventing a refusal out of that would orphan
+    every one of them."""
+    assert anchors.find_snippet(["MARK"], ["MARK"], [], []) == [0]
+
+
 # ------------------------------------------- 5. the tier-2 line map
 
 
@@ -455,6 +489,54 @@ def test_a_target_missing_here_but_authored_elsewhere_is_unverified(unbuilt):
     assert result["reason"] == "other_branch"
     assert "feat/x" in result["hint"]
     assert result["against"] == {"branch": "main", "head": ""}
+
+
+def test_a_param_missing_from_a_part_that_exists_here_is_still_other_branch(
+        unbuilt):
+    """K10 — the cross-branch check only ran when the whole PART was missing.
+
+    A part that exists on both branches but declares the parameter on only one
+    of them is the ordinary shape of a branch: the reader is told the
+    parameter was *removed*, which is a claim about their branch made from an
+    anchor that was never about their branch. "We are not looking at the
+    anchor's branch" has to be decided before absence is classified at all.
+    """
+    elsewhere = {"branch": "main", "head": "", "root": None}
+    ok = anchors.resolve(unbuilt, "demo",
+                         {"kind": "param", "part": "box", "param": "wall",
+                          "branch": "feat/x"}, context=elsewhere)
+    assert ok["status"] == "ok"          # present here: nothing to classify
+
+    gone = anchors.resolve(unbuilt, "demo",
+                           {"kind": "param", "part": "box", "param": "depth",
+                            "branch": "feat/x"}, context=elsewhere)
+    assert (gone["status"], gone["reason"]) == ("unverified", "other_branch")
+    assert "feat/x" in gone["hint"] and "depth" in gone["hint"]
+    assert unbuilt.kernel.calls == []
+
+
+def test_a_script_range_lost_on_another_branch_is_other_branch(unbuilt,
+                                                               monkeypatch):
+    """The same rule for the script anchor's own orphan verdicts: the lines
+    are gone from *this* branch, which says nothing about the branch the
+    thread was opened on. Tier 2 is forced to run (there is no repo here) so
+    the verdict under test is a real ``lines_removed``, not a "we did not
+    look"."""
+    monkeypatch.setattr(anchors, "_blob_lines",
+                        lambda *a, **k: SCRIPT.splitlines())
+    anchor = {"kind": "script_range", "part": "box", "start": 7, "end": 8,
+              **anchors.snippet_of(SCRIPT, 7, 8), "head": "cafe1234",
+              "branch": "feat/x"}
+    unbuilt.store.write_script("demo", "box", "print('rewritten')\n")
+
+    same = anchors.resolve(unbuilt, "demo", anchor,
+                           {"branch": "feat/x", "head": "", "root": None})
+    assert (same["status"], same["reason"]) == ("orphaned", "lines_removed")
+
+    other = anchors.resolve(unbuilt, "demo", anchor,
+                            {"branch": "main", "head": "", "root": None})
+    assert (other["status"], other["reason"]) == ("unverified", "other_branch")
+    assert "feat/x" in other["hint"]
 
 
 def test_script_range_tier_1_resolves_without_git(unbuilt):

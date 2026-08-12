@@ -44,6 +44,17 @@ def install_write_guard(service) -> None:
        fallback would land on the default branch.
     2. the turn lock, keyed by the caller's resolved working tree, so turn
        locks and undo stacks are per-branch.
+
+    Anything that WRAPPED the previous guard is re-installed afterwards, and
+    that is a correctness requirement rather than tidiness: this function
+    replaces the guard rather than wrapping it, so PRD-008's per-part claim
+    check (installed lazily from ``routes_presence``, because route packs
+    mount after every tool pack) was silently removed by any later rebuild and
+    stayed removed until the next heartbeat — a window in which one human's
+    save could land straight over another's. The re-install is conditional on
+    the service ALREADY having a claim registry, so a service that never had
+    claims — ``checks.py``'s ephemeral one, which PRD-004 requires to end with
+    ``write_guard is None`` — is left exactly as it was.
     """
     def guard(proj: str) -> None:
         service.branches.ensure_checkout(proj)
@@ -52,6 +63,10 @@ def install_write_guard(service) -> None:
         )
 
     service.store.write_guard = guard
+    if getattr(service, "claims", None) is not None:
+        from .presence import ensure_claim_guard
+
+        ensure_claim_guard(service)
 
 
 def register(registry, service) -> None:

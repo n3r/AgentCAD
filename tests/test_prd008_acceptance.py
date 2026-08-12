@@ -19,7 +19,10 @@ so a reviewer can map AC → test without reading the unit suites.
 | AC1 | ``test_ac1_the_review_loop_end_to_end`` (scripted agent half) +
         ``test_ac1_browser_half_evidence_is_recorded`` (the two-browser
         session, driven for real in slices 8-9 — the PRD-001 AC6 / PRD-002 AC1
-        evidence-check precedent) |
+        evidence-check precedent) +
+        ``test_ac1_browser_half_is_wired_into_the_shipped_frontend`` (a
+        source-level gate under that record: the modules must still define and
+        wire the surfaces the changelogs claim) |
 | AC2 | ``test_ac2_a_face_anchor_survives_or_says_it_did_not`` |
 | AC3 | ``test_ac3_a_script_range_anchor_tracks_an_insert_above_it`` |
 | AC4 | ``test_ac4_a_mention_delivers_an_event_and_an_unread_record`` |
@@ -284,6 +287,47 @@ def test_ac1_browser_half_evidence_is_recorded():
     for phrase in ("two identities", "console", "override"):
         assert phrase in presence.lower(), \
             f"slice-9 evidence does not mention {phrase!r}"
+
+
+def test_ac1_browser_half_is_wired_into_the_shipped_frontend():
+    """The structural half of AC1, and the honest limit of it.
+
+    The evidence check above asserts only that a changelog *says* a browser
+    session happened, which is exactly as strong as the prose: deleting
+    ``comments.init()``, the pin overlay or the claim dialog would have left it
+    green. This one reads the shipped modules and asserts the surfaces the
+    changelogs claim are actually defined and actually wired together, so
+    removing the feature fails a test rather than only contradicting a
+    document.
+
+    What it does **not** prove: that any of it renders, that the pin lands in
+    the right place, or that the console is clean. Those need a browser, they
+    were driven for real in slices 8-9, and the changelog is the record. This
+    is a structural gate under that record, not a replacement for it.
+    """
+    js = REPO_ROOT / "frontend" / "js"
+    comments = (js / "comments.js").read_text(encoding="utf-8")
+    main = (js / "main.js").read_text(encoding="utf-8")
+    api = (js / "api.js").read_text(encoding="utf-8")
+    viewport = (js / "viewport.js").read_text(encoding="utf-8")
+
+    # The threads module and its pin overlay.
+    for surface in ("export function init(", "export function meshChanged(",
+                    "export function handleEvent(", "function syncPins(",
+                    "function positionPins("):
+        assert surface in comments, f"comments.js no longer defines {surface!r}"
+    # A pin is placed from the CURRENT geometry, never from the stored anchor:
+    # this is the mis-pin the whole feature is arranged around.
+    assert "viewport.faceCentroid(" in comments
+    assert "export function faceCentroid(" in viewport
+
+    # …and the app wires both of them plus the claim-override dialog.
+    assert "comments.init(" in main
+    assert "comments.meshChanged(" in main
+    assert '"comment_changed"' in main
+    assert '"claim_changed"' in main
+    assert "api.overrideClaim(" in main
+    assert "overrideClaim:" in api
 
 
 # ------------------------------------------------------------------- AC2

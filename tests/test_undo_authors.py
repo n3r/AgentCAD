@@ -440,3 +440,139 @@ def test_reverting_an_already_reverted_commit_is_refused(tmp_path):
         history.revert(proj, target)
     assert excinfo.value.details["reason"] == "already_reverted"
     assert history._run(proj, "status", "--porcelain").stdout.strip() == ""
+
+
+def test_a_failure_after_the_patch_applied_leaves_nothing_behind(tmp_path):
+    """K2: "never a partial apply" has to hold on the way OUT too.
+
+    ``git revert --no-commit`` succeeds, and then the commit behind it fails —
+    a repository hook that rejects it is the review's scenario. The inverse
+    patch is applied and staged at that moment, so an error that simply
+    propagated left the project mutated while ``UndoCursor`` put the entry
+    back and told the caller nothing had happened.
+    """
+    from agentcad.core.history import HistoryError
+
+    history = ProjectHistory()
+    proj = tmp_path / "demo"
+    (proj / "parts").mkdir(parents=True)
+    (proj / "parts" / "a.py").write_text("A1\n", encoding="utf-8")
+    history.snapshot(proj, "base")
+    (proj / "parts" / "a.py").write_text("A2\n", encoding="utf-8")
+    target = history.snapshot(proj, "edit a")
+
+    before_head = history.head(proj)
+    before_tree = history._run(proj, "rev-parse", "HEAD^{tree}").stdout.strip()
+
+    hook = proj / ".history" / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    with pytest.raises(HistoryError):
+        history.revert(proj, target)
+
+    assert history.head(proj) == before_head
+    assert history._run(
+        proj, "rev-parse", "HEAD^{tree}").stdout.strip() == before_tree
+    assert history._run(proj, "status", "--porcelain").stdout.strip() == ""
+    assert (proj / "parts" / "a.py").read_text(encoding="utf-8") == "A2\n"
+
+
+# --------------------------------------- merges: authorship and ``undo_to``
+
+
+@pytest.fixture
+def branched(demo):
+    """'demo' plus a branch 'feat' forked from master."""
+    service, registry = demo
+    service.branches.create("demo", "feat")
+    return service, registry
+
+
+def _on(service, client: str, branch: str) -> None:
+    """Put a client on a branch (identity + checkout), like test_merge.py."""
+    _as(client)
+    if service.branches.current("demo") != branch:
+        service.branches.switch("demo", branch)
+
+
+def _restarted_cursor(service):
+    """A cursor with empty stacks over the same durable history — exactly what
+    a server restart leaves behind, without rebuilding the whole service."""
+    from agentcad.core.history import UndoCursor
+
+    return UndoCursor(service.history, service.store, EventBus())
+
+
+def test_a_merge_commit_carries_its_author_into_history(branched):
+    """K7: a non-fast-forward merge writes ``Merged-by:``, not ``Client:``, so
+    ``author_of`` read it as "no author at all" — ``project_history`` showed
+    ``null`` for the one commit that always has a person behind it, and a
+    post-restart ``scope: "mine"`` undo could never select it."""
+    service, registry = branched
+    _on(service, "browser:a", "feat")
+    _script(registry, "box", BOX_V2)
+    _on(service, "browser:b", "master")
+    _script(registry, "pin", BOX_V3)          # divergence: a real two-parent
+
+    merged = registry.call("merge_branch", {"project": "demo", "source": "feat"})
+    assert "error" not in merged, merged
+    assert merged["fast_forward"] is False
+
+    top = _log(service)[0]
+    assert top["message"].startswith("merge feat into master")
+    assert top["author"] == "browser:b"
+
+    # …and the restart path can therefore select it.
+    cursor = _restarted_cursor(service)
+    _as("browser:b")
+    undone = cursor.undo("demo", scope="mine")
+    assert undone["label"].startswith("merge feat into master")
+
+
+def test_a_scoped_undo_of_a_fast_forward_merge_honours_undo_to(branched):
+    """K5: a fast-forward moves the branch onto a commit whose first parent
+    belongs to the SOURCE, which is why ``on_snapshot`` records ``undo_to``.
+    The scoped path ignored it and reverted only the source tip, leaving every
+    earlier merged commit standing — a half-undone merge."""
+    service, registry = branched
+    _on(service, "browser:a", "feat")
+    _script(registry, "box", BOX_V2)          # S1
+    _script(registry, "box", BOX_V3)          # S2
+    _on(service, "browser:a", "master")
+
+    merged = registry.call("merge_branch", {"project": "demo", "source": "feat"})
+    assert "error" not in merged, merged
+    assert merged["fast_forward"] is True
+
+    _on(service, "browser:b", "master")
+    _script(registry, "pin", BOX_V2)          # unrelated later work
+
+    _on(service, "browser:a", "master")
+    undone = registry.call("undo", {"project": "demo", "scope": "mine"})
+    assert "error" not in undone, undone
+    # The whole fast-forward is undone — S1 as well as S2 …
+    assert _text(service, "box") == BOX_SCRIPT
+    # … and B's later, unrelated edit is untouched.
+    assert _text(service, "pin") == BOX_V2
+
+
+def test_the_post_restart_fallback_under_mine_looks_past_the_head(demo):
+    """K6: the fallback read ``log(limit=1)``, so "is the newest commit mine?"
+    stood in for "do I have anything to undo?". A commits, B commits, the
+    process restarts — A's commit is still reachable and still A's."""
+    service, registry = demo
+    _as("browser:a")
+    _script(registry, "box", BOX_V2)
+    a_commit = _log(service)[0]["id"]
+    _as("browser:b")
+    _script(registry, "pin", BOX_V3)
+
+    cursor = _restarted_cursor(service)
+    _as("browser:a")
+    undone = cursor.undo("demo", scope="mine")
+    assert undone["label"] == "project_changed box"
+    assert _text(service, "box") == BOX_SCRIPT   # A's edit taken back …
+    assert _text(service, "pin") == BOX_V3       # … B's left standing
+    assert _log(service)[0]["message"].startswith(f"revert {a_commit[:8]}")

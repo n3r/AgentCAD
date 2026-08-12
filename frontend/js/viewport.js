@@ -256,8 +256,9 @@ export function projectPoint(point) {
 
 /** The mean vertex position of one B-rep face of the displayed part, in world
  *  space — where a pin for that face belongs. null when that part is not on
- *  stage or its triangle->face sidecar has not loaded yet (the caller then
- *  falls back to the centroid the anchor recorded at creation).
+ *  stage or its triangle->face sidecar has not loaded yet — and null is the
+ *  whole answer: the caller draws no pin at all until this returns one,
+ *  because the only other position available is where the face used to be.
  *
  *  Read against the CURRENT geometry and the ordinal the server RESOLVED, not
  *  the one the anchor stored: after a rebuild the two need not be the same

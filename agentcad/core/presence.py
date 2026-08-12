@@ -1,6 +1,6 @@
 """Live presence: who else is on this project, and where they are looking.
 
-Four rules, and each of them is a design decision rather than an
+Five rules, and each of them is a design decision rather than an
 implementation detail (PRD-008, design Decision 13):
 
 1. **Presence is fed by an HTTP heartbeat, never by a client→server
@@ -22,6 +22,14 @@ implementation detail (PRD-008, design Decision 13):
 4. **Presence is never persisted** (FR9). This is a dict in the service's
    process; a restart empties it, which is the honest answer to "who is here
    *now*". Nothing here touches the store.
+5. **Everything here is bounded, because nothing here is authenticated.** The
+   identity arrives on a header anyone can set and anyone can rotate, so it is
+   length-checked (:data:`MAX_ID_CHARS`, refused not truncated), the roster has
+   a hard ceiling (:data:`MAX_CLIENTS`) that refuses a *new* row rather than
+   evicting an incumbent, and the rate limiter's buckets have one too
+   (:data:`MAX_BUCKETS`). The last of these is what stops rotation bypassing
+   the limit outright. The broadcast needs no separate bound: a
+   ``presence_changed`` frame *is* the roster, so capping the roster caps it.
 
 Two smaller rules that are easy to get wrong:
 
@@ -58,11 +66,28 @@ SURFACES = ("viewport", "editor", "inspector", "proposals")
 
 MAX_LABEL_CHARS = 40
 MAX_PART_CHARS = 64
+#: An identity is a self-asserted header on an unauthenticated local server,
+#: so it is bounded here rather than trusted: it becomes a dict key in the
+#: roster, the claim registry and the rate limiter, and it is echoed into
+#: everybody else's toolbar. Matches ``routes_presence._beacon_identity``.
+MAX_ID_CHARS = 64
 
 #: A heartbeat is 1/s with a burst of 5 — enough for the immediate beats a
 #: project/part/branch/focus change fires, not enough to be a write amplifier.
 RATE_PER_S = 1.0
 RATE_BURST = 5.0
+
+#: Hard ceiling on the whole roster, across every working tree in the process.
+#: "One client, one id" is a convention, not a fact — nothing stops a caller
+#: rotating ``X-Agent-Id`` — and every row costs a TTL of memory *and* a slot
+#: in every ``presence_changed`` frame, so the broadcast grows with the flood.
+#: A local CAD session has single-digit clients; this is well past any real
+#: use and is still a bound.
+MAX_CLIENTS = 200
+#: Ceiling on live rate-limit buckets, for the same reason: a bucket is
+#: allocated by the first heartbeat under an id, which is *before* the roster
+#: gets a say.
+MAX_BUCKETS = 512
 
 
 def _text(value, limit: int) -> str | None:
@@ -74,32 +99,93 @@ def _text(value, limit: int) -> str | None:
     return cleaned[:limit] or None
 
 
+def check_identity(value: object) -> str:
+    """A client id fit to be a key, or a ValidationError saying why not.
+
+    Refused rather than truncated, unlike :func:`_text`: a label is display
+    data and a shortened one is merely shorter, but two identities cut to the
+    same 64 characters would be *one* client to the roster, the claims and the
+    mentions — a silent identity merge is a worse answer than an error.
+
+    Public because the *route* has to ask before :meth:`PresenceRegistry.touch`
+    does: the rate limiter mints a bucket keyed by the raw identity, and it
+    runs first, so validating only inside ``touch`` would let an unbounded
+    string become a dict key on the way past.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError("presence needs a client identity")
+    who = value.strip()
+    if len(who) > MAX_ID_CHARS:
+        raise ValidationError(
+            f"client identity is longer than {MAX_ID_CHARS} characters",
+            {"max": MAX_ID_CHARS, "given": len(who)},
+        )
+    if not who.isprintable():
+        raise ValidationError("client identity has non-printable characters")
+    return who
+
+
 class TokenBucket:
     """Per-identity rate limit for the heartbeat.
 
     Over-rate calls are answered with the roster and ``throttled: true``
     rather than an error: a heartbeat that surfaced as a red toast would teach
     users to distrust a status indicator.
+
+    **Bounded** at :data:`MAX_BUCKETS`, because a bucket is minted by the first
+    heartbeat under an identity and a rotating identity therefore both bypasses
+    the limit *and* leaks a dict entry per beat. Eviction drops the buckets
+    that carry no information first — a bucket refilled to its full burst is
+    indistinguishable from an absent one, so dropping it grants nobody
+    anything — and only then the least recently used, which costs at most one
+    extra burst. That subsumes "evict a bucket with its roster row": a row
+    expires after ``PRESENCE_TTL_S`` (45 s) and a bucket refills in five, so
+    every departed client's bucket is already in the first group. Eviction is
+    deliberately *not* driven by the leave beacon, which is self-asserted —
+    that would make "I'm leaving" a way to ask for a fresh burst.
     """
 
     def __init__(self, rate: float = RATE_PER_S, burst: float = RATE_BURST,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 limit: int = MAX_BUCKETS) -> None:
         self._rate = rate
         self._burst = burst
         self._clock = clock
+        self._limit = max(1, int(limit))
         self._lock = threading.Lock()
         self._buckets: dict[str, tuple[float, float]] = {}
+
+    def _tokens(self, entry: tuple[float, float], now: float) -> float:
+        tokens, last = entry
+        return min(self._burst, tokens + (now - last) * self._rate)
+
+    def _evict(self, now: float) -> None:
+        """Make room for one more bucket. Called under the lock."""
+        for who in [w for w, e in self._buckets.items()
+                    if self._tokens(e, now) >= self._burst]:
+            del self._buckets[who]
+        while len(self._buckets) >= self._limit:
+            oldest = min(self._buckets, key=lambda w: self._buckets[w][1])
+            del self._buckets[oldest]
 
     def take(self, who: str) -> bool:
         now = self._clock()
         with self._lock:
-            tokens, last = self._buckets.get(who, (self._burst, now))
-            tokens = min(self._burst, tokens + (now - last) * self._rate)
+            entry = self._buckets.get(who)
+            if entry is None and len(self._buckets) >= self._limit:
+                self._evict(now)
+            tokens = self._tokens(entry or (self._burst, now), now)
             if tokens < 1.0:
                 self._buckets[who] = (tokens, now)
                 return False
             self._buckets[who] = (tokens - 1.0, now)
             return True
+
+    def forget(self, who: str) -> None:
+        """Drop one identity's bucket. For a caller that KNOWS the identity is
+        gone for good — never for a client-asserted leave."""
+        with self._lock:
+            self._buckets.pop(who, None)
 
 
 class PresenceRegistry:
@@ -149,17 +235,34 @@ class PresenceRegistry:
         """Register or refresh one client. Returns ``(entry, changed)``, where
         ``changed`` is true only when the roster others can see differs — a
         join, a leave someone else's read collected, a focus or label change.
-        An idle heartbeat returns ``False`` and must publish nothing."""
+        An idle heartbeat returns ``False`` and must publish nothing.
+
+        Two bounds, both of them about an identity nobody authenticated: the
+        id itself is length-checked (:func:`_identity`), and a **new** row is
+        refused once the roster is full. Refused, not made room for: a flood
+        of rotating ids is by construction the most recently seen half of the
+        dict, so evicting the oldest would hand it every real client's seat.
+        An incumbent keeps refreshing through the cap — its slot already
+        exists — and the ceiling clears itself one TTL after the flood stops.
+        """
         if surface is not None and surface not in SURFACES:
             raise ValidationError(
                 f"unknown presence surface {surface!r}",
                 {"known": list(SURFACES)},
             )
+        client_id = check_identity(client_id)
         now = self._clock()
         with self._lock:
             changed = self._prune(now)
             slot = (key, client_id)
             previous = self._clients.get(slot)
+            if previous is None and len(self._clients) >= MAX_CLIENTS:
+                raise ValidationError(
+                    f"this project has {MAX_CLIENTS} clients present, which is "
+                    "the maximum; an idle one drops out within "
+                    f"{PRESENCE_TTL_S:.0f}s",
+                    {"max": MAX_CLIENTS, "ttl_s": PRESENCE_TTL_S},
+                )
             entry = {
                 "id": client_id,
                 "kind": actor_kind(client_id),
@@ -312,6 +415,17 @@ def ensure_claim_guard(service) -> None:
     from ``routes_presence.build_router`` (route packs mount after every tool
     pack) and from every claims entry point, which is exactly how
     ``ProposalManager`` installs its branch-delete guard.
+
+    That was not enough on its own: a *later* rebuild of the registry replaced
+    the guard again and left the seam claim-free until the next heartbeat, a
+    window in which one human's save lands over another's with no conflict and
+    no dialog. ``install_write_guard`` therefore calls this function itself
+    once it has replaced the guard — the same seam that removes the wrapper
+    puts it back — but only when ``service.claims`` already exists, so a
+    service that never had claims (``checks.py``'s ephemeral one, which
+    PRD-004 pins as ending with ``write_guard is None``) is untouched. The
+    lazy entry points stay, because they are what installs the guard the
+    *first* time.
 
     The wrapper calls the previous guard **first**, so ``ensure_checkout`` and
     the turn check keep their order and their errors: a turn held by another

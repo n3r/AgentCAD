@@ -190,25 +190,61 @@ def test_an_agent_never_holds_a_claim_so_two_humans_still_conflict():
     assert claims.get("demo", "box")["holder"] == "browser:a"
 
 
-def test_an_armed_override_is_not_spent_when_nothing_would_block():
-    """An override is authorization for *one* refused write. Spending it on a
-    write that would have succeeded anyway both loses the retry the dialog was
-    shown for and force-steals a claim nobody was defending."""
+def test_an_armed_override_never_force_steals_a_claim_nobody_defended():
+    """An override authorizes *one* write, and only as far as the conflict it
+    was shown for goes. A write that would have succeeded anyway must not be
+    turned into a forced steal — ``overridden`` stays False and ``acquire``
+    is not called with ``force``."""
     claims = ClaimRegistry()
 
-    # Nothing holds `lid`: the armed override must survive untouched.
     claims.arm_override("demo", "lid", "browser:b")
     fresh = claims.claim_write("demo", "lid", "browser:b")
     assert fresh["overridden"] is False
-    assert claims._armed.get(("demo", "lid", "browser:b")) is not None
+    assert claims.get("demo", "lid")["holder"] == "browser:b"
 
-    # An agent's write is exempt without an override too, so B's stays armed.
+    # An agent's write is exempt without an override too, and takes nothing.
     other = ClaimRegistry()
     other.acquire("demo", "box", "browser:a")
     other.arm_override("demo", "box", "chat:main")
     assert other.claim_write("demo", "box", "chat:main") is None
-    assert other._armed.get(("demo", "box", "chat:main")) is not None
     assert other.get("demo", "box")["holder"] == "browser:a"
+
+
+def test_an_armed_override_does_not_survive_to_steal_a_later_claim():
+    """K8 — the other side of the same coin, and the one that bites.
+
+    An arming that is only *used* on a conflict was also only *consumed* on a
+    conflict, so a retry that landed on a part the holder had already let go
+    left it armed. The report's sequence: A holds ``box``, B's dialog arms an
+    override, A releases, B's retry succeeds without needing it — and then A
+    takes the part back inside the 30-second window, at which point B's next
+    ordinary write silently spends the old authorization and steals a claim
+    nobody confirmed taking. The arming is now spent by the first write it
+    authorizes, whether or not that write turned out to need it.
+    """
+    from agentcad.core.model import ConflictError
+
+    claims = ClaimRegistry()
+    claims.acquire("demo", "box", "browser:a")
+    claims.arm_override("demo", "box", "browser:b")     # the conflict dialog
+    claims.release("demo", "box", "browser:a")          # A lets go first
+
+    retry = claims.claim_write("demo", "box", "browser:b")
+    assert retry["overridden"] is False                 # nothing to override
+    assert claims.get("demo", "box")["holder"] == "browser:b"
+    assert claims._armed.get(("demo", "box", "browser:b")) is None
+
+    # A takes the part back inside the old override's window.
+    claims.release("demo", "box", "browser:b")
+    claims.acquire("demo", "box", "browser:a")
+    with pytest.raises(ConflictError):
+        claims.claim_write("demo", "box", "browser:b")
+    assert claims.get("demo", "box")["holder"] == "browser:a"
+
+    # A second steal needs a second confirmation, and then it works.
+    claims.arm_override("demo", "box", "browser:b")
+    assert claims.claim_write("demo", "box", "browser:b")["overridden"] is True
+    assert claims.get("demo", "box")["holder"] == "browser:b"
 
 
 def test_an_override_is_single_use_and_so_is_the_contextvar():
@@ -464,18 +500,27 @@ def test_a_claim_on_an_unknown_project_is_404_and_a_bad_part_is_422(http):
 
 
 def test_the_guard_survives_a_full_build_registry(http):
-    """R7. ``tools_versioning`` REPLACES ``write_guard``; the wrapper is
-    re-installed lazily, from the route pack and from every claims entry
-    point, so a registry rebuilt after the fact cannot silently disarm it."""
+    """R7, and K9's window.
+
+    ``tools_versioning`` REPLACES ``write_guard``, so a rebuild used to leave
+    the seam claim-free until the *next* heartbeat or override request put the
+    wrapper back — and this test used to insert exactly such a heartbeat
+    before asking about the conflict, which is how it stayed green over a real
+    hole. It now asks the question with **no intervening claims entry point**:
+    the rebuild itself re-installs the wrapper, because it is the same seam
+    that removed it.
+    """
     service, _registry, client = http
     _claim(client, "box", ALICE)
     assert getattr(service.store.write_guard, "_claims_installed", False)
 
     build_registry(service)  # the versioning pack installs its own guard
-    assert not getattr(service.store.write_guard, "_claims_installed", False)
+    assert getattr(service.store.write_guard, "_claims_installed", False)
+    # Straight to a conflicting write — no heartbeat, no override request.
+    assert _write(client, "box", BOB).status_code == 409
 
-    # …and the next claims entry point puts it back, with the turn check still
-    # underneath it (the previous guard is called FIRST).
+    # And the turn check is still underneath it (the previous guard runs
+    # FIRST), which is what the lazy re-install has always had to preserve.
     _claim(client, "box", ALICE)
     assert getattr(service.store.write_guard, "_claims_installed", False)
     assert _write(client, "box", BOB).status_code == 409

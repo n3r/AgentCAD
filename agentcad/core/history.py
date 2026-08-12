@@ -33,7 +33,10 @@ reconciler's scans, and every exact-message assertion in the suite, all of
 which read ``%s``) is unaffected. Git's own author/committer stay the fixed
 repo-local identity on purpose: the client id is a self-asserted header, and
 rewriting a commit's author with it would dress bookkeeping up as a
-cryptographic claim about who wrote the change.
+cryptographic claim about who wrote the change. Reading authorship back
+(:func:`author_of`) accepts ``Merged-by:`` as well, because that is the
+trailer ``core/merge.py`` has written on two-parent merge commits since
+PRD-001 and its exact message is pinned by that feature's tests.
 
 Design constraints: stdlib only, subprocess git with a hard timeout, and
 ``snapshot`` NEVER raises into the caller — a broken or missing git must
@@ -68,6 +71,14 @@ _REF_REJECT = ("..", "@{", ".lock", "//")
 # The authorship trailer (Decision 15). Matched anywhere in the BODY, so a
 # caller that already wrote one (the merge orchestrator's style) keeps it.
 _CLIENT_TRAILER_RE = re.compile(r"^Client:[ \t]*(.+?)[ \t]*$", re.M)
+# The merge orchestrator's own authorship trailer. ``merge.py`` (PRD-001) has
+# written ``Merged-by:`` since before ``Client:`` existed and its exact commit
+# message is pinned by that feature's tests, so authorship is read from BOTH
+# spellings here rather than by rewriting what a merge says. Without this a
+# two-parent merge — the one commit that always has a person behind it —
+# reported ``author: null`` and could never be selected by a post-restart
+# ``scope: "mine"`` undo.
+_MERGED_BY_TRAILER_RE = re.compile(r"^Merged-by:[ \t]*(.+?)[ \t]*$", re.M)
 # One record per commit in log(): %B is multi-line, so commits are separated
 # by \x1e and fields within a record by \x1f. Deliberately NOT git's
 # %(trailers:...) placeholder — that one needs git >= 2.22 and degrades by
@@ -103,9 +114,17 @@ def with_client_trailer(message: str) -> str:
 
 
 def author_of(body: str) -> str | None:
-    """The ``Client:`` trailer's value, or None for a commit written before
-    authorship existed. Never ``"unknown"``: absent is a different fact."""
-    match = _CLIENT_TRAILER_RE.search(body or "")
+    """The commit's client identity, or None for a commit written before
+    authorship existed. Never ``"unknown"``: absent is a different fact.
+
+    Two trailers, checked in that order: ``Client:``, which every snapshot
+    carries, and ``Merged-by:``, which is what ``core/merge.py`` has always
+    written on a two-parent merge commit. ``Client:`` wins when both are
+    present, because it is the one this module puts there.
+    """
+    text = body or ""
+    match = (_CLIENT_TRAILER_RE.search(text)
+             or _MERGED_BY_TRAILER_RE.search(text))
     return match.group(1) if match else None
 
 
@@ -366,9 +385,21 @@ class ProjectHistory:
         self.snapshot(path, f"restore {commit[:8]}")
 
     def revert(self, project_path: Path | str, commit: str,
-               message: str | None = None) -> str:
+               message: str | None = None, since: str | None = None) -> str:
         """Undo ONE commit's changes as a new commit, leaving every later
         commit standing; returns the new commit id (PRD-008, Decision 16).
+
+        ``since`` widens that to the RANGE ``since..commit`` — every commit
+        reachable from ``commit`` but not from ``since``, inverted newest
+        first into a single commit. It exists for one caller: undoing a
+        **fast-forward merge**, where the entry's ``undo_to`` names the state
+        the target branch was on and everything between it and the entry
+        arrived in that one merge. Reverting only the tip there leaves the
+        merge half undone. A ``since`` that is not an ancestor of ``commit``
+        is ignored (the single-commit revert is the honest fallback), and a
+        range that contains a merge commit fails cleanly rather than
+        half-applying: git needs a per-commit mainline it cannot be given for
+        a range, and :meth:`_rollback_revert` puts the tree back.
 
         This is what a ``scope: "mine"`` undo does when the caller's edit is no
         longer the branch head: ``restore`` would overlay a whole past tree and
@@ -377,10 +408,14 @@ class ProjectHistory:
         against its FIRST parent — the branch that was merged *into*, i.e. the
         one that keeps.
 
-        Never a partial apply (FR14): a conflict is rolled back and raised as a
-        ``ConflictError`` carrying ``{commit, reason, paths, blocked_by}``. A
-        commit whose changes are already gone from the tree raises the same
-        error with ``reason: "already_reverted"`` rather than an empty commit.
+        Never a partial apply (FR14), **in both directions**: a conflict is
+        rolled back and raised as a ``ConflictError`` carrying
+        ``{commit, reason, paths, blocked_by}``, and so is a failure *after*
+        the patch applied cleanly — a repository hook rejecting the commit
+        leaves the inverse patch applied and staged, which is a mutated project
+        behind an error saying nothing happened. A commit whose changes are
+        already gone from the tree raises the same error with
+        ``reason: "already_reverted"`` rather than an empty commit.
 
         **A dirty tree is refused before git is asked to start** (``reason:
         "uncommitted_changes"``, with the tracked paths). Two reasons, and the
@@ -420,18 +455,27 @@ class ProjectHistory:
                  "paths": dirty, "blocked_by": []},
             )
 
-        parents = self._run(
-            path, "rev-list", "--parents", "-n", "1", commit
-        ).stdout.split()[1:]
-        # git refuses a merge revert without a mainline; first parent = target.
-        mainline = ["-m", "1"] if len(parents) > 1 else []
+        base = self._range_base(path, commit, since)
+        if base is None:
+            parents = self._run(
+                path, "rev-list", "--parents", "-n", "1", commit
+            ).stdout.split()[1:]
+            # git refuses a merge revert without a mainline; 1st parent=target.
+            mainline = ["-m", "1"] if len(parents) > 1 else []
+            rev = [commit]
+        else:
+            # A range is inverted commit by commit, so a mainline cannot be
+            # meaningful for all of them at once; git says so and we roll back.
+            mainline = []
+            rev = [f"{base}..{commit}"]
 
-        attempt = self._run(path, "revert", "--no-commit", *mainline, commit,
+        before = self.head(path)
+        attempt = self._run(path, "revert", "--no-commit", *mainline, *rev,
                             check=False)
         if attempt.returncode != 0:
             paths = self._unmerged_paths(path)
             blocked_by = self._commits_touching(path, commit, paths)
-            self._rollback_revert(path)
+            self._rollback_revert(path, before)
             if not paths:
                 detail = (attempt.stderr or attempt.stdout).strip()
                 raise HistoryError(f"git revert failed: {detail}")
@@ -442,15 +486,45 @@ class ProjectHistory:
             )
         staged = self._run(path, "diff", "--cached", "--quiet", check=False)
         if staged.returncode == 0:
-            self._rollback_revert(path)
+            self._rollback_revert(path, before)
             raise ConflictError(
                 f"commit {commit[:8]} has already been undone",
                 {"commit": commit, "reason": "already_reverted",
                  "paths": [], "blocked_by": []},
             )
-        self._run(path, "commit", "-m", with_client_trailer(
-            message or f"revert {commit[:8]}"))
-        return self._run(path, "rev-parse", "HEAD").stdout.strip()
+        # From here the inverse patch IS applied and staged, so "never a
+        # partial apply" is now a statement about the way OUT: anything that
+        # fails between this point and the returned id has to put the tree,
+        # the index and HEAD back before the error leaves.
+        try:
+            self._run(path, "commit", "-m", with_client_trailer(
+                message or f"revert {commit[:8]}"))
+            return self._run(path, "rev-parse", "HEAD").stdout.strip()
+        except Exception:
+            self._rollback_revert(path, before)
+            raise
+
+    def _range_base(self, path: Path, commit: str,
+                    since: str | None) -> str | None:
+        """``since`` when it is a usable exclusive base for ``commit``, else
+        None (revert the single commit).
+
+        Three ways to be unusable, and all three degrade to the single-commit
+        revert rather than raising: a malformed or unknown id, an id that is
+        not an ancestor of ``commit`` (the range would then mean something
+        nobody asked for), and ``since == commit`` (an empty range).
+        """
+        if not isinstance(since, str) or not _COMMIT_RE.match(since):
+            return None
+        if not self.has_commit(path, since):
+            return None
+        resolved = self._run(path, "rev-parse", since, check=False).stdout.strip()
+        head = self._run(path, "rev-parse", commit, check=False).stdout.strip()
+        if not resolved or resolved == head:
+            return None
+        ancestry = self._run(path, "merge-base", "--is-ancestor", since, commit,
+                             check=False)
+        return since if ancestry.returncode == 0 else None
 
     def _dirty_paths(self, path: Path) -> list[str]:
         """Tracked paths with staged or unstaged modifications.
@@ -474,7 +548,7 @@ class ProjectHistory:
             paths.append(entry.strip('"'))
         return sorted(set(paths))
 
-    def _rollback_revert(self, path: Path) -> None:
+    def _rollback_revert(self, path: Path, before: str | None = None) -> None:
         """Undo what *this* revert started, and nothing else.
 
         Both steps are conditional because both are destructive and neither is
@@ -482,14 +556,21 @@ class ProjectHistory:
         sequencer (``REVERT_HEAD``), ``reset --hard`` only when something is
         still dirty afterwards. :meth:`revert` refuses a dirty tree up front,
         so anything dirty here is the revert's own doing.
+
+        ``before`` is the commit the tree started on, and it matters for
+        exactly one case: a failure *after* the revert commit already landed
+        (a ``rev-parse`` that failed behind it). "Reset to HEAD" would then
+        keep the very commit this rollback exists to remove, so the reset
+        names the starting commit instead and HEAD moves back with the tree.
         """
-        head = self._run(path, "rev-parse", "--git-path", "REVERT_HEAD",
-                         check=False)
-        marker = head.stdout.strip()
+        probe = self._run(path, "rev-parse", "--git-path", "REVERT_HEAD",
+                          check=False)
+        marker = probe.stdout.strip()
         if marker and (path / marker).is_file():
             self._run(path, "revert", "--abort", check=False)
-        if self._dirty_paths(path):
-            self._run(path, "reset", "--hard", "HEAD", check=False)
+        moved = before is not None and self.head(path) not in (None, before)
+        if moved or self._dirty_paths(path):
+            self._run(path, "reset", "--hard", before or "HEAD", check=False)
 
     def _unmerged_paths(self, path: Path) -> list[str]:
         """Paths git left conflicted — read BEFORE the abort clears them."""
@@ -670,8 +751,12 @@ class UndoCursor:
     linear "restore" commit and the durable history never rewrites.
 
     Stacks are process-memory (like the chat history): after a server
-    restart ``undo`` degrades to a single step back through the latest
-    snapshot via the git log, and ``redo`` is empty. Bounded to
+    restart ``undo`` degrades to a step back through the git log — the latest
+    snapshot under ``scope: "any"``, the caller's most recent one within
+    ``FALLBACK_SEARCH`` commits under ``"mine"`` — and ``redo`` is empty.
+    A fallback entry carries no ``undo_to`` (that fact lives only in the
+    stack), so a fast-forward merge undone after a restart goes back through
+    its first parent. Bounded to
     ``UNDO_LIMIT`` entries per stack, and keyed by ``store.lock_key(proj)``
     so each branch's working tree gets its own undo/redo history.
 
@@ -688,6 +773,12 @@ class UndoCursor:
     """
 
     UNDO_LIMIT = 100
+    #: How far back the post-restart ``scope: "mine"`` fallback searches the
+    #: durable log for the caller's most recent commit. Bounded on purpose and
+    #: at ``UNDO_LIMIT``'s order: it is one git call, and a client whose last
+    #: edit is more than a hundred snapshots old is asking for history, not
+    #: for undo.
+    FALLBACK_SEARCH = 100
     #: Selectors for a step. "any" = today's behavior; "mine" = the caller's
     #: own most recent entry, skipping (never discarding) everyone else's.
     SCOPES = ("any", "mine")
@@ -759,6 +850,37 @@ class UndoCursor:
 
     # ------------------------------------------------------------- internals
 
+    def _from_log(self, path, scope: str, caller: str) -> dict | None:
+        """The post-restart fallback: a stack entry rebuilt from git.
+
+        A restart empties the in-memory stacks, and the durable history is all
+        that is left. ``"any"`` steps back through the LATEST snapshot, which
+        is the whole of that scope's question. ``"mine"`` asks a different one
+        — "have *I* got anything to undo?" — and reading one commit answered it
+        with "is the newest commit mine?", so an edit by anybody else on top of
+        the caller's was enough to hear "nothing of yours to undo" about a
+        commit still sitting reachable in history. It therefore searches back
+        through :data:`FALLBACK_SEARCH` commits for the caller's most recent
+        one; that bound is the same order as ``UNDO_LIMIT`` and is what
+        ``log()`` itself will hand out, so this is one git call either way.
+
+        A ``restore`` snapshot is refused in both scopes: undoing it would act
+        as a redo, and repeated fallback undos would then oscillate between two
+        states. Authorship comes from the commit trailer here — the one place
+        it is read from git rather than from the stack.
+        """
+        limit = 1 if scope == "any" else self.FALLBACK_SEARCH
+        for row in self.history.log(path, limit=limit):
+            if row["message"].startswith("restore "):
+                # For "any" this is the single candidate; for "mine" an
+                # intervening restore is somebody's undo, not the caller's edit.
+                continue
+            if scope != "any" and row.get("author") != caller:
+                continue
+            return {"id": row["id"], "message_from_log": True,
+                    "label": row["message"], "author": row.get("author")}
+        return None
+
     def _step(self, proj: str, *, redo: bool, scope: str = "any") -> dict:
         from .model import ConflictError, ValidationError
 
@@ -794,17 +916,9 @@ class UndoCursor:
                 )
             entry = source.pop(index) if index >= 0 else None
             if entry is None and not redo:
-                # Post-restart fallback: one step back through the latest
-                # snapshot. Refused when that snapshot is itself a restore —
-                # undoing it would act as a redo, and repeated fallback undos
-                # would oscillate between two states. Under "mine" the
-                # trailer's author has to be the caller, or it is not theirs.
-                log = self.history.log(path, limit=1)
-                if (log and not log[0]["message"].startswith("restore ")
-                        and (scope == "any" or log[0].get("author") == caller)):
-                    entry = {"id": log[0]["id"], "message_from_log": True,
-                             "label": log[0]["message"],
-                             "author": log[0].get("author")}
+                found = self._from_log(path, scope, caller)
+                if found is not None:
+                    entry = found
             if entry is None:
                 raise ConflictError(
                     f"nothing to {verb}" if scope == "any"
@@ -814,6 +928,10 @@ class UndoCursor:
             # restore a tree — that would take everyone's later work with it.
             # It reverts exactly its own commit instead (Decision 16 step 4).
             head = self.history.head(path)
+            # The exclusive base of a RANGE revert — set only where ``undo_to``
+            # is (a fast-forward merge), because everything between it and the
+            # entry arrived in that one step. See ProjectHistory.revert.
+            revert_since = None
             if redo:
                 # entry["id"] captures the state to return to; going back is
                 # "undo the redo": restore its parent again later.
@@ -824,6 +942,12 @@ class UndoCursor:
                 if (revert_target is None and scope == "mine"
                         and entry["id"] != head):
                     revert_target = entry["id"]
+                    # ``undo_to`` is what the unscoped path restores to; the
+                    # scoped path cannot restore a whole tree (that would take
+                    # later work with it), so it inverts exactly the range the
+                    # entry brought in. Reverting only the tip, as this used
+                    # to, leaves a fast-forward merge half undone.
+                    revert_since = entry.get("undo_to")
                 target = None
                 if revert_target is None:
                     target = entry.get("undo_to") or self.history.parent_of(
@@ -842,6 +966,7 @@ class UndoCursor:
                     commit = self.history.revert(
                         path, revert_target,
                         f"revert {revert_target[:8]} ({verb} by {caller})",
+                        since=revert_since,
                     )
                     moved = {k: v for k, v in entry.items()
                              if k not in ("applied_by", "undone_by")}

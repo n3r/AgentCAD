@@ -450,6 +450,18 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   one change this feature must never take. Measured (changelog 0123, 2 693
   known-truth faces): **53.9% resolved, 2 mis-pins**, both on a body of
   revolution. Quote that number, not "never".
+- **A lone survivor is not evidence, for scripts either.** `find_snippet` used
+  to skip the stored context whenever exactly one copy of the snippet was left,
+  so deleting the anchored one of two identical lines re-pinned the thread onto
+  the unrelated survivor and reported `moved` at confidence **1.0** — the same
+  mistake as the face matcher's lone candidate. A lone hit must now be
+  corroborated by **at least one side** of the stored `before`/`after` (both
+  would orphan the ordinary case, where an edit rewrites one side), and a hit
+  the context contradicts falls through to the tier-2 line map, which answers
+  from the real diff. The gap that remains, stated rather than hidden: an
+  anchor that stored **no** context — the top *and* bottom of a file, or one
+  written before context existed — has nothing to corroborate and keeps the old
+  behavior.
 - **Two measured ceilings on face re-matching, both documented rather than
   tuned away.** (1) *Any* parameter change that alters the part's **bounding
   box** orphans every anchor on that part — `bbox_uvw` is relative to the
@@ -480,12 +492,29 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   claim-covered. Whole-manifest writes are turn-locked only, on purpose.
 - **The claim guard is installed lazily and from `routes_presence`**, because
   `tools_versioning` (`v`) REPLACES `write_guard` after `tools_comments` (`c`)
-  loads. Same trap, same fix as `ProposalManager`'s branch-delete guard.
+  loads. Same trap, same fix as `ProposalManager`'s branch-delete guard. **And
+  `install_write_guard` re-installs it after replacing the guard**, because
+  "lazy" alone left a window: a *later* `build_registry` disarmed claims until
+  the next heartbeat. It is conditional on `service.claims` already existing,
+  so `checks.py`'s ephemeral service still ends with `write_guard is None`
+  (PRD-004 pins that) — do not make it unconditional.
+- **An armed override is spent by the first write it authorizes, and used only
+  against a real conflict.** Both halves matter: using it where nothing blocks
+  force-steals a claim nobody was defending, and leaving it armed because
+  nothing blocked lets it steal the *next* claim with no second confirmation.
 - **Presence is an HTTP heartbeat, not a client→server WebSocket.** `/ws` is in
   `app.py` (a core this feature may not edit), carries no client identity, and
   its Host guard is HTTP middleware. The heartbeat *response* is the mechanism;
   `presence_changed` is an optimization. The registry is in-memory and never
   persisted.
+- **Presence is bounded, because the identity is a header anyone can rotate.**
+  `MAX_ID_CHARS` (64, refused not truncated — a truncation would merge two
+  identities into one roster/claim/mention key), `MAX_CLIENTS` (200, a full
+  roster refuses a *new* row rather than evicting an incumbent, because a
+  flood is by construction the most-recently-seen rows), and `MAX_BUCKETS`
+  (512, or rotation bypasses the rate limit outright — buckets refilled to
+  full burst are evicted first, since they carry no information). The
+  `presence_changed` broadcast *is* the roster, so no separate bound.
 - **`notification` events are broadcast to every `/ws` client and filtered
   client-side.** Honest on a single-node, unauthenticated, 127.0.0.1-only
   server; PRD-005 is what makes delivery per-principal.
@@ -502,7 +531,22 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   goes in the body, so every `%s` subject contract still holds; git's
   author/committer stay the fixed local identity because the client id is an
   unvalidated header. `log()` reports `author: null` — never `"unknown"` — for
-  a commit written before authorship existed.
+  a commit written before authorship existed. **`author_of` reads `Merged-by:`
+  too**: `merge.py` has written that trailer since PRD-001 and its exact
+  message is pinned by that feature's tests, so authorship is read from both
+  spellings rather than by rewriting what a merge says.
+- **`undo {scope: "mine"}` off the head is a `git revert`, and it honours
+  `undo_to`.** A fast-forward merge moves the branch onto a commit whose first
+  parent belongs to the *source*, so `undo_to` names the state the target was
+  really on; the scoped path reverts the whole range `undo_to..entry` in one
+  commit (a single-commit revert would leave the merge half undone) and a
+  whole-tree restore is never an option there, because it would take everyone
+  else's later work with it.
+- **`ProjectHistory.revert` is atomic in both directions.** A dirty tree is
+  refused up front, a conflict rolls back — and a failure *after* the patch
+  applied (a repo hook rejecting the commit) resets tree, index and HEAD to
+  where they started before the error leaves. "Never a partial apply" is a
+  statement about the way out too.
 - **`actor_kind`/`author_kind` is bookkeeping, not authentication.** It is
   `human` iff the identity is the browser. Say so on every surface that shows
   it, until PRD-005.

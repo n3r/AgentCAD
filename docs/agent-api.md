@@ -43,8 +43,11 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
   target is gone or no candidate cleared the tolerance — the contract, not a
   bug) and `unverified` (*we did not look*: the part is unbuilt, git is
   absent, the packet is frozen, the anchor belongs to another branch).
-  `unverified` is never a synonym for "fine". See [Review
-  threads](#review-threads).
+  `unverified` is never a synonym for "fine", and **`other_branch` wins over
+  `orphaned` at every level** — a parameter, a line range or a face missing
+  from a part that exists on both branches reads `unverified`/`other_branch`,
+  because "it was removed" would be a claim about a branch the thread was
+  never about. See [Review threads](#review-threads).
 
 ## Tools
 
@@ -600,6 +603,15 @@ exists (`bbox_uvw` is measured against those bounds — which is exactly what
 makes a pure scale survivable), and a **closed curved face** such as a
 cylinder's side orphans on any edit, because its area-weighted normal nearly
 cancels and no candidate clears the normal gate.
+
+**A script range is re-found by its text plus its context, never by its text
+alone.** Tier 1 looks for the stored snippet verbatim; a copy found elsewhere
+has to be corroborated by at least one side of the stored surrounding lines,
+**including when it is the only copy left** — deleting the anchored one of two
+identical lines used to re-pin the thread onto the unrelated survivor and
+report `moved` at confidence 1.0. A hit the context contradicts falls through
+to tier 2, a `difflib` map over the blob at the anchor's own head, which
+answers from the real diff or `orphaned`s.
 
 **Listing never builds.** Resolution reads the manifest, the meshes a build
 already wrote and at most one git blob per anchor — so a face anchor on a part

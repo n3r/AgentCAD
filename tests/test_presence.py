@@ -204,6 +204,74 @@ def test_mention_ids_span_branches_and_expire():
     assert reg.mention_ids("demo") == set()
 
 
+def test_a_rotating_identity_cannot_grow_the_roster_or_the_buckets():
+    """K11 — presence had no bound of any kind.
+
+    The identity is a self-asserted header on an unauthenticated local server,
+    so "one client, one id" is a convention rather than a fact. Thousands of
+    distinct ids each took a roster row that lived for the TTL, each got a
+    fresh full token bucket (so rate limiting was bypassed by rotating), each
+    bucket stayed allocated after its row expired, and every one of them
+    broadcast a roster that had grown by one.
+    """
+    clock = Clock()
+    reg = PresenceRegistry(clock=clock)
+    bucket = presence.TokenBucket(clock=clock)
+
+    for n in range(5000):
+        who = f"browser:{n:08x}"
+        bucket.take(who)
+        try:
+            reg.touch("demo", who, project="demo")
+        except ValidationError as exc:
+            assert exc.details["max"] == presence.MAX_CLIENTS
+    assert len(reg._clients) <= presence.MAX_CLIENTS      # noqa: SLF001
+    assert len(bucket._buckets) <= presence.MAX_BUCKETS   # noqa: SLF001
+    # The broadcast is the roster, so bounding one bounds the other.
+    assert len(reg.roster("demo")) <= presence.MAX_CLIENTS
+
+    # An incumbent is never evicted to make room for a newcomer: a full roster
+    # refuses the join instead, because rotating ids are the newest rows and
+    # LRU would hand the flooder everybody else's seat.
+    incumbent = reg.roster("demo")[0]["id"]
+    reg.touch("demo", incumbent, project="demo", surface="editor")
+    assert any(c["id"] == incumbent for c in reg.roster("demo"))
+
+    # …and the bound is a TTL away from clearing, not a restart.
+    clock.advance(PRESENCE_TTL_S + 1)
+    assert reg.roster("demo") == []
+    assert reg.touch("demo", "browser:real", project="demo")[1] is True
+
+
+def test_an_over_long_identity_is_refused_at_the_route_before_the_limiter(
+        client):
+    """…and at the route, not only in the registry: the rate limiter keys a
+    bucket by the raw header and runs first, so a check that lived only in
+    ``touch`` would let an unbounded string become a dict key on the way
+    past."""
+    _service, _registry, http = client
+    huge = "browser:" + "z" * 500
+    refused = http.post("/api/projects/demo/presence", json={},
+                        headers={"X-Agent-Id": huge})
+    assert refused.status_code == 422
+    assert refused.json()["error"]["details"]["max"] == presence.MAX_ID_CHARS
+    # Nobody joined, and the GET is refused for the same identity too.
+    assert _ids(_beat(http, "browser:aaaa")) == ["browser:aaaa"]
+    assert http.get("/api/projects/demo/presence",
+                    headers={"X-Agent-Id": huge}).status_code == 422
+
+
+def test_an_over_long_identity_is_refused_rather_than_truncated():
+    """An id is a dict key in three registries and is echoed into everybody
+    else's toolbar. Truncating would silently merge two identities; refusing
+    says what happened."""
+    reg = PresenceRegistry(clock=Clock())
+    with pytest.raises(ValidationError) as excinfo:
+        reg.touch("demo", "browser:" + "z" * 500, project="demo")
+    assert excinfo.value.details["max"] == presence.MAX_ID_CHARS
+    assert reg._clients == {}                            # noqa: SLF001
+
+
 def test_the_token_bucket_refills_at_one_per_second():
     clock = Clock()
     bucket = presence.TokenBucket(clock=clock)

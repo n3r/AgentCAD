@@ -35,6 +35,13 @@ a forged beacon a way to disarm the protection another human is editing under,
 and a claim already expires on its own in 90 s. Nothing else on this router
 reads an identity from a body.
 
+Every identity that reaches this router is bounded first
+(``presence.check_identity``) — at the *route*, not only inside the registry,
+because the rate limiter allocates a bucket keyed by the raw string and runs
+before the roster does. An id longer than ``MAX_ID_CHARS`` is a 422 rather than
+a truncation: two ids cut to the same 64 characters would be one client to the
+roster, the claims and the mentions.
+
 The response is the mechanism. Every call, including a throttled one, answers
 with the whole roster, so a client that misses every ``presence_changed``
 converges within one heartbeat. That is also why over-rate calls are HTTP 200
@@ -50,6 +57,7 @@ from ..core import locks
 from ..core.model import ValidationError
 from ..core.presence import (
     TokenBucket,
+    check_identity,
     ensure_claim_guard,
     ensure_claims,
     ensure_presence,
@@ -102,13 +110,17 @@ def build_router(service, registry) -> APIRouter:
 
     @router.get("/projects/{proj}/presence")
     def get_presence(proj: str):
-        return presence.payload(_where(proj), proj, locks.current_client_id())
+        return presence.payload(_where(proj), proj,
+                                check_identity(locks.current_client_id()))
 
     @router.post("/projects/{proj}/presence")
     async def heartbeat(proj: str, request: Request):
         body = await _json(request)
         key = _where(proj)
-        who = locks.current_client_id()
+        # Checked HERE, before the rate limiter, not only inside ``touch``:
+        # the bucket is keyed by the raw identity and is allocated first, so a
+        # header nobody bounded would become a dict key on the way past.
+        who = check_identity(locks.current_client_id())
 
         if body.get("leave"):
             # The pagehide beacon (see the module docstring for why this one
@@ -167,7 +179,7 @@ def build_router(service, registry) -> APIRouter:
             raise ValidationError("claims/override needs a part",
                                   {"got": body.get("part")})
         part = part.strip()
-        who = locks.current_client_id()
+        who = check_identity(locks.current_client_id())
         ensure_claim_guard(service)
         claims = ensure_claims(service)
         armed = claims.arm_override(key, part, who)

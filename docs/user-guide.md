@@ -660,10 +660,18 @@ you.
 - **A face.** Click a face in the viewport and press **Comment** on the face
   card. Open face threads then draw a numbered **pin** over the model, which
   follows the face as parameters change — and disappears when the anchor stops
-  being `ok`/`moved`, rather than floating over the wrong place.
+  being `ok`/`moved`, rather than floating over the wrong place. A pin is only
+  ever drawn once the browser has located the face on the geometry *currently
+  on screen*; in the moment between a rebuild and that data arriving there is
+  no pin at all, because the only other position available is where the face
+  used to be, and a pin you cannot tell apart from a located one is worse than
+  no pin.
 - **Script lines.** Select lines in the Code editor and comment; the thread
   gets a marker in the editor **gutter**, which moves when you insert lines
-  above it.
+  above it. The snippet is re-found by its text *and* the lines around it: if
+  the same line exists twice and the commented one is deleted, the thread does
+  not silently jump to the other copy — it falls back to a real diff of the
+  script, and orphans if that cannot place it either.
 - **A parameter.** A count **badge** on the parameter row.
 - **A proposal's diff hunk.** Hover a diff line in a proposal's Files tab; the
   hunk header then carries a count chip.
@@ -700,7 +708,10 @@ parameter being changed) that part shows an **"<name> is editing"** chip, and
 your write to it comes back as a conflict dialog naming them, with an
 **Override** button. Override arms one single-use 30-second override and
 retries your save; the override is announced to everyone, so taking a part is
-on the record. Claims are per part — somebody editing `bracket` never blocks
+on the record. It really is single-use: it is spent by that retry whether or
+not the other person was still holding the part when it landed, so if they
+pick the part back up a moment later your next save asks you again rather than
+taking it silently. Claims are per part — somebody editing `bracket` never blocks
 your work on `nozzle` — they last 90 seconds, they are dropped the moment
 editing stops, and they apply **between people only**: an agent is never
 blocked by your open editor. The project-wide **turn lock** is the other

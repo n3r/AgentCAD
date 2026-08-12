@@ -549,7 +549,9 @@ list_comments
                                                   → moved | orphaned
                              → never built        → unverified/part_not_built
        script_range        → exact snippet at the stored range      → ok
-                             exact snippet elsewhere + context      → moved
+                             exact snippet elsewhere, corroborated
+                             by the stored context (a LONE copy the
+                             context contradicts is not a match)    → moved
                              difflib map over the blob at anchor.head
                                                   → moved | orphaned
                              no git / head gone   → unverified
@@ -560,12 +562,20 @@ list_comments
 Four states, three of which are not "fine": `ok`, `moved`, `orphaned`,
 `unverified` (*we did not look*). The contract is **orphan rather than guess** —
 an ambiguous match is an orphan, a lone candidate must clear an absolute area
-bar of its own (`LONE_AREA_REL`, the code review's finding), and the tolerances
-were set by measurement (`docs/changelog/0113-prd008-anchor-resolution.md`,
-re-measured in `0123`: 53.9% resolved, 2 mis-pins in 2 693 known-truth faces —
-a strong bias, not a guarantee). Resolution issues **zero kernel calls**: it
-reads the manifest, meshes a build already wrote, and at most one git blob per
-anchor.
+bar of its own (`LONE_AREA_REL`, the code review's finding), a lone *snippet*
+must be corroborated by the stored context (changelog `0124` — the same
+"nothing left to compare against" mistake, in the script matcher), and the
+tolerances were set by measurement
+(`docs/changelog/0113-prd008-anchor-resolution.md`, re-measured in `0123`:
+53.9% resolved, 2 mis-pins in 2 693 known-truth faces — a strong bias, not a
+guarantee). Resolution issues **zero kernel calls**: it reads the manifest,
+meshes a build already wrote, and at most one git blob per anchor.
+
+Absence is classified **only after** deciding whether we are looking at the
+anchor's own branch: a parameter, a line range or a face missing from a part
+that exists on both branches is `unverified`/`other_branch`, not an orphan,
+because "it was removed" would be a claim about a branch the thread was never
+about (design Decision 7, widened in changelog `0124`).
 
 **Presence** is an in-memory registry keyed `(lock_key, client_id)` with a 45 s
 TTL, fed by a 15 s HTTP heartbeat (`POST /api/projects/{p}/presence`) rather
@@ -573,7 +583,11 @@ than by the WebSocket: `/ws` lives in `app.py`, carries no client identity, and
 its Host guard is HTTP middleware. The heartbeat *response* carries the whole
 roster, so a client that misses every `presence_changed` converges within one
 beat; an over-rate heartbeat is HTTP 200 with `throttled: true`, never an
-error.
+error. Everything about it is bounded, because the identity is a header anyone
+can rotate: `MAX_ID_CHARS` (refused, never truncated — a truncation would merge
+two identities into one key), `MAX_CLIENTS` (a full roster refuses a *new* row
+rather than evicting an incumbent) and `MAX_BUCKETS` on the rate limiter,
+without which rotation bypasses the limit outright.
 
 **Two coordination mechanisms, one precedence rule**, evaluated on every
 persistent write at `ProjectStore.write_guard`:
