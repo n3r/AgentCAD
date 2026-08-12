@@ -215,14 +215,25 @@ def test_the_schemas_are_whitelisted(demo):
 
 def test_the_descriptions_state_the_honest_anchor_contract(demo):
     """An agent must not have to discover the four states, the orphan rate or
-    the "never render the stored ordinal" rule by being wrong once."""
+    the "never render the stored ordinal" rule by being wrong once.
+
+    The face-match rate moved from "two times in three, 0 mis-pins" to "about
+    half, 2 in 2 693" when the spike was re-measured against a stricter
+    ground-truth oracle (changelog 0123). A tool description that still
+    promised the old rate would be the *worst* place for the old number to
+    survive, so this asserts the new one — and, more importantly, that the
+    description tells an agent a wrong face is possible at all.
+    """
     _service, registry = demo
     listing = registry.get("list_comments").description.lower()
 
     for status in ("ok", "moved", "orphaned", "unverified"):
         assert status in listing
     assert "resolution.face_index" in listing  # never the stored ordinal
-    assert "two times in three" in listing     # the measured face-match rate
+    assert "about half" in listing             # the measured face-match rate
+    assert "2 693" in listing                  # ...over a stated sample
+    assert "rare but not impossible" in listing
+    assert "face_info" in listing              # what to do when it matters
     assert "never rebuilds" in listing or "never builds" in listing
     assert "not authentication" in listing     # actor_kind is bookkeeping
 

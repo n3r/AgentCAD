@@ -28,8 +28,12 @@ carries ``client_id`` in its body. That grants nobody anything: the header is
 itself unvalidated and self-asserted (identity here is bookkeeping, not
 authentication), and the worst a forged leave can do is drop a roster row that
 the sender's next 15-second heartbeat puts straight back — and that the TTL
-would have dropped within 45 s regardless. Nothing else on this router reads
-an identity from a body.
+would have dropped within 45 s regardless. The stated blast radius is the
+*whole* blast radius: a leave touches the roster and nothing else. It
+deliberately does **not** release the leaver's claims, because that would make
+a forged beacon a way to disarm the protection another human is editing under,
+and a claim already expires on its own in 90 s. Nothing else on this router
+reads an identity from a body.
 
 The response is the mechanism. Every call, including a throttled one, answers
 with the whole roster, so a client that misses every ``presence_changed``
@@ -110,12 +114,17 @@ def build_router(service, registry) -> APIRouter:
             # The pagehide beacon (see the module docstring for why this one
             # body may name its own identity). Publishing on the way out is
             # what makes an avatar disappear at once rather than at the TTL.
+            #
+            # A ROSTER ROW ONLY. This used to release every claim the named
+            # identity held, which made a forged beacon a way to switch off
+            # the one protection a human editing a part is relying on — a far
+            # bigger blast radius than the "drop a row the next heartbeat puts
+            # back" this router's docstring promises. A claim is soft and
+            # expires on its own 90-second TTL; waiting that out is the
+            # designed behaviour, and it is the only one a self-asserted
+            # identity can be trusted with.
             leaving = _beacon_identity(body) or who
-            gone = presence.leave(key, leaving)
-            # A window that closed is not still editing: its claims go with it,
-            # rather than making everyone else wait out the 90-second TTL.
-            dropped = sync_claim(service, key, proj, leaving, None, False)
-            if gone or dropped:
+            if presence.leave(key, leaving):
                 presence.publish(key, proj)
             return presence.payload(key, proj, who)
 

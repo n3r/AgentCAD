@@ -377,11 +377,25 @@ class ProjectHistory:
         against its FIRST parent — the branch that was merged *into*, i.e. the
         one that keeps.
 
-        Never a partial apply (FR14): a conflict is rolled back with
-        ``revert --abort`` plus a hard reset and raised as a ``ConflictError``
-        carrying ``{commit, reason, paths, blocked_by}``. A commit whose
-        changes are already gone from the tree raises the same error with
-        ``reason: "already_reverted"`` rather than an empty commit.
+        Never a partial apply (FR14): a conflict is rolled back and raised as a
+        ``ConflictError`` carrying ``{commit, reason, paths, blocked_by}``. A
+        commit whose changes are already gone from the tree raises the same
+        error with ``reason: "already_reverted"`` rather than an empty commit.
+
+        **A dirty tree is refused before git is asked to start** (``reason:
+        "uncommitted_changes"``, with the tracked paths). Two reasons, and the
+        second is the one that bit: git itself refuses to begin a revert that
+        would overwrite a local modification, so there was nothing to roll
+        back — but the rollback ran anyway, and a blanket ``reset --hard``
+        deleted the user's own unsaved edit (the user guide documents editing
+        ``parts/<id>.py`` in an external editor, so any other client's
+        ``undo {scope: "mine"}`` could reach it). And even where git *would*
+        have started, rolling a failure back cannot distinguish the revert's
+        changes from the ones that were already there. From a clean tree it
+        can: :meth:`_rollback_revert` aborts only a sequencer that actually
+        started and resets only a tree the revert actually dirtied. Untracked
+        files are not "uncommitted work" here — ``reset --hard`` never removes
+        them, and the next snapshot adds them.
         """
         from .model import ConflictError
 
@@ -397,6 +411,15 @@ class ProjectHistory:
         if probe.returncode != 0:
             raise HistoryError(f"unknown commit {commit!r}")
 
+        dirty = self._dirty_paths(path)
+        if dirty:
+            raise ConflictError(
+                f"cannot undo {commit[:8]}: the project has uncommitted "
+                "changes; save or discard them and try again",
+                {"commit": commit, "reason": "uncommitted_changes",
+                 "paths": dirty, "blocked_by": []},
+            )
+
         parents = self._run(
             path, "rev-list", "--parents", "-n", "1", commit
         ).stdout.split()[1:]
@@ -408,8 +431,7 @@ class ProjectHistory:
         if attempt.returncode != 0:
             paths = self._unmerged_paths(path)
             blocked_by = self._commits_touching(path, commit, paths)
-            self._run(path, "revert", "--abort", check=False)
-            self._run(path, "reset", "--hard", "HEAD", check=False)
+            self._rollback_revert(path)
             if not paths:
                 detail = (attempt.stderr or attempt.stdout).strip()
                 raise HistoryError(f"git revert failed: {detail}")
@@ -420,7 +442,7 @@ class ProjectHistory:
             )
         staged = self._run(path, "diff", "--cached", "--quiet", check=False)
         if staged.returncode == 0:
-            self._run(path, "reset", "--hard", "HEAD", check=False)
+            self._rollback_revert(path)
             raise ConflictError(
                 f"commit {commit[:8]} has already been undone",
                 {"commit": commit, "reason": "already_reverted",
@@ -429,6 +451,45 @@ class ProjectHistory:
         self._run(path, "commit", "-m", with_client_trailer(
             message or f"revert {commit[:8]}"))
         return self._run(path, "rev-parse", "HEAD").stdout.strip()
+
+    def _dirty_paths(self, path: Path) -> list[str]:
+        """Tracked paths with staged or unstaged modifications.
+
+        Untracked (``??``) and ignored (``!!``) entries are deliberately
+        excluded: a revert neither stages nor deletes them, so they are not
+        work a rollback could destroy, and treating them as dirty would block
+        undo in any project a user has dropped a scratch file into.
+        """
+        result = self._run(path, "status", "--porcelain", check=False)
+        if result.returncode != 0:
+            return []
+        paths = []
+        for line in result.stdout.splitlines():
+            if len(line) < 4 or line[:2] in ("??", "!!"):
+                continue
+            entry = line[3:].strip()
+            # "R  old -> new": the new name is the one on disk.
+            if " -> " in entry:
+                entry = entry.split(" -> ", 1)[1]
+            paths.append(entry.strip('"'))
+        return sorted(set(paths))
+
+    def _rollback_revert(self, path: Path) -> None:
+        """Undo what *this* revert started, and nothing else.
+
+        Both steps are conditional because both are destructive and neither is
+        always needed: ``revert --abort`` only when git actually opened a
+        sequencer (``REVERT_HEAD``), ``reset --hard`` only when something is
+        still dirty afterwards. :meth:`revert` refuses a dirty tree up front,
+        so anything dirty here is the revert's own doing.
+        """
+        head = self._run(path, "rev-parse", "--git-path", "REVERT_HEAD",
+                         check=False)
+        marker = head.stdout.strip()
+        if marker and (path / marker).is_file():
+            self._run(path, "revert", "--abort", check=False)
+        if self._dirty_paths(path):
+            self._run(path, "reset", "--hard", "HEAD", check=False)
 
     def _unmerged_paths(self, path: Path) -> list[str]:
         """Paths git left conflicted — read BEFORE the abort clears them."""

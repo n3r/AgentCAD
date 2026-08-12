@@ -529,7 +529,11 @@ rewritten (unread = mention seqs minus every seq a later `read` line names).
 
 **Anchor resolution is a read-time computation, never stored.** The anchor is
 immutable evidence stamped by the server at creation; what it *means now* is
-recomputed on every list:
+recomputed on every list. It issues no kernel call, forces no rebuild,
+regenerates no review packet and writes to no thread, anchor, manifest or
+proposal — the one thing it does write is a `<key>.facesig.json` memo of the
+face table beside the mesh in the project's `.cache`, derived data keyed by the
+same content hash:
 
 ```
 list_comments
@@ -554,11 +558,14 @@ list_comments
 ```
 
 Four states, three of which are not "fine": `ok`, `moved`, `orphaned`,
-`unverified` (*we did not look*). The contract is **orphan, never mis-pin** —
-an ambiguous match is an orphan, and the tolerances were set by measurement
-(see `docs/changelog/0113-prd008-anchor-resolution.md`). Resolution issues
-**zero kernel calls**: it reads the manifest, meshes a build already wrote, and
-at most one git blob per anchor.
+`unverified` (*we did not look*). The contract is **orphan rather than guess** —
+an ambiguous match is an orphan, a lone candidate must clear an absolute area
+bar of its own (`LONE_AREA_REL`, the code review's finding), and the tolerances
+were set by measurement (`docs/changelog/0113-prd008-anchor-resolution.md`,
+re-measured in `0123`: 53.9% resolved, 2 mis-pins in 2 693 known-truth faces —
+a strong bias, not a guarantee). Resolution issues **zero kernel calls**: it
+reads the manifest, meshes a build already wrote, and at most one git blob per
+anchor.
 
 **Presence** is an in-memory registry keyed `(lock_key, client_id)` with a 45 s
 TTL, fed by a 15 s HTTP heartbeat (`POST /api/projects/{p}/presence`) rather

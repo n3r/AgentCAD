@@ -441,10 +441,15 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   means *we did not look* (unbuilt part, no git, frozen packet) and must never
   be rendered as "fine". Address geometry through `resolution.face_index` and
   lines through `resolution.start`/`end` — never the stored ordinal.
-- **Orphan, never mis-pin.** An ambiguous face match is an orphan; a
-  low-confidence line remap is an orphan. Loosening a tolerance to make a pin
-  appear is the one change this feature must never take (measured: at
-  `AMBIGUITY_MARGIN 0.20`, 0 mis-pins in 2 537 faces; at 0.15, one appears).
+- **Orphan rather than guess — a bias, not a guarantee.** An ambiguous face
+  match is an orphan; a low-confidence line remap is an orphan; and a **lone
+  candidate** is an orphan unless it clears `LONE_AREA_REL` on its own, because
+  `AMBIGUITY_MARGIN` cannot fire when there is nothing to compare against —
+  that gap was a real mis-pin (a cut-away boss re-pinning onto the plate under
+  it at 0.87 "confidence"). Loosening a tolerance to make a pin appear is the
+  one change this feature must never take. Measured (changelog 0123, 2 693
+  known-truth faces): **53.9% resolved, 2 mis-pins**, both on a body of
+  revolution. Quote that number, not "never".
 - **Two measured ceilings on face re-matching, both documented rather than
   tuned away.** (1) *Any* parameter change that alters the part's **bounding
   box** orphans every anchor on that part — `bbox_uvw` is relative to the

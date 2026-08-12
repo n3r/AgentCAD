@@ -192,6 +192,63 @@ def test_an_edit_delivers_only_the_newly_mentioned(demo):
         "chat:main", "chat:build"]
 
 
+def test_a_removed_and_re_added_mention_is_not_delivered_twice(demo):
+    """"Already delivered" is a fact about the *log*, not about the body.
+
+    ``already`` used to read the comment's CURRENT ``mentions`` — so an edit
+    that dropped a handle wiped the only record that it had been delivered,
+    and putting it back rang the same person again. The delivery record is the
+    thread's audit log, which is append-only and cannot be edited away.
+    """
+    service, _registry = demo
+    _post(demo[1], "@chat:main have a look")
+    service.comments.edit_comment("demo", "1", "1", "never mind")
+    service.comments.edit_comment("demo", "1", "1", "@chat:main have a look")
+
+    records = service.comments.notifications("demo")
+    assert [r["to"] for r in records] == ["chat:main"]
+
+
+def test_a_comment_may_not_mention_more_people_than_it_may_attach(demo):
+    """A cap, for the same reason attachments have one: one comment is one
+    mutation, and one mutation must not mint an unbounded number of records
+    and WebSocket frames. The handles stay in the body — nothing is rewritten;
+    the *comment* is refused so the author can see and fix it."""
+    from agentcad.core.comments import MAX_MENTIONS
+
+    service, registry = demo
+    body = " ".join(f"@chat:s{n}" for n in range(MAX_MENTIONS + 1))
+    refused = registry.call("add_comment", {"project": "demo",
+                                            "anchor": _anchor(), "body": body})
+    assert refused["error"]["type"] == "validation_error", refused
+    assert refused["error"]["details"] == {"max": MAX_MENTIONS,
+                                           "given": MAX_MENTIONS + 1}
+    assert service.comments.list("demo")["threads"] == []
+    assert service.comments.notifications("demo") == []
+
+    # Exactly at the cap still goes through.
+    ok = " ".join(f"@chat:s{n}" for n in range(MAX_MENTIONS))
+    assert "error" not in registry.call(
+        "add_comment", {"project": "demo", "anchor": _anchor(), "body": ok})
+    assert len(service.comments.notifications("demo")) == MAX_MENTIONS
+
+
+def test_the_notification_sequence_is_counted_incrementally(demo):
+    """``seq`` used to be ``len(read_text().splitlines()) + 1`` on every
+    append — quadratic in the log, on the path a single comment can drive
+    ``MAX_MENTIONS`` times. It is now carried forward, and must still be the
+    line number a full re-count would give."""
+    service, registry = demo
+    for n in range(6):
+        _post(registry, f"@chat:main @chat:build number {n}")
+    records = service.comments.notifications("demo")
+    assert [r["seq"] for r in records] == list(range(1, len(records) + 1))
+
+    path = service.comments.store.notifications_path("demo")
+    lines = [line for line in path.read_text().splitlines() if line.strip()]
+    assert len(lines) == len(records)
+
+
 def test_the_log_is_append_only_across_a_read_and_a_new_mention(demo):
     service, registry = demo
     _post(registry, "@chat:main one")

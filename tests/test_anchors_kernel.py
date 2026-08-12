@@ -49,6 +49,31 @@ def build(p):
     return b3d.Box(p.plate_w, 40, 10)
 '''
 
+# The same plate with a boss so wide that its top face is nearly the plate top:
+# same normal, same normalized position, and an area share close enough to slip
+# through a 50% gate. This is the shape the mis-pin was found on.
+WIDE_BOSS = '''\
+import build123d as b3d
+
+PARAMS = {
+    "plate_w": {"default": 40.0, "min": 20.0, "max": 80.0, "unit": "mm"},
+    "boss_r":  {"default": 19.0, "min": 4.0,  "max": 19.5, "unit": "mm"},
+}
+
+
+def build(p):
+    plate = b3d.Box(p.plate_w, 40, 10)
+    boss = b3d.Cylinder(radius=p.boss_r, height=10).moved(
+        b3d.Location((0, 0, 10)))
+    return plate + boss
+'''
+
+WIDE_NO_BOSS = WIDE_BOSS.replace(
+    "    boss = b3d.Cylinder(radius=p.boss_r, height=10).moved(\n"
+    "        b3d.Location((0, 0, 10)))\n    return plate + boss\n",
+    "    return plate\n")
+assert "boss" not in WIDE_NO_BOSS.split("def build")[1]
+
 TWO_SOLIDS = '''\
 import build123d as b3d
 
@@ -193,6 +218,37 @@ def test_a_face_that_was_cut_away_is_orphaned(demo):
     assert view["anchor"]["face_index"] == face["index"]   # last-known anchor
     assert view["comments"][0]["body"] == "this boss needs a fillet"
     assert manager.list("demo")["counts"]["orphaned"] == 1
+
+
+def test_a_cut_away_face_does_not_re_pin_onto_the_survivor_under_it(demo):
+    """The mis-pin the ambiguity margin could not catch.
+
+    ``match_face`` only ran its ambiguity check when there were *two* or more
+    candidates, so a face with exactly one survivor in the pool was accepted
+    for being the only one left — and reported a margin of ``best - 0``, i.e.
+    near-maximal confidence. Widen the boss until its top face is the same
+    size, orientation and normalized position as the plate top hiding beneath
+    it, cut the boss away, and the thread moved onto the plate at 0.87.
+
+    A lone candidate now has to clear an absolute area bar
+    (:data:`anchors.LONE_AREA_REL`), because with no rival there is nothing
+    else left to corroborate it.
+    """
+    service, manager = demo
+    service.update_part("demo", "boss", script=WIDE_BOSS)
+    anchors.forget_tables()
+    face = _top_of_boss(service)
+    thread = manager.create(
+        "demo", {"kind": "face", "part": "boss", "face_index": face["index"]},
+        "this boss needs a fillet")
+    assert thread["resolution"]["status"] == "ok"
+
+    service.update_part("demo", "boss", script=WIDE_NO_BOSS)
+    resolution = manager.get("demo", thread["id"])["resolution"]
+
+    assert resolution["status"] == "orphaned", resolution
+    assert resolution["reason"] == "area_mismatch", resolution
+    assert resolution["hint"]
 
 
 def test_an_orphaned_thread_is_still_listable_and_resolvable(demo):

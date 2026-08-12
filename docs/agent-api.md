@@ -588,10 +588,13 @@ stored `anchor` never changes under you. Address a face through
 the stored `anchor.face_index`, which is the ordinal at creation time. Face
 ordinals are not stable across a parameter change (measured: 87–93% hold; one
 bundled part renumbered 20 of its 44 faces for a **1%** tweak), so a face
-anchor is re-matched from its stored mesh signature: measured over 2 537 faces
-it resolves about **two times in three** and honestly `orphaned` otherwise,
-with **zero** mis-pins. Orphan, never mis-pin. Two ceilings are worth knowing
-before you read an `orphaned` as a bug: a parameter change that moves a face's
+anchor is re-matched from its stored mesh signature: measured over 2 693 faces
+whose identity is known it resolves about **half** the time and comes back
+honestly `orphaned` otherwise, with **2 mis-pins in 2 693** (both on a body of
+revolution). Orphan rather than guess — a strong bias, not a guarantee, so
+treat a resolved face as strong evidence and confirm with `face_info` when the
+answer decides something expensive. Two ceilings are worth knowing before you
+read an `orphaned` as a bug: a parameter change that moves a face's
 position *relative to the shape's bounds* orphans it even though the face still
 exists (`bbox_uvw` is measured against those bounds — which is exactly what
 makes a pure scale survivable), and a **closed curved face** such as a

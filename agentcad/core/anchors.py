@@ -19,10 +19,18 @@ of four states:
 
 Two rules govern everything below.
 
-**Orphan, never mis-pin.** A comment pointing at the wrong face is worse than a
-comment pointing at nothing, so an ambiguous best match is an orphan and a
-low-confidence line remap is an orphan. Loosening a tolerance to make a pin
-appear is the one change this module must never take.
+**Orphan rather than guess.** A comment pointing at the wrong face is worse
+than a comment pointing at nothing, so an ambiguous best match is an orphan, a
+low-confidence line remap is an orphan, and a lone candidate that only *looks*
+certain because it had no rival is an orphan unless it clears an absolute bar
+on its own (:data:`LONE_AREA_REL`). Loosening a tolerance to make a pin appear
+is the one change this module must never take.
+
+This is a strong bias, **not a guarantee**, and the difference is stated
+wherever the number is: the re-measurement below finds 2 mis-pins in 2 693
+face pairs whose identity is known. An earlier run reported none; a stricter
+ground-truth oracle and the case the code review reproduced showed that
+"never" was a claim the evidence did not support.
 
 **Resolution never calls the kernel and never forces a build.** Listing threads
 on a 40-part project must not rebuild 40 parts. Face signatures are derived in
@@ -55,9 +63,9 @@ Two traps this module encodes:
   signature against another mesh-derived signature at the same
   ``MESH_TOLERANCE``: a consistent estimator beats an accurate one. On such
   faces the estimator is merely *wobbly*, which costs candidacy and yields an
-  orphan — never a mis-pin. The payload labels these numbers as mesh-derived
-  for the same reason, and ``face_info`` remains the tool for inspecting one
-  face exactly.
+  orphan rather than a wrong pin. The payload labels these numbers as
+  mesh-derived for the same reason, and ``face_info`` remains the tool for
+  inspecting one face exactly.
 * **A ``proposal_hunk`` anchor reads the persisted ``packet.json``, and only
   that.** ``service.packets.packet(...)`` regenerates a stale packet — which
   rebuilds geometry on both sides of the proposal and can move the proposal's
@@ -92,7 +100,9 @@ _NEEDS_HINT = ("orphaned", "unverified")
 # --------------------------------------------------------------- tolerances
 #
 # MEASURED, not guessed (risk R1's spike; every number is in
-# docs/changelog/0113-prd008-anchor-resolution.md). 11 bundled parts across
+# docs/changelog/0113-prd008-anchor-resolution.md). The FIRST run, whose
+# outcome numbers were superseded by the re-measurement further down — its
+# method and its two findings still stand. 11 bundled parts across
 # construction/fasteners/prototyping/rocketry x every numeric parameter x
 # +1%/+10%/+30% = 91 rebuild pairs and 3 206 face pairs, ground truth
 # established independently of this matcher: a chain of <=2% parameter steps,
@@ -112,12 +122,43 @@ _NEEDS_HINT = ("orphaned", "unverified")
 #    is therefore a *final gate on the winner*, never a candidacy filter, and
 #    the ambiguity margin does the safety work.
 #
-# At the values below the shipped code measured ZERO mis-pins over the 2 537
-# face pairs whose truth is known, resolving 69.2% of them (1 756: 66.5% at
-# +1%, 71.8% at +10%, 69.7% at +30%) and orphaning the other 30.8%. Of the 669
-# faces the change destroyed, 657 were orphaned and 12 matched something.
-# Loosening any of these to make a pin appear is the one change this module
-# must never take.
+# RE-MEASURED after code review (changelog 0123), because the first run's
+# "ZERO mis-pins" did not survive a stricter ground-truth oracle and did not
+# cover the case the review reproduced. Same method, two changes: the whole
+# <=2% chain is retained so truth can be recomputed offline, and each MNN hop
+# now needs a *Lowe ratio test* in both directions (nearest at least 2x nearer
+# than the runner-up) — without it, plain MNN pairs a face with the wrong
+# near-twin on a repeated-feature part and 16 composed hops turn that into
+# confident wrong truth. An ambiguous hop drops the face from the sample rather
+# than guessing, so the oracle costs sample size, never correctness. 30 chains
+# (4 example projects, 11 parts, up to 3 parameters each), 3 102 face pairs at
+# the checkpoints, 2 693 of them with a truth mapping.
+#
+# At the values below, WITH the lone-candidate gate:
+#
+#   +1%   540/949  (56.9%) resolved, 407 orphaned, 2 mis-pinned
+#   +10%  486/879  (55.3%) resolved, 393 orphaned, 0 mis-pinned
+#   +30%  455/865  (52.6%) resolved, 410 orphaned, 0 mis-pinned
+#   all  1 451/2 693 (53.9%) resolved, 1 240 orphaned, 2 mis-pinned
+#
+# plus 409 faces with no truth mapping, of which 146 orphaned and 263 matched
+# something (the oracle drops faces it cannot pair unambiguously, so most of
+# those still exist and were most likely matched correctly).
+#
+# **TWO MIS-PINS REMAIN, and they are not advertised away.** Both are
+# rocketry/nozzle at +1% on `chamber_d`: a body of revolution whose seam faces
+# the oracle pairs one way and the matcher another, at dot ~1.0 and area error
+# ~0.01. One has three candidates and clears the ambiguity margin; one is
+# lone and clears the area gate. Neither is reachable by tightening a
+# tolerance that would not also orphan hundreds of true pairs, and we cannot
+# tell from the data alone which of the two answers is right. So the contract
+# this module states is "orphan rather than guess, and mis-pins are rare
+# (2 in 2 693 measured) rather than impossible" — every place that used to
+# claim "never" was narrowed to match (AGENTS.md, tools_comments._FACE_ODDS,
+# docs/user-guide.md, the PRD's AC2 divergence).
+#
+# Loosening any of these to make a pin appear is still the one change this
+# module must never take.
 
 # True pairs went as low as dot 0.9724 (a rotating face under a 30% angle
 # change); rivals below this are a different surface. Kept deliberately loose:
@@ -128,8 +169,10 @@ NORMAL_DOT = 0.99
 # 0.1528 at +30%). Candidacy radius, generous on purpose for the same reason.
 UVW_DIST = 0.15
 # Best-minus-runner-up. The design guessed 0.05, which mis-pinned 60 faces;
-# 0.15 still mis-pinned one; 0.20 mis-pinned none. This constant, not the
-# feature filters, is what "orphan, never mis-pin" rests on.
+# 0.15 still mis-pinned one; 0.20 was the best of them. This constant is what
+# the orphan-rather-than-guess bias rests on WHEN THERE IS A RIVAL — see
+# LONE_AREA_REL for the case where there is not, which is the case it cannot
+# reach and where the review found a mis-pin.
 AMBIGUITY_MARGIN = 0.20
 # A FINAL GATE on the winner, not a filter: a face whose share of the shape's
 # tessellated area differs by more than this is refused even when it is the
@@ -138,6 +181,35 @@ AMBIGUITY_MARGIN = 0.20
 # total area, not mm^2, for the same reason ``bbox_uvw`` exists: a parameter
 # that scales the part multiplies every absolute area and moves no fraction.
 AREA_REL = 0.5
+# The same gate, tightened, for a candidate that is ALONE in the pool.
+#
+# This is the review's finding, and it is the hole the paragraph above did not
+# see: ``AMBIGUITY_MARGIN`` is what "orphan, never mis-pin" actually rests on,
+# and it cannot fire when there is nothing to compare the winner against. A
+# lone survivor was therefore accepted for being the only one left, at a
+# reported margin of ``best - 0`` — near-maximal confidence for evidence that
+# was never corroborated. The reproduction: a boss widened until its top face
+# has the same normal and the same normalized position as the plate top
+# underneath it, then cut away; the thread moved onto the plate at 0.87, with
+# an area share off by 0.43 — inside the 0.5 gate.
+#
+# 0.30 is measured, on the re-run described at the top of this block. Over the
+# 1 174 lone-candidate matches whose truth is known, area-share error runs
+# median 0.025, p90 0.194, p95 0.218, p99 0.322, max 0.432; 0.30 therefore
+# keeps ~98% of them, refuses the 0.434 mis-pin, and costs 1.1 points of
+# overall resolution (55.0% -> 53.9%). **The headroom is thin and it is stated
+# rather than hidden**: AC2's own fixture — widening a plate under an unchanged
+# boss — is a *true* pair at 0.2739, because ``area_frac`` is only invariant
+# when the WHOLE shape scales, and a change to one feature moves every other
+# face's share. Anything below 0.28 orphans that pin.
+#
+# A *score* bar cannot do this job. Correct lone matches score down to 0.7407
+# (p1 0.85) and the mis-pin scored 0.8697, so a score bar that caught it would
+# orphan a fifth of the true ones. Area share is the only feature that
+# separates them, because the face that replaces a destroyed one is by
+# construction at the same normal and normalized position — which is precisely
+# why it was the only candidate.
+LONE_AREA_REL = 0.30
 #
 # The design's fifth constant, ``STICKY_MARGIN = 0.02`` — keep the stored
 # ordinal when it scores within 0.02 of the winner — is deliberately NOT
@@ -420,6 +492,15 @@ def match_face(signature: dict,
     produces mis-pins. The winner must then clear the runner-up by
     :data:`AMBIGUITY_MARGIN` and survive the area gate.
 
+    **A lone candidate is the case that has no ambiguity check at all**, and it
+    is where the review found a mis-pin: with nothing to beat, "only survivor"
+    was treated as "certain", at a reported margin of ``best - 0``. Such a
+    winner is held to :data:`LONE_AREA_REL` instead of :data:`AREA_REL` — a
+    tighter *absolute* bar on the one feature that still carries information,
+    because a face that replaces a destroyed one is by construction at the same
+    normal and position. A ``margin`` reported alongside a single candidate
+    means "against no rival"; it is not a confidence.
+
     ``refusal`` is ``"no_candidate"``, ``"ambiguous"`` or ``"area_mismatch"``
     when the answer is "no face", and ``None`` when ``row`` is the answer. Six
     identical faces of a cube are genuinely indistinguishable by this signature
@@ -469,7 +550,11 @@ def match_face(signature: dict,
     margin = best_score - runner_up
     if len(scored) > 1 and margin < AMBIGUITY_MARGIN:
         return None, best_score, margin, "ambiguous"
-    if best_area_rel > AREA_REL:
+    # A lone candidate never met the ambiguity check — there was nothing for it
+    # to beat — so the area gate is the only evidence left and it is tightened
+    # accordingly (:data:`LONE_AREA_REL`). Read the reported ``margin`` for such
+    # a match as "against no rival", not as confidence.
+    if best_area_rel > (AREA_REL if len(scored) > 1 else LONE_AREA_REL):
         return None, best_score, margin, "area_mismatch"
     return best, best_score, margin, None
 
@@ -794,6 +879,17 @@ def read_context(service, proj: str) -> dict:
 def resolve(service, proj: str, anchor: object,
             context: dict | None = None) -> dict:
     """The current status of one stored anchor. Never raises, never builds.
+
+    Precisely what it does **not** touch: it never asks the kernel for
+    anything, never triggers a rebuild, never regenerates a review packet, and
+    never writes to the thread, the anchor, the manifest or a proposal's state.
+    It is not, however, a *pure* read of the filesystem: the first resolution
+    of a given cache key derives the face table from the mesh a build already
+    wrote and memoizes it as a ``<key>.facesig.json`` sidecar in the project's
+    ``.cache`` directory (:func:`signature_table`). That file is derived data
+    beside derived data, keyed by the same content hash, and a cache directory
+    that refuses the write is ignored — but "read-only" would be the wrong
+    word for it, so it is not used.
 
     Every result carries ``against: {branch, head}`` — what it was resolved
     against — because a thread authored on another branch that resolves

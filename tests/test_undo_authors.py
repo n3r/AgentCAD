@@ -244,6 +244,50 @@ def test_redo_after_a_revert_reverts_the_revert(demo):
     assert _log(service)[0]["message"].startswith("revert ")
 
 
+def test_the_post_restart_fallback_under_mine_checks_the_trailer(demo, kernel,
+                                                                tmp_path):
+    """A restart empties the in-memory undo stacks, and the fallback reads the
+    latest snapshot out of the log instead. Under ``scope: "mine"`` that
+    snapshot is only the caller's if its ``Client:`` trailer says so — this is
+    the one place ``author`` comes from git rather than from the stack, and it
+    had no test.
+    """
+    service, registry = demo
+    _as("browser:a")
+    _script(registry, "box", BOX_V2)
+
+    # A fresh service over the same store: the cursor knows nothing.
+    restarted = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    registry2 = build_registry(restarted)
+
+    _as("browser:b")
+    refused = registry2.call("undo", {"project": "demo", "scope": "mine"})
+    assert refused["error"]["type"] == "conflict_error", refused
+    assert _text(service, "box") == BOX_V2      # B took nothing back
+
+    # …and "any" still steps back through it, because that scope never asks
+    # whose it was.
+    assert "error" not in registry2.call("undo", {"project": "demo"})
+    assert _text(service, "box") == BOX_SCRIPT
+
+
+def test_the_post_restart_fallback_under_mine_accepts_my_own_snapshot(
+        demo, kernel, tmp_path):
+    """The other half: the same fallback, taken by the identity whose trailer
+    is on the commit."""
+    service, registry = demo
+    _as("browser:a")
+    _script(registry, "box", BOX_V2)
+
+    restarted = AgentCADService(tmp_path / "projects", kernel, EventBus())
+    registry2 = build_registry(restarted)
+
+    _as("browser:a")
+    undone = registry2.call("undo", {"project": "demo", "scope": "mine"})
+    assert "error" not in undone, undone
+    assert _text(service, "box") == BOX_SCRIPT
+
+
 def test_mine_undo_at_the_head_takes_the_restore_path(demo):
     """Decision 16 step 3: when the caller's entry IS the branch head there is
     nothing to revert around — the existing restore path runs unchanged."""
@@ -294,6 +338,89 @@ def test_revert_of_an_unknown_commit_raises(tmp_path):
         history.revert(proj, "deadbeef")
     with pytest.raises(HistoryError):
         history.revert(proj, "--help")
+
+
+def test_revert_refuses_a_dirty_tree_and_keeps_the_uncommitted_work(tmp_path):
+    """The one that ate somebody's editor buffer.
+
+    ``git revert --no-commit`` REFUSES to start when the tree has local
+    changes to a file it would touch — so the revert never applied anything,
+    and the old cleanup path's unconditional ``reset --hard HEAD`` discarded
+    the user's own uncommitted edit instead of the revert's. The user guide
+    documents editing ``parts/<id>.py`` in an external editor, so a second
+    client's ``undo {scope: "mine"}`` was enough to reach it. The refusal is
+    now up front, it names the dirty paths, and the file is untouched.
+    """
+    from agentcad.core.model import ConflictError
+
+    history = ProjectHistory()
+    proj = tmp_path / "demo"
+    (proj / "parts").mkdir(parents=True)
+    (proj / "parts" / "a.py").write_text("line1\nline2\nline3\n", encoding="utf-8")
+    history.snapshot(proj, "a v1")
+    (proj / "parts" / "a.py").write_text("line1\nCHANGED\nline3\n", encoding="utf-8")
+    target = history.snapshot(proj, "a v2")
+    (proj / "parts" / "z.py").write_text("z\n", encoding="utf-8")
+    history.snapshot(proj, "z")
+
+    precious = "line1\nCHANGED\nline3\nPRECIOUS UNSAVED WORK\n"
+    (proj / "parts" / "a.py").write_text(precious, encoding="utf-8")
+
+    with pytest.raises(ConflictError) as excinfo:
+        history.revert(proj, target)
+    details = excinfo.value.details
+    assert details["reason"] == "uncommitted_changes"
+    assert details["commit"] == target
+    assert "parts/a.py" in details["paths"]
+    assert (proj / "parts" / "a.py").read_text(encoding="utf-8") == precious
+
+
+def test_revert_refuses_a_dirty_tree_even_for_an_unrelated_file(tmp_path):
+    """The guard is the tree, not the overlap. git would have *started* this
+    revert (different file), and a mid-flight failure would then have reset
+    the unrelated edit away. Refusing up front is the only state in which the
+    cleanup below can be honest about what it is undoing."""
+    from agentcad.core.model import ConflictError
+
+    history = ProjectHistory()
+    proj = tmp_path / "demo"
+    (proj / "parts").mkdir(parents=True)
+    (proj / "parts" / "a.py").write_text("A1\n", encoding="utf-8")
+    (proj / "parts" / "b.py").write_text("B1\n", encoding="utf-8")
+    history.snapshot(proj, "base")
+    (proj / "parts" / "a.py").write_text("A2\n", encoding="utf-8")
+    target = history.snapshot(proj, "edit a")
+    (proj / "parts" / "z.py").write_text("z\n", encoding="utf-8")
+    history.snapshot(proj, "z")
+
+    (proj / "parts" / "b.py").write_text("B-UNSAVED\n", encoding="utf-8")
+    with pytest.raises(ConflictError) as excinfo:
+        history.revert(proj, target)
+    assert excinfo.value.details["paths"] == ["parts/b.py"]
+    assert (proj / "parts" / "b.py").read_text(encoding="utf-8") == "B-UNSAVED\n"
+    assert (proj / "parts" / "a.py").read_text(encoding="utf-8") == "A2\n"
+
+
+def test_revert_leaves_an_untracked_file_alone(tmp_path):
+    """An untracked file is not "uncommitted work git is about to overwrite":
+    the next snapshot will add it, ``reset --hard`` never deletes it, and
+    blocking every undo on one would make the guard useless in a project a
+    user drops a scratch file into."""
+    history = ProjectHistory()
+    proj = tmp_path / "demo"
+    (proj / "parts").mkdir(parents=True)
+    (proj / "parts" / "a.py").write_text("A1\n", encoding="utf-8")
+    history.snapshot(proj, "base")
+    (proj / "parts" / "a.py").write_text("A2\n", encoding="utf-8")
+    target = history.snapshot(proj, "edit a")
+    (proj / "parts" / "z.py").write_text("z\n", encoding="utf-8")
+    history.snapshot(proj, "z")
+
+    scratch = proj / "parts" / "scratch.txt"
+    scratch.write_text("notes\n", encoding="utf-8")
+    assert history.revert(proj, target)
+    assert (proj / "parts" / "a.py").read_text(encoding="utf-8") == "A1\n"
+    assert scratch.read_text(encoding="utf-8") == "notes\n"
 
 
 def test_reverting_an_already_reverted_commit_is_refused(tmp_path):

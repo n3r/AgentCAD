@@ -25,23 +25,24 @@ so a reviewer can map AC → test without reading the unit suites.
 | AC4 | ``test_ac4_a_mention_delivers_an_event_and_an_unread_record`` |
 | AC5 | ``test_ac5_a_claim_conflicts_overrides_and_leaves_other_parts_alone`` |
 | AC6 | ``test_ac6_the_turn_lock_still_decides_first`` +
-        ``test_ac6_the_lock_suite_is_unmodified_evidence`` |
+        ``test_ac6_the_lock_suite_is_unmodified`` |
 | AC7 | ``test_ac7_per_user_undo_and_its_structured_conflict`` |
 | AC8 | ``test_ac8_threads_survive_project_restore`` |
 | AC9 | ``test_ac9_an_attachment_outside_exports_is_refused`` +
         ``test_ac9_the_full_suite_count_is_cited`` |
 
 **AC2 is asserted at the wording the measurements support, not at the wording
-the PRD was written with.** The slice-2 spike (2 537 face pairs over 11 bundled
-parts, ``docs/changelog/0113-prd008-anchor-resolution.md``) measured: face
-ordinals move (about one in ten for a 1% tweak), the matcher resolves ~69% of
-surviving faces, orphans 98.2% of destroyed ones and **mis-pinned 0 of 2 537**.
-Slices 8-9 added two more ceilings (changelog 0119): a parameter change that
-moves a face's position *relative to the shape's bounds* orphans it even though
-the face still exists, and a closed curved face orphans on any edit at all. So
-the honest criterion — recorded as a divergence in the PRD's as-built section —
-is **"survives a parameter tweak where the face's position within the shape's
-bounds is stable, or says `orphaned` with a reason, and never points at the
+the PRD was written with.** The slice-2 spike, **re-measured after code review**
+(``docs/changelog/0123-prd008-review-fixes.md``, 2 693 face pairs with a
+stricter ground-truth oracle): face ordinals move (about one in ten for a 1%
+tweak), the matcher resolves 53.9% of surviving faces, orphans the rest — and
+**mis-pins 2 of 2 693**, so "never" is not a claim this suite makes. Slices 8-9
+added two more ceilings (changelog 0119): a parameter change that moves a
+face's position *relative to the shape's bounds* orphans it even though the
+face still exists, and a closed curved face orphans on any edit at all. So the
+honest criterion — recorded as a divergence in the PRD's as-built section — is
+**"survives a parameter tweak where the face's position within the shape's
+bounds is stable, or says `orphaned` with a reason, and rarely points at the
 wrong face"**, and this module tests exactly that: `orphaned` is asserted as a
 *correct* outcome, and every non-orphaned answer is verified geometrically
 rather than by trusting the resolver's own reply.
@@ -54,6 +55,7 @@ from __future__ import annotations
 
 import queue
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -107,7 +109,18 @@ NO_BOSS = BOSS.replace(
 assert "boss = " not in NO_BOSS
 
 # A wider boss: a real script edit that leaves the shape's bounds alone.
-WIDER_BOSS = BOSS.replace('"default": 8.0', '"default": 11.0')
+#
+# r=9, not r=11, and the reason is a measured ceiling rather than a fudge. The
+# boss's top face is the *only* candidate for its own signature (nothing else
+# on this shape faces +Z at the top of the bounding box), so it is judged by
+# ``anchors.LONE_AREA_REL`` — the absolute area-share bar a lone candidate has
+# to clear now that "only survivor" no longer counts as proof. r=8 -> 9 moves
+# that share by 0.20; r=8 -> 11 moves it by 0.45, further than ANY correct
+# lone match in the 2 693-face measurement (max 0.432) and further than the
+# mis-pin the bar exists to refuse (0.434). An edit that nearly doubles the
+# commented face's share of the part now orphans the thread, honestly, and
+# that ceiling is documented in the user guide.
+WIDER_BOSS = BOSS.replace('"default": 8.0', '"default": 9.0')
 assert WIDER_BOSS != BOSS
 
 
@@ -222,7 +235,7 @@ def test_ac1_the_review_loop_end_to_end(geo):
     # 4. it replies with the render as evidence, then resolves the thread.
     replied = registry.call("add_comment", {
         "project": "demo", "thread": thread["id"],
-        "body": "widened the boss to r=11; see the render",
+        "body": "widened the boss to r=9; see the render",
         "attachments": [render["path"]]})
     assert "error" not in replied, replied
     reply = replied["thread"]["comments"][-1]
@@ -477,15 +490,40 @@ def test_ac6_the_turn_lock_still_decides_first(http):
         assert "error" not in registry.call("release_turn", {"project": "demo"})
 
 
-def test_ac6_the_lock_suite_is_unmodified_evidence():
+def test_ac6_the_lock_suite_is_unmodified():
     """AC6's actual gate is that the pre-existing lock suite passes
-    **unmodified** — a claim to make about a diff, not about a run. Slice 7's
-    changelog records it (`git diff --stat tests/test_locks.py` empty); this
-    check fails if that record is removed."""
-    entry = (CHANGELOG / "0118-prd008-part-claims.md").read_text(
-        encoding="utf-8")
-    assert "test_locks.py" in entry
-    assert "unmodified" in entry.lower()
+    **unmodified** — a claim about a diff, so this asks git for the diff.
+
+    It used to assert only that slice 7's changelog *said so*, which is a test
+    of a sentence rather than of the tree. ``git diff main...HEAD --
+    tests/test_locks.py`` must be empty. Skipped, never silently passed, where
+    the question cannot be asked: no git, not a repo, or no ``main`` to
+    compare against (a shallow CI clone, a fork whose default branch is named
+    something else).
+    """
+    if shutil.which("git") is None:
+        pytest.skip("git not found on PATH")
+    repo = Path(__file__).resolve().parents[1]
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                              text=True, timeout=30)
+
+    if git("rev-parse", "--is-inside-work-tree").returncode != 0:
+        pytest.skip("not a git work tree")
+    if git("rev-parse", "--verify", "--quiet", "main").returncode != 0:
+        pytest.skip("no 'main' branch to compare against")
+
+    diff = git("diff", "main...HEAD", "--", "tests/test_locks.py")
+    assert diff.returncode == 0, diff.stderr
+    assert diff.stdout.strip() == "", (
+        "tests/test_locks.py changed on this branch; AC6's gate is that the "
+        f"pre-existing lock suite passes UNMODIFIED:\n{diff.stdout}")
+
+    working = git("diff", "--", "tests/test_locks.py")
+    assert working.stdout.strip() == "", (
+        "tests/test_locks.py has uncommitted modifications:\n"
+        f"{working.stdout}")
 
 
 # ------------------------------------------------------------------- AC7
@@ -632,3 +670,16 @@ def test_ac9_the_full_suite_count_is_cited():
     assert any(token.isdigit() and len(token) >= 4
                for token in text.replace(",", " ").split()), \
         "the close-out entry does not cite a suite count"
+
+    # It stays an evidence check, deliberately. Recomputing the number here
+    # would mean running the full suite from inside the full suite; collecting
+    # it instead (`--collect-only`) counts *cases*, which is not what
+    # `make test` reports (marks, skips and parametrization all move it). The
+    # later entry that reports a NEW count is the thing that must not silently
+    # contradict this one, so both are required to cite one.
+    latest = max(CHANGELOG.glob("0[0-9][0-9][0-9]-*.md"))
+    if latest != entry:
+        recent = latest.read_text(encoding="utf-8")
+        assert "make test" in recent and "passed" in recent, (
+            f"{latest.name} is the newest changelog entry and cites no "
+            "suite count; every entry that lands work must cite one")

@@ -71,15 +71,19 @@ _RESOLUTION = (
     "creation time and are stale the moment geometry changes."
 )
 
-#: The measured honesty (changelog 0113's R1 spike): the numbers, not a vibe.
+#: The measured honesty (changelog 0113's R1 spike, re-measured in 0123): the
+#: numbers, not a vibe — including the ones that got worse on the second look.
 _FACE_ODDS = (
     "Face ordinals are NOT stable across a parameter change (measured: 87-93% "
     "hold, and one bundled part renumbered 20 of its 44 faces for a 1% "
     "tweak), so a face anchor is re-matched from the mesh-derived signature it "
-    "stored. Measured over 2 537 faces: about TWO TIMES IN THREE it resolves "
-    "(ok/moved), and the remaining third comes back 'orphaned' — never a "
-    "wrong face (0 mis-pins). A repeated feature (a thread, a bolt circle) is "
-    "genuinely ambiguous and orphans by design: 'orphan, never mis-pin'."
+    "stored. Measured over 2 693 faces whose identity is known: about HALF "
+    "resolve (ok/moved) and the rest come back 'orphaned', which is the safe "
+    "answer, not a bug. A wrong face is RARE BUT NOT IMPOSSIBLE — 2 of those "
+    "2 693, both on a body of revolution. Treat a resolved face as strong "
+    "evidence, not proof: if the answer decides something expensive, confirm "
+    "with face_info. A repeated feature (a thread, a bolt circle) is genuinely "
+    "ambiguous and orphans by design."
 )
 
 #: The hunk table (design Decision 8), in the words an agent has to act on.

@@ -96,6 +96,14 @@ ANCHOR_KINDS = ("part", "face", "param", "script_range", "instance",
 ACTIONS = ("created", "replied", "resolved", "reopened", "comment_edited",
            "comment_deleted", "mentioned")
 MAX_ATTACHMENTS = 8
+#: The same cap, for the same reason, on the other unbounded list a single
+#: comment carries. Each deliverable mention mints a ``notifications.jsonl``
+#: line AND a broadcast WebSocket frame, so an uncapped body was one mutation
+#: costing a thousand records and a thousand frames. Handles beyond the cap are
+#: not silently dropped — the body is stored verbatim and never rewritten, so a
+#: dropped mention would be an ``@name`` sitting in the text that quietly
+#: notified nobody. The comment is refused instead, with ``{max, given}``.
+MAX_MENTIONS = 8
 MAX_BODY_BYTES = 16 * 1024
 # The cap on the snippet a script_range anchor stores as its evidence; read by
 # the anchor builder in core/anchors.py, which writes into this envelope.
@@ -219,6 +227,9 @@ class CommentStore:
     def __init__(self, store: ProjectStore) -> None:
         self.store = store
         self._lock = threading.RLock()
+        # Line counts of the append-only logs, carried forward instead of
+        # recounted — see _next_seq.
+        self._seq: dict[Path, int] = {}
 
     # ------------------------------------------------------------ locations
 
@@ -373,7 +384,7 @@ class CommentStore:
         actor = entry.get("actor") or locks.current_client_id()
         with self._lock:
             record = {
-                "seq": self._line_count(path) + 1,
+                "seq": self._next_seq(path),
                 "ts": entry.get("ts") or _now(),
                 "actor": actor,
                 "actor_kind": entry.get("actor_kind") or actor_kind(actor),
@@ -408,7 +419,7 @@ class CommentStore:
         path = self.notifications_path(proj)
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
-            record = {"seq": self._line_count(path) + 1,
+            record = {"seq": self._next_seq(path),
                       "kind": entry.get("kind") or "mention",
                       **{key: value for key, value in entry.items()
                          if key not in ("seq", "kind")},
@@ -440,6 +451,22 @@ class CommentStore:
             if isinstance(record, dict):
                 entries.append(record)
         return entries
+
+    def _next_seq(self, path: Path) -> int:
+        """The next 1-based line number for an append-only log.
+
+        Counted *forward* rather than by re-reading the file, which made every
+        append O(n) and a burst of them O(n²) — and a single comment can drive
+        :data:`MAX_MENTIONS` appends. The count is re-derived from the file
+        whenever it is not already known or the file is not there (a project
+        deleted and recreated under a long-lived store), so it is always the
+        number a full re-count would give. Callers hold ``self._lock``.
+        """
+        known = self._seq.get(path)
+        if known is None or not path.exists():
+            known = self._line_count(path)
+        self._seq[path] = known + 1
+        return known + 1
 
     @staticmethod
     def _line_count(path: Path) -> int:
@@ -582,9 +609,11 @@ class CommentManager:
             # body that no longer contains them would make the field a lie,
             # and a mistyped handle would be unfixable. Only the *newly*
             # mentioned are delivered — nobody is notified twice for one
-            # comment.
-            already = [m for m in comment.get("mentions") or []
-                       if isinstance(m, str)]
+            # comment, and "already delivered" is read from the audit log
+            # rather than from ``comment["mentions"]``, which an edit rewrites:
+            # removing a handle and putting it back used to erase the only
+            # record of the first delivery and ring the same person again.
+            already = self._delivered(proj, tid, cid)
             mentions = self._mentions(proj, body)
             comment["body"] = body
             comment["mentions"] = mentions
@@ -822,6 +851,9 @@ class CommentManager:
         Implausible handles are dropped here and nowhere else: the body is
         stored verbatim, so ``@todo`` survives in the text and delivers
         nothing.
+
+        More than :data:`MAX_MENTIONS` deliverable handles is refused rather
+        than truncated — see the constant for why.
         """
         present = self._present_ids(proj)
         found: list[str] = []
@@ -835,6 +867,11 @@ class CommentManager:
                     continue
             if handle not in found:
                 found.append(handle)
+        if len(found) > MAX_MENTIONS:
+            raise ValidationError(
+                f"at most {MAX_MENTIONS} mentions per comment",
+                {"max": MAX_MENTIONS, "given": len(found)},
+            )
         return found
 
     def _present_ids(self, proj: str) -> set[str]:
@@ -855,6 +892,20 @@ class CommentManager:
             # Presence is ephemeral and best-effort; a registry that cannot
             # answer must not stop a comment from being written.
             return set()
+
+    def _delivered(self, proj: str, tid: str, cid: str) -> set[str]:
+        """Everyone a notification for *this comment* has already gone to.
+
+        Read from the thread's ``audit.jsonl`` — the append-only record
+        :meth:`_deliver` writes — because that is the only account of a
+        delivery that an edit cannot rewrite.
+        """
+        return {who
+                for entry in self.store.audit(proj, tid)
+                if entry.get("action") == "mentioned"
+                and (entry.get("details") or {}).get("comment") == cid
+                for who in (entry.get("details") or {}).get("to") or ()
+                if isinstance(who, str)}
 
     def _deliver(self, proj: str, tid: str, cid: str, actor: str,
                  mentions: list[str]) -> list[dict]:

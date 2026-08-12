@@ -671,9 +671,22 @@ you.
 A face anchor survives a parameter tweak when the face stays where it is
 relative to the shape's bounds, and honestly says `orphaned` otherwise —
 including for faces that still exist but moved within the bounds, and for
-closed curved faces (a cylinder's side), which orphan on any edit. **Orphan,
-never mis-pin**: a comment pointing at nothing is recoverable, a comment
-pointing at the wrong face is not.
+closed curved faces (a cylinder's side), which orphan on any edit. **Orphan
+rather than guess**: a comment pointing at nothing is recoverable, a comment
+pointing at the wrong face is not — so the matcher refuses a match it cannot
+support, including one that only looks certain because no other face was left
+to compare it with. Measured over 2 693 faces, about half resolve, the rest
+orphan, and **2 pointed at the wrong face** — rare, not impossible, so a pin on
+a part you have reshaped heavily is worth a glance before you act on it.
+
+One ceiling is worth knowing because it looks like a bug and is not: when no
+other face on the part is even a candidate — a lone face at that orientation
+and position, which is the common case for a boss top or a pocket floor — the
+match rests on size alone, so an edit that moves that face's **share of the
+part's surface area** by more than about 30% orphans the thread. Widening a
+boss a little keeps the pin; nearly doubling it does not. That is deliberate:
+the same "only candidate left" reasoning is what used to move a comment onto
+the face *underneath* one that had been cut away.
 
 ### Who else is here
 
@@ -700,6 +713,24 @@ write fails exactly as it always did, and no override is offered.
 in that client's **inbox**, the toolbar button with the unread badge. Clicking
 a row opens the thread and marks it read. `@todo` and `@nobody` are not
 identities: they stay plain text and deliver nothing.
+
+### Upgrading: your browser gets a new identity once
+
+Presence needs each browser to *have* an identity, so this release mints one
+per browser profile (`browser:<8 hex>`, kept in `localStorage`) where every
+browser previously sent the single shared id `browser`. On first load after
+upgrading, an existing browser is therefore a **new client** to the server, and
+two things follow, both one-time and neither destructive:
+
+- **Your per-client branch checkout is gone.** Branch checkouts are keyed by
+  client id, so a new id has no row and lands on the project's default branch.
+  Re-check-out the branch you were on; nothing on any branch was touched.
+- **A turn you were holding is held by your old identity.** You cannot release
+  a turn you no longer claim to be, so wait out its TTL (two minutes by
+  default) or restart the server, and take the turn again.
+
+Comments, history and attributions written under the old id keep it: `browser`
+stays a valid identity to read, mention and filter by.
 
 ### What this is honestly not
 

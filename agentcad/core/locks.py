@@ -14,11 +14,15 @@ persistent write:
    details (AC6's regression gate is that ``tests/test_locks.py`` passes
    unmodified);
 2. the client holding the turn is **never** claim-checked (FR12);
-3. a part claimed by a *different* client conflicts only when the holder and
-   the caller are both ``human``. If an agent's write were blocked by a human's
-   open editor, the product's flagship loop — human pins a comment on a face,
-   agent fixes it and replies — would 409 on the agent's very first write.
-   Agents are governed by turns; claims stop two humans clobbering each other.
+3. a part claimed by a *different* client conflicts unless the caller is an
+   agent. If an agent's write were blocked by a human's open editor, the
+   product's flagship loop — human pins a comment on a face, agent fixes it and
+   replies — would 409 on the agent's very first write. The exemption runs that
+   way and no other: an agent also never *takes* a claim (``acquire`` refuses a
+   non-human holder), because a claim an agent held would be a claim no human
+   could conflict with, and one agent write would then switch off the
+   human-vs-human protection for 90 s. Agents are governed by turns; claims
+   stop two humans clobbering each other.
 
 Identity travels on a ContextVar so it flows naturally through the service
 layer regardless of entry point (HTTP middleware sets it per request from the
@@ -238,15 +242,25 @@ class ClaimRegistry:
     # ---------------------------------------------------------------- public
 
     def acquire(self, key: str, part: str, holder: str,
-                ttl_s: float = CLAIM_TTL_S, *, force: bool = False) -> dict:
-        """Take or refresh the claim on ``part``.
+                ttl_s: float = CLAIM_TTL_S, *, force: bool = False
+                ) -> dict | None:
+        """Take or refresh the claim on ``part``, or ``None`` for an agent.
 
         Free, expired or already ours: taken. Held by somebody else: returned
         **unchanged** unless ``force`` — a claim is never stolen by accident,
         only by an override the caller asked for. Never raises: refusing to
         write is :meth:`check`'s job, and doing both here would make every
         caller reason about two failure modes.
+
+        **An agent never holds a claim.** This is the one door claims are taken
+        through, so the rule lives here rather than in each policy caller. A
+        claim exists to stop two *humans* clobbering each other; an agent that
+        held one would be a claim nobody can conflict with — which is exactly
+        how ``check``'s exemption used to swallow the human-vs-human conflict
+        it exists to raise. Agents are governed by turns instead.
         """
+        if _kind(holder) != "human":
+            return None
         ttl = min(max(float(ttl_s), MIN_TTL_S), MAX_TTL_S)
         now = time.time()
         with self._lock:
@@ -319,52 +333,84 @@ class ClaimRegistry:
             expires_at = self._armed.pop(slot, None)
         return expires_at is not None and expires_at > time.time()
 
+    def _blocking(self, key: str, part: str | None,
+                  client_id: str) -> dict | None:
+        """The claim that would refuse this write, ignoring any override.
+
+        The **one** exemption, and it runs in one direction only: an *agent* is
+        never blocked by a *human*'s claim, because otherwise the flagship loop
+        — human pins a comment on a face, agent fixes it — would 409 on the
+        agent's first write. The mirror exemption ("a human is never blocked by
+        an agent's claim") used to be written here too, and it was a hole
+        rather than a courtesy: combined with an agent that *took* claims it
+        turned every claim on a part an agent had touched into a claim nobody
+        could conflict with. :meth:`acquire` now keeps agents claim-less, so
+        the holder here is always a human and this branch is the whole rule.
+        """
+        if part is None:
+            return None
+        claim = self.get(key, part)
+        if claim is None or claim["holder"] == client_id:
+            return None
+        if _kind(client_id) == "agent" and claim["holder_kind"] == "human":
+            return None  # FR11, design Decision 14
+        return claim
+
+    @staticmethod
+    def _refusal(claim: dict, part: str) -> ConflictError:
+        """The refusal, built once: its ``details`` is what the browser's
+        conflict dialog renders and what ``docs/agent-api.md`` row 3 promises."""
+        return ConflictError(
+            f"{claim['holder']} is editing {part}",
+            {"claim": claim, "overridable": True},
+        )
+
     def check(self, key: str, part: str | None, client_id: str, *,
               override: bool = False) -> None:
         """Raise ConflictError when ``part`` is claimed by a different human.
 
-        Whole-manifest writes (``part is None``), an agent on either side, our
-        own claim, an expired one, an armed override or an enclosing
+        Whole-manifest writes (``part is None``), an agent caller, our own
+        claim, an expired one, an armed override or an enclosing
         ``claim_override()`` all pass. The error names the holder and says
         ``overridable`` so a UI can offer the one button that resolves it.
         """
-        if part is None:
+        claim = self._blocking(key, part, client_id)
+        if claim is None:
             return
-        claim = self.get(key, part)
-        if claim is None or claim["holder"] == client_id:
-            return
-        if claim["holder_kind"] != "human" or _kind(client_id) != "human":
-            return  # claims are human-vs-human only (FR11, design Decision 14)
         if override or override_var.get() or self._consume(key, part, client_id):
             return
-        raise ConflictError(
-            f"{claim['holder']} is editing {part}",
-            {"claim": claim, "overridable": True},
-        )
+        raise self._refusal(claim, part)
 
     def claim_write(self, key: str, part: str | None,
                     client_id: str) -> dict | None:
         """:meth:`check` plus the acquisition policy, for the write guard.
 
         Returns None when there was nothing to do, else
-        ``{claim, changed, overridden}``. The policy in one sentence: a write
-        takes the claim when the part is free or already ours, steals it when
-        an override was spent, and leaves it exactly where it was when we got
-        through only because one of the two parties is an agent — an agent's
-        write must not quietly evict the human who is still typing.
+        ``{claim, changed, overridden}``. The policy in one sentence: a *human*
+        write takes the claim when the part is free or already ours and steals
+        it when an override was spent; an agent's write is let through and
+        changes nothing, neither taking a free part nor evicting the human who
+        is still typing.
+
+        An override is computed **only against a real conflict**. It is
+        single-use authorization for the one write a dialog was shown for, so
+        spending it on a write that would have succeeded anyway would both lose
+        that retry and force-steal a claim nobody was defending.
         """
         if part is None:
             return None
         before = self.get(key, part)
-        overridden = bool(
-            before is not None and before["holder"] != client_id
-            and (override_var.get()
-                 or self._consume(key, part, client_id))
-        )
-        if not overridden:
-            self.check(key, part, client_id)
-        if before is not None and before["holder"] != client_id and not overridden:
+        blocking = self._blocking(key, part, client_id)
+        overridden = False
+        if blocking is not None:
+            overridden = bool(override_var.get()
+                              or self._consume(key, part, client_id))
+            if not overridden:
+                raise self._refusal(blocking, part)
+        elif before is not None and before["holder"] != client_id:
             return None  # an agent writing under a human's claim: not ours
         claim = self.acquire(key, part, client_id, force=overridden)
+        if claim is None:
+            return None  # an agent: it wrote, and it holds nothing
         changed = before is None or before["holder"] != client_id
         return {"claim": claim, "changed": changed, "overridden": overridden}

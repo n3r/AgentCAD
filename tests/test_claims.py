@@ -150,10 +150,65 @@ def test_check_is_human_vs_human_and_names_the_holder():
     assert details["overridable"] is True
     assert "browser:a" in str(excinfo.value)
 
-    # A human is likewise never blocked by an AGENT's claim.
+    # …and there is no such thing as an agent's claim to be blocked BY: the
+    # exemption runs one way only (see the test below for why).
     agent_claims = ClaimRegistry()
-    agent_claims.acquire("demo", "box", "chat:main")
+    assert agent_claims.acquire("demo", "box", "chat:main") is None
+    assert agent_claims.get("demo", "box") is None
     agent_claims.check("demo", "box", "browser:b")
+
+
+def test_an_agent_never_holds_a_claim_so_two_humans_still_conflict():
+    """The hole that disabled FR11.
+
+    ``claim_write`` used to acquire for ANY caller. Once an agent held a part,
+    ``check`` returned early for *everyone* — the exemption was written
+    "either side is an agent" — so a human could no longer take that claim and
+    a second human wrote straight over her with no conflict, no dialog and no
+    chip, for as long as the agent kept writing. The rule is asymmetric in one
+    direction only: an agent is never blocked by a human, and an agent never
+    holds a claim that could suppress the human-vs-human check.
+    """
+    claims = ClaimRegistry()
+
+    # The agent's script write goes through and leaves the part unclaimed.
+    assert claims.claim_write("demo", "box", "chat:main") is None
+    assert claims.get("demo", "box") is None
+
+    # Human A's heartbeat now actually gets the claim…
+    assert claims.acquire("demo", "box", "browser:a")["holder"] == "browser:a"
+    # …and human B is refused, with the payload the conflict dialog renders.
+    with pytest.raises(Exception) as excinfo:
+        claims.claim_write("demo", "box", "browser:b")
+    details = excinfo.value.details
+    assert details["claim"]["holder"] == "browser:a"
+    assert details["overridable"] is True
+    assert claims.get("demo", "box")["holder"] == "browser:a"
+
+    # The agent still writes straight through A's claim, and does not evict her.
+    assert claims.claim_write("demo", "box", "chat:main") is None
+    assert claims.get("demo", "box")["holder"] == "browser:a"
+
+
+def test_an_armed_override_is_not_spent_when_nothing_would_block():
+    """An override is authorization for *one* refused write. Spending it on a
+    write that would have succeeded anyway both loses the retry the dialog was
+    shown for and force-steals a claim nobody was defending."""
+    claims = ClaimRegistry()
+
+    # Nothing holds `lid`: the armed override must survive untouched.
+    claims.arm_override("demo", "lid", "browser:b")
+    fresh = claims.claim_write("demo", "lid", "browser:b")
+    assert fresh["overridden"] is False
+    assert claims._armed.get(("demo", "lid", "browser:b")) is not None
+
+    # An agent's write is exempt without an override too, so B's stays armed.
+    other = ClaimRegistry()
+    other.acquire("demo", "box", "browser:a")
+    other.arm_override("demo", "box", "chat:main")
+    assert other.claim_write("demo", "box", "chat:main") is None
+    assert other._armed.get(("demo", "box", "chat:main")) is not None
+    assert other.get("demo", "box")["holder"] == "browser:a"
 
 
 def test_an_override_is_single_use_and_so_is_the_contextvar():
@@ -272,6 +327,35 @@ def test_an_agent_writes_straight_through_a_humans_claim(http):
     assert roster["claims"]["box"]["holder"] == "browser:aaaaaaaa"
 
 
+def test_an_agents_write_does_not_disable_the_conflict_between_two_humans(http):
+    """FR11 end to end, in the order that broke it: the agent writes *first*.
+
+    The agent used to take the claim on `box`, which made every subsequent
+    ``check`` return early — so Alice's heartbeat could not take the part and
+    Bob overwrote her silently. Now the agent leaves no claim behind and the
+    dialog Alice's conflict is supposed to raise still appears.
+    """
+    _service, _registry, client = http
+
+    assert _write(client, "box", BOT).status_code == 200
+    assert client.get("/api/projects/demo/presence",
+                      headers=ALICE).json()["claims"] == {}
+
+    payload = _claim(client, "box", ALICE)
+    assert payload["claims"]["box"]["holder"] == "browser:aaaaaaaa"
+
+    refused = _write(client, "box", BOB)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["error"]["details"]["claim"]["holder"] == (
+        "browser:aaaaaaaa")
+    assert refused.json()["error"]["details"]["overridable"] is True
+
+    # A further agent write refreshes nothing and steals nothing.
+    assert _write(client, "box", BOT).status_code == 200
+    roster = client.get("/api/projects/demo/presence", headers=ALICE).json()
+    assert roster["claims"]["box"]["holder"] == "browser:aaaaaaaa"
+
+
 def test_the_turn_holder_is_never_claim_checked(http):
     """FR12. Bob takes the turn; Alice's claim on box does not stop him."""
     _service, _registry, client = http
@@ -334,15 +418,37 @@ def test_a_heartbeat_claims_releases_and_publishes(http):
     service.bus.unsubscribe(subscription)
 
 
-def test_leaving_releases_every_claim(http):
+def test_leaving_drops_the_roster_row_and_leaves_the_claims_to_the_ttl(http):
+    """A leave is a **beacon**, and a beacon names its own identity in the
+    body because ``sendBeacon`` cannot set headers — so anybody can send one
+    for anybody. Dropping a roster row on that basis is harmless (the next
+    heartbeat puts it back). Releasing that identity's *claims* was not: one
+    forged beacon switched off the protection a human was relying on while
+    still typing. Claims now expire on their own 90-second TTL, which is the
+    behaviour a soft claim is designed around.
+    """
     _service, _registry, client = http
     _claim(client, "box", ALICE)
     _claim(client, "lid", BOB)
 
+    forged = client.post(
+        "/api/projects/demo/presence",
+        json={"leave": True, "client_id": "browser:aaaaaaaa"}, headers=BOB)
+    assert forged.status_code == 200
+
+    roster = client.get("/api/projects/demo/presence", headers=BOB).json()
+    assert set(roster["claims"]) == {"box", "lid"}
+    assert roster["claims"]["box"]["holder"] == "browser:aaaaaaaa"
+    assert "browser:aaaaaaaa" not in {c["id"] for c in roster["clients"]}
+    # …and Bob still cannot write to the part Alice is holding.
+    assert _write(client, "box", BOB).status_code == 409
+
+    # Alice's own leave is the same: the roster row goes, the claim waits out
+    # its TTL like every other claim nobody is refreshing.
     client.post("/api/projects/demo/presence", json={"leave": True},
                 headers=ALICE)
-    remaining = client.get("/api/projects/demo/presence", headers=BOB).json()
-    assert set(remaining["claims"]) == {"lid"}
+    assert set(client.get("/api/projects/demo/presence",
+                          headers=BOB).json()["claims"]) == {"box", "lid"}
 
 
 def test_a_claim_on_an_unknown_project_is_404_and_a_bad_part_is_422(http):

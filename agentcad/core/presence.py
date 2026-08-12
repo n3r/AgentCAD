@@ -362,6 +362,10 @@ def sync_claim(service, key: str, proj: str, who: str, part: str | None,
     dirty editor buffer or a control being dragged, and a claim nobody is
     actually using is worse than none, because it teaches people to click
     Override reflexively.
+
+    An agent heartbeating with ``claim: true`` takes nothing: ``acquire``
+    answers ``None`` for a non-human holder, because a claim an agent holds is
+    a claim no human can conflict with.
     """
     claims = getattr(service, "claims", None)
     if claims is None:
@@ -371,8 +375,8 @@ def sync_claim(service, key: str, proj: str, who: str, part: str | None,
     if keep:
         before = claims.get(key, keep)
         claim = claims.acquire(key, keep, who)
-        if claim["holder"] == who and (before is None
-                                       or before["holder"] != who):
+        if claim and claim["holder"] == who and (before is None
+                                                 or before["holder"] != who):
             publish_claim(service, proj, keep, claim)
             changed = True
     for held, claim in claims.all(key).items():

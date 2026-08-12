@@ -262,6 +262,30 @@ def test_the_area_gate_refuses_a_lone_candidate_of_the_wrong_size():
     assert refusal == "area_mismatch"
 
 
+def test_a_lone_candidate_must_clear_the_tighter_absolute_area_bar():
+    """The ambiguity margin is what "orphan, never mis-pin" rests on — and it
+    cannot fire at all when exactly one candidate survives. Such a winner was
+    accepted for being the only one left, and reported ``margin = best - 0``,
+    i.e. near-maximal confidence, for it. With no rival to corroborate it, the
+    one remaining piece of evidence has to be strong on its own.
+    """
+    # Every face of a cube has a unique normal, so each is the only candidate
+    # for its own signature — the case the ambiguity margin cannot reach.
+    table = _table()
+    frac = _sig(table[1], table)["area_frac"]
+
+    signature = _sig(table[1], table)
+    signature["area_frac"] = frac * 0.65       # 35% off the stored share
+    assert anchors.LONE_AREA_REL < 0.35 < anchors.AREA_REL
+    best, _score, _margin, refusal = anchors.match_face(signature, table)
+    assert best is None and refusal == "area_mismatch"
+
+    # Inside the bar it still matches: this is a gate, not a refusal to answer.
+    signature["area_frac"] = frac * 0.95
+    best, _score, _margin, refusal = anchors.match_face(signature, table)
+    assert refusal is None and best["index"] == 1
+
+
 def test_a_signature_without_area_frac_falls_back_to_millimetres():
     """Nothing has written such a signature, but a stored anchor outlives the
     code that wrote it, and an old anchor must degrade rather than crash."""
@@ -281,6 +305,7 @@ def test_the_measured_constants_are_the_spike_s_and_not_the_design_s_guesses():
     assert anchors.UVW_DIST == 0.15          # design guessed 0.15
     assert anchors.AMBIGUITY_MARGIN == 0.20  # design guessed 0.05: 60 mis-pins
     assert anchors.AREA_REL == 0.5           # design guessed 0.25, as a filter
+    assert anchors.LONE_AREA_REL == 0.30     # the review's mis-pin: 0.43
     assert not hasattr(anchors, "STICKY_MARGIN")
 
 

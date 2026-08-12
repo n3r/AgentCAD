@@ -294,12 +294,26 @@ build — rather than through the unit seams (`tests/test_comments.py`,
    parameters × +1%/+10%/+30%, 3 206 face pairs with ground truth established
    independently of the matcher (`docs/changelog/0113-prd008-anchor-resolution.md`):
 
-   | claim | measured |
+   Those numbers were **re-measured after code review**
+   (`docs/changelog/0123-prd008-review-fixes.md`) with a stricter ground-truth
+   oracle — a Lowe ratio test on each mutual-nearest-neighbour hop, so a face
+   the oracle cannot pair unambiguously leaves the sample instead of being
+   guessed at — and the second run is the one to quote:
+
+   | claim | measured (re-run, 2 693 known-truth faces) |
    |---|---|
    | face ordinals are stable | **no** — 87–93% hold; one part renumbered 20 of 44 faces for a 1% tweak |
-   | a surviving face re-matches | **~69%** (1 756 of 2 537), not always |
-   | a destroyed face orphans | **98.2%** (657 of 669) |
-   | it never mis-pins | **0 of 2 537** — the contract, and it holds |
+   | a surviving face re-matches | **53.9%** (1 451 of 2 693), not always |
+   | a destroyed face orphans | the safe direction, and the usual one |
+   | it never mis-pins | **not true: 2 of 2 693**, both on a body of revolution |
+
+   The review reproduced a third class the first run never exercised: a face
+   *cut away* whose only surviving candidate sits at the same normal and
+   normalized position re-pinned onto it at 0.87 "confidence", because
+   `AMBIGUITY_MARGIN` — the constant the whole guarantee rested on — cannot
+   fire when there is exactly one candidate. That is fixed in the code
+   (`LONE_AREA_REL`, an absolute area bar a lone candidate must clear on its
+   own), and the residual 2 are reported rather than tuned away.
 
    Slices 8–9 found two further ceilings in the browser
    (`docs/changelog/0119-prd008-threads-ui.md`): a parameter change that moves
@@ -312,12 +326,14 @@ build — rather than through the unit seams (`tests/test_comments.py`,
    **The honest criterion, and the one the acceptance test asserts:** *a face
    anchor survives a parameter tweak where the face's position within the
    shape's bounds is stable, or reports `orphaned` with a reason and no
-   address — and never points at the wrong face; the thread stays listable
-   either way.* Orphaned is a correct outcome, and for a repeated feature (104
-   near-identical thread faces on `fasteners/tapped_plate`) it is the *only*
-   correct outcome. Loosening a tolerance to raise the hit rate buys mis-pins:
-   at `AMBIGUITY_MARGIN 0.15` the rate rises ~1.5 points and one mis-pin
-   appears. That trade was refused.
+   address — and points at the wrong face only rarely (2 in 2 693 measured);
+   the thread stays listable either way.* Orphaned is a correct outcome, and
+   for a repeated feature (104 near-identical thread faces on
+   `fasteners/tapped_plate`) it is the *only* correct outcome. Loosening a
+   tolerance to raise the hit rate buys mis-pins: at `AMBIGUITY_MARGIN 0.15`
+   the rate rises ~1.5 points and one mis-pin appears. That trade was refused,
+   and the reverse trade was taken — `LONE_AREA_REL` costs 1.1 points of hit
+   rate to close the lone-candidate hole.
 2. **The module is `comments`, not `threads`** — `core/comments.py`,
    `core/anchors.py`, `core/tools_comments.py`, `server/routes_comments.py`.
    `agentcad/toolkit/threads.py` is ISO screw threads and `tests/test_threads.py`
@@ -384,7 +400,8 @@ build — rather than through the unit seams (`tests/test_comments.py`,
 ## Risks & open questions
 
 - **Re-anchoring is heuristic** — signatures can mismatch after large
-  topology changes. The contract is honesty: orphan, never mis-pin;
+  topology changes. The contract is honesty: orphan rather than guess, and
+  publish the mis-pin rate (2 in 2 693) rather than claim there is none;
   tolerances tuned on the bundled examples. PRD-002's hunk anchors
   sidestep the problem by anchoring to immutable diffs.
 - **Two coordination mechanisms** (turns + claims) risk confusion — one
