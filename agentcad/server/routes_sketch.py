@@ -32,6 +32,10 @@ def build_router(service, registry) -> APIRouter:
             # `false` is the GUI's "do not emit"; the tool schema types this
             # key as a string, so the bool never reaches the registry.
             "emit": body.get("emit") or None,
+            # The plane a sketch-on-face was solved in. The solver is 2D and
+            # ignores it; emission writes it into the script, because
+            # sketch-on-face coordinates without their basis are arbitrary.
+            "plane": body.get("plane"),
         })
 
     return router

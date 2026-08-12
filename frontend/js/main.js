@@ -1453,6 +1453,35 @@ async function selectFace(partId, faceIndex) {
   }
 }
 
+async function openSketchOnFace(button) {
+  if (!faceSel) return;
+  const { partId, faceIndex } = faceSel;
+  button.disabled = true;
+  let res = null;
+  try {
+    // `face_info` gives a normal and a centre — a plane, but no basis. Without
+    // a deterministic in-plane X axis every coordinate the sketch emits is
+    // arbitrary, so the plane comes from `sketch_plane`, which also projects
+    // the face's own boundary edges into that basis.
+    res = await api.callTool("sketch_plane", {
+      project: state.projectName,
+      part_id: partId,
+      face_index: faceIndex,
+    });
+  } catch (err) {
+    toast(`Sketch on face failed — ${err.message}`, "error");
+    button.disabled = false;
+    return;
+  }
+  button.disabled = false;
+  if (res.error) {
+    toast(`Sketch on face failed — ${res.error.message}`, "error");
+    return;
+  }
+  sketcher.openOnFace({ ...res, part_id: partId });
+  toast(`Sketching on face ${faceIndex} · ${res.refs.length} reference edge(s)`);
+}
+
 function renderFaceCard() {
   const card = document.getElementById("facecard");
   const body = document.getElementById("facecard-body");
@@ -1516,6 +1545,18 @@ function renderFaceCard() {
   });
   row.append(input, apply);
   body.appendChild(row);
+
+  const sketch = document.createElement("button");
+  sketch.type = "button";
+  sketch.className = "tb-btn";
+  sketch.textContent = "Sketch on face";
+  sketch.disabled = !planar;
+  sketch.title = planar
+    ? "Open the sketcher on this face's plane, with the face's own boundary "
+      + "edges projected in as fixed references"
+    : "A sketch needs a planar face";
+  sketch.addEventListener("click", () => openSketchOnFace(sketch));
+  row.appendChild(sketch);
 
   const comment = document.createElement("button");
   comment.type = "button";

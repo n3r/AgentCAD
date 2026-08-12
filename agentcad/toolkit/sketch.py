@@ -54,18 +54,32 @@ arc's `a1.center`) live behind it, so a user entity containing a dot is a
 `SketchError` rather than a silent rebinding. Sub-entities may be *referenced*
 from a constraint; they may not be *declared*.
 
-**Tangency has two residual forms, and the choice is not cosmetic.** When the
-tangency point is a point of its own, tangency is `dist(centre, line) - r`.
-When the line's endpoint *is* the arc's own virtual handle — a closed chain,
-or a slot's side — that point is already on both curves structurally, and the
-remaining condition is that the radius meets the line square. Measured: with
-the distance form in that position, sliding the junction moves *both* line
-endpoints along the line, so the row is second-order flat and the Jacobian is
-**rank-deficient at the solution** (a slot reported rank 1 of 5, `dof 4`, and
-its own name in `free_entities`). `_shared_endpoint` detects the case and uses
-the perpendicular form: same row count, `dof 0`, and on a 50-entity ring of
-arcs and lines the warm solve went 11.5 ms -> 6.1 ms (nfev 7 -> 4) with
-`max_residual` 3.6e-8 -> 2.8e-14.
+**Tangency has three residual forms, and the choice is not cosmetic.** When
+the two curves do not otherwise meet, tangency is a distance:
+`dist(centre, line) - r`, or `d(c1,c2) - (r1 +- r2)`. When they already meet at
+a point, that form is second-order flat there and the row falls into the span
+of the rows that pin the junction, so the Jacobian is **rank-deficient at the
+solution** and the constraint reports itself as redundant while doing real
+work. Two ways a junction is pinned, and both are handled:
+
+- **structurally** — the line is built on `arc1.end` (a closed chain, a slot's
+  side). `_shared_endpoint` detects it and uses the perpendicular form
+  `(at - centre) . u_line` (`tangent_point_perp`). Measured in slice 6: a slot
+  reported rank 1 of 5 and `dof 4` with its own name in `free_entities`; with
+  the perpendicular form `dof 0`, and a 50-entity ring of arcs and lines went
+  11.5 ms -> 6.1 ms warm (nfev 7 -> 4), `max_residual` 3.6e-8 -> 2.8e-14.
+- **by a `coincident` constraint** — a junction *point* tied to the handle,
+  which is what the GUI and most agents write. `_joined_handle` /
+  `_joined_handles` detect it (union-find over every declared coincidence) and
+  use the **direction** form `t_a x t_b` (`tangent_dir`). Measured in slice 10
+  and fixed here: on the GUI's line -> tangent-arc chain the singular values
+  were `1.21e+1  2.45e+0  1.84e-16` against a `8.46e-9` rank tolerance —
+  rank 2 of 3, `dof 5` instead of 4, chip reading `over-constrained (1)` — and
+  the arc-arc form is *exactly* dependent there (`4.70e-16`). With the
+  direction form: `1.21e+1  1.73e+0  1.20e-01`, `dof 4`, nothing redundant.
+
+The three are the same geometry; only their linearizations differ. A junction
+in a chain always has one of the two well-conditioned forms.
 
 ## Splines and slots (PRD-009 slice 6)
 
@@ -219,8 +233,8 @@ RESIDUAL_KINDS = frozenset({
     "fixed", "coincident", "distance", "distance_x", "distance_y",
     "horizontal", "vertical", "parallel", "perpendicular", "angle",
     "point_on_line", "point_on_circle", "radius", "equal_radius", "midpoint",
-    "tangent_line_circle", "tangent_point_perp", "tangent_circles",
-    "symmetric", "equal_length",
+    "tangent_line_circle", "tangent_point_perp", "tangent_dir",
+    "tangent_circles", "symmetric", "equal_length",
 })
 
 # Entity names are the user's namespace; dotted names are the solver's. A
@@ -300,6 +314,10 @@ class _Arc:
     t1_0: float
     t2_0: float
     fixed_r: bool = False
+    # A wholly fixed arc — projected reference geometry (slice 12). It owns
+    # **no** parameters at all: not the radius, not the two angles. That is
+    # what lets a sketch-on-face reference add no DOF and never be dragged.
+    fixed: bool = False
     ir: int = -1
     i1: int = -1
     i2: int = -1
@@ -309,6 +327,33 @@ class _Arc:
     # the slot that compiled this arc, if any: it owns the parameter slots for
     # reporting, and it is what `initial` seeds instead of the arc
     owner: str | None = None
+
+
+@dataclass
+class _Ellipse:
+    """Centre point + `a`, `b`, `phi` — three own parameters, five when bounded.
+
+    Angles (the rotation `phi` and the bounds `t1`/`t2`) are **degrees in the
+    spec and radians here**, and the bounds are the **eccentric anomaly**, not
+    a true angle: the point at `t` is `c + R(phi) (a cos t, b sin t)`. That is
+    not an arbitrary choice — measured against the pinned build123d 0.11.1,
+    `EllipticalCenterArc`'s `start_angle`/`arc_size` are the same anomaly to
+    8.9e-16 mm, so the solver's parameter *is* the emitted curve's parameter.
+    """
+
+    name: str
+    center: str
+    a0: float
+    b0: float
+    phi0: float
+    bounded: bool = False
+    t1_0: float = 0.0
+    t2_0: float = 2 * math.pi
+    ia: int = -1
+    ib: int = -1
+    ip: int = -1
+    i1: int = -1
+    i2: int = -1
 
 
 @dataclass
@@ -414,24 +459,81 @@ class _ArcEndPoint(PointRef):
     wrote.
     """
 
-    __slots__ = ("center", "radius", "it")
+    __slots__ = ("center", "radius", "it", "t_fixed")
 
     def __init__(self, name: str, center: PointRef, radius: ScalarRef,
-                 it: int) -> None:
-        self.name, self.center, self.radius, self.it = name, center, radius, it
-        self.params = tuple(dict.fromkeys(center.params + radius.params + (it,)))
+                 it: int | None, t_fixed: float = 0.0) -> None:
+        self.name, self.center, self.radius = name, center, radius
+        self.it, self.t_fixed = it, t_fixed
+        extra = () if it is None else (it,)
+        self.params = tuple(
+            dict.fromkeys(center.params + radius.params + extra))
+
+    def _t(self, v) -> float:
+        return self.t_fixed if self.it is None else v[self.it]
 
     def value(self, v):
         cx, cy = self.center.value(v)
-        r, t = self.radius.value(v), v[self.it]
+        r, t = self.radius.value(v), self._t(v)
         return cx + r * math.cos(t), cy + r * math.sin(t)
 
     def accum(self, v, J, row, dfdx, dfdy):
-        r, t = self.radius.value(v), v[self.it]
+        r, t = self.radius.value(v), self._t(v)
         ct, st = math.cos(t), math.sin(t)
         self.center.accum(v, J, row, dfdx, dfdy)
         self.radius.accum(v, J, row, dfdx * ct + dfdy * st)
-        J[row, self.it] += r * (dfdy * ct - dfdx * st)
+        if self.it is not None:
+            J[row, self.it] += r * (dfdy * ct - dfdx * st)
+
+
+class _EllipsePoint(PointRef):
+    """A point on an ellipse at anomaly `t`: `c + R(phi) (a cos t, b sin t)`.
+
+    Three uses, all the same class: a bounded elliptical arc's `.start`/`.end`
+    handles (`t` is a parameter slot), the axis handles `.major`/`.minor`
+    (`t` is the constant 0 or pi/2, which is what lets the existing point
+    vocabulary pin an ellipse's size and orientation), and **the tangency
+    point of an elliptical tangency** (`t` is the auxiliary parameter that
+    exists because point-to-ellipse distance has no closed form).
+    """
+
+    __slots__ = ("center", "ra", "rb", "ip", "it", "t_fixed")
+
+    def __init__(self, name: str, center: PointRef, ra: ScalarRef,
+                 rb: ScalarRef, ip: int, it: int | None = None,
+                 t_fixed: float = 0.0) -> None:
+        self.name, self.center, self.ra, self.rb = name, center, ra, rb
+        self.ip, self.it, self.t_fixed = ip, it, t_fixed
+        extra = (ip,) if it is None else (ip, it)
+        self.params = tuple(dict.fromkeys(
+            center.params + ra.params + rb.params + extra))
+
+    def _local(self, v):
+        a, b = self.ra.value(v), self.rb.value(v)
+        t = self.t_fixed if self.it is None else v[self.it]
+        phi = v[self.ip]
+        return a, b, math.cos(t), math.sin(t), math.cos(phi), math.sin(phi)
+
+    def value(self, v):
+        cx, cy = self.center.value(v)
+        a, b, ct, st, cp, sp = self._local(v)
+        lx, ly = a * ct, b * st
+        return cx + lx * cp - ly * sp, cy + lx * sp + ly * cp
+
+    def accum(self, v, J, row, dfdx, dfdy):
+        a, b, ct, st, cp, sp = self._local(v)
+        lx, ly = a * ct, b * st
+        self.center.accum(v, J, row, dfdx, dfdy)
+        self.ra.accum(v, J, row, dfdx * ct * cp + dfdy * ct * sp)
+        self.rb.accum(v, J, row, -dfdx * st * sp + dfdy * st * cp)
+        # d/dphi of R(phi) w is rot90(R(phi) w) — the point turns about the
+        # centre, so the partial is the perpendicular of the local vector.
+        J[row, self.ip] += (dfdx * (-lx * sp - ly * cp)
+                            + dfdy * (lx * cp - ly * sp))
+        if self.it is not None:
+            dlx, dly = -a * st, b * ct
+            J[row, self.it] += (dfdx * (dlx * cp - dly * sp)
+                                + dfdy * (dlx * sp + dly * cp))
 
 
 class ScalarRef:
@@ -470,6 +572,122 @@ class _FixedScalar(ScalarRef):
 
     def accum(self, v, J, row, d):
         return
+
+
+class TangentRef:
+    """A curve's **unit tangent direction** at a junction.
+
+    The third reference kind, and the one tangency needs where the two curves
+    already meet at a point: with the junction pinned by a coincidence, the
+    remaining condition is that the two tangents are parallel, and that is a
+    residual on directions rather than on distances. See `_tangent_dir`.
+    """
+
+    __slots__ = ("name", "params")
+
+    def value(self, v: np.ndarray) -> tuple[float, float]:
+        raise NotImplementedError
+
+    def accum(self, v: np.ndarray, J: np.ndarray, row: int,
+              dfdtx: float, dfdty: float) -> None:
+        raise NotImplementedError
+
+
+class _LineTangent(TangentRef):
+    """`unit(p1 -> p2)` — the same normalization `parallel` differentiates."""
+
+    __slots__ = ("ra", "rb")
+
+    def __init__(self, name: str, ra: PointRef, rb: PointRef) -> None:
+        self.name, self.ra, self.rb = name, ra, rb
+        self.params = tuple(dict.fromkeys(ra.params + rb.params))
+
+    def value(self, v):
+        ux, uy, _ = _unit(*self.ra.value(v), *self.rb.value(v))
+        return ux, uy
+
+    def accum(self, v, J, row, dfdtx, dfdty):
+        ux, uy, n = _unit(*self.ra.value(v), *self.rb.value(v))
+        _accum_dir(v, J, row, self.ra, self.rb, ux, uy, n, dfdtx, dfdty)
+
+
+class _ArcTangent(TangentRef):
+    """`(-sin theta, cos theta)` at one of an arc's virtual handles.
+
+    It touches **only the angle slot**: the derivative of `c + r e(theta)` in
+    `theta` is `r (-sin, cos)`, and normalizing drops both the centre and the
+    radius. That is exactly why it fixes the rank collapse — the tangency
+    condition stops being a function of the same quantities the coincidence
+    rows already pin.
+    """
+
+    __slots__ = ("it", "t_fixed")
+
+    def __init__(self, name: str, it: int | None, t_fixed: float = 0.0) -> None:
+        self.name, self.it, self.t_fixed = name, it, t_fixed
+        self.params = () if it is None else (it,)
+
+    def _t(self, v) -> float:
+        return self.t_fixed if self.it is None else v[self.it]
+
+    def value(self, v):
+        t = self._t(v)
+        return -math.sin(t), math.cos(t)
+
+    def accum(self, v, J, row, dfdtx, dfdty):
+        if self.it is None:
+            return
+        t = v[self.it]
+        J[row, self.it] += -dfdtx * math.cos(t) - dfdty * math.sin(t)
+
+
+class _EllipseTangent(TangentRef):
+    """The unit tangent of an ellipse at anomaly `t`.
+
+    `dP/dt = R(phi) (-a sin t, b cos t)`, normalized. Unlike a circle's, it
+    depends on `a` and `b` as well as on the angle — an ellipse's tangent
+    direction is not perpendicular to its radius — which is the whole reason
+    elliptical tangency needs the anomaly as a parameter instead of a formula.
+    """
+
+    __slots__ = ("ra", "rb", "ip", "it", "t_fixed")
+
+    def __init__(self, name: str, ra: ScalarRef, rb: ScalarRef, ip: int,
+                 it: int | None = None, t_fixed: float = 0.0) -> None:
+        self.name, self.ra, self.rb = name, ra, rb
+        self.ip, self.it, self.t_fixed = ip, it, t_fixed
+        extra = (ip,) if it is None else (ip, it)
+        self.params = tuple(dict.fromkeys(ra.params + rb.params + extra))
+
+    def _w(self, v):
+        """The unnormalized tangent, and the pieces its derivatives need."""
+        a, b = self.ra.value(v), self.rb.value(v)
+        t = self.t_fixed if self.it is None else v[self.it]
+        phi = v[self.ip]
+        ct, st = math.cos(t), math.sin(t)
+        cp, sp = math.cos(phi), math.sin(phi)
+        lx, ly = -a * st, b * ct
+        return (lx * cp - ly * sp, lx * sp + ly * cp), (a, b, ct, st, cp, sp)
+
+    def value(self, v):
+        (wx, wy), _ = self._w(v)
+        n = math.hypot(wx, wy) or 1e-12
+        return wx / n, wy / n
+
+    def accum(self, v, J, row, dfdtx, dfdty):
+        (wx, wy), (a, b, ct, st, cp, sp) = self._w(v)
+        n = math.hypot(wx, wy) or 1e-12
+        ux, uy = wx / n, wy / n
+        # through the normalization: (I - u u^T) / n
+        d = dfdtx * ux + dfdty * uy
+        gx, gy = (dfdtx - ux * d) / n, (dfdty - uy * d) / n
+        self.ra.accum(v, J, row, gx * (-st * cp) + gy * (-st * sp))
+        self.rb.accum(v, J, row, gx * (-ct * sp) + gy * (ct * cp))
+        J[row, self.ip] += gx * (-wy) + gy * wx        # rot90(w)
+        if self.it is not None:
+            dlx, dly = -a * ct, -b * st
+            J[row, self.it] += (gx * (dlx * cp - dly * sp)
+                                + gy * (dlx * sp + dly * cp))
 
 
 # ---------------- the residual IR ----------------
@@ -552,8 +770,15 @@ class Sketch:
         self.lines: dict[str, _Line] = {}
         self.circles: dict[str, _Circle] = {}
         self.arcs: dict[str, _Arc] = {}
+        self.ellipses: dict[str, _Ellipse] = {}
         self.splines: dict[str, _Spline] = {}
         self.slots: dict[str, _Slot] = {}
+        # Entities that constrain but do not emit — construction geometry, and
+        # every projected reference a sketch-on-face brings in (slice 12). The
+        # solver treats them like any other entity; `core/sketch_emit.py` drops
+        # them. A browser-only flag would have been a lie the emitter never
+        # sees, which is why slice 9 deferred it to here.
+        self.construction: set[str] = set()
         self.residuals: list[Residual] = []
         self.n_res = 0
         self.n_par = 0
@@ -587,6 +812,16 @@ class Sketch:
         self.con_args: list[dict] | None = None
         self._refs: dict[str, PointRef] = {}
         self._rads: dict[str, ScalarRef] = {}
+        # Union-find over handle names, fed by every `coincident` constraint.
+        # `tangent` consults it to find out whether the two curves already meet
+        # at a point — the difference between a well-conditioned direction
+        # residual and a rank-deficient distance one (`_junction`).
+        self._coin: dict[str, str] = {}
+        # Auxiliary anomaly slots created by elliptical tangencies, with the
+        # curve each one touches: `initial_vector` seeds them geometrically,
+        # **after** `initial` has moved the entities, because a client cannot
+        # be asked to send a parameter the solver invented.
+        self._aux_seeds: list[tuple[int, str, str, str]] = []
         self._con_index = -1
         self._spec_index: object = _AUTO_INDEX
         self._origin: str | None = None
@@ -608,7 +843,7 @@ class Sketch:
                 "sub-entities (slot1.arc_a)")
         if (name in self.points or name in self.lines or name in self.circles
                 or name in self.arcs or name in self.splines
-                or name in self.slots):
+                or name in self.slots or name in self.ellipses):
             raise SketchError(f"duplicate entity {name}")
         return name
 
@@ -651,7 +886,8 @@ class Sketch:
     def arc(self, name: str, center: str, r0: float, start_deg: float,
             end_deg: float, fixed_r: bool = False, *, internal: bool = False,
             radius_ref: ScalarRef | None = None, authored: str = "center",
-            three_point: tuple | None = None, owner: str | None = None) -> str:
+            three_point: tuple | None = None, owner: str | None = None,
+            fixed: bool = False) -> str:
         """An arc: a centre point, a radius and two angles (**degrees here**).
 
         Costs exactly 3 parameters — 2 when `fixed_r`, 0 extra when the caller
@@ -663,8 +899,9 @@ class Sketch:
         self._claim(name, internal=internal)
         self._need_point(center)
         a = _Arc(name, center, float(r0), math.radians(float(start_deg)),
-                 math.radians(float(end_deg)), bool(fixed_r),
-                 authored=authored, three_point=three_point)
+                 math.radians(float(end_deg)), bool(fixed_r) or bool(fixed),
+                 fixed=bool(fixed), authored=authored,
+                 three_point=three_point)
         a.owner = owner
         slot_name = owner or name     # what `free_entities` should call it
         if radius_ref is not None:
@@ -677,16 +914,19 @@ class Sketch:
             self.n_par += 1
             self.slot_owner.append(slot_name)
             self._rads[name] = _FreeScalar(name, a.ir)
-        a.i1, a.i2 = self.n_par, self.n_par + 1
-        self.n_par += 2
-        self.slot_owner += [slot_name, slot_name]
+        if not a.fixed:
+            a.i1, a.i2 = self.n_par, self.n_par + 1
+            self.n_par += 2
+            self.slot_owner += [slot_name, slot_name]
         self.arcs[name] = a
         centre_ref, radius = self._refs[center], self._rads[name]
         self._refs[f"{name}.center"] = centre_ref
         self._refs[f"{name}.start"] = _ArcEndPoint(
-            f"{name}.start", centre_ref, radius, a.i1)
+            f"{name}.start", centre_ref, radius,
+            None if a.fixed else a.i1, a.t1_0)
         self._refs[f"{name}.end"] = _ArcEndPoint(
-            f"{name}.end", centre_ref, radius, a.i2)
+            f"{name}.end", centre_ref, radius,
+            None if a.fixed else a.i2, a.t2_0)
         return name
 
     def arc_three_point(self, name: str, start, mid, end, *,
@@ -709,6 +949,70 @@ class Sketch:
         centre = self.point(f"{name}.center", cx, cy, internal=True)
         return self.arc(name, centre, r, math.degrees(t1), math.degrees(t2),
                         internal=True, authored="three_point", three_point=pts)
+
+    def ellipse(self, name: str, center: str, a: float, b: float,
+                rotation: float = 0.0, start_deg: float | None = None,
+                end_deg: float | None = None, *, internal: bool = False) -> str:
+        """An ellipse, or an elliptical arc when both bounds are given.
+
+        Costs 3 parameters (`a`, `b`, `phi`) plus 2 when bounded, plus the 2
+        its centre point costs. Handles:
+
+        - `<name>.center` — the centre point;
+        - `<name>.major` / `<name>.minor` — the ends of the two semi-axes, at
+          anomaly 0 and 90 degrees. They are ordinary point handles, so the
+          whole point vocabulary pins an ellipse's size and orientation
+          (`distance {p: "e1.center", q: "e1.major", d: 30}`,
+          `horizontal` on a line to `e1.major`, ...) without a single new
+          constraint type;
+        - `<name>.start` / `<name>.end` on a bounded arc.
+
+        The semi-axes are also scalar handles `<name>.a` / `<name>.b`, so
+        `radius` and `equal_radius` accept them.
+
+        **Angles are the eccentric anomaly**, matching build123d's
+        `EllipticalCenterArc` (measured to 8.9e-16 mm), and — like an arc's —
+        they are never wrapped mid-solve.
+        """
+        self._claim(name, internal=internal)
+        self._need_point(center)
+        a, b = float(a), float(b)
+        if not (a > 0.0 and b > 0.0):
+            raise SketchError(
+                f"ellipse {name!r} needs positive semi-axes, got a={a}, b={b}")
+        bounded = start_deg is not None and end_deg is not None
+        if (start_deg is None) != (end_deg is None):
+            raise SketchError(
+                f"ellipse {name!r} is bounded by **both** start_deg and "
+                "end_deg, or by neither (a full ellipse)")
+        e = _Ellipse(name, center, a, b, math.radians(float(rotation)), bounded)
+        if bounded:
+            e.t1_0 = math.radians(float(start_deg))
+            e.t2_0 = math.radians(float(end_deg))
+        e.ia, e.ib, e.ip = self.n_par, self.n_par + 1, self.n_par + 2
+        self.n_par += 3
+        self.slot_owner += [name, name, name]
+        ra = _FreeScalar(f"{name}.a", e.ia)
+        rb = _FreeScalar(f"{name}.b", e.ib)
+        self._rads[f"{name}.a"] = ra
+        self._rads[f"{name}.b"] = rb
+        if bounded:
+            e.i1, e.i2 = self.n_par, self.n_par + 1
+            self.n_par += 2
+            self.slot_owner += [name, name]
+        self.ellipses[name] = e
+        centre_ref = self._refs[center]
+        self._refs[f"{name}.center"] = centre_ref
+        self._refs[f"{name}.major"] = _EllipsePoint(
+            f"{name}.major", centre_ref, ra, rb, e.ip, None, 0.0)
+        self._refs[f"{name}.minor"] = _EllipsePoint(
+            f"{name}.minor", centre_ref, ra, rb, e.ip, None, math.pi / 2)
+        if bounded:
+            self._refs[f"{name}.start"] = _EllipsePoint(
+                f"{name}.start", centre_ref, ra, rb, e.ip, e.i1)
+            self._refs[f"{name}.end"] = _EllipsePoint(
+                f"{name}.end", centre_ref, ra, rb, e.ip, e.i2)
+        return name
 
     def spline(self, name: str, points: Sequence[str], *,
                internal: bool = False) -> str:
@@ -804,6 +1108,14 @@ class Sketch:
         d = math.degrees(phi)
         return (d + 90.0, d + 270.0), (d - 90.0, d + 90.0)
 
+    def mark_construction(self, name: str) -> None:
+        """Declare an entity construction-only: it constrains, it never emits."""
+        if not (name in self.lines or name in self.circles or name in self.arcs
+                or name in self.ellipses or name in self.splines
+                or name in self.slots or name in self.points):
+            raise SketchError(f"unknown entity {name!r} marked construction")
+        self.construction.add(name)
+
     def _pref(self, n: str) -> PointRef:
         """Resolve a point handle: a point name, or a virtual handle."""
         ref = self._refs.get(n)
@@ -867,6 +1179,8 @@ class Sketch:
             return "circle"
         if name in self.arcs:
             return "arc"
+        if name in self.ellipses:
+            return "ellipse"
         base, _, attr = name.rpartition(RESERVED_NAME_CHAR)
         if attr in ("start", "end") and base in self.splines:
             return "spline_end"
@@ -904,8 +1218,34 @@ class Sketch:
                            self._params(rp), f, df))
 
     def coincident(self, p: str, q: str) -> None:
+        self.note_coincidence(p, q)
         self._coincident(self._begin("coincident"), self._pref(p),
                          self._pref(q))
+
+    def note_coincidence(self, p: str, q: str) -> None:
+        """Record that two handles are the same point, without adding rows.
+
+        `coincident` calls it, and `parse_sketch` calls it for **every**
+        coincidence in the spec *before* compiling anything, so a `tangent`
+        declared ahead of the coincidence that joins its curves still sees the
+        junction. Through the direct `Sketch` API the order does matter:
+        declare the coincidence first, or call this.
+        """
+        self._union(p, q)
+
+    def _root(self, h: str) -> str:
+        parent = self._coin
+        while parent.get(h, h) != h:
+            h = parent[h] = parent.get(parent[h], parent[h])
+        return h
+
+    def _union(self, p: str, q: str) -> None:
+        rp, rq = self._root(p), self._root(q)
+        if rp != rq:
+            self._coin[rq] = rp
+
+    def _same_point(self, p: str, q: str) -> bool:
+        return p == q or self._root(p) == self._root(q)
 
     def _coincident(self, ci: int, rp: PointRef, rq: PointRef) -> None:
         """Two rows, whatever the handles are: `concentric` and every arc
@@ -1072,7 +1412,9 @@ class Sketch:
         self._on_line(self._begin("point_on_line"), p, ln)
 
     def _on_line(self, ci: int, p: str, ln: str) -> None:
-        rp = self._pref(p)
+        self._on_line_ref(ci, self._pref(p), ln)
+
+    def _on_line_ref(self, ci: int, rp: PointRef, ln: str) -> None:
         ra, rb = self._line_refs(ln)
 
         def f(v):
@@ -1098,7 +1440,9 @@ class Sketch:
         self._on_circle(self._begin("point_on_circle"), p, c)
 
     def _on_circle(self, ci: int, p: str, c: str) -> None:
-        rp = self._pref(p)
+        self._on_circle_ref(ci, self._pref(p), c)
+
+    def _on_circle_ref(self, ci: int, rp: PointRef, c: str) -> None:
         rc, rr = self._circle_refs(c)
 
         def f(v):
@@ -1116,9 +1460,25 @@ class Sketch:
                            self._params(rp, rc, rr), f, df))
 
     def radius(self, c: str, r: float) -> None:
-        self._need_circle(c)
-        _, rr = self._circle_refs(c)
-        self._radius_ref(self._begin("radius"), rr, float(r))
+        self._radius_ref(self._begin("radius"), self._radius_of(c), float(r))
+
+    def _radius_of(self, name: str) -> ScalarRef:
+        """A radius-like scalar: a circle or arc, or `<ellipse>.a` / `.b`.
+
+        An ellipse has two of them and neither is "the" radius, so it is named
+        rather than implied — and then `radius {c: "e1.a", r: 30}` and
+        `equal_radius {c1: "e1.b", c2: "C2"}` work with no new constraint type.
+        """
+        if name in self.circles or name in self.arcs:
+            return self._rads[name]
+        ref = self._rads.get(name)
+        if ref is None:
+            if name in self.ellipses:
+                raise SketchError(
+                    f"{name!r} is an ellipse and has two semi-axes: name one, "
+                    f"{name + '.a'!r} or {name + '.b'!r}")
+            raise SketchError(f"unknown circle or arc {name}")
+        return ref
 
     def _radius_ref(self, ci: int, rr: ScalarRef, want: float) -> None:
 
@@ -1131,9 +1491,7 @@ class Sketch:
         self._add(Residual(ci, "radius", 1, self._params(rr), f, df))
 
     def equal_radius(self, c1: str, c2: str) -> None:
-        self._need_circle(c1), self._need_circle(c2)
-        _, r1 = self._circle_refs(c1)
-        _, r2 = self._circle_refs(c2)
+        r1, r2 = self._radius_of(c1), self._radius_of(c2)
 
         def f(v):
             return (r1.value(v) - r2.value(v),)
@@ -1185,6 +1543,13 @@ class Sketch:
         if at is None:
             at = self._shared_endpoint(ln, c)
         if at is None:
+            handle = self._joined_handle(ln, c)
+            if handle is not None:
+                # The junction is already pinned by a coincidence, so tangency
+                # is a *direction* condition. See `_tangent_dir`.
+                self._tangent_dir(ci, self._line_tangent(ln),
+                                  self._curve_tangent(handle))
+                return
             def f(v):
                 ax, ay = ra.value(v)
                 ux, uy, _ = _unit(ax, ay, *rb.value(v))
@@ -1235,28 +1600,130 @@ class Sketch:
                 return handle
         return None
 
-    def _tangent_perp(self, ci: int, ln: str, c: str, at: str) -> None:
-        """`(at - centre) . u_line == 0` — the radius meets the line square."""
+    def _handles_of(self, c: str) -> tuple[str, ...]:
+        """A curve's endpoint handles: an arc's, or a bounded ellipse's.
+
+        A circle and a full ellipse have none — they have no endpoints, so
+        they can never share a junction, which is exactly the case that keeps
+        the v1 distance residual.
+        """
+        if c in self.arcs or (c in self.ellipses and self.ellipses[c].bounded):
+            return (f"{c}.start", f"{c}.end")
+        return ()
+
+    def _joined_handle(self, ln: str, c: str) -> str | None:
+        """The curve handle a line endpoint already meets by a *coincidence*.
+
+        `_shared_endpoint` is the structural case (the line is literally built
+        on `arc1.end`); this is the same junction expressed the way the GUI and
+        most agents write it — a junction *point* tied to the handle by a
+        `coincident` constraint — and it needs the same treatment for the same
+        reason (`_tangent_dir`).
+        """
+        line = self.lines[ln]
+        for handle in self._handles_of(c):
+            for end in (line.p1, line.p2):
+                if self._same_point(end, handle):
+                    return handle
+        return None
+
+    def _joined_handles(self, c1: str, c2: str) -> tuple[str, str] | None:
+        """The pair of arc handles where two curves already meet, if any."""
+        for h1 in self._handles_of(c1):
+            for h2 in self._handles_of(c2):
+                if self._same_point(h1, h2):
+                    return h1, h2
+        return None
+
+    def _line_tangent(self, ln: str) -> TangentRef:
         ra, rb = self._line_refs(ln)
-        rc, _ = self._circle_refs(c)
-        rt = self._pref(at)
+        return _LineTangent(ln, ra, rb)
+
+    def _curve_tangent(self, handle: str) -> TangentRef:
+        """The tangent direction at an arc's or a bounded ellipse's handle."""
+        base, _, which = handle.rpartition(RESERVED_NAME_CHAR)
+        if base in self.arcs:
+            arc = self.arcs[base]
+            return _ArcTangent(handle, arc.i1 if which == "start" else arc.i2)
+        e = self.ellipses[base]
+        return _EllipseTangent(handle, self._rads[f"{base}.a"],
+                               self._rads[f"{base}.b"], e.ip,
+                               e.i1 if which == "start" else e.i2)
+
+    def _tangent_dir(self, ci: int, ta: TangentRef, tb: TangentRef) -> None:
+        """Tangency at a junction the sketch already pins: `t_a x t_b == 0`.
+
+        **The residual form is not cosmetic, and this is the second time this
+        plan has had to say so.** Slice 6 measured it for a junction the
+        geometry shares *structurally* (a slot's side built on its cap's
+        handle); slice 10 measured the same collapse for a junction shared by a
+        `coincident` constraint, which is the idiom the GUI writes. At exact
+        tangency `dist(centre, line) - r` sits at a minimum of the distance it
+        measures, so its gradient vanishes in every direction the junction can
+        move and the row falls into the span of the coincidence rows: measured
+        on the GUI's line -> tangent-arc chain, singular values
+        `1.21e+1  2.45e+0  1.84e-16` against a rank tolerance of `8.46e-9`, so
+        rank 2 of 3, `dof 5` instead of 4, and the chip read
+        `over-constrained (1)` blaming a constraint that was doing real work
+        (from an off-tangent seed the same constraint reaches tangency to
+        2.7e-11). The arc-arc form `d(c1,c2) - (r1 +- r2)` is *exactly*
+        dependent at a coincident junction — `4.70e-16` — not merely small.
+
+        With the junction pinned, the honest remaining condition is that the
+        two curves leave it in the same direction, and a unit-tangent cross
+        product is first-order in the arc's angle (gradient `+-1` there) rather
+        than second-order flat. Same row count; measured `dof 4` on the chain
+        and `dof 3` on the arc pair, with `max_residual` at machine zero.
+
+        The structural case keeps `tangent_point_perp` — `(at - centre) . u` is
+        this same residual scaled by `r`, and slice 6's measurements and tests
+        are written against that name.
+        """
 
         def f(v):
-            ux, uy, _ = _unit(*ra.value(v), *rb.value(v))
-            tx, ty = rt.value(v)
-            cx, cy = rc.value(v)
-            return ((tx - cx) * ux + (ty - cy) * uy,)
+            ax, ay = ta.value(v)
+            bx, by = tb.value(v)
+            return (ax * by - ay * bx,)
 
         def df(v, J, r):
-            ux, uy, n = _unit(*ra.value(v), *rb.value(v))
-            tx, ty = rt.value(v)
+            ax, ay = ta.value(v)
+            bx, by = tb.value(v)
+            ta.accum(v, J, r, by, -bx)
+            tb.accum(v, J, r, -ay, ax)
+
+        self._add(Residual(ci, "tangent_dir", 1, self._params(ta, tb), f, df))
+
+    def _tangent_perp(self, ci: int, ln: str, c: str, at: str) -> None:
+        """`(at - centre) . u_line == 0` — the radius meets the line square."""
+        self._perp_to_direction(ci, self._line_tangent(ln), self._pref(at),
+                                self._circle_refs(c)[0])
+
+    def _perp_to_direction(self, ci: int, td: TangentRef, rt: PointRef,
+                           rc: PointRef) -> None:
+        """`(at - centre) . t == 0` for any direction `t`.
+
+        The line form is slice 6's tangency (a circle's radius meets the line
+        square); the same row with an ellipse's tangent in place of the line's
+        is "the circle's centre lies on the ellipse's normal", which is half of
+        a curve-ellipse tangency.
+        """
+
+        def f(v):
+            tx, ty = td.value(v)
+            px, py = rt.value(v)
             cx, cy = rc.value(v)
-            rt.accum(v, J, r, ux, uy)
-            rc.accum(v, J, r, -ux, -uy)
-            _accum_dir(v, J, r, ra, rb, ux, uy, n, tx - cx, ty - cy)
+            return ((px - cx) * tx + (py - cy) * ty,)
+
+        def df(v, J, r):
+            tx, ty = td.value(v)
+            px, py = rt.value(v)
+            cx, cy = rc.value(v)
+            rt.accum(v, J, r, tx, ty)
+            rc.accum(v, J, r, -tx, -ty)
+            td.accum(v, J, r, px - cx, py - cy)
 
         self._add(Residual(ci, "tangent_point_perp", 1,
-                           self._params(ra, rb, rc, rt), f, df))
+                           self._params(td, rt, rc), f, df))
 
     def tangent_circles(self, c1: str, c2: str, kind: str = "external") -> None:
         """Circle/arc tangent to circle/arc (v1 name, kept for ever)."""
@@ -1268,6 +1735,18 @@ class Sketch:
         if kind not in ("external", "internal"):
             raise SketchError(
                 f"tangent kind must be 'external' or 'internal', not {kind!r}")
+        joined = self._joined_handles(c1, c2)
+        if joined is not None:
+            # Two arcs meeting at a coincident junction: the distance form is
+            # *exactly* dependent on the coincidence rows there (measured
+            # singular value 4.70e-16), so tangency compiles to the direction
+            # residual. `kind` has no meaning at a shared point — external and
+            # internal are the two ways two circles can touch *without* one,
+            # and the coincidence has already chosen the touching point — so it
+            # is accepted and unused, which the tool description states.
+            self._tangent_dir(ci, self._curve_tangent(joined[0]),
+                              self._curve_tangent(joined[1]))
+            return
         ra, r1 = self._circle_refs(c1)
         rb, r2 = self._circle_refs(c2)
         sign = 1.0 if kind == "external" else -1.0
@@ -1301,7 +1780,17 @@ class Sketch:
         ci = self._begin("tangent")
         ka, kb = self._kind_of(a), self._kind_of(b)
         radial = ("circle", "arc")
-        if ka == "spline_end" and kb == "line":
+        if ka == "ellipse" or kb == "ellipse":
+            e, other = (a, b) if ka == "ellipse" else (b, a)
+            other_kind = kb if ka == "ellipse" else ka
+            if at is not None:
+                raise SketchError(
+                    "`at` is not supported on an elliptical tangency: the "
+                    "tangency point is the solver's own auxiliary parameter "
+                    f"({e}.tangency), because point-to-ellipse distance has no "
+                    "closed form")
+            self._tangent_ellipse(ci, e, other, other_kind)
+        elif ka == "spline_end" and kb == "line":
             self._tangent_spline_end(ci, a, b)
         elif kb == "spline_end" and ka == "line":
             self._tangent_spline_end(ci, b, a)
@@ -1318,7 +1807,83 @@ class Sketch:
         else:
             raise SketchError(
                 f"tangent cannot constrain {ka} {a!r} to {kb} {b!r}; supported "
-                "pairs are line+circle, line+arc and circle/arc+circle/arc")
+                "pairs are line+circle, line+arc, circle/arc+circle/arc and "
+                "ellipse+line/circle/arc")
+
+    def _tangent_ellipse(self, ci: int, ename: str, other: str,
+                         other_kind: str) -> None:
+        """Tangency to an ellipse: two rows and **one auxiliary parameter**.
+
+        There is no closed form for the distance from a point to an ellipse, so
+        the tangency point is carried explicitly as its eccentric anomaly
+        `<ellipse>.tangency` and the condition is written where it *is*
+        closed-form — the touch point lies on the other curve, and the two
+        tangents agree there:
+
+        - against a line: `point_on_line(P(t))` + `t_ellipse(t) x u_line`;
+        - against a circle or arc: `|P(t) - centre| = r` +
+          `(P(t) - centre) . t_ellipse(t) = 0` (the centre lies on the
+          ellipse's normal).
+
+        Net one degree of freedom removed, as a tangency should be: +1
+        parameter, +2 rows. The parameter is **seeded geometrically** — the
+        anomaly of the closest point on the ellipse to the other curve, found
+        by a 72-sample scan of the starting geometry plus a local refinement.
+
+        Measured (slice 11 spike, 20 randomized starts per configuration; the
+        plan's ship/no-ship gate was 90%): **20/20 for both pairings**,
+        geometric tangency error p50 9.25e-13 mm (line) and 1.32e-10 mm
+        (circle), max 9.1e-10 — measured as the true minimum distance from the
+        other curve to the ellipse, not from the residual.
+        `tests/test_sketch_ellipses.py` re-runs exactly those starts.
+
+        The geometric seed is worth its microseconds but is **not** what makes
+        it feasible: from a fixed `t=0` seed both configurations still solve
+        20/20, and from a uniformly random anomaly 20/20 and 19/20. Cost: nfev
+        p50 48 (line) and 120 (circle), solve p50 3.8 ms and 7.8 ms — a
+        curve-ellipse tangency is the most expensive constraint in the
+        vocabulary, and on a drag path it is the one to watch.
+
+        When the two curves already meet at a junction the sketch pins, there
+        is no auxiliary parameter at all: the anomaly is the handle's own, and
+        `_tangent_dir` applies (see `tangent`'s dispatch below).
+        """
+        e = self.ellipses[ename]
+        if other_kind == "ellipse":
+            raise SketchError(
+                "tangency between two ellipses is out of scope: it needs an "
+                "auxiliary anomaly on each curve and was not measured; "
+                "constrain one of them through a handle instead")
+        if other_kind not in ("line", "circle", "arc"):
+            raise SketchError(
+                f"tangent cannot constrain ellipse {ename!r} to {other_kind} "
+                f"{other!r}")
+        joined = (self._joined_handle(other, ename) if other_kind == "line"
+                  else (self._joined_handles(other, ename) or (None, None))[1])
+        if joined is not None:
+            # The junction is pinned: the tangency point is a handle, not an
+            # unknown, and the direction residual is first-order there.
+            far = (self._line_tangent(other) if other_kind == "line"
+                   else self._curve_tangent(
+                       self._joined_handles(other, ename)[0]))
+            self._tangent_dir(ci, far, self._curve_tangent(joined))
+            return
+
+        it = self.n_par
+        self.n_par += 1
+        self.slot_owner.append(f"{ename}.tangency")
+        centre_ref = self._refs[e.center]
+        ra, rb = self._rads[f"{ename}.a"], self._rads[f"{ename}.b"]
+        touch = _EllipsePoint(f"{ename}.tangency", centre_ref, ra, rb, e.ip, it)
+        tangent = _EllipseTangent(f"{ename}.tangency", ra, rb, e.ip, it)
+        self._aux_seeds.append((it, ename, other, other_kind))
+        if other_kind == "line":
+            self._on_line_ref(ci, touch, other)
+            self._tangent_dir(ci, self._line_tangent(other), tangent)
+        else:
+            self._on_circle_ref(ci, touch, other)
+            self._perp_to_direction(ci, tangent, touch,
+                                    self._circle_refs(other)[0])
 
     def _tangent_spline_end(self, ci: int, handle: str, ln: str) -> None:
         """A spline's end tangent, as a direction residual against the first
@@ -1418,12 +1983,17 @@ class Sketch:
                            self._params(ra, rb, rc, rd), f, df))
 
     def concentric(self, a: str, b: str) -> None:
-        """Centre coincidence of two circles/arcs — 2 rows, the `coincident`
-        residual on the two centre handles."""
-        self._need_circle(a), self._need_circle(b)
-        ra, _ = self._circle_refs(a)
-        rb, _ = self._circle_refs(b)
+        """Centre coincidence of two circles/arcs/ellipses — 2 rows, the
+        `coincident` residual on the two centre handles."""
+        ra, rb = self._center_of(a), self._center_of(b)
         self._coincident(self._begin("concentric"), ra, rb)
+
+    def _center_of(self, name: str) -> PointRef:
+        curve = (self.circles.get(name) or self.arcs.get(name)
+                 or self.ellipses.get(name))
+        if curve is None:
+            raise SketchError(f"unknown circle, arc or ellipse {name}")
+        return self._refs[curve.center]
 
     # ---------------- the drag objective ----------------
     def drag(self, point: str, x: float, y: float,
@@ -1500,6 +2070,8 @@ class Sketch:
                 + [(n, a.r0) for n, a in self.arcs.items()
                    if a.fixed_r and a.owner is None]),
             "slots": sorted((n, s.width) for n, s in self.slots.items()),
+            "ellipses": sorted((n, e.bounded) for n, e in self.ellipses.items()),
+            "construction": sorted(self.construction),
         }
         blob = json.dumps(payload, sort_keys=True, default=str).encode()
         return hashlib.sha256(blob).hexdigest()
@@ -1527,7 +2099,7 @@ class Sketch:
         if not isinstance(initial, dict):
             raise SketchError("initial must be an object with 'points', "
                               "'circles', 'arcs' and/or 'slots' entries")
-        known = ("arcs", "circles", "points", "slots")
+        known = ("arcs", "circles", "ellipses", "points", "slots")
         unknown_sections = set(initial) - set(known)
         if unknown_sections:
             raise SketchError(
@@ -1537,6 +2109,10 @@ class Sketch:
         circs = initial.get("circles") or {}
         arcs = initial.get("arcs") or {}
         slots = initial.get("slots") or {}
+        ells = initial.get("ellipses") or {}
+        for name in ells:
+            if name not in self.ellipses:
+                raise SketchError(f"initial names unknown ellipse {name!r}")
         for name in pts:
             if name not in self.points:
                 raise SketchError(f"initial names unknown point {name!r}")
@@ -1575,11 +2151,28 @@ class Sketch:
                 missing.append(name)
                 continue
             seeds.append((slot, {"r_seed": float(given["r"])}))
+        for name, e in self.ellipses.items():
+            given = ells.get(name)
+            if not isinstance(given, dict):
+                missing.append(name)
+                continue
+            want = {"a0": given.get("a"), "b0": given.get("b"),
+                    "phi0": given.get("rotation")}
+            if e.bounded:
+                want["t1_0"] = given.get("start_deg")
+                want["t2_0"] = given.get("end_deg")
+            if any(val is None for val in want.values()):
+                missing.append(name)
+                continue
+            seeds.append((e, {k: (float(val) if k in ("a0", "b0")
+                                  else math.radians(float(val)))
+                              for k, val in want.items()}))
         for name, a in self.arcs.items():
-            if a.owner is not None:
+            if a.owner is not None or a.fixed:
                 # A slot's caps are derived: their angles are re-derived from
                 # the seeded centres below, so a client never has to send a
-                # compiled sub-entity's parameters.
+                # compiled sub-entity's parameters. A fixed reference arc has
+                # no parameters to seed at all.
                 continue
             given = arcs.get(name)
             if not isinstance(given, dict):
@@ -1636,10 +2229,63 @@ class Sketch:
         for a in self.arcs.values():
             if not a.fixed_r:
                 x0[a.ir] = a.r0
-            x0[a.i1], x0[a.i2] = a.t1_0, a.t2_0
+            if not a.fixed:
+                x0[a.i1], x0[a.i2] = a.t1_0, a.t2_0
+        for e in self.ellipses.values():
+            x0[e.ia], x0[e.ib], x0[e.ip] = e.a0, e.b0, e.phi0
+            if e.bounded:
+                x0[e.i1], x0[e.i2] = e.t1_0, e.t2_0
         for slot in self.slots.values():
             x0[slot.ir] = slot.width / 2 if slot.r_seed is None else slot.r_seed
+        for it, ename, other, other_kind in self._aux_seeds:
+            x0[it] = self._seed_anomaly(x0, ename, other, other_kind)
         return x0
+
+    # A coarse scan then a local refinement. 72 + 20 evaluations of a couple of
+    # trig operations is microseconds, and it is what turns the elliptical
+    # tangency from 12/20 into 20/20 convergence (slice 11 spike).
+    _SCAN, _REFINE = 72, 20
+
+    def _seed_anomaly(self, x0: np.ndarray, ename: str, other: str,
+                      other_kind: str) -> float:
+        """The anomaly of the point on the ellipse nearest the other curve.
+
+        The auxiliary parameter of an elliptical tangency has no meaning to the
+        caller, so the solver has to find its own starting value; a fixed seed
+        lands on the wrong side of the ellipse and converges to a tangency on
+        the far side, or not at all.
+        """
+        e = self.ellipses[ename]
+        cx, cy = self._refs[e.center].value(x0)
+        a, b, phi = float(x0[e.ia]), float(x0[e.ib]), float(x0[e.ip])
+        cp, sp = math.cos(phi), math.sin(phi)
+
+        def point(t):
+            lx, ly = a * math.cos(t), b * math.sin(t)
+            return cx + lx * cp - ly * sp, cy + lx * sp + ly * cp
+
+        if other_kind == "line":
+            ra, rb = self._line_refs(other)
+            ax, ay = ra.value(x0)
+            ux, uy, _ = _unit(ax, ay, *rb.value(x0))
+
+            def gap(t):
+                px, py = point(t)
+                return abs((px - ax) * uy - (py - ay) * ux)
+        else:
+            rc, rr = self._circle_refs(other)
+            ox, oy = rc.value(x0)
+            r = rr.value(x0)
+
+            def gap(t):
+                px, py = point(t)
+                return abs(math.hypot(px - ox, py - oy) - r)
+
+        step = 2 * math.pi / self._SCAN
+        best = min((t * step for t in range(self._SCAN)), key=gap)
+        fine = 2 * step / self._REFINE
+        return min((best - step + k * fine for k in range(self._REFINE + 1)),
+                   key=gap)
 
     def _row_offsets(self) -> list[int]:
         offsets, row = [], 0
@@ -1963,8 +2609,10 @@ class Sketch:
             # (a wrapped parameter is a Jacobian discontinuity, and is how an
             # arc jumps the long way round during a drag). The reported end
             # keeps the full sweep relative to the reported start.
-            start_deg = math.degrees(float(xs[a.i1])) % 360.0
-            sweep_deg = math.degrees(float(xs[a.i2]) - float(xs[a.i1]))
+            t1 = a.t1_0 if a.fixed else float(xs[a.i1])
+            t2 = a.t2_0 if a.fixed else float(xs[a.i2])
+            start_deg = math.degrees(t1) % 360.0
+            sweep_deg = math.degrees(t2 - t1)
             out_arcs[name] = {
                 "center": a.center,
                 "cx": float(cx), "cy": float(cy),
@@ -1975,6 +2623,30 @@ class Sketch:
                 "end": {"x": float(ex), "y": float(ey)},
                 "authored": a.authored,
             }
+        out_ellipses = {}
+        for name, e in self.ellipses.items():
+            cx, cy = self._refs[e.center].value(xs)
+            entry = {
+                "center": e.center,
+                "cx": float(cx), "cy": float(cy),
+                "a": float(xs[e.ia]), "b": float(xs[e.ib]),
+                "rotation": math.degrees(float(xs[e.ip])) % 360.0,
+                "bounded": e.bounded,
+            }
+            if e.bounded:
+                # Same rule as an arc: normalized on OUTPUT only, with the end
+                # carrying the full signed sweep relative to the reported start.
+                start_deg = math.degrees(float(xs[e.i1])) % 360.0
+                sweep_deg = math.degrees(float(xs[e.i2]) - float(xs[e.i1]))
+                sx, sy = self._refs[f"{name}.start"].value(xs)
+                ex, ey = self._refs[f"{name}.end"].value(xs)
+                entry.update({
+                    "start_deg": start_deg,
+                    "end_deg": start_deg + sweep_deg,
+                    "start": {"x": float(sx), "y": float(sy)},
+                    "end": {"x": float(ex), "y": float(ey)},
+                })
+            out_ellipses[name] = entry
         out_splines = {}
         for name, sp in self.splines.items():
             coords = [self._refs[pt].value(xs) for pt in sp.points]
@@ -2026,12 +2698,16 @@ class Sketch:
             "points": out_pts,
             "circles": out_circ,
             "arcs": out_arcs,
+            "ellipses": out_ellipses,
             "splines": out_splines,
             "slots": out_slots,
             "diagnostics": diag,
             # "computed" or "cached": a drag frame serves the block the
             # constraint set already produced (Decision 9c).
             "diagnostics_source": source,
+            # Names the emitter must skip: construction geometry and every
+            # projected reference (slice 12).
+            "construction": sorted(self.construction),
             "warm_started": self.warm_started,
             "warnings": list(self.warnings),
         }
@@ -2058,6 +2734,8 @@ def parse_sketch(spec: dict) -> Sketch:
       "circles": [{"name","center","r","fixed_r"?}, ...],
       "arcs":    [{"name","center","r","start_deg","end_deg","fixed_r"?}, ...]
                  or [{"name","start":[x,y],"mid":[x,y],"end":[x,y]}, ...],
+      "ellipses":[{"name","center","a","b","rotation"?,
+                   "start_deg"?,"end_deg"?}, ...],
       "splines": [{"name","points":[<point names>]}, ...],
       "slots":   [{"name","c1","c2","width"}, ...],
       "constraints": [{"type": <name>, ...kwargs}, ...],
@@ -2080,7 +2758,7 @@ def parse_sketch(spec: dict) -> Sketch:
     for a in spec.get("arcs", []):
         if "center" in a and "start_deg" in a:
             sk.arc(a["name"], a["center"], a["r"], a["start_deg"], a["end_deg"],
-                   a.get("fixed_r", False))
+                   a.get("fixed_r", False), fixed=a.get("fixed", False))
         elif "start" in a and "mid" in a and "end" in a:
             sk.arc_three_point(a["name"], a["start"], a["mid"], a["end"])
         else:
@@ -2088,6 +2766,10 @@ def parse_sketch(spec: dict) -> Sketch:
                 f"arc {a.get('name')!r} must be authored either centre-form "
                 "({center, r, start_deg, end_deg}) or 3-point "
                 "({start, mid, end})")
+    for e in spec.get("ellipses", []):
+        sk.ellipse(e["name"], e["center"], e["a"], e["b"],
+                   e.get("rotation") or 0.0,
+                   e.get("start_deg"), e.get("end_deg"))
     for sl in spec.get("slots", []):
         sk.slot(sl["name"], sl["c1"], sl["c2"], sl["width"])
     for sp in spec.get("splines", []):
@@ -2096,6 +2778,11 @@ def parse_sketch(spec: dict) -> Sketch:
     # only exist once the arc that owns them has been declared
     for l in spec.get("lines", []):
         sk.line(l["name"], l["p1"], l["p2"])
+    for kind in ("points", "lines", "circles", "arcs", "ellipses", "splines",
+                 "slots"):
+        for entity in spec.get(kind, []):
+            if entity.get("construction"):
+                sk.mark_construction(entity["name"])
     dispatch = {
         "fixed": sk.fixed, "coincident": sk.coincident, "distance": sk.distance,
         "distance_x": sk.distance_x, "distance_y": sk.distance_y,
@@ -2109,6 +2796,14 @@ def parse_sketch(spec: dict) -> Sketch:
         "tangent": sk.tangent, "symmetric": sk.symmetric,
         "equal_length": sk.equal_length, "concentric": sk.concentric,
     }
+    # Coincidences are registered **before** anything compiles, so a `tangent`
+    # written ahead of the `coincident` that joins its two curves still sees
+    # the junction and compiles to the well-conditioned direction residual
+    # (`Sketch._tangent_dir`). A spec is a set, not a program; only the direct
+    # `Sketch` API is order-sensitive here, and its docstring says so.
+    for c in spec.get("constraints", []):
+        if c.get("type") == "coincident" and c.get("p") and c.get("q"):
+            sk.note_coincidence(c["p"], c["q"])
     for i, c in enumerate(spec.get("constraints", [])):
         kw = {k: v for k, v in c.items() if k != "type"}
         try:

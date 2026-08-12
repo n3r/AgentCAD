@@ -20,6 +20,54 @@ from .sketch_emit import EmitError
 from .sketch_emit import emit as emit_code
 from .tools import Tool, schema
 
+FACE_INDEX_CAVEAT = (
+    "Face indices are mesh-order ordinals; a parameter change that alters the "
+    "part's topology can renumber them. Re-pick the face if the rebuild moves."
+)
+
+
+def reference_entities(refs: list[dict]) -> dict:
+    """Projected boundary edges, in `solve_sketch`'s entity shape.
+
+    **Fixed and construction-marked, both deliberately.** Fixed means a
+    reference contributes zero parameters: it adds no DOF, cannot be dragged,
+    and can never turn up in a conflict report as something the user could
+    change (design Decision 12). Construction means it constrains but is not
+    emitted as geometry — a projected edge belongs to the part, not to the new
+    profile, and emitting it would duplicate the face's own boundary.
+
+    Names are flat (`ref0`, `ref0_a`): a dot is the solver's namespace for
+    virtual handles, and an entity may not contain one.
+
+    A `kind: "other"` reference (anything that is not a line or a circle) is
+    **skipped**: it has no exact entity in the solver's vocabulary, and a
+    polyline the user could constrain to is not the curve they can see.
+    """
+    points, lines, circles, arcs = [], [], [], []
+    for ref in refs:
+        name = ref["name"]
+        if ref["kind"] == "line":
+            points.append({"name": f"{name}_a", "x": ref["p1"][0],
+                           "y": ref["p1"][1], "fixed": True})
+            points.append({"name": f"{name}_b", "x": ref["p2"][0],
+                           "y": ref["p2"][1], "fixed": True})
+            lines.append({"name": name, "p1": f"{name}_a", "p2": f"{name}_b",
+                          "construction": True})
+        elif ref["kind"] in ("circle", "arc"):
+            points.append({"name": f"{name}_c", "x": ref["center"][0],
+                           "y": ref["center"][1], "fixed": True})
+            if ref["kind"] == "circle":
+                circles.append({"name": name, "center": f"{name}_c",
+                                "r": ref["r"], "fixed_r": True,
+                                "construction": True})
+            else:
+                arcs.append({"name": name, "center": f"{name}_c",
+                             "r": ref["r"], "start_deg": ref["start_deg"],
+                             "end_deg": ref["end_deg"], "fixed": True,
+                             "construction": True})
+    return {"points": points, "lines": lines, "circles": circles, "arcs": arcs}
+
+
 _USAGE = (
     "Provide rough starting coordinates in the shape you want — the solver "
     "converges to the nearest solution, so a mirrored initial guess yields a "
@@ -55,7 +103,41 @@ _NEW_CONSTRAINTS = (
     "the pair is perpendicular to it. `equal_length {l1, l2}` and `concentric "
     "{a, b}` (2 rows, centre coincidence) complete the set. The v1 names "
     "`tangent_line_circle` and `tangent_circles` keep working unchanged — "
-    "`tangent` is a new front door, not a rename."
+    "`tangent` is a new front door, not a rename. When the two curves already "
+    "meet at a point — the line is built on `arc1.end`, or a `coincident` ties "
+    "a junction point to it — tangency compiles to a **direction** residual "
+    "(the two tangents are parallel there) instead of a distance one, still 1 "
+    "row: the distance form is second-order flat at a junction and reports "
+    "itself as redundant (measured singular value 1.8e-16 against a 8.5e-9 "
+    "rank tolerance) while doing real work. At such a junction `kind` has no "
+    "meaning — the coincidence has already chosen where the curves touch — so "
+    "it is accepted and unused."
+)
+
+_ELLIPSES = (
+    "An **ellipse** is {name, center: <point>, a, b, rotation?} — a full "
+    "ellipse — or the same plus {start_deg, end_deg} for an elliptical arc. It "
+    "costs 3 parameters (a, b, rotation) plus 2 when bounded. Angles are the "
+    "**eccentric anomaly** in degrees: the point at t is center + R(rotation) "
+    "(a cos t, b sin t), which is exactly build123d's `EllipticalCenterArc` "
+    "parametrization (measured to 8.9e-16 mm), so the solved angles are the "
+    "emitted ones. Handles: `<name>.center`; `<name>.major` and "
+    "`<name>.minor`, the ends of the two semi-axes, which are ordinary point "
+    "handles — so `distance`, `coincident`, `horizontal` and the rest pin an "
+    "ellipse's size and orientation with no new constraint type; and "
+    "`<name>.start` / `<name>.end` on a bounded arc. The semi-axes are also "
+    "scalar handles `<name>.a` / `<name>.b`, which `radius` and `equal_radius` "
+    "accept (an ellipse has two radii, so you name the one you mean). "
+    "`concentric` accepts an ellipse. `tangent` accepts ellipse+line and "
+    "ellipse+circle/arc: point-to-ellipse distance has no closed form, so it "
+    "carries the tangency point's anomaly as an auxiliary parameter "
+    "(`<name>.tangency`, +1 parameter and +2 rows — still one degree of "
+    "freedom removed) unless the two curves already meet at a pinned "
+    "junction, where the direction residual applies and there is no auxiliary "
+    "parameter at all. **Out of scope, deliberately:** tangency between two "
+    "ellipses (it needs an auxiliary anomaly on each and was not measured), "
+    "on-ellipse point constraints, and parabolas/hyperbolas (a PRD non-goal — "
+    "elliptical arcs cover the CAD-practical conics)."
 )
 
 _DIAGNOSTICS = (
@@ -77,7 +159,8 @@ _DIAGNOSTICS = (
 
 _INITIAL = (
     "Optional warm start: {points:{name:{x,y}}, circles:{name:{r}}, "
-    "arcs:{name:{r,start_deg,end_deg}}, slots:{name:{r}}}. It seeds "
+    "arcs:{name:{r,start_deg,end_deg}}, slots:{name:{r}}, "
+    "ellipses:{name:{a,b,rotation,start_deg?,end_deg?}}}. It seeds "
     "the starting coordinates only — it cannot fix a point, override fixed_r "
     "or introduce an entity — so its job is to **select the solution branch** "
     "(which side of a mirror pair you land on), not to make the solve faster. "
@@ -149,21 +232,56 @@ _EMIT = (
 )
 
 
+_PLANE = (
+    "Optional: the plane this sketch lives on, as returned by `sketch_plane` "
+    "({origin, x_dir, y_dir, normal, face_index, part}). The solver is 2D and "
+    "ignores it; **emission does not** — it writes `BuildSketch(Plane(origin=" 
+    "..., x_dir=..., z_dir=...))` instead of `Plane.XY`, with the face "
+    "reference and its caveat as comments above the block. Sketch-on-face "
+    "coordinates are meaningless without the basis they were solved in, so "
+    "the basis goes in the script."
+)
+
+_SKETCH_PLANE = (
+    "Return the sketch plane of a planar B-rep face of a script part, plus "
+    "that face's own boundary edges expressed **in the plane's 2D "
+    "coordinates** — the external geometry a sketch on that face references. "
+    "`face_info` reports a normal and a centre, which is a plane but not a "
+    "basis; without a deterministic in-plane X axis every emitted coordinate "
+    "is arbitrary, so this returns build123d's `Plane(face)` basis "
+    "(`origin`, `x_dir`, `y_dir`, `normal`). Measured stable: `x_dir` is "
+    "bit-identical across rebuilds, across a fresh worker process, and across "
+    "parameter changes that do not renumber the faces. `refs` entries are "
+    "{name, kind: line|arc|circle|other, constrainable, ...}: lines and "
+    "circles come back as themselves; **anything else comes back "
+    "`kind: \"other\"` with a polyline approximation and cannot be "
+    "constrained to** — a documented gap, not a silent one. `entities` is the "
+    "same references already in `solve_sketch`'s entity shape, **fixed and "
+    "construction-marked**: they add no parameters, cannot be dragged, cannot "
+    "appear in a conflict report, and are not emitted as geometry. Face "
+    "indices are mesh-order ordinals and a topology-changing parameter edit "
+    "can renumber them — the emitted script says so inline."
+)
+
+
 def register(registry, service) -> None:
     def solve(entities: dict, constraints: list, initial: dict | None = None,
               emit: str | bool | None = None, drag: dict | None = None,
-              diagnostics: str | None = None) -> dict:
+              diagnostics: str | None = None,
+              plane: dict | None = None) -> dict:
         spec = {
             "points": entities.get("points", []),
             "lines": entities.get("lines", []),
             "circles": entities.get("circles", []),
             "arcs": entities.get("arcs", []),
+            "ellipses": entities.get("ellipses", []),
             "splines": entities.get("splines", []),
             "slots": entities.get("slots", []),
             "constraints": constraints,
             "initial": initial,
             "drag": drag,
             "diagnostics": diagnostics,
+            "plane": plane,
         }
         try:
             result = solve_sketch(spec)
@@ -216,17 +334,21 @@ def register(registry, service) -> None:
         "solve_sketch",
         "Solve a 2D constrained sketch to exact coordinates you can feed into "
         "build123d BuildLine/BuildSketch. " + _USAGE + " " + _ARCS + " "
-        + _SPLINES_AND_SLOTS + " " + _NEW_CONSTRAINTS + " " + _DIAGNOSTICS
-        + " " + _DRAG + " " + _DIAGNOSTICS_MODE + " " + _EMIT,
+        + _ELLIPSES + " " + _SPLINES_AND_SLOTS + " " + _NEW_CONSTRAINTS
+        + " " + _DIAGNOSTICS
+        + " " + _DRAG + " " + _DIAGNOSTICS_MODE + " " + _EMIT + " " + _PLANE,
         schema(
             {
                 "entities": {"type": "object", "description":
                              "{points:[{name,x,y,fixed?}], lines:[{name,p1,p2}], "
                              "circles:[{name,center,r,fixed_r?}], "
                              "arcs:[{name,center,r,start_deg,end_deg,fixed_r?}], "
+                             "ellipses:[{name,center,a,b,rotation?,"
+                             "start_deg?,end_deg?}], "
                              "splines:[{name,points:[<point names>]}], "
                              "slots:[{name,c1,c2,width}]}"
-                             + " " + _ARCS + " " + _SPLINES_AND_SLOTS},
+                             + " " + _ARCS + " " + _ELLIPSES + " "
+                             + _SPLINES_AND_SLOTS},
                 "constraints": {"type": "array", "description":
                                 "[{type, ...kwargs}] — see tool description"},
                 "initial": {"type": "object", "description": _INITIAL},
@@ -234,8 +356,40 @@ def register(registry, service) -> None:
                 "diagnostics": {"type": "string",
                                 "description": _DIAGNOSTICS_MODE},
                 "emit": {"type": "string", "description": _EMIT},
+                "plane": {"type": "object", "description": _PLANE},
             },
             ["entities", "constraints"],
         ),
         solve,
     ))
+
+    def sketch_plane(project: str, part_id: str, face_index: int) -> dict:
+        record = service.store.get_part(project, part_id)
+        if record.kind != "script":
+            raise ValidationError(
+                "sketch-on-face works on script parts only (an imported "
+                "reference has no script to emit into)")
+        script = service.store.read_script(project, part_id)
+        info = service.kernel.request(
+            "sketch_plane",
+            {"script": script, "params": record.params,
+             "face_index": int(face_index)},
+            timeout_s=300.0,          # may rebuild the shape from scratch
+        )
+        return {
+            "project": project, "part_id": part_id,
+            **info,
+            "entities": reference_entities(info["refs"]),
+            "caveat": FACE_INDEX_CAVEAT,
+        }
+
+    registry.register(Tool("sketch_plane", _SKETCH_PLANE, schema(
+        {
+            "project": {"type": "string", "description": "Project name"},
+            "part_id": {"type": "string", "description": "Part id"},
+            "face_index": {"type": "integer",
+                           "description": "Mesh-order B-rep face index "
+                                          "(must be planar)"},
+        },
+        ["project", "part_id", "face_index"],
+    ), sketch_plane))

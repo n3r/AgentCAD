@@ -246,30 +246,41 @@ def test_a_line_arc_line_fillet_solves_and_is_analytically_tangent():
         (arc["start"]["x"], arc["start"]["y"]), abs=1e-9)
     assert (j2["x"], j2["y"]) == pytest.approx(
         (arc["end"]["x"], arc["end"]["y"]), abs=1e-9)
-    # And the junctions are where a hand calculation puts them — but only to
-    # ~1e-4 mm, and that is a *measured property of tangency*, not slop. At a
-    # tangency the endpoint's angle is quadratically flat: `sin(theta) = -cy/r`
-    # pins nothing to first order near -1, so theta carries ~4e-6 rad of
-    # genuine slack while both residuals sit at 1e-11 (measured: the junction
-    # lands 1.7e-5 mm along the line from the ideal tangency point, and the
-    # arc departs the line by (1.7e-5)^2 / 2r = 2e-11 mm).
+    # And the junctions are where a hand calculation puts them. This assertion
+    # used to hold only to ~1e-4 mm, because `dist(centre, line) - r` is
+    # quadratically flat in the arc's angle at a tangency and left ~4e-6 rad of
+    # genuine slack (measured: the junction landed 1.7e-5 mm along the line
+    # from the ideal tangency point, with both residuals at 1e-11). Since the
+    # tangency fix carried over from slice 10 the junction of a
+    # coincident-tied chain compiles to a **direction** residual, which is
+    # first-order there: this now lands exactly (measured 0.0 mm, nfev 17 -> 4,
+    # max_residual 2.3e-11 -> 1.8e-16). The tolerance is left loose on purpose
+    # — the assertion is about the geometry, not about the conditioning, and
+    # `tests/test_sketch_tangent_direction.py` owns the latter.
     #
-    # Consequence for slice 7's emitter, which is the design's rule already:
-    # **anchor arcs on the shared solved endpoint**, never recompute an
-    # endpoint from centre + radius + angle.
+    # Slice 7's emitter rule is unchanged either way: **anchor arcs on the
+    # shared solved endpoint**, never recompute an endpoint from centre +
+    # radius + angle.
     assert res["max_residual"] < 1e-9
     assert (j1["x"], j1["y"]) == pytest.approx((41.37 - r, 0.0), abs=1e-4)
     assert (j2["x"], j2["y"]) == pytest.approx((41.37, r), abs=1e-4)
 
 
-def test_a_chain_on_the_handles_is_exact_where_a_coincident_tied_one_is_not():
-    """Measured, and worth knowing before authoring a chain.
+def test_both_chain_idioms_are_exact_since_the_junction_fix():
+    """Both ways of writing a junction are now first-order exact.
 
+    This test used to assert the opposite, and the change is the point.
     `_fillet_spec` writes the GUI's idiom — a junction *point* tied to the
-    handle by `coincident` — so the tangency residual is `dist(centre, line) −
-    r`, which is quadratically flat in the arc's angle. Writing the same
-    profile with the line's endpoint **being** the handle lets the solver use
-    the perpendicular form, which is first-order exact.
+    handle by `coincident` — which compiled to `dist(centre, line) − r`,
+    quadratically flat in the arc's angle: 17 evaluations, `max_residual`
+    2.3e-11, the junction 1.7e-5 mm off, and (slice 10, on a shorter chain)
+    a rank count that reported the tangency as redundant. Writing the line's
+    endpoint **as** the handle used the perpendicular form and was exact in 5.
+
+    Since the fix carried over from slice 10 a coincident-tied junction
+    compiles to the direction residual, and the two idioms agree: 4 and 5
+    evaluations, both exact. The rank/DOF half of that fix lives in
+    `tests/test_sketch_tangent_direction.py`.
     """
     handles = {
         "points": [{"name": "o", "x": 0.0, "y": 0.0, "fixed": True},
@@ -290,11 +301,16 @@ def test_a_chain_on_the_handles_is_exact_where_a_coincident_tied_one_is_not():
     direct = solve_sketch(handles)
     via_point = solve_sketch(_fillet_spec())
     assert direct["ok"] and direct["dof"] == 0
+    assert via_point["ok"] and via_point["dof"] == 0
     r = direct["arcs"]["f"]["r"]
-    # exact, not 1.7e-5 away, and in 5 evaluations rather than 17
+    # exact, not 1.7e-5 away — now from either idiom
     assert direct["arcs"]["f"]["start"]["x"] == pytest.approx(41.37 - r, abs=1e-12)
+    assert via_point["points"]["j1"]["x"] == pytest.approx(
+        41.37 - via_point["arcs"]["f"]["r"], abs=1e-12)
     assert direct["max_residual"] < 1e-15
-    assert direct["nfev"] < via_point["nfev"]
+    assert via_point["max_residual"] < 1e-15
+    # and the coincident-tied form no longer costs 3x the evaluations
+    assert via_point["nfev"] <= direct["nfev"] + 1
 
 
 @pytest.mark.parametrize("kind,sep", [("external", 15.9), ("internal", 3.3)])

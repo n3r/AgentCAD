@@ -52,6 +52,8 @@ a solution whose two chained endpoints are 1e-6 mm apart — trip it.
 | arc (3-point authored) | `ThreePointArc(start, mid, end)` |
 | arc sweeping a full turn | `CenterArc(...)` (a `RadiusArc` cannot express it) |
 | full circle | `Circle(radius=...)` under `Locations(...)` |
+| full ellipse | `Ellipse(x_radius=..., y_radius=..., rotation=...)` under `Locations(...)` |
+| elliptical arc | `EllipticalCenterArc(centre, a, b, start_angle=..., arc_size=..., rotation=...)` |
 | spline | `Spline(p0, ..., pn)`, with `tangents=` for a pinned end |
 | slot, standalone | `SlotCenterToCenter(sep, height, rotation=...)` under `Locations` |
 | slot, tied to the sketch | its compiled primitives — two `Line`s, two `RadiusArc`s |
@@ -134,6 +136,13 @@ def _handle_xy(solution: dict, handle: str) -> tuple[float, float]:
             return float(arc[attr]["x"]), float(arc[attr]["y"])
         if attr == "center":
             return float(arc["cx"]), float(arc["cy"])
+    ellipses = solution.get("ellipses") or {}
+    if base in ellipses:
+        e = ellipses[base]
+        if attr in ("start", "end") and e.get("bounded"):
+            return float(e[attr]["x"]), float(e[attr]["y"])
+        if attr == "center":
+            return float(e["cx"]), float(e["cy"])
     splines = solution.get("splines") or {}
     if base in splines and attr in ("start", "end"):
         coords = splines[base]["coords"]
@@ -155,7 +164,15 @@ def _sweep_deg(arc: dict) -> float:
 
 # -------------------------------------------------------------------- plan
 def _members(solution: dict, spec: dict) -> list[dict]:
-    """Every curve that can join a chain, in a deterministic order."""
+    """Every curve that can join a chain, in a deterministic order.
+
+    **Construction geometry is not a member.** A construction line and every
+    projected reference a sketch-on-face brings in (slice 12) constrain the
+    sketch and must not appear in its profile — so they are dropped here, at
+    the one place that decides what the emitted code contains, rather than
+    filtered out of each call site.
+    """
+    skip = set(solution.get("construction") or ())
     slots = solution.get("slots") or {}
     owner: dict[str, str] = {}
     for name, slot in slots.items():
@@ -164,17 +181,31 @@ def _members(solution: dict, spec: dict) -> list[dict]:
 
     members: list[dict] = []
     for line in spec.get("lines") or []:
+        if line["name"] in skip:
+            continue
         members.append({"kind": "line", "name": line["name"],
                         "ends": (line["p1"], line["p2"]), "slot": None})
     for name in (solution.get("arcs") or {}):
+        if name in skip:
+            continue
         members.append({"kind": "arc", "name": name,
                         "ends": (f"{name}.start", f"{name}.end"),
                         "slot": owner.get(name)})
+    for name, e in (solution.get("ellipses") or {}).items():
+        if not e.get("bounded") or name in skip:
+            continue          # a full ellipse is a face, not a chain member
+        members.append({"kind": "ellipse", "name": name,
+                        "ends": (f"{name}.start", f"{name}.end"),
+                        "slot": None})
     for name, spline in (solution.get("splines") or {}).items():
+        if name in skip:
+            continue
         members.append({"kind": "spline", "name": name,
                         "ends": (spline["points"][0], spline["points"][-1]),
                         "slot": None})
     for name, slot in slots.items():
+        if name in skip:
+            continue
         cap_a, cap_b = slot["arcs"]
         side_1, side_2 = slot["sides"]
         # `Sketch.slot` builds each side directly on the caps' virtual handles
@@ -345,6 +376,17 @@ def _gap(solution, members, entry, decimals, arc_anchor) -> float:
     """How far the shared literal moves the endpoints it stands for."""
     lit = _round_trip(entry["xy"], decimals)
     gap = max((math.dist(xy, lit) for _, xy in entry["endpoints"]), default=0.0)
+    # An elliptical arc has no endpoint-anchored constructor in build123d, so
+    # its endpoints are *always* derived by the reader from rounded literals —
+    # measured unconditionally, not only under `arc_anchor="center"`.
+    ellipses = solution.get("ellipses") or {}
+    for (mi, k), _xy in entry["endpoints"]:
+        member = members[mi]
+        if member["kind"] != "ellipse" or member["name"] not in ellipses:
+            continue
+        derived = _ellipse_point(ellipses[member["name"]],
+                                 "start" if k == 0 else "end", decimals)
+        gap = max(gap, math.dist(derived, lit))
     if arc_anchor != "center":
         return gap
     # A centre-parametrized arc's endpoint is *derived by the reader* from the
@@ -396,6 +438,49 @@ def _arc_call(arc: dict, va: str, vb: str, rev: bool, decimals: int,
     signed = -arc["r"] if (sweep > 0) == short else arc["r"]
     return (f"RadiusArc({va}, {vb}, {fmt(signed, decimals)}, "
             f"short_sagitta={short})")
+
+
+def _ellipse_arc_call(e: dict, decimals: int) -> str:
+    """`EllipticalCenterArc`, the only bounded-ellipse constructor there is.
+
+    Three measured facts about the pinned build123d 0.11.1 are baked in here:
+
+    1. `start_angle`/`arc_size` are the **eccentric anomaly**, the same
+       parameter the solver uses (agreement 8.9e-16 mm), so no conversion.
+    2. `arc_size` — **not** `end_angle`. Passing `end_angle` raises
+       `UnboundLocalError` in 0.11.1: its deprecation branch reads a
+       `direction` that is only bound when `angular_direction` is also passed.
+       The working spelling is the signed sweep, which is what the solver
+       reports anyway.
+    3. There is **no endpoint-anchored elliptical constructor** (`RadiusArc`'s
+       counterpart does not exist; `EllipticalStartArc` anchors one end and
+       derives the other). So unlike an arc, an elliptical arc's endpoints are
+       always *derived by the reader* from the rounded centre, axes, rotation
+       and angles — which is why `_gap` measures that derivation for every
+       elliptical arc regardless of `arc_anchor`.
+
+    The call is written in the arc's own direction whichever way the chain
+    walks it: build123d joins a `BuildLine` on proximity, not on order.
+    """
+    sweep = float(e["end_deg"]) - float(e["start_deg"])
+    return (f"EllipticalCenterArc(({fmt(e['cx'], decimals)}, "
+            f"{fmt(e['cy'], decimals)}), {fmt(e['a'], decimals)}, "
+            f"{fmt(e['b'], decimals)}, start_angle={fmt(e['start_deg'], decimals)}, "
+            f"arc_size={fmt(sweep, decimals)}, "
+            f"rotation={fmt(e['rotation'], decimals)})")
+
+
+def _ellipse_point(e: dict, which: str, decimals: int) -> tuple[float, float]:
+    """The endpoint **as the reader will derive it** from the emitted literals."""
+    cx, cy = float(fmt(e["cx"], decimals)), float(fmt(e["cy"], decimals))
+    a, b = float(fmt(e["a"], decimals)), float(fmt(e["b"], decimals))
+    phi = math.radians(float(fmt(e["rotation"], decimals)))
+    start = float(fmt(e["start_deg"], decimals))
+    sweep = float(fmt(float(e["end_deg"]) - float(e["start_deg"]), decimals))
+    t = math.radians(start if which == "start" else start + sweep)
+    lx, ly = a * math.cos(t), b * math.sin(t)
+    return (cx + lx * math.cos(phi) - ly * math.sin(phi),
+            cy + lx * math.sin(phi) + ly * math.cos(phi))
 
 
 def _spline_call(spline: dict, va: str, vb: str, rev: bool, decimals: int,
@@ -467,11 +552,53 @@ def _emit_chain(chain, members, junctions, vname, solution, decimals,
         if member["kind"] == "arc":
             out.append(_arc_call(solution["arcs"][member["name"]], va, vb, rev,
                                  decimals, arc_anchor, warnings))
+        elif member["kind"] == "ellipse":
+            out.append(_ellipse_arc_call(solution["ellipses"][member["name"]],
+                                         decimals))
         else:
             out.append(_spline_call(solution["splines"][member["name"]], va, vb,
                                     rev, decimals, member["name"], warnings))
         i += 1
     return out
+
+
+def _plane_expr(plane: dict, decimals: int) -> str:
+    """`Plane(...)` for a sketch on a face — the basis, written out.
+
+    `Plane.XY` is a name; a face's plane is three vectors, and they have to be
+    in the script or the coordinates the emitter just wrote mean nothing. The
+    basis is the one `kernel/handlers/sketchplane.py` measured with, and the
+    caveat above the block says what can move it.
+    """
+    def vec(key, default):
+        v = plane.get(key) or default
+        return ("(" + ", ".join(fmt(float(c), decimals) for c in v) + ")")
+
+    return (f"Plane(origin={vec('origin', (0, 0, 0))}, "
+            f"x_dir={vec('x_dir', (1, 0, 0))}, "
+            f"z_dir={vec('normal', (0, 0, 1))})")
+
+
+def _plane_header(plane: dict) -> list[str]:
+    """The provenance comment, with the caveat inline (design Decision 12).
+
+    Face indices are mesh-order ordinals, and a parameter change that alters
+    the part's topology renumbers them — measured in the slice-12 spike, where
+    `corner_r: 6.0` turned the enclosure's face 37 from its 5989 mm^2 base
+    plate into a 51 mm^2 sliver. Surfaced, not hidden and not silently
+    repaired.
+    """
+    index = plane.get("face_index")
+    if index is None:
+        return []
+    part = plane.get("part") or "build(p)"
+    return [
+        f"# --- agentcad sketch on face {index} of {part} ---",
+        "# NOTE: face indices are mesh-order ordinals; a parameter change that",
+        "# alters the part's topology can renumber them. Re-pick the face if",
+        "# the rebuild moves. The plane's basis below is the one the sketch",
+        "# was solved in.",
+    ]
 
 
 def emit(solution: dict, spec: dict, *, style: str = "function",
@@ -525,10 +652,20 @@ def emit(solution: dict, spec: dict, *, style: str = "function",
             _gate(solution, members, junctions, chains, decimals, arc_anchor,
                   closure_tol, warnings, refuse=False)
 
-    for circle in (solution.get("circles") or {}).values():
+    for name, circle in (solution.get("circles") or {}).items():
+        if name in (solution.get("construction") or ()):
+            continue
         body.append(f"with Locations(({fmt(circle['cx'], decimals)}, "
                     f"{fmt(circle['cy'], decimals)})):")
         body.append(f"    Circle(radius={fmt(circle['r'], decimals)})")
+    for name, e in (solution.get("ellipses") or {}).items():
+        if e.get("bounded") or name in (solution.get("construction") or ()):
+            continue          # already emitted as a chain member
+        body.append(f"with Locations(({fmt(e['cx'], decimals)}, "
+                    f"{fmt(e['cy'], decimals)})):")
+        body.append(f"    Ellipse(x_radius={fmt(e['a'], decimals)}, "
+                    f"y_radius={fmt(e['b'], decimals)}, "
+                    f"rotation={fmt(e['rotation'], decimals)})")
     for name in face_slots:
         slot = solution["slots"][name]
         c1, c2 = slot["center1"], slot["center2"]
@@ -540,7 +677,10 @@ def emit(solution: dict, spec: dict, *, style: str = "function",
                     f"{fmt(2.0 * slot['r'], decimals)}, "
                     f"rotation={fmt(rot, decimals)})")
 
-    return {"code": _render(body, style), "warnings": warnings, "style": style}
+    plane = spec.get("plane") or None
+    return {"code": _render(body, style, plane, decimals),
+            "warnings": warnings, "style": style,
+            "plane": plane}
 
 
 def _gate(solution, members, junctions, chains, decimals, arc_anchor,
@@ -576,17 +716,20 @@ def _gate(solution, members, junctions, chains, decimals, arc_anchor,
         })
 
 
-def _render(body: list[str], style: str) -> str:
+def _render(body: list[str], style: str, plane: dict | None = None,
+            decimals: int = DECIMALS) -> str:
     if not body:
         body = ["pass"]
+    where = "Plane.XY" if not plane else _plane_expr(plane, decimals)
+    header = _plane_header(plane) if plane else []
     if style == "buildline":
-        return "\n".join(["with BuildSketch(Plane.XY) as _sk:"]
+        return "\n".join(header + [f"with BuildSketch({where}) as _sk:"]
                          + ["    " + line for line in body]) + "\n"
     return "\n".join([
         "", "",
-        "# --- agentcad sketch (auto-generated) ---",
+        *(header or ["# --- agentcad sketch (auto-generated) ---"]),
         "def sketch_profile():",
-        "    with BuildSketch(Plane.XY) as _sk:",
+        f"    with BuildSketch({where}) as _sk:",
         *["        " + line for line in body],
         "    return _sk.sketch",
         "",

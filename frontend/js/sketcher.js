@@ -37,15 +37,20 @@ let toolBtns = {}; // tool name -> button
 let conBtns = {}; // constraint name -> button
 
 let open = false;
-let tool = "select"; // select | point | line | circle | arc | arc3 | arcTan | spline | slot
+let tool = "select"; // select | point | line | circle | arc | arc3 | arcTan | ellipse | spline | slot
 let model = null; // {points, lines, circles, arcs, splines, slots, constraints}
 let seq = null; // name counters
-let selection = []; // [{kind, name}] kind: point|handle|line|circle|arc|spline|slot
+let selection = []; // [{kind, name}] kind: point|handle|line|circle|arc|ellipse|spline|slot
 let chainPrev = null; // line/arc tools: previous point *ref* in the chain
 let pending = null; // multi-click tool state: {kind, ...}
 let cursor = null; // last pointer sketch coords (for previews)
 let scale = 4; // px per mm
 let solveSeq = 0;
+// The face this sketch lives on: {origin, x_dir, y_dir, normal, face_index,
+// part} from the `sketch_plane` tool, plus the projected boundary edges. It
+// rides along to the server on every solve, because the *emitter* needs it —
+// sketch-on-face coordinates without their basis are arbitrary.
+let plane = null;
 // `local: true` marks a verdict computed in the browser (no residuals to
 // solve), so the chip can tell "nothing to solve" from a server answer.
 let solveState = { ok: true, dof: 0, local: true };
@@ -85,12 +90,50 @@ export function init(a) {
   buildUI();
 }
 
+/** Open the sketcher on a part face, with its boundary edges as references.
+ *
+ *  The references enter the model as ordinary entities that happen to be
+ *  **fixed and construction-marked**: fixed means they add no DOF and cannot
+ *  be dragged, construction means the emitter never writes them as geometry.
+ *  Both flags are the server's (`core/tools_sketch.reference_entities`) — the
+ *  browser only carries them, because a browser-only flag would be a lie the
+ *  emitter never sees. */
+export function openOnFace(info) {
+  resetModel();
+  plane = {
+    origin: info.origin, x_dir: info.x_dir, y_dir: info.y_dir,
+    normal: info.normal, face_index: info.face_index,
+    part: info.part_id ? `build(p)` : undefined,
+  };
+  const ents = info.entities || {};
+  for (const p of ents.points || []) model.points.push({ ...p });
+  for (const l of ents.lines || []) model.lines.push({ ...l });
+  for (const c of ents.circles || []) model.circles.push({ ...c });
+  for (const a of ents.arcs || []) model.arcs.push({ ...a });
+  const skipped = (info.refs || []).filter((r) => !r.constrainable).length;
+  show();
+  solveAndRender("full");
+  if (skipped) {
+    // A documented gap, said out loud: a spline or elliptical boundary edge
+    // has no exact entity in the solver's vocabulary, so it is not offered as
+    // a constraint target rather than approximated into one.
+    actions.toast(`${skipped} boundary edge(s) are neither lines nor circles `
+                  + "and were not projected — they cannot be constraint targets",
+                  "info");
+  }
+}
+
+function isConstruction(entity) {
+  return !!(entity && entity.construction);
+}
+
 function resetModel() {
   model = {
-    points: [], lines: [], circles: [], arcs: [], splines: [], slots: [],
-    constraints: [],
+    points: [], lines: [], circles: [], arcs: [], ellipses: [], splines: [],
+    slots: [], constraints: [],
   };
-  seq = { p: 0, l: 0, c: 0, a: 0, sp: 0, sl: 0 };
+  seq = { p: 0, l: 0, c: 0, a: 0, e: 0, sp: 0, sl: 0 };
+  plane = null;
   selection = [];
   chainPrev = null;
   pending = null;
@@ -160,6 +203,7 @@ function buildUI() {
     ["arc", "Arc", "Click the center, then the start, then the end"],
     ["arc3", "Arc3", "Click the start, then the end, then a point on the arc"],
     ["arcTan", "ArcT", "Continue the chain with an arc tangent to the last segment"],
+    ["ellipse", "Ellipse", "Click the center, then the end of the major axis, then a point for the minor"],
     ["spline", "Spline", "Click through points; Esc ends the spline"],
     ["slot", "Slot", "Click both cap centers, then give the width"],
   ]) {
@@ -297,6 +341,21 @@ function curveOf(name) {
   return model.circles.find((c) => c.name === name) || arcOf(name);
 }
 
+function ellipseOf(name) {
+  return model.ellipses.find((e) => e.name === name);
+}
+
+/** A point on an ellipse at eccentric anomaly `deg` — the solver's own
+ *  parametrization, and build123d's (measured to 8.9e-16 mm). */
+function ellipsePoint(e, ctr, deg) {
+  const t = (deg * Math.PI) / 180;
+  const phi = (e.rotation * Math.PI) / 180;
+  const lx = e.a * Math.cos(t);
+  const ly = e.b * Math.sin(t);
+  return { x: ctr.x + lx * Math.cos(phi) - ly * Math.sin(phi),
+           y: ctr.y + lx * Math.sin(phi) + ly * Math.cos(phi) };
+}
+
 /** `p3` -> the point; `a1.start` / `a1.end` -> the arc's virtual handle.
  *  Returns `{x, y}` or null. Arc handles are *derived*, never stored: the
  *  solver owns the arc's centre/radius/angles and the endpoints follow. */
@@ -307,8 +366,20 @@ function refCoords(ref) {
     const p = point(ref);
     return p ? { x: p.x, y: p.y } : null;
   }
-  const arc = arcOf(ref.slice(0, dot));
+  const base = ref.slice(0, dot);
   const which = ref.slice(dot + 1);
+  const ell = ellipseOf(base);
+  if (ell) {
+    const ec = point(ell.center);
+    if (!ec) return null;
+    if (which === "center") return { x: ec.x, y: ec.y };
+    if (which === "major") return ellipsePoint(ell, ec, 0);
+    if (which === "minor") return ellipsePoint(ell, ec, 90);
+    if (!ell.bounded || (which !== "start" && which !== "end")) return null;
+    return ellipsePoint(ell, ec,
+                        which === "start" ? ell.start_deg : ell.end_deg);
+  }
+  const arc = arcOf(base);
   if (!arc || (which !== "start" && which !== "end")) return null;
   const c = point(arc.center);
   if (!c) return null;
@@ -322,6 +393,17 @@ function allRefs() {
   for (const a of model.arcs) {
     refs.push({ ref: `${a.name}.start`, kind: "handle" },
               { ref: `${a.name}.end`, kind: "handle" });
+  }
+  for (const e of model.ellipses) {
+    // `.major` / `.minor` are the ends of the two semi-axes: ordinary point
+    // handles, which is how the existing vocabulary pins an ellipse's size
+    // and orientation without a single new constraint type.
+    refs.push({ ref: `${e.name}.major`, kind: "handle" },
+              { ref: `${e.name}.minor`, kind: "handle" });
+    if (e.bounded) {
+      refs.push({ ref: `${e.name}.start`, kind: "handle" },
+                { ref: `${e.name}.end`, kind: "handle" });
+    }
   }
   return refs;
 }
@@ -381,6 +463,13 @@ function addArc(centerRef, r, startDeg, endDeg) {
   return name;
 }
 
+function addEllipse(centerRef, a, b, rotation) {
+  const name = `e${++seq.e}`;
+  model.ellipses.push({ name, center: centerRef, a, b, rotation,
+                        bounded: false });
+  return name;
+}
+
 function mutated() {
   render();
   solveAndRender();
@@ -417,6 +506,7 @@ function deleteSelection() {
     const before = gone.size;
     for (const c of model.circles) if (gone.has(c.center)) gone.add(c.name);
     for (const a of model.arcs) if (gone.has(a.center)) gone.add(a.name);
+    for (const e of model.ellipses) if (gone.has(e.center)) gone.add(e.name);
     for (const l of model.lines) {
       if (gone.has(baseName(l.p1)) || gone.has(baseName(l.p2))) gone.add(l.name);
     }
@@ -433,6 +523,7 @@ function deleteSelection() {
   model.lines = model.lines.filter((l) => !gone.has(l.name));
   model.circles = model.circles.filter((c) => !gone.has(c.name));
   model.arcs = model.arcs.filter((a) => !gone.has(a.name));
+  model.ellipses = model.ellipses.filter((e) => !gone.has(e.name));
   model.slots = model.slots.filter((s) => !gone.has(s.name));
   model.splines = model.splines.filter((s) => !gone.has(s.name));
   for (const sp of model.splines) {
@@ -454,6 +545,11 @@ function applyConstraint(name) {
   const pts = selectedOf("point", "handle");
   const lns = selectedOf("line");
   const crv = selectedOf("circle", "arc");
+  const ell = selectedOf("ellipse");
+  // `tangent` and `concentric` take any curve; `radius` and `equal_radius`
+  // have to know the difference, because an ellipse has two radii and neither
+  // is "the" one.
+  const anyCrv = [...crv, ...ell];
   if (name === "fixed" && selectedOf("point").length === 1) {
     const p = point(selectedOf("point")[0]);
     p.fixed = !p.fixed;
@@ -482,11 +578,28 @@ function applyConstraint(name) {
     const r = parseFloat(prompt("Radius (mm):", fmtVal(c.r)));
     if (!Number.isFinite(r) || r <= 0) return;
     model.constraints.push({ type: "radius", c: crv[0], r });
-  } else if (name === "tangent" && lns.length + crv.length === 2 && crv.length) {
+  } else if (name === "radius" && ell.length === 1) {
+    // Two semi-axes, two constraints on the two scalar handles `e1.a`/`e1.b`.
+    // Either prompt may be cancelled or left blank to pin only the other one.
+    const e = ellipseOf(ell[0]);
+    const a = parseFloat(prompt("Semi-axis a (mm), blank to leave free:",
+                                fmtVal(e.a)));
+    const b = parseFloat(prompt("Semi-axis b (mm), blank to leave free:",
+                                fmtVal(e.b)));
+    if (!Number.isFinite(a) && !Number.isFinite(b)) return;
+    if (Number.isFinite(a) && a > 0) {
+      model.constraints.push({ type: "radius", c: `${ell[0]}.a`, r: a });
+    }
+    if (Number.isFinite(b) && b > 0) {
+      model.constraints.push({ type: "radius", c: `${ell[0]}.b`, r: b });
+    }
+  } else if (name === "tangent" && lns.length + anyCrv.length === 2
+             && anyCrv.length && ell.length < 2) {
     // One front door over the solver's dispatch table: it works out which of
-    // the two is the line.
-    model.constraints.push({ type: "tangent", a: lns[0] || crv[0],
-                             b: crv[crv.length - 1] });
+    // the two is the line. Two ellipses are refused — that tangency needs an
+    // auxiliary anomaly on each curve and was not measured (slice 11).
+    model.constraints.push({ type: "tangent", a: lns[0] || anyCrv[0],
+                             b: anyCrv[anyCrv.length - 1] });
   } else if (name === "symmetric" && pts.length === 2 && lns.length === 1) {
     model.constraints.push({ type: "symmetric", a: pts[0], b: pts[1],
                              about: lns[0] });
@@ -494,8 +607,8 @@ function applyConstraint(name) {
     model.constraints.push({ type: "equal_length", l1: lns[0], l2: lns[1] });
   } else if (name === "equal" && crv.length === 2) {
     model.constraints.push({ type: "equal_radius", c1: crv[0], c2: crv[1] });
-  } else if (name === "concentric" && crv.length === 2) {
-    model.constraints.push({ type: "concentric", a: crv[0], b: crv[1] });
+  } else if (name === "concentric" && anyCrv.length === 2) {
+    model.constraints.push({ type: "concentric", a: anyCrv[0], b: anyCrv[1] });
   } else {
     return; // enablement should prevent this; ignore quietly
   }
@@ -507,9 +620,10 @@ function updateConstraintButtons() {
   const nHnd = selectedOf("handle").length;
   const nLns = selectedOf("line").length;
   const nCrv = selectedOf("circle", "arc").length;
-  const nAll = nPts + nHnd + nLns + nCrv;
-  const only = (p, l, c) => nPts + nHnd === p && nLns === l && nCrv === c
-    && selection.length === nAll;
+  const nEll = selectedOf("ellipse").length;
+  const nAll = nPts + nHnd + nLns + nCrv + nEll;
+  const only = (p, l, c, e = 0) => nPts + nHnd === p && nLns === l
+    && nCrv === c && nEll === e && selection.length === nAll;
   const enable = {
     fixed: only(1, 0, 0) && nPts === 1,
     coincident: only(2, 0, 0),
@@ -518,12 +632,17 @@ function updateConstraintButtons() {
     vertical: only(0, 1, 0),
     parallel: only(0, 2, 0),
     perpendicular: only(0, 2, 0),
-    radius: only(0, 0, 1),
-    // line+curve or curve+curve; two lines are never tangent
-    tangent: only(0, 1, 1) || only(0, 0, 2),
+    // one circle/arc (one radius), or one ellipse (two semi-axes)
+    radius: only(0, 0, 1) || only(0, 0, 0, 1),
+    // line+curve or curve+curve; two lines are never tangent, and two
+    // ellipses are out of scope (slice 11's spike measured neither)
+    tangent: only(0, 1, 1) || only(0, 0, 2) || only(0, 1, 0, 1)
+      || only(0, 0, 1, 1),
     symmetric: only(2, 1, 0),
+    // `equal` stays circles/arcs: "equal" between an ellipse and a circle
+    // would have to guess which semi-axis was meant
     equal: only(0, 2, 0) || only(0, 0, 2),
-    concentric: only(0, 0, 2),
+    concentric: only(0, 0, 2) || only(0, 0, 1, 1) || only(0, 0, 0, 2),
   };
   for (const [name, b] of Object.entries(conBtns)) b.disabled = !enable[name];
 }
@@ -588,6 +707,7 @@ function onPointerDown(e) {
   if (tool === "arc") return arcCenterClick(x, y);
   if (tool === "arc3") return arcThreePointClick(x, y);
   if (tool === "arcTan") return arcTangentClick(x, y);
+  if (tool === "ellipse") return ellipseClick(x, y);
   if (tool === "spline") return splineClick(x, y);
   if (tool === "slot") return slotClick(x, y);
   if (tool === "circle") {
@@ -656,6 +776,40 @@ function arcCenterClick(x, y) {
   pending = null;
   chainPrev = null;
   mutated();
+}
+
+/** Centre, then the end of the major axis (which fixes `a` and the rotation),
+ *  then any point whose distance across that axis fixes `b`. Three clicks, the
+ *  same shape as the `Arc` tool. */
+function ellipseClick(x, y) {
+  if (!pending || pending.kind !== "ellipse") {
+    let center = nearRef(x, y);
+    if (!center || center.includes(".")) center = addPoint(x, y);
+    pending = { kind: "ellipse", center };
+    renderPreview();
+    return;
+  }
+  const c = refCoords(pending.center);
+  if (pending.a === undefined) {
+    pending.a = Math.max(0.25, Math.hypot(x - c.x, y - c.y));
+    pending.rotation = angleDeg(c.x, c.y, x, y);
+    renderPreview();
+    return;
+  }
+  const b = minorFrom(pending, c, x, y);
+  addEllipse(pending.center, pending.a, b, pending.rotation);
+  pending = null;
+  chainPrev = null;
+  mutated();
+}
+
+/** The semi-minor axis a cursor at (x, y) implies: its distance from the
+ *  major axis, clamped so a degenerate ellipse can never be authored. */
+function minorFrom(p, c, x, y) {
+  const phi = (p.rotation * Math.PI) / 180;
+  const dx = x - c.x;
+  const dy = y - c.y;
+  return Math.max(0.25, Math.abs(-dx * Math.sin(phi) + dy * Math.cos(phi)));
 }
 
 function arcThreePointClick(x, y) {
@@ -901,7 +1055,8 @@ function sendDragFrame() {
   // cursor crosses it. `diagnostics` is left at its default so the drag frame
   // serves the cached block instead of paying for the greedy pass.
   api.solveSketch(entitiesSpec(), model.constraints,
-                  { initial: seedFromModel(), drag: { point: ref, x: c.x, y: c.y } })
+                  solveOpts({ initial: seedFromModel(),
+                              drag: { point: ref, x: c.x, y: c.y } }))
     .then((res) => {
       if (my !== solveSeq || !drag) return;
       const error = errorOf(res, null);
@@ -1041,13 +1196,25 @@ function entitiesSpec() {
     points: model.points.map((p) => ({
       name: p.name, x: p.x, y: p.y, fixed: !!p.fixed,
     })),
-    lines: model.lines.map((l) => ({ name: l.name, p1: l.p1, p2: l.p2 })),
+    lines: model.lines.map((l) => ({
+      name: l.name, p1: l.p1, p2: l.p2,
+      ...(l.construction ? { construction: true } : {}),
+    })),
     circles: model.circles.map((c) => ({
       name: c.name, center: c.center, r: c.r,
+      ...(c.fixed_r ? { fixed_r: true } : {}),
+      ...(c.construction ? { construction: true } : {}),
     })),
     arcs: model.arcs.map((a) => ({
       name: a.name, center: a.center, r: a.r,
       start_deg: a.start_deg, end_deg: a.end_deg,
+      ...(a.fixed ? { fixed: true } : {}),
+      ...(a.construction ? { construction: true } : {}),
+    })),
+    ellipses: model.ellipses.map((e) => ({
+      name: e.name, center: e.center, a: e.a, b: e.b, rotation: e.rotation,
+      ...(e.bounded ? { start_deg: e.start_deg, end_deg: e.end_deg } : {}),
+      ...(e.construction ? { construction: true } : {}),
     })),
     splines: model.splines.map((s) => ({ name: s.name, points: [...s.points] })),
     slots: model.slots.map((s) => ({
@@ -1069,6 +1236,16 @@ function seedFromModel() {
   if (model.arcs.length) {
     seed.arcs = Object.fromEntries(model.arcs.map((a) => [a.name, {
       r: a.r, start_deg: a.start_deg, end_deg: a.end_deg,
+    }]));
+  }
+  if (model.ellipses.length) {
+    // Same all-or-nothing rule as a slot: an ellipse owns a, b and rotation
+    // (plus its bounds), and omitting any of them is not a smaller seed but
+    // no seed at all — `initial_incomplete`, a cold start, and the branch
+    // stability the drag path depends on gone with it.
+    seed.ellipses = Object.fromEntries(model.ellipses.map((e) => [e.name, {
+      a: e.a, b: e.b, rotation: e.rotation,
+      ...(e.bounded ? { start_deg: e.start_deg, end_deg: e.end_deg } : {}),
     }]));
   }
   if (model.slots.length) {
@@ -1100,6 +1277,18 @@ function applySolution(res) {
       a.r = s.r;
       a.start_deg = s.start_deg;
       a.end_deg = s.end_deg;
+    }
+  }
+  for (const e of model.ellipses) {
+    const s = res.ellipses && res.ellipses[e.name];
+    if (s) {
+      e.a = s.a;
+      e.b = s.b;
+      e.rotation = s.rotation;
+      if (e.bounded) {
+        e.start_deg = s.start_deg;
+        e.end_deg = s.end_deg;
+      }
     }
   }
 }
@@ -1149,11 +1338,28 @@ function hasResiduals() {
   return model.constraints.length > 0 || model.slots.length > 0;
 }
 
+/** The DOF of a sketch with no residuals at all, counted the way the solver
+ *  allocates parameters: 2 per free point, 1 per free radius, 3 per arc
+ *  (r, start, end) — 0 for a wholly fixed reference arc — 3 per ellipse plus 2
+ *  when it is bounded, and 1 for a slot's shared radius. */
 function freeParamCount() {
   return (
     model.points.filter((p) => !p.fixed).length * 2
-    + model.circles.length + model.arcs.length * 3 + model.slots.length
+    + model.circles.filter((c) => !c.fixed_r).length
+    + model.arcs.filter((a) => !a.fixed).length * 3
+    + model.ellipses.reduce((n, e) => n + (e.bounded ? 5 : 3), 0)
+    + model.slots.length
   );
+}
+
+/** The optional half of every solve request. The plane rides along on all of
+ *  them: `insertSnippet` is the one that needs it (emission writes the basis
+ *  into the script), and passing it everywhere keeps the three call sites from
+ *  diverging. */
+function solveOpts(extra) {
+  const opts = { ...(extra || {}) };
+  if (plane) opts.plane = plane;
+  return Object.keys(opts).length ? opts : undefined;
 }
 
 async function solveAndRender(diagnostics) {
@@ -1171,7 +1377,7 @@ async function solveAndRender(diagnostics) {
   let thrown = null;
   try {
     res = await api.solveSketch(entitiesSpec(), model.constraints,
-                                diagnostics ? { diagnostics } : undefined);
+                                solveOpts(diagnostics ? { diagnostics } : null));
   } catch (err) {
     thrown = err;
   }
@@ -1243,8 +1449,9 @@ function chipState() {
 function renderStatus() {
   updateConstraintButtons();
   renderChips();
-  const anyCurve = model.lines.length || model.circles.length
-    || model.arcs.length || model.splines.length || model.slots.length;
+  const anyCurve = [...model.lines, ...model.circles, ...model.arcs,
+                    ...model.ellipses, ...model.splines, ...model.slots]
+    .some((e) => !isConstruction(e));
   insertBtn.disabled = !solveState.ok || !anyCurve;
   const st = chipState();
   dofEl.className = `sk-dof ${st.cls}`;
@@ -1315,6 +1522,35 @@ function arcPathD(cx, cy, r, a0, a1) {
   return `M ${x0} ${y0} A ${r} ${r} 0 ${large} ${sweep > 0 ? 1 : 0} ${x1} ${y1}`;
 }
 
+/** An SVG `A` path for an ellipse or elliptical arc. SVG's arc command takes
+ *  the two radii and an x-axis rotation, so this is the same curve the solver
+ *  and build123d use — no polyline approximation. The rotation is passed in
+ *  the *world* frame; the y-flipped group handles the rest, exactly as the
+ *  circular `arcPathD` lets the group decide the sweep's sense. */
+function ellipsePathD(e, ctr) {
+  const at = (deg) => ellipsePoint(e, ctr, deg);
+  const rot = e.rotation;
+  if (!e.bounded) {
+    const p0 = at(0);
+    const p1 = at(180);
+    // one `A` cannot express a closed curve; two halves can
+    return `M ${p0.x} ${p0.y} A ${e.a} ${e.b} ${rot} 1 1 ${p1.x} ${p1.y}`
+      + ` A ${e.a} ${e.b} ${rot} 1 1 ${p0.x} ${p0.y} Z`;
+  }
+  const sweep = e.end_deg - e.start_deg;
+  if (Math.abs(sweep) >= FULL_TURN_DEG) {
+    const p0 = at(e.start_deg);
+    const p1 = at(e.start_deg + 180);
+    return `M ${p0.x} ${p0.y} A ${e.a} ${e.b} ${rot} 1 1 ${p1.x} ${p1.y}`
+      + ` A ${e.a} ${e.b} ${rot} 1 1 ${p0.x} ${p0.y}`;
+  }
+  const p0 = at(e.start_deg);
+  const p1 = at(e.end_deg);
+  const large = Math.abs(sweep) > 180 ? 1 : 0;
+  return `M ${p0.x} ${p0.y} A ${e.a} ${e.b} ${rot} ${large} `
+    + `${sweep > 0 ? 1 : 0} ${p1.x} ${p1.y}`;
+}
+
 /** A Catmull-Rom preview of the interpolating spline the emitter will write.
  *  Display only — build123d's `Spline` owns the real end conditions. */
 function splinePathD(pts) {
@@ -1346,10 +1582,20 @@ function slotPathD(c1, c2, r) {
     + ` A ${r} ${r} 0 0 0 ${c1.x + nx * r} ${c1.y + ny * r} Z`;
 }
 
+function entityOf(kind, name) {
+  const bag = { line: model.lines, circle: model.circles, arc: model.arcs,
+                ellipse: model.ellipses, spline: model.splines,
+                slot: model.slots }[kind];
+  return bag ? bag.find((e) => e.name === name) : null;
+}
+
 function strokeFor(kind, name) {
   const c = colors();
   if (highlight.entities.has(name)) return c.flag;
-  return isSelected(kind, name) ? c.sel : c.curve;
+  if (isSelected(kind, name)) return c.sel;
+  // Projected references and construction geometry are ghosted: they
+  // constrain, they are not the profile, and the emitter does not write them.
+  return isConstruction(entityOf(kind, name)) ? c.ghost : c.curve;
 }
 
 function hitHandler(kind, name) {
@@ -1368,9 +1614,12 @@ function curveNodes(shape, attrs, kind, name) {
                           "stroke-width": SNAP_PX / scale });
   hit.style.cursor = "pointer";
   hit.addEventListener("pointerdown", hitHandler(kind, name));
+  const ghost = isConstruction(entityOf(kind, name));
   const vis = el(shape, {
     ...attrs, fill: "none", stroke: strokeFor(kind, name),
-    "stroke-width": (sel ? 2.4 : 1.6) / scale, "pointer-events": "none",
+    "stroke-width": (sel ? 2.4 : ghost ? 1.1 : 1.6) / scale,
+    "pointer-events": "none",
+    ...(ghost ? { "stroke-dasharray": `${3 / scale} ${2.5 / scale}` } : {}),
   });
   if (highlight.entities.has(name)) vis.setAttribute("class", "sk-pulse");
   return [hit, vis];
@@ -1444,10 +1693,25 @@ function render() {
       "arc", a.name));
   }
 
-  // arc endpoint handles: the names `a1.start` / `a1.end` the solver takes
+  for (const e of model.ellipses) {
+    const ctr = refCoords(e.center);
+    if (!ctr) continue;
+    worldG.append(...curveNodes("path", { d: ellipsePathD(e, ctr) },
+                                "ellipse", e.name));
+  }
+
+  // curve handles: the names the solver takes — an arc's `a1.start`/`a1.end`,
+  // and an ellipse's `e1.major`/`e1.minor` (plus its bounds when it is an arc)
+  const handleRefs = [];
   for (const a of model.arcs) {
-    for (const which of ["start", "end"]) {
-      const ref = `${a.name}.${which}`;
+    handleRefs.push(`${a.name}.start`, `${a.name}.end`);
+  }
+  for (const e of model.ellipses) {
+    handleRefs.push(`${e.name}.major`, `${e.name}.minor`);
+    if (e.bounded) handleRefs.push(`${e.name}.start`, `${e.name}.end`);
+  }
+  {
+    for (const ref of handleRefs) {
       const at = refCoords(ref);
       if (!at) continue;
       const sel = isSelected("handle", ref);
@@ -1559,6 +1823,17 @@ function renderPreview() {
           d: arcPathD(arc.cx, arc.cy, arc.r, arc.start_deg, arc.end_deg) }));
       }
     }
+  } else if (pending.kind === "ellipse") {
+    const ctr = refCoords(pending.center);
+    if (!ctr) return;
+    if (pending.a === undefined) {
+      previewG.appendChild(dashedLine(ctr, cursor));
+    } else {
+      previewG.appendChild(dashed("path", {
+        d: ellipsePathD({ a: pending.a, rotation: pending.rotation,
+                          b: minorFrom(pending, ctr, cursor.x, cursor.y),
+                          bounded: false }, ctr) }));
+    }
   } else if (pending.kind === "spline") {
     const pts = pending.points.map(refCoords).filter(Boolean);
     previewG.appendChild(
@@ -1572,8 +1847,11 @@ function renderPreview() {
 // ---------------------------------------------------------------- insert
 
 async function insertSnippet() {
-  const anyCurve = model.lines.length || model.circles.length
-    || model.arcs.length || model.splines.length || model.slots.length;
+  // Construction geometry does not emit, so a sketch that is *only* projected
+  // references has nothing to insert.
+  const anyCurve = [...model.lines, ...model.circles, ...model.arcs,
+                    ...model.ellipses, ...model.splines, ...model.slots]
+    .some((e) => !isConstruction(e));
   if (!anyCurve) return;
   insertBtn.disabled = true;
   let res = null;
@@ -1582,7 +1860,8 @@ async function insertSnippet() {
     // One emitter for both layers: this is the same call an agent makes, so
     // the same spec yields byte-identical build123d either way (AC1).
     res = await api.solveSketch(entitiesSpec(), model.constraints,
-                                { emit: "function", diagnostics: "full" });
+                                solveOpts({ emit: "function",
+                                            diagnostics: "full" }));
   } catch (err) {
     thrown = err;
   }
