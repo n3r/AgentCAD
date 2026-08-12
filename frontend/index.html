@@ -49,6 +49,11 @@
       <span>Proposals</span><span id="proposals-count" class="tb-badge hidden"></span>
     </button>
 
+    <button id="notif-btn" class="tb-btn hidden" title="Mentions">
+      <span class="branch-glyph" aria-hidden="true">@</span>
+      <span>Inbox</span><span id="notif-count" class="tb-badge hidden"></span>
+    </button>
+
     <div class="toolbar-spacer"></div>
 
     <div id="rebuild-indicator" class="hidden">
@@ -110,6 +115,11 @@
     </aside>
 
     <main id="viewport">
+      <!-- Comment pins. An absolutely-positioned HTML overlay filling the same
+           box as the canvas (the #facecard/#hud pattern) — no CSS2DRenderer is
+           vendored. comments.js projects each open face thread's world point
+           with camera.project() inside the existing render loop. -->
+      <div id="pins"></div>
       <div id="hud" class="hidden"></div>
       <div id="viewport-empty" class="hidden"></div>
       <div id="placement" class="hidden">
@@ -135,6 +145,8 @@
         <button class="tab active" data-tab="params">Parameters</button>
         <button class="tab" data-tab="code">Code</button>
         <button class="tab" data-tab="metrics">Metrics</button>
+        <button class="tab" data-tab="threads">Threads<span id="threads-count"
+                class="tb-badge hidden"></span></button>
       </nav>
 
       <div id="banner" class="hidden">
@@ -149,11 +161,13 @@
       <div id="pane-code" class="pane hidden">
         <div id="editor-host"></div>
         <div class="editor-actions">
+          <span id="editor-claim" class="hidden"></span>
           <span id="editor-dirty"></span>
           <button id="save-btn" class="tb-btn">Save &amp; Rebuild</button>
         </div>
       </div>
       <div id="pane-metrics" class="pane hidden"></div>
+      <div id="pane-threads" class="pane hidden"></div>
     </aside>
   </div>
 
@@ -232,6 +246,52 @@
         <div id="proposals-list" class="prop-list"></div>
         <div id="proposals-detail" class="prop-detail"></div>
       </div>
+    </div>
+  </div>
+
+  <!-- The claim conflict. Shown ONLY for a 409 whose details carry
+       overridable:true (a soft per-part claim); a plain turn-lock 409 keeps
+       today's banner and is offered no override, because there is nothing
+       here that could grant one. -->
+  <div id="claim-modal" class="modal-overlay hidden">
+    <div class="modal narrow">
+      <header class="modal-head">
+        <span id="claim-title" class="modal-title">Someone is editing this part</span>
+        <div class="modal-actions">
+          <button id="claim-cancel" class="tb-btn" type="button">Cancel</button>
+          <button id="claim-override" class="tb-btn" type="button">Override</button>
+        </div>
+      </header>
+      <div id="claim-body" class="conflict-body"></div>
+    </div>
+  </div>
+
+  <div id="notifications-modal" class="modal-overlay hidden">
+    <div class="modal narrow">
+      <header class="modal-head">
+        <span class="modal-title">Mentions</span>
+        <div class="modal-actions">
+          <button id="notif-read-all" class="tb-btn" type="button">Mark all read</button>
+          <button id="notif-close" class="tb-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div id="notif-body" class="conflict-body"></div>
+    </div>
+  </div>
+
+  <!-- One composer for every surface. It is a fixed popover rather than a
+       panel section because the four places a thread starts from — the face
+       card, the editor gutter, a param row and a proposal's diff row — are not
+       all reachable while the inspector is visible (the proposals modal covers
+       it), and two composers would be two behaviours to keep in step. -->
+  <div id="comment-pop" class="hidden">
+    <div id="comment-pop-anchor" class="cmt-anchor"></div>
+    <textarea id="comment-pop-body" rows="3" aria-label="Comment body"
+              placeholder="Comment…  @chat:main notifies the agent"></textarea>
+    <div class="cmt-pop-foot">
+      <span id="comment-pop-hint" class="cmt-hint"></span>
+      <button id="comment-pop-cancel" class="tb-btn" type="button">Cancel</button>
+      <button id="comment-pop-send" class="tb-btn" type="button">Comment</button>
     </div>
   </div>
 

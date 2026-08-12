@@ -91,7 +91,11 @@ def register(registry, service) -> None:
 
     registry.register(Tool(
         "project_history",
-        "List a project's history snapshots, newest first: {id, message, ts}. "
+        "List a project's history snapshots, newest first: "
+        "{id, message, ts, author}. `author` is the client id that made the "
+        "change, read from the commit's `Client:` trailer — self-asserted "
+        "bookkeeping, not authentication — and null for snapshots taken "
+        "before authorship was recorded. "
         "A snapshot is committed automatically after every persistent "
         "mutation (part/script/param/assembly edits, mates, materials, PMI, "
         "imports), so entry [0] is the current state and entry [1] is the "

@@ -8,6 +8,9 @@ let currentPartId = null;
 let cleanText = "";
 let dirtyEl = null;
 let saveBtn = null;
+let lastDirty = false;
+let gutterClickHandler = null;
+const dirtyListeners = new Set();
 
 export function init(hostEl, { onSave }) {
   onSaveCallback = onSave;
@@ -19,6 +22,11 @@ export function init(hostEl, { onSave }) {
     mode: "python",
     theme: "agentcad",
     lineNumbers: true,
+    // The second gutter is PRD-008's: one marker per open script_range thread.
+    // CodeMirror 5 needs the gutter DECLARED here — setGutterMarker on an
+    // undeclared gutter silently does nothing — and the linenumbers gutter
+    // must be listed too or declaring gutters at all drops it.
+    gutters: ["CodeMirror-linenumbers", "agentcad-comments"],
     lineWrapping: true,
     indentUnit: 4,
     styleActiveLine: false,
@@ -33,8 +41,36 @@ export function init(hostEl, { onSave }) {
     },
   });
   cm.on("change", updateDirty);
+  // Clicking the comments gutter where there is no marker is how a script_range
+  // thread starts. A marker swallows its own mousedown, so this only fires on
+  // empty gutter space.
+  cm.on("gutterClick", (inst, line, gutter, ev) => {
+    if (gutter !== "agentcad-comments" || !gutterClickHandler) return;
+    gutterClickHandler(line + 1, ev);
+  });
   saveBtn.addEventListener("click", () => save());
   updateDirty();
+}
+
+/** fn(line1Based, mouseEvent) for a click on empty comment-gutter space. */
+export function onCommentGutterClick(fn) {
+  gutterClickHandler = fn;
+}
+
+/** The selected line range as 1-based inclusive {start, end}, or null. */
+export function selectionRange() {
+  if (!cm || !cm.somethingSelected()) return null;
+  const from = cm.getCursor("from");
+  const to = cm.getCursor("to");
+  // A selection that ends at column 0 stops on the line above it, the way
+  // every editor's "selected lines" count does.
+  const endLine = to.ch === 0 && to.line > from.line ? to.line - 1 : to.line;
+  return { start: from.line + 1, end: endLine + 1 };
+}
+
+/** Total lines, so a caller can clamp a range before it asks the server to. */
+export function lineCount() {
+  return cm ? cm.lineCount() : 0;
 }
 
 export function setPart(partId, script) {
@@ -76,6 +112,51 @@ export function isDirty() {
   return cm.getValue() !== cleanText;
 }
 
+/** Called on every change to the buffer's dirty state (PRD-008 slice 9 wires
+ *  the part claim to it: a dirty buffer claims the part, viewing never does). */
+export function onDirtyChange(fn) {
+  dirtyListeners.add(fn);
+  return () => dirtyListeners.delete(fn);
+}
+
+// ------------------------------------------------------------ comment gutter
+
+/** Replace every marker in the `agentcad-comments` gutter.
+ *
+ *  `rows` is [{line, count, status, title, thread}] with 1-based lines that
+ *  have ALREADY been through the server's resolution — a moved thread hands us
+ *  its current line, never the one it was authored on. Called from state, so
+ *  it is idempotent: it clears the gutter first, every time. */
+export function setCommentGutter(rows, onClick) {
+  if (!cm) return;
+  cm.clearGutter("agentcad-comments");
+  for (const row of rows || []) {
+    const line = Math.min(Math.max(1, row.line | 0), cm.lineCount()) - 1;
+    const marker = document.createElement("span");
+    marker.className = `cm-thread-mark st-${row.status || "ok"}`;
+    marker.textContent = row.count > 1 ? String(row.count) : "●";
+    marker.title = row.title || "";
+    marker.setAttribute("role", "button");
+    marker.addEventListener("mousedown", (e) => e.stopPropagation());
+    marker.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (onClick) onClick(row);
+    });
+    cm.setGutterMarker(line, "agentcad-comments", marker);
+  }
+}
+
+/** Scroll a 1-based line range into view and select it (thread click-to-focus). */
+export function revealRange(start, end) {
+  if (!cm) return;
+  const last = cm.lineCount();
+  const from = Math.min(Math.max(1, start | 0), last) - 1;
+  const to = Math.min(Math.max(from + 1, end | 0), last) - 1;
+  cm.setSelection({ line: from, ch: 0 }, { line: to, ch: cm.getLine(to).length });
+  cm.scrollIntoView({ from: { line: from, ch: 0 }, to: { line: to, ch: 0 } }, 80);
+  cm.focus();
+}
+
 export function refresh() {
   // CodeMirror needs a refresh after its pane becomes visible
   if (cm) cm.refresh();
@@ -93,7 +174,12 @@ export function setSaving(saving) {
 
 function updateDirty() {
   if (!dirtyEl) return;
-  if (isDirty()) {
+  const dirty = isDirty();
+  if (dirty !== lastDirty) {
+    lastDirty = dirty;
+    for (const fn of [...dirtyListeners]) fn(dirty, currentPartId);
+  }
+  if (dirty) {
     dirtyEl.textContent = "unsaved changes — ⌘S to save";
     dirtyEl.classList.add("dirty");
   } else {

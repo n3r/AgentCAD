@@ -2,6 +2,7 @@
 // all mutations go through the actions object provided by main.js.
 
 import { state, onKeys } from "./state.js";
+import { clientId } from "./api.js";
 
 let actions = null;
 let partsList = null;
@@ -27,7 +28,8 @@ export function init(a) {
     actions.selectAssembly(null);
   });
   onKeys(
-    ["project", "assembly", "selectedPart", "selectedInstance", "mode", "rebuilding", "partKinds"],
+    ["project", "assembly", "selectedPart", "selectedInstance", "mode",
+     "rebuilding", "partKinds", "presence"],
     render
   );
   render();
@@ -71,6 +73,31 @@ function renderParts() {
         ? `imported reference · ${kindInfo.source}`
         : "imported reference";
       li.appendChild(badge);
+    }
+
+    // Presence and claims, rendered FROM STATE like everything else here —
+    // this list is cleared and rebuilt on every relevant change, so an
+    // indicator poked in imperatively would survive exactly until the next
+    // rebuild. "presence" is in this module's onKeys for the same reason.
+    const claim = claimOn(part.id);
+    if (claim) {
+      const chip = document.createElement("span");
+      chip.className = "row-claim";
+      chip.textContent = "editing";
+      chip.title =
+        `${labelOf(claim.holder)} has ${part.id} open for editing. ` +
+        "A soft claim: it expires on its own, it only ever binds two humans, " +
+        "and it can always be overridden.";
+      li.appendChild(chip);
+    } else {
+      const watchers = othersOn(part.id);
+      if (watchers.length) {
+        const d = dot("presence");
+        d.title = watchers
+          .map((c) => `${c.label} — ${c.focus && c.focus.surface}`)
+          .join("\n");
+        li.appendChild(d);
+      }
     }
 
     if (state.rebuilding.has(part.id)) {
@@ -155,4 +182,28 @@ function dot(kind) {
   const d = document.createElement("span");
   d.className = `row-dot ${kind}`;
   return d;
+}
+
+// state.presence is read directly rather than through presence.js: that module
+// already imports INSTANCE_PALETTE from here, and closing the cycle for three
+// one-line lookups would be a real fragility for no gain.
+
+function claimOn(partId) {
+  const claims = (state.presence && state.presence.claims) || {};
+  const claim = claims[partId];
+  return claim && claim.holder !== clientId ? claim : null;
+}
+
+/** Other clients whose focus names this part. */
+function othersOn(partId) {
+  const clients = (state.presence && state.presence.clients) || [];
+  return clients.filter(
+    (c) => c.id !== clientId && c.focus && c.focus.part_id === partId
+  );
+}
+
+function labelOf(id) {
+  const clients = (state.presence && state.presence.clients) || [];
+  const found = clients.find((c) => c.id === id);
+  return (found && found.label) || id || "someone";
 }

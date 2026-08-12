@@ -18,7 +18,7 @@ the same service humans use through the browser UI.
 │ FastAPI server — 127.0.0.1:<port>   (agentcad serve)        │
 │                                                             │
 │   ToolRegistry ──► AgentCADService ──► ProjectStore (files) │
-│   (65 tools,       (cache, events,     ~/AgentCAD/projects  │
+│   (70 tools,       (cache, events,     ~/AgentCAD/projects  │
 │    single source    orchestration)     or --projects-dir    │
 │    of truth)             │                                  │
 │                          │ line-delimited JSON-RPC (stdio)  │
@@ -74,10 +74,14 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/core/packet.py` | `PacketBuilder`: the review packet. Four pure delta functions (changed parts, PARAMS, assembly, metrics) plus generation over the two branch worktrees — git diffs, per-part metrics through the ordinary service path, frame-matched renders, and `geom_diff` kernel calls — persisted with both branch heads. Talks to the kernel only through `service.kernel.request`. |
 | `agentcad/core/specs.py` | `SpecRunner`: design-spec orchestration — the `ast`-only `declares_specs` presence scan, the three evaluation tiers, the `.cache/*.specs.json` result sidecars, the report (flat check records, per-part blocks, per-requirement grouping), the `specs.py` reader/writer, and `evaluate_specs`/`gate_provider` for the proposal gate. Talks to the kernel only through `service.kernel.request`; imports no OCP. |
 | `agentcad/core/checks.py` | Geometry CI: the `schema: 1` report (rows, stages, verdict), its markdown rendering, a hand-rolled `validate_report`, and `CheckRunner` — the *sequencer* that drives four existing surfaces (`_ensure_built`, `_resolved_instances` + `check_interference`, `SpecRunner.run`, the drawing tools), materializes a `--ref` into a throwaway worktree behind a second ephemeral service, verifies determinism, and posts a verdict to a proposal (`CheckStore` + the `checks` gate provider). Composes; never measures. Imports no OCP. |
+| `agentcad/core/comments.py` | `CommentStore` (thread documents + an append-only `audit.jsonl` per thread and one `notifications.jsonl` per project, atomic writes, a persisted `next_id` high-water mark, a rebuildable `index.json`) and `CommentManager`: the thread lifecycle, anchor validation, attachment rules, mentions, and the `comment_changed`/`notification` events. Lives in the `.history/agentcad/comments/` sidecar — canonical, branch-free, outside model state. No kernel, no git. |
+| `agentcad/core/anchors.py` | Read-time anchor **resolution**: the four states (`ok`/`moved`/`orphaned`/`unverified`) built in one place by `make_resolution`, `face_table`/`signature_table` (per-face area, area-weighted centroid and normal, `bbox_uvw`, `area_frac` — pure NumPy over the `.acm` mesh plus the `<key>.faces.u32` sidecar, no kernel call and no rebuild), the face matcher, the two-tier `script_range` remap (exact snippet search, then a `difflib` line map over the blob at the anchor's stored head), and the `proposal_hunk` header re-match. Imports no OCP. |
+| `agentcad/core/presence.py` | `PresenceRegistry`: an in-memory, TTL'd (45 s) roster keyed `(lock_key, client_id)`, fed by an HTTP heartbeat and expired lazily on read — never persisted, no background thread. Also `install_claim_guard`/`ensure_*`, the lazy wrapper that teaches `ProjectStore.write_guard` about per-part claims without changing its signature. |
+| `agentcad/core/locks.py` | `TurnLock` (project-wide, explicit) and `ClaimRegistry` (per-part, implicit, human-vs-human, 90 s), plus the client-identity and `write_scope` contextvars that carry "who" and "which part" to the write guard. |
 | `agentcad/core/tools.py` | ToolRegistry — the 17 core tools defined once; discovers and loads `tools_*.py` packs. MCP and chat render from the merged registry. |
-| `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals, specs, run_checks), each exporting `register(registry, service)`. `tools_specs` additionally *wraps* `service._rebuild` and `service.get_part` (the `install_write_guard` precedent) and appends the `specs` gate provider; `tools_run_checks` installs `service.checks` and appends the `checks` gate — and is named for **load order**, since packs load alphabetically and `tools_proposals` resets `gate_providers`. |
+| `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals, specs, run_checks, comments), each exporting `register(registry, service)`. `tools_specs` additionally *wraps* `service._rebuild` and `service.get_part` (the `install_write_guard` precedent) and appends the `specs` gate provider; `tools_run_checks` installs `service.checks` and appends the `checks` gate — and is named for **load order**, since packs load alphabetically and `tools_proposals` resets `gate_providers`. |
 | `agentcad/server/app.py` | Core REST routes (thin), `/api/tools` passthrough, WebSocket channel, static hosting; mounts `routes_*.py` packs under `/api`. |
-| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve, history, branches/versions/merge, proposals, specs, checks). |
+| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve, history, branches/versions/merge, proposals, specs, checks, comments, presence). |
 | `agentcad/agent/mcp_server.py` | MCP stdio server proxying `/api/tools`; auto-starts the HTTP server when unreachable. |
 | `agentcad/agent/chat.py` | Server-side Anthropic tool-use loop streaming to the UI over the WebSocket. |
 | `frontend/` | Static ES modules (no bundler): Three.js viewport, tree, parameter inspector, CodeMirror editor, chat panel. |
@@ -500,6 +504,126 @@ one `append` to `service.gate_providers`.
 confined kernel worker as every other build (see [Trust model](#trust-model)).
 On Linux there is no seatbelt until PRD-006, which is why the GitHub Action
 documents `pull_request` (never `pull_request_target`) and no secrets.
+
+## Review threads, anchors and presence
+
+Feedback that points at something. A **thread** is a root comment plus replies
+with state `open`/`resolved`, anchored to a part, a face, a param, a script
+line range, an assembly instance or a proposal diff hunk.
+
+**Storage — deliberately not model state.**
+
+```
+<project>/.history/agentcad/comments/
+  next_id · index.json · notifications.jsonl
+  <id>/thread.json · <id>/audit.jsonl
+```
+
+Inside GIT_DIR, so it rides no branch, appears in no `git status`, is never
+merged, and is structurally beyond `project_restore`'s reach — the same
+sidecar pattern as `proposals/` (PRD-002), resolved through
+`store.canonical_path_of` so a client working in a branch worktree writes to
+the one canonical list. `thread.json`, `index.json` and `next_id` are atomic
+writes; `audit.jsonl` and `notifications.jsonl` are appends and are never
+rewritten (unread = mention seqs minus every seq a later `read` line names).
+
+**Anchor resolution is a read-time computation, never stored.** The anchor is
+immutable evidence stamped by the server at creation; what it *means now* is
+recomputed on every list. It issues no kernel call, forces no rebuild,
+regenerates no review packet and writes to no thread, anchor, manifest or
+proposal — the one thing it does write is a `<key>.facesig.json` memo of the
+face table beside the mesh in the project's `.cache`, derived data keyed by the
+same content hash and versioned (`{"v": 2, "faces": [...]}`, changelog `0125`)
+so a memo written by an older build is recomputed from the mesh rather than
+read short of a feature:
+
+```
+list_comments
+  └─ for each anchor
+       part/param/instance → manifest lookup                → ok | orphaned
+       face                → service._cache_key_for(part)    (NO build)
+                             .cache/<key>.acm + <key>.faces.u32
+                             → face_table (area, centroid, normal,
+                                           bbox_uvw, area_frac)
+                             → same mesh key?     → ok
+                             → matcher (normal dot, bbox_uvw distance,
+                                        area-share gate, ambiguity margin)
+                                                  → moved | orphaned
+                             → never built        → unverified/part_not_built
+       script_range        → exact snippet at the stored range      → ok
+                             exact snippet elsewhere, corroborated
+                             by the stored context (a LONE copy the
+                             context contradicts is not a match)    → moved
+                             difflib map over the blob at anchor.head
+                                                  → moved | orphaned
+                             no git / head gone   → unverified
+       proposal_hunk       → persisted packet.json, header identity → ok |
+                             moved | orphaned | unverified(packet_frozen)
+```
+
+Four states, three of which are not "fine": `ok`, `moved`, `orphaned`,
+`unverified` (*we did not look*). The contract is **orphan rather than guess** —
+an ambiguous match is an orphan, a lone candidate must clear an absolute area
+bar of its own (`LONE_AREA_REL`, the code review's finding) **and still touch
+the same number of faces** (`0125` — the area bar alone did not close the class
+it was introduced for), a lone *snippet* must be contradicted by neither side
+of its stored context (changelog `0124`, tightened in `0125` — the same
+"nothing left to compare against" mistake, in the script matcher), and the
+tolerances were set by measurement
+(`docs/changelog/0113-prd008-anchor-resolution.md`, re-measured in `0123` and
+`0125`). Two classes, measured separately because the first says nothing about
+the second: across a **parameter change**, 53.9% resolved and 2 mis-pins in
+2 693 known-truth faces; across a **deleted feature**, 98.8% correctly orphaned
+and 4 mis-pins in 327 destroyed faces (27 before the adjacency gate). A strong
+bias, not a guarantee: a cut-away face can still re-pin. Resolution issues
+**zero kernel calls**: it reads the manifest, meshes a build already wrote, and
+at most one git blob per anchor.
+
+Absence is classified **only after** deciding whether we are looking at the
+anchor's own branch: a parameter, a line range or a face missing from a part
+that exists on both branches is `unverified`/`other_branch`, not an orphan,
+because "it was removed" would be a claim about a branch the thread was never
+about (design Decision 7, widened in changelog `0124`).
+
+**Presence** is an in-memory registry keyed `(lock_key, client_id)` with a 45 s
+TTL, fed by a 15 s HTTP heartbeat (`POST /api/projects/{p}/presence`) rather
+than by the WebSocket: `/ws` lives in `app.py`, carries no client identity, and
+its Host guard is HTTP middleware. The heartbeat *response* carries the whole
+roster, so a client that misses every `presence_changed` converges within one
+beat; an over-rate heartbeat is HTTP 200 with `throttled: true`, never an
+error. Everything about it is bounded, because the identity is a header anyone
+can rotate: `MAX_ID_CHARS` (refused, never truncated — a truncation would merge
+two identities into one key; the check lives in `locks.check_client_id` and is
+called by the claim registry too, because a part write reaches it without
+passing a presence route), `MAX_CLIENTS` (a **process-wide** ceiling, and a
+full roster refuses a *new* row rather than evicting an incumbent) and
+`MAX_BUCKETS` on the rate limiter, which bounds memory first: a rotating
+identity is granted its first beat exactly like a real newcomer, so what it is
+held to is one grant per bucket per refill window (512 per 5 s) rather than the
+1/s a single client gets. Eviction may drop only a bucket that has refilled to
+its full burst — dropping a spent one would hand its owner a new one, which is
+a payout to the flood it is supposed to bound.
+
+**Two coordination mechanisms, one precedence rule**, evaluated on every
+persistent write at `ProjectStore.write_guard`:
+
+| # | Condition | Outcome |
+|---|---|---|
+| 1 | Another client holds the project **turn** | today's `ConflictError`, unchanged (PRD-001 path, message and details) |
+| 2 | The caller holds the turn | proceed — **never** claim-checked (FR12) |
+| 3 | The part is **claimed** by another client and both are `human` | `ConflictError` with `{claim, overridable: true}` — the browser arms a single-use 30 s override and retries |
+| 4 | otherwise | proceed, and refresh the caller's claim on that part |
+
+Claims are per-part, implicit (taken by *editing*, never by viewing), 90 s, and
+**human-vs-human only** — an agent blocked by a human's open editor would 409
+on the first write of the human→agent review loop. The part dimension reaches
+the guard through the `locks.write_scope` contextvar, so `write_guard`'s
+signature is unchanged and only `write_script`/`update_part_entry` are covered;
+whole-manifest writes are turn-locked only.
+
+**Events** all ride the existing bus: `comment_changed`, `notification`,
+`presence_changed`, `claim_changed`. None of them is `project_changed` — a
+comment is not a model change, so it triggers no snapshot and no rebuild.
 
 ## Anatomy of one rebuild
 

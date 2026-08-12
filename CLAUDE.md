@@ -59,6 +59,19 @@ This project is built skill-first. Use the Superpowers process skills:
   `skip`/`budget_exceeded` + exit 2, never a red · DXF is not byte-stable, so
   determinism compares SVG only · the Action checks the working tree and takes
   `--sha` as provenance, never `--ref`.
+- Review threads (`core/comments.py`, `core/anchors.py`, `core/presence.py`):
+  the module is **`comments`**, never `threads` (`toolkit/threads.py` is ISO
+  screw threads) · threads live in `.history/agentcad/comments/` (canonical,
+  branch-free, restore-proof) and are **never** `project_changed` · an anchor is
+  immutable and its status is computed on every read — `unverified` means *we
+  did not look*, and **orphan rather than guess, a bias and not a guarantee**
+  (a bounds-moving param or a closed curved face orphans by design; mis-pins
+  are 2 in 2 693 across a parameter change and 4 in 327 when a feature is
+  deleted — quote both, never "never") · resolution makes **zero kernel
+  calls** · claims are per-part, human-vs-human, never for the turn holder, and
+  reach `write_guard` through `locks.write_scope` (its signature is unchanged) ·
+  presence is an **HTTP heartbeat**, not client→server WS · `undo {scope}`
+  defaults to `"any"` and the stacks are **not** per client.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests

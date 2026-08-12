@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 65 tools (68 with the
+Agents drive AgentCAD through a single tool surface — 70 tools (73 with the
 `[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -37,6 +37,17 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
   payload — over REST at HTTP **200**, not 409 — because a conflict is a
   workflow state to render, not a failure. Everything else keeps the usual
   `validation_error` / `notfound_error` / `conflict_error` mapping.
+- A review thread's anchor resolves into **four** statuses, and they are not
+  interchangeable: `ok` (it still points at what it pointed at), `moved`
+  (re-matched at a **new** address, which the block carries), `orphaned` (the
+  target is gone or no candidate cleared the tolerance — the contract, not a
+  bug) and `unverified` (*we did not look*: the part is unbuilt, git is
+  absent, the packet is frozen, the anchor belongs to another branch).
+  `unverified` is never a synonym for "fine", and **`other_branch` wins over
+  `orphaned` at every level** — a parameter, a line range or a face missing
+  from a part that exists on both branches reads `unverified`/`other_branch`,
+  because "it was removed" would be a claim about a branch the thread was
+  never about. See [Review threads](#review-threads).
 
 ## Tools
 
@@ -122,11 +133,11 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 | `get_part_pmi` | **project, part_id** | The part's stored PMI section, with empty `dims`/`datums`/`fcf` when unset. |
 | `face_info` | **project, part_id, face_index** | Inspect one B-rep face by its mesh-order index (the same ordinal the viewport's face picking and the `mesh/faces` sidecar use): `{planar, normal, area_mm2, center, n_faces}`. |
 | `push_pull` | **project, part_id, face_index, distance_mm** | Direct-manipulation face offset recorded as code: validates the face is planar, then APPENDS an auto-generated wrapper to the script (`push_face(build(p), i, d)` — visible, editable, composable) and rebuilds. Positive distance grows the solid along the outward normal; negative cuts inward. The script stays the source of truth. |
-| `project_history` | **project**, limit, ref | List the project's automatic history snapshots, newest first (`{id, message, ts}`); entry [0] is the current state. History is **per branch**: you see your own branch's unless you pass `ref` — a branch or tag name — which reads that ref's history without switching you. `available: false` + empty list when git is missing on the server. |
+| `project_history` | **project**, limit, ref | List the project's automatic history snapshots, newest first (`{id, message, ts, author}` — `author` is the client id that made it, read from the commit's `Client:` trailer, and `null` for a snapshot taken before authorship was recorded); entry [0] is the current state. History is **per branch**: you see your own branch's unless you pass `ref` — a branch or tag name — which reads that ref's history without switching you. `available: false` + empty list when git is missing on the server. |
 | `project_restore` | **project, commit** | Restore the project to a snapshot id **or a branch/tag name** (`{commit: "shop-rev-a"}` restores a version) and append a linear "restore" commit on your current branch. Returns refreshed history + `{restored}`; validation_error on unknown commit/no git, conflict_error under someone else's turn lock. A manual restore is itself one undoable step. |
-| `undo` | **project** | Undo the last mutation (any client's) by stepping back through the git history: `{undone, history: {available, undo, redo}}`. conflict_error when nothing to undo; after a server restart one step remains available. |
-| `redo` | **project** | Redo the most recently undone mutation. The redo stack clears when any new mutation happens. |
-| `get_history` | **project** | Undoable/redoable action labels, newest first, plus `available` (false when git is missing). The full durable snapshot log with commit ids is `project_history`. |
+| `undo` | **project**, scope | Undo the last mutation by stepping back through the git history: `{undone, history: {available, undo, redo, mine}}`. `scope` is `any` (**default** — one shared stack, so you may take back another client's edit, which is the point of Cmd+Z next to a working agent) or `mine` (skip other clients' entries and take back your own most recent one). A `mine` undo of an entry that is no longer the branch head is a **`git revert` of exactly that commit**, so nobody else's later work moves; a later change that overlaps it is a `conflict_error` with `details: {commit, reason: "overlapping_changes", paths, blocked_by}` — never a merge, never a partial apply. Every other refusal has the same shape: `uncommitted_changes`, `already_reverted`, and `merge_in_range` when the range an undo would invert contains a merge commit. conflict_error when there is nothing to undo; after a server restart one step remains available. |
+| `redo` | **project**, scope | Redo the most recently undone mutation. The redo stack clears when any new mutation happens. A step that was undone by a revert is redone by reverting that revert. |
+| `get_history` | **project** | Undoable/redoable action labels, newest first, plus `available` (false when git is missing) and `mine: {undo, redo}` — how many entries on each stack are yours. The full durable snapshot log with commit ids is `project_history`. |
 | `render_view` | **project**, part_id, view, width, height | Server-side shaded orthographic render of built geometry so the agent can *see* the shape. `part_id` renders one part; omit it to render the whole placed assembly (instance transforms and colors honored; unbuildable instances are listed in `skipped`). `view` is `iso` (default), `front`, `top` or `right`; `width`/`height` are 64..2048 px (default 800×600). Writes `exports/renders/<part|assembly>_<view>.png` and returns `{path, width, height, view, png_base64}`; over MCP and in chat the PNG arrives as actual image content. |
 | `analyze_part` | **project, part_id, kind**, plane, axis, min_required | `kind=section` (cross-section area on `plane` XY\|XZ\|YZ), `wall` (min wall thickness; with `min_required` it adds an `ok` flag), `inertia` (mass-properties tensor + centre of mass), `projected_area` (silhouette area along `axis` X\|Y\|Z), `curvature` (per-face gaussian K in 1/mm² and mean H in 1/mm sampled on an 8×8 UV grid: `faces[]` with min/max/mean per face, `worst_gaussian_abs`, `n_faces`, `sampled_points`; H's sign is orientation-dependent — compare magnitudes; a true G2 blend shows no jump in K/H across the seam). Script parts only. |
 
@@ -543,6 +554,201 @@ duration_s}` after **every** completed run — including a red one and a
 budget-truncated one, and from the CLI as well as from the tool and the route.
 It is deliberately not `project_changed`: measuring a project is not changing
 it, so it triggers no history snapshot.
+
+### Review threads
+
+Feedback that points at something and can be marked done: a thread is a root
+comment plus replies, anchored to a part, a face, a parameter, a script line
+range, an assembly instance or a proposal diff hunk, with state `open` or
+`resolved`. Threads live at `.history/agentcad/comments/` — **canonical,
+branch-free, and outside model state**: every branch sees the same list,
+`project_restore` cannot rewind one, no merge ever touches one, and a comment
+never appears in `git status`.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `list_comments` | **project**, part_id, state, kind, branch, proposal, anchor_status, resolve_anchors | `{threads: [{id, state, anchor, resolution, branch, author, author_kind, created, updated, resolved, comments: [{id, author, author_kind, ts, body, attachments: [{path, available}], mentions, edited, deleted}]}], counts: {open, resolved, orphaned}}`. `counts` describes the whole project, never the filtered page. `resolve_anchors: false` is the cheapest listing — no `resolution` block and no `orphaned` count, because nothing was looked at. |
+| `add_comment` | **project, body**, anchor, thread, attachments | The post-state `{thread}`. Exactly **one** of `anchor` (open a new thread) or `thread` (reply to that id) — both or neither is a `validation_error`. |
+| `resolve_thread` | **project, thread** | The post-state `{thread}`. Idempotent: resolving a resolved thread records nothing and publishes nothing. |
+| `reopen_thread` | **project, thread** | The post-state `{thread}`. |
+| `list_notifications` | project, unread | `{notifications: [{seq, kind: "mention", to, project, thread, comment, from, ts, read}], unread: n}` for **the calling identity only**, oldest first. Omit `project` for every project on this server. |
+
+**The six anchors, validated at creation** (a bad anchor is a
+`validation_error`, never a stored orphan):
+`{kind: "part", part}` · `{kind: "face", part, face_index}` (the part must have
+been built; validated against the mesh's face count, and an imported reference
+part has no faces to anchor to) · `{kind: "param", part, param}` ·
+`{kind: "script_range", part, start, end}` (1-based, **inclusive**) ·
+`{kind: "instance", instance}` · `{kind: "proposal_hunk", proposal, file,
+hunk}`. Branch, head and every piece of evidence (a face's signature, a line
+range's snippet) are stamped **by the server** and refused from the caller: a
+signature a client can assert is not evidence of anything.
+
+**An anchor is immutable; its status is computed on every read** into the four
+statuses in the conventions above, so `resolution` is *view* data and the
+stored `anchor` never changes under you. Address a face through
+`resolution.face_index` and lines through `resolution.start`/`end` — **never**
+the stored `anchor.face_index`, which is the ordinal at creation time. Face
+ordinals are not stable across a parameter change (measured: 87–93% hold; one
+bundled part renumbered 20 of its 44 faces for a **1%** tweak), so a face
+anchor is re-matched from its stored mesh signature: measured over 2 693 faces
+whose identity is known it resolves about **half** the time and comes back
+honestly `orphaned` otherwise, with **2 mis-pins in 2 693** (both on a body of
+revolution). That sweep only ever changes a *parameter*, so it says nothing
+about the class you hit when you **delete** a feature; that one was measured
+separately over 327 faces that no longer exist, and **4 of them re-pinned onto
+the face that was underneath** (98.8% correctly orphaned). Orphan rather than
+guess — a strong bias, not a guarantee: **a cut-away face can still re-pin**,
+so treat a resolved face as strong evidence, and confirm with `face_info` when
+the answer decides something expensive. Two ceilings are worth knowing before you
+read an `orphaned` as a bug: a parameter change that moves a face's
+position *relative to the shape's bounds* orphans it even though the face still
+exists (`bbox_uvw` is measured against those bounds — which is exactly what
+makes a pure scale survivable), and a **closed curved face** such as a
+cylinder's side orphans on any edit, because its area-weighted normal nearly
+cancels and no candidate clears the normal gate.
+
+**A script range is re-found by its text plus its context, never by its text
+alone.** Tier 1 looks for the stored snippet verbatim; a lone copy must be
+contradicted by neither side of the stored surrounding lines — deleting the
+anchored one of two identical lines used to re-pin the thread onto the
+unrelated survivor and report `moved` at confidence 1.0, and one *agreeing*
+side is not enough to rule that out, because duplicated blocks routinely end
+with the same line. The same rule guards the address the anchor already has: a
+range that still holds its exact text but whose context says a different block
+now sits there is put to the diff rather than answered `ok` (with no diff to
+read — no git, no head — the address still wins, so an ordinary edit near a
+thread never costs it its pin). With two or more copies the context is a
+tie-break, as before. A refused hit falls through to tier 2, a `difflib` map
+over the blob at the anchor's own head, which answers from the real diff or
+`orphaned`s.
+
+**Listing never builds.** Resolution reads the manifest, the meshes a build
+already wrote and at most one git blob per anchor — so a face anchor on a part
+that has never been built is `unverified`/`part_not_built` rather than a 300 s
+rebuild, and `list_comments` on a 40-part project stays a cheap read.
+
+**Hunk threads re-map by header, and never regenerate a packet.** A
+`{kind: "proposal_hunk", proposal, file, hunk}` anchor is validated against the
+proposal's **already-built** review packet (`file` is a path in its script
+diffs, `hunk` a 0-based index into that file's hunks; no packet on disk is a
+`validation_error` telling you to call `proposal_packet`, never a build), and
+it stores that hunk's header byte-for-byte plus the packet's `generation`.
+Because a regeneration renumbers hunks freely, the header is the identity:
+same generation → `ok`; a new generation carrying that exact header exactly
+once → `moved` to its new index (**never** `ok`, even at the same index — a new
+generation measured different commits); the header rewritten or now
+non-unique → `orphaned`/`hunk_regenerated`; a packet frozen by a merge →
+`unverified`/`packet_frozen`, because the diff it describes is history and the
+thread is the record of a review of exactly that. Reading a thread only ever
+reads the persisted `packet.json` — never `proposal_packet`'s regeneration
+path, which rebuilds geometry on both sides and can move the proposal's state.
+`list_comments {kind: "proposal_hunk", proposal: "3"}` fetches one proposal's
+threads in a single call.
+
+**Attachments** must live under the project's `exports/` (pass what
+`render_view` returned, or `"exports/renders/iso.png"`); anything resolving
+outside that tree, symlinks included, is a `validation_error`, and there are at
+most 8 per comment. A file that is missing at read time is reported as
+`{path, available: false}`, never an error — `exports/` is branch-scoped.
+
+**Attribution is bookkeeping, not authentication.** `author`/`actor` is the
+client identity (`browser`, `browser:<nonce>`, `chat:<session>`, an MCP agent's
+`X-Agent-Id`) and `author_kind` is `human` iff it is the browser; the header is
+unvalidated. Anyone may resolve or reopen anything; only a comment's own author
+may edit or delete it, and the root comment cannot be deleted at all (retire a
+thread by resolving it). Every action appends to a per-thread audit log.
+
+**Mentions.** `@<identity>` in a body notifies that identity — but only when it
+names a **plausible** one: `browser`, `browser:<nonce>`, `chat`,
+`chat:<session>` (the chat engine's own `[a-z0-9_-]{1,32}` session rule), or a
+client the presence registry currently knows. `@todo` and `@nobody` stay plain
+text and deliver nothing, and mentioning yourself delivers nothing. Deliveries
+land in one append-only `notifications.jsonl` per project with a `to` field —
+never a file per identity, which would make an unvalidated header into a
+path — and *read* is another line in the same log, so unread is derived
+(mentions minus every seq a later `read` line names) and nothing is rewritten.
+Editing a comment re-scans it and delivers only the **newly** mentioned.
+
+Routes: `GET|POST /api/projects/{proj}/comments`,
+`GET /api/projects/{proj}/comments/{id}`,
+`POST /api/projects/{proj}/comments/{id}/resolve`,
+`.../reopen`, `PATCH|DELETE /api/projects/{proj}/comments/{id}/comments/{cid}`
+(edit or tombstone one comment — panel affordances, deliberately not tools),
+`GET /api/projects/{proj}/comments/{id}/audit`,
+`GET /api/projects/{proj}/notifications?unread=`,
+`POST /api/projects/{proj}/notifications/read {ids?}` (omit `ids` to mark all
+of yours; another identity's seq is a 422). Both notification routes answer for
+the identity of the *request* and never take one as an argument.
+
+**Events.** `comment_changed {project, thread, state, action, part}` on every
+mutation (`created`, `replied`, `resolved`, `reopened`, `comment_edited`,
+`comment_deleted`) — and on **no** no-op. It is deliberately not
+`project_changed`: a comment is not a model change, so it triggers no history
+snapshot and no rebuild. Each mention adds `notification {to, project, thread,
+comment, from, ts}`, published straight after it. **The bus is a broadcast**:
+every `/ws` client receives every `notification` and filters on `to` itself.
+That is honest for a single-user, 127.0.0.1-only server with no authentication
+— it discloses nothing a `GET` on the same box would not — and per-principal
+delivery arrives with real identity (PRD-005), with no payload change.
+
+### Presence and per-part claims
+
+Who else is in this project, and who is currently editing which part. **There
+are no tools here on purpose** — an agent coordinates through `acquire_turn`
+and branches, and a claim is a *human*-vs-human courtesy that an agent must
+never be blocked by (see the precedence table below). The surface is three
+routes:
+
+```
+GET  /api/projects/{proj}/presence            # read the roster, register nobody
+POST /api/projects/{proj}/presence            # heartbeat  {part_id?, surface?,
+                                              #             label?, claim?, leave?}
+POST /api/projects/{proj}/claims/override     # {part} -> {part, armed_until, claim}
+```
+
+Both presence calls answer with the whole roster:
+`{you, clients: [{id, kind, label, focus: {part_id, surface}, since}],
+claims: {<part>: {part, holder, holder_kind, expires_at}}, ttl_s,
+heartbeat_s}`. `surface` is one of `viewport | editor | inspector | proposals`
+(anything else is a `validation_error`); `kind` is `human` iff the identity is
+a browser. The registry is **in-memory and never persisted**, entries expire
+45 s after the last beat (the browser beats every 15 s), and `{leave: true}` is
+what a closing tab sends. An over-rate heartbeat is **HTTP 200 with
+`throttled: true`**, never an error — the response is the mechanism, so a
+client that misses every event still converges within one beat.
+
+A **claim** names one part, is taken by *editing* (a heartbeat with
+`claim: true`, or any successful part-scoped write — viewing never claims),
+lasts 90 s, and is enforced at the one seam every persistent write passes
+through:
+
+| # | Condition | Outcome |
+|---|---|---|
+| 1 | another client holds the project **turn** | today's `conflict_error`, unchanged |
+| 2 | you hold the turn | proceed — never claim-checked |
+| 3 | the part is claimed by another client and **both are `human`** | `conflict_error` with `details: {claim: {part, holder, holder_kind, expires_at}, overridable: true}` |
+| 4 | otherwise | proceed, and refresh your claim on that part |
+
+Only `update_part_script` and per-part manifest edits are claim-covered;
+whole-manifest writes (`add_part`, assembly, project materials) are turn-locked
+only, on purpose. To take a part anyway, `POST …/claims/override {part}` arms a
+**single-use, 30-second** override for your identity and retries the write; a
+library or tool caller uses `with locks.claim_override():` instead. Arming
+publishes `claim_changed` with `overridden_by`, so taking somebody's part is on
+the record before the write lands.
+
+**Events.** `presence_changed {project, clients, claims}` when the roster
+actually differs (never on a no-op heartbeat) and `claim_changed {project,
+part, holder, holder_kind, expires_at, overridden_by?}`. With
+`comment_changed` and `notification` these are the four events PRD-008 adds;
+all four ride the existing `/ws` broadcast and none of them is
+`project_changed`.
+
+**Identity is self-asserted.** `X-Agent-Id` is an unvalidated header, so
+presence, claims, authorship and mentions are bookkeeping and coordination, not
+authentication or access control. That is honest for a single-node,
+127.0.0.1-only server; PRD-005 is what makes it a principal.
 
 ### Sketch solving
 

@@ -425,6 +425,150 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   `.history/`, so `--ref "$GITHUB_SHA"` would exit 2 on every run. Pass
   `--sha` / `--ref-label` instead.
 
+## Review-thread gotchas (PRD-008 — read before touching comments, anchors, presence or undo)
+
+- **Threads live at `.history/agentcad/comments/`, are canonical and
+  branch-free, and are never model state.** `project_restore` cannot rewind
+  them, every branch sees the same list, no merge ever touches them, and a
+  comment never shows up in `git status`. Paths come from
+  `store.canonical_path_of`, **never `path_of`**.
+- **The module is `comments`, never `threads`.** `agentcad/toolkit/threads.py`
+  is ISO screw threads and `tests/test_threads.py` is its test module. The word
+  survives only in payloads and tool names (`resolve_thread`,
+  `comment_changed {thread}`), which FR7 freezes.
+- **An anchor is immutable; its status is computed on every read.** `ok`,
+  `moved`, `orphaned` and `unverified` are four different facts. `unverified`
+  means *we did not look* (unbuilt part, no git, frozen packet) and must never
+  be rendered as "fine". Address geometry through `resolution.face_index` and
+  lines through `resolution.start`/`end` — never the stored ordinal.
+- **Orphan rather than guess — a bias, not a guarantee.** An ambiguous face
+  match is an orphan; a low-confidence line remap is an orphan; and a **lone
+  candidate** is an orphan unless it clears `LONE_AREA_REL` on its own *and*
+  still touches the same number of faces, because `AMBIGUITY_MARGIN` cannot
+  fire when there is nothing to compare against — that gap was a real mis-pin
+  (a cut-away boss re-pinning onto the plate under it at 0.87 "confidence").
+  Loosening a tolerance to make a pin appear is the one change this feature
+  must never take. **Two measured classes, two rates, quote both** — the second
+  is the one an agent hits, and the first cannot speak for it because that
+  sweep never deletes anything:
+  - a **parameter change** (changelog 0123, 2 693 known-truth faces): 53.9%
+    resolved, **2 mis-pins**, both on a body of revolution;
+  - a **deleted feature** (changelog 0125, 327 faces that no longer exist):
+    98.8% correctly orphaned, **4 mis-pins**, down from 27 before the adjacency
+    gate — all four a square pad on a square plate, where every number a
+    mesh-derived signature has is the same on both faces.
+
+  So **a cut-away face can still re-pin**; say that, not "never", and confirm
+  with `face_info` before an expensive decision.
+- **A lone survivor is not evidence, for scripts either.** `find_snippet` used
+  to skip the stored context whenever exactly one copy of the snippet was left,
+  so deleting the anchored one of two identical lines re-pinned the thread onto
+  the unrelated survivor and reported `moved` at confidence **1.0** — the same
+  mistake as the face matcher's lone candidate. A lone hit must now be
+  contradicted by **neither** side of the stored `before`/`after` — "one
+  agreeing side is enough" was the first fix and it was too weak, because
+  duplicated blocks in real code end the same way (`    return shell`) far more
+  often than they begin the same way. The same rule guards tier 1's *identity*
+  check: an address that still holds the anchored text but whose stored context
+  says the block around it is a different one is put to the diff instead of
+  being taken on trust (and is still answered `ok` when there is no diff to
+  read, so an edit near a thread in a project without git costs nothing). With
+  two or more hits the context stays a tie-break. A refused hit falls through
+  to the tier-2 line map, which answers from the real diff — and that is what
+  makes the strict rule cheap, because a block that stayed in its neighborhood
+  with one side rewritten is exactly what a diff gets right. The gap that
+  remains, stated rather than hidden: an anchor that stored **no** context —
+  the top *and* bottom of a file, or one written before context existed — has
+  nothing to check and keeps the old behavior.
+- **Two measured ceilings on face re-matching, both documented rather than
+  tuned away.** (1) *Any* parameter change that alters the part's **bounding
+  box** orphans every anchor on that part — `bbox_uvw` is relative to the
+  bounds, which is exactly what makes a pure scale survivable and what makes a
+  bounds change total. (2) A **closed curved face** (a cylinder's side) orphans
+  on any edit: its area-weighted normal nearly cancels, so `NORMAL_DOT` admits
+  no candidate. Both are the safe direction.
+- **`metrics.n_faces` is deduped (`len(shape.faces())`); the `<key>.faces.u32`
+  sidecar is the authority for face-index validation** — it is what an ordinal
+  is *defined* by (the `TopExp_Explorer` walk `mesh.py` tessellates).
+- **Face signatures are derived in the server from `.acm` + `.faces.u32` — no
+  kernel call, no rebuild.** `signature_table` uses `service._cache_key_for`,
+  never `mesh_info`/`_ensure_built`; a part that was never built resolves to
+  `unverified`/`part_not_built`, and listing a hundred threads is a cheap read.
+- **Hunk anchors read the persisted `packet.json` only** — never
+  `service.packets.packet(...)`, which rebuilds geometry on both sides and can
+  move a proposal's state. The hunk **header** is the identity, not the index.
+- **Claims are human-vs-human only, and never apply to a client holding the
+  turn.** Precedence: turn → own-turn bypass → claim → proceed. A claim names
+  one *part*, is taken by editing (a `claim: true` heartbeat or a successful
+  part-scoped write), and expires in 90 s; the **turn lock** is project-wide,
+  explicit (`acquire_turn`) and applies to everyone. Agents get no claim tools
+  by design — an agent blocked by a human's open editor would 409 on the first
+  write of the flagship loop.
+- **The part dimension reaches `write_guard` through `locks.write_scope`, not
+  through the guard's signature** — every existing guard keeps working
+  byte-identically, and only `write_script` / `update_part_entry` are
+  claim-covered. Whole-manifest writes are turn-locked only, on purpose.
+- **The claim guard is installed lazily and from `routes_presence`**, because
+  `tools_versioning` (`v`) REPLACES `write_guard` after `tools_comments` (`c`)
+  loads. Same trap, same fix as `ProposalManager`'s branch-delete guard. **And
+  `install_write_guard` re-installs it after replacing the guard**, because
+  "lazy" alone left a window: a *later* `build_registry` disarmed claims until
+  the next heartbeat. It is conditional on `service.claims` already existing,
+  so `checks.py`'s ephemeral service still ends with `write_guard is None`
+  (PRD-004 pins that) — do not make it unconditional.
+- **An armed override is spent by the first write it authorizes, and used only
+  against a real conflict.** Both halves matter: using it where nothing blocks
+  force-steals a claim nobody was defending, and leaving it armed because
+  nothing blocked lets it steal the *next* claim with no second confirmation.
+- **Presence is an HTTP heartbeat, not a client→server WebSocket.** `/ws` is in
+  `app.py` (a core this feature may not edit), carries no client identity, and
+  its Host guard is HTTP middleware. The heartbeat *response* is the mechanism;
+  `presence_changed` is an optimization. The registry is in-memory and never
+  persisted.
+- **Presence is bounded, because the identity is a header anyone can rotate.**
+  `MAX_ID_CHARS` (64, refused not truncated — a truncation would merge two
+  identities into one roster/claim/mention key), `MAX_CLIENTS` (200, a full
+  roster refuses a *new* row rather than evicting an incumbent, because a
+  flood is by construction the most-recently-seen rows), and `MAX_BUCKETS`
+  (512, or rotation bypasses the rate limit outright — buckets refilled to
+  full burst are evicted first, since they carry no information). The
+  `presence_changed` broadcast *is* the roster, so no separate bound.
+- **`notification` events are broadcast to every `/ws` client and filtered
+  client-side.** Honest on a single-node, unauthenticated, 127.0.0.1-only
+  server; PRD-005 is what makes delivery per-principal.
+- **`comment_changed` is never `project_changed`.** A comment is not a model
+  change: it must trigger no history snapshot and no rebuild. `bus.on_publish`
+  is a single slot already owned by `service._snapshot_on_event` — never
+  assign it.
+- **Per-user undo did not re-key the undo stacks.** `scope: "any"` is the
+  default and is byte-identical to the behavior that predates authorship,
+  because a human pressing Cmd+Z to take back the agent's edit is the product's
+  flagship loop. `scope: "mine"` skips (never discards) other clients' entries,
+  and reverts instead of restoring once the entry is no longer the head.
+- **Authorship is a commit-message *trailer*, not a git author.** `Client: <id>`
+  goes in the body, so every `%s` subject contract still holds; git's
+  author/committer stay the fixed local identity because the client id is an
+  unvalidated header. `log()` reports `author: null` — never `"unknown"` — for
+  a commit written before authorship existed. **`author_of` reads `Merged-by:`
+  too**: `merge.py` has written that trailer since PRD-001 and its exact
+  message is pinned by that feature's tests, so authorship is read from both
+  spellings rather than by rewriting what a merge says.
+- **`undo {scope: "mine"}` off the head is a `git revert`, and it honours
+  `undo_to`.** A fast-forward merge moves the branch onto a commit whose first
+  parent belongs to the *source*, so `undo_to` names the state the target was
+  really on; the scoped path reverts the whole range `undo_to..entry` in one
+  commit (a single-commit revert would leave the merge half undone) and a
+  whole-tree restore is never an option there, because it would take everyone
+  else's later work with it.
+- **`ProjectHistory.revert` is atomic in both directions.** A dirty tree is
+  refused up front, a conflict rolls back — and a failure *after* the patch
+  applied (a repo hook rejecting the commit) resets tree, index and HEAD to
+  where they started before the error leaves. "Never a partial apply" is a
+  statement about the way out too.
+- **`actor_kind`/`author_kind` is bookkeeping, not authentication.** It is
+  `human` iff the identity is the browser. Say so on every surface that shows
+  it, until PRD-005.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script

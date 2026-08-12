@@ -204,8 +204,10 @@ HUD state, and error banner tell you the mesh on screen is stale.
 
 ## Inspector
 
-Three tabs on the right: **Parameters**, **Code**, **Metrics**. The error
-banner (below the tabs) belongs to all three.
+Four tabs on the right: **Parameters**, **Code**, **Metrics** and
+**Threads** (review comments — see [Review threads and
+presence](#review-threads-and-presence)). The error banner (below the tabs)
+belongs to all of them.
 
 ### Parameters
 
@@ -619,6 +621,156 @@ Proposals are workflow metadata, not model state: they live in
 `<project>/.history/agentcad/proposals/`, outside every working tree, so they
 are the same on every branch and **Undo / Restore never rewinds them**.
 
+## Review threads and presence
+
+Feedback that points at something. A **thread** is a comment plus replies,
+anchored to a part, a face, a parameter, a script line range, an assembly
+instance or a proposal diff hunk, with a state of *open* or *resolved* — and an
+agent sees exactly the same threads you do, as a work queue it can list, answer
+with a render attached, and resolve.
+
+### The Threads tab
+
+A fourth inspector tab beside Parameters, Code and Metrics. It lists the
+project's threads with a breadcrumb of what each one points at, filters for
+**open / resolved / all** plus a separate **orphaned** count, a composer,
+replies, and Resolve / Reopen. **Show** jumps to the thing: a face selects the
+part, highlights the face and fits the camera; a line range opens the Code tab
+at those lines; a param scrolls the Parameters pane and flashes the row; an
+instance selects it in the tree; a hunk opens that proposal's Files tab.
+
+Every row carries a **status chip**, and the four states are four different
+facts:
+
+| Chip | Means |
+|---|---|
+| `ok` | still points at what it pointed at |
+| `moved` (amber) | re-matched at a **new** address, shown as `bracket · L22–23 → L24–25` |
+| `orphaned` (red) | the target is gone, or nothing cleared the tolerance |
+| `unverified` (dashed) | **not checked** — the part is not built, git is absent, the packet is frozen |
+
+`unverified` is never a synonym for "fine". An `orphaned` or `unverified`
+thread is still a thread — readable, listable, resolvable — but **Show** is
+disabled and says why, because there is nowhere honest to jump to. The status
+is recomputed on every read; the anchor you created never changes underneath
+you.
+
+### Pointing at things
+
+- **A face.** Click a face in the viewport and press **Comment** on the face
+  card. Open face threads then draw a numbered **pin** over the model, which
+  follows the face as parameters change — and disappears when the anchor stops
+  being `ok`/`moved`, rather than floating over the wrong place. A pin is only
+  ever drawn once the browser has located the face on the geometry *currently
+  on screen*; in the moment between a rebuild and that data arriving there is
+  no pin at all, because the only other position available is where the face
+  used to be, and a pin you cannot tell apart from a located one is worse than
+  no pin.
+- **Script lines.** Select lines in the Code editor and comment; the thread
+  gets a marker in the editor **gutter**, which moves when you insert lines
+  above it. The snippet is re-found by its text *and* the lines around it: if
+  the same line exists twice and the commented one is deleted, the thread does
+  not silently jump to the other copy — it falls back to a real diff of the
+  script, and orphans if that cannot place it either.
+- **A parameter.** A count **badge** on the parameter row.
+- **A proposal's diff hunk.** Hover a diff line in a proposal's Files tab; the
+  hunk header then carries a count chip.
+
+A face anchor survives a parameter tweak when the face stays where it is
+relative to the shape's bounds, and honestly says `orphaned` otherwise —
+including for faces that still exist but moved within the bounds, and for
+closed curved faces (a cylinder's side), which orphan on any edit. **Orphan
+rather than guess**: a comment pointing at nothing is recoverable, a comment
+pointing at the wrong face is not — so the matcher refuses a match it cannot
+support, including one that only looks certain because no other face was left
+to compare it with. Two things were measured, and they are different numbers.
+Across a **parameter change** (2 693 faces) about half resolve, the rest
+orphan, and **2 pointed at the wrong face**. Across a **deleted feature** (327
+faces that no longer exist) 99% orphan and **4 re-pinned onto the surface that
+was underneath** — all four a square pad on a square plate, where the face left
+behind has the same shape, the same place and nearly the same size as the one
+you deleted. So a pin can survive onto the wrong face after you delete
+something: rare, not impossible, and worth a glance before you act on it.
+
+One ceiling is worth knowing because it looks like a bug and is not: when no
+other face on the part is even a candidate — a lone face at that orientation
+and position, which is the common case for a boss top or a pocket floor — the
+match rests on size alone, so an edit that moves that face's **share of the
+part's surface area** by more than about 30% orphans the thread. Widening a
+boss a little keeps the pin; nearly doubling it does not. That is deliberate:
+the same "only candidate left" reasoning is what used to move a comment onto
+the face *underneath* one that had been cut away.
+
+### Who else is here
+
+The toolbar shows an **avatar** per other client in the project — a browser
+tab, a chat session, an MCP agent — with its label and what it is looking at,
+refreshed every 15 seconds and dropped 45 seconds after a client goes quiet.
+Part rows in the tree show a dot for someone looking at that part.
+
+**Claims.** When somebody is *editing* a part (a dirty editor buffer, or a
+parameter being changed) that part shows an **"<name> is editing"** chip, and
+your write to it comes back as a conflict dialog naming them, with an
+**Override** button. Override arms one single-use 30-second override and
+retries your save; the override is announced to everyone, so taking a part is
+on the record. It really is single-use: it is spent by that retry whether or
+not the other person was still holding the part when it landed, so if they
+pick the part back up a moment later your next save asks you again rather than
+taking it silently. Claims are per part — somebody editing `bracket` never blocks
+your work on `nozzle` — they last 90 seconds, they are dropped the moment
+editing stops, and they apply **between people only**: an agent is never
+blocked by your open editor. The project-wide **turn lock** is the other
+mechanism and it still decides first: while an agent holds the turn, every
+write fails exactly as it always did, and no override is offered.
+
+### Mentions and the inbox
+
+`@` an identity in a comment — `@chat:main`, `@browser:1a2b3c4d` — and it lands
+in that client's **inbox**, the toolbar button with the unread badge. Clicking
+a row opens the thread and marks it read. `@todo` and `@nobody` are not
+identities: they stay plain text and deliver nothing.
+
+### Upgrading: your browser gets a new identity once
+
+Presence needs each browser to *have* an identity, so this release mints one
+per browser profile (`browser:<8 hex>`, kept in `localStorage`) where every
+browser previously sent the single shared id `browser`. On first load after
+upgrading, an existing browser is therefore a **new client** to the server, and
+two things follow, both one-time and neither destructive:
+
+- **Your per-client branch checkout is gone.** Branch checkouts are keyed by
+  client id, so a new id has no row and lands on the project's default branch.
+  Re-check-out the branch you were on; nothing on any branch was touched.
+- **A turn you were holding is held by your old identity.** You cannot release
+  a turn you no longer claim to be, so wait out its TTL (two minutes by
+  default) or restart the server, and take the turn again.
+
+Comments, history and attributions written under the old id keep it: `browser`
+stays a valid identity to read, mention and filter by.
+
+### What this is honestly not
+
+Identity here is **self-asserted**. A client id is a header, not a login, so
+attribution, mentions, presence and claims are coordination and bookkeeping —
+not authentication and not access control. Presence is **ephemeral**: it lives
+in the server's memory and is gone on restart. And every notification is
+broadcast to every connected client and filtered in the browser, so on this
+single-user, 127.0.0.1-only server your inbox is visible to anyone already on
+the machine. Real principals arrive with PRD-005.
+
+Three gaps are deliberate rather than pending bugs: an **assembly instance**
+anchor has no create affordance in the UI (agents and REST can make one, and
+the panel focuses it correctly); comment **attachments** have no browser file
+picker (an agent attaches a render from `exports/`, and the panel renders the
+chip); and **Cmd+Z is always the shared undo** — `scope: "mine"`, which takes
+back only your own last edit, is an API-level capability with no toolbar
+gesture, because a human taking back the agent's edit with Cmd+Z is the
+interaction the button exists for.
+
+Threads are workflow metadata, not model state: they live in
+`<project>/.history/agentcad/comments/`, outside every working tree, so every
+branch sees the same list and **Undo / Restore never rewinds them**.
+
 ## Working with the bundled examples
 
 Pick them from the project switcher:
@@ -658,6 +810,7 @@ suite, so the shipped defaults always build.
 | `<project>/.cache/` | Derived data (ACM1 meshes + metrics JSON keyed by content hash). Safe to delete; rebuilt on demand — and **shared by every branch**, since the keys are content hashes. |
 | `<project>/.history/` | The project's git repository (snapshots, branches, tags). `git log`/`diff`/`clone` work on it directly. Inside it: `trees/<branch>/` — one working tree per non-default branch — and `agentcad/` — sidecar state (default branch, per-client checkouts, version referrers, any staged merge, and `proposals/`). None of it is ever committed. |
 | `<project>/.history/agentcad/proposals/<id>/` | One change proposal: `proposal.json`, the append-only `audit.jsonl`, the generated `packet.json` and its render PNGs / diff meshes. Shared by every branch and never rewound by a restore. `policy.json` beside them holds the project's merge policy (`approvals_required`, `self_approve`). |
+| `<project>/.history/agentcad/comments/` | Review threads: `<id>/thread.json` plus its append-only `<id>/audit.jsonl`, an `index.json` that can be rebuilt from the directories, a persisted `next_id`, and one `notifications.jsonl` per project. Branch-free like proposals, and never rewound by a restore. |
 | `<project>/exports/` | STEP/STL/3MF part & assembly exports, plus `<part>_drawing.svg`/`.dxf` drawings, from the Export menu, agent tools, or `agentcad export`. |
 | `examples/` (repo) | The bundled example projects, registered at startup. |
 | `~/.agentcad/config.json` | The persisted port (`AGENTCAD_CONFIG` overrides the path). |

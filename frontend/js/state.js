@@ -24,6 +24,9 @@ export const state = {
   merge: null,           // staged merge summary from merge_status, or null
   proposals: null,       // proposal_list payload {proposals, counts}, or null
   proposal: null,        // proposal_get payload for the open detail, or null
+  presence: null,        // last heartbeat payload {you, clients, claims, ttl_s}
+  comments: null,        // list_comments payload {threads, counts}, or null
+  notifications: null,   // list_notifications payload {notifications, unread}
 };
 
 const listeners = new Map();

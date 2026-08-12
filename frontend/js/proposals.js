@@ -24,6 +24,7 @@ import { state, setState, onKeys } from "./state.js";
 import { relTime } from "./versions.js";
 import * as merge from "./merge.js";
 import * as viewport from "./viewport.js";
+import * as comments from "./comments.js";
 
 const STATES = [
   "draft", "open", "approved", "changes_requested", "merged", "closed",
@@ -98,6 +99,11 @@ export function init(a) {
     if (overlayPart && state.selectedPart !== overlayPart) hideLegend();
     else if (overlayPart && state.mode !== "part") hideLegend();
   });
+  // A thread opened on a hunk has to show up on the hunk immediately, and the
+  // chips are drawn from state.comments rather than from a local count.
+  onKeys(["comments"], () => {
+    if (isOpen() && activeTab === "files") renderTab();
+  });
 }
 
 export function isOpen() {
@@ -116,6 +122,25 @@ export async function open() {
   // Reopening keeps the proposal that was being read: refresh() only picks a
   // default when nothing is selected.
   if (selectedId) loadDetail(selectedId);
+}
+
+/** Open the modal straight onto one proposal and one tab — what a thread
+ *  anchored to a diff hunk focuses to. */
+export async function openTo(id, tab) {
+  if (!state.projectName) {
+    actions.toast("Open a project first", "error");
+    return;
+  }
+  overlayEl.classList.remove("hidden");
+  titleEl.textContent = `${state.projectName} · proposals`;
+  await refresh();
+  await loadDetail(String(id));
+  // After loadDetail, not before: selecting a different proposal resets the
+  // tab to Overview on purpose, so asking for one has to come afterwards.
+  if (tab && TABS.some(([key]) => key === tab) && activeTab !== tab) {
+    activeTab = tab;
+    renderDetail();
+  }
 }
 
 function close() {
@@ -426,6 +451,70 @@ function renderActions(proposal) {
 
 // --------------------------------------------------------------- the tabs
 
+// PRD-008: the hover affordance and the existing-thread chips on the diff
+// rows PRD-002 stamped `data-part`/`data-hunk`/`data-line` onto for exactly
+// this. Re-applied after EVERY renderTab, because #prop-pane is rebuilt on
+// each tab click and on every proposal_changed — an affordance attached once
+// would survive precisely one render.
+let hoverBtn = null;
+
+function decorateDiffs(pane) {
+  if (!pane || !selectedId) return;
+  const groups = comments.hunkThreads(selectedId);
+  for (const row of pane.querySelectorAll(".diff-line.diff-hunk")) {
+    const file = row.closest(".diff-block").dataset.file;
+    const threads = groups.get(`${file}\u0000${row.dataset.hunk}`);
+    if (!threads || !threads.length) continue;
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "diff-thread-chip";
+    chip.textContent = `💬 ${threads.length}`;
+    chip.title = threads
+      .map((th) => `${th.author}: ${(th.comments[0] || {}).body || ""}`)
+      .join("\n");
+    chip.addEventListener("click", (e) => {
+      e.stopPropagation();
+      comments.showThread(threads[0].id);
+    });
+    row.appendChild(chip);
+  }
+  // ONE shared hover button, moved between rows, rather than one per line: a
+  // large diff is thousands of rows and this pane is rebuilt constantly.
+  pane.addEventListener("mouseover", (e) => {
+    const row = e.target.closest && e.target.closest(".diff-line");
+    if (!row || !row.dataset.hunk) return;
+    // Rows before the first @@ carry data-hunk="-1": there is no hunk there to
+    // anchor to, so no affordance is offered.
+    if (Number(row.dataset.hunk) < 0) return;
+    if (!hoverBtn) {
+      hoverBtn = document.createElement("button");
+      hoverBtn.type = "button";
+      hoverBtn.className = "diff-comment-btn";
+      hoverBtn.textContent = "💬";
+      hoverBtn.title = "Comment on this hunk";
+      hoverBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const host = hoverBtn.parentElement;
+        if (!host) return;
+        comments.openComposer(
+          {
+            kind: "proposal_hunk",
+            proposal: String(selectedId),
+            file: host.closest(".diff-block").dataset.file,
+            hunk: Number(host.dataset.hunk),
+          },
+          {
+            label: `#${selectedId} · ${host.closest(".diff-block").dataset.file}` +
+              ` hunk ${host.dataset.hunk}`,
+            at: { x: ev.clientX, y: ev.clientY },
+          }
+        );
+      });
+    }
+    if (hoverBtn.parentElement !== row) row.appendChild(hoverBtn);
+  });
+}
+
 function renderTab() {
   const pane = document.getElementById("prop-pane");
   if (!pane) return;
@@ -458,7 +547,11 @@ function renderTab() {
     return;
   }
   if (activeTab === "overview") return renderOverview(pane);
-  if (activeTab === "files") return renderFiles(pane);
+  if (activeTab === "files") {
+    renderFiles(pane);
+    decorateDiffs(pane);
+    return;
+  }
   if (activeTab === "geometry") return renderGeometry(pane);
 }
 
@@ -845,6 +938,9 @@ function img(src, alt, className) {
 function diffBlock(partId, diff) {
   const block = div("diff-block");
   block.dataset.part = partId;
+  // The DIFF PATH, not the part id: a proposal_hunk anchor names the file the
+  // packet's script diffs are keyed by, and `data-part` alone cannot spell it.
+  block.dataset.file = diff.path || "";
   let hunk = -1;
   const lines = String(diff.unified || "").split("\n");
   if (lines.length && lines[lines.length - 1] === "") lines.pop();

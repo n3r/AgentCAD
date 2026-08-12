@@ -4,6 +4,7 @@
 import { api, ApiError } from "./api.js";
 import { state, setState, onKeys } from "./state.js";
 import * as editor from "./editor.js";
+import * as presence from "./presence.js";
 
 let actions = null;
 
@@ -13,6 +14,7 @@ let codeTab = null;
 let activeTab = "params";
 
 let bannerEl, bannerTitle, bannerBody;
+let editorClaimEl = null;
 let paramsPane, metricsPane;
 
 let renderedPartId = null;
@@ -52,6 +54,10 @@ export function init(a) {
     params: paramsPane,
     code: document.getElementById("pane-code"),
     metrics: metricsPane,
+    // The map is snapshotted here, once: a pane whose key is missing is never
+    // shown and never hidden, so a new tab must be registered in this object
+    // and not only in index.html.
+    threads: document.getElementById("pane-threads"),
   };
   tabs = [...document.querySelectorAll("#tabs .tab")];
   codeTab = document.querySelector('#tabs .tab[data-tab="code"]');
@@ -65,8 +71,14 @@ export function init(a) {
   document.getElementById("banner-close").addEventListener("click", dismissBanner);
 
   editor.init(document.getElementById("editor-host"), { onSave: saveScript });
+  editorClaimEl = document.getElementById("editor-claim");
+  // A DIRTY BUFFER claims the part; viewing never does. That is the whole
+  // rule, and it is why this hangs off the editor's dirty state rather than
+  // off selecting a part or opening the Code tab.
+  editor.onDirtyChange(syncClaiming);
 
   onKeys(["part"], render);
+  onKeys(["presence", "part", "selectedPart"], renderClaimChip);
   // Materials can arrive after the part; refresh the material block when they do.
   onKeys(["materials"], () => {
     if (state.part) renderMetrics(state.part);
@@ -85,6 +97,33 @@ export function setTab(name) {
 
 export function isCodeTabActive() {
   return activeTab === "code";
+}
+
+// One decorator, called at the END of every render() — after buildParamControls
+// (which rebuilds every row when the part id or the params_spec JSON changes)
+// AND after syncParamValues (which does not). PRD-008's per-param thread badge
+// has to survive both paths, so it hooks the one place both of them return to
+// rather than either of them.
+let paramDecorator = null;
+
+export function setParamDecorator(fn) {
+  paramDecorator = fn;
+  if (state.part) decorateParams();
+}
+
+/** Re-run the decorator without a params re-render — for when the decorator's
+ *  own data changed (a thread opened) rather than the part's. */
+export function redecorateParams() {
+  decorateParams();
+}
+
+function decorateParams() {
+  if (!paramDecorator) return;
+  try {
+    paramDecorator(paramsPane, state.part || null);
+  } catch (err) {
+    console.error("param decorator failed", err);
+  }
 }
 
 // ------------------------------------------------------------------ banner
@@ -124,6 +163,7 @@ function render() {
     metricsPane.innerHTML = '<div class="pane-note">Select a part to see its metrics.</div>';
     editor.setPart(null, "");
     hideBanner();
+    decorateParams();
     return;
   }
 
@@ -165,6 +205,7 @@ function render() {
   } else {
     hideBanner();
   }
+  decorateParams();
 }
 
 function effectiveValue(part, name, spec) {
@@ -601,6 +642,8 @@ function specNum(value) {
 
 function queueParam(name, value) {
   pending[name] = value;
+  // A control being dragged is the other half of "taken by editing".
+  syncClaiming();
   pendingPartId = state.part ? state.part.id : null;
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(flushParams, 250);
@@ -621,10 +664,19 @@ function flushParams() {
       if (inflight[n] > 1) inflight[n] -= 1;
       else delete inflight[n];
     }
+    syncClaiming();
   };
   patchChain = patchChain.then(async () => {
     try {
-      const result = await api.patchParams(proj, partId, values);
+      let result;
+      try {
+        result = await api.patchParams(proj, partId, values);
+      } catch (err) {
+        // A refused write is offered the override exactly once; the arming
+        // route is single-use, so a second 409 is a real refusal.
+        if (!(await actions.handleWriteConflict(err, partId))) throw err;
+        result = await api.patchParams(proj, partId, values);
+      }
       applyRebuildResult(partId, result, values);
     } catch (err) {
       showBanner(err instanceof ApiError ? err.error : { message: String(err) });
@@ -671,10 +723,17 @@ function applyRebuildResult(partId, result, values) {
 
 // -------------------------------------------------------------- save flow
 
-async function saveScript(partId, script) {
+async function saveScript(partId, script, retrying = false) {
   editor.setSaving(true);
   try {
-    const result = await api.updatePart(state.projectName, partId, { script });
+    let result;
+    try {
+      result = await api.updatePart(state.projectName, partId, { script });
+    } catch (err) {
+      if (retrying || !(await actions.handleWriteConflict(err, partId))) throw err;
+      editor.setSaving(false);
+      return saveScript(partId, script, true);
+    }
     // The server persists the script either way; the editor now matches disk.
     editor.markSaved(script);
     if (state.part && state.part.id === partId) {
@@ -694,6 +753,38 @@ async function saveScript(partId, script) {
 
 export function saveIfDirty() {
   if (state.part && editor.isDirty()) editor.save();
+}
+
+// ------------------------------------------------------------------ claims
+
+/** One rule, one place: we are claiming iff there is an edit in progress —
+ *  an unsaved buffer, or a param write queued or in flight. Presence turns
+ *  that into a per-part claim on the next heartbeat, and drops it as soon as
+ *  it is false: a claim nobody is using teaches people to click Override
+ *  reflexively, which is worse than no claim at all. */
+function syncClaiming() {
+  presence.setClaiming(
+    editor.isDirty() ||
+      Object.keys(pending).length > 0 ||
+      Object.keys(inflight).length > 0
+  );
+}
+
+/** "<label> is editing" above the editor. The claim HOLDER's display label,
+ *  never the raw identity — that is what the tooltip is for. */
+function renderClaimChip() {
+  if (!editorClaimEl) return;
+  const partId = state.part ? state.part.id : null;
+  const claim = partId ? presence.otherClaim(partId) : null;
+  if (!claim) {
+    editorClaimEl.classList.add("hidden");
+    return;
+  }
+  editorClaimEl.textContent = `${presence.labelFor(claim.holder)} is editing`;
+  editorClaimEl.title =
+    `${claim.holder} (${claim.holder_kind}) has ${partId} open. Saving will ` +
+    "offer to override — claims are soft and expire on their own.";
+  editorClaimEl.classList.remove("hidden");
 }
 
 // --------------------------------------------------------------- metrics

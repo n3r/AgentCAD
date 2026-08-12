@@ -1,0 +1,1532 @@
+"""Anchor evidence at creation, anchor *status* at read time (PRD-008 FR1-FR3).
+
+A thread's anchor is immutable: it is what the author pointed at. Where that
+target is *now* is never stored — it is computed on every read, here, into one
+of four states:
+
+``ok``
+    the anchor still points at what it pointed at, by identity.
+``moved``
+    re-matched at a different address; the result carries the new address and
+    the score that earned it. The stored anchor is unchanged.
+``orphaned``
+    the target is gone, or no candidate cleared the tolerance. The thread stays
+    readable and resolvable and keeps its last-known anchor.
+``unverified``
+    **we did not look.** An unbuilt part, no git, a frozen packet. This is a
+    fourth fact, not a synonym for "fine": rendering it as ``ok`` is exactly how
+    a UI ends up drawing a pin on a stale ordinal.
+
+Two rules govern everything below.
+
+**Orphan rather than guess.** A comment pointing at the wrong face is worse
+than a comment pointing at nothing, so an ambiguous best match is an orphan, a
+low-confidence line remap is an orphan, and a lone candidate that only *looks*
+certain because it had no rival is an orphan unless it clears an absolute bar
+on its own (:data:`LONE_AREA_REL`) *and* still touches the same number of faces
+(:func:`_same_neighborhood`). Loosening a tolerance to make a pin appear is the
+one change this module must never take.
+
+This is a strong bias, **not a guarantee**, and the two measured classes are
+both stated wherever a number is, because they are not the same number:
+
+* **a parameter changed** — 2 mis-pins in 2 693 face pairs whose identity is
+  known (0.07%);
+* **a feature was deleted** — 4 mis-pins in 327 faces that no longer exist
+  (1.2%), down from 27 (8.3%) before the adjacency gate below.
+
+The second class is the one an earlier claim of "never" hid: the sweep that
+produced the 2-in-2 693 figure only ever perturbs a *number*, so every face it
+scores still exists somewhere and it cannot say anything about a face that was
+destroyed. **A cut-away face can still re-pin.** The four that do are a square
+pad on a square plate, where the normal, the normalized position, the outline
+and the adjacency are all the same on both faces and only the area share
+differs — by less than the gate. Confirm with ``face_info`` before acting on an
+expensive decision.
+
+**Resolution never calls the kernel and never forces a build.** Listing threads
+on a 40-part project must not rebuild 40 parts. Face signatures are derived in
+*this* process from the two files a build already wrote — ``<key>.acm`` and the
+``<key>.faces.u32`` sidecar — with NumPy. ``agentcad.kernel.acm`` states in its
+own docstring that it has no OCP dependency, and ``core/packet.py``,
+``core/service.py`` and ``core/tools_vision.py`` already read it from the server
+process. Nothing here imports OCP or build123d, directly or transitively.
+
+Two traps this module encodes:
+
+* **``n_faces`` has two definitions, and only one of them defines an ordinal.**
+  ``metrics["n_faces"]`` is ``len(shape.faces())``, which build123d
+  deduplicates by hash; the ``.faces.u32`` sidecar comes from the raw
+  ``TopExp_Explorer`` walk that ``mesh.py`` tessellates in, and does not. The
+  design warns the metric can therefore be *smaller* on a compound or a
+  shared-face shape — **we could not reproduce that**: the two agreed on all 14
+  shapes measured, including a compound of two coincident boxes (changelog
+  0113). Face indices are still validated against ``max(sidecar) + 1`` —
+  :func:`sidecar_face_count` — because the sidecar is what an ordinal *is*, not
+  because the metric was caught disagreeing.
+* **A mesh-derived signature is not the B-rep.** Measured against ``face_info``
+  on a cylinder: on a *planar* face the normal and centroid agree to 1e-6 and
+  the tessellated area is 0.5% low (chord error, always low, never high). On
+  the *closed curved* side face the areas still agree to 0.13% — and the
+  normals do not agree at all, because an area-weighted normal over a surface
+  that wraps a full turn very nearly cancels, while ``face_info`` reports a
+  single ``normal_at(0.5, 0.5)`` sample. No tolerance reconciles those two.
+  It is survivable because the matcher only ever compares a mesh-derived
+  signature against another mesh-derived signature at the same
+  ``MESH_TOLERANCE``: a consistent estimator beats an accurate one. On such
+  faces the estimator is merely *wobbly*, which costs candidacy and yields an
+  orphan rather than a wrong pin. The payload labels these numbers as
+  mesh-derived for the same reason, and ``face_info`` remains the tool for
+  inspecting one face exactly.
+* **A ``proposal_hunk`` anchor reads the persisted ``packet.json``, and only
+  that.** ``service.packets.packet(...)`` regenerates a stale packet — which
+  rebuilds geometry on both sides of the proposal and can move the proposal's
+  own state — so validating or reading one comment would rewrite the evidence
+  it comments on. :func:`stored_packet` is the one door, and a packet that is
+  absent, frozen or unreadable is answered as a *state*, never built.
+"""
+
+from __future__ import annotations
+
+import ast
+import difflib
+import hashlib
+import json
+import struct
+import threading
+from pathlib import Path
+
+import numpy as np
+
+from ..kernel import acm
+from .model import NotFoundError, ValidationError
+from .project import ProjectStore
+
+RESOLUTION = ("ok", "moved", "orphaned", "unverified")
+
+# Statuses that must explain themselves. ``moved`` carries the new address
+# instead, which is the explanation.
+_NEEDS_REASON = ("moved", "orphaned", "unverified")
+_NEEDS_HINT = ("orphaned", "unverified")
+
+# --------------------------------------------------------------- tolerances
+#
+# MEASURED, not guessed (risk R1's spike; every number is in
+# docs/changelog/0113-prd008-anchor-resolution.md). The FIRST run, whose
+# outcome numbers were superseded by the re-measurement further down — its
+# method and its two findings still stand. 11 bundled parts across
+# construction/fasteners/prototyping/rocketry x every numeric parameter x
+# +1%/+10%/+30% = 91 rebuild pairs and 3 206 face pairs, ground truth
+# established independently of this matcher: a chain of <=2% parameter steps,
+# each step matched by mutual-nearest-neighbour on ABSOLUTE centroids (reliable
+# at that step size, and using none of the features below), composed.
+#
+# Two findings set these values, and both contradict the design's guesses:
+#
+# 1. A face ordinal is NOT stable across a parameter change. 90.5% of faces
+#    kept their ordinal, but prototyping/enclosure_lid renumbered 20 of its 44
+#    faces for a 1% change. The matcher is load-bearing, not a fallback.
+# 2. Filtering candidates by area MAKES the matcher mis-pin. Every rival a
+#    filter removes is a rival that would have tripped the ambiguity check, so
+#    the design's `AREA_REL` filter turned orphans into wrong answers: at the
+#    design's five constants the sweep produced 63 mis-pins on faces whose
+#    identity is known, plus 42 matches to faces that no longer existed. Area
+#    is therefore a *final gate on the winner*, never a candidacy filter, and
+#    the ambiguity margin does the safety work.
+#
+# RE-MEASURED after code review (changelog 0123), because the first run's
+# "ZERO mis-pins" did not survive a stricter ground-truth oracle and did not
+# cover the case the review reproduced. Same method, two changes: the whole
+# <=2% chain is retained so truth can be recomputed offline, and each MNN hop
+# now needs a *Lowe ratio test* in both directions (nearest at least 2x nearer
+# than the runner-up) — without it, plain MNN pairs a face with the wrong
+# near-twin on a repeated-feature part and 16 composed hops turn that into
+# confident wrong truth. An ambiguous hop drops the face from the sample rather
+# than guessing, so the oracle costs sample size, never correctness. 30 chains
+# (4 example projects, 11 parts, up to 3 parameters each), 3 102 face pairs at
+# the checkpoints, 2 693 of them with a truth mapping.
+#
+# At the values below, with both lone-candidate gates (the per-ratio lines are
+# the gated ones; an earlier version of this block quoted the *ungated* split,
+# which is why its three numbers summed to 1 481 and its total said 1 451):
+#
+#   +1%   540/949  (56.9%) resolved, 407 orphaned, 2 mis-pinned
+#   +10%  486/879  (55.3%) resolved, 393 orphaned, 0 mis-pinned
+#   +30%  425/865  (49.1%) resolved, 440 orphaned, 0 mis-pinned
+#   all  1 451/2 693 (53.9%) resolved, 1 240 orphaned, 2 mis-pinned
+#
+# plus 409 faces with no truth mapping, of which 146 orphaned and 263 matched
+# something (the oracle drops faces it cannot pair unambiguously, so most of
+# those still exist and were most likely matched correctly).
+#
+# **TWO MIS-PINS REMAIN, and they are not advertised away.** Both are
+# rocketry/nozzle at +1% on `chamber_d`: a body of revolution whose seam faces
+# the oracle pairs one way and the matcher another, at dot ~1.0 and area error
+# ~0.01. One has three candidates and clears the ambiguity margin; one is
+# lone and clears the area gate. Neither is reachable by tightening a
+# tolerance that would not also orphan hundreds of true pairs, and we cannot
+# tell from the data alone which of the two answers is right.
+#
+# MEASURED SEPARATELY, and this is the class the sweep above CANNOT SEE: what
+# happens when a feature is DELETED (changelog 0125). The sweep only ever moves
+# a number, so every face it scores still exists; the case the review and the
+# verification round both reproduced is a face that no longer exists at all,
+# with something else sitting where it was. 67 deletions — a plate+feature
+# family (boss, pad, rib, hole, pocket, counterbore) swept over the sizes that
+# make the deleted face look most like the one under it, plus 13 real deletions
+# in the bundled examples (a hole group, an igniter boss, a footprint recess, a
+# bore chamfer, an inner fillet, countersunk screw holes) — and ground truth
+# from a geometric oracle that uses none of the matcher's features: every
+# triangle centroid of a BEFORE face is tested against the AFTER mesh with an
+# exact point-to-triangle distance, so "destroyed" means no part of the face is
+# on the new boundary and the only correct answer is `orphaned`.
+#
+#   327 destroyed faces   300 orphaned (91.7%), 27 MIS-PINNED   before
+#                         323 orphaned (98.8%),  4 MIS-PINNED   after
+#   515 surviving faces   375 resolved (72.8%), 0 mis-pinned, unchanged by the
+#                         gate that closed the 23
+#
+# The gate is :func:`_same_neighborhood` and it costs NOTHING on the parameter
+# class: all 1 144 correct lone matches there keep their neighbor count, so
+# the numbers above are the same with it and without it. The four survivors are
+# a square pad on a square plate — same normal, same normalized position, same
+# outline, same adjacency, area share 0.13 apart — and there is nothing left in
+# a mesh-derived signature to separate those. So the contract this module
+# states is "orphan rather than guess; mis-pins are rare (2 in 2 693 across a
+# parameter change, 4 in 327 when a feature is deleted) rather than
+# impossible", and every surface says both numbers or a bound covering both
+# (AGENTS.md, tools_comments._FACE_ODDS, docs/agent-api.md,
+# docs/architecture.md, docs/user-guide.md, the PRD's AC2 divergence).
+#
+# Two candidates that did NOT earn their place, on the same data:
+#   * circularity (4*pi*A/P^2, a dimensionless outline descriptor): caught 16
+#     of the 27 deletion mis-pins on its own, added ZERO on top of adjacency,
+#     and cost 28 resolutions on the parameter class at its best bar (0.2).
+#     Not shipped — a feature that only duplicates another one's catches is
+#     dead weight that looks like a safety net.
+#   * the adjacency gate applied to every winner instead of only to a lone one:
+#     identical on the deletion class, and it orphans 4 true matches on
+#     injector_plate.n_orifices, where the parameter itself changes the
+#     topology. Gates go on a lone winner, never on candidacy.
+#
+# Loosening any of these to make a pin appear is still the one change this
+# module must never take.
+
+# True pairs went as low as dot 0.9724 (a rotating face under a 30% angle
+# change); rivals below this are a different surface. Kept deliberately loose:
+# a true face filtered OUT of the pool is a face that cannot trip the ambiguity
+# check, which is how a lone rival becomes a mis-pin.
+NORMAL_DOT = 0.99
+# The normalized-bbox centroid moved at most 0.1615 for a true pair (p99
+# 0.1528 at +30%). Candidacy radius, generous on purpose for the same reason.
+UVW_DIST = 0.15
+# Best-minus-runner-up. The design guessed 0.05, which mis-pinned 60 faces;
+# 0.15 still mis-pinned one; 0.20 was the best of them. This constant is what
+# the orphan-rather-than-guess bias rests on WHEN THERE IS A RIVAL — see
+# LONE_AREA_REL for the case where there is not, which is the case it cannot
+# reach and where the review found a mis-pin.
+AMBIGUITY_MARGIN = 0.20
+# A FINAL GATE on the winner, not a filter: a face whose share of the shape's
+# tessellated area differs by more than this is refused even when it is the
+# only candidate (measured: two such matches in the run, one of them a 1 000x
+# jump, both on faces that no longer existed). It compares the *fraction* of
+# total area, not mm^2, for the same reason ``bbox_uvw`` exists: a parameter
+# that scales the part multiplies every absolute area and moves no fraction.
+AREA_REL = 0.5
+# The same gate, tightened, for a candidate that is ALONE in the pool.
+#
+# This is the review's finding, and it is the hole the paragraph above did not
+# see: ``AMBIGUITY_MARGIN`` is what "orphan, never mis-pin" actually rests on,
+# and it cannot fire when there is nothing to compare the winner against. A
+# lone survivor was therefore accepted for being the only one left, at a
+# reported margin of ``best - 0`` — near-maximal confidence for evidence that
+# was never corroborated. The reproduction: a boss widened until its top face
+# has the same normal and the same normalized position as the plate top
+# underneath it, then cut away; the thread moved onto the plate at 0.87, with
+# an area share off by 0.43 — inside the 0.5 gate.
+#
+# 0.30 is measured, on the re-run described at the top of this block. Over the
+# 1 174 lone-candidate matches whose truth is known, area-share error runs
+# median 0.025, p90 0.194, p95 0.218, p99 0.322, max 0.432; 0.30 therefore
+# keeps ~98% of them, refuses the 0.434 mis-pin, and costs 1.1 points of
+# overall resolution (55.0% -> 53.9%). **The headroom is thin and it is stated
+# rather than hidden**: AC2's own fixture — widening a plate under an unchanged
+# boss — is a *true* pair at 0.2739, because ``area_frac`` is only invariant
+# when the WHOLE shape scales, and a change to one feature moves every other
+# face's share. Anything below 0.28 orphans that pin.
+#
+# A *score* bar cannot do this job. Correct lone matches score down to 0.7407
+# (p1 0.85) and the mis-pin scored 0.8697, so a score bar that caught it would
+# orphan a fifth of the true ones.
+#
+# **AND IT IS NOT ENOUGH BY ITSELF, which is what the verification round
+# showed.** Widen the same boss a little further — r=20 on a 40 mm plate — and
+# the plate top left behind is 0.237 away in area share, INSIDE this bar, and
+# the thread moved onto it at confidence 0.9289 (also at r=20/h=2, r=19.5/h=1,
+# r=20/h=4). **Tightening this bar is not the answer, measured**: on the
+# deletion sweep, alone, it mis-pins 27 of 327 at 0.30, 21 at 0.20 and still 14
+# at 0.10 — while 0.20 costs 84 of the parameter class's 1 451 resolutions and
+# 6 of the deletion class's 375 surviving faces. The area share is the last
+# *metric* feature, and every metric feature is one the replacement face
+# reproduces by construction — same surface, same place. It takes a non-metric
+# one: see :func:`_same_neighborhood`, which is kept as a second gate rather
+# than a replacement, because the two are not redundant (0.5 + adjacency
+# mis-pins 7 of 327 where 0.30 + adjacency mis-pins 4).
+LONE_AREA_REL = 0.30
+#
+# The design's fifth constant, ``STICKY_MARGIN = 0.02`` — keep the stored
+# ordinal when it scores within 0.02 of the winner — is deliberately NOT
+# implemented. It is unreachable: the measured ambiguity margin is 0.20, so any
+# rival close enough to be a sticky tie has already made the match ambiguous,
+# and an ambiguous match is an orphan. It changed no outcome in the spike
+# because it cannot. Dead code that looks like a safety net is worse than no
+# safety net.
+# A partially-surviving line range below this mapped fraction is an orphan,
+# never a low-quality "moved".
+LINE_CONFIDENCE_MIN = 0.6
+
+# The context lines a script_range anchor keeps on each side, used to
+# disambiguate a snippet that occurs more than once.
+CONTEXT_LINES = 3
+
+_SIG_SUFFIX = ".facesig.json"
+# 1: area/centroid/normal/bbox_uvw. 2: + neighbors. A cached sidecar
+# at an older version is recomputed rather than read, because a missing feature
+# and a face that genuinely has none are the same JSON.
+_SIG_VERSION = 2
+
+_TABLE_LOCK = threading.RLock()
+_TABLE_CACHE: dict[str, list[dict]] = {}
+_TABLE_CACHE_MAX = 64
+
+
+# --------------------------------------------------------------- the result
+
+
+def make_resolution(status: str, **fields) -> dict:
+    """The one constructor for a resolution block.
+
+    Enforces the vocabulary at the point of construction (PRD-003's
+    ``make_item`` precedent): a status outside :data:`RESOLUTION` is a
+    ``ValueError``, and so is an unexplained non-``ok`` status. A caller who
+    cannot say *why* a thread lost its target has not resolved anything.
+    """
+    if status not in RESOLUTION:
+        raise ValueError(
+            f"unknown resolution status {status!r}; expected one of "
+            f"{', '.join(RESOLUTION)}"
+        )
+    if status in _NEEDS_REASON and not fields.get("reason"):
+        raise ValueError(f"resolution status {status!r} requires a reason")
+    if status in _NEEDS_HINT and not fields.get("hint"):
+        raise ValueError(
+            f"resolution status {status!r} requires a hint: a reader told only "
+            "that something is wrong will render it as 'fine'"
+        )
+    return {"status": status,
+            **{key: value for key, value in fields.items() if value is not None}}
+
+
+# ------------------------------------------------------------ the face table
+
+
+def sidecar_face_count(face_ids: bytes | np.ndarray) -> int:
+    """``max(sidecar) + 1`` — the face-index authority (R2).
+
+    NOT ``metrics.n_faces``: that is ``len(shape.faces())``, deduplicated by
+    hash, and it is a *count of distinct faces*, not the length of the walk
+    ordinals are positions in. The two happened to agree on every shape we
+    measured; that is not a reason to validate against the one that is only
+    incidentally right.
+    """
+    ids = _face_ids(face_ids)
+    if ids is None or ids.size == 0:
+        return 0
+    return int(ids.max()) + 1
+
+
+def face_table(acm_bytes: bytes, face_ids: bytes | np.ndarray) -> list[dict]:
+    """One row per face ordinal, from the mesh and its triangle→face sidecar.
+
+    Per face: ``area`` (Σ triangle areas), ``centroid`` (area-weighted mean of
+    triangle centroids), ``normal`` (normalized area-weighted sum of triangle
+    normals), ``bbox_uvw`` (the centroid inside the *whole shape's* bounding
+    box as three fractions in [0, 1]; a degenerate axis maps to 0.5) and
+    ``neighbors`` (how many other faces share a boundary edge with it).
+
+    The last is :func:`_boundary`'s, and it is the only feature here that is
+    not "where the face is and how big it is" — which is what a face that
+    *replaces* a destroyed one reproduces by construction. See
+    :func:`_same_neighborhood`.
+
+    An ordinal the tessellator emitted no triangle for still consumes its slot,
+    with ``present: False`` — ordinals are explorer positions, so dropping one
+    would shift every ordinal after it. A mesh and a sidecar that disagree
+    about the triangle count are not a table: ``[]``, and the caller answers
+    ``unverified``.
+    """
+    ids = _face_ids(face_ids)
+    if ids is None or ids.size == 0:
+        return []
+    try:
+        mesh = acm.parse(acm_bytes)
+    except (ValueError, struct.error):
+        return []
+    positions = np.asarray(mesh["positions"], dtype=np.float64)
+    indices = np.asarray(mesh["indices"], dtype=np.int64)
+    if indices.shape[0] != ids.size or positions.shape[0] == 0:
+        return []
+
+    tri = positions[indices]                       # (nt, 3, 3)
+    edge1 = tri[:, 1] - tri[:, 0]
+    edge2 = tri[:, 2] - tri[:, 0]
+    cross = np.cross(edge1, edge2)
+    areas = 0.5 * np.linalg.norm(cross, axis=1)
+    centroids = tri.mean(axis=1)
+
+    n_faces = int(ids.max()) + 1
+    face_area = np.bincount(ids, weights=areas, minlength=n_faces)
+    face_centroid = np.stack(
+        [np.bincount(ids, weights=areas * centroids[:, ax], minlength=n_faces)
+         for ax in range(3)],
+        axis=1,
+    )
+    # Triangle normals are already area-scaled (|cross| == 2 * area), so a
+    # plain sum is the area-weighted sum.
+    face_normal = np.stack(
+        [np.bincount(ids, weights=cross[:, ax], minlength=n_faces)
+         for ax in range(3)],
+        axis=1,
+    )
+
+    lo = positions.min(axis=0)
+    hi = positions.max(axis=0)
+    span = hi - lo
+    neighbors = _boundary(positions, indices, ids, n_faces)
+
+    rows = []
+    for index in range(n_faces):
+        area = float(face_area[index])
+        if area <= 0.0:
+            rows.append({"index": index, "present": False, "area": 0.0,
+                         "centroid": [0.0, 0.0, 0.0],
+                         "normal": [0.0, 0.0, 0.0],
+                         "bbox_uvw": [0.5, 0.5, 0.5], "neighbors": 0})
+            continue
+        centroid = face_centroid[index] / area
+        normal = face_normal[index]
+        length = float(np.linalg.norm(normal))
+        unit = (normal / length) if length > 0 else np.zeros(3)
+        uvw = [
+            float((centroid[ax] - lo[ax]) / span[ax]) if span[ax] > 1e-12 else 0.5
+            for ax in range(3)
+        ]
+        rows.append({
+            "index": index,
+            "present": True,
+            "area": area,
+            "centroid": [float(v) for v in centroid],
+            "normal": [float(v) for v in unit],
+            "bbox_uvw": uvw,
+            "neighbors": int(neighbors[index]),
+        })
+    return rows
+
+
+def _boundary(positions: np.ndarray, indices: np.ndarray, ids: np.ndarray,
+              n_faces: int) -> np.ndarray:
+    """How many other faces each face shares a B-rep edge with, from the
+    triangles alone.
+
+    An edge used by exactly *one* triangle **of its own face** is on that
+    face's boundary; the face id is part of the edge key because two faces can
+    index the same vertex (a hand-built mesh does, and dropping the id would
+    cancel their boundaries against each other).
+
+    Two boundary edges belong to the same B-rep edge when their endpoints
+    coincide *in space*. That is an exact float comparison on purpose: OCCT
+    triangulates a shared edge from one discretization, so both faces write
+    identical f32 nodes and the ACM round-trip is lossless. A pair that
+    somehow disagreed in the last bit would cost the two faces a neighbor each
+    — an under-count, which makes the gate that reads this stricter rather than
+    looser, and which the measurement would have shown as a resolution loss
+    (it showed none: 1 144 of 1 144 correct lone matches kept their count).
+    """
+    neighbors = np.zeros(n_faces, dtype=np.int64)
+    if indices.size == 0:
+        return neighbors
+
+    edges = np.concatenate([indices[:, [0, 1]], indices[:, [1, 2]],
+                            indices[:, [2, 0]]], axis=0)
+    edge_face = np.concatenate([ids, ids, ids])
+    keyed = np.column_stack([edge_face, np.sort(edges, axis=1)])
+    _uniq, inverse, counts = np.unique(keyed, axis=0, return_inverse=True,
+                                       return_counts=True)
+    lone = counts[inverse.reshape(-1)] == 1
+    edges, edge_face = edges[lone], edge_face[lone]
+    if edges.size == 0:
+        return neighbors
+
+    # Canonical endpoint order, so one edge keys the same from either face.
+    first, second = positions[edges[:, 0]], positions[edges[:, 1]]
+    swap = np.zeros(len(edges), dtype=bool)
+    tie = np.ones(len(edges), dtype=bool)
+    for axis in range(3):
+        swap |= tie & (first[:, axis] > second[:, axis])
+        tie &= first[:, axis] == second[:, axis]
+    lower = np.where(swap[:, None], second, first)
+    upper = np.where(swap[:, None], first, second)
+    _shared, inverse = np.unique(np.column_stack([lower, upper]), axis=0,
+                                 return_inverse=True)
+
+    inverse = inverse.reshape(-1)
+    order = np.argsort(inverse, kind="stable")
+    grouped = inverse[order]
+    starts = np.flatnonzero(np.r_[True, grouped[1:] != grouped[:-1]])
+    sizes = np.diff(np.r_[starts, len(grouped)])
+    pairs: list[np.ndarray] = []
+    twins = starts[sizes == 2]
+    if twins.size:
+        left, right = edge_face[order[twins]], edge_face[order[twins + 1]]
+        pairs.append(np.column_stack([left, right]))
+        pairs.append(np.column_stack([right, left]))   # adjacency is symmetric
+    for start, size in zip(starts[sizes > 2], sizes[sizes > 2]):
+        members = np.unique(edge_face[order[start:start + size]])
+        pairs.append(np.array([(a, b) for a in members for b in members]))
+    if pairs:
+        both = np.concatenate(pairs)
+        both = both[both[:, 0] != both[:, 1]]
+        if both.size:
+            distinct = np.unique(both, axis=0)
+            neighbors = np.bincount(distinct[:, 0], minlength=n_faces)
+    return neighbors
+
+
+def _face_ids(face_ids: bytes | np.ndarray) -> np.ndarray | None:
+    if isinstance(face_ids, np.ndarray):
+        return face_ids.astype(np.int64, copy=False)
+    if not isinstance(face_ids, (bytes, bytearray, memoryview)):
+        return None
+    raw = bytes(face_ids)
+    if not raw or len(raw) % 4:
+        return None
+    return np.frombuffer(raw, dtype="<u4").astype(np.int64)
+
+
+# ------------------------------------------------------- cached tables per part
+
+
+def mesh_key(service, proj: str, part: str) -> str | None:
+    """The cache key a build *would* use, computed without building.
+
+    ``service._cache_key_for`` hashes the script text, the params and the
+    densities — it never touches the kernel. Returns ``None`` for a part that
+    is not in the manifest.
+    """
+    try:
+        record = service.store.get_part(proj, part)
+        return service._cache_key_for(proj, record)
+    except (NotFoundError, ValidationError, OSError):
+        # A part that is gone, a script file that is gone, a material the
+        # project no longer defines: all "no key", all resolved as a state by
+        # the caller rather than raised out of somebody's comment list.
+        return None
+
+
+def signature_table(service, proj: str, part: str,
+                    key: str | None = None) -> tuple[str | None, list[dict]]:
+    """``(cache_key, face_table)`` for a part, or ``(key, [])`` when the part
+    has not been built at its current inputs.
+
+    Never calls ``service.mesh_info`` or ``service._ensure_built`` — both
+    build, and a comment list must stay a cheap read (design Decision 4). The
+    table is memoized in-process by cache key and persisted beside the mesh as
+    ``<key>.facesig.json``, which PRD-004's determinism stage does not compare
+    (it names an explicit ``(".acm", ".faces.u32")`` tuple).
+    """
+    key = mesh_key(service, proj, part) if key is None else key
+    if not key:
+        return None, []
+    with _TABLE_LOCK:
+        cached = _TABLE_CACHE.get(key)
+    if cached is not None:
+        return key, cached
+
+    cache = service.store.cache_dir(proj)
+    mesh_path = cache / f"{key}.acm"
+    sidecar_path = cache / f"{key}.faces.u32"
+    sig_path = cache / f"{key}{_SIG_SUFFIX}"
+
+    table: list[dict] = []
+    if sig_path.is_file():
+        try:
+            stored = json.loads(sig_path.read_text(encoding="utf-8"))
+            # A sidecar written by an older version of this module is missing
+            # whatever the version after it added, and a row with no
+            # ``neighbors`` key is indistinguishable from a face with no
+            # neighbors. Version it and recompute the rest — the mesh it is
+            # derived from is right there.
+            if isinstance(stored, dict) and stored.get("v") == _SIG_VERSION \
+                    and isinstance(stored.get("faces"), list):
+                table = stored["faces"]
+        except (OSError, json.JSONDecodeError):
+            table = []
+    if not table:
+        if not (mesh_path.is_file() and sidecar_path.is_file()):
+            return key, []
+        try:
+            table = face_table(mesh_path.read_bytes(), sidecar_path.read_bytes())
+        except OSError:
+            return key, []
+        if table:
+            _persist(sig_path, table)
+    if table:
+        with _TABLE_LOCK:
+            if len(_TABLE_CACHE) >= _TABLE_CACHE_MAX:
+                _TABLE_CACHE.clear()
+            _TABLE_CACHE[key] = table
+    return key, table
+
+
+def _persist(path: Path, table: list[dict]) -> None:
+    try:
+        ProjectStore._atomic_write(
+            path, json.dumps({"v": _SIG_VERSION, "faces": table}).encode())
+    except OSError:
+        pass  # a read-only or full cache directory must not break a listing
+
+
+def forget_tables() -> None:
+    """Drop the in-process table cache (tests, and a long-lived process that
+    has churned through many cache keys)."""
+    with _TABLE_LOCK:
+        _TABLE_CACHE.clear()
+
+
+# ------------------------------------------------------------- the face matcher
+
+
+def signature_of(row: dict, key: str, n_faces: int,
+                 whole_area: float | None = None) -> dict:
+    """The stored evidence for a face.
+
+    Two halves, on purpose. What a *human or an agent* reads: the absolute
+    centroid, normal and tessellated area ("the 41.9 mm² face at z = 60") —
+    these are what ``face_info`` would show and what a payload is for. What the
+    *matcher* uses: ``bbox_uvw`` and ``area_frac``, both scale-invariant,
+    because a parameter that scales the part moves every absolute number and
+    neither of these — plus ``neighbors``, which says what the face *touches*
+    rather than where it sits, and is the only evidence left when a face is
+    destroyed and something else takes its place (:func:`match_face`).
+    """
+    total = row["area"] if not whole_area else whole_area
+    return {
+        "centroid": [round(v, 6) for v in row["centroid"]],
+        "normal": [round(v, 6) for v in row["normal"]],
+        "area_mm2": round(row["area"], 6),
+        "area_frac": round(row["area"] / total, 9) if total > 0 else 0.0,
+        "bbox_uvw": [round(v, 6) for v in row["bbox_uvw"]],
+        "neighbors": int(row.get("neighbors", 0)),
+        "n_faces": n_faces,
+        "mesh_key": key,
+    }
+
+
+def total_area(table: list[dict]) -> float:
+    return float(sum(row["area"] for row in table if row.get("present")))
+
+
+def match_face(signature: dict,
+               table: list[dict]) -> tuple[dict | None, float, float, str | None]:
+    """``(row, score, margin, refusal)`` — the winner, or why there is none.
+
+    Candidacy is normal + normalized position only. Both radii are deliberately
+    generous: every rival that stays in the pool is a rival that can trip the
+    ambiguity check, and the spike measured that *narrowing* candidacy is what
+    produces mis-pins. The winner must then clear the runner-up by
+    :data:`AMBIGUITY_MARGIN` and survive the area gate.
+
+    **A lone candidate is the case that has no ambiguity check at all**, and it
+    is where the review found a mis-pin: with nothing to beat, "only survivor"
+    was treated as "certain", at a reported margin of ``best - 0``. Such a
+    winner is held to :data:`LONE_AREA_REL` instead of :data:`AREA_REL` — a
+    tighter *absolute* bar on the one feature that still carries information,
+    because a face that replaces a destroyed one is by construction at the same
+    normal and position. A ``margin`` reported alongside a single candidate
+    means "against no rival"; it is not a confidence.
+
+    ``refusal`` is ``"no_candidate"``, ``"ambiguous"`` or ``"area_mismatch"``
+    when the answer is "no face", and ``None`` when ``row`` is the answer. Six
+    identical faces of a cube are genuinely indistinguishable by this signature
+    once the part rotates, and the contract says orphan, never guess.
+
+    The stored ordinal is deliberately not an input: see the note on
+    ``STICKY_MARGIN`` above — under the measured ambiguity margin a tie-break
+    toward it cannot fire, so taking it would only imply an influence it does
+    not have. Whether the winner *is* the stored ordinal is the caller's
+    question, and the difference between ``ok`` and ``moved``.
+    """
+    normal = np.asarray(signature.get("normal") or [0.0, 0.0, 0.0], dtype=float)
+    uvw = np.asarray(signature.get("bbox_uvw") or [0.5, 0.5, 0.5], dtype=float)
+    frac = signature.get("area_frac")
+    area = float(signature.get("area_mm2") or 0.0)
+    whole = total_area(table)
+
+    scored: list[tuple[float, dict, float]] = []
+    for row in table:
+        if not row.get("present"):
+            continue
+        dot = float(np.dot(normal, np.asarray(row["normal"], dtype=float)))
+        if dot < NORMAL_DOT:
+            continue
+        theirs_uvw = np.asarray(row["bbox_uvw"], dtype=float)
+        dist = float(np.linalg.norm(uvw - theirs_uvw))
+        if dist > UVW_DIST:
+            continue
+        if frac is None:
+            # A signature from before ``area_frac`` existed: fall back to the
+            # absolute comparison, which is right whenever nothing scaled.
+            mine, theirs = area, float(row["area"])
+        else:
+            mine = float(frac)
+            theirs = float(row["area"]) / whole if whole > 0 else 0.0
+        area_rel = abs(theirs - mine) / max(mine, theirs, 1e-12)
+        score = (0.5 * dot
+                 + 0.3 * (1.0 - min(area_rel, 1.0))
+                 + 0.2 * (1.0 - dist / UVW_DIST))
+        scored.append((score, row, area_rel))
+
+    if not scored:
+        return None, 0.0, 0.0, "no_candidate"
+    scored.sort(key=lambda item: (-item[0], item[1]["index"]))
+    best_score, best, best_area_rel = scored[0]
+    runner_up = scored[1][0] if len(scored) > 1 else 0.0
+    margin = best_score - runner_up
+    if len(scored) > 1 and margin < AMBIGUITY_MARGIN:
+        return None, best_score, margin, "ambiguous"
+    # A lone candidate never met the ambiguity check — there was nothing for it
+    # to beat — so the area gate is the only evidence left and it is tightened
+    # accordingly (:data:`LONE_AREA_REL`). Read the reported ``margin`` for such
+    # a match as "against no rival", not as confidence.
+    if best_area_rel > (AREA_REL if len(scored) > 1 else LONE_AREA_REL):
+        return None, best_score, margin, "area_mismatch"
+    if len(scored) == 1 and not _same_neighborhood(signature, best):
+        return None, best_score, margin, "topology_mismatch"
+    return best, best_score, margin, None
+
+
+def _same_neighborhood(signature: dict, row: dict) -> bool:
+    """Does the winner touch as many faces as the anchored one did?
+
+    The one comparison in this module that is not a tolerance. A count of
+    adjacent faces is an integer read off the tessellation, it does not move
+    when a parameter scales the part, and — measured — it does not move when a
+    parameter reshapes it either: all 1 144 correct lone matches in the
+    re-measurement kept theirs. So "different" is evidence, not noise.
+
+    ``None`` on either side is an anchor written before the count existed (or a
+    hand-built table); there is nothing to compare, and manufacturing a refusal
+    out of a missing field would orphan every thread the previous version
+    wrote.
+    """
+    mine, theirs = signature.get("neighbors"), row.get("neighbors")
+    if not isinstance(mine, int) or not isinstance(theirs, int):
+        return True
+    return mine == theirs
+
+
+# ---------------------------------------------------------- script snippets
+
+
+def snippet_of(text: str, start: int, end: int) -> dict:
+    """The evidence a ``script_range`` anchor stores: the exact lines, their
+    sha256, and :data:`CONTEXT_LINES` lines of context each side.
+
+    The snippet is capped at ``MAX_SNIPPET_LINES``/``MAX_SNIPPET_BYTES``; a
+    range longer than the cap keeps its head, which is enough for the exact
+    search that wins AC3 and bounds what a thread document can cost.
+    """
+    from .comments import MAX_SNIPPET_BYTES, MAX_SNIPPET_LINES
+
+    lines = text.splitlines()
+    body = lines[start - 1:end][:MAX_SNIPPET_LINES]
+    while body and len("\n".join(body).encode("utf-8")) > MAX_SNIPPET_BYTES:
+        body.pop()
+    snippet = "\n".join(body)
+    return {
+        "snippet": snippet,
+        "snippet_sha256": hashlib.sha256(snippet.encode("utf-8")).hexdigest(),
+        "before": "\n".join(lines[max(0, start - 1 - CONTEXT_LINES):start - 1]),
+        "after": "\n".join(lines[end:end + CONTEXT_LINES]),
+    }
+
+
+def find_snippet(lines: list[str], snippet: list[str], before: list[str],
+                 after: list[str]) -> list[int]:
+    """Every 0-based offset where *snippet* occurs exactly, narrowed by — and
+    for a lone occurrence, gated on — the stored context.
+
+    Exact string work only, no heuristics: this is where AC3 is won.
+
+    **A single surviving copy is not evidence that it is the right one.** The
+    context used to be consulted only to break a tie between two or more
+    copies, so deleting the anchored occurrence of a snippet that appeared
+    twice left the *other* one as "the only match", and the resolver reported
+    ``moved`` at confidence 1.0 — the script-anchor twin of the lone-candidate
+    face mis-pin, and refused here the same way: a lone hit has to answer to
+    the stored context, or it is not a hit.
+
+    "Corroborated" first meant **one side, not both** — a real edit around a
+    moved block routinely rewrites the line after it while the lines before it
+    stand — and the verification round showed that is too weak, for a reason
+    the first fix had backwards. Duplicated blocks in real code end the same
+    way (``    return shell``) far more often than they begin the same way, so
+    the surviving twin of a deleted block coincides on one side *routinely*,
+    and one agreeing side was enough to pin it at confidence 1.0 while the
+    other side flatly contradicted. A side that disagrees is evidence, not a
+    missing vote.
+
+    So: a lone hit must be contradicted by **nothing**. A side that stored no
+    context — the top or the bottom of a file, or an anchor written before
+    context existed — is not checked, because there is nothing in it to check;
+    such an anchor keeps the old behavior and is the one shape this gate cannot
+    speak about. **With rivals the rule is unchanged**: context is a tie-break,
+    because there the ambiguity itself already stops a wrong unique answer.
+
+    Refusing here is not the end of the line, and that is what makes the strict
+    rule cheap: :func:`_resolve_script_range` falls through to the tier-2 line
+    map against the blob at the anchor's own head. A block that stayed in its
+    neighborhood with one side rewritten is precisely the case a diff answers
+    correctly; a block that moved across the file keeps neither side and was
+    refused under the old rule too.
+    """
+    if not snippet:
+        return []
+    span = len(snippet)
+    hits = [i for i in range(len(lines) - span + 1)
+            if lines[i:i + span] == snippet]
+    if not hits:
+        return []
+    scored = []
+    for offset in hits:
+        head = lines[max(0, offset - len(before)):offset]
+        tail = lines[offset + span:offset + span + len(after)]
+        # Only a side that HAS stored context can agree or disagree; an empty
+        # side would otherwise score a free point on every candidate.
+        agree = bool(before and head == before) + bool(after and tail == after)
+        against = bool(before and head != before) + bool(after and tail != after)
+        scored.append((agree, against, offset))
+    if len(hits) == 1:
+        return [] if scored[0][1] else hits
+    best = max(agree for agree, _against, _offset in scored)
+    if best == 0:
+        # Nothing corroborates either copy: the ambiguity the caller already
+        # treats as "no unique answer".
+        return hits
+    return [offset for agree, _against, offset in scored if agree == best]
+
+
+def line_map(old: list[str], new: list[str], start: int,
+             end: int) -> tuple[int, int, float] | None:
+    """Map the 1-based inclusive range ``[start, end]`` from *old* to *new*.
+
+    ``difflib`` opcodes: ``equal`` blocks map by offset. A range wholly inside
+    an equal block maps exactly (confidence 1.0); a range that survives
+    partially maps over the span its surviving lines cover, with the mapped
+    fraction as the confidence. A range with no surviving line returns
+    ``None`` — the caller orphans it.
+    """
+    mapping: dict[int, int] = {}
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            None, old, new, autojunk=False).get_opcodes():
+        if tag == "equal":
+            for offset in range(i2 - i1):
+                mapping[i1 + offset] = j1 + offset
+    wanted = [index for index in range(start - 1, end)]
+    mapped = [mapping[index] for index in wanted if index in mapping]
+    if not mapped:
+        return None
+    return min(mapped) + 1, max(mapped) + 1, len(mapped) / len(wanted)
+
+
+# --------------------------------------------------------------- validation
+
+
+def validate_face(service, proj: str, fields: dict) -> dict:
+    """FR1's face rules, against the sidecar — never against a metric.
+
+    Refuses an unbuilt part (with the hint that says what to do about it), a
+    reference part (an imported STL is one welded mesh face with no surface,
+    and ``handlers/reference.py`` reports a hardcoded ``n_faces: 1``), and an
+    index outside ``max(sidecar) + 1``. Stores the signature the matcher will
+    re-identify the face by.
+    """
+    part = _require_part(service, proj, fields.get("part"))
+    record = service.store.get_part(proj, part)
+    if record.kind != "script":
+        raise ValidationError(
+            f"part {part!r} is a {record.kind} part: an imported mesh is one "
+            "welded face with no surface, so it cannot carry a face anchor",
+            {"part": part, "kind": record.kind},
+        )
+    index = fields.get("face_index")
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        raise ValidationError(
+            "anchor.face_index must be a non-negative integer",
+            {"face_index": index},
+        )
+    key, table = signature_table(service, proj, part)
+    if not table:
+        raise ValidationError(
+            f"part {part!r} has no built mesh at its current parameters, so "
+            "there is no face to anchor to — build the part first",
+            {"part": part, "hint": "call get_part or rebuild_part, then retry"},
+        )
+    if index >= len(table):
+        raise ValidationError(
+            f"face_index {index} is out of range: part {part!r} has "
+            f"{len(table)} faces",
+            {"part": part, "face_index": index, "n_faces": len(table)},
+        )
+    row = table[index]
+    if not row["present"]:
+        raise ValidationError(
+            f"face {index} of part {part!r} has no tessellated area, so there "
+            "is nothing to point at",
+            {"part": part, "face_index": index},
+        )
+    return {
+        "part": part,
+        "face_index": index,
+        "signature": signature_of(row, key or "", len(table), total_area(table)),
+    }
+
+
+def validate_script_range(service, proj: str, fields: dict) -> dict:
+    """FR1's line rules, against the current script, plus the evidence tier 1
+    resolves with: the exact snippet, its sha256 and its context."""
+    part = _require_part(service, proj, fields.get("part"))
+    record = service.store.get_part(proj, part)
+    if record.kind != "script":
+        raise ValidationError(
+            f"part {part!r} is a {record.kind} part and has no script",
+            {"part": part, "kind": record.kind},
+        )
+    start = _line_number(fields.get("start"), "anchor.start")
+    end = _line_number(fields.get("end"), "anchor.end")
+    text = service.store.read_script(proj, part)
+    total = len(text.splitlines())
+    if end < start:
+        raise ValidationError(
+            f"anchor.end ({end}) is before anchor.start ({start})",
+            {"start": start, "end": end},
+        )
+    if end > total:
+        raise ValidationError(
+            f"lines {start}-{end} run past the end of part {part!r}'s script "
+            f"({total} lines)",
+            {"part": part, "start": start, "end": end, "lines": total},
+        )
+    return {"part": part, "start": start, "end": end,
+            **snippet_of(text, start, end)}
+
+
+def validate_proposal_hunk(service, proj: str, fields: dict) -> dict:
+    """FR1's hunk rules, against the **persisted** ``packet.json`` only.
+
+    A hunk anchor points at a *measurement*, so the measurement must already
+    exist: an absent packet is a ``validation_error`` telling the caller to
+    build one, never a build. Captures the evidence Decision 8 re-maps by —
+    the hunk's header byte-for-byte, and the generation it was read from.
+    """
+    store = _proposal_store(service)
+    if store is None:
+        raise ValidationError(
+            "this server has no change proposals (the pack needs git), so "
+            "there is no review packet to anchor a thread to",
+            {"hint": "anchor to a script_range on the part instead"},
+        )
+    pid = _proposal_id(fields.get("proposal"))
+    try:
+        store.load(proj, pid)
+    except (NotFoundError, ValidationError) as exc:
+        raise ValidationError(f"unknown proposal {pid!r}",
+                              {"proposal": pid}) from exc
+    packet = stored_packet(service, proj, pid)
+    if packet is None:
+        raise ValidationError(
+            f"proposal {pid} has no review packet on disk, so there is no "
+            "hunk to point at",
+            {"proposal": pid,
+             "hint": "call proposal_packet first — a thread anchors to a diff "
+                     "that has been measured, and reading one never builds a "
+                     "packet"},
+        )
+    diffs = packet_diffs(packet)
+    file = fields.get("file")
+    if not isinstance(file, str) or file not in diffs:
+        raise ValidationError(
+            f"proposal {pid}'s review packet has no script diff for {file!r}",
+            {"proposal": pid, "file": file, "files": sorted(diffs)},
+        )
+    diff = diffs[file]
+    if diff.get("truncated") or diff.get("unified") is None:
+        raise ValidationError(
+            f"the diff for {file} in proposal {pid} was truncated (too large "
+            "to keep), so its hunks carry no reviewable text",
+            {"proposal": pid, "file": file, "truncated": True},
+        )
+    hunks = [hunk for hunk in (diff.get("hunks") or []) if isinstance(hunk, dict)]
+    index = fields.get("hunk")
+    if isinstance(index, bool) or not isinstance(index, int) \
+            or not 0 <= index < len(hunks):
+        raise ValidationError(
+            f"anchor.hunk must be a hunk index of {file} in proposal {pid}: "
+            f"0 <= hunk < {len(hunks)}",
+            {"proposal": pid, "file": file, "hunk": index, "hunks": len(hunks)},
+        )
+    header = hunks[index].get("header")
+    if not isinstance(header, str) or not header:
+        raise ValidationError(
+            f"hunk {index} of {file} in proposal {pid} has no header to "
+            "identify it by",
+            {"proposal": pid, "file": file, "hunk": index},
+        )
+    return {"proposal": pid, "file": file, "hunk": index,
+            "hunk_header": header, "generation": packet.get("generation") or ""}
+
+
+def _proposal_id(value: object) -> str:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValidationError(
+            "anchor.proposal must be a proposal id like '3'",
+            {"proposal": value},
+        )
+    pid = str(value).strip()
+    if not pid:
+        raise ValidationError("anchor.proposal must be a proposal id like '3'",
+                              {"proposal": value})
+    return pid
+
+
+def _proposal_store(service):
+    """PRD-002's ``ProposalStore``, or ``None`` when the proposals pack is not
+    installed (it self-disables without git, and comments do not)."""
+    return getattr(getattr(service, "proposals", None), "store", None)
+
+
+def stored_packet(service, proj: str, pid: str) -> dict | None:
+    """The review packet exactly as PRD-002 persisted it, or ``None``.
+
+    ``packet.json`` and nothing else. **Never**
+    ``service.packets.packet(...)``: that regenerates a stale packet, which
+    rebuilds the geometry on both sides of the proposal and can move the
+    proposal's own state — so validating or reading one comment would rewrite
+    the evidence it is commenting on.
+    """
+    store = _proposal_store(service)
+    if store is None:
+        return None
+    try:
+        data = json.loads(
+            store.packet_path(proj, pid).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, NotFoundError, ValidationError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def packet_diffs(packet: dict) -> dict[str, dict]:
+    """``{path: script_diff}`` over the packet's part rows — the files a
+    ``proposal_hunk`` anchor may name."""
+    diffs: dict[str, dict] = {}
+    for part in packet.get("parts") or []:
+        diff = part.get("script_diff") if isinstance(part, dict) else None
+        if isinstance(diff, dict) and isinstance(diff.get("path"), str):
+            diffs[diff["path"]] = diff
+    return diffs
+
+
+def _require_part(service, proj: str, value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError("anchor.part must be a non-empty string")
+    known = service.store.part_ids(proj)
+    if value not in known:
+        raise ValidationError(f"unknown part {value!r}",
+                              {"part": value, "parts": known})
+    return value
+
+
+def _line_number(value: object, what: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValidationError(f"{what} must be a 1-based line number",
+                              {"value": value})
+    return value
+
+
+# --------------------------------------------------------------- resolution
+
+
+def read_context(service, proj: str) -> dict:
+    """What every anchor in one page resolves *against*: the reader's current
+    branch and its head.
+
+    Resolved once per listing, never per thread — a 40-thread page must not be
+    40 git calls (design Decision 4's cost budget).
+    """
+    branch, head = "", ""
+    branches = getattr(service, "branches", None)
+    history = getattr(service, "history", None)
+    try:
+        if branches is not None:
+            branch = branches.current(proj) or ""
+        if history is not None and history.available():
+            canonical = service.store.canonical_path_of(proj)
+            head = (history.resolve_branch(canonical, branch) if branch
+                    else history.head(service.store.path_of(proj))) or ""
+    except Exception:                                  # noqa: BLE001
+        # Provenance is context, and a broken git layer must never turn a
+        # comment list into a 500. An empty head degrades tier 2 to
+        # ``unverified``, which is the honest answer.
+        pass
+    return {"branch": branch, "head": head,
+            "root": service.store.path_of(proj)}
+
+
+def resolve(service, proj: str, anchor: object,
+            context: dict | None = None) -> dict:
+    """The current status of one stored anchor. Never raises, never builds.
+
+    Precisely what it does **not** touch: it never asks the kernel for
+    anything, never triggers a rebuild, never regenerates a review packet, and
+    never writes to the thread, the anchor, the manifest or a proposal's state.
+    It is not, however, a *pure* read of the filesystem: the first resolution
+    of a given cache key derives the face table from the mesh a build already
+    wrote and memoizes it as a ``<key>.facesig.json`` sidecar in the project's
+    ``.cache`` directory (:func:`signature_table`). That file is derived data
+    beside derived data, keyed by the same content hash, and a cache directory
+    that refuses the write is ignored — but "read-only" would be the wrong
+    word for it, so it is not used.
+
+    Every result carries ``against: {branch, head}`` — what it was resolved
+    against — because a thread authored on another branch that resolves
+    ``orphaned`` here would be telling the reader their face was cut away when
+    they merely switched branches (design Decision 7).
+    """
+    context = read_context(service, proj) if context is None else context
+    against = {"branch": context.get("branch", ""),
+               "head": context.get("head", "")}
+    if not isinstance(anchor, dict):
+        return make_resolution(
+            "unverified", reason="malformed_anchor",
+            hint="the stored anchor is not an object; nothing can be resolved",
+            against=against)
+    handler = _RESOLVERS.get(anchor.get("kind"))
+    if handler is None:
+        return make_resolution(
+            "unverified", reason="unknown_kind",
+            hint=f"anchor kind {anchor.get('kind')!r} has no resolver in this "
+                 "build", against=against)
+    try:
+        result = handler(service, proj, anchor, context)
+    except Exception as exc:                           # noqa: BLE001
+        # A listing is a read: a surprise in one thread's anchor must not
+        # take the page down, and "we could not look" is exactly what
+        # ``unverified`` means.
+        result = make_resolution(
+            "unverified", reason="resolver_failed",
+            hint=f"{type(exc).__name__}: {exc}")
+    result["against"] = against
+    return result
+
+
+def _elsewhere(anchor: dict, context: dict, what: str) -> dict | None:
+    """Decision 7: a target missing here while the anchor names another branch
+    is ``unverified``, not ``orphaned``.
+
+    **Every** absence verdict goes through here, not only a missing part. The
+    check used to run one level too shallow: it asked "is the parent part
+    gone?" first and only consulted the branch if it was, so a part that
+    exists on both branches while the *parameter*, the *lines* or the *face*
+    inside it exists on only one — which is the ordinary shape of a branch —
+    reported ``orphaned``/``param_removed``. That is a claim that somebody
+    deleted the target, made from an anchor that was never about the reader's
+    branch. The question "am I even looking at the anchor's branch?" has to be
+    answered before absence is classified, whatever is absent.
+    """
+    authored = anchor.get("branch") or ""
+    current = context.get("branch") or ""
+    if authored and current and authored != current:
+        return make_resolution(
+            "unverified", reason="other_branch",
+            hint=f"{what} does not exist on {current!r}; this thread was "
+                 f"authored on {authored!r} — switch branches to resolve it")
+    return None
+
+
+def _resolve_part(service, proj, anchor, context) -> dict:
+    part = anchor.get("part")
+    if part in service.store.part_ids(proj):
+        return make_resolution("ok")
+    return _elsewhere(anchor, context, f"part {part!r}") or make_resolution(
+        "orphaned", reason="part_removed",
+        hint=f"part {part!r} is no longer in this project")
+
+
+def _resolve_instance(service, proj, anchor, context) -> dict:
+    instance = anchor.get("instance")
+    known = [i["id"] for i in
+             service.store.manifest(proj)["assembly"]["instances"]]
+    if instance in known:
+        return make_resolution("ok")
+    return _elsewhere(anchor, context, f"instance {instance!r}") or \
+        make_resolution("orphaned", reason="instance_removed",
+                        hint=f"assembly instance {instance!r} is no longer "
+                             "placed in this project")
+
+
+def _resolve_param(service, proj, anchor, context) -> dict:
+    part, param = anchor.get("part"), anchor.get("param")
+    if part not in service.store.part_ids(proj):
+        return _elsewhere(anchor, context, f"part {part!r}") or make_resolution(
+            "orphaned", reason="part_removed",
+            hint=f"part {part!r} is no longer in this project")
+    names = _param_names(service, proj, part)
+    if names is None:
+        return make_resolution(
+            "unverified", reason="spec_unavailable",
+            hint=f"part {part!r}'s parameter spec is not statically readable "
+                 "and is not cached; open the part to load it")
+    if param in names:
+        return make_resolution("ok")
+    return _elsewhere(anchor, context, f"parameter {param!r}") or \
+        make_resolution(
+            "orphaned", reason="param_removed",
+            hint=f"parameter {param!r} is no longer declared by part {part!r}")
+
+
+def _param_names(service, proj: str, part: str) -> set[str] | None:
+    """The part's parameter names without a kernel call, or ``None``.
+
+    ``service._params_spec`` runs the ``inspect`` handler, which is a kernel
+    round trip — forbidden here (R8). Two cheap authorities instead: the
+    spec cache, if this process has already inspected exactly this script, and
+    otherwise a static ``ast`` read of a literal module-level ``PARAMS`` dict
+    (parsed, never executed). A script that computes its ``PARAMS`` at import
+    time and has not been inspected is honestly ``unverified``.
+    """
+    try:
+        text = service.store.read_script(proj, part)
+    except Exception:                                  # noqa: BLE001
+        return None
+    cache = getattr(service, "_spec_cache", None)
+    if isinstance(cache, dict):
+        spec = cache.get(hashlib.sha256(text.encode()).hexdigest())
+        if isinstance(spec, dict):
+            return set(spec)
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    for node in tree.body:
+        targets = getattr(node, "targets", [])
+        if not (isinstance(node, ast.Assign) and len(targets) == 1):
+            continue
+        target = targets[0]
+        if not (isinstance(target, ast.Name) and target.id == "PARAMS"):
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except (ValueError, SyntaxError):
+            return None
+        if isinstance(value, dict):
+            return {key for key in value if isinstance(key, str)}
+    return None
+
+
+_REFUSAL_HINTS = {
+    "no_candidate": "no face of the current geometry matches this signature — "
+                    "the face it named was most likely cut away",
+    "ambiguous": "two faces match this signature equally well, and pointing at "
+                 "the wrong one is worse than pointing at nothing",
+    "area_mismatch": "the only matching face is a very different size, which is "
+                     "a different face wearing the same orientation",
+    "topology_mismatch": "the only matching face touches a different number of "
+                         "faces than the one this thread was opened on, so it "
+                         "is a different face at the same place — most likely "
+                         "the surface that was underneath the one cut away",
+}
+
+
+def _resolve_face(service, proj, anchor, context) -> dict:
+    part = anchor.get("part")
+    index = anchor.get("face_index")
+    signature = anchor.get("signature") or {}
+    if part not in service.store.part_ids(proj):
+        return _elsewhere(anchor, context, f"part {part!r}") or make_resolution(
+            "orphaned", reason="part_removed",
+            hint=f"part {part!r} is no longer in this project")
+    record = service.store.get_part(proj, part)
+    if record.kind != "script":
+        return _elsewhere(anchor, context, f"a B-rep face of part {part!r}") or \
+            make_resolution(
+                "orphaned", reason="not_a_script_part",
+                hint=f"part {part!r} is now a {record.kind} part: an imported "
+                     "mesh carries no B-rep faces")
+    key, table = signature_table(service, proj, part)
+    if not table:
+        return make_resolution(
+            "unverified", reason="part_not_built",
+            hint=f"part {part!r} has no mesh cached at its current parameters; "
+                 "listing threads never rebuilds, so build the part to resolve "
+                 "this anchor")
+    if key and key == signature.get("mesh_key") and isinstance(index, int) \
+            and 0 <= index < len(table) and table[index]["present"]:
+        # The geometry is byte-identical to what the author pointed at: there
+        # is nothing to re-match.
+        return make_resolution("ok", confidence=1.0, face_index=index,
+                               n_faces=len(table))
+    if not signature.get("normal"):
+        return make_resolution(
+            "unverified", reason="no_signature",
+            hint="this anchor predates face signatures; re-create the thread "
+                 "to make it resolvable")
+    stored = index if isinstance(index, int) else -1
+    row, score, margin, refusal = match_face(signature, table)
+    if row is None:
+        return _elsewhere(anchor, context, f"the face part {part!r} was "
+                          "commented on") or \
+            make_resolution("orphaned", reason=refusal,
+                            hint=_REFUSAL_HINTS[refusal],
+                            confidence=round(score, 4),
+                            margin=round(margin, 4),
+                            n_faces=len(table))
+    status = "ok" if row["index"] == stored else "moved"
+    return make_resolution(
+        status, face_index=row["index"], confidence=round(score, 4),
+        margin=round(margin, 4), n_faces=len(table),
+        reason=None if status == "ok" else "rematched_by_signature")
+
+
+def _resolve_script_range(service, proj, anchor, context) -> dict:
+    part = anchor.get("part")
+    start, end = anchor.get("start"), anchor.get("end")
+    if part not in service.store.part_ids(proj):
+        return _elsewhere(anchor, context, f"part {part!r}") or make_resolution(
+            "orphaned", reason="part_removed",
+            hint=f"part {part!r} is no longer in this project")
+    record = service.store.get_part(proj, part)
+    if record.kind != "script":
+        return _elsewhere(anchor, context, f"a script range of part {part!r}") \
+            or make_resolution(
+                "orphaned", reason="not_a_script_part",
+                hint=f"part {part!r} is now a {record.kind} part and has no "
+                     "script")
+    text = service.store.read_script(proj, part)
+    lines = text.splitlines()
+    snippet = (anchor.get("snippet") or "").splitlines()
+    if not snippet or not isinstance(start, int) or not isinstance(end, int):
+        return make_resolution(
+            "unverified", reason="no_snippet",
+            hint="this anchor stored no snippet; re-create the thread to make "
+                 "it resolvable")
+
+    # --- tier 1: exact snippet, no git, no heuristics. AC3 is won here.
+    #
+    # The reported range keeps the anchor's own length rather than the
+    # snippet's: a range longer than MAX_SNIPPET_LINES stored a truncated
+    # snippet, and reporting the truncation as the range would silently shrink
+    # the comment's target every time it is read.
+    #
+    # "Still at its own address, still the same text" is identity — UNLESS the
+    # stored context says the block around it is a different one. Two functions
+    # ending in the same lines, the first deleted, and the second's copy slides
+    # up onto the anchored address: address and text both match and it is not
+    # the same code. Such an address is put to the diff below instead of being
+    # taken on trust, and if there is no diff to read it is still answered as
+    # the ``ok`` it has always been (a rewritten line *near* a thread must not
+    # cost the thread its pin just because the project has no git).
+    span = end - start
+    before = (anchor.get("before") or "").splitlines()
+    after = (anchor.get("after") or "").splitlines()
+    at_home = lines[start - 1:start - 1 + len(snippet)] == snippet
+    home = make_resolution("ok", start=start, end=end, confidence=1.0)
+    disputed = at_home and (
+        (bool(before) and lines[max(0, start - 1 - len(before)):start - 1]
+         != before)
+        or (bool(after) and lines[end:end + len(after)] != after))
+    if at_home and not disputed:
+        return home
+    hits = find_snippet(lines, snippet, before, after)
+    if len(hits) == 1 and not at_home:
+        first = hits[0] + 1
+        return make_resolution("moved", reason="snippet_found_verbatim",
+                               start=first, end=min(first + span, len(lines)),
+                               confidence=1.0)
+
+    # --- tier 2: a real line map against the blob at the anchor's own head.
+    old = _blob_lines(service, proj, part, anchor.get("head") or "",
+                      context.get("root"))
+    if old is None:
+        if at_home:
+            return home        # no diff to appeal to; the address still holds it
+        reason = "no_git" if not _git_available(service) else (
+            "head_unreachable" if anchor.get("head") else "no_head")
+        return make_resolution(
+            "unverified", reason=reason,
+            hint="the script as it was when this thread was opened is not "
+                 "readable, so the range cannot be remapped — we did not look, "
+                 "so this is not an orphan")
+    lost = f"lines {start}-{end} of part {part!r}"
+    mapped = line_map(old, lines, start, end)
+    if mapped is None:
+        return _elsewhere(anchor, context, lost) or make_resolution(
+            "orphaned", reason="lines_removed",
+            hint=f"{lost} were deleted or rewritten; the thread keeps its "
+                 "last-known range")
+    new_start, new_end, confidence = mapped
+    if confidence < LINE_CONFIDENCE_MIN:
+        return _elsewhere(anchor, context, lost) or make_resolution(
+            "orphaned", reason="low_confidence",
+            hint=f"only {confidence:.0%} of lines {start}-{end} survive the "
+                 "edit — a partial remap would point at the wrong code",
+            confidence=round(confidence, 4))
+    status = "ok" if (new_start, new_end) == (start, end) else "moved"
+    return make_resolution(
+        status, start=new_start, end=new_end, confidence=round(confidence, 4),
+        reason=None if status == "ok" else "remapped_by_diff")
+
+
+def _resolve_proposal_hunk(service, proj, anchor, context) -> dict:
+    """Decision 8's table, read off the persisted packet.
+
+    The header is the identity and the index is not: a regeneration renumbers
+    hunks freely, so a re-map is a byte-identical ``header`` match *within the
+    new generation*, unique or nothing. Three deliberate choices:
+
+    * **A frozen packet is ``unverified``, whatever its generation says.** The
+      diff it describes is history the moment a merge lands, and this thread is
+      the record of a review of exactly that; answering ``ok`` would invite a
+      UI to open a live diff that no longer exists.
+    * **A new generation is ``moved``, even to the same index.** A generation
+      is one measurement; a different one measured different commits, so
+      claiming the reviewed text is unchanged would be a claim nobody checked.
+    * **Two matching headers orphan.** Same rule as the face matcher:
+      ambiguity is an orphan, never a guess.
+
+    Decision 7's cross-branch rule does not apply here — a proposal is
+    branch-free storage that *names* its two branches, so it is equally
+    readable from either one.
+    """
+    from .proposals import TERMINAL
+
+    pid = str(anchor.get("proposal") or "")
+    file = anchor.get("file")
+    index = anchor.get("hunk")
+    header = anchor.get("hunk_header")
+    store = _proposal_store(service)
+    if store is None:
+        return make_resolution(
+            "unverified", reason="proposals_unavailable",
+            hint="this server has no change proposals (the pack needs git), so "
+                 "the review packet this thread points at cannot be read — we "
+                 "did not look, so this is not an orphan")
+    try:
+        proposal = store.load(proj, pid)
+    except (NotFoundError, ValidationError):
+        return make_resolution(
+            "orphaned", reason="proposal_removed",
+            hint=f"proposal {pid} is no longer in this project; the thread "
+                 "keeps the hunk it was opened on")
+    packet = stored_packet(service, proj, pid)
+    if packet is None:
+        return make_resolution(
+            "orphaned", reason="packet_missing",
+            hint=f"proposal {pid}'s review packet is not on disk any more, and "
+                 "resolving a comment never builds one")
+    state = proposal.get("state")
+    if packet.get("frozen") or state in TERMINAL:
+        return make_resolution(
+            "unverified", reason="packet_frozen",
+            hint=f"proposal {pid} is {state} and its review packet is frozen: "
+                 "the diff this thread reviewed is history now and is never "
+                 "measured again",
+            generation=packet.get("generation") or None)
+    diffs = packet_diffs(packet)
+    diff = diffs.get(file) if isinstance(file, str) else None
+    if diff is None:
+        return make_resolution(
+            "orphaned", reason="file_not_in_diff",
+            hint=f"{file} is no longer part of what proposal {pid} changes")
+    hunks = [hunk for hunk in (diff.get("hunks") or []) if isinstance(hunk, dict)]
+    generation = packet.get("generation") or ""
+    if (generation and generation == anchor.get("generation")
+            and isinstance(index, int) and 0 <= index < len(hunks)
+            and hunks[index].get("header") == header):
+        return make_resolution("ok", hunk=index, generation=generation,
+                               confidence=1.0)
+    if not isinstance(header, str) or not header:
+        return make_resolution(
+            "unverified", reason="no_header",
+            hint="this anchor stored no hunk header, so there is nothing to "
+                 "re-match the regenerated packet against; re-create the "
+                 "thread on the current packet")
+    matches = [hunk for hunk in hunks if hunk.get("header") == header]
+    if len(matches) == 1:
+        found = matches[0].get("index")
+        if isinstance(found, bool) or not isinstance(found, int):
+            found = hunks.index(matches[0])
+        return make_resolution(
+            "moved", reason="hunk_remapped_by_header", hunk=found,
+            generation=generation, confidence=1.0,
+            new_start=matches[0].get("new_start"))
+    hint = (
+        f"{file}'s diff in proposal {pid} no longer contains the hunk this "
+        "thread was opened on, so it was rewritten by a regeneration"
+        if not matches else
+        f"{file}'s diff now contains that hunk header {len(matches)} times, "
+        "and pointing at the wrong one is worse than pointing at nothing"
+    )
+    return make_resolution("orphaned", reason="hunk_regenerated", hint=hint,
+                           generation=generation)
+
+
+def _git_available(service) -> bool:
+    history = getattr(service, "history", None)
+    try:
+        return bool(history is not None and history.available())
+    except Exception:                                  # noqa: BLE001
+        return False
+
+
+def _blob_lines(service, proj: str, part: str, head: str,
+                root: Path | None) -> list[str] | None:
+    """The part's script as it was at *head*, or ``None`` when we cannot look.
+
+    Through ``history._run_bytes`` — hermetic env, 10 s timeout — never a raw
+    ``subprocess``, and undecoded, because a script is content and the text
+    path replaces every byte it cannot decode.
+    """
+    if not head or not _git_available(service):
+        return None
+    path = root if root is not None else service.store.path_of(proj)
+    try:
+        result = service.history._run_bytes(
+            path, "cat-file", "blob", f"{head}:parts/{part}.py", check=False)
+    except Exception:                                  # noqa: BLE001
+        return None
+    if result.returncode != 0 or not result.stdout:
+        return None
+    try:
+        return result.stdout.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return None
+
+
+_RESOLVERS = {
+    "part": _resolve_part,
+    "face": _resolve_face,
+    "param": _resolve_param,
+    "script_range": _resolve_script_range,
+    "instance": _resolve_instance,
+    "proposal_hunk": _resolve_proposal_hunk,
+}
