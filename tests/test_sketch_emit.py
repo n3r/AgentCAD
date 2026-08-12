@@ -368,7 +368,8 @@ def test_an_unpinned_spline_emits_no_tangents():
     spec["constraints"] = spec["constraints"][1:]
     res = emit(solved(spec), spec)
     assert "Spline(" in res["code"] and "tangents=" not in res["code"]
-    assert res["warnings"] == []
+    # an open spline closes nothing, which is its own (reported) matter
+    assert [w["code"] for w in res["warnings"]] == ["no_closed_profile"]
 
 
 def slot_only_spec() -> dict:
@@ -688,3 +689,191 @@ def test_the_same_entity_unmarked_really_does_emit(kind):
     spec = _construction_spec(case, present=True, marked=False)
     absent = _construction_spec(case, present=False, marked=False)
     assert emit(solved(spec), spec)["code"] != emit(solved(absent), absent)["code"]
+
+
+# --------------------------------------------------------------------------
+# review 2, C7: one `BuildLine` and one `make_face()` for every chain there is
+# --------------------------------------------------------------------------
+def two_squares_spec(*, second_open: bool = False) -> dict:
+    """Two disjoint unit squares, 20 mm apart — nothing joins them."""
+    pts, lines = [], []
+    for k, ox in enumerate((0.0, 20.0)):
+        names = [f"s{k}p{i}" for i in range(4)]
+        for name, (dx, dy) in zip(names, ((0, 0), (1, 0), (1, 1), (0, 1))):
+            pts.append({"name": name, "x": ox + dx, "y": float(dy),
+                        "fixed": True})
+        ring = list(zip(names, names[1:] + names[:1]))
+        if second_open and k == 1:
+            ring = ring[:-1]
+        for i, (a, b) in enumerate(ring):
+            lines.append({"name": f"s{k}l{i}", "p1": a, "p2": b})
+    return {"points": pts, "lines": lines, "constraints": []}
+
+
+def test_two_disjoint_closed_chains_emit_two_faces():
+    """Everything went into **one** `BuildLine` followed by **one**
+    `make_face()`, so two disjoint squares emitted valid-looking code that
+    rebuilt to a single 1 mm^2 face instead of two totalling 2 (review 2, C7).
+    """
+    spec = two_squares_spec()
+    code = emit(solved(spec), spec)["code"]
+    assert code.count("with BuildLine():") == 2, code
+    assert code.count("make_face()") == 2, code
+
+
+def test_a_closed_chain_next_to_an_open_one_keeps_both():
+    """`make_face()` consumes every pending edge in its `BuildLine`, so an
+    open chain sharing one with a closed chain was swallowed by it."""
+    spec = two_squares_spec(second_open=True)
+    code = emit(solved(spec), spec)["code"]
+    assert code.count("with BuildLine():") == 2, code
+    assert code.count("make_face()") == 1, code
+
+
+@pytest.mark.integration
+def test_two_disjoint_closed_chains_rebuild_to_two_faces(kernel, tmp_path):
+    """The measurement, through the real kernel: total area 2, not 1."""
+    spec = two_squares_spec()
+    metrics = build_metrics(kernel, tmp_path, emit(solved(spec), spec)["code"])
+    assert metrics["volume_mm3"] == pytest.approx(2.0, rel=1e-9)
+    assert metrics["bbox"]["max"][0] == pytest.approx(21.0, abs=1e-9)
+
+
+@pytest.mark.integration
+def test_a_closed_chain_next_to_an_open_one_rebuilds(kernel, tmp_path):
+    spec = two_squares_spec(second_open=True)
+    metrics = build_metrics(kernel, tmp_path, emit(solved(spec), spec)["code"])
+    assert metrics["volume_mm3"] == pytest.approx(1.0, rel=1e-9)
+
+
+# --------------------------------------------------------------------------
+# review 2, C8: the arc constructors have a domain, and the gate never saw it
+# --------------------------------------------------------------------------
+def sweep_spec(start: float, end: float) -> dict:
+    return {
+        "points": [{"name": "c", "x": 0.0, "y": 0.0, "fixed": True}],
+        "arcs": [{"name": "a", "center": "c", "r": 5.0, "start_deg": start,
+                  "end_deg": end, "fixed_r": True, "fixed": True}],
+        "constraints": [],
+    }
+
+
+@pytest.mark.parametrize("sweep", [0.0, 1e-12])
+def test_a_zero_sweep_arc_is_refused(sweep):
+    """`RadiusArc(v0, v0, 1.0, ...)` — the same vertex twice — raises
+    `Standard_ConstructionError` in OCCT. The closure gate only measures how
+    far a *junction literal* moved its endpoints, so it could not see this
+    (review 2, C8)."""
+    spec = sweep_spec(30.0, 30.0 + sweep)
+    with pytest.raises(EmitError, match="sweep"):
+        emit(solved(spec), spec)
+
+
+@pytest.mark.parametrize("sweep", [450.0, -450.0, 720.0])
+def test_an_arc_sweeping_past_a_full_turn_is_refused(sweep):
+    """Everything with `|sweep| > 360` was classified as a full turn and sent
+    verbatim to `CenterArc`, which raises `ValueError` on 450."""
+    spec = sweep_spec(0.0, sweep)
+    with pytest.raises(EmitError, match="turn"):
+        emit(solved(spec), spec)
+
+
+def test_a_full_turn_still_emits_a_center_arc():
+    """The documented case is untouched: exactly one turn has coincident
+    endpoints and `CenterArc` is the only constructor that can say so."""
+    spec = sweep_spec(0.0, 360.0)
+    res = emit(solved(spec), spec)
+    assert "CenterArc(" in res["code"]
+    assert any(w["code"] == "arc_full_turn" for w in res["warnings"])
+
+
+SWEEP_PROBE = '''\
+from build123d import *
+
+PARAMS = {}
+
+
+%s
+
+
+def build(p):
+    sketch_profile()          # the constructors have to accept their arguments
+    return Box(1.0, 1.0, 1.0)
+'''
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("sweep",
+                         [1.0, 90.0, 180.0, 270.0, 359.0, 360.0, -90.0, -359.0])
+def test_every_emittable_sweep_rebuilds(kernel, tmp_path, sweep):
+    """The range the two refusals bracket, run through the real kernel.
+
+    An open arc has no face, so this asserts what C8 is about — that the
+    constructor the emitter picked accepts its arguments — rather than a
+    volume. `RadiusArc(v0, v0, ...)` raised `Standard_ConstructionError` and
+    `CenterArc(..., 450.0)` raised `ValueError` here.
+    """
+    spec = sweep_spec(0.0, sweep)
+    # a closed square alongside, so `BuildSketch` has a face to return: an arc
+    # on its own is an open chain and no face comes out of one.
+    square = two_squares_spec()
+    spec["points"] += [{**p, "name": f"sq_{p['name']}"} for p in square["points"]
+                       if p["name"].startswith("s0")]
+    spec["lines"] = [{"name": f"sq_{l['name']}", "p1": f"sq_{l['p1']}",
+                      "p2": f"sq_{l['p2']}"} for l in square["lines"]
+                     if l["name"].startswith("s0")]
+    code = emit(solved(spec), spec)["code"]
+    kernel.request("build", {"script": SWEEP_PROBE % code, "params": {},
+                             "mesh_path": str(tmp_path / "m.acm")})
+
+
+# --------------------------------------------------------------------------
+# review 2, C9: the emitter's guarantee is that non-rebuilding code is refused
+# --------------------------------------------------------------------------
+def circle_solution(radius: float) -> tuple[dict, dict]:
+    spec = {
+        "points": [{"name": "c", "x": 0.0, "y": 0.0, "fixed": True}],
+        "circles": [{"name": "hole", "center": "c", "r": 4.0}],
+        "constraints": [],
+    }
+    sol = solved(spec)
+    sol["circles"]["hole"]["r"] = radius
+    return sol, spec
+
+
+@pytest.mark.parametrize("radius", [0.0, -1.0, 1e-11])
+def test_a_non_positive_emitted_radius_is_refused(radius):
+    """The solver refuses a non-positive radius where it is *written*; this is
+    the second layer, over the value that was actually **solved and
+    formatted**. `1e-11` is the third case: nine decimals rounds it to
+    `Circle(radius=0.0)`, and the emitter's contract is about the code it
+    emits, not the float it started from."""
+    sol, spec = circle_solution(radius)
+    with pytest.raises(EmitError, match="positive radius"):
+        emit(sol, spec)
+
+
+def test_an_arc_radius_is_checked_the_same_way():
+    spec = sweep_spec(0.0, 90.0)
+    sol = solved(spec)
+    sol["arcs"]["a"]["r"] = -5.0
+    with pytest.raises(EmitError, match="positive radius"):
+        emit(sol, spec)
+
+
+def test_a_sketch_that_closes_nothing_says_so():
+    """Found while fixing C7, and reported rather than refused: a `BuildSketch`
+    with no face raises *at its own exit* ("Unable to repositioned type
+    <class 'NoneType'>"). Drawing an open chain and pressing Insert is a
+    legitimate half-finished state, so the emitter names the consequence
+    instead of throwing the work away."""
+    spec = two_squares_spec(second_open=True)
+    spec["lines"] = [l for l in spec["lines"] if l["name"].startswith("s1")]
+    res = emit(solved(spec), spec)
+    assert "make_face()" not in res["code"]
+    assert any(w["code"] == "no_closed_profile" for w in res["warnings"])
+
+
+def test_a_sketch_that_closes_something_does_not():
+    res = emit(solved(two_squares_spec()), two_squares_spec())
+    assert not any(w["code"] == "no_closed_profile" for w in res["warnings"])

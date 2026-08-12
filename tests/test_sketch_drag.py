@@ -201,6 +201,11 @@ def staircase(n_seg: int, redundant: bool = True) -> dict:
     return {"points": points, "lines": lines, "circles": [], "constraints": cons}
 
 
+def without_ms(res: dict) -> dict:
+    """A diagnostics block without its own wall-clock measurement."""
+    return {k: v for k, v in res["diagnostics"].items() if k != "analysis_ms"}
+
+
 def test_a_drag_frame_serves_the_cached_diagnostics_block():
     spec = staircase(6)
     full = solve_sketch({**spec, "diagnostics": "full"})
@@ -208,7 +213,11 @@ def test_a_drag_frame_serves_the_cached_diagnostics_block():
     frame = solve_sketch({**spec, "initial": seed_from(full),
                           "drag": {"point": "p3", "x": 12.0, "y": 9.0}})
     assert frame["diagnostics_source"] == "cached"
-    assert frame["diagnostics"] == full["diagnostics"]
+    # Everything but `analysis_ms`: a served block reports the time *this*
+    # frame spent, because the cache no longer carries a verdict — it carries
+    # the greedy dependent-row set, and the rank that set was found at is
+    # re-verified against this frame's Jacobian (review 2, C10).
+    assert without_ms(frame) == without_ms(full)
     # and `full` on the same drag frame recomputes it
     forced = solve_sketch({**spec, "initial": seed_from(full),
                            "diagnostics": "full",
@@ -267,7 +276,7 @@ def test_the_cached_block_is_measurably_cheaper(capsys):
         print(f"  {cached['n_residuals']} rows: diagnostics cached "
               f"{cached_ms:6.2f} ms/frame")
     assert cached["diagnostics_source"] == "cached"
-    assert cached["diagnostics"] == computed["diagnostics"]
+    assert without_ms(cached) == without_ms(computed)
     assert cached_ms < computed_ms
 
 

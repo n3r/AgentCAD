@@ -13,6 +13,7 @@ difference on purpose: a future "simplification" back to pivoted QR must fail
 loudly with an explanation rather than quietly start pointing at the wrong line.
 """
 
+import math
 import statistics
 import time
 
@@ -625,3 +626,114 @@ def test_no_constraint_that_removes_a_dof_is_ever_blamed(case):
         assert without["dof"] > full["dof"], (
             f"{case}[{i}] {con['type']} removes no DOF, so it is genuinely "
             f"dependent and does not belong in the audit corpus")
+
+
+# --------------------------------------------------------------------------
+# review 2: the rank has to be the truth about *this* configuration
+# --------------------------------------------------------------------------
+def test_a_zero_distance_pins_both_coordinates():
+    """`|p - q| - 0` is not differentiable at its own solution: every
+    subgradient is one row, so the Jacobian could only ever remove one of the
+    two degrees of freedom the geometry removes. Measured before the fix:
+    fixed `a`, free `b`, `distance(a, b, 0)` -> `ok: true`, **`rank 0`,
+    `dof 2`**, `redundant: [distance]` — on a sketch with nothing free at all
+    (review 2, C2)."""
+    res = solve_sketch({
+        "points": [{"name": "a", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "b", "x": 3.0, "y": 4.0}],
+        "constraints": [{"type": "distance", "p": "a", "q": "b", "d": 0.0}],
+    })
+    assert res["ok"] is True, res
+    assert res["rank"] == 2 and res["dof"] == 0, res["diagnostics"]
+    assert res["diagnostics"]["status"] == "well_constrained"
+    assert res["diagnostics"]["redundant"] == []
+    assert res["points"]["b"] == pytest.approx({"x": 0.0, "y": 0.0}, abs=1e-12)
+
+
+def test_a_zero_distance_still_reports_itself_as_a_distance():
+    """Compiled as a coincidence, blamed as what the caller wrote."""
+    spec = {
+        "points": [{"name": "a", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "b", "x": 3.0, "y": 4.0}],
+        "constraints": [{"type": "distance", "p": "a", "q": "b", "d": 0.0},
+                        {"type": "coincident", "p": "a", "q": "b"}],
+    }
+    diag = solve_sketch(spec)["diagnostics"]
+    blamed = diag["redundant"] + diag["conflicting"]
+    assert blamed and blamed[0]["type"] in ("distance", "coincident"), diag
+
+
+def test_a_degenerate_seed_no_longer_gives_a_distance_row_no_gradient():
+    """The other half of C2: two points on top of each other are a legitimate
+    *seed*, and `_unit`'s zero direction made the whole `distance` row vanish
+    there — an all-zero row is a constraint the solver cannot see and the rank
+    analysis counts as absent."""
+    from agentcad.toolkit.sketch import Sketch
+    sk = Sketch()
+    sk.point("a", 0.0, 0.0, fixed=True)
+    sk.point("b", 0.0, 0.0)
+    sk.distance("a", "b", 5.0)
+    J = sk.make_functions()[1](sk.initial_vector())
+    assert np.linalg.norm(J) > 0.0, J
+    assert sk.rank(J) == 1
+
+
+def test_a_drag_frame_cannot_poison_a_later_verdict():
+    """Review 2, C10.
+
+    The cache key is the residual *structure*, deliberately — the GUI resends
+    the whole spec every frame with its points at the last solution, so keying
+    on coordinates would miss every time — but the rank of a **nonlinear**
+    Jacobian is a function of the configuration as well. A `parallel` between
+    two collapsed lines has an identically zero row (both unit directions are
+    undefined, so both halves of the chain rule vanish): rank 0, `dof 8`,
+    `over_constrained`. The same spec drawn with two real lines is rank 1,
+    `dof 7`, `under_constrained` — and it used to be served the first verdict.
+    """
+    def spec(pts, **extra):
+        return {
+            "points": [{"name": n, "x": x, "y": y}
+                       for n, (x, y) in zip("abcd", pts)],
+            "lines": [{"name": "l1", "p1": "a", "p2": "b"},
+                      {"name": "l2", "p1": "c", "p2": "d"}],
+            "constraints": [{"type": "parallel", "l1": "l1", "l2": "l2"}],
+            **extra,
+        }
+
+    collapsed = [(0.0, 0.0), (0.0, 0.0), (5.0, 5.0), (5.0, 5.0)]
+    drawn = [(0.0, 0.0), (10.0, 0.0), (0.0, 5.0), (10.0, 5.0)]
+
+    poison = solve_sketch(spec(collapsed,
+                               drag={"point": "b", "x": 0.0, "y": 0.0}))
+    assert poison["rank"] == 0 and poison["dof"] == 8, poison["diagnostics"]
+    assert poison["diagnostics"]["status"] == "over_constrained"
+
+    cached = solve_sketch(spec(drawn, diagnostics="cached"))
+    full = solve_sketch(spec(drawn, diagnostics="full"))
+    assert cached["rank"] == full["rank"] == 1, (cached, full)
+    assert cached["dof"] == full["dof"] == 7
+    assert cached["diagnostics"]["status"] == "under_constrained"
+    assert cached["diagnostics"]["redundant"] == []
+
+
+def test_the_greedy_pass_and_the_reported_rank_can_never_disagree():
+    """Review 2, C6 — verified, not assumed.
+
+    The finding was that the greedy pass (row-relative `1e-8`) and the SVD
+    (`max(shape) * s0 * 1e-10`) could disagree about a row, so the blame set
+    could contradict the rank. Changelog 0142 made the greedy pass's own count
+    *be* the rank wherever it runs, which is what closes it; this pins the
+    matrix the review measured and both halves of the agreement.
+    """
+    from agentcad.toolkit.sketch import Sketch
+    sk = Sketch()
+    sk.n_res, sk.n_par = 3, 2
+    J = np.array([[1.0, 0.0], [1.0, -5e-9], [0.0, -1.0]])
+    dependent, complete = sk.dependent_rows(Sketch.row_scaled(J))
+    assert complete
+    # the count the analysis reports is the greedy pass's own
+    assert J.shape[0] - len(dependent) == 2
+    # and a row that is independent by more than the greedy tolerance is kept
+    J2 = np.array([[1.0, 0.0], [1.0, -5e-7], [0.0, -1.0]])
+    dependent2, complete2 = sk.dependent_rows(Sketch.row_scaled(J2))
+    assert complete2 and dependent2 == [2], dependent2

@@ -591,6 +591,21 @@ Every item is traceable to a measurement in `docs/changelog/0127`–`0141`.
   the wrong branch, or none), so every kind is covered by a central-difference
   test — `RESIDUAL_KINDS` unions the `DERIV_BUILDERS` of every
   `tests/test_sketch_*.py`, and a kind with no case fails loudly.
+- **The derivative gate cannot tell you the residual is right, and it never
+  could.** It compares each `df` against a central difference of **its own
+  `f`**, so a geometrically *wrong* residual passes every case: the internal
+  circle/circle tangency computed `d - (r1 - r2)` instead of `d - |r1 - r2|`
+  for two slices — two internally tangent circles reported `ok: true` one way
+  round and `ok: false`, `max_residual` 10, the other — with a green
+  derivative suite over it the whole time. Wherever this branch or its
+  changelogs say "every residual's derivative is proven", read exactly that
+  and no more. The independent layer is
+  **`tests/test_sketch_semantics.py`**: for each constraint it builds a
+  configuration whose geometry it computes itself and asserts `f == 0` where
+  the constraint holds *and* that `f` tracks the geometric error with the
+  right sign and scale — a slope, not a smallness, because a residual that is
+  the square of the error is small for reasons that have nothing to do with
+  the sketch being right.
 - **A residual that is second-order flat at the solution makes the Jacobian
   rank-deficient AT the solution and reports phantom DOF.** If two entities
   are already tied together by rows the sketch declares, write the remaining
@@ -635,6 +650,26 @@ Every item is traceable to a measurement in `docs/changelog/0127`–`0141`.
   nothing. The emitter gates on a measured 1e-8 mm closure tolerance and
   refuses rather than emitting code that will not rebuild. Never format a
   coordinate for code with a display formatter.
+- **One `BuildLine` and one `make_face()` per CHAIN.** `make_face()` consumes
+  every pending edge in its builder and makes **one** face, so a single shared
+  `BuildLine` turned two disjoint squares into one 1 mm² face instead of two
+  totalling 2, and swallowed an open chain drawn next to a closed one. A chain
+  is the unit of connectivity, so it is the unit of emission.
+- **The closure gate does not check that the call is legal.** It measures how
+  far a junction's shared literal moved the endpoints it stands for, and that
+  is all: a zero-sweep arc still reached `RadiusArc(v0, v0, r)`
+  (`Standard_ConstructionError`) and anything past a full turn still reached
+  `CenterArc(..., 450.0)` (`ValueError`). Both are refused where the
+  constructor is chosen. Same for radii — **every emitted radius is checked as
+  the reader will see it**, after formatting, because nine decimals rounds
+  1e-11 to `Circle(radius=0.0)`, which makes no face. A radius is also refused
+  where it is *written* (`Sketch.circle/arc/radius`); the two layers see
+  different numbers.
+- **A sketch that closes nothing emits code that raises.** `BuildSketch` with
+  no face fails at its own exit ("Unable to repositioned type
+  `<class 'NoneType'>`"). That is reported as a `no_closed_profile` warning
+  rather than refused, because drawing an open chain and pressing Insert is a
+  legitimate half-finished state.
 - **`EllipticalCenterArc` takes `arc_size`, not `end_angle`, in the pinned
   build123d 0.11.1**: `end_angle` raises `UnboundLocalError` because the
   deprecation branch reads a name only the *other* deprecated parameter binds.
@@ -652,18 +687,29 @@ Every item is traceable to a measurement in `docs/changelog/0127`–`0141`.
   `initial`'s coverage requirement, because requiring a point the caller never
   wrote made the all-or-nothing seed impossible to satisfy.
 - **Tangency at a junction the sketch pins is a DIRECTION residual, and the
-  detector reads the CONSTRAINT GRAPH.** `dist(centre, line) - r` and
+  detector asks the JACOBIAN.** `dist(centre, line) - r` and
   `d(c1,c2) - (r1 ± r2)` sit at an extremum of the manifold the pinning rows
   cut out, so their gradient falls into that span: the row reports itself
   redundant while removing a real DOF, and `max_residual` reports the *square*
   of the geometric error (measured 8.11e-11 reported against a true
   4.97e-05 mm before the fix — a ratio of 6.1e+05; 10.0 after it, which is
-  the radius). This has been found three times — structurally shared handles
-  (slice 6), a `coincident` junction
-  (slice 10), a `point_on_circle` junction (review) — because each fix keyed
-  off a hardcoded handle list. It is now derived from `ON_CURVE_ARGS`:
-  **every constraint type is classified as an incidence or explicitly not one,
-  and a test fails when a new type is added without that decision.**
+  the radius). **This was found four times**, and each of the first three
+  fixes was an enumeration that the next one walked past: a list of entity
+  handles (slice 6), a union-find over `coincident` (slice 10), a table of
+  constraint kinds that put a point on a curve (0142). The fourth was
+  `distance_x(p, a1.start, 0)` + `distance_y(p, a1.start, 0)` — a junction
+  pinned exactly as hard as a coincidence, on none of the lists.
+  `Sketch.resolve_tangencies` replaces the enumeration with a criterion: a
+  handle is **held on** a curve when the curve's own on-curve function is zero
+  there *and* its gradient lies in the **row space of every other residual
+  row**, evaluated at the configuration those rows project the seed onto; two
+  curves share a junction when some handle is held on both. No constraint kind
+  appears in it, so no new kind can make it stale. Two things it does not
+  claim: a *pinned but non-zero* offset is not a junction (the value half is
+  what keeps `distance_x(..., 5)` an ordinary tangency), and ellipses and
+  splines have no closed-form on-curve function so they keep the symbolic
+  detector — their fallback is already first-order, so a missed junction there
+  costs a parameter, not an answer.
 - **The rank must not be a function of row scale.** One 1e-9 mm line (a GUI
   double-click) writes 1.4e+09 into the Jacobian through `_accum_dir`'s `1/n`,
   and a relative singular-value threshold then reads every honest row as zero:
@@ -672,6 +718,45 @@ Every item is traceable to a measurement in `docs/changelog/0127`–`0141`.
   to completion **its count is the rank**, so `status`, `dof` and the blame
   sets agree by construction — `over_constrained` with an empty blame set is a
   bug, not a display problem, and the chip branches on `status`.
+- **The diagnostics cache carries the greedy dependent-row set, never a
+  verdict.** Its key is the residual *structure* on purpose (the GUI resends
+  the whole spec every drag frame with its points at the last solution, so a
+  coordinate key would miss every time) — but nonlinear rank is a function of
+  the configuration, so a drag frame with two collapsed lines cached `rank 0`,
+  `dof 8`, `over_constrained` and the next ordinary solve of the same
+  structure was served it. The rank is now recomputed on **every** frame and
+  the cached set is used only when it matches; `status`, `dof`,
+  `free_entities` and the redundant/conflicting split always describe the
+  frame in front of them. `diagnostics_source: "cached"` means the greedy pass
+  was reused, not the answer.
+- **A residual on a LENGTH is not a residual on a DIRECTION, and they need
+  different degenerate-case rules.** `_unit` returns a zero direction for a
+  degenerate segment, which is right for `parallel`/`perpendicular`/`angle`/
+  `point_on_line` — they are functions of a direction and a zero-length
+  segment has none. `distance`, `point_on_circle`, `equal_length` and the
+  circle-circle tangency are functions of `|b - a|`, and there a zero
+  direction is the one subgradient that makes the whole Jacobian row vanish:
+  measured, `distance(a, b, 0)` at its own solution reported `rank 0`,
+  `dof 2` and called itself redundant while pinning both coordinates. Those
+  use `_norm_dir`, whose documented convention is the **+x unit subgradient**.
+  And `distance(p, q, 0)` compiles to the **coincidence rows** — the same
+  solution set, linear, rank 2 — because one subgradient can only ever remove
+  one of the two DOF the geometry removes.
+- **Every async response is scoped to the part that asked for it.**
+  `sketch_plane` and `/api/sketch/blocks` are round trips the user can outrun:
+  pick a face on part A, switch to part B, and A's basis and references opened
+  over B — Insert then wrote A-plane geometry into B's script. Both paths
+  record `"<project>::<part>"` with the request and re-check it on arrival,
+  alongside the generation counters. `sketcher.openOnFace` re-checks it again
+  on its own side of the module boundary.
+- **`specToModel` and `entitiesSpec` are an inverse pair, and it is asserted
+  in node** (`tests/test_sketch_frontend_roundtrip.py`, which is why
+  `sketcher.js` exports `__roundTrip__`). A flag dropped on either side is
+  geometry that changes meaning after one GUI round trip: a construction
+  spline or slot came back as *emitted* geometry, and a fixed-radius arc came
+  back free. A three-point arc is deliberately **normalized** to the canvas's
+  one arc representation (centre point + radius + angles) on load — the canvas
+  has no other — so it re-emits as `RadiusArc`, not `ThreePointArc`.
 - **For a face: the basis is stable, the ordinal is not.** `Plane(face).x_dir`
   is **bit-identical** across rebuilds, across a fresh worker and across
   parameter changes that do not renumber faces — so sketch-on-face coordinates
@@ -689,6 +774,16 @@ Every item is traceable to a measurement in `docs/changelog/0127`–`0141`.
 - **Round-trip: the code is the source of truth for geometry; the block is
   provenance.** A hash mismatch is `diverged` and is never repaired; an
   unreadable spec is `unverified`, which is "we cannot tell", not "no sketch".
+  **The hash covers the spec AND the code** (spec version 2): covering only
+  the code meant `ok` said "nobody edited the geometry" while every reader
+  took it to mean "this spec produced this code", and editing one coordinate
+  in the comment left the block `ok`. And the block records an `initial` taken
+  from the **solution**, because `initial` selects the branch: without it a
+  sketch emitted on the seeded branch reopened on the other one, `ok`.
+  `_read_spec` validates the spec's **shape** — every section a list of named
+  objects, every constraint an object with a `type` — because
+  `"points": "not-a-list"` used to read `ok` and then throw out of the
+  browser's `.map()`.
   The block name is the emitted function's name, so a second block in one
   script must take the next free name or it silently shadows the first —
   `next_name` is the server's answer and Insert asks for it. The block scanner

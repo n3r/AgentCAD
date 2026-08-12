@@ -36,7 +36,8 @@ from fastapi.testclient import TestClient
 
 from agentcad.core import tools_sketch
 from agentcad.core.sketch_emit import (
-    EmitError, block_hash, emit, next_name, parse_blocks,
+    SPEC_PREFIX, SPEC_VERSION, EmitError, block_hash, emit, next_name,
+    parse_blocks,
 )
 from agentcad.core.tools import ToolRegistry, build_registry
 from agentcad.server.app import create_app
@@ -161,7 +162,7 @@ def test_a_persisted_block_carries_the_marker_the_spec_and_the_hash():
     assert "def sketch_profile():" in code
 
     spec = json.loads(lines[1].split("# agentcad-sketch-spec: ", 1)[1])
-    assert spec["v"] == 1
+    assert spec["v"] == SPEC_VERSION
     assert [p["name"] for p in spec["entities"]["points"]] == ["a", "b", "c",
                                                               "d"]
     assert len(spec["constraints"]) == 6
@@ -359,7 +360,7 @@ def test_a_block_with_no_end_marker_is_unverified():
 
 
 def test_an_unknown_spec_version_is_unverified():
-    script = block_of(square_spec()).replace('{"v": 1,', '{"v": 99,', 1)
+    script = block_of(square_spec()).replace('{"v": 2,', '{"v": 99,', 1)
     block = parse_blocks(script)[0]
     assert block["status"] == "unverified"
     assert "version" in block["message"]
@@ -564,3 +565,118 @@ def test_a_blank_line_between_the_marker_and_the_spec_is_tolerated():
               if line.startswith("# --- agentcad sketch"))
     spaced = "\n".join(lines[:at + 1] + [""] + lines[at + 1:])
     assert parse_blocks(spaced)[0]["status"] == "ok", parse_blocks(spaced)[0]
+
+
+# --------------------------------------------------------------------------
+# review 2, C11: `ok` has to mean "this spec produced this code"
+# --------------------------------------------------------------------------
+def test_editing_only_the_spec_comment_is_a_divergence():
+    """The hash covered the code and nothing else, so a block whose *spec* had
+    been rewritten still read `ok` — and the sketcher then opened a sketch that
+    has nothing to do with the geometry beneath it (review 2, C11)."""
+    script = SCRIPT_HEAD + block_of(square_spec())
+    edited = "\n".join(
+        _with_moved_point(l) if l.startswith("# agentcad-sketch-spec:") else l
+        for l in script.splitlines())
+    assert edited != script
+    block = parse_blocks(edited)[0]
+    assert block["status"] == "diverged", block
+    assert "spec" in block["message"]
+
+
+def _with_moved_point(line: str) -> str:
+    """The spec comment with one entity coordinate rewritten — a hand edit to
+    the provenance, with the code beneath it untouched."""
+    spec = json.loads(line[len(SPEC_PREFIX):])
+    spec["entities"]["points"][1]["x"] = 99.0
+    return SPEC_PREFIX + json.dumps(spec)
+
+
+def mirror_spec(cy: float) -> dict:
+    """Two solutions, and `initial` is what picks one: `c` is held 25 from
+    both `a` and `b`, so it can sit above or below the axis."""
+    return {
+        "points": [{"name": "a", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "b", "x": 30.0, "y": 0.0, "fixed": True},
+                   {"name": "c", "x": 15.0, "y": cy}],
+        "lines": [{"name": "ab", "p1": "a", "p2": "b"},
+                  {"name": "bc", "p1": "b", "p2": "c"},
+                  {"name": "ca", "p1": "c", "p2": "a"}],
+        "constraints": [{"type": "distance", "p": "a", "q": "c", "d": 25.0},
+                        {"type": "distance", "p": "b", "q": "c", "d": 25.0}],
+    }
+
+
+def test_a_block_reopens_on_the_branch_its_code_was_emitted_from():
+    """`persist_spec` stored the coordinates the caller *submitted* and dropped
+    `initial`, so a sketch emitted on the branch `initial` selected reopened on
+    the other one — while reporting `ok`. The block now records the solution
+    its own code was written from, as an `initial`, so re-solving it lands
+    where the code is."""
+    spec = mirror_spec(+10.0)                     # submitted: above the axis
+    spec["initial"] = {"points": {"c": {"x": 15.0, "y": -10.0}}}
+    sol = solved(spec)
+    assert sol["points"]["c"]["y"] < 0.0, sol["points"]   # emitted: below
+    script = SCRIPT_HEAD + emit(sol, spec, persist="profile")["code"]
+    block = parse_blocks(script)[0]
+    assert block["status"] == "ok", block["message"]
+    again = solve_sketch({**block["spec"]["entities"],
+                          "constraints": block["spec"]["constraints"],
+                          "initial": block["spec"].get("initial")})
+    assert again["points"]["c"]["y"] == pytest.approx(sol["points"]["c"]["y"],
+                                                      abs=1e-9)
+
+
+def test_the_recorded_initial_is_the_solution_not_the_submission():
+    spec = mirror_spec(+10.0)
+    spec["initial"] = {"points": {"c": {"x": 15.0, "y": -10.0}}}
+    sol = solved(spec)
+    block = parse_blocks(emit(sol, spec, persist="profile")["code"])[0]
+    seeded = block["spec"]["initial"]["points"]["c"]
+    assert seeded["y"] == pytest.approx(sol["points"]["c"]["y"], abs=1e-12)
+    # and the entities are still the submission, which is what FR10 records
+    assert block["spec"]["entities"]["points"][2]["y"] == 10.0
+
+
+# --------------------------------------------------------------------------
+# review 2, C12: unreadable must mean `unverified`, not `ok`
+# --------------------------------------------------------------------------
+BROKEN_SPECS = {
+    "entities_not_an_object": '{"v": 1, "entities": [1, 2]}',
+    "kind_not_a_list": '{"v": 1, "entities": {"points": "not-a-list"}}',
+    "entity_not_an_object": '{"v": 1, "entities": {"points": ["p1"]}}',
+    "entity_without_a_name": '{"v": 1, "entities": {"points": [{"x": 1}]}}',
+    "unknown_entity_kind": '{"v": 1, "entities": {"widgets": []}}',
+    "constraints_not_a_list": '{"v": 1, "entities": {}, "constraints": {}}',
+    "constraint_not_an_object": '{"v": 1, "entities": {}, "constraints": [7]}',
+    "constraint_without_a_type": ('{"v": 1, "entities": {}, '
+                                  '"constraints": [{"p": "a"}]}'),
+    "plane_not_an_object": '{"v": 1, "entities": {}, "plane": 3}',
+    "initial_not_an_object": '{"v": 1, "entities": {}, "initial": []}',
+}
+
+
+@pytest.mark.parametrize("case", sorted(BROKEN_SPECS))
+def test_a_semantically_broken_spec_is_unverified(case):
+    """`_read_spec` checked that the JSON was an object with an `entities` key
+    and the right version, and nothing else — so
+    `"entities": {"points": "not-a-list"}` came back `ok` and the browser threw
+    a `TypeError` out of `.map()` (review 2, C12). Unreadable means
+    `unverified`, at the one place that decides."""
+    script = block_of(square_spec())
+    broken = "\n".join(
+        f"# agentcad-sketch-spec: {BROKEN_SPECS[case]}"
+        if l.startswith("# agentcad-sketch-spec:") else l
+        for l in script.splitlines())
+    block = parse_blocks(broken)[0]
+    assert block["status"] == "unverified", block
+    assert block["spec"] is None
+    assert block["message"]
+
+
+def test_a_readable_spec_is_still_ok():
+    """The narrowing: the validation must not reject what the emitter writes,
+    for any entity kind."""
+    for build in (square_spec, curvy_spec, construction_spec):
+        block = parse_blocks(block_of(build()))[0]
+        assert block["status"] == "ok", (build.__name__, block["message"])

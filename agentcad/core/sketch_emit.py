@@ -43,6 +43,22 @@ honest question is how far the shared literal moved the geometry it stands
 for. Both failures the design names — a 6-decimal centre-parametrized arc, and
 a solution whose two chained endpoints are 1e-6 mm apart — trip it.
 
+**What the gate cannot see is whether the call is legal**, and there are three
+of those, all refused where the call is written rather than where it explodes
+(review 2, C8/C9): a zero sweep (`RadiusArc(v0, v0, r)` —
+`Standard_ConstructionError`), a sweep past one full turn (`CenterArc(..., 450)`
+— `ValueError`), and a non-positive radius **as formatted** (nine decimals
+rounds 1e-11 to `Circle(radius=0.0)`, which makes no face; a negative one
+raises `gp_Circ() - radius should be positive number`).
+
+**One `BuildLine` and one `make_face()` per chain.** `make_face()` consumes
+every pending edge in its builder and makes *one* face, so a single shared
+`BuildLine` rebuilt two disjoint 1x1 squares into one face of area 1 instead of
+two totalling 2 (review 2, C7). A sketch where nothing closes still emits, with
+a `no_closed_profile` warning: `BuildSketch` with no face raises at its own
+exit, and drawing an open chain and pressing Insert is a legitimate
+half-finished state.
+
 ## The entity -> build123d mapping (FR9/FR11)
 
 | entity | emitted |
@@ -50,7 +66,7 @@ a solution whose two chained endpoints are 1e-6 mm apart — trip it.
 | line chain | `Polyline(v0, v1, ...)`, or `Line(a, b)` per segment in a mixed chain |
 | arc (centre-authored, in a chain) | `RadiusArc(start, end, +-r, short_sagitta=...)` |
 | arc (3-point authored) | `ThreePointArc(start, mid, end)` |
-| arc sweeping a full turn | `CenterArc(...)` (a `RadiusArc` cannot express it) |
+| arc sweeping exactly a full turn | `CenterArc(...)` (a `RadiusArc` cannot express it) |
 | full circle | `Circle(radius=...)` under `Locations(...)` |
 | full ellipse | `Ellipse(x_radius=..., y_radius=..., rotation=...)` under `Locations(...)` |
 | elliptical arc | `EllipticalCenterArc(centre, a, b, start_angle=..., arc_size=..., rotation=...)` |
@@ -72,7 +88,8 @@ only artifact and a script-resident block gets branching, restore, undo, merge
 and the proposal diff for free:
 
     # --- agentcad sketch "profile" (auto-generated; edit or remove freely) ---
-    # agentcad-sketch-spec: {"v": 1, "entities": {...}, "constraints": [...]}
+    # agentcad-sketch-spec: {"v": 2, "entities": {...}, "constraints": [...],
+    #                        "initial": {...}}
     # agentcad-sketch-hash: sha256:...
     def sketch_profile():
         ...
@@ -81,8 +98,18 @@ and the proposal diff for free:
 `parse_blocks(script)` reads them back. **The code is the source of truth for
 geometry; the spec block is provenance**, so a hash mismatch is reported
 (`diverged`) and never repaired: the sketcher opens read-only and asks. A
-block whose spec will not parse is `unverified` — "we cannot tell", which is
-never rendered as "there is no sketch" (the PRD-008 rule).
+block whose spec will not parse — or will not parse *into the shape of a
+sketch spec* — is `unverified`, "we cannot tell", which is never rendered as
+"there is no sketch" (the PRD-008 rule).
+
+**The hash covers the spec line and the code together**, and the block records
+an `initial` taken from the solution. Covering only the code meant `ok` said
+"nobody edited the geometry" while every reader took it to mean "this spec
+produced this code" — editing one coordinate in the comment left the block
+`ok` — and dropping `initial` meant a sketch emitted on the branch a seed
+selected reopened on the *other* branch, also `ok` (review 2, C11). That is why
+the format is version 2: a version-1 block's hash covers something else, so it
+reads `unverified` rather than `diverged`.
 """
 
 from __future__ import annotations
@@ -116,7 +143,7 @@ FULL_TURN_TOL_DEG = 1e-9
 
 
 # ------------------------------------------------------ round-trip block
-SPEC_VERSION = 1
+SPEC_VERSION = 2
 DEFAULT_NAME = "profile"
 BLOCK_MARKER = ('# --- agentcad sketch "{name}" (auto-generated; edit or '
                 'remove freely) ---')
@@ -471,11 +498,55 @@ def _gap(solution, members, entry, decimals, arc_anchor) -> float:
 
 
 # ------------------------------------------------------------------- emission
+def _radius(label: str, value, decimals: int) -> float:
+    """A radius, checked as the **reader will see it** (review 2, C9).
+
+    Both layers matter and they are different numbers. The solver refuses a
+    non-positive radius where it is written; here the value has been *solved*
+    (a free radius can converge to zero) and is about to be *formatted*, and
+    nine decimals rounds `1e-11` to `0.0`. `Circle(radius=0.0)` creates no face
+    and `Circle(radius=-1.0)` raises `gp_Circ() - radius should be positive
+    number` — the emitter's one guarantee is that code it returns rebuilds.
+    """
+    r = float(value)
+    if not math.isfinite(r) or r <= 0.0 or float(fmt(r, decimals)) <= 0.0:
+        raise EmitError(
+            f"refusing to emit {label}: it needs a positive radius and its "
+            f"solved value is {r!r}, which is written at {decimals} decimals as "
+            f"{fmt(r, decimals)}. build123d: 'gp_Circ() - radius should be "
+            "positive number'.")
+    return r
+
+
 def _arc_call(arc: dict, va: str, vb: str, rev: bool, decimals: int,
-              arc_anchor: str, warnings: list) -> str:
+              arc_anchor: str, warnings: list, label: str = "arc") -> str:
+    _radius(label, arc["r"], decimals)
     name_sweep = _sweep_deg(arc)
     sweep = -name_sweep if rev else name_sweep
-    if abs(abs(sweep) - 360.0) <= FULL_TURN_TOL_DEG or abs(sweep) > 360.0:
+    # **The constructors have a domain and the closure gate cannot see it**
+    # (review 2, C8). The gate measures how far a junction's shared literal
+    # moved the endpoints it stands for; it never asks whether the call it just
+    # wrote is one build123d will accept. Two ends of the sweep range are not:
+    #
+    # - a zero sweep becomes `RadiusArc(v0, v0, r, ...)` — the same vertex
+    #   twice — and OCCT raises `Standard_ConstructionError`;
+    # - anything past a full turn was *classified* as a full turn and passed
+    #   through to `CenterArc(..., 450.0)`, which raises `ValueError`.
+    #
+    # Neither is repairable without changing the geometry, so both are refused.
+    if abs(sweep) <= FULL_TURN_TOL_DEG:
+        raise EmitError(
+            f"refusing to emit {label}: its sweep is {sweep!r} degrees, so its "
+            "two endpoints are the same point and there is no arc to write "
+            "(build123d/OCCT: Standard_ConstructionError). Give the arc a "
+            "sweep, or drop it.")
+    if abs(sweep) > 360.0 + FULL_TURN_TOL_DEG:
+        raise EmitError(
+            f"refusing to emit {label}: its sweep is {sweep!r} degrees, more "
+            "than a full turn. build123d has no constructor for an arc that "
+            "laps itself (`CenterArc` raises ValueError past 360), and "
+            "silently trimming it would change the geometry.")
+    if abs(abs(sweep) - 360.0) <= FULL_TURN_TOL_DEG:
         warnings.append({
             "code": "arc_full_turn",
             "message": ("an arc sweeping a full turn has coincident endpoints "
@@ -502,7 +573,7 @@ def _arc_call(arc: dict, va: str, vb: str, rev: bool, decimals: int,
             f"short_sagitta={short})")
 
 
-def _ellipse_arc_call(e: dict, decimals: int) -> str:
+def _ellipse_arc_call(e: dict, decimals: int, name: str = "ellipse") -> str:
     """`EllipticalCenterArc`, the only bounded-ellipse constructor there is.
 
     Three measured facts about the pinned build123d 0.11.1 are baked in here:
@@ -524,7 +595,17 @@ def _ellipse_arc_call(e: dict, decimals: int) -> str:
     The call is written in the arc's own direction whichever way the chain
     walks it: build123d joins a `BuildLine` on proximity, not on order.
     """
+    _radius(f"elliptical arc {name!r} (x_radius)", e["a"], decimals)
+    _radius(f"elliptical arc {name!r} (y_radius)", e["b"], decimals)
     sweep = float(e["end_deg"]) - float(e["start_deg"])
+    if abs(sweep) <= FULL_TURN_TOL_DEG:
+        raise EmitError(
+            f"refusing to emit elliptical arc {name!r}: its sweep is {sweep!r} "
+            "degrees, so it has no extent.")
+    if abs(sweep) > 360.0 + FULL_TURN_TOL_DEG:
+        raise EmitError(
+            f"refusing to emit elliptical arc {name!r}: its sweep is {sweep!r} "
+            "degrees, more than a full turn.")
     return (f"EllipticalCenterArc(({fmt(e['cx'], decimals)}, "
             f"{fmt(e['cy'], decimals)}), {fmt(e['a'], decimals)}, "
             f"{fmt(e['b'], decimals)}, start_angle={fmt(e['start_deg'], decimals)}, "
@@ -613,10 +694,11 @@ def _emit_chain(chain, members, junctions, vname, solution, decimals,
         va, vb = vname[jids[i]], vname[jids[i + 1]]
         if member["kind"] == "arc":
             out.append(_arc_call(solution["arcs"][member["name"]], va, vb, rev,
-                                 decimals, arc_anchor, warnings))
+                                 decimals, arc_anchor, warnings,
+                                 f"arc {member['name']!r}"))
         elif member["kind"] == "ellipse":
             out.append(_ellipse_arc_call(solution["ellipses"][member["name"]],
-                                         decimals))
+                                         decimals, member["name"]))
         else:
             out.append(_spline_call(solution["splines"][member["name"]], va, vb,
                                     rev, decimals, member["name"], warnings))
@@ -743,28 +825,36 @@ def emit(solution: dict, spec: dict, *, style: str = "function",
 
     body: list[str] = []
     if chains:
+        _gate(solution, members, junctions, chains, decimals, arc_anchor,
+              closure_tol, warnings)
+    # **One `BuildLine` and one `make_face()` per chain** (review 2, C7).
+    # Every chain used to go into a single `BuildLine` followed by a single
+    # `make_face()` if *any* of them closed, and `make_face()` consumes every
+    # pending edge in the builder to make **one** face: two disjoint 1x1
+    # squares emitted syntactically valid code carrying both polylines and
+    # rebuilt to a single face of area 1 instead of two totalling 2, and a
+    # closed square next to an open chain swallowed the open one. A chain is
+    # the unit of connectivity, so it is the unit of emission.
+    for chain in chains:
         body.append("with BuildLine():")
-        for chain in chains:
-            body += ["    " + line for line in
-                     _emit_chain(chain, members, junctions, vname, solution,
-                                 decimals, arc_anchor, warnings)]
-        if any(chain["closed"] for chain in chains):
-            _gate(solution, members, junctions, chains, decimals, arc_anchor,
-                  closure_tol, warnings)
+        body += ["    " + line for line in
+                 _emit_chain(chain, members, junctions, vname, solution,
+                             decimals, arc_anchor, warnings)]
+        if chain["closed"]:
             body.append("make_face()")
-        else:
-            _gate(solution, members, junctions, chains, decimals, arc_anchor,
-                  closure_tol, warnings, refuse=False)
 
     for name, circle in (solution.get("circles") or {}).items():
         if name in construction:
             continue
+        _radius(f"circle {name!r}", circle["r"], decimals)
         body.append(f"with Locations(({fmt(circle['cx'], decimals)}, "
                     f"{fmt(circle['cy'], decimals)})):")
         body.append(f"    Circle(radius={fmt(circle['r'], decimals)})")
     for name, e in (solution.get("ellipses") or {}).items():
         if e.get("bounded") or name in construction:
             continue          # already emitted as a chain member
+        _radius(f"ellipse {name!r} (x_radius)", e["a"], decimals)
+        _radius(f"ellipse {name!r} (y_radius)", e["b"], decimals)
         body.append(f"with Locations(({fmt(e['cx'], decimals)}, "
                     f"{fmt(e['cy'], decimals)})):")
         body.append(f"    Ellipse(x_radius={fmt(e['a'], decimals)}, "
@@ -772,8 +862,13 @@ def emit(solution: dict, spec: dict, *, style: str = "function",
                     f"rotation={fmt(e['rotation'], decimals)})")
     for name in face_slots:
         slot = solution["slots"][name]
+        _radius(f"slot {name!r}", slot["r"], decimals)
         c1, c2 = slot["center1"], slot["center2"]
         sep = math.dist((c1["x"], c1["y"]), (c2["x"], c2["y"]))
+        if float(fmt(sep, decimals)) <= 0.0:
+            raise EmitError(
+                f"refusing to emit slot {name!r}: its two centres are the same "
+                f"point at {decimals} decimals, so it has no length")
         mid = ((c1["x"] + c2["x"]) / 2.0, (c1["y"] + c2["y"]) / 2.0)
         rot = math.degrees(math.atan2(c2["y"] - c1["y"], c2["x"] - c1["x"]))
         body.append(f"with Locations({_pt(mid, decimals)}):")
@@ -781,19 +876,39 @@ def emit(solution: dict, spec: dict, *, style: str = "function",
                     f"{fmt(2.0 * slot['r'], decimals)}, "
                     f"rotation={fmt(rot, decimals)})")
 
+    if body and "make_face()" not in body:
+        # Found while fixing C7: a sketch with nothing closed produces a
+        # `BuildSketch` with no face, and build123d raises *at the block's
+        # exit* — "Unable to repositioned type <class 'NoneType'>". It is not
+        # refused, because drawing an open chain and pressing Insert is a
+        # legitimate half-finished state and refusing it would be worse than
+        # saying so; but it is not passed off as buildable either.
+        warnings.append({
+            "code": "no_closed_profile",
+            "message": ("nothing in this sketch closes, so the emitted "
+                        "`BuildSketch` produces no face and build123d raises "
+                        "when it exits. Close a chain, or add a circle, "
+                        "ellipse or standalone slot."),
+        })
+
     plane = spec.get("plane") or None
     code = _render(body, style, plane, decimals,
                    func=f"sketch_{block or DEFAULT_NAME}",
                    banner=block is None)
     if block is not None:
-        code = wrap_block(block, spec, code)
+        code = wrap_block(block, spec, code, solution)
     return {"code": code, "warnings": warnings, "style": style,
             "plane": plane, "persist": block}
 
 
 def _gate(solution, members, junctions, chains, decimals, arc_anchor,
           closure_tol, warnings, refuse: bool = True) -> None:
-    """Refuse to emit `make_face()` over a junction that will not close."""
+    """Refuse to emit `make_face()` over a junction that will not close.
+
+    Runs once over every chain: it already separates the junctions of *closed*
+    chains (fatal) from the rest (a warning), so a sketch that mixes the two
+    gets the right answer for each.
+    """
     used = {jid for chain in chains for jid in chain["junctions"]}
     closed = {jid for chain in chains if chain["closed"]
               for jid in chain["junctions"]}
@@ -863,23 +978,55 @@ def _norm(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.split("\n")).strip("\n")
 
 
-def block_hash(code: str) -> str:
-    """`sha256:<hex>` over the emitted code block, normalised by `_norm`."""
-    digest = hashlib.sha256(_norm(code).encode("utf-8")).hexdigest()
+def block_hash(code: str, spec_line: str | None = None) -> str:
+    """`sha256:<hex>` over the block's **spec and code together**.
+
+    The hash used to cover only the code, so `status: ok` said "nobody
+    hand-edited the geometry" and was read — by the sketcher, by the banner and
+    by `docs/agent-api.md` — as "this spec produced this code". Those are
+    different claims, and review 2 (C11) separated them: editing `"x": 40.0` to
+    `"x": 99.0` in the spec comment left the block `ok`, so the sketcher opened
+    a sketch with no relationship to the code under it and offered to re-emit
+    from it.
+
+    Covering both is what makes `ok` mean the pair is the pair the emitter
+    wrote. A block written before this reads `unverified` (its spec is
+    version 1), not `diverged`: "we cannot tell" is the honest verdict for a
+    block whose hash covers something else.
+    """
+    payload = _norm(code) if spec_line is None else (
+        _norm(code) + "\n\x00spec\x00" + spec_line)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return f"{HASH_ALGO}:{digest}"
 
 
-def persist_spec(spec: dict) -> dict:
-    """The spec **as submitted**, in the shape a caller can post straight back.
+def spec_line(spec: dict) -> str:
+    """The spec as the block carries it — one JSON line.
 
-    As submitted, not as solved: the block records the input that produced the
-    code beneath it. The GUI submits the on-screen (already solved)
-    coordinates, so reopening a GUI-authored block re-solves from its own
-    solution and lands on the same branch — the property FR10 needs — without
-    the emitter inventing a second, rounded copy of the geometry that the code
-    already holds.
+    Not canonicalised: the hash covers this **text**, so what a reader sees is
+    exactly what was signed, and the key order stays the readable one
+    (`v`, `entities`, `constraints`, ...) rather than the alphabetical one.
+    """
+    return json.dumps(spec)
 
-    `initial`, `drag` and `diagnostics` are properties of one call and are not
+
+def persist_spec(spec: dict, solution: dict | None = None) -> dict:
+    """The spec a caller can post straight back **and land where the code is**.
+
+    Entities and constraints are recorded **as submitted**: the block records
+    the input that produced the code beneath it, and FR10 is about that input.
+
+    `initial` is recorded from the **solution**, and that is review 2's finding
+    C11. `initial` selects the solution branch, and dropping it meant a sketch
+    emitted on the branch the caller seeded reopened on the other one — the
+    code says one thing, the block's own spec re-solves to another, and the
+    hash said `ok` because it only ever covered the code. Measured: a
+    mirror-symmetric triangle submitted with `c.y = +10` and seeded `c.y = -10`
+    emitted the negative branch and reopened on the positive one. The solved
+    coordinates are the seed that reproduces the emitted geometry, so they are
+    what the block carries.
+
+    `drag` and `diagnostics` are properties of one call and are still not
     persisted. `plane` is (slice 12): sketch-on-face coordinates without their
     basis are arbitrary.
     """
@@ -889,6 +1036,53 @@ def persist_spec(spec: dict) -> dict:
            "constraints": list(spec.get("constraints") or [])}
     if spec.get("plane"):
         out["plane"] = spec["plane"]
+    initial = _initial_from(solution, spec)
+    if initial:
+        out["initial"] = initial
+    return out
+
+
+def _initial_from(solution: dict | None, spec: dict) -> dict:
+    """The solved geometry, in `initial`'s shape.
+
+    All-or-nothing, like `initial` itself: every entity the solver reported is
+    seeded, so `Sketch.seed` cannot degrade the whole block to a cold start
+    over one missing name. Compiled sub-entities (a slot's caps, a 3-point
+    arc's centre) are excluded — the solver re-derives them.
+    """
+    if not solution:
+        return {}
+    sub = {f"{name}.arc_a" for name in (solution.get("slots") or {})}
+    sub |= {f"{name}.arc_b" for name in (solution.get("slots") or {})}
+    out: dict[str, dict] = {}
+    points = {name: {"x": float(p["x"]), "y": float(p["y"])}
+              for name, p in (solution.get("points") or {}).items()}
+    if points:
+        out["points"] = points
+    circles = {name: {"r": float(c["r"])}
+               for name, c in (solution.get("circles") or {}).items()}
+    if circles:
+        out["circles"] = circles
+    arcs = {name: {"r": float(a["r"]), "start_deg": float(a["start_deg"]),
+                   "end_deg": float(a["end_deg"])}
+            for name, a in (solution.get("arcs") or {}).items()
+            if name not in sub}
+    if arcs:
+        out["arcs"] = arcs
+    ellipses = {}
+    for name, e in (solution.get("ellipses") or {}).items():
+        entry = {"a": float(e["a"]), "b": float(e["b"]),
+                 "rotation": float(e["rotation"])}
+        if e.get("bounded"):
+            entry["start_deg"] = float(e["start_deg"])
+            entry["end_deg"] = float(e["end_deg"])
+        ellipses[name] = entry
+    if ellipses:
+        out["ellipses"] = ellipses
+    slots = {name: {"r": float(s["r"])}
+             for name, s in (solution.get("slots") or {}).items()}
+    if slots:
+        out["slots"] = slots
     return out
 
 
@@ -903,14 +1097,16 @@ def block_name(persist) -> str:
     return name
 
 
-def wrap_block(name: str, spec: dict, code: str) -> str:
+def wrap_block(name: str, spec: dict, code: str,
+               solution: dict | None = None) -> str:
     """Marker, spec, hash, code, end marker — the block a script carries."""
     body = code.strip("\n")
+    line = spec_line(persist_spec(spec, solution))
     return "\n".join([
         "", "",
         BLOCK_MARKER.format(name=name),
-        SPEC_PREFIX + json.dumps(persist_spec(spec)),
-        HASH_PREFIX + block_hash(body),
+        SPEC_PREFIX + line,
+        HASH_PREFIX + block_hash(body, line),
         body,
         BLOCK_END.format(name=name),
         "",
@@ -1017,7 +1213,10 @@ def parse_blocks(script: str) -> list[dict]:
 def _block_status(name, spec_line, hash_line, code, start, end,
                   closed: bool) -> dict:
     entry = {"name": name, "status": "unverified", "spec": None, "code": code,
-             "hash": hash_line, "computed_hash": block_hash(code),
+             "hash": hash_line,
+             # over the spec **and** the code: `ok` means this pair is the pair
+             # the emitter wrote (review 2, C11).
+             "computed_hash": block_hash(code, spec_line),
              "start_line": start + 1, "end_line": max(end, start) + 1,
              "message": ""}
     spec, problem = _read_spec(spec_line)
@@ -1042,10 +1241,11 @@ def _block_status(name, spec_line, hash_line, code, start, end,
     if hash_line != entry["computed_hash"]:
         entry["status"] = "diverged"
         entry["message"] = (
-            f"the code of sketch {name!r} was edited by hand since the spec "
-            "was written (hash mismatch). The code is the source of truth for "
-            "geometry: re-solve from the spec to discard the edit, or discard "
-            "the spec to keep it. Nothing is overwritten either way.")
+            f"sketch {name!r} was edited by hand since it was written: its "
+            "code, its spec or both no longer hash to the recorded value. The "
+            "code is the source of truth for geometry — re-solve from the spec "
+            "to discard the edit, or discard the spec to keep it. Nothing is "
+            "overwritten either way.")
         return entry
     entry["status"] = "ok"
     return entry
@@ -1067,10 +1267,58 @@ def _read_spec(spec_line: str | None) -> tuple[dict | None, str]:
     version = spec.get("v")
     if version != SPEC_VERSION:
         return None, (f"the spec block is version {version!r}, and this "
-                      f"AgentCAD writes version {SPEC_VERSION} — it was "
-                      "probably written by a newer build; the code is left "
-                      "alone")
+                      f"AgentCAD reads version {SPEC_VERSION}; the code is "
+                      "left alone")
+    problem = _spec_shape_problem(spec)
+    if problem:
+        return None, (f"the spec block is unreadable ({problem}); the code is "
+                      "left alone")
     return spec, ""
+
+
+def _spec_shape_problem(spec: dict) -> str:
+    """Why this spec cannot be loaded, or `""`.
+
+    `_read_spec` checked that the JSON was an object carrying an `entities` key
+    of the right version and **nothing else**, so
+    `"entities": {"points": "not-a-list"}` came back `status: ok` and the
+    sketcher threw a `TypeError` out of `specToModel`'s `.map()` — a corrupt
+    comment in a script taking the whole panel down, and the `unverified`
+    contract ("we cannot tell") not applying to the one case it was written
+    for (review 2, C12).
+
+    Shape only, deliberately: this decides whether the block can be *loaded*,
+    not whether it solves. A spec naming an unknown constraint type or a
+    dangling entity reference is readable, and `parse_sketch` is the thing that
+    reports on it — with a message about the constraint rather than about the
+    comment.
+    """
+    entities = spec.get("entities")
+    if not isinstance(entities, dict):
+        return "`entities` is not an object"
+    for kind, items in entities.items():
+        if kind not in PERSIST_KINDS:
+            return (f"`entities` has an unknown section {kind!r}; known: "
+                    f"{list(PERSIST_KINDS)}")
+        if not isinstance(items, list):
+            return f"`entities.{kind}` is not a list"
+        for item in items:
+            if not isinstance(item, dict):
+                return f"`entities.{kind}` holds {type(item).__name__}, not objects"
+            if not isinstance(item.get("name"), str) or not item["name"]:
+                return f"an entity in `entities.{kind}` has no name"
+    constraints = spec.get("constraints", [])
+    if not isinstance(constraints, list):
+        return "`constraints` is not a list"
+    for con in constraints:
+        if not isinstance(con, dict):
+            return f"`constraints` holds {type(con).__name__}, not objects"
+        if not isinstance(con.get("type"), str) or not con["type"]:
+            return "a constraint has no `type`"
+    for key in ("plane", "initial"):
+        if key in spec and not isinstance(spec[key], dict):
+            return f"`{key}` is not an object"
+    return ""
 
 
 def next_name(script: str, base: str = DEFAULT_NAME) -> str:

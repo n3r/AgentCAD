@@ -499,3 +499,143 @@ def _radial_circle_circle_sketch() -> Sketch:
 
 DERIV_BUILDERS["tangent_dir_radial_line"] = _radial_junction_sketch
 DERIV_BUILDERS["tangent_dir_radial_circles"] = _radial_circle_circle_sketch
+
+
+# --------------------------------------------------------------------------
+# the FOURTH class: a junction pinned by rows that are not `coincident`
+# and not on the `ON_CURVE_ARGS` table (review 2, finding C4)
+# --------------------------------------------------------------------------
+def dimensional_junction_spec(*, off: float = 0.0) -> dict:
+    """The junction is pinned by two **dimensional** rows.
+
+    `distance_x(p2, a1.start, 0)` + `distance_y(p2, a1.start, 0)` removes both
+    degrees of freedom of the offset exactly as a `coincident` does, and neither
+    row is a coincidence nor an incidence. The union-find never sees it.
+    """
+    return {
+        "points": [{"name": "p1", "x": -10.0, "y": 10.0},
+                   {"name": "p2", "x": 0.0 + off, "y": 10.0},
+                   {"name": "ct", "x": 0.0, "y": 0.0, "fixed": True}],
+        "arcs": [{"name": "a1", "center": "ct", "r": 10.0, "start_deg": 90.0,
+                  "end_deg": 0.0, "fixed_r": True}],
+        "lines": [{"name": "l1", "p1": "p1", "p2": "p2"}],
+        "constraints": [
+            {"type": "distance_x", "p": "p2", "q": "a1.start", "d": 0.0},
+            {"type": "distance_y", "p": "p2", "q": "a1.start", "d": 0.0},
+            {"type": "tangent", "a": "l1", "b": "a1"},
+        ],
+    }
+
+
+def symmetric_junction_spec() -> dict:
+    """The same, pinned by a `symmetric` about a fixed axis instead.
+
+    `symmetric` puts two points on opposite sides of a line — with the mirror
+    axis running *through* the arc handle the two rows pin the pair together,
+    which is a third spelling again.
+    """
+    return {
+        "points": [{"name": "p1", "x": -10.0, "y": 10.0},
+                   {"name": "p2", "x": 0.0, "y": 10.0},
+                   {"name": "ax1", "x": 0.0, "y": 10.0, "fixed": True},
+                   {"name": "ax2", "x": 1.0, "y": 10.0, "fixed": True},
+                   {"name": "ct", "x": 0.0, "y": 0.0, "fixed": True}],
+        "arcs": [{"name": "a1", "center": "ct", "r": 10.0, "start_deg": 90.0,
+                  "end_deg": 0.0, "fixed_r": True}],
+        "lines": [{"name": "l1", "p1": "p1", "p2": "p2"},
+                  {"name": "axis", "p1": "ax1", "p2": "ax2",
+                   "construction": True}],
+        "constraints": [
+            {"type": "symmetric", "a": "p2", "b": "a1.start", "about": "axis"},
+            {"type": "tangent", "a": "l1", "b": "a1"},
+        ],
+    }
+
+
+def measured_on_curve_spec() -> dict:
+    """The junction is held **on the circle** by a measurement, not by an
+    `ON_CURVE_ARGS` constraint: `distance(p, c, 10)` + `radius(C, 10)` says
+    "p is 10 from the centre and the circle's radius is 10", which is exactly
+    `point_on_circle` written in two rows the incidence table cannot see."""
+    return {
+        "points": [{"name": "c", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "p", "x": 10.0, "y": 0.0},
+                   {"name": "q", "x": 10.0, "y": 20.0}],
+        "circles": [{"name": "C", "center": "c", "r": 10.0}],
+        "lines": [{"name": "L", "p1": "p", "p2": "q"}],
+        "constraints": [{"type": "distance", "p": "p", "q": "c", "d": 10.0},
+                        {"type": "radius", "c": "C", "r": 10.0},
+                        {"type": "tangent", "a": "L", "b": "C"}],
+    }
+
+
+CLASS_SPECS["line_arc_dimensional"] = dimensional_junction_spec
+CLASS_SPECS["line_arc_symmetric"] = symmetric_junction_spec
+CLASS_SPECS["line_circle_measured"] = measured_on_curve_spec
+
+
+def test_a_dimensionally_pinned_junction_is_recognised():
+    """Review 2, C4 — the exact configuration and the exact numbers.
+
+    Before: singular values `12.04, 1.41, 4.3e-17`, rank 2 of 3, `dof 2` too
+    high and `redundant: [tangent]` against a row doing real work. The correct
+    rank is 3.
+    """
+    spec = dimensional_junction_spec()
+    sk = parse_sketch(spec)
+    assert [r.kind for r in sk.residuals] == [
+        "distance_x", "distance_y", "tangent_dir"]
+    res, svals, tol = _singular_values(spec)
+    assert svals[-1] > max(tol, 1e-3), (svals, tol)
+    assert res["ok"] is True, res["diagnostics"]
+    assert res["rank"] == 3 == res["n_residuals"], res["diagnostics"]
+    assert res["diagnostics"]["redundant"] == []
+
+
+def test_the_junction_criterion_is_the_jacobian_not_a_list_of_kinds():
+    """The class-level statement, and the reason there is no fifth instance.
+
+    A junction is pinned when the **rest of the residual rows** determine the
+    junction's on-curve function on both curves and determine it to zero. That
+    is a question about the row space of the Jacobian, so it cannot be made
+    stale by adding a constraint type — which is what happened three times.
+    Assert it the only way that means anything: over every spelling of "these
+    two curves already meet", including two the incidence table has never
+    heard of.
+    """
+    for name, build in sorted(CLASS_SPECS.items()):
+        sk = parse_sketch(build())
+        kinds = [r.kind for r in sk.residuals]
+        assert "tangent_dir" in kinds, (name, kinds)
+        assert "tangent_line_circle" not in kinds, (name, kinds)
+        assert "tangent_circles" not in kinds, (name, kinds)
+
+
+def test_a_pinned_but_offset_junction_is_not_a_junction():
+    """The other half, and the one a value-blind rank test would get wrong:
+    `distance_x(..., 5)` pins the offset just as firmly, to a point that is
+    **not** on the arc. That is an ordinary tangency and must keep the
+    distance residual."""
+    spec = dimensional_junction_spec()
+    spec["constraints"][0]["d"] = 5.0
+    kinds = [r.kind for r in parse_sketch(spec).residuals]
+    assert "tangent_line_circle" in kinds, kinds
+    assert "tangent_dir" not in kinds, kinds
+
+
+@pytest.mark.parametrize("off", [0.0, 0.5, 3.0, 12.0, 60.0, -25.0])
+def test_the_junction_is_found_however_far_the_seed_is_from_it(off):
+    """The criterion is about the **solution**, so the seed must not decide it.
+
+    That is why the non-tangency rows are projected onto their own manifold
+    before the question is asked — and why the row-space test has an absolute
+    floor: a *structural* incidence has an analytically zero gradient and a
+    numerically 1e-16 one, which a purely relative test reads as a full-size
+    vector pointing somewhere random. Measured without the floor: found at
+    0 mm and 0.5 mm, missed at 3 mm, found again at 12 mm.
+    """
+    spec = dimensional_junction_spec(off=off)
+    assert [r.kind for r in parse_sketch(spec).residuals][-1] == "tangent_dir"
+    res = solve_sketch(spec)
+    assert res["ok"] is True, res["diagnostics"]
+    assert res["rank"] == res["n_residuals"]

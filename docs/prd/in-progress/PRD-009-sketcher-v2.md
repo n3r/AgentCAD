@@ -320,20 +320,43 @@ named.
    writes a **new** block and leaves the diverged one in the script, with a
    toast saying so. Rewriting a range of the editor buffer needs an `editor.js`
    API outside the plan's permitted file list, and appending is what "never
-   silently overwrite" actually asks for. Divergence detection, the read-only
-   open and the two explicit choices are exactly as specified.
-7. **`tangent` at a junction changed residual form twice, and it is a
-   correctness fix, not a tweak** (0132, 0137). A residual that is second-order
-   flat at a shared endpoint makes the Jacobian rank-deficient *at the
-   solution*: a fully-determined slot read `dof 4`, and a GUI tangent chain read
-   `over-constrained (1)` with a singular value of 1.8e-16 against a 8.5e-9
-   rank tolerance. FR2's tangency is therefore implemented as three residual
-   forms chosen by how the curves meet (structural handle → perpendicular,
-   coincident junction → direction, otherwise v1's distance form). Two
-   pre-existing tests changed with it, both because they encoded the defect —
+   silently overwrite" actually asks for. The read-only open and the two
+   explicit choices are exactly as specified.
+
+   **Corrected (0143).** This entry used to claim divergence detection was
+   exact. It was not: the hash covered the emitted code and nothing else, so
+   editing a coordinate *in the spec comment* left the block `ok`, and
+   `persist_spec` dropped `initial` — so a sketch emitted on the branch a seed
+   selected reopened on the **other** branch, also `ok`. The hash now covers
+   the spec line as well as the code and the block records an `initial` taken
+   from the solution; the spec format is version **2** and a version-1 block
+   reads `unverified` (its hash covers something else) rather than `diverged`.
+   `_read_spec` also validates the spec's shape now — it used to accept
+   `"points": "not-a-list"` as `ok` and let the browser throw.
+7. **`tangent` at a junction changed residual form four times, and it is a
+   correctness fix, not a tweak** (0132, 0137, 0142, 0143). A residual that is
+   second-order flat at a shared endpoint makes the Jacobian rank-deficient
+   *at the solution*: a fully-determined slot read `dof 4`, and a GUI tangent
+   chain read `over-constrained (1)` with a singular value of 1.8e-16 against a
+   8.5e-9 rank tolerance. FR2's tangency is implemented as three residual forms
+   (structural handle → perpendicular, pinned junction → direction, otherwise
+   v1's distance form). Two pre-existing tests changed with it, both because
+   they encoded the defect —
    `test_a_chain_on_the_handles_is_exact_where_a_coincident_tied_one_is_not`
    asserted `nfev` 5 < 17 and became `..._both_chain_idioms_are_exact_since_the_junction_fix`
    (0137's Notes has the diff and the reasoning).
+
+   **Corrected (0143).** This entry used to say the three forms "cover how
+   curves meet". They do; *choosing between them* was the recurring bug, and it
+   recurred a fourth time after 0142 claimed to have fixed the class. The
+   selector was an enumeration each time — entity handles, then `coincident`
+   unions, then a table of constraint kinds — and a junction pinned by
+   `distance_x(p, a1.start, 0)` + `distance_y(p, a1.start, 0)` is on none of
+   them (measured: svals `12.04, 1.41, 4.3e-17`, rank 2 of 3, tangency
+   redundant; correct rank 3). `Sketch.resolve_tangencies` replaces the
+   enumeration with a Jacobian criterion — the junction's on-curve function is
+   zero *and* its gradient is in the row space of every other row — which
+   mentions no constraint kind at all.
 8. **FR9's constructor list is implemented minus `TangentArc` and
    `SlotOverall`** (0133). Chains prefer **endpoint-anchored** constructors,
    measured: a centre-parametrized arc chain at the GUI's old 6 decimals leaves
@@ -343,10 +366,34 @@ named.
    wrong; `SlotCenterToCenter` covers the slot case and `SlotOverall` is the
    same face with a different dimension. `CenterArc` survives for a full turn
    only, with a warning.
+
+   **Corrected (0143).** "A full turn only" described the intent, not the
+   code: *every* `|sweep| > 360` was classified as a full turn and passed to
+   `CenterArc`, which raises `ValueError` at 450, and a zero sweep went to
+   `RadiusArc(v0, v0, r)`, which raises `Standard_ConstructionError`. The
+   closure gate could catch neither — it measures endpoint displacement, not
+   whether the call is legal. Both are now refused with a message naming the
+   sweep, and the rebuild test walks the range in between. The emitter also
+   writes **one `BuildLine` and one `make_face()` per chain**: a single shared
+   builder made two disjoint squares rebuild to one face of area 1 instead of
+   two totalling 2.
 9. **The GUI authors 3-point arcs in centre form** (0135), so
    `arcs[n]["authored"]` is never `"three_point"` from the browser and the
    emitter writes `RadiusArc` — the preferred constructor anyway. The 3-point
-   *spec* form is fully supported for agents.
+   *spec* form is fully supported for agents **on the solver and emitter
+   surface**.
+
+   **Corrected (0143).** It was not supported in the *sketcher*: a
+   3-point-authored block opened as `{start, mid, end}` and the next solve
+   re-serialized it as a centre form with `center`, `r`, `start_deg` and
+   `end_deg` all `undefined` — a validation error where the user expected
+   their sketch. The canvas has exactly one arc representation, so
+   `specToModel` now **normalizes** a 3-point arc into it (its circumcentre
+   becomes a real point entity) and it re-emits as `RadiusArc`. Same geometry,
+   one representation; `tests/test_sketch_frontend_roundtrip.py` asserts the
+   whole pair is an inverse, in node, over every entity kind and flag —
+   construction splines and slots and an arc's `fixed_r` were being dropped
+   there too.
 10. **Spline end tangency is not on the GUI palette** (0135). The solver takes
     it (`tangent {a: "sp1.start", b: "ln4"}`); shipping half of it in the
     browser — with on-curve constraints already a documented non-goal — would

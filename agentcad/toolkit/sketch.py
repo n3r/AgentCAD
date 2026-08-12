@@ -64,19 +64,26 @@ that pin the junction. The Jacobian is **rank-deficient at the solution**, the
 constraint reports itself redundant while doing real work, and `max_residual`
 measures the *square* of the geometric error instead of the error.
 
-**A junction is pinned by the CONSTRAINT GRAPH, not by a list of handles.**
-This bug was fixed twice against a hardcoded handle list and came back a third
-time anyway, because that list could not see a junction held by
-`point_on_circle` — a circle has no handles at all. The detector now reads two
-things together: the union-find over every declared `coincident`, and the
-incidence graph `note_incidence` builds from `ON_CURVE_ARGS` (every constraint
-type that ties a point to a curve, plus the structural incidences — an arc's
-handles, a line's endpoints). `_junction_handles` finds the point both curves
-hold; `_tangent_at` builds each curve's tangent reference there. **Adding a
-constraint kind without classifying it fails a test**, which is what stops a
-fourth instance.
+**A junction is pinned by the JACOBIAN, not by any list.** This has been fixed
+four times, and the first three fixes were each an enumeration the next
+instance walked past: a list of entity handles (slice 6), a union-find over
+`coincident` (slice 10), a table of constraint *kinds* that put a point on a
+curve (`ON_CURVE_ARGS`, changelog 0142). The fourth was
+`distance_x(p, a1.start, 0)` + `distance_y(p, a1.start, 0)` — a junction pinned
+exactly as hard as a coincidence, on none of the lists.
 
-The measured history, all three instances:
+`resolve_tangencies` replaces the enumeration with a criterion. Let `R` be
+every residual row except the tangency rows being decided, and `x*` a
+configuration `R` solves. A handle `h` is **held on** curve `c` when
+`phi_c(h) == 0` at `x*` **and** `grad phi_c(h)` lies in the **row space of
+`R`** (`phi` is the curve's own on-curve function: `|h - centre| - r`, or
+`cross(h - a, u_line)`). Two curves share a junction when some handle is held
+on both — which is exactly when the distance form sits at an extremum of the
+manifold `R` cuts out. No constraint kind appears in it, so no new kind can
+make it stale. The symbolic detector below still runs first, as a fast path,
+and `ON_CURVE_ARGS` still drives it.
+
+The measured history, all four instances:
 
 - **structurally** — the line is built on `arc1.end` (a closed chain, a slot's
   side). `_shared_endpoint` detects it and uses the perpendicular form
@@ -104,9 +111,16 @@ The measured history, all three instances:
   6.1e+05 for the distance form.
   A circle has no handles, so its tangent at a pinned point comes from
   `_RadialTangent` — `rot90(unit(p - centre))`.
+- **by any combination of rows that pins the offset** — review 2's
+  `distance_x(p2, a1.start, 0)` + `distance_y(p2, a1.start, 0)`. Measured:
+  svals `10.05  1.005  1.61e-16`, rank 2 of 3, `dof 7` (true 6),
+  `redundant: [tangent]`. With the Jacobian criterion: `1.142  1.000  0.834`,
+  rank 3 of 3, nothing redundant. The *value* half of the criterion is what
+  keeps `distance_x(..., 5)` — the offset pinned to a point that is **not** on
+  the arc — an ordinary tangency.
 
-The three are the same geometry; only their linearizations differ. A junction
-the sketch pins always has one of the two well-conditioned forms.
+The three forms are the same geometry; only their linearizations differ. A
+junction the sketch pins always has one of the two well-conditioned forms.
 
 ## Splines and slots (PRD-009 slice 6)
 
@@ -142,6 +156,14 @@ function `f` and their **analytic derivative** `df`. That buys three things:
   **A residual without a `df` reintroduces the O(n^2) cost, so `Residual`
   refuses to be constructed without one**, and every `df` is proven against a
   central difference of its own `f` in `tests/test_sketch_jacobian.py`.
+  **That gate cannot tell you the residual is right**, and it did not: it is
+  closed over `f`, so the internal circle-circle tangency computed
+  `d - (r1 - r2)` instead of `d - |r1 - r2|` for two slices with a green
+  derivative suite over it (review 2, C1/C15). The independent layer is
+  `tests/test_sketch_semantics.py`, which asserts what each residual *means*
+  against geometry it computes itself — including that `f` tracks the
+  geometric error with the right sign and scale, which is the half a check at
+  the solution cannot see.
 - `con_index` lets a diagnostic name the constraint the caller actually wrote.
 - `PointRef` indirection (a name -> value/gradient/param slots) is what will
   let arcs, ellipses and splines reuse this vocabulary through virtual handles
@@ -232,10 +254,17 @@ where its constraints put it — which is what dragging a fully-constrained
 entity should do — and it costs nothing when the drag moved only free DOF,
 because the constraint rows are already satisfied there.
 
-Diagnostics stay **off the drag path**: `analyze` is cached against a hash of
-the compiled residual structure *and the constraint targets*, and
-`spec["diagnostics"] in {"auto", "full", "cached"}` chooses. `auto` recomputes
-except on a drag frame. `diagnostics_source` reports which block you got, so a
+Diagnostics stay **off the drag path**: the greedy dependent-row pass is cached
+against a hash of the compiled residual structure *and the constraint targets*,
+and `spec["diagnostics"] in {"auto", "full", "cached"}` chooses. `auto`
+recomputes except on a drag frame. **The cache holds the dependent-row set and
+the rank it was found at, never the verdict**: the structure key excludes
+coordinates (the GUI resends the whole spec every frame, so a coordinate key
+would miss every time) while nonlinear rank depends on the configuration, so a
+drag frame with two collapsed lines cached `rank 0 / dof 8 / over_constrained`
+and the next ordinary solve of the same structure was served it (review 2,
+C10). The rank is recomputed every frame and the cached set reused only if it
+matches. `diagnostics_source` reports which frame's greedy pass you got, so a
 cached measurement is never presented as a fresh one.
 """
 from __future__ import annotations
@@ -274,6 +303,35 @@ ANALYSIS_BUDGET_MS = 50.0
 # A parameter slot counts as free when its column of the null-space basis is
 # this large relative to the largest such column.
 NULLSPACE_TOL_REL = 1e-6
+
+# How far a candidate junction may sit off a curve, on the configuration the
+# non-tangency rows project to, and still count as held on it; and how much of
+# a probe gradient may fall outside those rows' row space. Both are the
+# junction detector's tolerances (`_held_on`, `resolve_tangencies`). They are
+# far tighter than any drawing tolerance on purpose: the question is not "are
+# these near each other" but "do the other constraints *say* they meet".
+JUNCTION_TOL_MM = 1e-7
+JUNCTION_ROWSPACE_TOL = 1e-7
+
+# Residual evaluations allowed for projecting the seed onto the manifold the
+# non-tangency rows cut out, before the junction question is asked. A seed is
+# whatever the caller drew; the criterion is about the *solution*. Measured: an
+# under-determined projection is not fast — the dimensional junction seeded
+# 60 mm away needed 137 evaluations, and at 60 it stopped 21.8 mm short and the
+# junction was missed for a purely numerical reason. This budget is only spent
+# on tangencies the symbolic detector did **not** resolve.
+JUNCTION_PROJECT_NFEV = 500
+
+# Two slot centres closer than this are the same point: the slot has no
+# direction, its caps have no angles and its emission is not a slot. Checked at
+# declaration **and** after `initial` seeds the centres (review 2, C5).
+SLOT_MIN_SPAN_MM = 1e-9
+
+# Every radius in a sketch is a positive length. A zero or negative one solves
+# and then fails in the kernel — `Circle(radius=0.0)` makes no face and
+# `Circle(radius=-1.0)` raises `gp_Circ() - radius should be positive` — so it
+# is refused where it is written, not where it explodes (review 2, C9).
+MIN_RADIUS_MM = 0.0
 
 # Every residual kind this module can emit. `tests/test_sketch_jacobian.py`
 # asserts it has a central-difference case for each one, so adding a kind
@@ -831,25 +889,93 @@ class Residual:
 
 
 def _unit(ax: float, ay: float, bx: float, by: float):
-    """Unit direction a->b and the segment length (guarded)."""
+    """Unit direction a->b and the segment length (guarded).
+
+    **Coincident points get a zero direction here, deliberately**, and that is
+    right for the residuals this feeds: `parallel`, `perpendicular`, `angle`
+    and `point_on_line` are all functions of a *direction*, and a degenerate
+    segment has none. Handing them an invented direction would make a
+    `parallel` on a zero-length line suddenly unsatisfiable rather than
+    vacuous. Residuals that are functions of a *length* use `_norm_dir`
+    instead — see the note there, which is review 2's finding C2.
+    """
     dx, dy = bx - ax, by - ay
     n = math.hypot(dx, dy) or 1e-12
     return dx / n, dy / n, n
 
 
+def _norm_dir(ax: float, ay: float, bx: float, by: float):
+    """The gradient direction of `|b - a|`, with a **subgradient convention**.
+
+    `distance`, `point_on_circle`, `equal_length` and the circle-circle
+    tangency are all `|b - a|` (a *length*), not a direction. The Euclidean
+    norm is not differentiable at zero: its Clarke subdifferential there is the
+    whole closed unit ball, and `_unit`'s zero vector is the one element of it
+    that makes the residual's whole Jacobian row vanish — so a valid
+    zero-length solution reported `rank 0`, `dof 2` and called the constraint
+    redundant while it was pinning both coordinates (review 2, C2).
+
+    The convention here is the **+x unit subgradient**: at a coincidence the
+    row reads as if `b` were about to leave `a` along +x. It is an honest
+    element of the subdifferential, it is deterministic, and it keeps a
+    degenerate *seed* from producing an all-zero row the solver cannot escape.
+    It does **not** make the rank right on its own — one subgradient is rank 1
+    where the geometry pins 2 — which is why `distance(p, q, 0)` compiles to
+    the coincidence rows instead (see `Sketch.distance`).
+
+    The residual **value** is untouched by any of this: only `df` reads a
+    direction, so `max_residual` still measures the same millimetres.
+    """
+    dx, dy = bx - ax, by - ay
+    n = math.hypot(dx, dy)
+    if n <= 0.0:
+        return 1.0, 0.0, 0.0
+    return dx / n, dy / n, n
+
+
+def _check_radius(what: str, value) -> float:
+    """A radius is a positive finite length, wherever it is written.
+
+    Neither the circle/arc constructors nor the `radius` constraint checked
+    this, so `radius {c: "C", r: -1}` solved `ok: true` and emitted
+    `Circle(radius=-1.0)`, which raises `gp_Circ() - radius should be positive`
+    in the kernel; `r: 0` emitted `Circle(radius=0.0)`, which makes no face
+    (review 2, C9). The emitter re-checks the *solved and formatted* value —
+    two layers, because a free radius can also solve to zero.
+    """
+    r = float(value)
+    if not math.isfinite(r) or r <= MIN_RADIUS_MM:
+        raise SketchError(
+            f"{what} must be a positive radius, got {r}; a zero or negative "
+            "radius has no geometry (build123d: 'gp_Circ() - radius should be "
+            "positive number')")
+    return r
+
+
 def _circumcircle(a, b, c) -> tuple[float, float, float]:
     """Centre and radius through three points; collinear points are an error."""
+    # **Everything here is relative to `a`, and so is the tolerance.**
+    # Written in absolute coordinates this was not translation invariant in
+    # either half (review 2, C3): the collinearity tolerance scaled with the
+    # world position, so the same 1 mm arc was accepted at the origin and
+    # rejected as collinear at 1e9 mm — and the `ax*ax + ay*ay` form loses
+    # every significant digit of a millimetre-scale arc out there anyway
+    # (measured: radius 1.0 at the origin, 0.0 at 1e9). An arc's geometry is a
+    # property of the three points' offsets, so the arithmetic is done in them.
     (ax, ay), (bx, by), (cx, cy) = a, b, c
-    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
-    scale = max(abs(ax), abs(ay), abs(bx), abs(by), abs(cx), abs(cy), 1.0)
-    if abs(d) <= 1e-12 * scale * scale:
+    ux1, uy1 = bx - ax, by - ay
+    ux2, uy2 = cx - ax, cy - ay
+    d = 2.0 * (ux1 * uy2 - uy1 * ux2)
+    span = max(abs(ux1), abs(uy1), abs(ux2), abs(uy2),
+               abs(cx - bx), abs(cy - by), 1e-12)
+    if abs(d) <= 1e-12 * span * span:
         raise SketchError(
             "three-point arc needs three non-collinear points; "
             f"{a}, {b}, {c} are collinear")
-    a2, b2, c2 = ax * ax + ay * ay, bx * bx + by * by, cx * cx + cy * cy
-    ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d
-    uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d
-    return ux, uy, math.hypot(ax - ux, ay - uy)
+    n1, n2 = ux1 * ux1 + uy1 * uy1, ux2 * ux2 + uy2 * uy2
+    ox = (uy2 * n1 - uy1 * n2) / d
+    oy = (ux1 * n2 - ux2 * n1) / d
+    return ax + ox, ay + oy, math.hypot(ox, oy)
 
 
 def _accum_dir(v, J, row, ra: PointRef, rb: PointRef,
@@ -940,6 +1066,13 @@ class Sketch:
         # **after** `initial` has moved the entities, because a client cannot
         # be asked to send a parameter the solver invented.
         self._aux_seeds: list[tuple[int, str, str, str]] = []
+        # Tangency rows compiled in the **distance** form, pending the
+        # Jacobian-derived junction test (`resolve_tangencies`). Each entry is
+        # `{row, a, b, ci}`: the index into `self.residuals` the direction form
+        # replaces in place — same row, same position, so declaration-order
+        # blame is untouched.
+        self._pending_tangency: list[dict] = []
+        self._tangencies_resolved = False
         self._con_index = -1
         self._spec_index: object = _AUTO_INDEX
         self._origin: str | None = None
@@ -990,6 +1123,7 @@ class Sketch:
                internal: bool = False) -> str:
         self._claim(name, internal=internal)
         self._need_point(center)
+        _check_radius(f"circle {name!r}", r0)
         c = _Circle(name, center, float(r0), bool(fixed_r))
         if c.fixed_r:
             self._rads[name] = _FixedScalar(name, c.r0)
@@ -1017,6 +1151,7 @@ class Sketch:
         """
         self._claim(name, internal=internal)
         self._need_point(center)
+        _check_radius(f"arc {name!r}", r0)
         a = _Arc(name, center, float(r0), math.radians(float(start_deg)),
                  math.radians(float(end_deg)), bool(fixed_r) or bool(fixed),
                  fixed=bool(fixed), authored=authored,
@@ -1180,7 +1315,7 @@ class Sketch:
             raise SketchError(f"slot {name!r} needs a positive width, got {width}")
         p1, p2 = self.points[c1], self.points[c2]
         span = math.hypot(p2.x0 - p1.x0, p2.y0 - p1.y0)
-        if span <= 1e-9:
+        if span <= SLOT_MIN_SPAN_MM:
             raise SketchError(
                 f"slot {name!r} needs two distinct centres; {c1!r} and {c2!r} "
                 "start at the same coordinates")
@@ -1400,6 +1535,21 @@ class Sketch:
     def distance(self, p: str, q: str, d: float) -> None:
         rp, rq = self._pref(p), self._pref(q)
         d = float(d)
+        if not math.isfinite(d):
+            raise SketchError(f"distance must be a finite length, got {d}")
+        ci = self._begin("distance")
+        if d == 0.0:
+            # **A zero distance is a coincidence, and is compiled as one.**
+            # `|p - q| - 0` is not differentiable at its own solution: every
+            # subgradient is a single row, so the Jacobian could only ever
+            # remove *one* degree of freedom where the geometry removes two.
+            # Measured (review 2, C2): fixed `a`, free `b`, `distance(a, b, 0)`
+            # reported `rank 0`, `dof 2` and `redundant: [distance]` on a
+            # sketch with nothing free at all. The two coincidence rows are the
+            # same solution set, exactly, and they are linear.
+            self.note_coincidence(p, q)
+            self._coincident(ci, rp, rq)
+            return
 
         def f(v):
             px, py = rp.value(v)
@@ -1409,12 +1559,11 @@ class Sketch:
         def df(v, J, r):
             px, py = rp.value(v)
             qx, qy = rq.value(v)
-            ux, uy, _ = _unit(qx, qy, px, py)
+            ux, uy, _ = _norm_dir(qx, qy, px, py)
             rp.accum(v, J, r, ux, uy)
             rq.accum(v, J, r, -ux, -uy)
 
-        self._add(Residual(self._begin("distance"), "distance", 1,
-                           self._params(rp, rq), f, df))
+        self._add(Residual(ci, "distance", 1, self._params(rp, rq), f, df))
 
     def distance_x(self, p: str, q: str, d: float) -> None:
         rp, rq = self._pref(p), self._pref(q)
@@ -1549,6 +1698,15 @@ class Sketch:
         self._on_line_ref(ci, self._pref(p), ln)
 
     def _on_line_ref(self, ci: int, rp: PointRef, ln: str) -> None:
+        self._add(self._on_line_residual(ci, rp, ln))
+
+    def _on_line_residual(self, ci: int, rp: PointRef, ln: str) -> Residual:
+        """`cross(p - a, u_line) == 0`, built but not added.
+
+        Returned rather than added so `resolve_tangencies` can *probe* it: the
+        question "does the sketch hold this point on this line" is the value
+        and gradient of exactly this residual (see `_held_on`).
+        """
         ra, rb = self._line_refs(ln)
 
         def f(v):
@@ -1566,8 +1724,8 @@ class Sketch:
             ra.accum(v, J, r, -uy, ux)
             _accum_dir(v, J, r, ra, rb, ux, uy, n, -wy, wx)
 
-        self._add(Residual(ci, "point_on_line", 1,
-                           self._params(rp, ra, rb), f, df))
+        return Residual(ci, "point_on_line", 1,
+                        self._params(rp, ra, rb), f, df)
 
     def point_on_circle(self, p: str, c: str) -> None:
         self._need_circle(c)
@@ -1578,6 +1736,10 @@ class Sketch:
         self._on_circle_ref(ci, self._pref(p), c)
 
     def _on_circle_ref(self, ci: int, rp: PointRef, c: str) -> None:
+        self._add(self._on_circle_residual(ci, rp, c))
+
+    def _on_circle_residual(self, ci: int, rp: PointRef, c: str) -> Residual:
+        """`|p - centre| - r == 0`, built but not added (see `_held_on`)."""
         rc, rr = self._circle_refs(c)
 
         def f(v):
@@ -1586,15 +1748,16 @@ class Sketch:
             return (math.hypot(px - cx, py - cy) - rr.value(v),)
 
         def df(v, J, r):
-            ux, uy, _ = _unit(*rc.value(v), *rp.value(v))
+            ux, uy, _ = _norm_dir(*rc.value(v), *rp.value(v))
             rp.accum(v, J, r, ux, uy)
             rc.accum(v, J, r, -ux, -uy)
             rr.accum(v, J, r, -1.0)
 
-        self._add(Residual(ci, "point_on_circle", 1,
-                           self._params(rp, rc, rr), f, df))
+        return Residual(ci, "point_on_circle", 1,
+                        self._params(rp, rc, rr), f, df)
 
     def radius(self, c: str, r: float) -> None:
+        _check_radius(f"radius of {c!r}", r)
         self._radius_ref(self._begin("radius"), self._radius_of(c), float(r))
 
     def _radius_of(self, name: str) -> ScalarRef:
@@ -1706,6 +1869,12 @@ class Sketch:
 
             self._add(Residual(ci, "tangent_line_circle", 1,
                                self._params(ra, rb, rc, rr), f, df))
+            # **Provisional.** The symbolic pass above sees a junction the
+            # constraint *graph* spells out; `resolve_tangencies` asks the
+            # Jacobian the same question once every row exists, and swaps the
+            # direction form in over this row if the answer is yes.
+            self._pending_tangency.append(
+                {"row": len(self.residuals) - 1, "a": ln, "b": c, "ci": ci})
             return
 
         # Named or structural, `at` is a point on both curves — so a *second*
@@ -1865,6 +2034,13 @@ class Sketch:
         are written against that name.
         """
 
+        self._add(self._tangent_dir_residual(ci, ta, tb))
+
+    def _tangent_dir_residual(self, ci: int, ta: TangentRef,
+                              tb: TangentRef) -> Residual:
+        """`t_a x t_b`, built but not added — `resolve_tangencies` swaps this
+        in over a provisional distance row without moving it."""
+
         def f(v):
             ax, ay = ta.value(v)
             bx, by = tb.value(v)
@@ -1876,7 +2052,201 @@ class Sketch:
             ta.accum(v, J, r, by, -bx)
             tb.accum(v, J, r, -ay, ax)
 
-        self._add(Residual(ci, "tangent_dir", 1, self._params(ta, tb), f, df))
+        return Residual(ci, "tangent_dir", 1, self._params(ta, tb), f, df)
+
+    # ---------------- the junction criterion (review 2, C4) ----------------
+    def resolve_tangencies(self) -> None:
+        """Re-ask "do these two curves already meet?" of the **Jacobian**.
+
+        This is the fourth time the tangency degeneracy has been fixed, and the
+        first time the criterion is not an enumeration. The three previous
+        detectors each answered "is this junction pinned" from a list — of
+        entity handles (slice 6), of `coincident` unions (slice 10), of
+        constraint *kinds* that put a point on a curve (changelog 0142) — and
+        each list was complete until someone wrote the junction a way it did
+        not cover. Review 2 wrote it with `distance_x(p, a1.start, 0)` +
+        `distance_y(p, a1.start, 0)`: two rows that pin the junction exactly as
+        hard as a coincidence and appear on no list at all.
+
+        **The criterion.** Let `R` be every residual row *except* the tangency
+        rows being decided, and let `x*` be a configuration those rows solve
+        (they are projected onto their own manifold first, so a rough seed is
+        not mistaken for a rough sketch). A point handle `h` is **held on**
+        curve `c` when both of these hold at `x*`:
+
+        1. `phi_c(h) = 0` — `h` is on `c` there (`phi` is the curve's own
+           on-curve function: `|h - centre| - r`, or `cross(h - a, u_line)`);
+        2. `grad phi_c(h)` lies in the **row space of R** — the other rows
+           determine it, so it cannot move off the curve without breaking one
+           of them.
+
+        The two curves share a junction when some handle is held on both, and
+        that is exactly the condition under which the distance form sits at an
+        extremum of the manifold `R` cuts out (its gradient is then a
+        combination of R's rows, so it adds no rank and its value is the
+        *square* of the geometric error). No constraint kind appears anywhere
+        in it, so a new kind cannot make it stale: any combination of rows that
+        removes both degrees of freedom of the junction — however spelled —
+        puts `grad phi` in the row space, because the offset it would have to
+        move along is in R's null space.
+
+        Two things it deliberately does **not** claim:
+
+        - **Value, not just rank.** `distance_x(p, a1.start, 5)` pins the
+          offset just as firmly, to a point that is *not* on the arc. That is
+          an ordinary tangency, and condition (1) is what keeps it one.
+        - **Ellipses and splines are out.** Neither has a closed-form on-curve
+          function here, so they keep the symbolic detector. An elliptical
+          tangency's fallback is the auxiliary-anomaly form, which is already a
+          pair of direction residuals and was never in this class; the cost of
+          a missed junction there is one extra parameter, not a wrong answer.
+
+        The symbolic detector runs first and is unchanged, so every sketch it
+        already resolved costs nothing here (measured: the slot ring and the
+        50-segment staircase never reach this pass).
+        """
+        if self._tangencies_resolved:
+            return
+        self._tangencies_resolved = True
+        pending = [p for p in self._pending_tangency
+                   if p["row"] < len(self.residuals)]
+        if not pending or not self.n_par:
+            return
+        rows = {p["row"] for p in pending}
+        others = [r for i, r in enumerate(self.residuals) if i not in rows]
+        probe = self._junction_probe(others)
+        if probe is None:
+            return
+        for entry in pending:
+            joined = self._probe_junction(entry["a"], entry["b"], probe)
+            if joined is None:
+                continue
+            handle, ta, tb = joined
+            self.residuals[entry["row"]] = self._tangent_dir_residual(
+                entry["ci"], ta, tb)
+
+    def _junction_probe(self, others: list[Residual]):
+        """`(x*, Vr, Ur_scaled, f_scaled)` for the non-tangency rows, or None.
+
+        `x*` is the seed projected onto the manifold those rows cut out — the
+        junction question is about the *solution*, and a caller's seed may be
+        millimetres away from one. `Vr` spans their row space at `x*`.
+        """
+        x0 = self.initial_vector()
+        n_rows = sum(r.rows for r in others)
+        if not n_rows:
+            # Nothing pins anything: only a structurally identical handle can
+            # be a junction, and `_shared_endpoint` already found those.
+            return (x0, np.zeros((self.n_par, 0)))
+        offsets, row = [], 0
+        for res in others:
+            offsets.append(row)
+            row += res.rows
+        buf = np.zeros((n_rows, self.n_par))
+
+        def fun(v):
+            out = np.empty(n_rows)
+            for res, r0 in zip(others, offsets):
+                out[r0:r0 + res.rows] = res.f(v)
+            return out
+
+        def jac(v):
+            buf.fill(0.0)
+            for res, r0 in zip(others, offsets):
+                res.df(v, buf, r0)
+            return buf
+
+        try:
+            fit = least_squares(fun, x0, jac=jac, method="trf",
+                                xtol=1e-12, ftol=1e-12, gtol=1e-12,
+                                max_nfev=JUNCTION_PROJECT_NFEV)
+            xs = fit.x
+        except Exception:                       # pragma: no cover - defensive
+            xs = x0
+        J = jac(xs)
+        norms = np.linalg.norm(J, axis=1)
+        Js = J / np.where(norms > 0.0, norms, 1.0)[:, None]
+        try:
+            _, s, Vt = np.linalg.svd(Js, full_matrices=False)
+        except np.linalg.LinAlgError:           # pragma: no cover - defensive
+            return None
+        if s.size == 0 or s[0] <= 0.0:
+            return (xs, np.zeros((self.n_par, 0)))
+        keep = int((s > max(Js.shape) * s[0] * RANK_TOL_REL).sum())
+        return (xs, Vt[:keep].T)
+
+    def _probe_junction(self, a: str, b: str, probe):
+        """`(handle, t_a, t_b)` where the sketch holds a point on both, or None."""
+        xs, Vr = probe
+        candidates = list(dict.fromkeys(
+            list(self._on_curve_handles(a)) + list(self._on_curve_handles(b))
+            + [n for n in self._refs]))
+        for handle in candidates:
+            if not self._held_on(a, handle, xs, Vr):
+                continue
+            if not self._held_on(b, handle, xs, Vr):
+                continue
+            ta = self._tangent_at(a, handle)
+            tb = self._tangent_at(b, handle)
+            if ta is not None and tb is not None:
+                return handle, ta, tb
+        return None
+
+    def _held_on(self, curve: str, handle: str, xs: np.ndarray,
+                 Vr: np.ndarray) -> bool:
+        """Do the other rows hold `handle` **on** `curve` at `xs`?
+
+        Both halves of the criterion in `resolve_tangencies`: the on-curve
+        function is zero there, and its gradient is in the row space `Vr`
+        spans. A structural handle (`a1.start` on `a1`) passes trivially — its
+        residual is identically zero with an identically zero gradient.
+        """
+        res = self._on_curve_residual(curve, handle)
+        if res is None:
+            return False
+        # The value first: it is one hypot and it rejects almost every
+        # candidate, so the gradient and the projection are only paid for the
+        # handles that are actually sitting on the curve.
+        value = float(res.f(xs)[0])
+        scale = max(1.0, self._curve_scale(curve, xs))
+        if abs(value) > JUNCTION_TOL_MM * scale:
+            return False
+        row = np.zeros((1, self.n_par))
+        res.df(xs, row, 0)
+        g = row[0]
+        outside = g - Vr @ (Vr.T @ g) if Vr.shape[1] else g
+        # `max(|g|, 1)`, not `|g|`. Both on-curve functions are built from
+        # **unit** vectors, so a gradient that actually constrains anything has
+        # norm ~1 — and a *structural* incidence (`a1.start` on `a1`, `p2` on
+        # the line it is an endpoint of) is analytically zero but numerically
+        # 1e-16 of floating-point dust, which a purely relative test reads as a
+        # full-size vector pointing somewhere random. Measured: without the
+        # floor, a junction seeded 3 mm off was found at 0 mm and 0.5 mm and
+        # missed at 3 mm, for no geometric reason at all.
+        return (float(np.linalg.norm(outside))
+                <= JUNCTION_ROWSPACE_TOL * max(float(np.linalg.norm(g)), 1.0))
+
+    def _on_curve_residual(self, curve: str, handle: str) -> Residual | None:
+        """The curve's on-curve function at `handle`, or None for a curve
+        without a closed-form one (an ellipse, a spline)."""
+        rp = self._refs.get(handle)
+        if rp is None:
+            return None
+        if curve in self.lines:
+            return self._on_line_residual(-1, rp, curve)
+        if curve in self.circles or curve in self.arcs:
+            return self._on_circle_residual(-1, rp, curve)
+        return None
+
+    def _curve_scale(self, curve: str, xs: np.ndarray) -> float:
+        """A length the curve's on-curve function is measured against."""
+        if curve in self.circles or curve in self.arcs:
+            return abs(self._rads[curve].value(xs))
+        line = self.lines.get(curve)
+        if line is None:
+            return 1.0
+        ra, rb = self._line_refs(curve)
+        return math.dist(ra.value(xs), rb.value(xs))
 
     def _tangent_perp(self, ci: int, ln: str, c: str, at: str) -> None:
         """`(at - centre) . u_line == 0` — the radius meets the line square."""
@@ -1933,23 +2303,47 @@ class Sketch:
             return
         ra, r1 = self._circle_refs(c1)
         rb, r2 = self._circle_refs(c2)
-        sign = 1.0 if kind == "external" else -1.0
+        external = kind == "external"
 
+        # **Internal tangency is `d - |r1 - r2|`, not `d - (r1 - r2).`**
+        # Which circle is inside which is a property of the pair, not of the
+        # order the caller named them in: measured (review 2, C1) on two fixed
+        # circles r=10 and r=5 whose centres are 5 apart — internally tangent —
+        # `tangent(big, small, internal)` returned `ok: true` and
+        # `tangent(small, big, internal)` returned `ok: false`, residual 10,
+        # with the pair reported as conflicting. Both spellings are the same
+        # geometry.
+        #
+        # `|.|` has a kink at `r1 == r2` (two internally tangent circles of
+        # equal radius are the *same* circle, a degenerate configuration). The
+        # convention is `sgn(0) = 0` — the minimum-norm element of the Clarke
+        # subdifferential, and the value a central difference straddling the
+        # kink returns, so the derivative gate agrees with it rather than
+        # having to avoid it.
         def f(v):
             ax, ay = ra.value(v)
             bx, by = rb.value(v)
-            return (math.hypot(ax - bx, ay - by)
-                    - (r1.value(v) + sign * r2.value(v)),)
+            v1, v2 = r1.value(v), r2.value(v)
+            want = v1 + v2 if external else abs(v1 - v2)
+            return (math.hypot(ax - bx, ay - by) - want,)
 
         def df(v, J, r):
-            ux, uy, _ = _unit(*rb.value(v), *ra.value(v))
+            ux, uy, _ = _norm_dir(*rb.value(v), *ra.value(v))
             ra.accum(v, J, r, ux, uy)
             rb.accum(v, J, r, -ux, -uy)
-            r1.accum(v, J, r, -1.0)
-            r2.accum(v, J, r, -sign)
+            if external:
+                d1 = d2 = -1.0
+            else:
+                gap = r1.value(v) - r2.value(v)
+                s = 0.0 if gap == 0.0 else math.copysign(1.0, gap)
+                d1, d2 = -s, s
+            r1.accum(v, J, r, d1)
+            r2.accum(v, J, r, d2)
 
         self._add(Residual(ci, "tangent_circles", 1,
                            self._params(ra, rb, r1, r2), f, df))
+        self._pending_tangency.append(
+            {"row": len(self.residuals) - 1, "a": c1, "b": c2, "ci": ci})
 
     # ---------------- generalized constraints (slice 5) ----------------
     def tangent(self, a: str, b: str, at: str | None = None,
@@ -2157,8 +2551,10 @@ class Sketch:
             return (math.hypot(bx - ax, by - ay) - math.hypot(dx - cx, dy - cy),)
 
         def df(v, J, r):
-            ux, uy, _ = _unit(*ra.value(v), *rb.value(v))
-            wx, wy, _ = _unit(*rc.value(v), *rd.value(v))
+            # `_norm_dir`, not `_unit`: this residual is a difference of two
+            # *lengths* (review 2, C2).
+            ux, uy, _ = _norm_dir(*ra.value(v), *rb.value(v))
+            wx, wy, _ = _norm_dir(*rc.value(v), *rd.value(v))
             rb.accum(v, J, r, ux, uy)
             ra.accum(v, J, r, -ux, -uy)
             rd.accum(v, J, r, -wx, -wy)
@@ -2399,11 +2795,29 @@ class Sketch:
         return True
 
     def _reseed_slots(self) -> None:
-        """Re-derive every slot's compiled geometry from the seeded centres."""
+        """Re-derive every slot's compiled geometry from the seeded centres.
+
+        **And re-validate them.** `slot()` rejects two coincident centres at
+        declaration, but `initial` runs afterwards and a *complete* warm start
+        can put them back on top of each other — measured (review 2, C5): a
+        width-10 slot declared at `(0,0)`/`(20,0)` and seeded with both centres
+        at `(0,0)` returned `ok: true`, `rank 1`, `dof 8`, and emitted geometry
+        that is not a slot. The seed is checked by the same rule the
+        declaration is, because it produces the same object.
+        """
         for name, slot in self.slots.items():
             p1, p2 = self.points[slot.c1], self.points[slot.c2]
+            if math.hypot(p2.x0 - p1.x0, p2.y0 - p1.y0) <= SLOT_MIN_SPAN_MM:
+                raise SketchError(
+                    f"initial collapses slot {name!r}: it seeds {slot.c1!r} and "
+                    f"{slot.c2!r} onto the same coordinates, and a slot needs "
+                    "two distinct centres")
             a_deg, b_deg = self._slot_arc_angles(p1, p2)
             r = slot.width / 2 if slot.r_seed is None else slot.r_seed
+            if not (r > 0.0) or not math.isfinite(r):
+                raise SketchError(
+                    f"initial seeds slot {name!r} with radius {r}; a slot's "
+                    "radius must be positive")
             for arc_name, (d1, d2) in ((f"{name}.arc_a", a_deg),
                                        (f"{name}.arc_b", b_deg)):
                 arc = self.arcs[arc_name]
@@ -2635,18 +3049,48 @@ class Sketch:
         return dependent, True
 
     def analyze(self, J: np.ndarray, f: np.ndarray, *, ok: bool,
-                budget_ms: float = ANALYSIS_BUDGET_MS) -> dict:
-        """The `diagnostics` block returned on every solve (FR5)."""
+                budget_ms: float = ANALYSIS_BUDGET_MS,
+                cached: dict | None = None) -> tuple[dict, dict | None, bool]:
+        """The `diagnostics` block returned on every solve (FR5).
+
+        Returns `(block, cache_payload, reused)`. `cached` is a previous
+        frame's `cache_payload` and it is **verified against this frame's
+        Jacobian before any of it is used**: the SVD rank is recomputed here,
+        always, and the cached dependent-row set is reused only when that rank
+        matches the rank the cached set was found at.
+
+        That verification is review 2's finding C10. The cache key is the
+        *structure* — deliberately, because the GUI resends the whole spec
+        every drag frame and keying on coordinates would miss every time — but
+        the rank of a nonlinear Jacobian is a function of the **configuration**
+        too. Measured: a drag frame whose line had coincident endpoints cached
+        `rank 0`, `dof 6`, `over_constrained`, and a later ordinary solve of a
+        nonzero line asking for `diagnostics: "cached"` was served that verdict
+        (a full analysis of the same solve says `rank 1`, `dof 5`,
+        `under_constrained`). The rank is cheap next to the greedy dependent-row
+        pass — the pass is what the cache exists for — so recomputing it every
+        frame keeps `status`, `rank`, `dof` and `free_entities` describing the
+        sketch in front of them, and the blame sets are re-split from *this*
+        frame's residuals.
+        """
         t0 = time.perf_counter()
         n_par, n_res = self.n_par, self.n_res
-        rank = self.rank(J) if (n_par and n_res) else 0
+        svd_rank = self.rank(J) if (n_par and n_res) else 0
+        rank = svd_rank
 
         # Only a rank-deficient system has dependent rows at all, so a
         # well-constrained sketch — the drag-path case — never pays for the
         # greedy pass.
         dependent: list[int] = []
         complete = True
-        if rank < n_res:
+        reused = False
+        if cached is not None and cached.get("svd_rank") == svd_rank:
+            dependent = list(cached.get("dependent") or [])
+            complete = bool(cached.get("complete", True))
+            reused = True
+            if complete:
+                rank = n_res - len(dependent)
+        elif rank < n_res:
             dependent, complete = self.dependent_rows(self.row_scaled(J),
                                                       budget_ms)
             if complete:
@@ -2712,7 +3156,9 @@ class Sketch:
             # removing any one member resolves the dependency.
             diag["redundant"] = redundant
             diag["conflicting"] = conflicting
-        return diag
+        payload = {"svd_rank": svd_rank, "dependent": list(dependent),
+                   "complete": complete}
+        return diag, payload, reused
 
     # ---------------- solve ----------------
     # A note for whoever owns the drag budget next: `tr_solver="lsmr"` was
@@ -2761,33 +3207,40 @@ class Sketch:
                      budget_ms: float) -> tuple[dict, str]:
         """`analyze`, behind the structure cache (design Decision 9c).
 
-        A drag frame changes no constraints, so `auto` serves the block the
-        previous solve computed rather than paying for an SVD and the greedy
-        dependent-set pass on every frame. `full` always recomputes; `cached`
-        prefers the cache whatever the frame is. The served block is the one
-        that was computed — including its `analysis_ms` — and
-        `diagnostics_source` says which it is, because a cached measurement
-        presented as a fresh one is exactly the kind of quiet lie this
-        codebase's `unverified` rule exists to prevent.
+        A drag frame changes no constraints, so `auto` reuses the **greedy
+        dependent-row set** the previous solve found rather than paying ~6.4 ms
+        for it on every frame. `full` always recomputes; `cached` prefers the
+        cache whatever the frame is.
+
+        What the cache does **not** carry any more is the verdict. The cached
+        set is accepted only if this frame's Jacobian has the rank it was found
+        at, and `status`, `rank`, `dof`, `free_entities` and the
+        redundant/conflicting split are computed from this frame either way —
+        because the structure key excludes coordinates and nonlinear rank does
+        not (review 2, C10; see `analyze`). `diagnostics_source` says which
+        frame's greedy pass you got, because a cached measurement presented as
+        a fresh one is exactly the kind of quiet lie this codebase's
+        `unverified` rule exists to prevent.
         """
         mode = self.diagnostics_mode
         key = self.structure_key()
         prefer_cache = key is not None and (
             mode == "cached" or (mode == "auto" and self.drag_res is not None))
-        if prefer_cache:
-            cached = _DIAG_CACHE.get(key)
-            if cached is not None:
-                return dict(cached), "cached"
-        diag = self.analyze(J, f, ok=ok, budget_ms=budget_ms)
-        if key is not None:
-            _DIAG_CACHE[key] = dict(diag)
+        cached = _DIAG_CACHE.get(key) if prefer_cache else None
+        diag, payload, reused = self.analyze(J, f, ok=ok, budget_ms=budget_ms,
+                                             cached=cached)
+        if key is not None and payload is not None:
+            _DIAG_CACHE[key] = payload
             while len(_DIAG_CACHE) > DIAG_CACHE_MAX:
                 _DIAG_CACHE.pop(next(iter(_DIAG_CACHE)))
-        return diag, "computed"
+        return diag, ("cached" if reused else "computed")
 
     def solve(self, tol: float = 1e-10, max_nfev: int = 2000, *,
               analysis_budget_ms: float = ANALYSIS_BUDGET_MS) -> dict:
         t0 = time.perf_counter()
+        # Idempotent, and `parse_sketch` has normally already run it: a
+        # `Sketch` built through the direct API gets the junction criterion too.
+        self.resolve_tangencies()
         n_par, n_res = self.n_par, self.n_res
         m = n_res + self.n_drag
         x0 = self.initial_vector()
@@ -3114,6 +3567,10 @@ def parse_sketch(spec: dict) -> Sketch:
                           f"{list(DIAGNOSTICS_MODES)}, not {mode!r}")
     sk.diagnostics_mode = mode
     sk.seed(spec.get("initial"))
+    # After `seed`, because the junction question is asked of the configuration
+    # the sketch actually solves from; before `drag`, because the drag block is
+    # an objective and never a pinning row.
+    sk.resolve_tangencies()
     drag = spec.get("drag")
     if drag:
         if not isinstance(drag, dict):

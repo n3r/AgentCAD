@@ -1,11 +1,23 @@
 """Every residual's analytic `df`, proven against a central difference of `f`.
 
-This is the highest-value test in PRD-009. A wrong analytic derivative does
-not crash: it converges slowly, to the wrong branch, or not at all, and it is
-very hard to debug from the outside. So every registered residual kind is
-evaluated at randomized parameter vectors and compared column-by-column with a
-central difference of *its own* `f` — including the columns it did not
-declare, which is how an under-declared `params` tuple is caught.
+A wrong analytic derivative does not crash: it converges slowly, to the wrong
+branch, or not at all, and it is very hard to debug from the outside. So every
+registered residual kind is evaluated at randomized parameter vectors and
+compared column-by-column with a central difference of *its own* `f` —
+including the columns it did not declare, which is how an under-declared
+`params` tuple is caught.
+
+**Read the claim exactly: this proves `df` is the derivative of `f`, and it
+cannot tell you `f` is the right function.** It is closed over `f`, so a
+geometrically wrong residual passes every case here — and one did, for two
+slices: the internal circle/circle tangency computed `d - (r1 - r2)` instead of
+`d - |r1 - r2|`, so two internally tangent circles reported `ok: false` if you
+named them in the other order, with this suite green over it the whole time
+(review 2, findings C1 and C15). The independent layer is
+**`tests/test_sketch_semantics.py`**, which asserts what each residual *means*
+against geometry it computes itself. Neither module replaces the other, and a
+changelog that says "every residual is proven" without naming which of the two
+claims it means is overstating this one.
 
 `RESIDUAL_KINDS` is the coverage gate: a kind added to the solver without a
 case in *some* derivative harness fails

@@ -107,7 +107,7 @@ export function init(a) {
     // `sketch_profile()` into part B's script — and if A was a sketch-on-face,
     // every solve still shipped A's face basis. Switching parts starts a new
     // sketch; the old one lives in whatever script it was inserted into.
-    const key = `${state.projectName || ""}::${state.selectedPart || ""}`;
+    const key = ownerKey();
     if (key === sketchOwner) return;
     sketchOwner = key;
     resetModel();
@@ -127,6 +127,12 @@ export function init(a) {
   }).observe(document.documentElement, {
     attributes: true, attributeFilter: ["data-theme"],
   });
+  // The block lookup needs the *script*, and the script arrives after the
+  // `selectedPart` event that triggered it — so it is retried here, when the
+  // buffer actually holds the part it is about (review 2, C14).
+  editor.onPartChange(() => {
+    if (open) refreshBlocks();
+  });
   document.addEventListener("keydown", onKey);
   resetModel();
   buildUI();
@@ -141,10 +147,16 @@ export function init(a) {
  *  browser only carries them, because a browser-only flag would be a lie the
  *  emitter never sees. */
 export function openOnFace(info) {
+  // The plane was measured for one part. `main.js` rechecks the selection
+  // before calling, and this is the same check on the other side of the
+  // module boundary — a face basis installed over a different part is
+  // coordinates in a plane that part does not have (review 2, C14).
+  const owner = ownerKey(info.project, info.owner_part);
+  if (info.owner_part !== undefined && owner !== ownerKey()) return;
   resetModel();
   // Claim the current part for this sketch, so a `selectedPart` event that
   // arrives after the face pick cannot reset what was just opened.
-  sketchOwner = `${state.projectName || ""}::${state.selectedPart || ""}`;
+  sketchOwner = ownerKey();
   plane = {
     origin: info.origin, x_dir: info.x_dir, y_dir: info.y_dir,
     normal: info.normal, face_index: info.face_index,
@@ -172,6 +184,14 @@ export function openOnFace(info) {
                   + "and were not projected — they cannot be constraint targets",
                   "info");
   }
+}
+
+/** `"<project>::<part>"` — the sketch's owner, and the thing every async
+ *  response has to still be about when it lands. */
+function ownerKey(project, part) {
+  const p = project === undefined ? state.projectName : project;
+  const q = part === undefined ? state.selectedPart : part;
+  return `${p || ""}::${q || ""}`;
 }
 
 function isConstruction(entity) {
@@ -1313,23 +1333,62 @@ function hasEntities() {
  *  `entitiesSpec()`. `construction` and `plane` ride through untouched: a
  *  reference that re-parsed as real geometry would emit the part's own
  *  boundary back into it, and a sketch-on-face without its basis is a set of
- *  coordinates in a plane nobody recorded. */
+ *  coordinates in a plane nobody recorded.
+ *
+ *  **It has to be an exact inverse, and it was not** (review 2, C13): a
+ *  construction spline or slot came back as real geometry after one round
+ *  trip, an arc lost `fixed_r`, and a three-point arc opened as
+ *  `{start, mid, end}` and re-serialized as a centre form full of `undefined`,
+ *  which the route rejected. `tests/test_sketch_frontend_roundtrip.py` runs
+ *  the pair over every entity kind and every flag through node.
+ *
+ *  The one deliberate normalization is the three-point arc: the canvas has a
+ *  single arc representation — a **centre point entity** plus radius and two
+ *  angles — so a three-point-authored arc is converted to it on load, with its
+ *  circumcentre added as a real point. Same geometry; it re-emits as
+ *  `RadiusArc` rather than `ThreePointArc`, which is the emitter's preferred
+ *  (endpoint-anchored) constructor anyway. */
 function specToModel(spec) {
   const ents = (spec && spec.entities) || {};
   model.points = (ents.points || []).map((p) => ({ ...p, fixed: !!p.fixed }));
   model.lines = (ents.lines || []).map((l) => ({ ...l }));
   model.circles = (ents.circles || []).map((c) => ({ ...c }));
-  model.arcs = (ents.arcs || []).map((a) => ({ ...a }));
+  model.arcs = [];
+  for (const a of ents.arcs || []) model.arcs.push(arcFromSpec(a));
+  model.arcs = model.arcs.filter(Boolean);
   model.ellipses = (ents.ellipses || []).map((e) => ({
     ...e, rotation: e.rotation || 0,
     bounded: e.start_deg !== undefined && e.start_deg !== null,
   }));
   model.splines = (ents.splines || []).map(
-    (s) => ({ name: s.name, points: [...s.points] }));
+    (s) => ({ ...s, points: [...s.points] }));
   model.slots = (ents.slots || []).map((s) => ({ ...s }));
   model.constraints = ((spec && spec.constraints) || []).map((c) => ({ ...c }));
   plane = (spec && spec.plane) || null;
   seq = countersFor(model);
+}
+
+/** One spec arc into the canvas's centre form, adding its centre point when
+ *  the arc was authored through three points. Returns null for three points
+ *  that are collinear — there is no arc through them and the solver would
+ *  refuse the spec too. */
+function arcFromSpec(a) {
+  if (a.center !== undefined && a.center !== null) return { ...a };
+  const at = (v) => ({ x: Number(v[0]), y: Number(v[1]) });
+  if (!Array.isArray(a.start) || !Array.isArray(a.mid) || !Array.isArray(a.end)) {
+    return null;
+  }
+  const arc = circumArc(at(a.start), at(a.mid), at(a.end));
+  if (!arc) return null;
+  let name = `${a.name}_center`;
+  let n = 2;
+  while (model.points.some((p) => p.name === name)) name = `${a.name}_center${n++}`;
+  model.points.push({ name, x: arc.cx, y: arc.cy, fixed: false });
+  const { start, mid, end, center, ...rest } = a;
+  return {
+    ...rest, center: name, r: arc.r,
+    start_deg: arc.start_deg, end_deg: arc.end_deg,
+  };
 }
 
 /** Look for round-trip blocks in the open part's script and offer them.
@@ -1339,6 +1398,12 @@ async function refreshBlocks() {
   if (hasEntities()) return;
   let script = "";
   try {
+    // **Whose script is in the buffer**, not whose part is selected.
+    // `state.selectedPart` changes on the click and `editor.setPart` lands a
+    // fetch later, so a lookup started in between read part A's script and
+    // opened A's sketch over part B — with A's own generation counter and A's
+    // owner key, both of which say everything is fine (review 2, C14).
+    if (editor.partId() !== state.selectedPart) return;
     script = editor.getScript() || "";
   } catch (err) {
     script = "";
@@ -1349,6 +1414,12 @@ async function refreshBlocks() {
     return;
   }
   const my = ++blocksSeq;
+  // The script was read out of the editor for **this** part. The generation
+  // counter alone is not enough here: `state` publishes `selectedPart` and the
+  // editor loads the new script on its own schedule, so a lookup can be in
+  // flight across a part switch and land on the other part's canvas. The owner
+  // is recorded with the request and re-checked with it (review 2, C14).
+  const owner = ownerKey();
   let res = null;
   try {
     res = await api.sketchBlocks(script);
@@ -1359,7 +1430,8 @@ async function refreshBlocks() {
   // empty canvas must not `resetModel()` over geometry the user drew while it
   // was in flight — there is no undo for that. A newer generation (a part
   // switch, a second open) supersedes this answer entirely.
-  if (my !== blocksSeq || hasEntities()) return;
+  if (my !== blocksSeq || owner !== ownerKey() || hasEntities()) return;
+  if (editor.partId() !== state.selectedPart) return;
   const blocks = (res && res.blocks) || [];
   if (!blocks.length) {
     hideBanner();
@@ -1418,6 +1490,7 @@ async function checkReopenedFace() {
   }
   if (!project || !part) return;
   const my = ++faceSeq;
+  const owner = ownerKey(project, part);
   let res = null;
   try {
     res = await api.callTool("sketch_plane", {
@@ -1426,8 +1499,10 @@ async function checkReopenedFace() {
   } catch (err) {
     return;              // an unreachable server is not a moved face
   }
-  // `plane !== p` means a different sketch is on screen now.
-  if (my !== faceSeq || plane !== p || !res || res.error) return;
+  // `plane !== p` means a different sketch is on screen now; `owner` means a
+  // different *part* is, which `plane` alone cannot tell you.
+  if (my !== faceSeq || plane !== p || owner !== ownerKey()) return;
+  if (!res || res.error) return;
   const check = res.face_check;
   if (!check || check.status !== "moved") return;
   actions.toast(check.message, "error");
@@ -1530,37 +1605,66 @@ function applyReadOnly() {
 
 // ------------------------------------------------------------------ solve
 
+/** The model as a solve/emit spec.
+ *
+ *  **Every flag the model can carry is written here**, because this and
+ *  `specToModel` are an inverse pair and a flag dropped on this side is
+ *  geometry that changes meaning after one GUI round trip: a construction
+ *  spline or slot silently became emitted geometry, and a fixed-radius arc
+ *  gained a free radius (review 2, C13). */
 function entitiesSpec() {
+  const flags = (e) => ({
+    ...(e.fixed ? { fixed: true } : {}),
+    ...(e.fixed_r ? { fixed_r: true } : {}),
+    ...(e.construction ? { construction: true } : {}),
+  });
   return {
     points: model.points.map((p) => ({
       name: p.name, x: p.x, y: p.y, fixed: !!p.fixed,
+      ...(p.construction ? { construction: true } : {}),
     })),
     lines: model.lines.map((l) => ({
-      name: l.name, p1: l.p1, p2: l.p2,
-      ...(l.construction ? { construction: true } : {}),
+      name: l.name, p1: l.p1, p2: l.p2, ...flags(l),
     })),
     circles: model.circles.map((c) => ({
-      name: c.name, center: c.center, r: c.r,
-      ...(c.fixed_r ? { fixed_r: true } : {}),
-      ...(c.construction ? { construction: true } : {}),
+      name: c.name, center: c.center, r: c.r, ...flags(c),
     })),
     arcs: model.arcs.map((a) => ({
       name: a.name, center: a.center, r: a.r,
-      start_deg: a.start_deg, end_deg: a.end_deg,
-      ...(a.fixed ? { fixed: true } : {}),
-      ...(a.construction ? { construction: true } : {}),
+      start_deg: a.start_deg, end_deg: a.end_deg, ...flags(a),
     })),
     ellipses: model.ellipses.map((e) => ({
       name: e.name, center: e.center, a: e.a, b: e.b, rotation: e.rotation,
       ...(e.bounded ? { start_deg: e.start_deg, end_deg: e.end_deg } : {}),
-      ...(e.construction ? { construction: true } : {}),
+      ...flags(e),
     })),
-    splines: model.splines.map((s) => ({ name: s.name, points: [...s.points] })),
+    splines: model.splines.map((s) => ({
+      name: s.name, points: [...s.points], ...flags(s),
+    })),
     slots: model.slots.map((s) => ({
-      name: s.name, c1: s.c1, c2: s.c2, width: s.width,
+      name: s.name, c1: s.c1, c2: s.c2, width: s.width, ...flags(s),
     })),
   };
 }
+
+/** Exported for `tests/test_sketch_frontend_roundtrip.py` only.
+ *
+ *  `specToModel` and `entitiesSpec` are an inverse pair and there is no way to
+ *  assert that from outside the module — the model they share is private.
+ *  This runs the pair over one spec and hands back what the next solve would
+ *  send, which is exactly the property the test needs. */
+export const __roundTrip__ = {
+  entitiesOf(spec) {
+    resetModel();
+    specToModel(spec);
+    return entitiesSpec();
+  },
+  constraintsOf(spec) {
+    resetModel();
+    specToModel(spec);
+    return model.constraints;
+  },
+};
 
 /** The previous frame's solution, in `initial`'s shape. A slot is seeded by
  *  its radius alone — its caps are re-derived from the seeded centres — and

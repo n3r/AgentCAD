@@ -11,6 +11,10 @@ let saveBtn = null;
 let lastDirty = false;
 let gutterClickHandler = null;
 const dirtyListeners = new Set();
+// Fired when the buffer starts holding a *different* part's script. The
+// sketcher needs it: `state.selectedPart` changes on the click and this lands
+// a fetch later, so a block lookup started in between reads the wrong script.
+const partListeners = new Set();
 
 export function init(hostEl, { onSave }) {
   onSaveCallback = onSave;
@@ -86,6 +90,9 @@ export function setPart(partId, script) {
     cm.setValue(cleanText);
   }
   updateDirty();
+  // **After** the buffer holds the new script, not before: a listener that
+  // reads `getScript()` on this event must get the part it was told about.
+  if (switching) for (const fn of [...partListeners]) fn(partId);
 }
 
 export function markSaved(script) {
@@ -95,6 +102,17 @@ export function markSaved(script) {
 
 export function getScript() {
   return cm.getValue();
+}
+
+/** Whose script `getScript()` is currently holding.
+ *
+ *  `state.selectedPart` changes when the user clicks; this buffer changes when
+ *  `setPart` lands, which is a fetch later. Anything that reads the script and
+ *  then acts on the *selected* part has to compare the two — the sketcher's
+ *  block lookup read part A's script one tick after the user picked part B and
+ *  opened A's sketch over B. */
+export function partId() {
+  return currentPartId;
 }
 
 /** Append text to the end of the buffer (used by the sketcher's insert).
@@ -117,6 +135,12 @@ export function isDirty() {
 export function onDirtyChange(fn) {
   dirtyListeners.add(fn);
   return () => dirtyListeners.delete(fn);
+}
+
+/** Called when the buffer swaps to another part's script (see `partListeners`). */
+export function onPartChange(fn) {
+  partListeners.add(fn);
+  return () => partListeners.delete(fn);
 }
 
 // ------------------------------------------------------------ comment gutter

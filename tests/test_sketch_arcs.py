@@ -23,6 +23,7 @@ import math
 import statistics
 import time
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
@@ -760,3 +761,117 @@ def test_a_50_entity_sketch_that_is_half_arcs_still_clears_the_drag_budget(capsy
     assert res["ok"] is True, res["diagnostics"]
     assert res["warm_started"] is True
     assert p50 <= FR6_WARM_MS, f"warm-drag p50 {p50:.2f} ms over FR6's budget"
+
+
+# --------------------------------------------------------------------------
+# review 2: the residual has to mean the same thing whichever way round the
+# caller names the two curves (C1), and an arc is the same arc wherever the
+# part happens to sit in the world (C3)
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("order", ["big_first", "small_first"])
+def test_internal_tangency_does_not_depend_on_the_operand_order(order):
+    """`d - (r1 - r2)` was the residual; `d - |r1 - r2|` is the geometry.
+
+    Two fixed circles, r=10 and r=5, centres 5 apart: internally tangent, and
+    the review measured `tangent(big, small, internal)` -> `ok: true` against
+    `tangent(small, big, internal)` -> `ok: false`, `max_residual` **10**, the
+    pair reported as conflicting. Which circle is inside which is not a
+    property of the argument order.
+    """
+    a, b = ("big", "small") if order == "big_first" else ("small", "big")
+    res = solve_sketch({
+        "points": [{"name": "c1", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "c2", "x": 5.0, "y": 0.0, "fixed": True}],
+        "circles": [{"name": "big", "center": "c1", "r": 10.0, "fixed_r": True},
+                    {"name": "small", "center": "c2", "r": 5.0,
+                     "fixed_r": True}],
+        "constraints": [{"type": "tangent", "a": a, "b": b, "kind": "internal"}],
+    })
+    assert res["ok"] is True, res
+    assert res["max_residual"] == pytest.approx(0.0, abs=1e-12)
+
+
+@pytest.mark.parametrize("order", ["big_first", "small_first"])
+def test_internal_tangency_solves_the_same_geometry_either_way(order):
+    """And it does the work from an off seed, not just at the answer."""
+    a, b = ("a1", "a2") if order == "big_first" else ("a2", "a1")
+    res = solve_sketch({
+        "points": [{"name": "c1", "x": 0.0, "y": 0.0, "fixed": True},
+                   {"name": "c2", "x": 1.4, "y": 0.0}],
+        "arcs": [{"name": "a1", "center": "c1", "r": 9.6, "start_deg": 0.0,
+                  "end_deg": 140.0, "fixed_r": True},
+                 {"name": "a2", "center": "c2", "r": 6.3, "start_deg": 180.0,
+                  "end_deg": 320.0, "fixed_r": True}],
+        "constraints": [{"type": "tangent", "a": a, "b": b, "kind": "internal"},
+                        {"type": "distance_y", "p": "c1", "q": "c2", "d": 0.0}],
+    })
+    assert res["ok"] is True, res["diagnostics"]
+    c2 = res["points"]["c2"]
+    assert math.hypot(c2["x"], c2["y"]) == pytest.approx(9.6 - 6.3, abs=1e-9)
+
+
+def test_equal_radii_are_the_kink_of_the_absolute_value():
+    """`|r1 - r2|` is not differentiable at `r1 == r2`, and the convention is
+    `sgn(0) = 0` — which is what a central difference straddling the kink
+    returns, so the derivative gate agrees with it instead of avoiding it."""
+    sk = Sketch()
+    sk.point("c1", 0.0, 0.0)
+    sk.point("c2", 0.0, 0.0)
+    sk.circle("C1", "c1", 7.0)
+    sk.circle("C2", "c2", 7.0)
+    sk.tangent_circles("C1", "C2", "internal")
+    res = sk.residuals[-1]
+    v = sk.initial_vector()
+    J = np.zeros((1, sk.n_par))
+    res.df(v, J, 0)
+    h = 1e-6
+    for ir in (sk.circles["C1"].ir, sk.circles["C2"].ir):
+        up, dn = v.copy(), v.copy()
+        up[ir] += h
+        dn[ir] -= h
+        central = (res.f(up)[0] - res.f(dn)[0]) / (2 * h)
+        assert J[0, ir] == pytest.approx(central, abs=1e-9)
+        assert J[0, ir] == pytest.approx(0.0, abs=1e-12)
+
+
+@pytest.mark.parametrize("shift", [0.0, 1e3, 1e6, 1e9])
+def test_a_three_point_arc_is_the_same_arc_wherever_it_sits(shift):
+    """Collinearity was tested against the **absolute** coordinates, so the
+    same unit arc was accepted at the origin and rejected as collinear at
+    1e9 mm — and the circumcircle formula lost every digit of it out there
+    besides (measured radius 1.0 at the origin, 0.0 at 1e9)."""
+    res = solve_sketch({"arcs": [{
+        "name": "a1",
+        "start": [shift, shift], "mid": [shift + 1.0, shift + 1.0],
+        "end": [shift + 2.0, shift],
+    }]})
+    arc = res["arcs"]["a1"]
+    assert arc["r"] == pytest.approx(1.0, rel=1e-9)
+    assert arc["cx"] == pytest.approx(shift + 1.0, abs=max(1e-9, shift * 1e-15))
+    assert arc["cy"] == pytest.approx(shift, abs=max(1e-9, shift * 1e-15))
+
+
+def test_genuinely_collinear_points_are_still_refused():
+    with pytest.raises(SketchError, match="collinear"):
+        solve_sketch({"arcs": [{"name": "a1", "start": [1e9, 1e9],
+                                "mid": [1e9 + 1.0, 1e9 + 1.0],
+                                "end": [1e9 + 2.0, 1e9 + 2.0]}]})
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0])
+@pytest.mark.parametrize("where", ["circle", "arc", "constraint"])
+def test_a_radius_is_a_positive_length_wherever_it_is_written(where, bad):
+    """`radius {c: "C", r: -1}` solved `ok: true` and emitted
+    `Circle(radius=-1.0)`, which raises `gp_Circ() - radius should be positive
+    number`; `r: 0` emitted a circle that makes no face (review 2, C9)."""
+    base = {"points": [{"name": "c", "x": 0.0, "y": 0.0, "fixed": True}]}
+    if where == "circle":
+        spec = {**base, "circles": [{"name": "C", "center": "c", "r": bad}]}
+    elif where == "arc":
+        spec = {**base, "arcs": [{"name": "A", "center": "c", "r": bad,
+                                  "start_deg": 0.0, "end_deg": 90.0}]}
+    else:
+        spec = {**base, "circles": [{"name": "C", "center": "c", "r": 5.0}],
+                "constraints": [{"type": "radius", "c": "C", "r": bad}]}
+    with pytest.raises(SketchError, match="positive radius"):
+        solve_sketch(spec)

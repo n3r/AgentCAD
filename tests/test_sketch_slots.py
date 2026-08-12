@@ -298,3 +298,50 @@ def test_the_tool_accepts_slots_and_splines():
         constraints=[])
     assert res["ok"] is True
     assert res["slots"]["s1"]["r"] == pytest.approx(WIDTH / 2, abs=1e-9)
+
+
+# --------------------------------------------------------------------------
+# review 2, C5: `initial` runs after the declaration validated the centres
+# --------------------------------------------------------------------------
+def test_a_warm_start_that_collapses_the_centres_is_refused():
+    """`slot()` rejects two coincident centres; `initial` seeds them
+    afterwards and `_reseed_slots` did not look. Measured: a width-10 slot
+    declared at `(0,0)`/`(20,0)` and warm-started with both centres at `(0,0)`
+    returned `ok: true`, `rank 1`, `dof 8` — and whatever it emitted was not a
+    slot."""
+    spec = {
+        "points": [{"name": "s1", "x": 0.0, "y": 0.0},
+                   {"name": "s2", "x": 20.0, "y": 0.0}],
+        "slots": [{"name": "sl", "c1": "s1", "c2": "s2", "width": 10.0}],
+        "initial": {"points": {"s1": {"x": 0.0, "y": 0.0},
+                               "s2": {"x": 0.0, "y": 0.0}},
+                    "slots": {"sl": {"r": 5.0}}},
+    }
+    with pytest.raises(SketchError, match="collapses slot"):
+        solve_sketch(spec)
+
+
+def test_a_warm_start_that_keeps_them_apart_still_warm_starts():
+    """The narrowing: only a *collapsed* seed is refused."""
+    res = solve_sketch({
+        "points": [{"name": "s1", "x": 0.0, "y": 0.0},
+                   {"name": "s2", "x": 20.0, "y": 0.0}],
+        "slots": [{"name": "sl", "c1": "s1", "c2": "s2", "width": 10.0}],
+        "initial": {"points": {"s1": {"x": 1.0, "y": 2.0},
+                               "s2": {"x": 25.0, "y": 2.0}},
+                    "slots": {"sl": {"r": 5.0}}},
+    })
+    assert res["ok"] is True and res["warm_started"] is True
+    assert res["slots"]["sl"]["center2"]["x"] == pytest.approx(25.0)
+
+
+def test_a_warm_start_with_a_non_positive_slot_radius_is_refused():
+    with pytest.raises(SketchError, match="radius must be positive"):
+        solve_sketch({
+            "points": [{"name": "s1", "x": 0.0, "y": 0.0},
+                       {"name": "s2", "x": 20.0, "y": 0.0}],
+            "slots": [{"name": "sl", "c1": "s1", "c2": "s2", "width": 10.0}],
+            "initial": {"points": {"s1": {"x": 0.0, "y": 0.0},
+                                   "s2": {"x": 20.0, "y": 0.0}},
+                        "slots": {"sl": {"r": 0.0}}},
+        })

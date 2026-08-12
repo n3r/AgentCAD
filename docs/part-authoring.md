@@ -346,7 +346,7 @@ the script it was written into:
 
 ```python
 # --- agentcad sketch "profile" (auto-generated; edit or remove freely) ---
-# agentcad-sketch-spec: {"v": 1, "entities": {...}, "constraints": [...]}
+# agentcad-sketch-spec: {"v": 2, "entities": {...}, "constraints": [...], "initial": {...}}
 # agentcad-sketch-hash: sha256:33353fb1…
 def sketch_profile():
     ...
@@ -366,12 +366,17 @@ and the sketcher's Insert asks for it rather than guessing.
 `{name, status, spec, code, hash, computed_hash, start_line, end_line,
 message}` — and the GUI does the same through `POST /api/sketch/blocks`.
 **The code is the source of truth for geometry; the spec block is
-provenance:** if the hash no longer matches the code, `status` is `diverged`
-and nothing is repaired (the sketcher opens read-only and asks the user to
-choose). A spec that will not parse, or a block with no hash or no end marker,
-is `unverified` — "we cannot tell", never rendered as "there is no sketch".
-The spec is stored **as submitted**, so a client that submits its solved
-coordinates reopens on the same solution branch.
+provenance:** the hash covers **the spec line and the code together**, so
+`status: "ok"` means *this spec produced this code*. Edit either and `status`
+is `diverged`, and nothing is repaired (the sketcher opens read-only and asks
+the user to choose). A spec that will not parse, is not shaped like a sketch
+spec, is of another version, or a block with no hash or no end marker, is
+`unverified` — "we cannot tell", never rendered as "there is no sketch".
+
+Entities and constraints are stored **as submitted**; `initial` is stored from
+the **solution**, which is what makes reopening land on the branch the code was
+emitted from. (Without it, a sketch solved on the branch an `initial` selected
+reopened on the other one and still reported `ok`.)
 
 ### Threads and fasteners
 

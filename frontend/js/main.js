@@ -1456,6 +1456,12 @@ async function selectFace(partId, faceIndex) {
 async function openSketchOnFace(button) {
   if (!faceSel) return;
   const { partId, faceIndex } = faceSel;
+  // **The plane belongs to the part that asked for it.** `sketch_plane` is a
+  // kernel round trip, and nothing rechecked the selection when it landed: pick
+  // a face on part A, switch to part B before the kernel answers, and A's face
+  // basis and projected references opened in the sketcher *over B* — and Insert
+  // then wrote geometry expressed in A's plane into B's script (review 2, C14).
+  const project = state.projectName;
   button.disabled = true;
   let res = null;
   try {
@@ -1464,7 +1470,7 @@ async function openSketchOnFace(button) {
     // arbitrary, so the plane comes from `sketch_plane`, which also projects
     // the face's own boundary edges into that basis.
     res = await api.callTool("sketch_plane", {
-      project: state.projectName,
+      project,
       part_id: partId,
       face_index: faceIndex,
     });
@@ -1474,11 +1480,14 @@ async function openSketchOnFace(button) {
     return;
   }
   button.disabled = false;
+  const stale = state.projectName !== project || state.selectedPart !== partId
+    || !faceSel || faceSel.partId !== partId || faceSel.faceIndex !== faceIndex;
+  if (stale) return;              // the user moved on; this plane is not theirs
   if (res.error) {
     toast(`Sketch on face failed — ${res.error.message}`, "error");
     return;
   }
-  sketcher.openOnFace({ ...res, part_id: partId });
+  sketcher.openOnFace({ ...res, part_id: partId, project, owner_part: partId });
   toast(`Sketching on face ${faceIndex} · ${res.refs.length} reference edge(s)`);
 }
 
