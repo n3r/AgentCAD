@@ -1,7 +1,6 @@
 # PRD-008 — Anchored review threads and presence
 
-- **Status:** implemented — AC1–AC9 verified (branch
-  `prd-008-review-threads`; see Verification below)
+- **Status:** completed — merged to main in PR #12 (AC1–AC9 verified)
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
