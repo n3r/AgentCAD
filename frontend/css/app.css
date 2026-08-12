@@ -42,6 +42,18 @@
   --syn-comment: #5c626c;
   --syn-operator: #9aa4af;
   --syn-property: #c0c7cf;
+  /* Sketch canvas. SVG cannot inherit a stroke from a token, so sketcher.js
+     reads these once per render — which is the only way the 2D sketch follows
+     the theme the way the 3D viewport does through viewport.setTheme. */
+  --sk-grid: #232529;
+  --sk-axis: #33363d;
+  --sk-curve: #c9ced6;
+  --sk-point: #8b919b;
+  --sk-fixed: #d99a4e;
+  --sk-sel: #e8b06a;
+  --sk-ghost: #d99a4e;
+  --sk-flag: #e0655c;
+  --sk-ring: #17181b;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
   --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -86,6 +98,15 @@
   --syn-comment: #9aa1ab;
   --syn-operator: #58616c;
   --syn-property: #3d444d;
+  --sk-grid: #d7dae0;
+  --sk-axis: #aeb5bf;
+  --sk-curve: #3a4048;
+  --sk-point: #6b727c;
+  --sk-fixed: #a86d24;
+  --sk-sel: #8a5a1d;
+  --sk-ghost: #a86d24;
+  --sk-flag: #c2413a;
+  --sk-ring: #ffffff;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1845,6 +1866,48 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   white-space: nowrap;
 }
 .sk-status.err { color: var(--err); }
+
+/* The DOF chip. It replaces the old `solved · dof N` string, and its four
+   looks are the four things a constraint solver can tell you: the sketch is
+   pinned (ok), it can still move (dof), something adds nothing (warn), or
+   something cannot be satisfied (err). `stale` is the fifth state and the
+   important one — during a drag the diagnostics block is served from the
+   cache, and a cached verdict presented as a fresh one is exactly the quiet
+   lie the `unverified` rule exists to prevent. */
+.sk-dof {
+  height: 22px;
+  margin-left: 8px;
+  padding: 0 9px;
+  border-radius: 11px;
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+}
+.sk-dof.ok { color: var(--ok); border-color: var(--hairline); }
+.sk-dof.dof { color: var(--text); }
+.sk-dof.warn { color: var(--accent); border-color: var(--accent-ring); }
+.sk-dof.err { color: var(--err); border-color: var(--err-ring); }
+.sk-dof.stale { opacity: 0.55; font-style: italic; }
+.sk-dof:hover { background: var(--raised-2); }
+
+.sk-chip.flagged {
+  color: var(--err);
+  border-color: var(--err-ring);
+  background: var(--err-soft);
+}
+
+/* The DOF chip's highlight: a short pulse on the geometry it names. */
+@keyframes sk-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+.sk-pulse { animation: sk-pulse 0.7s ease-in-out 2; }
+
 .sk-canvas {
   flex: 1;
   min-height: 0;
@@ -1882,7 +1945,9 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .row-dot.building, .msg.assistant.streaming::after { animation: none; }
+  .row-dot.building, .msg.assistant.streaming::after, .sk-pulse {
+    animation: none;
+  }
 }
 
 /* ================================================== review threads (PRD-008)

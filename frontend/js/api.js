@@ -256,8 +256,20 @@ export const api = {
   callTool: (name, body) => request("POST", `/api/tools/${enc(name)}`, body),
 
   // ---- 2D sketch solve (constraint solver) ----
-  solveSketch: (entities, constraints) =>
-    request("POST", "/api/sketch/solve", { entities, constraints }),
+  /** Solve a constrained sketch. `opts` carries the optional keys the route
+   *  whitelists: `initial` (the previous frame's solution — the warm start
+   *  that selects the solution *branch*), `drag` ({point, x, y}, a weighted
+   *  soft objective), `diagnostics` ("auto" | "full" | "cached") and `emit`
+   *  ("function" | "buildline") for server-side code emission.
+   *
+   *  **This goes through the shared `request()` on purpose.** The drag path
+   *  sends one of these per animation frame, and a reused HTTP connection is
+   *  the difference between 0.7 ms and 12.6 ms per frame (design Decision
+   *  9b). Nothing here may add `Connection: close`, a per-call
+   *  `AbortController` teardown or `sendBeacon` — measured in a real browser,
+   *  200 consecutive drag frames opened **zero** new TCP connections. */
+  solveSketch: (entities, constraints, opts) =>
+    request("POST", "/api/sketch/solve", { entities, constraints, ...opts }),
 
   /** Raw-body upload of an imported CAD file. Resolves {source, size_bytes};
    *  throws ApiError on rejection (too large, bad extension, empty). */

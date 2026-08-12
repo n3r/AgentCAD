@@ -1,9 +1,15 @@
-// 2D sketch editor overlay (MVP). A dark SVG canvas over the viewport:
-// draw points / line chains / circles, apply constraints, and every mutation
-// round-trips the whole spec through POST /api/sketch/solve (the first-party
-// scipy solver) — solved coordinates re-render the canvas. "Insert" appends a
-// build123d sketch_profile() snippet to the code editor; the user wires it
-// into build(p) themselves (stated in a toast).
+// 2D sketch editor overlay. A themed SVG canvas over the viewport: draw
+// points / line chains / circles / arcs / splines / slots, apply constraints,
+// drag geometry, and every mutation round-trips the whole spec through POST
+// /api/sketch/solve (the first-party scipy solver) — solved coordinates
+// re-render the canvas.
+//
+// **Emission lives on the server.** "Insert" asks the same route for
+// `emit: "function"` and pastes the code it returns, so the GUI and an agent
+// produce byte-identical build123d for the same spec (PRD-009 AC1). There is
+// deliberately no snippet builder, no number formatter for code and no chain
+// finder in this file: `agentcad/core/sketch_emit.py` owns all three, behind a
+// closure gate the browser cannot skip.
 //
 // Sketch plane is XY, y up (SVG y-axis is flipped via a scale(1,-1) group);
 // units are mm, 1 SVG user unit == 1 mm, zoom via the wheel.
@@ -14,31 +20,43 @@ import * as editor from "./editor.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const SNAP_PX = 10; // screen px within which a click reuses an existing point
-const COINCIDE_EPS = 1e-6; // endpoint coincidence -> closed loop (mm)
+const DRAG_PX = 3; // screen px of movement before a press becomes a drag
+const PULSE_MS = 1800; // how long a DOF-chip highlight stays up
+const FULL_TURN_DEG = 359.99; // an SVG arc command cannot express a full turn
 
 let actions = null;
 let host = null; // #sketcher
 let btn = null; // #sketch-btn
 let svg = null;
 let worldG = null; // y-flipped group holding grid + entities
-let previewG = null; // rubber-band overlays (redrawn on pointermove)
-let statusEl = null;
+let previewG = null; // rubber-band + drag overlays (redrawn on pointermove)
+let dofEl = null; // the DOF chip
 let chipsEl = null;
 let insertBtn = null;
 let toolBtns = {}; // tool name -> button
 let conBtns = {}; // constraint name -> button
 
 let open = false;
-let tool = "select"; // select | point | line | circle
-let model = null; // {points, lines, circles, constraints}
+let tool = "select"; // select | point | line | circle | arc | arc3 | arcTan | spline | slot
+let model = null; // {points, lines, circles, arcs, splines, slots, constraints}
 let seq = null; // name counters
-let selection = []; // [{kind, name}] kind: point|line|circle
-let chainPrev = null; // line tool: previous point name in the chain
-let pending = null; // circle tool drag: {center, created, r}
+let selection = []; // [{kind, name}] kind: point|handle|line|circle|arc|spline|slot
+let chainPrev = null; // line/arc tools: previous point *ref* in the chain
+let pending = null; // multi-click tool state: {kind, ...}
 let cursor = null; // last pointer sketch coords (for previews)
 let scale = 4; // px per mm
 let solveSeq = 0;
+// `local: true` marks a verdict computed in the browser (no residuals to
+// solve), so the chip can tell "nothing to solve" from a server answer.
 let solveState = { ok: true, dof: 0, local: true };
+let drag = null; // active pointer drag — see startDrag()
+let press = null; // pointerdown that has not yet become a click or a drag
+let highlight = { entities: new Set(), constraints: new Set() };
+let highlightTimer = null;
+
+// Canvas palette, read from CSS custom properties so the sketch follows the
+// app's light/dark theme instead of hard-coding a dark ramp.
+let palette = null;
 
 // ------------------------------------------------------------------ setup
 
@@ -53,17 +71,32 @@ export function init(a) {
     btn.classList.toggle("hidden", !partMode);
     if (!partMode && open) close();
   });
+  // The canvas palette comes from CSS custom properties, so a theme switch
+  // has to invalidate it. theme.js flips `data-theme` on <html> and does not
+  // publish a state key, so watch the attribute rather than edit that module.
+  new MutationObserver(() => {
+    palette = null;
+    if (open) render();
+  }).observe(document.documentElement, {
+    attributes: true, attributeFilter: ["data-theme"],
+  });
   document.addEventListener("keydown", onKey);
   resetModel();
   buildUI();
 }
 
 function resetModel() {
-  model = { points: [], lines: [], circles: [], constraints: [] };
-  seq = { p: 0, l: 0, c: 0 };
+  model = {
+    points: [], lines: [], circles: [], arcs: [], splines: [], slots: [],
+    constraints: [],
+  };
+  seq = { p: 0, l: 0, c: 0, a: 0, sp: 0, sl: 0 };
   selection = [];
   chainPrev = null;
   pending = null;
+  drag = null;
+  press = null;
+  clearHighlight();
   solveState = { ok: true, dof: 0, local: true };
 }
 
@@ -80,6 +113,25 @@ function close() {
   open = false;
   host.classList.add("hidden");
   btn.classList.remove("active");
+}
+
+function colors() {
+  if (palette) return palette;
+  const cs = getComputedStyle(host);
+  const v = (name, fallback) =>
+    (cs.getPropertyValue(name) || "").trim() || fallback;
+  palette = {
+    grid: v("--sk-grid", "#232529"),
+    axis: v("--sk-axis", "#33363d"),
+    curve: v("--sk-curve", "#c9ced6"),
+    point: v("--sk-point", "#8b919b"),
+    fixed: v("--sk-fixed", "#d99a4e"),
+    sel: v("--sk-sel", "#e8b06a"),
+    ghost: v("--sk-ghost", "#d99a4e"),
+    flag: v("--sk-flag", "#e0655c"),
+    ring: v("--sk-ring", "#17181b"),
+  };
+  return palette;
 }
 
 // --------------------------------------------------------------------- UI
@@ -101,10 +153,15 @@ function buildUI() {
   bar.className = "sk-bar";
 
   for (const [name, label, title] of [
-    ["select", "Select", "Select entities (shift-click adds)"],
+    ["select", "Select", "Select entities (shift-click adds); drag a point or an arc end to solve"],
     ["point", "Point", "Click to place points"],
     ["line", "Line", "Click-click line chains; Esc ends the chain"],
     ["circle", "Circle", "Press at the center, drag the radius"],
+    ["arc", "Arc", "Click the center, then the start, then the end"],
+    ["arc3", "Arc3", "Click the start, then the end, then a point on the arc"],
+    ["arcTan", "ArcT", "Continue the chain with an arc tangent to the last segment"],
+    ["spline", "Spline", "Click through points; Esc ends the spline"],
+    ["slot", "Slot", "Click both cap centers, then give the width"],
   ]) {
     const b = skButton(label, title, () => setTool(name));
     toolBtns[name] = b;
@@ -120,7 +177,11 @@ function buildUI() {
     ["vertical", "V", "Make the selected line vertical"],
     ["parallel", "Par", "Make two selected lines parallel"],
     ["perpendicular", "Perp", "Make two selected lines perpendicular"],
-    ["radius", "Rad", "Set the selected circle's radius"],
+    ["radius", "Rad", "Set the selected circle's or arc's radius"],
+    ["tangent", "Tan", "Tangency between the two selected curves"],
+    ["symmetric", "Sym", "Mirror two selected points about the selected line"],
+    ["equal", "Eq", "Equal length (two lines) or equal radius (two curves)"],
+    ["concentric", "Conc", "Share a center between the two selected curves"],
   ]) {
     const b = skButton(label, title, () => applyConstraint(name));
     conBtns[name] = b;
@@ -135,15 +196,17 @@ function buildUI() {
     renderStatus();
   }));
 
-  statusEl = document.createElement("span");
-  statusEl.className = "sk-status";
-  bar.appendChild(statusEl);
+  dofEl = document.createElement("button");
+  dofEl.type = "button";
+  dofEl.className = "sk-dof";
+  dofEl.addEventListener("click", onDofClick);
+  bar.appendChild(dofEl);
 
   const spacer = document.createElement("span");
   spacer.className = "sk-spacer";
   bar.appendChild(spacer);
 
-  insertBtn = skButton("Insert → script", "Append a build123d sketch_profile() snippet to the editor", insertSnippet);
+  insertBtn = skButton("Insert → script", "Emit build123d for the solved sketch and append it to the editor", insertSnippet);
   insertBtn.classList.add("sk-primary");
   bar.appendChild(insertBtn);
   bar.appendChild(skButton("✕", "Close the sketcher", close));
@@ -153,6 +216,7 @@ function buildUI() {
   svg.addEventListener("pointerdown", onPointerDown);
   svg.addEventListener("pointermove", onPointerMove);
   svg.addEventListener("pointerup", onPointerUp);
+  svg.addEventListener("pointercancel", onPointerUp);
   svg.addEventListener("wheel", onWheel, { passive: false });
 
   chipsEl = document.createElement("div");
@@ -170,14 +234,30 @@ function sep() {
   return s;
 }
 
+// Tools that build one continuous chain. Switching *between* them keeps the
+// chain alive — "line, then a tangent arc, then a line" is the whole point of
+// the tangent-arc tool, and it has nothing to be tangent to if picking it up
+// drops the chain.
+const CHAIN_TOOLS = ["line", "arc3", "arcTan"];
+
 function setTool(name) {
+  if (!(CHAIN_TOOLS.includes(name) && CHAIN_TOOLS.includes(tool))) {
+    chainPrev = null;
+  }
   tool = name;
-  chainPrev = null;
   pending = null;
   for (const [n, b] of Object.entries(toolBtns)) {
     b.classList.toggle("active", n === name);
   }
   renderPreview();
+}
+
+/** Display-only number formatting (prompts and constraint chips).
+ *  Emission formats its own literals server-side, at 9 decimals behind a
+ *  closure gate — never reuse this for code. */
+function fmtVal(v) {
+  const x = Math.round(v * 1e4) / 1e4;
+  return String(Object.is(x, -0) ? 0 : x);
 }
 
 // -------------------------------------------------------------- selection
@@ -199,15 +279,70 @@ function toggleSelect(kind, name, additive) {
   renderStatus();
 }
 
-function selectedOf(kind) {
-  return selection.filter((s) => s.kind === kind).map((s) => s.name);
+function selectedOf(...kinds) {
+  return selection.filter((s) => kinds.includes(s.kind)).map((s) => s.name);
 }
 
-// ------------------------------------------------------------ model edits
+// ------------------------------------------------------- entities & refs
 
 function point(name) {
   return model.points.find((p) => p.name === name);
 }
+
+function arcOf(name) {
+  return model.arcs.find((a) => a.name === name);
+}
+
+function curveOf(name) {
+  return model.circles.find((c) => c.name === name) || arcOf(name);
+}
+
+/** `p3` -> the point; `a1.start` / `a1.end` -> the arc's virtual handle.
+ *  Returns `{x, y}` or null. Arc handles are *derived*, never stored: the
+ *  solver owns the arc's centre/radius/angles and the endpoints follow. */
+function refCoords(ref) {
+  if (!ref) return null;
+  const dot = ref.indexOf(".");
+  if (dot < 0) {
+    const p = point(ref);
+    return p ? { x: p.x, y: p.y } : null;
+  }
+  const arc = arcOf(ref.slice(0, dot));
+  const which = ref.slice(dot + 1);
+  if (!arc || (which !== "start" && which !== "end")) return null;
+  const c = point(arc.center);
+  if (!c) return null;
+  const t = ((which === "start" ? arc.start_deg : arc.end_deg) * Math.PI) / 180;
+  return { x: c.x + arc.r * Math.cos(t), y: c.y + arc.r * Math.sin(t) };
+}
+
+/** Every point-like ref a click can snap to: real points and arc handles. */
+function allRefs() {
+  const refs = model.points.map((p) => ({ ref: p.name, kind: "point" }));
+  for (const a of model.arcs) {
+    refs.push({ ref: `${a.name}.start`, kind: "handle" },
+              { ref: `${a.name}.end`, kind: "handle" });
+  }
+  return refs;
+}
+
+function nearRef(x, y) {
+  const tol = SNAP_PX / scale;
+  let best = null;
+  let bestD = tol;
+  for (const { ref } of allRefs()) {
+    const c = refCoords(ref);
+    if (!c) continue;
+    const d = Math.hypot(c.x - x, c.y - y);
+    if (d <= bestD) {
+      best = ref;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+// ------------------------------------------------------------ model edits
 
 function addPoint(x, y) {
   const name = `p${++seq.p}`;
@@ -217,18 +352,33 @@ function addPoint(x, y) {
   return name;
 }
 
-function nearPoint(x, y) {
-  const tol = SNAP_PX / scale;
-  let best = null;
-  let bestD = tol;
-  for (const p of model.points) {
-    const d = Math.hypot(p.x - x, p.y - y);
-    if (d <= bestD) {
-      best = p.name;
-      bestD = d;
-    }
+/** A chain joint: `ref` may be a real point or an arc's virtual handle, and a
+ *  handle is joined with a `coincident` rather than by sharing a point — the
+ *  arc owns its endpoint, so that is the only way to pin it. */
+function joinRef(ref, x, y) {
+  if (!ref) return addPoint(x, y);
+  if (ref.includes(".")) {
+    const p = addPoint(x, y);
+    model.constraints.push({ type: "coincident", p: ref, q: p });
+    return p;
   }
-  return best;
+  return ref;
+}
+
+function addLine(p1, p2) {
+  const dup = model.lines.some(
+    (l) => (l.p1 === p1 && l.p2 === p2) || (l.p1 === p2 && l.p2 === p1));
+  if (dup || p1 === p2) return null;
+  const name = `ln${++seq.l}`;
+  model.lines.push({ name, p1, p2 });
+  return name;
+}
+
+function addArc(centerRef, r, startDeg, endDeg) {
+  const name = `a${++seq.a}`;
+  model.arcs.push({ name, center: centerRef, r, start_deg: startDeg,
+                    end_deg: endDeg });
+  return name;
 }
 
 function mutated() {
@@ -236,40 +386,76 @@ function mutated() {
   solveAndRender();
 }
 
+/** Every entity name a constraint points at (`kind`/`type` are not refs). */
+const REF_KEYS = ["p", "q", "at", "ln", "l1", "l2", "c", "c1", "c2",
+                  "a", "b", "about"];
+
+function constraintRefs(con) {
+  const out = [];
+  for (const k of REF_KEYS) {
+    if (typeof con[k] === "string") out.push(con[k]);
+  }
+  return out;
+}
+
+function baseName(ref) {
+  const dot = ref.indexOf(".");
+  return dot < 0 ? ref : ref.slice(0, dot);
+}
+
 function deleteSelection() {
   if (!selection.length) return;
-  const pts = new Set(selectedOf("point"));
-  const lns = new Set(selectedOf("line"));
-  const crc = new Set(selectedOf("circle"));
-  // cascade: a removed point takes its lines and centered circles with it
-  for (const l of model.lines) {
-    if (pts.has(l.p1) || pts.has(l.p2)) lns.add(l.name);
+  const gone = new Set();
+  for (const s of selection) {
+    if (s.kind === "handle") gone.add(baseName(s.name)); // deleting an end
+    else gone.add(s.name);                               // deletes the arc
   }
-  for (const c of model.circles) {
-    if (pts.has(c.center)) crc.add(c.name);
+  // Cascade: an entity whose own reference is gone goes too. Iterate until
+  // the set stops growing — a slot's centre can take the slot, whose arcs a
+  // line may in turn have been built on.
+  for (;;) {
+    const before = gone.size;
+    for (const c of model.circles) if (gone.has(c.center)) gone.add(c.name);
+    for (const a of model.arcs) if (gone.has(a.center)) gone.add(a.name);
+    for (const l of model.lines) {
+      if (gone.has(baseName(l.p1)) || gone.has(baseName(l.p2))) gone.add(l.name);
+    }
+    for (const sl of model.slots) {
+      if (gone.has(sl.c1) || gone.has(sl.c2)) gone.add(sl.name);
+    }
+    for (const sp of model.splines) {
+      const left = sp.points.filter((n) => !gone.has(n));
+      if (left.length < 2) gone.add(sp.name);
+    }
+    if (gone.size === before) break;
   }
-  model.points = model.points.filter((p) => !pts.has(p.name));
-  model.lines = model.lines.filter((l) => !lns.has(l.name));
-  model.circles = model.circles.filter((c) => !crc.has(c.name));
-  model.constraints = model.constraints.filter((con) => {
-    for (const key of ["p", "q", "at"]) if (pts.has(con[key])) return false;
-    for (const key of ["ln", "l1", "l2"]) if (lns.has(con[key])) return false;
-    for (const key of ["c", "c1", "c2"]) if (crc.has(con[key])) return false;
-    return true;
-  });
+  model.points = model.points.filter((p) => !gone.has(p.name));
+  model.lines = model.lines.filter((l) => !gone.has(l.name));
+  model.circles = model.circles.filter((c) => !gone.has(c.name));
+  model.arcs = model.arcs.filter((a) => !gone.has(a.name));
+  model.slots = model.slots.filter((s) => !gone.has(s.name));
+  model.splines = model.splines.filter((s) => !gone.has(s.name));
+  for (const sp of model.splines) {
+    sp.points = sp.points.filter((n) => !gone.has(n));
+  }
+  // A deleted slot takes its whole compiled group: constraints may name
+  // `slot1.arc_a`, which stops existing the moment the slot does.
+  model.constraints = model.constraints.filter(
+    (con) => !constraintRefs(con).some((r) => gone.has(baseName(r))));
   selection = [];
   chainPrev = null;
+  clearHighlight();
   mutated();
 }
 
 // ------------------------------------------------------------ constraints
 
 function applyConstraint(name) {
-  const pts = selectedOf("point");
+  const pts = selectedOf("point", "handle");
   const lns = selectedOf("line");
-  const crc = selectedOf("circle");
-  if (name === "fixed" && pts.length === 1) {
-    const p = point(pts[0]);
+  const crv = selectedOf("circle", "arc");
+  if (name === "fixed" && selectedOf("point").length === 1) {
+    const p = point(selectedOf("point")[0]);
     p.fixed = !p.fixed;
     mutated();
     return;
@@ -277,10 +463,10 @@ function applyConstraint(name) {
   if (name === "coincident" && pts.length === 2) {
     model.constraints.push({ type: "coincident", p: pts[0], q: pts[1] });
   } else if (name === "distance" && pts.length === 2) {
-    const a = point(pts[0]);
-    const b = point(pts[1]);
-    const cur = Math.hypot(a.x - b.x, a.y - b.y);
-    const d = parseFloat(prompt("Distance (mm):", fmtNum(cur)));
+    const a = refCoords(pts[0]);
+    const b = refCoords(pts[1]);
+    const d = parseFloat(prompt("Distance (mm):",
+                                fmtVal(Math.hypot(a.x - b.x, a.y - b.y))));
     if (!Number.isFinite(d) || d < 0) return;
     model.constraints.push({ type: "distance", p: pts[0], q: pts[1], d });
   } else if (name === "horizontal" && lns.length === 1) {
@@ -291,11 +477,25 @@ function applyConstraint(name) {
     model.constraints.push({ type: "parallel", l1: lns[0], l2: lns[1] });
   } else if (name === "perpendicular" && lns.length === 2) {
     model.constraints.push({ type: "perpendicular", l1: lns[0], l2: lns[1] });
-  } else if (name === "radius" && crc.length === 1) {
-    const c = model.circles.find((x) => x.name === crc[0]);
-    const r = parseFloat(prompt("Radius (mm):", fmtNum(c.r)));
+  } else if (name === "radius" && crv.length === 1) {
+    const c = curveOf(crv[0]);
+    const r = parseFloat(prompt("Radius (mm):", fmtVal(c.r)));
     if (!Number.isFinite(r) || r <= 0) return;
-    model.constraints.push({ type: "radius", c: crc[0], r });
+    model.constraints.push({ type: "radius", c: crv[0], r });
+  } else if (name === "tangent" && lns.length + crv.length === 2 && crv.length) {
+    // One front door over the solver's dispatch table: it works out which of
+    // the two is the line.
+    model.constraints.push({ type: "tangent", a: lns[0] || crv[0],
+                             b: crv[crv.length - 1] });
+  } else if (name === "symmetric" && pts.length === 2 && lns.length === 1) {
+    model.constraints.push({ type: "symmetric", a: pts[0], b: pts[1],
+                             about: lns[0] });
+  } else if (name === "equal" && lns.length === 2) {
+    model.constraints.push({ type: "equal_length", l1: lns[0], l2: lns[1] });
+  } else if (name === "equal" && crv.length === 2) {
+    model.constraints.push({ type: "equal_radius", c1: crv[0], c2: crv[1] });
+  } else if (name === "concentric" && crv.length === 2) {
+    model.constraints.push({ type: "concentric", a: crv[0], b: crv[1] });
   } else {
     return; // enablement should prevent this; ignore quietly
   }
@@ -304,12 +504,14 @@ function applyConstraint(name) {
 
 function updateConstraintButtons() {
   const nPts = selectedOf("point").length;
+  const nHnd = selectedOf("handle").length;
   const nLns = selectedOf("line").length;
-  const nCrc = selectedOf("circle").length;
-  const only = (p, l, c) =>
-    nPts === p && nLns === l && nCrc === c && selection.length === p + l + c;
+  const nCrv = selectedOf("circle", "arc").length;
+  const nAll = nPts + nHnd + nLns + nCrv;
+  const only = (p, l, c) => nPts + nHnd === p && nLns === l && nCrv === c
+    && selection.length === nAll;
   const enable = {
-    fixed: only(1, 0, 0),
+    fixed: only(1, 0, 0) && nPts === 1,
     coincident: only(2, 0, 0),
     distance: only(2, 0, 0),
     horizontal: only(0, 1, 0),
@@ -317,6 +519,11 @@ function updateConstraintButtons() {
     parallel: only(0, 2, 0),
     perpendicular: only(0, 2, 0),
     radius: only(0, 0, 1),
+    // line+curve or curve+curve; two lines are never tangent
+    tangent: only(0, 1, 1) || only(0, 0, 2),
+    symmetric: only(2, 1, 0),
+    equal: only(0, 2, 0) || only(0, 0, 2),
+    concentric: only(0, 0, 2),
   };
   for (const [name, b] of Object.entries(conBtns)) b.disabled = !enable[name];
 }
@@ -324,12 +531,17 @@ function updateConstraintButtons() {
 function constraintLabel(con) {
   switch (con.type) {
     case "coincident": return `coin ${con.p}=${con.q}`;
-    case "distance": return `dist ${con.p}–${con.q} = ${fmtNum(con.d)}`;
+    case "distance": return `dist ${con.p}–${con.q} = ${fmtVal(con.d)}`;
     case "horizontal": return `H ${con.ln}`;
     case "vertical": return `V ${con.ln}`;
     case "parallel": return `par ${con.l1},${con.l2}`;
     case "perpendicular": return `perp ${con.l1},${con.l2}`;
-    case "radius": return `rad ${con.c} = ${fmtNum(con.r)}`;
+    case "radius": return `rad ${con.c} = ${fmtVal(con.r)}`;
+    case "tangent": return `tan ${con.a},${con.b}`;
+    case "symmetric": return `sym ${con.a},${con.b} ⟂ ${con.about}`;
+    case "equal_length": return `eq len ${con.l1},${con.l2}`;
+    case "equal_radius": return `eq rad ${con.c1},${con.c2}`;
+    case "concentric": return `conc ${con.a},${con.b}`;
     default: return con.type;
   }
 }
@@ -340,10 +552,12 @@ function renderChips() {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "sk-chip";
+    if (highlight.constraints.has(i)) chip.classList.add("flagged");
     chip.title = "Click to remove this constraint";
     chip.textContent = `${constraintLabel(con)} ×`;
     chip.addEventListener("click", () => {
       model.constraints.splice(i, 1);
+      clearHighlight();
       mutated();
     });
     chipsEl.appendChild(chip);
@@ -364,37 +578,23 @@ function onPointerDown(e) {
   if (e.button !== 0) return;
   const { x, y } = toSketch(e);
   if (tool === "point") {
-    if (!nearPoint(x, y)) {
+    if (!nearRef(x, y)) {
       addPoint(x, y);
       mutated();
     }
     return;
   }
-  if (tool === "line") {
-    let name = nearPoint(x, y);
-    if (name && name === chainPrev) {
-      chainPrev = null; // clicking the previous point ends the chain
-      renderPreview();
-      return;
-    }
-    if (!name) name = addPoint(x, y);
-    if (chainPrev && chainPrev !== name) {
-      const dup = model.lines.some(
-        (l) =>
-          (l.p1 === chainPrev && l.p2 === name) ||
-          (l.p1 === name && l.p2 === chainPrev)
-      );
-      if (!dup) model.lines.push({ name: `ln${++seq.l}`, p1: chainPrev, p2: name });
-    }
-    chainPrev = name;
-    mutated();
-    return;
-  }
+  if (tool === "line") return lineClick(x, y);
+  if (tool === "arc") return arcCenterClick(x, y);
+  if (tool === "arc3") return arcThreePointClick(x, y);
+  if (tool === "arcTan") return arcTangentClick(x, y);
+  if (tool === "spline") return splineClick(x, y);
+  if (tool === "slot") return slotClick(x, y);
   if (tool === "circle") {
-    let center = nearPoint(x, y);
-    const created = !center;
-    if (!center) center = addPoint(x, y);
-    pending = { center, created, r: 0 };
+    let center = nearRef(x, y);
+    const created = !center || center.includes(".");
+    if (created) center = addPoint(x, y);
+    pending = { kind: "circle", center, created, r: 0 };
     svg.setPointerCapture(e.pointerId);
     renderPreview();
     return;
@@ -402,22 +602,386 @@ function onPointerDown(e) {
   // select tool: empty-canvas click clears (entity handlers stopPropagation)
   if (!e.shiftKey) {
     selection = [];
+    clearHighlight();
     render();
     renderStatus();
   }
 }
 
-function onPointerMove(e) {
-  cursor = toSketch(e);
-  if (pending) {
-    const c = point(pending.center);
-    pending.r = Math.hypot(cursor.x - c.x, cursor.y - c.y);
+function lineClick(x, y) {
+  let ref = nearRef(x, y);
+  if (ref && ref === chainPrev) {
+    chainPrev = null; // clicking the previous point ends the chain
+    renderPreview();
+    return;
   }
-  if (pending || (tool === "line" && chainPrev)) renderPreview();
+  if (!ref) ref = addPoint(x, y);
+  if (chainPrev && chainPrev !== ref) addLine(chainPrev, ref);
+  chainPrev = ref;
+  mutated();
 }
 
-function onPointerUp() {
-  if (!pending) return;
+// ---- arcs ----------------------------------------------------------------
+
+function angleDeg(cx, cy, x, y) {
+  return (Math.atan2(y - cy, x - cx) * 180) / Math.PI;
+}
+
+/** Unwrap `end` so the sweep from `start` runs the way the cursor went. */
+function sweepTo(startDeg, endDeg, ccw) {
+  let d = endDeg - startDeg;
+  while (d <= 0) d += 360;
+  while (d > 360) d -= 360;
+  return startDeg + (ccw ? d : d - 360);
+}
+
+function arcCenterClick(x, y) {
+  if (!pending || pending.kind !== "arcC") {
+    let center = nearRef(x, y);
+    if (!center || center.includes(".")) center = addPoint(x, y);
+    pending = { kind: "arcC", center };
+    renderPreview();
+    return;
+  }
+  const c = refCoords(pending.center);
+  if (pending.start_deg === undefined) {
+    pending.r = Math.max(0.25, Math.hypot(x - c.x, y - c.y));
+    pending.start_deg = angleDeg(c.x, c.y, x, y);
+    renderPreview();
+    return;
+  }
+  const end = sweepTo(pending.start_deg, angleDeg(c.x, c.y, x, y),
+                      pending.ccw !== false);
+  addArc(pending.center, pending.r, pending.start_deg, end);
+  pending = null;
+  chainPrev = null;
+  mutated();
+}
+
+function arcThreePointClick(x, y) {
+  if (!pending || pending.kind !== "arc3") {
+    const ref = nearRef(x, y) || null;
+    const at = ref ? refCoords(ref) : { x, y };
+    pending = { kind: "arc3", startRef: ref, start: at };
+    renderPreview();
+    return;
+  }
+  if (!pending.end) {
+    const ref = nearRef(x, y) || null;
+    pending.endRef = ref;
+    pending.end = ref ? refCoords(ref) : { x, y };
+    renderPreview();
+    return;
+  }
+  const arc = circumArc(pending.start, { x, y }, pending.end);
+  const { startRef, endRef } = pending;
+  pending = null;
+  if (!arc) {
+    actions.toast("those three points are collinear — no arc through them",
+                  "error");
+    renderPreview();
+    return;
+  }
+  const center = addPoint(arc.cx, arc.cy);
+  const name = addArc(center, arc.r, arc.start_deg, arc.end_deg);
+  // Pin the ends onto whatever the user clicked: the arc owns its endpoints,
+  // so joining a chain means constraining its handle, not sharing a point.
+  if (startRef) {
+    model.constraints.push({ type: "coincident", p: `${name}.start`, q: startRef });
+  }
+  if (endRef) {
+    model.constraints.push({ type: "coincident", p: `${name}.end`, q: endRef });
+  }
+  chainPrev = `${name}.end`;
+  mutated();
+}
+
+/** Centre, radius and unwrapped sweep of the arc start->through->end. */
+function circumArc(a, m, b) {
+  const d = 2 * (a.x * (m.y - b.y) + m.x * (b.y - a.y) + b.x * (a.y - m.y));
+  if (Math.abs(d) < 1e-9) return null;
+  const sa = a.x * a.x + a.y * a.y;
+  const sm = m.x * m.x + m.y * m.y;
+  const sb = b.x * b.x + b.y * b.y;
+  const cx = (sa * (m.y - b.y) + sm * (b.y - a.y) + sb * (a.y - m.y)) / d;
+  const cy = (sa * (b.x - m.x) + sm * (a.x - b.x) + sb * (m.x - a.x)) / d;
+  const r = Math.hypot(a.x - cx, a.y - cy);
+  const t0 = angleDeg(cx, cy, a.x, a.y);
+  const tm = angleDeg(cx, cy, m.x, m.y);
+  const t1 = angleDeg(cx, cy, b.x, b.y);
+  // the sweep must pass through the middle point, so pick the direction that
+  // contains it — this is what stops a 3-point arc taking the long way round
+  const ccwMid = norm360(tm - t0);
+  const ccwEnd = norm360(t1 - t0);
+  const ccw = ccwMid < ccwEnd;
+  return { cx, cy, r, start_deg: t0, end_deg: sweepTo(t0, t1, ccw) };
+}
+
+function norm360(d) {
+  let x = d % 360;
+  if (x < 0) x += 360;
+  return x;
+}
+
+function arcTangentClick(x, y) {
+  if (!chainPrev) {
+    actions.toast("draw a line or an arc first — a tangent arc continues a chain",
+                  "error");
+    return;
+  }
+  const start = refCoords(chainPrev);
+  const dir = chainDirection(chainPrev);
+  if (!start || !dir) {
+    actions.toast("no tangent direction at that point", "error");
+    return;
+  }
+  // centre = start + n·d, with n ⟂ the incoming tangent and
+  // d = |sq|² / (2·(sq·n)) — the circle through `start` and the cursor that
+  // leaves `start` along `dir`.
+  const n = { x: -dir.y, y: dir.x };
+  const q = { x: x - start.x, y: y - start.y };
+  const denom = 2 * (q.x * n.x + q.y * n.y);
+  if (Math.abs(denom) < 1e-9) {
+    actions.toast("that point is straight ahead — a tangent arc would be a line",
+                  "error");
+    return;
+  }
+  const d = (q.x * q.x + q.y * q.y) / denom;
+  const cx = start.x + n.x * d;
+  const cy = start.y + n.y * d;
+  const r = Math.abs(d);
+  const t0 = angleDeg(cx, cy, start.x, start.y);
+  const t1 = angleDeg(cx, cy, x, y);
+  // d > 0 puts the centre on the +n side, which is a CCW sweep
+  const center = addPoint(cx, cy);
+  const name = addArc(center, r, t0, sweepTo(t0, t1, d > 0));
+  model.constraints.push({ type: "coincident", p: `${name}.start`, q: chainPrev });
+  const owner = chainOwner(chainPrev);
+  if (owner) model.constraints.push({ type: "tangent", a: owner, b: name });
+  chainPrev = `${name}.end`;
+  mutated();
+}
+
+/** The unit direction the chain arrives at `ref` travelling forward. */
+function chainDirection(ref) {
+  const at = refCoords(ref);
+  if (!at) return null;
+  const arcEnd = ref.includes(".") ? arcOf(baseName(ref)) : null;
+  if (arcEnd) {
+    const which = ref.slice(ref.indexOf(".") + 1);
+    const t = ((which === "start" ? arcEnd.start_deg : arcEnd.end_deg)
+               * Math.PI) / 180;
+    const ccw = arcEnd.end_deg >= arcEnd.start_deg ? 1 : -1;
+    return { x: -Math.sin(t) * ccw, y: Math.cos(t) * ccw };
+  }
+  // the most recently declared line that ends at this point
+  for (let i = model.lines.length - 1; i >= 0; i--) {
+    const l = model.lines[i];
+    const other = l.p2 === ref ? l.p1 : l.p1 === ref ? l.p2 : null;
+    if (!other) continue;
+    const o = refCoords(other);
+    if (!o) continue;
+    const dx = at.x - o.x;
+    const dy = at.y - o.y;
+    const n = Math.hypot(dx, dy) || 1;
+    return { x: dx / n, y: dy / n };
+  }
+  return null;
+}
+
+/** The curve a chain ref belongs to, for the tangency constraint. */
+function chainOwner(ref) {
+  if (ref.includes(".")) return baseName(ref);
+  for (let i = model.lines.length - 1; i >= 0; i--) {
+    const l = model.lines[i];
+    if (l.p1 === ref || l.p2 === ref) return l.name;
+  }
+  return null;
+}
+
+// ---- splines and slots ---------------------------------------------------
+
+function splineClick(x, y) {
+  let ref = nearRef(x, y);
+  if (ref && ref.includes(".")) ref = joinRef(ref, x, y);
+  if (!ref) ref = addPoint(x, y);
+  if (!pending || pending.kind !== "spline") {
+    pending = { kind: "spline", points: [ref] };
+    render();
+    return;
+  }
+  if (pending.points[pending.points.length - 1] === ref) {
+    finishSpline();
+    return;
+  }
+  pending.points.push(ref);
+  if (pending.points.length === 2) {
+    pending.name = `sp${++seq.sp}`;
+    model.splines.push({ name: pending.name, points: [...pending.points] });
+  } else {
+    const sp = model.splines.find((s) => s.name === pending.name);
+    sp.points = [...pending.points];
+  }
+  mutated();
+}
+
+function finishSpline() {
+  if (pending && pending.kind === "spline" && pending.points.length < 2) {
+    // one lonely click: no spline, but keep the point the user placed
+    pending = null;
+    render();
+    return;
+  }
+  pending = null;
+  renderPreview();
+}
+
+function slotClick(x, y) {
+  let ref = nearRef(x, y);
+  if (!ref || ref.includes(".")) ref = addPoint(x, y);
+  if (!pending || pending.kind !== "slot") {
+    pending = { kind: "slot", c1: ref };
+    renderPreview();
+    return;
+  }
+  if (ref === pending.c1) return;
+  const c1 = refCoords(pending.c1);
+  const c2 = refCoords(ref);
+  const len = Math.hypot(c2.x - c1.x, c2.y - c1.y);
+  const width = parseFloat(prompt("Slot width (mm):",
+                                  fmtVal(Math.max(2, len * 0.4))));
+  const c1Ref = pending.c1;
+  pending = null;
+  if (!Number.isFinite(width) || width <= 0) {
+    render();
+    return;
+  }
+  model.slots.push({ name: `sl${++seq.sl}`, c1: c1Ref, c2: ref, width });
+  mutated();
+}
+
+// ---- drag ----------------------------------------------------------------
+
+function startDrag(ref, e) {
+  // Snapshot before the first frame: on any solver error the drag ends and
+  // the sketch reverts here. A drag that leaves a divergent frame on screen
+  // is how a sketch gets corrupted.
+  drag = {
+    ref,
+    cursor: toSketch(e),
+    snapshot: JSON.parse(JSON.stringify(model)),
+    inFlight: false,
+    rafId: null,
+    frames: 0,
+  };
+  svg.setPointerCapture(e.pointerId);
+  renderPreview();
+}
+
+function scheduleDragFrame() {
+  if (!drag || drag.rafId) return;
+  drag.rafId = requestAnimationFrame(() => {
+    if (!drag) return;
+    drag.rafId = null;
+    // The predicted handle is painted on THIS frame, before any round trip
+    // (measured: the round trip cannot make a display frame — slice 10's
+    // browser spike). The solved geometry follows when the response lands.
+    renderPreview();
+    if (!drag.inFlight) sendDragFrame();
+  });
+}
+
+function sendDragFrame() {
+  const my = ++solveSeq;
+  const { ref, cursor: c } = drag;
+  drag.inFlight = true;
+  drag.frames++;
+  // `initial` is the PREVIOUS FRAME's solution, never the cursor: seeding the
+  // dragged point at the cursor is what flips the mirror branch when the
+  // cursor crosses it. `diagnostics` is left at its default so the drag frame
+  // serves the cached block instead of paying for the greedy pass.
+  api.solveSketch(entitiesSpec(), model.constraints,
+                  { initial: seedFromModel(), drag: { point: ref, x: c.x, y: c.y } })
+    .then((res) => {
+      if (my !== solveSeq || !drag) return;
+      const error = errorOf(res, null);
+      if (error) {
+        endDrag(error);
+        return;
+      }
+      applySolution(res);
+      solveState = fromResult(res);
+      render();
+      renderStatus();
+    })
+    .catch((err) => {
+      if (my !== solveSeq) return;
+      endDrag(errorOf(null, err));
+    })
+    .finally(() => {
+      if (drag) drag.inFlight = false;
+    });
+}
+
+function endDrag(err) {
+  if (!drag) return;
+  if (drag.rafId) cancelAnimationFrame(drag.rafId);
+  const moved = drag.frames > 0;
+  const snapshot = drag.snapshot;
+  drag = null;
+  if (err) {
+    model = snapshot;
+    solveSeq++; // discard anything still in flight
+    render();
+    solveAndRender();
+    actions.toast(`drag reverted — ${err.message}`, "error");
+    return;
+  }
+  render();
+  // One final non-drag solve with full diagnostics, so the chip and any
+  // conflicts describe the settled geometry rather than a cached block.
+  if (moved) solveAndRender("full");
+  else renderStatus();
+}
+
+function onPointerMove(e) {
+  cursor = toSketch(e);
+  if (drag) {
+    drag.cursor = cursor;
+    scheduleDragFrame();
+    return;
+  }
+  if (press && !press.started) {
+    const dx = (e.clientX - press.clientX);
+    const dy = (e.clientY - press.clientY);
+    if (Math.hypot(dx, dy) > DRAG_PX) {
+      press.started = true;
+      startDrag(press.ref, e);
+      return;
+    }
+  }
+  if (pending && pending.kind === "circle") {
+    const c = refCoords(pending.center);
+    pending.r = Math.hypot(cursor.x - c.x, cursor.y - c.y);
+  }
+  if (pending || (chainPrev && (tool === "line" || tool === "arcTan"))) {
+    renderPreview();
+  }
+}
+
+function onPointerUp(e) {
+  if (drag) {
+    endDrag(null);
+    press = null;
+    return;
+  }
+  if (press) {
+    const { kind, ref, shift } = press;
+    press = null;
+    toggleSelect(kind, ref, shift);
+    return;
+  }
+  if (!pending || pending.kind !== "circle") return;
   const { center, created, r } = pending;
   pending = null;
   if (r < 0.5) {
@@ -445,12 +1009,17 @@ function onKey(e) {
   const target = e.target instanceof Element ? e.target : document.body;
   if (target.closest("input, textarea, .CodeMirror")) return;
   if (e.key === "Escape") {
-    if (chainPrev || pending) {
+    if (drag) {
+      endDrag(null);
+    } else if (pending && pending.kind === "spline") {
+      finishSpline();
+    } else if (chainPrev || pending) {
       chainPrev = null;
       pending = null;
-      renderPreview();
-    } else if (selection.length) {
+      render();
+    } else if (selection.length || highlight.entities.size) {
       selection = [];
+      clearHighlight();
       render();
       renderStatus();
     } else {
@@ -476,75 +1045,247 @@ function entitiesSpec() {
     circles: model.circles.map((c) => ({
       name: c.name, center: c.center, r: c.r,
     })),
+    arcs: model.arcs.map((a) => ({
+      name: a.name, center: a.center, r: a.r,
+      start_deg: a.start_deg, end_deg: a.end_deg,
+    })),
+    splines: model.splines.map((s) => ({ name: s.name, points: [...s.points] })),
+    slots: model.slots.map((s) => ({
+      name: s.name, c1: s.c1, c2: s.c2, width: s.width,
+    })),
   };
+}
+
+/** The previous frame's solution, in `initial`'s shape. A slot is seeded by
+ *  its radius alone — its caps are re-derived from the seeded centres — and
+ *  the compiled sub-entities are deliberately absent. */
+function seedFromModel() {
+  const seed = {
+    points: Object.fromEntries(model.points.map((p) => [p.name, { x: p.x, y: p.y }])),
+  };
+  if (model.circles.length) {
+    seed.circles = Object.fromEntries(model.circles.map((c) => [c.name, { r: c.r }]));
+  }
+  if (model.arcs.length) {
+    seed.arcs = Object.fromEntries(model.arcs.map((a) => [a.name, {
+      r: a.r, start_deg: a.start_deg, end_deg: a.end_deg,
+    }]));
+  }
+  if (model.slots.length) {
+    // A slot owns a radius parameter of its own, so leaving it out is not a
+    // smaller seed — it is **no seed at all**: the solver reports
+    // `initial_incomplete` and degrades the whole frame to a cold start,
+    // which is exactly how a mirror flip gets back in through the side door.
+    seed.slots = Object.fromEntries(
+      model.slots.map((s) => [s.name, { r: s.width / 2 }]));
+  }
+  return seed;
+}
+
+function applySolution(res) {
+  for (const p of model.points) {
+    const s = res.points && res.points[p.name];
+    if (s) {
+      p.x = s.x;
+      p.y = s.y;
+    }
+  }
+  for (const c of model.circles) {
+    const s = res.circles && res.circles[c.name];
+    if (s) c.r = s.r;
+  }
+  for (const a of model.arcs) {
+    const s = res.arcs && res.arcs[a.name];
+    if (s) {
+      a.r = s.r;
+      a.start_deg = s.start_deg;
+      a.end_deg = s.end_deg;
+    }
+  }
+}
+
+/** A solve fails in two shapes and both must be handled: the route answers
+ *  **200 with an `{error: {type, message, details}}` envelope** for a
+ *  tool-level failure (an unsatisfiable constraint set, a refused emission),
+ *  and `request()` throws an `ApiError` carrying the same `error` object for
+ *  a transport or HTTP failure. Handling only the second is how a conflicting
+ *  sketch silently keeps reading "fully constrained". */
+function errorOf(res, err) {
+  if (err) return err.error || { message: err.message, details: {} };
+  return res && res.error ? res.error : null;
+}
+
+function failureState(error) {
+  const d = error.details || {};
+  const diag = d.diagnostics || {};
+  return {
+    ok: false,
+    msg: error.message,
+    maxResidual: d.max_residual,
+    dof: d.dof,
+    status: diag.status,
+    free: diag.free_entities || [],
+    redundant: diag.redundant || [],
+    conflicting: diag.conflicting || [],
+    complete: diag.analysis_complete !== false,
+  };
+}
+
+function fromResult(res) {
+  const d = res.diagnostics || {};
+  return {
+    ok: true,
+    dof: res.dof,
+    status: d.status,
+    free: d.free_entities || [],
+    redundant: d.redundant || [],
+    conflicting: d.conflicting || [],
+    complete: d.analysis_complete !== false,
+    stale: res.diagnostics_source === "cached",
+  };
+}
+
+function hasResiduals() {
+  return model.constraints.length > 0 || model.slots.length > 0;
 }
 
 function freeParamCount() {
   return (
-    model.points.filter((p) => !p.fixed).length * 2 + model.circles.length
+    model.points.filter((p) => !p.fixed).length * 2
+    + model.circles.length + model.arcs.length * 3 + model.slots.length
   );
 }
 
-async function solveAndRender() {
+async function solveAndRender(diagnostics) {
   const free = freeParamCount();
-  if (!model.constraints.length || free === 0) {
+  if (!hasResiduals() || free === 0) {
     // Nothing to solve: no residuals (or no free geometry). The sketch is
     // trivially consistent; dof is just the free parameter count.
-    solveState = { ok: true, dof: free, local: true };
+    solveState = { ok: true, dof: free, local: true, free: [],
+                   redundant: [], conflicting: [], complete: true };
     renderStatus();
     return;
   }
   const my = ++solveSeq;
-  let res;
+  let res = null;
+  let thrown = null;
   try {
-    res = await api.solveSketch(entitiesSpec(), model.constraints);
+    res = await api.solveSketch(entitiesSpec(), model.constraints,
+                                diagnostics ? { diagnostics } : undefined);
   } catch (err) {
-    if (my !== solveSeq) return;
-    solveState = { ok: false, msg: err.message };
+    thrown = err;
+  }
+  if (my !== solveSeq) return;
+  const error = errorOf(res, thrown);
+  if (error) {
+    solveState = failureState(error);
+    render();
     renderStatus();
     return;
   }
-  if (my !== solveSeq) return;
-  if (res.error) {
-    const d = res.error.details || {};
-    solveState = {
-      ok: false,
-      maxResidual: d.max_residual,
-      dof: d.dof,
-      msg: res.error.message,
-    };
-  } else {
-    for (const p of model.points) {
-      const s = res.points && res.points[p.name];
-      if (s) {
-        p.x = s.x;
-        p.y = s.y;
-      }
-    }
-    for (const c of model.circles) {
-      const s = res.circles && res.circles[c.name];
-      if (s) c.r = s.r;
-    }
-    solveState = { ok: true, dof: res.dof };
-    render();
-  }
+  applySolution(res);
+  solveState = fromResult(res);
+  render();
   renderStatus();
+}
+
+// -------------------------------------------------------------- DOF chip
+
+const DEPENDENT_NOTE =
+  "The reported set is *a* dependent set, not necessarily the unique culprit: "
+  + "removing any one member resolves the dependency. The member named is "
+  + "chosen by declaration order — the later constraint is blamed.";
+
+function chipState() {
+  const s = solveState;
+  const conflicting = s.conflicting || [];
+  const redundant = s.redundant || [];
+  if (!s.ok && !conflicting.length) {
+    const extra = s.maxResidual != null
+      ? ` (max residual ${Number(s.maxResidual).toExponential(1)})` : "";
+    return { cls: "err", text: "unsolved", title: s.msg + extra };
+  }
+  if (conflicting.length) {
+    return {
+      cls: "err",
+      text: `conflicting (${conflicting.length})`,
+      title: `${conflicting.length} constraint(s) cannot be satisfied together. `
+        + `${DEPENDENT_NOTE} Click to highlight the set.`,
+    };
+  }
+  if (redundant.length) {
+    return {
+      cls: "warn",
+      text: `over-constrained (${redundant.length})`,
+      title: `${redundant.length} constraint(s) add nothing — the sketch still `
+        + `solves. ${DEPENDENT_NOTE} Click to highlight the set.`,
+    };
+  }
+  if (s.complete === false) {
+    return { cls: "warn", text: `dof ${s.dof} · not analysed`,
+             title: "The dependency analysis ran out of its time budget, so "
+               + "redundant and conflicting constraints were not looked for. "
+               + "This is 'we did not look', not 'nothing found'." };
+  }
+  if (s.dof > 0) {
+    return {
+      cls: "dof",
+      text: `${s.dof} DOF`,
+      title: (s.free && s.free.length
+        ? `still free: ${s.free.join(", ")}. Click to highlight them.`
+        : "the sketch can still move; add constraints to pin it down"),
+    };
+  }
+  return { cls: "ok", text: "fully constrained",
+           title: "every degree of freedom is removed" };
 }
 
 function renderStatus() {
   updateConstraintButtons();
   renderChips();
-  insertBtn.disabled = !solveState.ok || (!model.lines.length && !model.circles.length);
-  statusEl.classList.toggle("err", !solveState.ok);
-  if (solveState.ok) {
-    statusEl.textContent = `solved · dof ${solveState.dof}`;
-  } else if (solveState.maxResidual != null) {
-    statusEl.textContent =
-      `unsolved · max residual ${Number(solveState.maxResidual).toExponential(1)}` +
-      (solveState.dof != null ? ` · dof ${solveState.dof}` : "");
-  } else {
-    statusEl.textContent = `unsolved · ${solveState.msg || "solver error"}`;
+  const anyCurve = model.lines.length || model.circles.length
+    || model.arcs.length || model.splines.length || model.slots.length;
+  insertBtn.disabled = !solveState.ok || !anyCurve;
+  const st = chipState();
+  dofEl.className = `sk-dof ${st.cls}`;
+  if (solveState.stale && drag) dofEl.classList.add("stale");
+  dofEl.textContent = st.text;
+  dofEl.title = st.title;
+}
+
+function onDofClick() {
+  const s = solveState;
+  const set = (s.conflicting || []).length ? s.conflicting
+    : (s.redundant || []).length ? s.redundant : null;
+  if (set) {
+    highlightSet({ constraints: set.map((c) => c.index).filter((i) => i != null) });
+    const compiled = set.filter((c) => c.index == null);
+    if (compiled.length) {
+      actions.toast(
+        `${compiled.length} of them come from ${compiled.map((c) => c.origin).join(", ")}`,
+        "info");
+    }
+    return;
   }
+  if ((s.free || []).length) highlightSet({ entities: s.free });
+}
+
+function highlightSet({ entities = [], constraints = [] }) {
+  highlight = { entities: new Set(entities), constraints: new Set(constraints) };
+  if (highlightTimer) clearTimeout(highlightTimer);
+  highlightTimer = setTimeout(() => {
+    clearHighlight();
+    render();
+    renderStatus();
+  }, PULSE_MS);
+  render();
+  renderStatus();
+}
+
+function clearHighlight() {
+  if (highlightTimer) clearTimeout(highlightTimer);
+  highlightTimer = null;
+  highlight = { entities: new Set(), constraints: new Set() };
 }
 
 // ----------------------------------------------------------------- render
@@ -555,8 +1296,89 @@ function el(name, attrs) {
   return node;
 }
 
+/** An SVG `A` path from centre/radius/angles. Inside the y-flipped world
+ *  group a growing angle is a positive sweep, so sweep-flag follows its sign. */
+function arcPathD(cx, cy, r, a0, a1) {
+  const sweep = a1 - a0;
+  const t0 = (a0 * Math.PI) / 180;
+  const t1 = (a1 * Math.PI) / 180;
+  const x0 = cx + r * Math.cos(t0);
+  const y0 = cy + r * Math.sin(t0);
+  if (Math.abs(sweep) >= FULL_TURN_DEG) {
+    // one `A` cannot express a full turn; two halves can
+    return `M ${x0} ${y0} A ${r} ${r} 0 1 1 ${cx - r * Math.cos(t0)} `
+      + `${cy - r * Math.sin(t0)} A ${r} ${r} 0 1 1 ${x0} ${y0}`;
+  }
+  const x1 = cx + r * Math.cos(t1);
+  const y1 = cy + r * Math.sin(t1);
+  const large = Math.abs(sweep) > 180 ? 1 : 0;
+  return `M ${x0} ${y0} A ${r} ${r} 0 ${large} ${sweep > 0 ? 1 : 0} ${x1} ${y1}`;
+}
+
+/** A Catmull-Rom preview of the interpolating spline the emitter will write.
+ *  Display only — build123d's `Spline` owns the real end conditions. */
+function splinePathD(pts) {
+  if (pts.length < 2) return "";
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    d += ` C ${p1.x + (p2.x - p0.x) / 6} ${p1.y + (p2.y - p0.y) / 6}`
+      + ` ${p2.x - (p3.x - p1.x) / 6} ${p2.y - (p3.y - p1.y) / 6}`
+      + ` ${p2.x} ${p2.y}`;
+  }
+  return d;
+}
+
+/** A slot's outline: two half-turn caps joined by two tangent sides. */
+function slotPathD(c1, c2, r) {
+  const dx = c2.x - c1.x;
+  const dy = c2.y - c1.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  return `M ${c1.x + nx * r} ${c1.y + ny * r}`
+    + ` L ${c2.x + nx * r} ${c2.y + ny * r}`
+    + ` A ${r} ${r} 0 0 0 ${c2.x - nx * r} ${c2.y - ny * r}`
+    + ` L ${c1.x - nx * r} ${c1.y - ny * r}`
+    + ` A ${r} ${r} 0 0 0 ${c1.x + nx * r} ${c1.y + ny * r} Z`;
+}
+
+function strokeFor(kind, name) {
+  const c = colors();
+  if (highlight.entities.has(name)) return c.flag;
+  return isSelected(kind, name) ? c.sel : c.curve;
+}
+
+function hitHandler(kind, name) {
+  return (e) => {
+    if (tool !== "select") return;
+    e.stopPropagation();
+    toggleSelect(kind, name, e.shiftKey);
+  };
+}
+
+/** A fat invisible hit target plus the visible stroke, the pair every curve
+ *  in this canvas is drawn as. */
+function curveNodes(shape, attrs, kind, name) {
+  const sel = isSelected(kind, name) || highlight.entities.has(name);
+  const hit = el(shape, { ...attrs, fill: "none", stroke: "rgba(0,0,0,0)",
+                          "stroke-width": SNAP_PX / scale });
+  hit.style.cursor = "pointer";
+  hit.addEventListener("pointerdown", hitHandler(kind, name));
+  const vis = el(shape, {
+    ...attrs, fill: "none", stroke: strokeFor(kind, name),
+    "stroke-width": (sel ? 2.4 : 1.6) / scale, "pointer-events": "none",
+  });
+  if (highlight.entities.has(name)) vis.setAttribute("class", "sk-pulse");
+  return [hit, vis];
+}
+
 function render() {
   if (!svg) return;
+  const c = colors();
   const w = Math.max(1, svg.clientWidth) / scale;
   const h = Math.max(1, svg.clientHeight) / scale;
   svg.setAttribute("viewBox", `${-w / 2} ${-h / 2} ${w} ${h}`);
@@ -574,79 +1396,85 @@ function render() {
     const v = i * step;
     grid.appendChild(el("line", {
       x1: v, y1: -n * step, x2: v, y2: n * step,
-      stroke: i === 0 ? "#33363d" : "#232529", "stroke-width": 1 / scale,
+      stroke: i === 0 ? c.axis : c.grid, "stroke-width": 1 / scale,
     }));
     grid.appendChild(el("line", {
       x1: -n * step, y1: v, x2: n * step, y2: v,
-      stroke: i === 0 ? "#33363d" : "#232529", "stroke-width": 1 / scale,
+      stroke: i === 0 ? c.axis : c.grid, "stroke-width": 1 / scale,
     }));
   }
   worldG.appendChild(grid);
 
-  // lines (fat invisible hit target + visible stroke)
-  for (const l of model.lines) {
-    const a = point(l.p1);
-    const b = point(l.p2);
+  // slots first — they are a filled outline the rest sits on
+  for (const sl of model.slots) {
+    const a = refCoords(sl.c1);
+    const b = refCoords(sl.c2);
     if (!a || !b) continue;
-    const sel = isSelected("line", l.name);
-    const hit = el("line", {
-      x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-      stroke: "rgba(0,0,0,0)", "stroke-width": SNAP_PX / scale,
-    });
-    hit.style.cursor = "pointer";
-    hit.addEventListener("pointerdown", (e) => {
-      if (tool !== "select") return;
-      e.stopPropagation();
-      toggleSelect("line", l.name, e.shiftKey);
-    });
-    const vis = el("line", {
-      x1: a.x, y1: a.y, x2: b.x, y2: b.y,
-      stroke: sel ? "#e8b06a" : "#c9ced6",
-      "stroke-width": (sel ? 2.4 : 1.6) / scale,
-      "pointer-events": "none",
-    });
-    worldG.append(hit, vis);
+    worldG.append(...curveNodes("path", { d: slotPathD(a, b, sl.width / 2) },
+                                "slot", sl.name));
   }
 
-  // circles
-  for (const c of model.circles) {
-    const ctr = point(c.center);
+  for (const sp of model.splines) {
+    const pts = sp.points.map(refCoords).filter(Boolean);
+    if (pts.length < 2) continue;
+    worldG.append(...curveNodes("path", { d: splinePathD(pts) },
+                                "spline", sp.name));
+  }
+
+  for (const l of model.lines) {
+    const a = refCoords(l.p1);
+    const b = refCoords(l.p2);
+    if (!a || !b) continue;
+    worldG.append(...curveNodes("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y },
+                                "line", l.name));
+  }
+
+  for (const cir of model.circles) {
+    const ctr = refCoords(cir.center);
     if (!ctr) continue;
-    const sel = isSelected("circle", c.name);
-    const hit = el("circle", {
-      cx: ctr.x, cy: ctr.y, r: c.r,
-      fill: "none", stroke: "rgba(0,0,0,0)", "stroke-width": SNAP_PX / scale,
-    });
-    hit.style.cursor = "pointer";
-    hit.addEventListener("pointerdown", (e) => {
-      if (tool !== "select") return;
-      e.stopPropagation();
-      toggleSelect("circle", c.name, e.shiftKey);
-    });
-    const vis = el("circle", {
-      cx: ctr.x, cy: ctr.y, r: c.r,
-      fill: "none", stroke: sel ? "#e8b06a" : "#c9ced6",
-      "stroke-width": (sel ? 2.4 : 1.6) / scale,
-      "pointer-events": "none",
-    });
-    worldG.append(hit, vis);
+    worldG.append(...curveNodes("circle", { cx: ctr.x, cy: ctr.y, r: cir.r },
+                                "circle", cir.name));
+  }
+
+  for (const a of model.arcs) {
+    const ctr = refCoords(a.center);
+    if (!ctr) continue;
+    worldG.append(...curveNodes(
+      "path", { d: arcPathD(ctr.x, ctr.y, a.r, a.start_deg, a.end_deg) },
+      "arc", a.name));
+  }
+
+  // arc endpoint handles: the names `a1.start` / `a1.end` the solver takes
+  for (const a of model.arcs) {
+    for (const which of ["start", "end"]) {
+      const ref = `${a.name}.${which}`;
+      const at = refCoords(ref);
+      if (!at) continue;
+      const sel = isSelected("handle", ref);
+      const s = 3.2 / scale;
+      const box = el("rect", {
+        x: at.x - s, y: at.y - s, width: s * 2, height: s * 2,
+        fill: sel ? c.sel : c.ghost, stroke: c.ring, "stroke-width": 1 / scale,
+      });
+      box.style.cursor = "pointer";
+      box.addEventListener("pointerdown", (e) => onEntityPointerDown(e, "handle", ref));
+      worldG.appendChild(box);
+    }
   }
 
   // points on top
   for (const p of model.points) {
     const sel = isSelected("point", p.name);
+    const flagged = highlight.entities.has(p.name);
     const dot = el("circle", {
-      cx: p.x, cy: p.y, r: (sel ? 5 : 3.6) / scale,
-      fill: sel ? "#e8b06a" : p.fixed ? "#d99a4e" : "#8b919b",
-      stroke: p.fixed ? "#e8b06a" : "#17181b",
+      cx: p.x, cy: p.y, r: (sel || flagged ? 5 : 3.6) / scale,
+      fill: flagged ? c.flag : sel ? c.sel : p.fixed ? c.fixed : c.point,
+      stroke: p.fixed ? c.sel : c.ring,
       "stroke-width": 1 / scale,
     });
+    if (flagged) dot.setAttribute("class", "sk-pulse");
     dot.style.cursor = "pointer";
-    dot.addEventListener("pointerdown", (e) => {
-      if (tool !== "select") return;
-      e.stopPropagation();
-      toggleSelect("point", p.name, e.shiftKey);
-    });
+    dot.addEventListener("pointerdown", (e) => onEntityPointerDown(e, "point", p.name));
     worldG.appendChild(dot);
   }
 
@@ -655,143 +1483,136 @@ function render() {
   renderPreview();
 }
 
+/** A press on a draggable ref: a click selects it, a movement drags it. */
+function onEntityPointerDown(e, kind, ref) {
+  if (tool !== "select" || e.button !== 0) return;
+  e.stopPropagation();
+  press = { kind, ref, shift: e.shiftKey, clientX: e.clientX,
+            clientY: e.clientY, started: false };
+}
+
+function dashed(shape, attrs) {
+  return el(shape, {
+    ...attrs, fill: "none", stroke: colors().ghost,
+    "stroke-width": 1.2 / scale,
+    "stroke-dasharray": `${4 / scale} ${3 / scale}`,
+  });
+}
+
+function dashedLine(a, b) {
+  return dashed("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+}
+
 function renderPreview() {
   if (!previewG) return;
+  const c = colors();
   previewG.textContent = "";
-  if (tool === "line" && chainPrev && cursor) {
-    const a = point(chainPrev);
-    if (a) {
+
+  // the drag: the predicted handle is at the cursor NOW, and a hairline shows
+  // how far the constraints are holding the geometry back from it
+  if (drag) {
+    const solved = refCoords(drag.ref);
+    const { x, y } = drag.cursor;
+    if (solved) {
       previewG.appendChild(el("line", {
-        x1: a.x, y1: a.y, x2: cursor.x, y2: cursor.y,
-        stroke: "#d99a4e", "stroke-width": 1.2 / scale,
-        "stroke-dasharray": `${4 / scale} ${3 / scale}`,
+        x1: solved.x, y1: solved.y, x2: x, y2: y, stroke: c.ghost,
+        "stroke-width": 0.8 / scale,
+        "stroke-dasharray": `${2 / scale} ${2 / scale}`,
       }));
     }
+    previewG.appendChild(el("circle", {
+      cx: x, cy: y, r: 4.5 / scale, fill: "none", stroke: c.ghost,
+      "stroke-width": 1.4 / scale,
+    }));
+    return;
   }
-  if (pending) {
-    const c = point(pending.center);
-    if (c && pending.r > 0) {
-      previewG.appendChild(el("circle", {
-        cx: c.x, cy: c.y, r: pending.r,
-        fill: "none", stroke: "#d99a4e", "stroke-width": 1.2 / scale,
-        "stroke-dasharray": `${4 / scale} ${3 / scale}`,
-      }));
+
+  if (chainPrev && cursor && (tool === "line" || tool === "arcTan")) {
+    const a = refCoords(chainPrev);
+    if (a) previewG.appendChild(dashedLine(a, cursor));
+  }
+  if (!pending || !cursor) return;
+  if (pending.kind === "circle") {
+    const ctr = refCoords(pending.center);
+    if (ctr && pending.r > 0) {
+      previewG.appendChild(
+        dashed("circle", { cx: ctr.x, cy: ctr.y, r: pending.r }));
     }
+  } else if (pending.kind === "arcC") {
+    const ctr = refCoords(pending.center);
+    if (!ctr) return;
+    if (pending.start_deg === undefined) {
+      previewG.appendChild(dashedLine(ctr, cursor));
+    } else {
+      const end = sweepTo(pending.start_deg,
+                          angleDeg(ctr.x, ctr.y, cursor.x, cursor.y), true);
+      previewG.appendChild(dashed("path", {
+        d: arcPathD(ctr.x, ctr.y, pending.r, pending.start_deg, end) }));
+    }
+  } else if (pending.kind === "arc3") {
+    if (!pending.end) {
+      previewG.appendChild(dashedLine(pending.start, cursor));
+    } else {
+      const arc = circumArc(pending.start, cursor, pending.end);
+      if (arc) {
+        previewG.appendChild(dashed("path", {
+          d: arcPathD(arc.cx, arc.cy, arc.r, arc.start_deg, arc.end_deg) }));
+      }
+    }
+  } else if (pending.kind === "spline") {
+    const pts = pending.points.map(refCoords).filter(Boolean);
+    previewG.appendChild(
+      dashed("path", { d: splinePathD([...pts, cursor]) }));
+  } else if (pending.kind === "slot") {
+    const a = refCoords(pending.c1);
+    if (a) previewG.appendChild(dashedLine(a, cursor));
   }
 }
 
 // ---------------------------------------------------------------- insert
 
-function fmtNum(v) {
-  let x = Math.round(v * 1e6) / 1e6;
-  if (Object.is(x, -0)) x = 0;
-  let s = String(x);
-  if (!s.includes(".") && !s.includes("e")) s += ".0";
-  return s;
-}
-
-/** Group the lines into maximal chains: [{pts: [names...], closed}]. */
-function findChains() {
-  const unused = new Set(model.lines.map((l) => l.name));
-  const byName = new Map(model.lines.map((l) => [l.name, l]));
-  const incident = new Map(); // point -> [line names]
-  for (const l of model.lines) {
-    for (const p of [l.p1, l.p2]) {
-      if (!incident.has(p)) incident.set(p, []);
-      incident.get(p).push(l.name);
-    }
+async function insertSnippet() {
+  const anyCurve = model.lines.length || model.circles.length
+    || model.arcs.length || model.splines.length || model.slots.length;
+  if (!anyCurve) return;
+  insertBtn.disabled = true;
+  let res = null;
+  let thrown = null;
+  try {
+    // One emitter for both layers: this is the same call an agent makes, so
+    // the same spec yields byte-identical build123d either way (AC1).
+    res = await api.solveSketch(entitiesSpec(), model.constraints,
+                                { emit: "function", diagnostics: "full" });
+  } catch (err) {
+    thrown = err;
   }
-  const takeNext = (pt, exclude) => {
-    for (const ln of incident.get(pt) || []) {
-      if (ln !== exclude && unused.has(ln)) return ln;
+  // An emission that would not rebuild comes back as a `validation_error`
+  // naming the junction — surface it verbatim rather than pasting code the
+  // kernel will refuse.
+  const error = errorOf(res, thrown);
+  if (error) {
+    if (error.details && error.details.diagnostics) {
+      solveState = failureState(error);
     }
-    return null;
-  };
-  const chains = [];
-  for (const start of model.lines) {
-    if (!unused.has(start.name)) continue;
-    unused.delete(start.name);
-    const pts = [start.p1, start.p2];
-    // extend forward from the tail
-    let last = start.name;
-    for (;;) {
-      const tail = pts[pts.length - 1];
-      const ln = takeNext(tail, last);
-      if (!ln) break;
-      unused.delete(ln);
-      const l = byName.get(ln);
-      pts.push(l.p1 === tail ? l.p2 : l.p1);
-      last = ln;
-      if (pts[pts.length - 1] === pts[0]) break; // closed by shared point
-    }
-    // extend backward from the head (open chains only)
-    if (pts[pts.length - 1] !== pts[0]) {
-      let first = start.name;
-      for (;;) {
-        const head = pts[0];
-        const ln = takeNext(head, first);
-        if (!ln) break;
-        unused.delete(ln);
-        const l = byName.get(ln);
-        pts.unshift(l.p1 === head ? l.p2 : l.p1);
-        first = ln;
-        if (pts[0] === pts[pts.length - 1]) break;
-      }
-    }
-    let closed = pts.length > 3 && pts[0] === pts[pts.length - 1];
-    if (closed) pts.pop(); // the closing point is re-emitted by the snippet
-    if (!closed && pts.length > 2) {
-      const a = point(pts[0]);
-      const b = point(pts[pts.length - 1]);
-      if (a && b && Math.hypot(a.x - b.x, a.y - b.y) < COINCIDE_EPS) {
-        pts.pop(); // coincident-by-coords endpoints: same closed loop
-        closed = true;
-      }
-    }
-    chains.push({ pts, closed });
-  }
-  return chains;
-}
-
-function buildSnippet() {
-  const chains = findChains();
-  const body = [];
-  if (chains.length) {
-    body.push("        with BuildLine():");
-    for (const chain of chains) {
-      const coords = chain.pts.map((n) => {
-        const p = point(n);
-        return `(${fmtNum(p.x)}, ${fmtNum(p.y)})`;
-      });
-      if (chain.closed) coords.push(coords[0]); // close the loop
-      body.push(`            Polyline(${coords.join(", ")})`);
-    }
-    if (chains.some((c) => c.closed)) {
-      body.push("        make_face()");
-    }
-  }
-  for (const c of model.circles) {
-    const ctr = point(c.center);
-    body.push(`        with Locations((${fmtNum(ctr.x)}, ${fmtNum(ctr.y)})):`);
-    body.push(`            Circle(radius=${fmtNum(c.r)})`);
-  }
-  return [
-    "",
-    "",
-    "# --- agentcad sketch (auto-generated) ---",
-    "def sketch_profile():",
-    "    with BuildSketch(Plane.XY) as _sk:",
-    ...body,
-    "    return _sk.sketch",
-    "",
-  ].join("\n");
-}
-
-function insertSnippet() {
-  if (!model.lines.length && !model.circles.length) return;
-  if (!editor.insertText(buildSnippet())) {
-    actions.toast("Open a script part first — the sketch inserts into its code", "error");
+    actions.toast(`sketch not inserted — ${error.message}`, "error");
+    render();
+    renderStatus();
     return;
   }
-  actions.toast("sketch inserted — call sketch_profile() from build(p)");
+  applySolution(res);
+  solveState = fromResult(res);
+  render();
+  renderStatus();
+  if (!editor.insertText(res.emit.code)) {
+    actions.toast("Open a script part first — the sketch inserts into its code",
+                  "error");
+    return;
+  }
+  const warnings = (res.emit.warnings || []).map((w) => w.message);
+  if (warnings.length) {
+    actions.toast(`sketch inserted with ${warnings.length} warning(s): `
+                  + warnings.join("; "), "info");
+  } else {
+    actions.toast("sketch inserted — call sketch_profile() from build(p)");
+  }
 }
