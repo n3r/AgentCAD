@@ -569,6 +569,101 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   `human` iff the identity is the browser. Say so on every surface that shows
   it, until PRD-005.
 
+## Sketcher gotchas (PRD-009 — read before touching the solver, the emitter or `sketcher.js`)
+
+Every item is traceable to a measurement in `docs/changelog/0127`–`0141`.
+
+- **`toolkit/sketch.py` runs in the SERVER process and must never import
+  build123d.** With `specs.py` it is one of exactly two toolkit modules with
+  that property (`facemod`, `fillet`, `shell`, `surfacing`, `sheetmetal`,
+  `threads` all import `b3d` and run kernel-side). `core/sketch_emit.py` is
+  OCP-free for the same reason: emitting build123d *source* is not importing
+  build123d. Both are asserted in a fresh interpreter with `OCP` blocked at
+  `sys.meta_path`. `numpy`/`scipy` are **declared** dependencies now, because
+  they used to arrive only transitively through build123d.
+- **The solver's cost is the Jacobian, not the iterations.** A finite-
+  difference Jacobian costs `n_par + 1` residual evaluations — 92% of the old
+  51 ms solve. Every residual ships an analytic `df`, and `Residual` **refuses
+  to be constructed without one**: a missing derivative does not crash, it
+  silently reinstates the O(n²) cost. A wrong one is worse (slow convergence,
+  the wrong branch, or none), so every kind is covered by a central-difference
+  test — `RESIDUAL_KINDS` unions the `DERIV_BUILDERS` of every
+  `tests/test_sketch_*.py`, and a kind with no case fails loudly.
+- **A residual that is second-order flat at the solution makes the Jacobian
+  rank-deficient AT the solution and reports phantom DOF.** If two entities
+  are already tied together by rows the sketch declares, write the remaining
+  condition in the quantity those rows do *not* pin: **distance-to-a-thing-you-
+  are-already-on is flat; direction is not.** This has now been found twice —
+  a slot's sides read `dof 4` on a fully-determined slot (0132), and a GUI
+  tangent chain read `over-constrained (1)` with a singular value of 1.8e-16
+  against a 8.5e-9 rank tolerance (0137). Both fixes were residual *forms*
+  (`tangent_point_perp` at a structural junction, `tangent_dir` at a
+  coincident one), never a tolerance. Raising `RANK_TOL_REL` to hide it would
+  have hidden real redundancy everywhere else.
+- **`dof` is `n_params − rank(J)`, never `n_params − n_residuals`.** The row
+  count reports a *negative* DOF for any redundant constraint — a quantity
+  with no meaning that the old GUI rendered as `dof -1`.
+- **Blame the *later* constraint: dependent-set analysis walks residual rows
+  in declaration order.** Column-pivoted QR is the textbook method and it
+  blamed an innocent original constraint in 2 of 3 measured cases, because
+  pivoting selects by column norm — an artifact of residual scaling.
+  `conflicting` is *a* dependent set and every surface says so.
+- **`over_constrained` is not an error; unsatisfiable is.** Redundant but
+  consistent returns `ok: true` with `redundant: [...]`. Only a non-empty
+  `conflicting` raises.
+- **The drag residual is an objective, not a constraint** — excluded from
+  `ok`, `max_residual`, `n_residuals`, the rank, the DOF and the diagnostics.
+  Including it makes every drag of a fully-constrained entity report
+  `ok: false` (measured `max_residual` 2.43 over a 48 mm drag). **The
+  exclusion is structural, not a flag**: the drag block lives outside
+  `self.residuals` and is appended only inside `make_functions`, and `solve`
+  slices `[:n_res]` off both the residual vector and the Jacobian before
+  anything is reported. Diagnostics are off the drag path the same way — a
+  well-constrained sketch never runs the greedy pass at all.
+- **Warm-starting from the on-screen state causes mirror flips, it does not
+  prevent them.** Seed from the *previous solution* and pull toward the cursor
+  with a weak residual (measured `+18.7265 → −18.7265` for the naive form).
+  `initial` is **all-or-nothing**: an incomplete seed is a cold start with
+  `initial_incomplete`, which quietly re-opens that door — the GUI forgetting
+  a slot's radius was exactly that bug.
+- **Emitted chains share vertex literals and round to 9 decimals.** A
+  centre-parametrized arc at the old 6 decimals leaves a 7.58e-7 mm gap and
+  `make_face()` raises *"Face can only be created with closed wires"* — and it
+  **only reproduces on non-round coordinates**, so a tidy test profile proves
+  nothing. The emitter gates on a measured 1e-8 mm closure tolerance and
+  refuses rather than emitting code that will not rebuild. Never format a
+  coordinate for code with a display formatter.
+- **`EllipticalCenterArc` takes `arc_size`, not `end_angle`, in the pinned
+  build123d 0.11.1**: `end_angle` raises `UnboundLocalError` because the
+  deprecation branch reads a name only the *other* deprecated parameter binds.
+  There is also **no endpoint-anchored elliptical constructor**, so an
+  elliptical arc's endpoints are always derived by the reader from rounded
+  literals — the closure gate measures that derivation unconditionally.
+- **`SlotCenterToCenter` is a BuildSketch face at the origin, not a BuildLine
+  curve.** A slot tied into a larger profile emits as its compiled primitives.
+- **A compiled sub-entity never gets blamed.** Slot machinery carries the
+  slot's own `con_index` and `origin: "slot:<name>"`, and `con_report` holds
+  `None` where there is no caller-visible index.
+- **For a face: the basis is stable, the ordinal is not.** `Plane(face).x_dir`
+  is **bit-identical** across rebuilds, across a fresh worker and across
+  parameter changes that do not renumber faces — so sketch-on-face coordinates
+  are reproducible. The face *index* is a mesh-order ordinal and a
+  topology-changing edit renumbers it (`corner_r: 6.0` turned the enclosure's
+  face 37 from a 5989 mm² plate into a 51 mm² sliver). Those are two different
+  claims; only the second is a caveat, and it is written into the emitted
+  script. Reference entities are `fixed` **and** `construction` — a fixed arc
+  pins its angles too, so a reference costs **zero** parameters.
+- **HTTP keep-alive is load-bearing on the drag path** (0.72 ms reused vs
+  12.55 ms p50 fresh), and it is confirmed working in Chrome — but the drag
+  budget is missed anyway on **display-frame quantization**, which is why the
+  GUI predicts the dragged handle locally and reconciles on the response. No
+  `Connection: close`, no per-frame `AbortController`, no `sendBeacon`.
+- **Round-trip: the code is the source of truth for geometry; the block is
+  provenance.** A hash mismatch is `diverged` and is never repaired; an
+  unreadable spec is `unverified`, which is "we cannot tell", not "no sketch".
+  The block name is the emitted function's name, so a second block in one
+  script must take the next free name or it silently shadows the first.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script

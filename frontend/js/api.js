@@ -271,6 +271,14 @@ export const api = {
   solveSketch: (entities, constraints, opts) =>
     request("POST", "/api/sketch/solve", { entities, constraints, ...opts }),
 
+  /** The round-trip sketch blocks in a part script (FR10). Resolves
+   *  `{blocks: [{name, status, spec, code, hash, computed_hash, start_line,
+   *  end_line, message}], next_name}` — `status` is `ok` | `diverged` |
+   *  `unverified`. The hash that decides between them is computed by the same
+   *  module that wrote it, so the browser never re-implements it. */
+  sketchBlocks: (script) =>
+    request("POST", "/api/sketch/blocks", { script }),
+
   /** Raw-body upload of an imported CAD file. Resolves {source, size_bytes};
    *  throws ApiError on rejection (too large, bad extension, empty). */
   async uploadImport(proj, filename, arrayBuffer) {

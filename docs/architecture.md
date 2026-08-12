@@ -18,7 +18,7 @@ the same service humans use through the browser UI.
 │ FastAPI server — 127.0.0.1:<port>   (agentcad serve)        │
 │                                                             │
 │   ToolRegistry ──► AgentCADService ──► ProjectStore (files) │
-│   (70 tools,       (cache, events,     ~/AgentCAD/projects  │
+│   (71 tools,       (cache, events,     ~/AgentCAD/projects  │
 │    single source    orchestration)     or --projects-dir    │
 │    of truth)             │                                  │
 │                          │ line-delimited JSON-RPC (stdio)  │
@@ -56,11 +56,13 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/kernel/acm.py` | ACM1 binary mesh codec (no OCP dependency; the frontend has a JS parser). |
 | `agentcad/kernel/client.py` | Worker lifecycle: spawn, one-request-at-a-time, per-request timeout, kill-and-respawn, stderr tail capture for crash reports. |
 | `agentcad/kernel/pool.py` | `KernelPool`: N `KernelClient`s behind the same `request()` surface; affinity routing + round-robin, lazy spawn. Size 1 ≡ single client. |
-| `agentcad/kernel/handlers/` | Worker handler packs (reference, drawing, analysis, fem, connectors, diff, specs) merged into the worker at startup — see [extension points](#v2-extension-points). |
+| `agentcad/kernel/handlers/` | Worker handler packs (reference, drawing, analysis, fem, connectors, diff, specs, sketchplane) merged into the worker at startup — see [extension points](#v2-extension-points). |
 | `agentcad/kernel/refload.py` | Reference-CAD loader (STEP/BREP → solid, STL → mesh-only Face) with an LRU keyed by (realpath, mtime, size). Kernel-side only (imports OCP). |
 | `agentcad/kernel/error_doctor.py` | Catalog of real OCCT/build123d failure signatures → plain-language diagnosis + fix; enriches every worker error's `details.hint`. |
 | `agentcad/kernel/_mates_resolver.py` | Connector evaluation + mate-graph ordering (cycle rejection) + Joint-based resolution to concrete transforms. |
 | `agentcad/toolkit/` | Part-authoring helpers importable from scripts: `safe_fillet`/`safe_shell`/`safe_bool`, the scipy sketch solver, `bd_warehouse` threads, and `specs` — the ten pure-data `check_*` constructors a script's `SPECS` list is built from (zero kernel imports, so a `check_fem_static` declares without the `[fem]` extra). |
+| `agentcad/toolkit/sketch.py` | The 2D constraint solver, and — with `specs.py` — one of exactly **two OCP-free toolkit modules**: it is imported by `core/tools_sketch.py` and therefore runs in the *server* process (`facemod`, `fillet`, `shell`, `surfacing`, `sheetmetal`, `threads` all import build123d and run kernel-side). Every constraint compiles to a typed `Residual` carrying its spec index, its parameter slots, its value function and its **analytic derivative**, which buys the Jacobian in one pass instead of `n_par + 1` (measured 104× at 50 entities), a rank analysis that can name the constraint a user wrote, and a `PointRef` indirection under which arcs, ellipses, splines and slots reuse the existing constraint vocabulary. Diagnostics are a pure-numpy post-pass (SVD for rank/DOF/free entities, declaration-order greedy selection for the dependent set). |
+| `agentcad/core/sketch_emit.py` | The **single** sketch emitter, for the GUI and for agents alike: solved sketch → idiomatic `BuildLine`/`BuildSketch` source at 9 decimals with shared junction literals, behind a 1e-8 mm closure gate that refuses `make_face()` on a wire that would not close. Also owns the FR10 round-trip block (`persist_spec`, `block_hash`, `parse_blocks`, `next_name`). Emitting build123d *source* is not importing build123d: OCP-free, asserted in a fresh interpreter. |
 | `agentcad/core/project.py` | Filesystem project store: `project.json` manifest (schema v2, reads v1), `parts/<id>.py` scripts, `imports/` references, atomic writes, validation. |
 | `agentcad/core/service.py` | The application service all clients share: rebuild orchestration (script and reference parts), content-hash mesh/metrics cache, EventBus, assembly rollups, three v2 seams (material resolver, mate resolution, kernel pool). |
 | `agentcad/core/materials.py` | Materials v2: frozen `Material` schema + 30-entry builtin library + `MaterialLibrary` (builtin < global file < project overrides). |
@@ -81,7 +83,7 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/core/tools.py` | ToolRegistry — the 17 core tools defined once; discovers and loads `tools_*.py` packs. MCP and chat render from the merged registry. |
 | `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals, specs, run_checks, comments), each exporting `register(registry, service)`. `tools_specs` additionally *wraps* `service._rebuild` and `service.get_part` (the `install_write_guard` precedent) and appends the `specs` gate provider; `tools_run_checks` installs `service.checks` and appends the `checks` gate — and is named for **load order**, since packs load alphabetically and `tools_proposals` resets `gate_providers`. |
 | `agentcad/server/app.py` | Core REST routes (thin), `/api/tools` passthrough, WebSocket channel, static hosting; mounts `routes_*.py` packs under `/api`. |
-| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve, history, branches/versions/merge, proposals, specs, checks, comments, presence). |
+| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve + sketch blocks, history, branches/versions/merge, proposals, specs, checks, comments, presence). |
 | `agentcad/agent/mcp_server.py` | MCP stdio server proxying `/api/tools`; auto-starts the HTTP server when unreachable. |
 | `agentcad/agent/chat.py` | Server-side Anthropic tool-use loop streaming to the UI over the WebSocket. |
 | `frontend/` | Static ES modules (no bundler): Three.js viewport, tree, parameter inspector, CodeMirror editor, chat panel. |

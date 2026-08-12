@@ -2609,10 +2609,14 @@ class Sketch:
             # (a wrapped parameter is a Jacobian discontinuity, and is how an
             # arc jumps the long way round during a drag). The reported end
             # keeps the full sweep relative to the reported start.
-            t1 = a.t1_0 if a.fixed else float(xs[a.i1])
-            t2 = a.t2_0 if a.fixed else float(xs[a.i2])
-            start_deg = math.degrees(t1) % 360.0
-            sweep_deg = math.degrees(t2 - t1)
+            # Named `th*`, not `t*`: `t1` is the solve's own end timestamp two
+            # dozen lines up, and an arc in the sketch used to clobber it —
+            # `solve_ms` came back as (an angle in radians − t0), a large
+            # negative number, for every sketch containing an arc.
+            th1 = a.t1_0 if a.fixed else float(xs[a.i1])
+            th2 = a.t2_0 if a.fixed else float(xs[a.i2])
+            start_deg = math.degrees(th1) % 360.0
+            sweep_deg = math.degrees(th2 - th1)
             out_arcs[name] = {
                 "center": a.center,
                 "cx": float(cx), "cy": float(cy),

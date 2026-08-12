@@ -232,6 +232,24 @@ _EMIT = (
 )
 
 
+_PERSIST = (
+    "Optional: also write the **round-trip block** (FR10) around the emitted "
+    "code, named by this string (a Python identifier — it becomes "
+    "`def sketch_<name>()`). The block is a `push_pull`-style marker, an "
+    "`# agentcad-sketch-spec:` line carrying this whole spec as JSON, an "
+    "`# agentcad-sketch-hash:` line over the code, and an end marker — in the "
+    "script, because the part script is the only artifact this project keeps, "
+    "and a script-resident block gets branching, restore, undo, merge and the "
+    "proposal diff for free. Reopening reads it back: the GUI does, and so can "
+    "you (`agentcad.core.sketch_emit.parse_blocks` is the reference reader). "
+    "**The code is the source of truth for geometry; the spec block is "
+    "provenance** — if the hash no longer matches, the code was hand-edited "
+    "and the block reports `diverged` rather than being repaired or silently "
+    "overwritten; an unreadable spec reports `unverified`, never 'no sketch'. "
+    "Pick a name no block in the target script already uses: two blocks of one "
+    "name define the same function twice and the second silently wins."
+)
+
 _PLANE = (
     "Optional: the plane this sketch lives on, as returned by `sketch_plane` "
     "({origin, x_dir, y_dir, normal, face_index, part}). The solver is 2D and "
@@ -268,7 +286,8 @@ def register(registry, service) -> None:
     def solve(entities: dict, constraints: list, initial: dict | None = None,
               emit: str | bool | None = None, drag: dict | None = None,
               diagnostics: str | None = None,
-              plane: dict | None = None) -> dict:
+              plane: dict | None = None,
+              persist: str | bool | None = None) -> dict:
         spec = {
             "points": entities.get("points", []),
             "lines": entities.get("lines", []),
@@ -325,7 +344,8 @@ def register(registry, service) -> None:
             # that did not solve would be emitting the wrong geometry.
             try:
                 result["emit"] = emit_code(
-                    result, spec, style="function" if emit is True else emit)
+                    result, spec, style="function" if emit is True else emit,
+                    persist=persist)
             except EmitError as exc:
                 raise ValidationError(str(exc), details) from exc
         return result
@@ -336,7 +356,8 @@ def register(registry, service) -> None:
         "build123d BuildLine/BuildSketch. " + _USAGE + " " + _ARCS + " "
         + _ELLIPSES + " " + _SPLINES_AND_SLOTS + " " + _NEW_CONSTRAINTS
         + " " + _DIAGNOSTICS
-        + " " + _DRAG + " " + _DIAGNOSTICS_MODE + " " + _EMIT + " " + _PLANE,
+        + " " + _DRAG + " " + _DIAGNOSTICS_MODE + " " + _EMIT + " " + _PERSIST
+        + " " + _PLANE,
         schema(
             {
                 "entities": {"type": "object", "description":
@@ -356,6 +377,7 @@ def register(registry, service) -> None:
                 "diagnostics": {"type": "string",
                                 "description": _DIAGNOSTICS_MODE},
                 "emit": {"type": "string", "description": _EMIT},
+                "persist": {"type": "string", "description": _PERSIST},
                 "plane": {"type": "object", "description": _PLANE},
             },
             ["entities", "constraints"],

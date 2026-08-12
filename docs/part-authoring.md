@@ -164,8 +164,8 @@ def build(p):
 ### Constraint-solved sketches
 
 `agentcad.toolkit.sketch.solve_sketch(spec)` runs a first-party scipy
-least-squares solver over points/lines/circles/arcs/splines/slots and a
-constraint list, and
+least-squares solver over points/lines/circles/arcs/ellipses/splines/slots and
+a constraint list, and
 returns exact coordinates you can feed straight into a `BuildLine`/`BuildSketch`.
 The same solver is exposed to agents as the `solve_sketch` tool (see
 [agent-api.md](agent-api.md)); the spec shape and constraint vocabulary are
@@ -238,18 +238,84 @@ kind?}` dispatches on what `a` and `b` are (line+circle/arc, or curve+curve);
 `symmetric {a, b, about}` mirrors two points or two lines about a line in two
 rows (midpoint on the axis **and** perpendicular to it).
 
+**Tangency at a junction is a *direction* residual, and that matters.** When
+the two curves already meet — the line is built on `arc1.end`, or a
+`coincident` ties a junction point to it — `tangent` compiles to "the two unit
+tangents are parallel" instead of "centre-to-line distance equals r". Same row
+count; the distance form is second-order flat exactly at the solution, so it
+reports itself as redundant while doing real work (measured singular value
+1.8e-16 against a 8.5e-9 rank tolerance) and costs four times the iterations.
+At such a junction `tangent`'s `kind` has no meaning and is accepted unused —
+the coincidence already chose where the curves touch.
+
+**Ellipses** (`"ellipses": [{name, center, a, b, rotation?}]`, plus
+`start_deg`/`end_deg` for an elliptical arc) cost 3 parameters (+2 when
+bounded). Angles are the **eccentric anomaly** in degrees — the point at `t` is
+`center + R(rotation)·(a·cos t, b·sin t)`, which is exactly build123d's
+`EllipticalCenterArc` parametrization (measured to 8.9e-16 mm), so the solved
+angles are the emitted ones. Handles: `<name>.center`, `<name>.major` /
+`<name>.minor` (the semi-axis ends, ordinary point handles, so `distance` and
+friends pin an ellipse's size with no new constraint type), `<name>.start` /
+`<name>.end` when bounded, and the scalar handles `<name>.a` / `<name>.b` that
+`radius`/`equal_radius` take — an ellipse has two radii and neither is *the*
+radius, so you name the one you mean. `tangent` accepts ellipse+line and
+ellipse+circle/arc, carrying the tangency point's anomaly as an auxiliary
+parameter (`<name>.tangency`). **Out of scope, deliberately:**
+ellipse-to-ellipse tangency, on-ellipse point constraints, and
+parabolas/hyperbolas (a PRD non-goal).
+
+#### Sketching on a face
+
+`sketch_plane {project, part_id, face_index}` (agent tool) returns the picked
+planar face's **basis** — `{origin, x_dir, y_dir, normal}` from build123d's
+`Plane(face)`, measured bit-identical across rebuilds, across a fresh worker
+and across parameter changes that do not renumber the faces — plus `refs`, the
+face's own boundary edges in that plane's 2D coordinates, and `entities`, the
+same references already in `solve_sketch`'s entity shape.
+
+Reference entities arrive **fixed and construction-marked**: fixed means they
+contribute zero parameters (no DOF, undraggable, and they can never appear in
+a conflict report as something you could change), construction means they
+constrain but are never emitted as geometry. Boundary edges that are neither
+lines nor circles come back `kind: "other"` with a polyline approximation and
+are **not** constraint targets — a documented gap, not a silent one.
+
+Pass the plane back as `"plane": {...}` on `solve_sketch` and emission writes
+`BuildSketch(Plane(origin=…, x_dir=…, z_dir=…))` instead of `Plane.XY`, under
+a header naming the face. **Face indices are mesh-order ordinals and a
+topology-changing parameter edit can renumber them** (measured: `corner_r: 6.0`
+turned the enclosure's face 37 from a 5989 mm² base plate into a 51 mm²
+sliver) — the caveat is written into the script rather than hidden.
+
 #### Emitting build123d source
 
 `"emit": "function" | "buildline"` (or `agentcad.core.sketch_emit.emit(solution,
 spec)`) returns `{code, warnings, style}` — the **one** emitter the GUI and
-agents share, so the same spec produces byte-identical code either way. The
-mapping: a line chain becomes `Polyline`/`Line`, an arc becomes an
-**endpoint-anchored** `RadiusArc` (or `ThreePointArc` when the arc was authored
-3-point), a spline becomes `Spline(..., tangents=…)` when an end tangent is
-pinned, a circle keeps its `Locations` + `Circle` form, and a slot emits as
-`SlotCenterToCenter` when it stands alone or as its compiled primitives when it
-carries constraints of its own (`SlotCenterToCenter` is a face, not a curve
-that can join a `BuildLine`).
+agents share, so the same spec produces byte-identical code either way.
+
+**The entity → build123d mapping (FR11):**
+
+| entity | emitted |
+|---|---|
+| line chain | `Polyline(v0, v1, …)`, or `Line(a, b)` per segment in a mixed chain |
+| arc (centre-authored, in a chain) | `RadiusArc(start, end, ±r, short_sagitta=…)` — endpoint-anchored |
+| arc (3-point authored) | `ThreePointArc(start, mid, end)` |
+| arc sweeping a full turn | `CenterArc(…)`, with a warning (a `RadiusArc` cannot express it) |
+| circle | `Circle(radius=…)` under `Locations(…)` |
+| ellipse (full) | `Ellipse(x_radius=…, y_radius=…, rotation=…)` under `Locations(…)` |
+| elliptical arc | `EllipticalCenterArc(centre, a, b, start_angle=…, arc_size=…, rotation=…)` |
+| spline | `Spline(p0, …, pn)`, with `tangents=` when an end tangent is pinned |
+| slot, standalone | `SlotCenterToCenter(sep, 2r, rotation=…)` under `Locations` |
+| slot, tied to the sketch | its compiled primitives — two `Line`s, two `RadiusArc`s |
+| construction / projected reference | **nothing** — it constrains, it never emits |
+| closed chain | `make_face()`, behind the closure gate |
+
+`arc_size`, **not** `end_angle`, on `EllipticalCenterArc`: passing `end_angle`
+raises `UnboundLocalError` in the pinned build123d 0.11.1 (its deprecation
+branch reads a name only the other deprecated parameter binds). And
+`SlotCenterToCenter` is a BuildSketch **face**, not a curve that can join a
+`BuildLine` chain, which is why a slot that carries constraints of its own
+emits as its primitives instead.
 
 Every junction is emitted **once**, as a shared `v<n>` literal at **9
 decimals**, and a closure gate refuses to emit `make_face()` when a junction's
@@ -271,6 +337,37 @@ constrained entity moves it (almost) not at all; that is correct.
 `"diagnostics": "auto" | "full" | "cached"` controls the diagnostics cache
 (`auto` serves the cached block on a drag frame, since a drag changes no
 constraints), and `diagnostics_source` in the result says which you got.
+
+#### Round-trip persistence
+
+`"persist": "<name>"` (alongside `emit`) wraps the emitted code in a block that
+carries the whole spec, so the sketch can be **reopened and re-solved** from
+the script it was written into:
+
+```python
+# --- agentcad sketch "profile" (auto-generated; edit or remove freely) ---
+# agentcad-sketch-spec: {"v": 1, "entities": {...}, "constraints": [...]}
+# agentcad-sketch-hash: sha256:33353fb1…
+def sketch_profile():
+    ...
+# --- end agentcad sketch "profile" ---
+```
+
+In the script, not a sidecar: the part script is the only artifact this
+project keeps, and a script-resident block gets branching, restore, undo,
+merge and the proposal diff for free. The block name becomes the function's
+name, so two sketches in one script never shadow each other.
+
+`agentcad.core.sketch_emit.parse_blocks(script)` reads them back —
+`{name, status, spec, code, hash, computed_hash, start_line, end_line,
+message}` — and the GUI does the same through `POST /api/sketch/blocks`.
+**The code is the source of truth for geometry; the spec block is
+provenance:** if the hash no longer matches the code, `status` is `diverged`
+and nothing is repaired (the sketcher opens read-only and asks the user to
+choose). A spec that will not parse, or a block with no hash or no end marker,
+is `unverified` — "we cannot tell", never rendered as "there is no sketch".
+The spec is stored **as submitted**, so a client that submits its solved
+coordinates reopens on the same solution branch.
 
 ### Threads and fasteners
 

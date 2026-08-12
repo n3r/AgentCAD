@@ -52,7 +52,9 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   linear-static FEM is an optional extra (`agentcad[fem]`).
 - **A part-authoring toolkit.** `safe_fillet` / `safe_shell` / `safe_bool`
   survive the common OCCT failures, a scipy constraint solver turns a
-  dimensioned sketch into exact coordinates, and `bd_warehouse`-backed
+  dimensioned sketch — lines, arcs, ellipses, splines and slots, with
+  tangency, symmetry, equality and concentricity — into exact coordinates
+  (and into the build123d source that rebuilds them), and `bd_warehouse`-backed
   helpers add ISO threads and fasteners — all importable from part scripts.
   An **Error Doctor** rewrites raw OCCT errors into plain-language fixes.
 
@@ -99,7 +101,7 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   change proposal, where a red or stale report blocks the merge. See
   [docs/geometry-ci.md](docs/geometry-ci.md).
 
-The agent tool surface is now **70 tools** (was 17; 73 with the `[fem]`
+The agent tool surface is now **71 tools** (was 17; 74 with the `[fem]`
 extra), and multi-part rebuilds fan out across a small pool of warm kernel
 workers. v3 added typed parameters, per-solid semantics, sheet metal with
 flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body
 
+from ..core import sketch_emit
+
 
 def build_router(service, registry) -> APIRouter:
     router = APIRouter()
@@ -36,6 +38,28 @@ def build_router(service, registry) -> APIRouter:
             # ignores it; emission writes it into the script, because
             # sketch-on-face coordinates without their basis are arbitrary.
             "plane": body.get("plane"),
+            # The round-trip block's name (FR10). `false`/`""` is "do not
+            # persist", like `emit`.
+            "persist": body.get("persist") or None,
         })
+
+    @router.post("/sketch/blocks")
+    def sketch_blocks(body: dict = Body(default_factory=dict)):
+        """Read the round-trip sketch blocks out of a part script (FR10).
+
+        **Not a registry call, deliberately.** `parse_blocks` is a pure text
+        function: no project, no store, no kernel, nothing for the tool layer
+        to mediate — and the PRD is explicit that the *solver* surface grows
+        keys rather than sprouting sibling tools. The route-pack precedent for
+        calling straight into core is `routes_undo.py` / `routes_presence.py`.
+        An agent that wants the same answer reads the one-line JSON comment
+        itself; `agentcad.core.sketch_emit.parse_blocks` is the reference
+        implementation and is importable.
+
+        Sync `def` for the same reason `/sketch/solve` is one.
+        """
+        script = body.get("script") or ""
+        return {"blocks": sketch_emit.parse_blocks(script),
+                "next_name": sketch_emit.next_name(script)}
 
     return router

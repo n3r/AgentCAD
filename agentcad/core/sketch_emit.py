@@ -62,11 +62,35 @@ The slot row is the trap: `SlotCenterToCenter` is a BuildSketch **face** at the
 origin, not a curve that can join a `BuildLine` chain, so a slot that carries
 constraints of its own (or whose primitives share a junction with anything
 else) emits as the primitives slice 6 already compiled.
+
+## Round-trip persistence (FR10)
+
+`emit(..., persist="profile")` wraps the code in a **structured block in the
+script** — the `push_pull` precedent (`core/tools_facemod.PUSH_PULL_MARKER`),
+not a sidecar file, because the PRD's non-goals say the part script is the
+only artifact and a script-resident block gets branching, restore, undo, merge
+and the proposal diff for free:
+
+    # --- agentcad sketch "profile" (auto-generated; edit or remove freely) ---
+    # agentcad-sketch-spec: {"v": 1, "entities": {...}, "constraints": [...]}
+    # agentcad-sketch-hash: sha256:...
+    def sketch_profile():
+        ...
+    # --- end agentcad sketch "profile" ---
+
+`parse_blocks(script)` reads them back. **The code is the source of truth for
+geometry; the spec block is provenance**, so a hash mismatch is reported
+(`diverged`) and never repaired: the sketcher opens read-only and asks. A
+block whose spec will not parse is `unverified` — "we cannot tell", which is
+never rendered as "there is no sketch" (the PRD-008 rule).
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import re
 
 # Emission precision. `fmtNum`'s 6 is measured unsafe; 7 is the first that
 # closes; 9 keeps two orders of margin.
@@ -87,6 +111,30 @@ ARC_ANCHORS = ("endpoint", "center")
 # A sweep this close to a full turn cannot be expressed as a RadiusArc (its
 # two endpoints coincide), so it falls back to CenterArc with a warning.
 FULL_TURN_TOL_DEG = 1e-9
+
+
+# ------------------------------------------------------ round-trip block
+SPEC_VERSION = 1
+DEFAULT_NAME = "profile"
+BLOCK_MARKER = ('# --- agentcad sketch "{name}" (auto-generated; edit or '
+                'remove freely) ---')
+BLOCK_END = '# --- end agentcad sketch "{name}" ---'
+SPEC_PREFIX = "# agentcad-sketch-spec: "
+HASH_PREFIX = "# agentcad-sketch-hash: "
+HASH_ALGO = "sha256"
+
+# The entity sections carried in the persisted spec, in the order they are
+# written. Anything else on the spec (`initial`, `drag`, `diagnostics`) is a
+# property of one *call*, not of the sketch, and is deliberately not persisted.
+PERSIST_KINDS = ("points", "lines", "circles", "arcs", "ellipses", "splines",
+                 "slots")
+
+_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_MARKER_RE = re.compile(
+    r'^#\s*---\s*agentcad sketch "([A-Za-z_][A-Za-z0-9_]*)"\s*\(auto-generated')
+_END_RE = re.compile(
+    r'^#\s*---\s*end agentcad sketch "([A-Za-z_][A-Za-z0-9_]*)"')
+_DEF_RE = re.compile(r"^def sketch_([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.M)
 
 
 class EmitError(ValueError):
@@ -604,14 +652,20 @@ def _plane_header(plane: dict) -> list[str]:
 def emit(solution: dict, spec: dict, *, style: str = "function",
          decimals: int = DECIMALS, arc_anchor: str = "endpoint",
          closure_tol: float = CLOSURE_TOL_MM,
-         join_tol: float = JOIN_TOL_MM) -> dict:
+         join_tol: float = JOIN_TOL_MM, persist=None) -> dict:
     """Emit build123d source for a solved sketch.
 
     `decimals` and `arc_anchor` are the two knobs the design measured; their
     defaults are the measured-safe values and the unsafe combination is kept
     reachable **only** so the regression test can prove it fails rather than
     assert it from memory.
+
+    `persist` is the round-trip block's name (`True` means `"profile"`): with
+    it the code is wrapped in the marker/spec/hash block `parse_blocks` reads
+    back. It is **opt-in** — without it the bytes are exactly what every
+    caller got before FR10 landed.
     """
+    block = None if persist is None or persist is False else block_name(persist)
     if style not in STYLES:
         raise EmitError(f"unknown emit style {style!r}; known: {list(STYLES)}")
     if arc_anchor not in ARC_ANCHORS:
@@ -678,9 +732,13 @@ def emit(solution: dict, spec: dict, *, style: str = "function",
                     f"rotation={fmt(rot, decimals)})")
 
     plane = spec.get("plane") or None
-    return {"code": _render(body, style, plane, decimals),
-            "warnings": warnings, "style": style,
-            "plane": plane}
+    code = _render(body, style, plane, decimals,
+                   func=f"sketch_{block or DEFAULT_NAME}",
+                   banner=block is None)
+    if block is not None:
+        code = wrap_block(block, spec, code)
+    return {"code": code, "warnings": warnings, "style": style,
+            "plane": plane, "persist": block}
 
 
 def _gate(solution, members, junctions, chains, decimals, arc_anchor,
@@ -717,7 +775,8 @@ def _gate(solution, members, junctions, chains, decimals, arc_anchor,
 
 
 def _render(body: list[str], style: str, plane: dict | None = None,
-            decimals: int = DECIMALS) -> str:
+            decimals: int = DECIMALS, func: str = "sketch_profile",
+            banner: bool = True) -> str:
     if not body:
         body = ["pass"]
     where = "Plane.XY" if not plane else _plane_expr(plane, decimals)
@@ -725,12 +784,220 @@ def _render(body: list[str], style: str, plane: dict | None = None,
     if style == "buildline":
         return "\n".join(header + [f"with BuildSketch({where}) as _sk:"]
                          + ["    " + line for line in body]) + "\n"
+    # `banner` is the generic auto-generated header. A persisted block writes
+    # its own marker line, so the two would read as a duplicate; the *plane*
+    # header is kept either way, because it carries the face caveat.
+    lead = header or (["# --- agentcad sketch (auto-generated) ---"]
+                      if banner else [])
     return "\n".join([
         "", "",
-        *(header or ["# --- agentcad sketch (auto-generated) ---"]),
-        "def sketch_profile():",
+        *lead,
+        f"def {func}():",
         f"    with BuildSketch({where}) as _sk:",
         *["        " + line for line in body],
         "    return _sk.sketch",
         "",
     ])
+
+
+# ------------------------------------------------------ round-trip (FR10)
+def _norm(text: str) -> str:
+    """The code as a hash sees it.
+
+    Line endings and trailing whitespace are normalised away deliberately: an
+    editor that rewrites either on save has not touched the geometry, and
+    reporting that as a hand edit would train the user to ignore the banner —
+    which is the one thing the banner cannot survive.
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(line.rstrip() for line in text.split("\n")).strip("\n")
+
+
+def block_hash(code: str) -> str:
+    """`sha256:<hex>` over the emitted code block, normalised by `_norm`."""
+    digest = hashlib.sha256(_norm(code).encode("utf-8")).hexdigest()
+    return f"{HASH_ALGO}:{digest}"
+
+
+def persist_spec(spec: dict) -> dict:
+    """The spec **as submitted**, in the shape a caller can post straight back.
+
+    As submitted, not as solved: the block records the input that produced the
+    code beneath it. The GUI submits the on-screen (already solved)
+    coordinates, so reopening a GUI-authored block re-solves from its own
+    solution and lands on the same branch — the property FR10 needs — without
+    the emitter inventing a second, rounded copy of the geometry that the code
+    already holds.
+
+    `initial`, `drag` and `diagnostics` are properties of one call and are not
+    persisted. `plane` is (slice 12): sketch-on-face coordinates without their
+    basis are arbitrary.
+    """
+    entities = {kind: list(spec.get(kind) or []) for kind in PERSIST_KINDS
+                if spec.get(kind)}
+    out = {"v": SPEC_VERSION, "entities": entities,
+           "constraints": list(spec.get("constraints") or [])}
+    if spec.get("plane"):
+        out["plane"] = spec["plane"]
+    return out
+
+
+def block_name(persist) -> str:
+    """Validate a block name — it becomes `def sketch_<name>()`."""
+    name = DEFAULT_NAME if persist is True else str(persist or "")
+    if not _NAME_RE.match(name):
+        raise EmitError(
+            f"sketch block name {name!r} is not a Python identifier; it "
+            "becomes the emitted function's name (`def sketch_<name>()`) and "
+            "the marker the block is found by")
+    return name
+
+
+def wrap_block(name: str, spec: dict, code: str) -> str:
+    """Marker, spec, hash, code, end marker — the block a script carries."""
+    body = code.strip("\n")
+    return "\n".join([
+        "", "",
+        BLOCK_MARKER.format(name=name),
+        SPEC_PREFIX + json.dumps(persist_spec(spec)),
+        HASH_PREFIX + block_hash(body),
+        body,
+        BLOCK_END.format(name=name),
+        "",
+    ])
+
+
+def parse_blocks(script: str) -> list[dict]:
+    """Read every sketch block out of a part script.
+
+    Returns one entry per block, in script order:
+
+    `{name, status, spec, code, hash, computed_hash, start_line, end_line,
+      message}` with `status` in:
+
+    - **`ok`** — the spec parsed and the hash matches the code beneath it.
+    - **`diverged`** — the spec parsed and the hash does **not** match: the
+      code was hand-edited. The code is the source of truth for geometry, so
+      this is reported and never repaired.
+    - **`unverified`** — the spec is missing, unreadable, of an unknown
+      version, unhashed, or the block has no end marker. "We cannot tell" is
+      never rendered as "there is no sketch"; the code is left alone.
+
+    Line numbers are 1-based over the script as given.
+    """
+    text = (script or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    out: list[dict] = []
+    i = 0
+    while i < len(lines):
+        marker = _MARKER_RE.match(lines[i].strip())
+        if not marker:
+            i += 1
+            continue
+        name = marker.group(1)
+        start = i
+        j = i + 1
+        spec_line = hash_line = None
+        while j < len(lines):
+            stripped = lines[j].strip()
+            if spec_line is None and stripped.startswith(SPEC_PREFIX.strip()):
+                spec_line = stripped[len(SPEC_PREFIX.strip()):].strip()
+            elif hash_line is None and stripped.startswith(HASH_PREFIX.strip()):
+                hash_line = stripped[len(HASH_PREFIX.strip()):].strip()
+            else:
+                break
+            j += 1
+        body_start = j
+        end = None
+        while j < len(lines):
+            done = _END_RE.match(lines[j].strip())
+            if done and done.group(1) == name:
+                end = j
+                break
+            if _MARKER_RE.match(lines[j].strip()):
+                break              # the next block starts: this one is open
+            j += 1
+        body_end = end if end is not None else j
+        code = "\n".join(lines[body_start:body_end]).strip("\n")
+        out.append(_block_status(name, spec_line, hash_line, code, start,
+                                 end if end is not None else body_end - 1,
+                                 closed=end is not None))
+        i = (end + 1) if end is not None else body_end
+    return out
+
+
+def _block_status(name, spec_line, hash_line, code, start, end,
+                  closed: bool) -> dict:
+    entry = {"name": name, "status": "unverified", "spec": None, "code": code,
+             "hash": hash_line, "computed_hash": block_hash(code),
+             "start_line": start + 1, "end_line": max(end, start) + 1,
+             "message": ""}
+    spec, problem = _read_spec(spec_line)
+    entry["spec"] = spec
+    if not closed:
+        # The hash covers the code, not the marker, so a deleted end marker
+        # would otherwise read as `ok` over a body that runs to the end of the
+        # file — a block whose extent nobody can agree on.
+        entry["message"] = (
+            f'sketch {name!r} has no `# --- end agentcad sketch "{name}" ---` '
+            "marker, so the code it covers cannot be delimited; the code is "
+            "left alone")
+        return entry
+    if problem:
+        entry["message"] = problem
+        return entry
+    if hash_line is None:
+        entry["message"] = (
+            f"sketch {name!r} records no hash, so a hand edit to its code "
+            "cannot be detected. Re-emit the sketch to restore the check.")
+        return entry
+    if hash_line != entry["computed_hash"]:
+        entry["status"] = "diverged"
+        entry["message"] = (
+            f"the code of sketch {name!r} was edited by hand since the spec "
+            "was written (hash mismatch). The code is the source of truth for "
+            "geometry: re-solve from the spec to discard the edit, or discard "
+            "the spec to keep it. Nothing is overwritten either way.")
+        return entry
+    entry["status"] = "ok"
+    return entry
+
+
+def _read_spec(spec_line: str | None) -> tuple[dict | None, str]:
+    if spec_line is None:
+        return None, ("the block carries no `# agentcad-sketch-spec:` line, "
+                      "so its constraints cannot be recovered; the code is "
+                      "left alone")
+    try:
+        spec = json.loads(spec_line)
+    except ValueError as exc:
+        return None, (f"the spec block is unreadable ({exc}); the code is "
+                      "left alone")
+    if not isinstance(spec, dict) or "entities" not in spec:
+        return None, ("the spec block is unreadable (it is not a sketch "
+                      "spec object); the code is left alone")
+    version = spec.get("v")
+    if version != SPEC_VERSION:
+        return None, (f"the spec block is version {version!r}, and this "
+                      f"AgentCAD writes version {SPEC_VERSION} — it was "
+                      "probably written by a newer build; the code is left "
+                      "alone")
+    return spec, ""
+
+
+def next_name(script: str, base: str = DEFAULT_NAME) -> str:
+    """The next block name that shadows nothing in this script.
+
+    Two blocks named the same would define the same `sketch_<name>()` twice
+    and the second would silently win — the `push_pull` counter's reason,
+    applied to a function name. Pre-slice-13 inserts carry no block, so plain
+    `def sketch_*(` definitions are counted too.
+    """
+    taken = {b["name"] for b in parse_blocks(script)}
+    taken |= set(_DEF_RE.findall((script or "").replace("\r\n", "\n")))
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base}{n}" in taken:
+        n += 1
+    return f"{base}{n}"

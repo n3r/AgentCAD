@@ -1908,6 +1908,40 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
 }
 .sk-pulse { animation: sk-pulse 0.7s ease-in-out 2; }
 
+/* The round-trip banner (FR10): which saved sketch is open, and — when the
+   emitted code was hand-edited — the two explicit choices. It is a strip
+   above the canvas rather than a toast, because a divergence has to stay on
+   screen until the user answers it. */
+.sk-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--hairline-soft);
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.sk-banner.hidden { display: none; }
+.sk-banner-msg { flex: 1; min-width: 200px; line-height: 1.45; }
+.sk-banner.ok { color: var(--dim); }
+.sk-banner.warn {
+  color: var(--accent);
+  border-bottom-color: var(--accent-ring);
+  background: var(--accent-soft);
+}
+.sk-banner.err {
+  color: var(--err);
+  border-bottom-color: var(--err-ring);
+  background: var(--err-soft);
+}
+.sk-banner-btn { flex: none; }
+
+/* Read-only, while a divergence is unanswered: the canvas still selects and
+   pans, it just cannot draw. */
+.sk-locked .sk-canvas { cursor: default; }
+
 .sk-canvas {
   flex: 1;
   min-height: 0;

@@ -11,6 +11,13 @@
 // finder in this file: `agentcad/core/sketch_emit.py` owns all three, behind a
 // closure gate the browser cannot skip.
 //
+// **Round-trip persistence lives on the server too** (FR10). "Insert" asks for
+// `persist: <name>`, so the pasted code carries a marker, its whole spec as
+// JSON and a hash over the code; opening the sketcher reads them back through
+// POST /api/sketch/blocks. The hash is the only thing that can tell a hand
+// edit from a fresh block, so it is computed in exactly one place — the same
+// module that wrote it — and this file never re-implements it.
+//
 // Sketch plane is XY, y up (SVG y-axis is flipped via a scale(1,-1) group);
 // units are mm, 1 SVG user unit == 1 mm, zoom via the wheel.
 
@@ -56,6 +63,13 @@ let plane = null;
 let solveState = { ok: true, dof: 0, local: true };
 let drag = null; // active pointer drag — see startDrag()
 let press = null; // pointerdown that has not yet become a click or a drag
+// The round-trip block this sketch was opened from, and the read-only latch a
+// **diverged** block opens under: the code is the source of truth for
+// geometry, so until the user chooses (re-solve from the spec / keep the hand
+// edit) nothing here may edit or emit. See `openBlock`.
+let blockName = null;
+let readOnly = false;
+let bannerEl = null;
 let highlight = { entities: new Set(), constraints: new Set() };
 let highlightTimer = null;
 
@@ -134,6 +148,8 @@ function resetModel() {
   };
   seq = { p: 0, l: 0, c: 0, a: 0, e: 0, sp: 0, sl: 0 };
   plane = null;
+  blockName = null;
+  readOnly = false;
   selection = [];
   chainPrev = null;
   pending = null;
@@ -150,6 +166,7 @@ function show() {
   btn.classList.add("active");
   render();
   renderStatus();
+  refreshBlocks();
 }
 
 function close() {
@@ -235,7 +252,12 @@ function buildUI() {
 
   bar.appendChild(skButton("Delete", "Delete the selection (Del)", deleteSelection));
   bar.appendChild(skButton("Clear", "Clear the whole sketch", () => {
+    // `resetModel` drops the read-only latch with the model it belonged to;
+    // the banner has to go with them. Clearing the canvas never edits the
+    // script, so a diverged block is still on disk, and reopening finds it.
     resetModel();
+    hideBanner();
+    applyReadOnly();
     render();
     renderStatus();
   }));
@@ -266,7 +288,14 @@ function buildUI() {
   chipsEl = document.createElement("div");
   chipsEl.className = "sk-chips";
 
-  host.append(bar, svg, chipsEl);
+  // The round-trip banner (FR10). It sits between the toolbar and the canvas
+  // because a divergence has to be read *before* the geometry below it is
+  // trusted, and it is the only surface that can say "this code was edited by
+  // hand" — slice 10 left it with nowhere to live.
+  bannerEl = document.createElement("div");
+  bannerEl.className = "sk-banner hidden";
+
+  host.append(bar, bannerEl, svg, chipsEl);
   setTool("line");
 
   new ResizeObserver(() => open && render()).observe(svg);
@@ -493,7 +522,7 @@ function baseName(ref) {
 }
 
 function deleteSelection() {
-  if (!selection.length) return;
+  if (readOnly || !selection.length) return;
   const gone = new Set();
   for (const s of selection) {
     if (s.kind === "handle") gone.add(baseName(s.name)); // deleting an end
@@ -542,6 +571,7 @@ function deleteSelection() {
 // ------------------------------------------------------------ constraints
 
 function applyConstraint(name) {
+  if (readOnly) return;
   const pts = selectedOf("point", "handle");
   const lns = selectedOf("line");
   const crv = selectedOf("circle", "arc");
@@ -644,7 +674,11 @@ function updateConstraintButtons() {
     equal: only(0, 2, 0) || only(0, 0, 2),
     concentric: only(0, 0, 2) || only(0, 0, 1, 1) || only(0, 0, 0, 2),
   };
-  for (const [name, b] of Object.entries(conBtns)) b.disabled = !enable[name];
+  for (const [name, b] of Object.entries(conBtns)) {
+    // A diverged block opens read-only: nothing may edit the sketch until the
+    // user has chosen between the spec and their hand edit.
+    b.disabled = readOnly || !enable[name];
+  }
 }
 
 function constraintLabel(con) {
@@ -695,6 +729,8 @@ function toSketch(e) {
 
 function onPointerDown(e) {
   if (e.button !== 0) return;
+  // Read-only (a diverged block): look and select, never draw.
+  if (readOnly && tool !== "select") return;
   const { x, y } = toSketch(e);
   if (tool === "point") {
     if (!nearRef(x, y)) {
@@ -1017,6 +1053,7 @@ function slotClick(x, y) {
 // ---- drag ----------------------------------------------------------------
 
 function startDrag(ref, e) {
+  if (readOnly) return;
   // Snapshot before the first frame: on any solver error the drag ends and
   // the sketch reverts here. A drag that leaves a divergent frame on screen
   // is how a sketch gets corrupted.
@@ -1187,6 +1224,211 @@ function onKey(e) {
     e.preventDefault();
     deleteSelection();
   }
+}
+
+// ------------------------------------------------- round-trip blocks (FR10)
+
+/** Name prefixes the GUI allocates, so a spec read back out of a script keeps
+ *  numbering where it left off instead of colliding with itself. Projected
+ *  references (`ref0`, `ref0_a`) match none of them, deliberately. */
+const NAME_SEQ = [
+  ["p", "points", /^p(\d+)$/], ["l", "lines", /^ln(\d+)$/],
+  ["c", "circles", /^c(\d+)$/], ["a", "arcs", /^a(\d+)$/],
+  ["e", "ellipses", /^e(\d+)$/], ["sp", "splines", /^sp(\d+)$/],
+  ["sl", "slots", /^sl(\d+)$/],
+];
+
+function countersFor(m) {
+  const out = { p: 0, l: 0, c: 0, a: 0, e: 0, sp: 0, sl: 0 };
+  for (const [key, kind, re] of NAME_SEQ) {
+    for (const entity of m[kind] || []) {
+      const hit = re.exec(entity.name);
+      if (hit) out[key] = Math.max(out[key], Number(hit[1]));
+    }
+  }
+  return out;
+}
+
+function hasEntities() {
+  return [model.points, model.lines, model.circles, model.arcs,
+          model.ellipses, model.splines, model.slots].some((a) => a.length);
+}
+
+/** A persisted spec back into the on-screen model — the inverse of
+ *  `entitiesSpec()`. `construction` and `plane` ride through untouched: a
+ *  reference that re-parsed as real geometry would emit the part's own
+ *  boundary back into it, and a sketch-on-face without its basis is a set of
+ *  coordinates in a plane nobody recorded. */
+function specToModel(spec) {
+  const ents = (spec && spec.entities) || {};
+  model.points = (ents.points || []).map((p) => ({ ...p, fixed: !!p.fixed }));
+  model.lines = (ents.lines || []).map((l) => ({ ...l }));
+  model.circles = (ents.circles || []).map((c) => ({ ...c }));
+  model.arcs = (ents.arcs || []).map((a) => ({ ...a }));
+  model.ellipses = (ents.ellipses || []).map((e) => ({
+    ...e, rotation: e.rotation || 0,
+    bounded: e.start_deg !== undefined && e.start_deg !== null,
+  }));
+  model.splines = (ents.splines || []).map(
+    (s) => ({ name: s.name, points: [...s.points] }));
+  model.slots = (ents.slots || []).map((s) => ({ ...s }));
+  model.constraints = ((spec && spec.constraints) || []).map((c) => ({ ...c }));
+  plane = (spec && spec.plane) || null;
+  seq = countersFor(model);
+}
+
+/** Look for round-trip blocks in the open part's script and offer them.
+ *
+ *  Never clobbers: a canvas with work on it is left alone. */
+async function refreshBlocks() {
+  if (hasEntities()) return;
+  let script = "";
+  try {
+    script = editor.getScript() || "";
+  } catch (err) {
+    script = "";
+  }
+  if (!script.includes("agentcad-sketch-spec")
+      && !script.includes("agentcad sketch \"")) {
+    hideBanner();
+    return;
+  }
+  let res = null;
+  try {
+    res = await api.sketchBlocks(script);
+  } catch (err) {
+    return;                       // an unreachable server is not a divergence
+  }
+  const blocks = (res && res.blocks) || [];
+  if (!blocks.length) {
+    hideBanner();
+    return;
+  }
+  if (blocks.length === 1) {
+    openBlock(blocks[0]);
+    return;
+  }
+  showPicker(blocks);
+}
+
+/** Open one block. A diverged one opens **read-only**: the code is the source
+ *  of truth for geometry, and the user picks explicitly between the spec and
+ *  their hand edit. Nothing is overwritten either way.
+ *
+ *  A block whose spec will not parse loads nothing, so there is nothing to
+ *  protect and the latch stays off — locking the canvas over whatever the user
+ *  had drawn would punish them for someone else's corrupt comment. */
+function openBlock(block) {
+  if (block.spec) {
+    resetModel();
+    specToModel(block.spec);
+    blockName = block.name;
+  }
+  readOnly = !!block.spec && block.status !== "ok";
+  applyReadOnly();
+  showBanner(block);
+  if (block.spec) {
+    render();
+    solveAndRender("full");
+  } else {
+    render();
+    renderStatus();
+  }
+}
+
+const BANNER_TEXT = {
+  ok: (b) => `editing sketch “${b.name}” from the script — its spec and the `
+    + "code are in sync",
+  diverged: (b) => `sketch “${b.name}”: the emitted code was edited by hand, `
+    + "so it no longer matches the saved spec. The code is the source of "
+    + "truth for geometry — nothing here has been overwritten.",
+  unverified: (b) => `sketch “${b.name}”: ${b.message}`,
+};
+
+function showBanner(block) {
+  bannerEl.textContent = "";
+  bannerEl.className = `sk-banner ${block.status === "ok" ? "ok"
+    : block.status === "diverged" ? "err" : "warn"}`;
+  const msg = document.createElement("span");
+  msg.className = "sk-banner-msg";
+  msg.textContent = (BANNER_TEXT[block.status] || BANNER_TEXT.unverified)(block);
+  bannerEl.appendChild(msg);
+  if (block.status === "ok") {
+    bannerEl.appendChild(bannerButton("✕", "Dismiss", hideBanner));
+    return;
+  }
+  if (block.spec) {
+    // The design's two explicit choices. Neither writes to the script: "Insert
+    // → script" still does that, and it appends a *new* block rather than
+    // rewriting the one the user edited.
+    bannerEl.appendChild(bannerButton(
+      "Re-solve from the spec",
+      "Edit the saved constraint spec. Inserting writes a new block; the "
+      + "hand-edited one stays in the script until you remove it.",
+      () => {
+        readOnly = false;
+        applyReadOnly();
+        hideBanner();
+        actions.toast(`editing the saved spec of “${block.name}” — Insert `
+                      + "writes a new block, so your hand edit is still there",
+                      "info");
+      }));
+    bannerEl.appendChild(bannerButton(
+      "Discard the spec",
+      "Keep the hand-edited code exactly as it is and drop its constraints.",
+      () => {
+        resetModel();
+        hideBanner();
+        render();
+        renderStatus();
+        actions.toast(`kept the hand-edited code of “${block.name}”; its `
+                      + "constraints are gone", "info");
+      }));
+    return;
+  }
+  bannerEl.appendChild(bannerButton("Dismiss", "Leave the code alone", () => {
+    readOnly = false;                 // nothing was loaded; nothing to latch
+    applyReadOnly();
+    hideBanner();
+  }));
+}
+
+function showPicker(blocks) {
+  bannerEl.textContent = "";
+  bannerEl.className = "sk-banner";
+  const msg = document.createElement("span");
+  msg.className = "sk-banner-msg";
+  msg.textContent = `${blocks.length} saved sketches in this script:`;
+  bannerEl.appendChild(msg);
+  for (const block of blocks) {
+    const label = block.status === "ok" ? block.name
+      : `${block.name} (${block.status})`;
+    bannerEl.appendChild(bannerButton(
+      label, block.message || `Open sketch “${block.name}”`,
+      () => openBlock(block)));
+  }
+  bannerEl.appendChild(bannerButton("✕", "Dismiss", hideBanner));
+}
+
+function bannerButton(label, title, onClick) {
+  const b = skButton(label, title, onClick);
+  b.classList.add("sk-banner-btn");
+  return b;
+}
+
+function hideBanner() {
+  bannerEl.className = "sk-banner hidden";
+  bannerEl.textContent = "";
+}
+
+/** Read-only is a latch on every surface that could edit or emit. */
+function applyReadOnly() {
+  host.classList.toggle("sk-locked", readOnly);
+  if (readOnly) setTool("select");
+  for (const [name, b] of Object.entries(toolBtns)) {
+    b.disabled = readOnly && name !== "select";
+  }
+  renderStatus();          // `updateConstraintButtons` honours `readOnly`
 }
 
 // ------------------------------------------------------------------ solve
@@ -1452,7 +1694,7 @@ function renderStatus() {
   const anyCurve = [...model.lines, ...model.circles, ...model.arcs,
                     ...model.ellipses, ...model.splines, ...model.slots]
     .some((e) => !isConstruction(e));
-  insertBtn.disabled = !solveState.ok || !anyCurve;
+  insertBtn.disabled = readOnly || !solveState.ok || !anyCurve;
   const st = chipState();
   dofEl.className = `sk-dof ${st.cls}`;
   if (solveState.stale && drag) dofEl.classList.add("stale");
@@ -1852,8 +2094,19 @@ async function insertSnippet() {
   const anyCurve = [...model.lines, ...model.circles, ...model.arcs,
                     ...model.ellipses, ...model.splines, ...model.slots]
     .some((e) => !isConstruction(e));
-  if (!anyCurve) return;
+  if (!anyCurve || readOnly) return;
   insertBtn.disabled = true;
+  // FR10: the round-trip block's name must shadow nothing already in the
+  // script — two blocks of one name define `sketch_<name>()` twice and the
+  // second silently wins. The server owns the naming rule (it also counts
+  // pre-FR10 `def sketch_*(` definitions), so ask it rather than guess.
+  let name = "profile";
+  try {
+    const info = await api.sketchBlocks(editor.getScript() || "");
+    name = info.next_name || name;
+  } catch (err) {
+    name = blockName || name;
+  }
   let res = null;
   let thrown = null;
   try {
@@ -1861,7 +2114,8 @@ async function insertSnippet() {
     // the same spec yields byte-identical build123d either way (AC1).
     res = await api.solveSketch(entitiesSpec(), model.constraints,
                                 solveOpts({ emit: "function",
-                                            diagnostics: "full" }));
+                                            diagnostics: "full",
+                                            persist: name }));
   } catch (err) {
     thrown = err;
   }
@@ -1887,11 +2141,21 @@ async function insertSnippet() {
                   "error");
     return;
   }
+  // The sketch now belongs to the block just written; the block it came from
+  // (if any) is left in the script untouched, because replacing a user's text
+  // is exactly what FR10 says never to do silently.
+  const previous = blockName;
+  blockName = res.emit.persist || name;
+  const stale = previous && previous !== blockName
+    ? ` — the earlier block “${previous}” is still in the script, remove it if `
+      + "this replaces it" : "";
   const warnings = (res.emit.warnings || []).map((w) => w.message);
   if (warnings.length) {
-    actions.toast(`sketch inserted with ${warnings.length} warning(s): `
-                  + warnings.join("; "), "info");
+    actions.toast(`sketch inserted as sketch_${blockName}() with `
+                  + `${warnings.length} warning(s): ${warnings.join("; ")}`,
+                  "info");
   } else {
-    actions.toast("sketch inserted — call sketch_profile() from build(p)");
+    actions.toast(`sketch inserted — call sketch_${blockName}() from `
+                  + `build(p)${stale}`);
   }
 }
