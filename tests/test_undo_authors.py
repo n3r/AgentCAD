@@ -423,6 +423,53 @@ def test_revert_leaves_an_untracked_file_alone(tmp_path):
     assert scratch.read_text(encoding="utf-8") == "notes\n"
 
 
+def test_a_range_containing_a_merge_is_a_structured_conflict(tmp_path):
+    """Every other way a revert can refuse says ``{commit, reason, paths,
+    blocked_by}``; this one said ``HistoryError: git revert failed: ...``.
+
+    A range is inverted commit by commit and git needs a per-commit mainline
+    it cannot be given for a range, so a merge inside ``since..commit`` cannot
+    be reverted this way — a real refusal with a real reason, not an internal
+    failure. It reached the undo path as a ``ValidationError`` ("undo failed:
+    git revert failed: …") where every sibling refusal is a ``ConflictError``
+    a UI can render, and it was decided by parsing git's stderr for the
+    *absence* of unmerged paths, which is not a decision at all.
+    """
+    from agentcad.core.model import ConflictError
+
+    history = ProjectHistory()
+    proj = tmp_path / "demo"
+    (proj / "parts").mkdir(parents=True)
+    (proj / "parts" / "a.py").write_text("A1\n", encoding="utf-8")
+    base = history.snapshot(proj, "base")
+
+    history._run(proj, "checkout", "-b", "side")
+    (proj / "parts" / "b.py").write_text("B1\n", encoding="utf-8")
+    history.snapshot(proj, "side edit")
+    history._run(proj, "checkout", "-")
+    (proj / "parts" / "a.py").write_text("A2\n", encoding="utf-8")
+    history.snapshot(proj, "main edit")
+    merged = history._run(proj, "merge", "--no-ff", "side", "-m", "merge side")
+    assert merged.returncode == 0, merged.stderr
+    (proj / "parts" / "a.py").write_text("A3\n", encoding="utf-8")
+    tip = history.snapshot(proj, "after the merge")
+
+    head_before = history.head(proj)
+    with pytest.raises(ConflictError) as excinfo:
+        history.revert(proj, tip, since=base)
+    details = excinfo.value.details
+    assert details["reason"] == "merge_in_range"
+    assert details["commit"] == tip
+    assert details["paths"] == []
+    assert len(details["blocked_by"]) == 1          # the merge commit itself
+    # ...and nothing was touched on the way to that refusal.
+    assert history.head(proj) == head_before
+    assert (proj / "parts" / "a.py").read_text(encoding="utf-8") == "A3\n"
+
+    # The single-commit revert of a merge is unaffected: it has a mainline.
+    assert history.revert(proj, details["blocked_by"][0])
+
+
 def test_reverting_an_already_reverted_commit_is_refused(tmp_path):
     from agentcad.core.model import ConflictError
 

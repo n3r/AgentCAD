@@ -24,12 +24,19 @@ implementation detail (PRD-008, design Decision 13):
    *now*". Nothing here touches the store.
 5. **Everything here is bounded, because nothing here is authenticated.** The
    identity arrives on a header anyone can set and anyone can rotate, so it is
-   length-checked (:data:`MAX_ID_CHARS`, refused not truncated), the roster has
-   a hard ceiling (:data:`MAX_CLIENTS`) that refuses a *new* row rather than
+   length-checked (:data:`MAX_ID_CHARS`, refused not truncated) **wherever it
+   becomes a key** — which means in ``locks.check_client_id``, not here: the
+   presence route was the only door that checked, and a part write carries the
+   same header into the claim registry from the write guard. The roster has a
+   hard ceiling (:data:`MAX_CLIENTS`) that refuses a *new* row rather than
    evicting an incumbent, and the rate limiter's buckets have one too
-   (:data:`MAX_BUCKETS`). The last of these is what stops rotation bypassing
-   the limit outright. The broadcast needs no separate bound: a
-   ``presence_changed`` frame *is* the roster, so capping the roster caps it.
+   (:data:`MAX_BUCKETS`). That last one is a **memory** bound first: a rotating
+   identity is granted its first beat exactly like a real newcomer, so it is
+   not held to 1/s — it is held to one grant per bucket per refill window, 512
+   per 5 s, because a table with nothing refilled in it has no room to mint
+   another. What bounds the flood's cost to everyone else is the roster
+   ceiling, and the broadcast needs no separate bound of its own, because a
+   ``presence_changed`` frame *is* the roster.
 
 Two smaller rules that are easy to get wrong:
 
@@ -66,18 +73,25 @@ SURFACES = ("viewport", "editor", "inspector", "proposals")
 
 MAX_LABEL_CHARS = 40
 MAX_PART_CHARS = 64
-#: An identity is a self-asserted header on an unauthenticated local server,
-#: so it is bounded here rather than trusted: it becomes a dict key in the
-#: roster, the claim registry and the rate limiter, and it is echoed into
-#: everybody else's toolbar. Matches ``routes_presence._beacon_identity``.
-MAX_ID_CHARS = 64
+#: An identity is a self-asserted header on an unauthenticated local server, so
+#: it is bounded rather than trusted: it becomes a dict key in the roster, the
+#: claim registry and the rate limiter, and it is echoed into everybody else's
+#: toolbar. The number and the check live in ``core.locks`` — beside the
+#: ContextVar the identity arrives in — because the claim registry is reached
+#: by a part write that never passes a presence route. Matches
+#: ``routes_presence._beacon_identity``.
+MAX_ID_CHARS = locks.MAX_CLIENT_ID_CHARS
 
 #: A heartbeat is 1/s with a burst of 5 — enough for the immediate beats a
 #: project/part/branch/focus change fires, not enough to be a write amplifier.
 RATE_PER_S = 1.0
 RATE_BURST = 5.0
 
-#: Hard ceiling on the whole roster, across every working tree in the process.
+#: Hard ceiling on the whole roster, across every project and branch in the
+#: process — deliberately process-wide, because what it bounds is process-wide:
+#: the dict lives in one service and a flood on one project would otherwise
+#: cost every other project's memory. The refusal says so rather than saying
+#: "this project", which is what it used to say and was not true.
 #: "One client, one id" is a convention, not a fact — nothing stops a caller
 #: rotating ``X-Agent-Id`` — and every row costs a TTL of memory *and* a slot
 #: in every ``presence_changed`` frame, so the broadcast grows with the flood.
@@ -111,18 +125,13 @@ def check_identity(value: object) -> str:
     does: the rate limiter mints a bucket keyed by the raw identity, and it
     runs first, so validating only inside ``touch`` would let an unbounded
     string become a dict key on the way past.
+
+    One line of policy, one implementation: ``locks.check_client_id``, which
+    the claim registry calls at its own doors for the same reason.
     """
     if not isinstance(value, str) or not value.strip():
         raise ValidationError("presence needs a client identity")
-    who = value.strip()
-    if len(who) > MAX_ID_CHARS:
-        raise ValidationError(
-            f"client identity is longer than {MAX_ID_CHARS} characters",
-            {"max": MAX_ID_CHARS, "given": len(who)},
-        )
-    if not who.isprintable():
-        raise ValidationError("client identity has non-printable characters")
-    return who
+    return locks.check_client_id(value)
 
 
 class TokenBucket:
@@ -133,16 +142,32 @@ class TokenBucket:
     users to distrust a status indicator.
 
     **Bounded** at :data:`MAX_BUCKETS`, because a bucket is minted by the first
-    heartbeat under an identity and a rotating identity therefore both bypasses
-    the limit *and* leaks a dict entry per beat. Eviction drops the buckets
-    that carry no information first — a bucket refilled to its full burst is
-    indistinguishable from an absent one, so dropping it grants nobody
-    anything — and only then the least recently used, which costs at most one
-    extra burst. That subsumes "evict a bucket with its roster row": a row
-    expires after ``PRESENCE_TTL_S`` (45 s) and a bucket refills in five, so
-    every departed client's bucket is already in the first group. Eviction is
-    deliberately *not* driven by the leave beacon, which is self-asserted —
-    that would make "I'm leaving" a way to ask for a fresh burst.
+    heartbeat under an identity and a rotating identity therefore leaks a dict
+    entry per beat.
+
+    **Eviction drops only what carries no information.** A bucket refilled to
+    its full burst is indistinguishable from an absent one, so dropping it
+    grants nobody anything. An LRU pass on top of that was not free and looked
+    it: under a rotating flood the least recently used bucket is one somebody
+    just spent tokens from, and deleting it hands that identity a brand new
+    burst — the limiter paying out exactly where it is being attacked. So when
+    nothing has refilled there is no room, and the beat is answered
+    ``throttled`` rather than granted at an incumbent's expense. The table
+    clears itself: every bucket refills inside ``burst / rate`` seconds (5) and
+    is evictable from then on, which also subsumes "evict a bucket with its
+    roster row" — a row lives for ``PRESENCE_TTL_S`` (45 s).
+
+    What this still does **not** do is give a rotating identity the per-client
+    rate: the limiter cannot tell one beat under a new id from a real
+    newcomer's first beat, so each fresh id is granted one. What it does do is
+    bound the flood — 5 000 ids used once each get :data:`MAX_BUCKETS` of them
+    through and the rest are throttled, where before the fix all 5 000 were
+    granted, because the LRU pass kept making room. So the ceiling is one
+    grant per bucket per refill window (512 per 5 s), not the 1/s a single
+    client gets, and the roster's own ceiling is what bounds the thing a flood
+    makes everyone else download. Eviction is deliberately *not* driven by the
+    leave beacon, which is self-asserted — that would make "I'm leaving" a way
+    to ask for a fresh burst.
     """
 
     def __init__(self, rate: float = RATE_PER_S, burst: float = RATE_BURST,
@@ -160,13 +185,14 @@ class TokenBucket:
         return min(self._burst, tokens + (now - last) * self._rate)
 
     def _evict(self, now: float) -> None:
-        """Make room for one more bucket. Called under the lock."""
+        """Drop every bucket that has refilled to its burst. Under the lock.
+
+        There is no second pass: see the class docstring for why an LRU one
+        would be a payout to the flood it is meant to bound.
+        """
         for who in [w for w, e in self._buckets.items()
                     if self._tokens(e, now) >= self._burst]:
             del self._buckets[who]
-        while len(self._buckets) >= self._limit:
-            oldest = min(self._buckets, key=lambda w: self._buckets[w][1])
-            del self._buckets[oldest]
 
     def take(self, who: str) -> bool:
         now = self._clock()
@@ -174,6 +200,8 @@ class TokenBucket:
             entry = self._buckets.get(who)
             if entry is None and len(self._buckets) >= self._limit:
                 self._evict(now)
+                if len(self._buckets) >= self._limit:
+                    return False       # no room that is free to make
             tokens = self._tokens(entry or (self._burst, now), now)
             if tokens < 1.0:
                 self._buckets[who] = (tokens, now)
@@ -238,7 +266,7 @@ class PresenceRegistry:
         An idle heartbeat returns ``False`` and must publish nothing.
 
         Two bounds, both of them about an identity nobody authenticated: the
-        id itself is length-checked (:func:`_identity`), and a **new** row is
+        id itself is length-checked (:func:`check_identity`), and a **new** row is
         refused once the roster is full. Refused, not made room for: a flood
         of rotating ids is by construction the most recently seen half of the
         dict, so evicting the oldest would hand it every real client's seat.
@@ -258,10 +286,11 @@ class PresenceRegistry:
             previous = self._clients.get(slot)
             if previous is None and len(self._clients) >= MAX_CLIENTS:
                 raise ValidationError(
-                    f"this project has {MAX_CLIENTS} clients present, which is "
-                    "the maximum; an idle one drops out within "
-                    f"{PRESENCE_TTL_S:.0f}s",
-                    {"max": MAX_CLIENTS, "ttl_s": PRESENCE_TTL_S},
+                    f"this server has {MAX_CLIENTS} clients present across all "
+                    "projects and branches, which is the maximum; an idle one "
+                    f"drops out within {PRESENCE_TTL_S:.0f}s",
+                    {"max": MAX_CLIENTS, "ttl_s": PRESENCE_TTL_S,
+                     "scope": "server"},
                 )
             entry = {
                 "id": client_id,

@@ -533,7 +533,9 @@ recomputed on every list. It issues no kernel call, forces no rebuild,
 regenerates no review packet and writes to no thread, anchor, manifest or
 proposal — the one thing it does write is a `<key>.facesig.json` memo of the
 face table beside the mesh in the project's `.cache`, derived data keyed by the
-same content hash:
+same content hash and versioned (`{"v": 2, "faces": [...]}`, changelog `0125`)
+so a memo written by an older build is recomputed from the mesh rather than
+read short of a feature:
 
 ```
 list_comments
@@ -562,14 +564,20 @@ list_comments
 Four states, three of which are not "fine": `ok`, `moved`, `orphaned`,
 `unverified` (*we did not look*). The contract is **orphan rather than guess** —
 an ambiguous match is an orphan, a lone candidate must clear an absolute area
-bar of its own (`LONE_AREA_REL`, the code review's finding), a lone *snippet*
-must be corroborated by the stored context (changelog `0124` — the same
+bar of its own (`LONE_AREA_REL`, the code review's finding) **and still touch
+the same number of faces** (`0125` — the area bar alone did not close the class
+it was introduced for), a lone *snippet* must be contradicted by neither side
+of its stored context (changelog `0124`, tightened in `0125` — the same
 "nothing left to compare against" mistake, in the script matcher), and the
 tolerances were set by measurement
-(`docs/changelog/0113-prd008-anchor-resolution.md`, re-measured in `0123`:
-53.9% resolved, 2 mis-pins in 2 693 known-truth faces — a strong bias, not a
-guarantee). Resolution issues **zero kernel calls**: it reads the manifest,
-meshes a build already wrote, and at most one git blob per anchor.
+(`docs/changelog/0113-prd008-anchor-resolution.md`, re-measured in `0123` and
+`0125`). Two classes, measured separately because the first says nothing about
+the second: across a **parameter change**, 53.9% resolved and 2 mis-pins in
+2 693 known-truth faces; across a **deleted feature**, 98.8% correctly orphaned
+and 4 mis-pins in 327 destroyed faces (27 before the adjacency gate). A strong
+bias, not a guarantee: a cut-away face can still re-pin. Resolution issues
+**zero kernel calls**: it reads the manifest, meshes a build already wrote, and
+at most one git blob per anchor.
 
 Absence is classified **only after** deciding whether we are looking at the
 anchor's own branch: a parameter, a line range or a face missing from a part
@@ -585,9 +593,16 @@ roster, so a client that misses every `presence_changed` converges within one
 beat; an over-rate heartbeat is HTTP 200 with `throttled: true`, never an
 error. Everything about it is bounded, because the identity is a header anyone
 can rotate: `MAX_ID_CHARS` (refused, never truncated — a truncation would merge
-two identities into one key), `MAX_CLIENTS` (a full roster refuses a *new* row
-rather than evicting an incumbent) and `MAX_BUCKETS` on the rate limiter,
-without which rotation bypasses the limit outright.
+two identities into one key; the check lives in `locks.check_client_id` and is
+called by the claim registry too, because a part write reaches it without
+passing a presence route), `MAX_CLIENTS` (a **process-wide** ceiling, and a
+full roster refuses a *new* row rather than evicting an incumbent) and
+`MAX_BUCKETS` on the rate limiter, which bounds memory first: a rotating
+identity is granted its first beat exactly like a real newcomer, so what it is
+held to is one grant per bucket per refill window (512 per 5 s) rather than the
+1/s a single client gets. Eviction may drop only a bucket that has refilled to
+its full burst — dropping a spent one would hand its owner a new one, which is
+a payout to the flood it is supposed to bound.
 
 **Two coordination mechanisms, one precedence rule**, evaluated on every
 persistent write at `ProjectStore.write_guard`:

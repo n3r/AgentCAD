@@ -219,10 +219,13 @@ def test_the_descriptions_state_the_honest_anchor_contract(demo):
 
     The face-match rate moved from "two times in three, 0 mis-pins" to "about
     half, 2 in 2 693" when the spike was re-measured against a stricter
-    ground-truth oracle (changelog 0123). A tool description that still
-    promised the old rate would be the *worst* place for the old number to
-    survive, so this asserts the new one — and, more importantly, that the
-    description tells an agent a wrong face is possible at all.
+    ground-truth oracle (changelog 0123), and then grew a SECOND rate: that
+    sweep only ever perturbs a parameter, so it says nothing about the class an
+    agent actually hits when it deletes a feature (4 mis-pins in 327 destroyed
+    faces, changelog 0125). A tool description that still promised the old rate
+    would be the *worst* place for an old number to survive, so this asserts
+    both — and, more importantly, that the description tells an agent a
+    cut-away face can still re-pin.
     """
     _service, registry = demo
     listing = registry.get("list_comments").description.lower()
@@ -232,7 +235,8 @@ def test_the_descriptions_state_the_honest_anchor_contract(demo):
     assert "resolution.face_index" in listing  # never the stored ordinal
     assert "about half" in listing             # the measured face-match rate
     assert "2 693" in listing                  # ...over a stated sample
-    assert "rare but not impossible" in listing
+    assert "327" in listing                    # the deletion class's sample
+    assert "cut-away face can still re-pin" in listing
     assert "face_info" in listing              # what to do when it matters
     assert "never rebuilds" in listing or "never builds" in listing
     assert "not authentication" in listing     # actor_kind is bookkeeping

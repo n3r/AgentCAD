@@ -165,12 +165,22 @@ of them is arbitrary:
   most-recently-seen rows, so LRU eviction would hand it every real client's
   seat; an incumbent keeps refreshing through the cap because its slot already
   exists, and the ceiling clears itself one TTL after the flood stops;
-- **`MAX_BUCKETS = 512`** on the rate limiter, which is the bound that
-  matters most: a bucket is minted by the first heartbeat under an id, which is
-  *before* the roster gets a say, so without it rotation bypasses the limit
-  outright. Eviction drops buckets refilled to full burst first — those are
-  indistinguishable from absent ones, so dropping them grants nobody anything —
-  and only then the least recently used.
+- **`MAX_BUCKETS = 512`** on the rate limiter: a bucket is minted by the first
+  heartbeat under an id, which is *before* the roster gets a say, so without it
+  a rotating id leaks a dict entry per beat. Eviction drops buckets refilled to
+  full burst first — those are indistinguishable from absent ones, so dropping
+  them grants nobody anything — and only then the least recently used.
+
+  > **Corrected by 0125.** This bullet said `MAX_BUCKETS` "is the bound that
+  > matters most … without it rotation bypasses the limit outright", and that
+  > is not what it does: a rotating identity gets a fresh bucket exactly like a
+  > real newcomer, so 5 000 ids used once each got 5 000 heartbeats through
+  > with the cap in place. `MAX_BUCKETS` bounds **memory**. The LRU half of the
+  > eviction was what made that true — the least recently used bucket under a
+  > flood is one somebody just spent tokens from, so dropping it handed that
+  > identity a fresh burst — and 0125 removes it: when nothing has refilled
+  > there is no room and the beat is throttled, which takes the same 5 000 ids
+  > from 5 000 grants to 512.
 - the **broadcast** needs no separate bound: a `presence_changed` frame *is*
   the roster.
 
@@ -254,6 +264,13 @@ node --check frontend/js/comments.js frontend/js/viewport.js frontend/js/main.js
 make test-fast -> 1120 passed, 1 skipped in 253.86s (0:04:13)
 make test      -> 1425 passed, 1 skipped in 1428.62s (0:23:48)
 ```
+
+(A verification round read the `make test-fast` line as understating the count
+by one — 1121 rather than 1120. **The line is right and stays**: 1121 is
+`passed + skipped`, and this line reports them separately, the way pytest does.
+Checked by arithmetic rather than by argument in 0125: the same target on the
+tree one commit later reports 1134 passed, 1 skipped, and that commit adds 16
+tests of which 2 are `slow` and so are not in `test-fast` — 1134 − 14 = 1120.)
 
 Baseline before this change was 1411 passed, 1 skipped (changelog 0123). Net
 **+14**: 15 test functions added, 3 rewritten in place —

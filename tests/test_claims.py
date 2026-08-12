@@ -38,6 +38,7 @@ from fastapi.testclient import TestClient
 
 from agentcad.core import locks
 from agentcad.core.locks import CLAIM_TTL_S, ClaimRegistry
+from agentcad.core.model import ConflictError, ValidationError
 from agentcad.core.presence import ensure_claim_guard
 from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
@@ -554,6 +555,86 @@ def test_an_ephemeral_check_service_still_ends_with_no_guard(kernel, tmp_path):
 
     assert service.store.write_guard is None
     assert getattr(service, "claims", None) is None
+
+
+def test_check_spends_an_arming_only_when_it_is_what_lets_the_call_through():
+    """An arming is single-use, so who spends it is a decision, not a detail.
+
+    ``check`` consumed it *first* and then looked at whether anything blocked,
+    which throws away the confirmation the dialog collected for the write that
+    is actually refused — the caller then gets a conflict it had already
+    answered. (``claim_write`` spends it unconditionally on purpose and for the
+    opposite reason: every write passes through that one, so an arming left
+    behind is a steal waiting for a claim to appear.) Unreachable today, since
+    ``claim_write`` is the only caller that both consumes and conflicts, and a
+    trap for the next one either way.
+    """
+    claims = ClaimRegistry()
+    claims.acquire("demo", "box", "browser:a")
+
+    # Nothing blocks (our own part): the arming is untouched.
+    claims.arm_override("demo", "lid", "browser:b")
+    claims.check("demo", "lid", "browser:b")
+    assert ("demo", "lid", "browser:b") in claims._armed      # noqa: SLF001
+
+    # Blocked, but an explicit override already lets it through: untouched too.
+    claims.arm_override("demo", "box", "browser:b")
+    claims.check("demo", "box", "browser:b", override=True)
+    assert ("demo", "box", "browser:b") in claims._armed      # noqa: SLF001
+
+    # Blocked with nothing else to appeal to: NOW it is spent, once.
+    claims.check("demo", "box", "browser:b")
+    assert ("demo", "box", "browser:b") not in claims._armed  # noqa: SLF001
+    with pytest.raises(ConflictError):
+        claims.check("demo", "box", "browser:b")
+
+
+def test_an_over_long_identity_cannot_take_a_claim_on_a_part_write(http):
+    """The identity bound was only ever on the *presence* routes.
+
+    ``presence.py``'s rule 5 says an id is bounded because it becomes a key in
+    the roster, the claim registry and the rate limiter — and the claim
+    registry was not on that path. A part write carries the same header and
+    reaches ``claim_write`` straight from the write guard, so a 4 008-character
+    ``X-Agent-Id`` took a claim whose holder was 4 008 characters, and the
+    roster payload and every ``claim_changed`` frame then carried it.
+    """
+    service, _registry, client = http
+    huge = {"X-Agent-Id": "browser:" + "z" * 4000}
+
+    refused = _write(client, "box", huge)
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["error"]["details"]["max"] == locks.MAX_CLIENT_ID_CHARS
+
+    # Nothing oversized reached the registry, and so nothing can reach a
+    # broadcast: the claim map IS what presence and claim_changed carry.
+    assert service.claims.all(service.store.lock_key("demo")) == {}
+    payload = client.post("/api/projects/demo/presence", json={},
+                          headers=ALICE).json()
+    assert all(len(holder) <= locks.MAX_CLIENT_ID_CHARS
+               for holder in payload["claims"])
+    assert all(len(claim["holder"]) <= locks.MAX_CLIENT_ID_CHARS
+               for claim in payload["claims"].values())
+
+    # An ordinary write by an ordinary identity is untouched.
+    assert _write(client, "box", ALICE).status_code == 200
+
+
+def test_the_registry_refuses_an_over_long_identity_rather_than_cutting_it():
+    """Refused, not truncated, for the reason presence gives: two identities
+    cut to the same 64 characters would be ONE client to the claim map."""
+    claims = ClaimRegistry()
+    huge = "browser:" + "z" * 4000
+
+    with pytest.raises(ValidationError) as excinfo:
+        claims.claim_write("demo", "box", huge)
+    assert excinfo.value.details["given"] == len(huge)
+    with pytest.raises(ValidationError):
+        claims.check("demo", "box", huge)
+    with pytest.raises(ValidationError):
+        claims.arm_override("demo", "box", huge)
+    assert claims.all("demo") == {}
+    assert claims._armed == {}                             # noqa: SLF001
 
 
 def test_a_library_caller_overrides_with_the_context_manager(http):

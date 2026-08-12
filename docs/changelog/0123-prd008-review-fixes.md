@@ -261,6 +261,19 @@ repro_claims.py
     override still armed? 1786482098.64          (not spent)
 ```
 
+> **Superseded by 0124 (K8), and read the last two lines the other way round.**
+> "Not spent" was recorded here as the desired outcome, and it is the bug: an
+> arming that survives the write it was shown for is authorization for a write
+> nobody was asked about — if the holder releases and takes the part back
+> inside the 30-second window, the *next* ordinary write finds it still sitting
+> there and steals the new claim silently. 0124 made the arming spent by the
+> first write it authorizes and *used* only against a real conflict, and
+> rewrote `test_an_armed_override_is_not_spent_when_nothing_would_block` into
+> `test_an_armed_override_never_force_steals_a_claim_nobody_defended`. 0125
+> moved the same consumption in `ClaimRegistry.check`, which had kept the
+> spend-first order. The `LONE_AREA_REL` reproduction quoted just above is also
+> narrower than it looks — see 0125 for the sizes it does not cover.
+
 ```
 uv run pytest -q tests/test_comments.py tests/test_comments_api.py \
   tests/test_comments_notifications.py tests/test_comments_proposals.py \

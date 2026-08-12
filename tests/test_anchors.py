@@ -84,6 +84,39 @@ def build(p):
 """
 
 
+# Two functions ending in the same three lines: deleting the first shifts the
+# second up until its ``shell = body`` sits at the line the thread anchored.
+TWIN = """\
+from build123d import *
+
+PARAMS = {"size": {"default": 10.0}}
+
+
+def _lug(p):
+    body = Box(p.size, p.size, p.size)
+    shell = body
+    return shell
+
+
+def build(p):
+    body = Box(p.size, p.size, p.size)
+    shell = body
+    return shell
+"""
+
+TWIN_DELETED = """\
+from build123d import *
+
+PARAMS = {"size": {"default": 10.0}}
+
+
+def build(p):
+    body = Box(p.size, p.size, p.size)
+    shell = body
+    return shell
+"""
+
+
 # ------------------------------------------- 1. the four-state vocabulary
 
 
@@ -170,7 +203,7 @@ def test_a_face_with_no_triangles_still_consumes_its_ordinal():
     assert len(table) == 7
     assert table[3] == {"index": 3, "present": False, "area": 0.0,
                         "centroid": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 0.0],
-                        "bbox_uvw": [0.5, 0.5, 0.5]}
+                        "bbox_uvw": [0.5, 0.5, 0.5], "neighbors": 0}
     assert table[4]["present"] is True
 
 
@@ -179,6 +212,33 @@ def test_an_empty_or_truncated_sidecar_is_not_a_table():
     assert anchors.face_table(buffer, b"") == []
     assert anchors.face_table(buffer, face_ids[:8]) == []
     assert anchors.face_table(b"nope", face_ids) == []
+
+
+def test_face_table_counts_the_faces_each_face_touches():
+    """The one feature the metric signature cannot supply.
+
+    ``normal``, ``bbox_uvw`` and ``area_frac`` all describe *where the face is
+    and how big it is*, which is exactly what a face that replaces a destroyed
+    one reproduces. Adjacency describes *what it touches*, and it comes from
+    the same two files: an edge used by one triangle of a face is on that
+    face's boundary, and a boundary edge whose two endpoints coincide with
+    another face's is a shared B-rep edge.
+    """
+    table = anchors.face_table(*cube_mesh(10.0))
+
+    for row in table:
+        assert row["neighbors"] == 4          # every face of a box touches 4
+
+
+def test_the_neighbor_count_is_topological_not_metric():
+    """It has to survive the change the matcher exists for: a parameter that
+    scales the part moves every length and every area, and moves no count."""
+    small = anchors.face_table(*cube_mesh(10.0))
+    large = anchors.face_table(*cube_mesh(70.0))
+
+    for a, b in zip(small, large):
+        assert a["area"] != pytest.approx(b["area"])
+        assert a["neighbors"] == b["neighbors"] == 4
 
 
 def test_n_faces_comes_from_the_sidecar_not_from_a_metric():
@@ -286,6 +346,46 @@ def test_a_lone_candidate_must_clear_the_tighter_absolute_area_bar():
     assert refusal is None and best["index"] == 1
 
 
+def test_a_lone_candidate_that_touches_different_faces_is_refused():
+    """The discriminator that closes the cut-away class the area bar could not.
+
+    Every feature the area bar and the position radius test is a feature the
+    *replacement* face reproduces by construction: a boss cut away leaves the
+    plate top at the same normal, the same normalized position and — if the
+    boss was wide enough — a similar share of the area. What it does not
+    reproduce is the neighborhood: the boss top was a disc bounded by one
+    cylindrical wall, the plate top is a square bounded by four sides.
+    """
+    table = _table()
+    signature = _sig(table[1], table)
+    assert signature["neighbors"] == 4
+    imposter = [dict(row) for row in table]
+    imposter[1]["neighbors"] = 1              # a disc, not the square it was
+
+    best, _score, _margin, refusal = anchors.match_face(signature, imposter)
+    assert best is None and refusal == "topology_mismatch"
+
+    # It is a gate on a LONE winner, not a candidacy filter: narrowing the pool
+    # is what removes the rival that would have tripped the ambiguity check.
+    both = imposter + [dict(table[1], index=6)]
+    best, _score, _margin, refusal = anchors.match_face(signature, both)
+    assert best is None and refusal == "ambiguous"
+
+
+def test_a_signature_without_a_neighbor_count_is_not_gated_on_it():
+    """An anchor stored before the count existed carries no opinion about the
+    neighborhood, and inventing a refusal out of a missing field would orphan
+    every thread written by the previous version."""
+    table = _table()
+    signature = _sig(table[1], table)
+    signature.pop("neighbors")
+    imposter = [dict(row) for row in table]
+    imposter[1]["neighbors"] = 1
+
+    best, _score, _margin, refusal = anchors.match_face(signature, imposter)
+    assert refusal is None and best["index"] == 1
+
+
 def test_a_signature_without_area_frac_falls_back_to_millimetres():
     """Nothing has written such a signature, but a stored anchor outlives the
     code that wrote it, and an old anchor must degrade rather than crash."""
@@ -370,12 +470,43 @@ def test_a_lone_survivor_the_context_contradicts_is_not_a_match():
     assert anchors.find_snippet(body, ["MARK"], before, after) == []
 
 
-def test_a_lone_survivor_one_side_of_the_context_corroborates_is_a_match():
-    """The other half: a real move keeps at least one side of its context, and
-    orphaning that would trade one wrong answer for a hundred missing ones."""
-    body = ["a = 1", "b = 2", "MARK", "c = 3"]
+def test_a_lone_survivor_one_side_of_the_context_contradicts_is_not_a_match():
+    """One agreeing side used to be enough, and it is not.
+
+    The first fix required a lone hit to be *corroborated* by one side of its
+    context, deliberately not both — an ordinary edit rewrites the line after a
+    block while the lines before it stand. The verification round showed what
+    that leaves open: duplicated blocks in real Python end the same way far
+    more often than they begin the same way (``    return shell``), so the
+    surviving twin of a deleted block coincides on one side routinely, and the
+    other side *contradicting* was being ignored rather than counted.
+
+    A lone hit now has to be contradicted by nothing. What it costs is small
+    and it is paid to a better source: a block that stayed in its
+    neighborhood, with one side rewritten, is exactly the case tier 2's diff
+    against the anchor's own head answers from the real edit — see
+    :func:`test_the_line_map_carries_a_range_across_an_insert` and the tier-2
+    test against a real blob below.
+    """
     moved = ["x = 0", "y = 0", "a = 1", "b = 2", "MARK", "print('new')"]
-    assert anchors.find_snippet(moved, ["MARK"], ["b = 2"], ["c = 3"]) == [4]
+    assert anchors.find_snippet(moved, ["MARK"], ["b = 2"], ["c = 3"]) == []
+
+    # ...and the same shape the other way round: the 'before' side is what the
+    # edit rewrote, the 'after' side coincides. This is the verifier's attack.
+    assert anchors.find_snippet(["x", "MARK", "y"], ["MARK"], ["b"], ["y"]) == []
+
+    # With every stored side agreeing it is still a hit: a gate, not a refusal.
+    assert anchors.find_snippet(["x", "b = 2", "MARK", "c = 3"], ["MARK"],
+                                ["b = 2"], ["c = 3"]) == [2]
+
+
+def test_two_copies_still_let_the_context_pick_the_better_one():
+    """The gate is on a LONE hit. With rivals the context is a tie-break, as
+    before: refusing everything that is not perfectly corroborated would orphan
+    the ordinary duplicated-line case that tier 1 exists to resolve."""
+    body = ["a = 1", "b = 2", "MARK", "z = 9", "q = 0", "MARK", "c = 4"]
+    assert anchors.find_snippet(body, ["MARK"], ["b = 2"], ["c = 4"]) == [2, 5]
+    assert anchors.find_snippet(body, ["MARK"], ["b = 2"], ["z = 9"]) == [2]
 
 
 def test_a_lone_survivor_with_no_stored_context_is_still_a_match():
@@ -672,6 +803,55 @@ def test_tier_2_remaps_through_the_blob_at_the_anchors_head(unbuilt):
     assert (result["start"], result["end"]) == (9, 11)
     assert result["confidence"] == 0.6667   # rounded, 2 of 3 lines
     assert unbuilt.kernel.calls == []
+
+
+@_needs_git
+def test_the_same_text_at_the_same_address_in_another_block_is_not_ok(unbuilt):
+    """The verifier's end-to-end attack on tier 1's *identity* check.
+
+    ``_lug`` and ``build`` end with the same three lines. A thread anchors
+    ``shell = body`` inside ``_lug``, and ``_lug`` is then deleted — which
+    shifts ``build`` up until its own ``shell = body`` sits at exactly the line
+    the thread points at. Address unchanged, text unchanged, and it is a
+    different block: tier 1 answered ``ok`` at confidence 1.0 for it.
+
+    The stored context is what tells them apart (``def _lug(p):`` above, not
+    ``def build(p):``), so a home address whose stored context contradicts is
+    no longer taken on identity; it is put to the diff, which reads the real
+    edit and says the lines were removed.
+    """
+    root = unbuilt.store.path_of("demo")
+    unbuilt.store.write_script("demo", "box", TWIN)
+    head = unbuilt.history.snapshot(root, "seed")
+    anchor = {"kind": "script_range", "part": "box", "start": 8, "end": 8,
+              **anchors.snippet_of(TWIN, 8, 8), "head": head}
+    assert TWIN.splitlines()[7] == TWIN_DELETED.splitlines()[7] == \
+        "    shell = body"
+    unbuilt.store.write_script("demo", "box", TWIN_DELETED)
+
+    result = anchors.resolve(unbuilt, "demo", anchor,
+                             {"branch": "", "head": head, "root": root})
+    assert result["status"] == "orphaned", result
+    assert result["reason"] == "lines_removed"
+
+
+def test_a_home_address_the_context_disputes_is_still_ok_with_no_diff(unbuilt):
+    """...and what the check may NOT do is turn an ordinary edit near a
+    comment into an orphan when there is no diff to appeal to.
+
+    Editing a line above a thread's range rewrites its stored context without
+    touching what it points at. Where a blob is readable that goes to tier 2,
+    which answers from the edit; where it is not — no git, no head — the
+    address still holds the anchored text, and that is the same ``ok`` this
+    module has always given, not an ``unverified``.
+    """
+    unbuilt.store.write_script("demo", "box", TWIN_DELETED)
+    anchor = {"kind": "script_range", "part": "box", "start": 8, "end": 8,
+              **anchors.snippet_of(TWIN, 8, 8)}
+
+    result = anchors.resolve(unbuilt, "demo", anchor,
+                             {"branch": "", "head": "", "root": None})
+    assert (result["status"], result["start"]) == ("ok", 8), result
 
 
 @_needs_git

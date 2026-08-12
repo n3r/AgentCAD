@@ -23,14 +23,26 @@ Two rules govern everything below.
 than a comment pointing at nothing, so an ambiguous best match is an orphan, a
 low-confidence line remap is an orphan, and a lone candidate that only *looks*
 certain because it had no rival is an orphan unless it clears an absolute bar
-on its own (:data:`LONE_AREA_REL`). Loosening a tolerance to make a pin appear
-is the one change this module must never take.
+on its own (:data:`LONE_AREA_REL`) *and* still touches the same number of faces
+(:func:`_same_neighborhood`). Loosening a tolerance to make a pin appear is the
+one change this module must never take.
 
-This is a strong bias, **not a guarantee**, and the difference is stated
-wherever the number is: the re-measurement below finds 2 mis-pins in 2 693
-face pairs whose identity is known. An earlier run reported none; a stricter
-ground-truth oracle and the case the code review reproduced showed that
-"never" was a claim the evidence did not support.
+This is a strong bias, **not a guarantee**, and the two measured classes are
+both stated wherever a number is, because they are not the same number:
+
+* **a parameter changed** — 2 mis-pins in 2 693 face pairs whose identity is
+  known (0.07%);
+* **a feature was deleted** — 4 mis-pins in 327 faces that no longer exist
+  (1.2%), down from 27 (8.3%) before the adjacency gate below.
+
+The second class is the one an earlier claim of "never" hid: the sweep that
+produced the 2-in-2 693 figure only ever perturbs a *number*, so every face it
+scores still exists somewhere and it cannot say anything about a face that was
+destroyed. **A cut-away face can still re-pin.** The four that do are a square
+pad on a square plate, where the normal, the normalized position, the outline
+and the adjacency are all the same on both faces and only the area share
+differs — by less than the gate. Confirm with ``face_info`` before acting on an
+expensive decision.
 
 **Resolution never calls the kernel and never forces a build.** Listing threads
 on a 40-part project must not rebuild 40 parts. Face signatures are derived in
@@ -134,11 +146,13 @@ _NEEDS_HINT = ("orphaned", "unverified")
 # (4 example projects, 11 parts, up to 3 parameters each), 3 102 face pairs at
 # the checkpoints, 2 693 of them with a truth mapping.
 #
-# At the values below, WITH the lone-candidate gate:
+# At the values below, with both lone-candidate gates (the per-ratio lines are
+# the gated ones; an earlier version of this block quoted the *ungated* split,
+# which is why its three numbers summed to 1 481 and its total said 1 451):
 #
 #   +1%   540/949  (56.9%) resolved, 407 orphaned, 2 mis-pinned
 #   +10%  486/879  (55.3%) resolved, 393 orphaned, 0 mis-pinned
-#   +30%  455/865  (52.6%) resolved, 410 orphaned, 0 mis-pinned
+#   +30%  425/865  (49.1%) resolved, 440 orphaned, 0 mis-pinned
 #   all  1 451/2 693 (53.9%) resolved, 1 240 orphaned, 2 mis-pinned
 #
 # plus 409 faces with no truth mapping, of which 146 orphaned and 263 matched
@@ -151,11 +165,49 @@ _NEEDS_HINT = ("orphaned", "unverified")
 # ~0.01. One has three candidates and clears the ambiguity margin; one is
 # lone and clears the area gate. Neither is reachable by tightening a
 # tolerance that would not also orphan hundreds of true pairs, and we cannot
-# tell from the data alone which of the two answers is right. So the contract
-# this module states is "orphan rather than guess, and mis-pins are rare
-# (2 in 2 693 measured) rather than impossible" — every place that used to
-# claim "never" was narrowed to match (AGENTS.md, tools_comments._FACE_ODDS,
-# docs/user-guide.md, the PRD's AC2 divergence).
+# tell from the data alone which of the two answers is right.
+#
+# MEASURED SEPARATELY, and this is the class the sweep above CANNOT SEE: what
+# happens when a feature is DELETED (changelog 0125). The sweep only ever moves
+# a number, so every face it scores still exists; the case the review and the
+# verification round both reproduced is a face that no longer exists at all,
+# with something else sitting where it was. 67 deletions — a plate+feature
+# family (boss, pad, rib, hole, pocket, counterbore) swept over the sizes that
+# make the deleted face look most like the one under it, plus 13 real deletions
+# in the bundled examples (a hole group, an igniter boss, a footprint recess, a
+# bore chamfer, an inner fillet, countersunk screw holes) — and ground truth
+# from a geometric oracle that uses none of the matcher's features: every
+# triangle centroid of a BEFORE face is tested against the AFTER mesh with an
+# exact point-to-triangle distance, so "destroyed" means no part of the face is
+# on the new boundary and the only correct answer is `orphaned`.
+#
+#   327 destroyed faces   300 orphaned (91.7%), 27 MIS-PINNED   before
+#                         323 orphaned (98.8%),  4 MIS-PINNED   after
+#   515 surviving faces   375 resolved (72.8%), 0 mis-pinned, unchanged by the
+#                         gate that closed the 23
+#
+# The gate is :func:`_same_neighborhood` and it costs NOTHING on the parameter
+# class: all 1 144 correct lone matches there keep their neighbor count, so
+# the numbers above are the same with it and without it. The four survivors are
+# a square pad on a square plate — same normal, same normalized position, same
+# outline, same adjacency, area share 0.13 apart — and there is nothing left in
+# a mesh-derived signature to separate those. So the contract this module
+# states is "orphan rather than guess; mis-pins are rare (2 in 2 693 across a
+# parameter change, 4 in 327 when a feature is deleted) rather than
+# impossible", and every surface says both numbers or a bound covering both
+# (AGENTS.md, tools_comments._FACE_ODDS, docs/agent-api.md,
+# docs/architecture.md, docs/user-guide.md, the PRD's AC2 divergence).
+#
+# Two candidates that did NOT earn their place, on the same data:
+#   * circularity (4*pi*A/P^2, a dimensionless outline descriptor): caught 16
+#     of the 27 deletion mis-pins on its own, added ZERO on top of adjacency,
+#     and cost 28 resolutions on the parameter class at its best bar (0.2).
+#     Not shipped — a feature that only duplicates another one's catches is
+#     dead weight that looks like a safety net.
+#   * the adjacency gate applied to every winner instead of only to a lone one:
+#     identical on the deletion class, and it orphans 4 true matches on
+#     injector_plate.n_orifices, where the parameter itself changes the
+#     topology. Gates go on a lone winner, never on candidacy.
 #
 # Loosening any of these to make a pin appear is still the one change this
 # module must never take.
@@ -205,10 +257,21 @@ AREA_REL = 0.5
 #
 # A *score* bar cannot do this job. Correct lone matches score down to 0.7407
 # (p1 0.85) and the mis-pin scored 0.8697, so a score bar that caught it would
-# orphan a fifth of the true ones. Area share is the only feature that
-# separates them, because the face that replaces a destroyed one is by
-# construction at the same normal and normalized position — which is precisely
-# why it was the only candidate.
+# orphan a fifth of the true ones.
+#
+# **AND IT IS NOT ENOUGH BY ITSELF, which is what the verification round
+# showed.** Widen the same boss a little further — r=20 on a 40 mm plate — and
+# the plate top left behind is 0.237 away in area share, INSIDE this bar, and
+# the thread moved onto it at confidence 0.9289 (also at r=20/h=2, r=19.5/h=1,
+# r=20/h=4). **Tightening this bar is not the answer, measured**: on the
+# deletion sweep, alone, it mis-pins 27 of 327 at 0.30, 21 at 0.20 and still 14
+# at 0.10 — while 0.20 costs 84 of the parameter class's 1 451 resolutions and
+# 6 of the deletion class's 375 surviving faces. The area share is the last
+# *metric* feature, and every metric feature is one the replacement face
+# reproduces by construction — same surface, same place. It takes a non-metric
+# one: see :func:`_same_neighborhood`, which is kept as a second gate rather
+# than a replacement, because the two are not redundant (0.5 + adjacency
+# mis-pins 7 of 327 where 0.30 + adjacency mis-pins 4).
 LONE_AREA_REL = 0.30
 #
 # The design's fifth constant, ``STICKY_MARGIN = 0.02`` — keep the stored
@@ -227,6 +290,10 @@ LINE_CONFIDENCE_MIN = 0.6
 CONTEXT_LINES = 3
 
 _SIG_SUFFIX = ".facesig.json"
+# 1: area/centroid/normal/bbox_uvw. 2: + neighbors. A cached sidecar
+# at an older version is recomputed rather than read, because a missing feature
+# and a face that genuinely has none are the same JSON.
+_SIG_VERSION = 2
 
 _TABLE_LOCK = threading.RLock()
 _TABLE_CACHE: dict[str, list[dict]] = {}
@@ -283,8 +350,14 @@ def face_table(acm_bytes: bytes, face_ids: bytes | np.ndarray) -> list[dict]:
 
     Per face: ``area`` (Σ triangle areas), ``centroid`` (area-weighted mean of
     triangle centroids), ``normal`` (normalized area-weighted sum of triangle
-    normals) and ``bbox_uvw`` (the centroid inside the *whole shape's* bounding
-    box as three fractions in [0, 1]; a degenerate axis maps to 0.5).
+    normals), ``bbox_uvw`` (the centroid inside the *whole shape's* bounding
+    box as three fractions in [0, 1]; a degenerate axis maps to 0.5) and
+    ``neighbors`` (how many other faces share a boundary edge with it).
+
+    The last is :func:`_boundary`'s, and it is the only feature here that is
+    not "where the face is and how big it is" — which is what a face that
+    *replaces* a destroyed one reproduces by construction. See
+    :func:`_same_neighborhood`.
 
     An ordinal the tessellator emitted no triangle for still consumes its slot,
     with ``present: False`` — ordinals are explorer positions, so dropping one
@@ -329,6 +402,7 @@ def face_table(acm_bytes: bytes, face_ids: bytes | np.ndarray) -> list[dict]:
     lo = positions.min(axis=0)
     hi = positions.max(axis=0)
     span = hi - lo
+    neighbors = _boundary(positions, indices, ids, n_faces)
 
     rows = []
     for index in range(n_faces):
@@ -337,7 +411,7 @@ def face_table(acm_bytes: bytes, face_ids: bytes | np.ndarray) -> list[dict]:
             rows.append({"index": index, "present": False, "area": 0.0,
                          "centroid": [0.0, 0.0, 0.0],
                          "normal": [0.0, 0.0, 0.0],
-                         "bbox_uvw": [0.5, 0.5, 0.5]})
+                         "bbox_uvw": [0.5, 0.5, 0.5], "neighbors": 0})
             continue
         centroid = face_centroid[index] / area
         normal = face_normal[index]
@@ -354,8 +428,78 @@ def face_table(acm_bytes: bytes, face_ids: bytes | np.ndarray) -> list[dict]:
             "centroid": [float(v) for v in centroid],
             "normal": [float(v) for v in unit],
             "bbox_uvw": uvw,
+            "neighbors": int(neighbors[index]),
         })
     return rows
+
+
+def _boundary(positions: np.ndarray, indices: np.ndarray, ids: np.ndarray,
+              n_faces: int) -> np.ndarray:
+    """How many other faces each face shares a B-rep edge with, from the
+    triangles alone.
+
+    An edge used by exactly *one* triangle **of its own face** is on that
+    face's boundary; the face id is part of the edge key because two faces can
+    index the same vertex (a hand-built mesh does, and dropping the id would
+    cancel their boundaries against each other).
+
+    Two boundary edges belong to the same B-rep edge when their endpoints
+    coincide *in space*. That is an exact float comparison on purpose: OCCT
+    triangulates a shared edge from one discretization, so both faces write
+    identical f32 nodes and the ACM round-trip is lossless. A pair that
+    somehow disagreed in the last bit would cost the two faces a neighbor each
+    — an under-count, which makes the gate that reads this stricter rather than
+    looser, and which the measurement would have shown as a resolution loss
+    (it showed none: 1 144 of 1 144 correct lone matches kept their count).
+    """
+    neighbors = np.zeros(n_faces, dtype=np.int64)
+    if indices.size == 0:
+        return neighbors
+
+    edges = np.concatenate([indices[:, [0, 1]], indices[:, [1, 2]],
+                            indices[:, [2, 0]]], axis=0)
+    edge_face = np.concatenate([ids, ids, ids])
+    keyed = np.column_stack([edge_face, np.sort(edges, axis=1)])
+    _uniq, inverse, counts = np.unique(keyed, axis=0, return_inverse=True,
+                                       return_counts=True)
+    lone = counts[inverse.reshape(-1)] == 1
+    edges, edge_face = edges[lone], edge_face[lone]
+    if edges.size == 0:
+        return neighbors
+
+    # Canonical endpoint order, so one edge keys the same from either face.
+    first, second = positions[edges[:, 0]], positions[edges[:, 1]]
+    swap = np.zeros(len(edges), dtype=bool)
+    tie = np.ones(len(edges), dtype=bool)
+    for axis in range(3):
+        swap |= tie & (first[:, axis] > second[:, axis])
+        tie &= first[:, axis] == second[:, axis]
+    lower = np.where(swap[:, None], second, first)
+    upper = np.where(swap[:, None], first, second)
+    _shared, inverse = np.unique(np.column_stack([lower, upper]), axis=0,
+                                 return_inverse=True)
+
+    inverse = inverse.reshape(-1)
+    order = np.argsort(inverse, kind="stable")
+    grouped = inverse[order]
+    starts = np.flatnonzero(np.r_[True, grouped[1:] != grouped[:-1]])
+    sizes = np.diff(np.r_[starts, len(grouped)])
+    pairs: list[np.ndarray] = []
+    twins = starts[sizes == 2]
+    if twins.size:
+        left, right = edge_face[order[twins]], edge_face[order[twins + 1]]
+        pairs.append(np.column_stack([left, right]))
+        pairs.append(np.column_stack([right, left]))   # adjacency is symmetric
+    for start, size in zip(starts[sizes > 2], sizes[sizes > 2]):
+        members = np.unique(edge_face[order[start:start + size]])
+        pairs.append(np.array([(a, b) for a in members for b in members]))
+    if pairs:
+        both = np.concatenate(pairs)
+        both = both[both[:, 0] != both[:, 1]]
+        if both.size:
+            distinct = np.unique(both, axis=0)
+            neighbors = np.bincount(distinct[:, 0], minlength=n_faces)
+    return neighbors
 
 
 def _face_ids(face_ids: bytes | np.ndarray) -> np.ndarray | None:
@@ -417,8 +561,14 @@ def signature_table(service, proj: str, part: str,
     if sig_path.is_file():
         try:
             stored = json.loads(sig_path.read_text(encoding="utf-8"))
-            if isinstance(stored, list):
-                table = stored
+            # A sidecar written by an older version of this module is missing
+            # whatever the version after it added, and a row with no
+            # ``neighbors`` key is indistinguishable from a face with no
+            # neighbors. Version it and recompute the rest — the mesh it is
+            # derived from is right there.
+            if isinstance(stored, dict) and stored.get("v") == _SIG_VERSION \
+                    and isinstance(stored.get("faces"), list):
+                table = stored["faces"]
         except (OSError, json.JSONDecodeError):
             table = []
     if not table:
@@ -440,7 +590,8 @@ def signature_table(service, proj: str, part: str,
 
 def _persist(path: Path, table: list[dict]) -> None:
     try:
-        ProjectStore._atomic_write(path, json.dumps(table).encode())
+        ProjectStore._atomic_write(
+            path, json.dumps({"v": _SIG_VERSION, "faces": table}).encode())
     except OSError:
         pass  # a read-only or full cache directory must not break a listing
 
@@ -464,7 +615,9 @@ def signature_of(row: dict, key: str, n_faces: int,
     these are what ``face_info`` would show and what a payload is for. What the
     *matcher* uses: ``bbox_uvw`` and ``area_frac``, both scale-invariant,
     because a parameter that scales the part moves every absolute number and
-    neither of these.
+    neither of these — plus ``neighbors``, which says what the face *touches*
+    rather than where it sits, and is the only evidence left when a face is
+    destroyed and something else takes its place (:func:`match_face`).
     """
     total = row["area"] if not whole_area else whole_area
     return {
@@ -473,6 +626,7 @@ def signature_of(row: dict, key: str, n_faces: int,
         "area_mm2": round(row["area"], 6),
         "area_frac": round(row["area"] / total, 9) if total > 0 else 0.0,
         "bbox_uvw": [round(v, 6) for v in row["bbox_uvw"]],
+        "neighbors": int(row.get("neighbors", 0)),
         "n_faces": n_faces,
         "mesh_key": key,
     }
@@ -556,7 +710,29 @@ def match_face(signature: dict,
     # a match as "against no rival", not as confidence.
     if best_area_rel > (AREA_REL if len(scored) > 1 else LONE_AREA_REL):
         return None, best_score, margin, "area_mismatch"
+    if len(scored) == 1 and not _same_neighborhood(signature, best):
+        return None, best_score, margin, "topology_mismatch"
     return best, best_score, margin, None
+
+
+def _same_neighborhood(signature: dict, row: dict) -> bool:
+    """Does the winner touch as many faces as the anchored one did?
+
+    The one comparison in this module that is not a tolerance. A count of
+    adjacent faces is an integer read off the tessellation, it does not move
+    when a parameter scales the part, and — measured — it does not move when a
+    parameter reshapes it either: all 1 144 correct lone matches in the
+    re-measurement kept theirs. So "different" is evidence, not noise.
+
+    ``None`` on either side is an anchor written before the count existed (or a
+    hand-built table); there is nothing to compare, and manufacturing a refusal
+    out of a missing field would orphan every thread the previous version
+    wrote.
+    """
+    mine, theirs = signature.get("neighbors"), row.get("neighbors")
+    if not isinstance(mine, int) or not isinstance(theirs, int):
+        return True
+    return mine == theirs
 
 
 # ---------------------------------------------------------- script snippets
@@ -597,20 +773,32 @@ def find_snippet(lines: list[str], snippet: list[str], before: list[str],
     copies, so deleting the anchored occurrence of a snippet that appeared
     twice left the *other* one as "the only match", and the resolver reported
     ``moved`` at confidence 1.0 — the script-anchor twin of the lone-candidate
-    face mis-pin, and refused here the same way: a lone hit must be
-    corroborated by the stored context, or it is not a hit.
+    face mis-pin, and refused here the same way: a lone hit has to answer to
+    the stored context, or it is not a hit.
 
-    "Corroborated" is deliberately **one side, not both**: a real edit around
-    a moved block routinely rewrites the line after it while the lines before
-    it stand (and the reverse), so demanding both would orphan the ordinary
-    case to catch the rare one. A side that stored nothing — the top or the
-    bottom of a file, or an anchor written before context existed — is not
-    checked, because there is nothing in it to check; such an anchor keeps the
-    old behavior and is the one shape this gate cannot speak about.
+    "Corroborated" first meant **one side, not both** — a real edit around a
+    moved block routinely rewrites the line after it while the lines before it
+    stand — and the verification round showed that is too weak, for a reason
+    the first fix had backwards. Duplicated blocks in real code end the same
+    way (``    return shell``) far more often than they begin the same way, so
+    the surviving twin of a deleted block coincides on one side *routinely*,
+    and one agreeing side was enough to pin it at confidence 1.0 while the
+    other side flatly contradicted. A side that disagrees is evidence, not a
+    missing vote.
 
-    Refusing here is not the end of the line: :func:`_resolve_script_range`
-    falls through to the tier-2 line map against the blob at the anchor's own
-    head, which answers from the real diff rather than from a coincidence.
+    So: a lone hit must be contradicted by **nothing**. A side that stored no
+    context — the top or the bottom of a file, or an anchor written before
+    context existed — is not checked, because there is nothing in it to check;
+    such an anchor keeps the old behavior and is the one shape this gate cannot
+    speak about. **With rivals the rule is unchanged**: context is a tie-break,
+    because there the ambiguity itself already stops a wrong unique answer.
+
+    Refusing here is not the end of the line, and that is what makes the strict
+    rule cheap: :func:`_resolve_script_range` falls through to the tier-2 line
+    map against the blob at the anchor's own head. A block that stayed in its
+    neighborhood with one side rewritten is precisely the case a diff answers
+    correctly; a block that moved across the file keeps neither side and was
+    refused under the old rule too.
     """
     if not snippet:
         return []
@@ -623,19 +811,19 @@ def find_snippet(lines: list[str], snippet: list[str], before: list[str],
     for offset in hits:
         head = lines[max(0, offset - len(before)):offset]
         tail = lines[offset + span:offset + span + len(after)]
-        # Only a side that HAS stored context can corroborate one; an empty
+        # Only a side that HAS stored context can agree or disagree; an empty
         # side would otherwise score a free point on every candidate.
-        scored.append((bool(before and head == before)
-                       + bool(after and tail == after), offset))
-    best = max(score for score, _ in scored)
+        agree = bool(before and head == before) + bool(after and tail == after)
+        against = bool(before and head != before) + bool(after and tail != after)
+        scored.append((agree, against, offset))
+    if len(hits) == 1:
+        return [] if scored[0][1] else hits
+    best = max(agree for agree, _against, _offset in scored)
     if best == 0:
-        # Nothing corroborates. With rivals that is the ambiguity the caller
-        # already treats as "no unique answer"; with a lone hit it means the
-        # stored context CONTRADICTS the only copy left, which is a different
-        # occurrence wearing the same text.
-        checked = bool(before) or bool(after)
-        return [] if (checked and len(hits) == 1) else hits
-    return [offset for score, offset in scored if score == best]
+        # Nothing corroborates either copy: the ambiguity the caller already
+        # treats as "no unique answer".
+        return hits
+    return [offset for agree, _against, offset in scored if agree == best]
 
 
 def line_map(old: list[str], new: list[str], start: int,
@@ -1062,6 +1250,10 @@ _REFUSAL_HINTS = {
                  "the wrong one is worse than pointing at nothing",
     "area_mismatch": "the only matching face is a very different size, which is "
                      "a different face wearing the same orientation",
+    "topology_mismatch": "the only matching face touches a different number of "
+                         "faces than the one this thread was opened on, so it "
+                         "is a different face at the same place — most likely "
+                         "the surface that was underneath the one cut away",
 }
 
 
@@ -1144,12 +1336,28 @@ def _resolve_script_range(service, proj, anchor, context) -> dict:
     # snippet's: a range longer than MAX_SNIPPET_LINES stored a truncated
     # snippet, and reporting the truncation as the range would silently shrink
     # the comment's target every time it is read.
+    #
+    # "Still at its own address, still the same text" is identity — UNLESS the
+    # stored context says the block around it is a different one. Two functions
+    # ending in the same lines, the first deleted, and the second's copy slides
+    # up onto the anchored address: address and text both match and it is not
+    # the same code. Such an address is put to the diff below instead of being
+    # taken on trust, and if there is no diff to read it is still answered as
+    # the ``ok`` it has always been (a rewritten line *near* a thread must not
+    # cost the thread its pin just because the project has no git).
     span = end - start
-    if lines[start - 1:start - 1 + len(snippet)] == snippet:
-        return make_resolution("ok", start=start, end=end, confidence=1.0)
-    hits = find_snippet(lines, snippet, (anchor.get("before") or "").splitlines(),
-                        (anchor.get("after") or "").splitlines())
-    if len(hits) == 1:
+    before = (anchor.get("before") or "").splitlines()
+    after = (anchor.get("after") or "").splitlines()
+    at_home = lines[start - 1:start - 1 + len(snippet)] == snippet
+    home = make_resolution("ok", start=start, end=end, confidence=1.0)
+    disputed = at_home and (
+        (bool(before) and lines[max(0, start - 1 - len(before)):start - 1]
+         != before)
+        or (bool(after) and lines[end:end + len(after)] != after))
+    if at_home and not disputed:
+        return home
+    hits = find_snippet(lines, snippet, before, after)
+    if len(hits) == 1 and not at_home:
         first = hits[0] + 1
         return make_resolution("moved", reason="snippet_found_verbatim",
                                start=first, end=min(first + span, len(lines)),
@@ -1159,6 +1367,8 @@ def _resolve_script_range(service, proj, anchor, context) -> dict:
     old = _blob_lines(service, proj, part, anchor.get("head") or "",
                       context.get("root"))
     if old is None:
+        if at_home:
+            return home        # no diff to appeal to; the address still holds it
         reason = "no_git" if not _git_available(service) else (
             "head_unreachable" if anchor.get("head") else "no_head")
         return make_resolution(

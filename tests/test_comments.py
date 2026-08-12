@@ -17,7 +17,7 @@ import shutil
 
 import pytest
 
-from agentcad.core import locks
+from agentcad.core import comments, locks
 from agentcad.core.comments import (
     ANCHOR_KINDS,
     MAX_ATTACHMENTS,
@@ -550,6 +550,52 @@ def test_a_thread_is_invisible_to_git(demo):
     status = service.history._run(path, "status", "--porcelain", check=False)
     assert status.returncode == 0, status.stderr
     assert status.stdout.strip() == ""
+
+
+def test_two_stores_appending_to_one_log_do_not_renumber_each_other(kernel,
+                                                                    tmp_path):
+    """The line-number cache is an optimization and must behave like one.
+
+    ``_next_seq`` carried a per-file count forward so an append is O(1) instead
+    of O(n) — a single comment can drive ``MAX_MENTIONS`` appends — but it was
+    only ever checked against "does the file exist". A second store on the same
+    project (a second service in one process, a second process, a test) writes
+    lines this one never saw, and both then hand out the same numbers for an
+    append-only log whose whole point is that its order is a record.
+
+    The cache is now keyed to where the file ENDED when we last wrote it, so
+    anybody else's append re-derives the count instead of being overwritten.
+    """
+    from .conftest import make_test_service
+
+    service = make_test_service(tmp_path / "projects", kernel)
+    service.store.create("plain")
+    first, second = CommentStore(service.store), CommentStore(service.store)
+
+    assert first.append_audit("plain", "1", {"action": "opened"})["seq"] == 1
+    assert second.append_audit("plain", "1", {"action": "replied"})["seq"] == 2
+    assert first.append_audit("plain", "1", {"action": "resolved"})["seq"] == 3
+    assert [e["seq"] for e in first.audit("plain", "1")] == [1, 2, 3]
+
+    assert first.append_notification("plain", {"to": "a"})["seq"] == 1
+    assert second.append_notification("plain", {"to": "b"})["seq"] == 2
+    assert [e["seq"] for e in first.notifications("plain")] == [1, 2]
+
+
+def test_the_line_number_cache_is_bounded(kernel, tmp_path):
+    """One entry per append-only log, and a project has one per THREAD, so a
+    long-lived server would carry a dict that only ever grows."""
+    from .conftest import make_test_service
+
+    service = make_test_service(tmp_path / "projects", kernel)
+    service.store.create("plain")
+    store = CommentStore(service.store)
+
+    for n in range(comments.MAX_SEQ_PATHS + 20):
+        store.append_audit("plain", str(n + 1), {"action": "opened"})
+    assert len(store._seq) <= comments.MAX_SEQ_PATHS      # noqa: SLF001
+    # Forgetting a count is free: it is re-derived from the file itself.
+    assert store.append_audit("plain", "1", {"action": "replied"})["seq"] == 2
 
 
 def test_the_store_needs_no_service_and_no_git(kernel, tmp_path):

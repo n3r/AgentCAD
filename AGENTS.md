@@ -443,25 +443,43 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   lines through `resolution.start`/`end` — never the stored ordinal.
 - **Orphan rather than guess — a bias, not a guarantee.** An ambiguous face
   match is an orphan; a low-confidence line remap is an orphan; and a **lone
-  candidate** is an orphan unless it clears `LONE_AREA_REL` on its own, because
-  `AMBIGUITY_MARGIN` cannot fire when there is nothing to compare against —
-  that gap was a real mis-pin (a cut-away boss re-pinning onto the plate under
-  it at 0.87 "confidence"). Loosening a tolerance to make a pin appear is the
-  one change this feature must never take. Measured (changelog 0123, 2 693
-  known-truth faces): **53.9% resolved, 2 mis-pins**, both on a body of
-  revolution. Quote that number, not "never".
+  candidate** is an orphan unless it clears `LONE_AREA_REL` on its own *and*
+  still touches the same number of faces, because `AMBIGUITY_MARGIN` cannot
+  fire when there is nothing to compare against — that gap was a real mis-pin
+  (a cut-away boss re-pinning onto the plate under it at 0.87 "confidence").
+  Loosening a tolerance to make a pin appear is the one change this feature
+  must never take. **Two measured classes, two rates, quote both** — the second
+  is the one an agent hits, and the first cannot speak for it because that
+  sweep never deletes anything:
+  - a **parameter change** (changelog 0123, 2 693 known-truth faces): 53.9%
+    resolved, **2 mis-pins**, both on a body of revolution;
+  - a **deleted feature** (changelog 0125, 327 faces that no longer exist):
+    98.8% correctly orphaned, **4 mis-pins**, down from 27 before the adjacency
+    gate — all four a square pad on a square plate, where every number a
+    mesh-derived signature has is the same on both faces.
+
+  So **a cut-away face can still re-pin**; say that, not "never", and confirm
+  with `face_info` before an expensive decision.
 - **A lone survivor is not evidence, for scripts either.** `find_snippet` used
   to skip the stored context whenever exactly one copy of the snippet was left,
   so deleting the anchored one of two identical lines re-pinned the thread onto
   the unrelated survivor and reported `moved` at confidence **1.0** — the same
   mistake as the face matcher's lone candidate. A lone hit must now be
-  corroborated by **at least one side** of the stored `before`/`after` (both
-  would orphan the ordinary case, where an edit rewrites one side), and a hit
-  the context contradicts falls through to the tier-2 line map, which answers
-  from the real diff. The gap that remains, stated rather than hidden: an
-  anchor that stored **no** context — the top *and* bottom of a file, or one
-  written before context existed — has nothing to corroborate and keeps the old
-  behavior.
+  contradicted by **neither** side of the stored `before`/`after` — "one
+  agreeing side is enough" was the first fix and it was too weak, because
+  duplicated blocks in real code end the same way (`    return shell`) far more
+  often than they begin the same way. The same rule guards tier 1's *identity*
+  check: an address that still holds the anchored text but whose stored context
+  says the block around it is a different one is put to the diff instead of
+  being taken on trust (and is still answered `ok` when there is no diff to
+  read, so an edit near a thread in a project without git costs nothing). With
+  two or more hits the context stays a tie-break. A refused hit falls through
+  to the tier-2 line map, which answers from the real diff — and that is what
+  makes the strict rule cheap, because a block that stayed in its neighborhood
+  with one side rewritten is exactly what a diff gets right. The gap that
+  remains, stated rather than hidden: an anchor that stored **no** context —
+  the top *and* bottom of a file, or one written before context existed — has
+  nothing to check and keeps the old behavior.
 - **Two measured ceilings on face re-matching, both documented rather than
   tuned away.** (1) *Any* parameter change that alters the part's **bounding
   box** orphans every anchor on that part — `bbox_uvw` is relative to the

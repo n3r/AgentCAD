@@ -306,14 +306,40 @@ build — rather than through the unit seams (`tests/test_comments.py`,
    | a surviving face re-matches | **53.9%** (1 451 of 2 693), not always |
    | a destroyed face orphans | the safe direction, and the usual one |
    | it never mis-pins | **not true: 2 of 2 693**, both on a body of revolution |
+   | it speaks for a DELETED feature | **no** — nothing here deletes anything; see the second table below |
 
    The review reproduced a third class the first run never exercised: a face
    *cut away* whose only surviving candidate sits at the same normal and
    normalized position re-pinned onto it at 0.87 "confidence", because
    `AMBIGUITY_MARGIN` — the constant the whole guarantee rested on — cannot
-   fire when there is exactly one candidate. That is fixed in the code
-   (`LONE_AREA_REL`, an absolute area bar a lone candidate must clear on its
-   own), and the residual 2 are reported rather than tuned away.
+   fire when there is exactly one candidate. `LONE_AREA_REL`, an absolute area
+   bar a lone candidate must clear on its own, was the first answer to it and
+   **did not close the class** (`docs/changelog/0125-prd008-verifier-fixes.md`):
+   verification widened the same boss to r=20 on a 40 mm plate, where the plate
+   top left behind is 0.24 away in area share — inside the 0.30 bar — and the
+   thread moved onto it at confidence 0.93. The table above cannot see any of
+   this, because that sweep only ever perturbs a *number*.
+
+   So the deletion class was measured on its own terms: 67 deletions (a
+   synthetic plate+feature family swept over the adversarial sizes, plus 13
+   real deletions in the bundled examples), ground truth from a geometric
+   oracle that uses none of the matcher's features — every triangle centroid of
+   a before-face tested against the after-mesh — so "destroyed" means the only
+   correct answer is `orphaned`.
+
+   | claim | measured (327 destroyed faces) |
+   |---|---|
+   | a destroyed face orphans | **91.7%** with the area bar alone (27 mis-pins) |
+   | …with the adjacency gate | **98.8%** (4 mis-pins) |
+   | surviving faces still resolve | 72.8%, and the gate cost none of them |
+   | a cut-away face never re-pins | **not true: 4 of 327** — a square pad on a square plate |
+
+   What closed the 23 is not another tolerance: it is the one feature a
+   replacement face does *not* reproduce, the number of faces it touches
+   (`_same_neighborhood`, read off the same mesh sidecars, no kernel call). It
+   costs nothing on the parameter class — all 1 144 correct lone matches there
+   keep their neighbor count. The residual 4 and the residual 2 are reported
+   rather than tuned away, and every surface says both numbers.
 
    Slices 8–9 found two further ceilings in the browser
    (`docs/changelog/0119-prd008-threads-ui.md`): a parameter change that moves
@@ -326,8 +352,9 @@ build — rather than through the unit seams (`tests/test_comments.py`,
    **The honest criterion, and the one the acceptance test asserts:** *a face
    anchor survives a parameter tweak where the face's position within the
    shape's bounds is stable, or reports `orphaned` with a reason and no
-   address — and points at the wrong face only rarely (2 in 2 693 measured);
-   the thread stays listable either way.* Orphaned is a correct outcome, and
+   address — and points at the wrong face only rarely (2 in 2 693 across a
+   parameter change, 4 in 327 when the face was destroyed outright); the thread
+   stays listable either way.* Orphaned is a correct outcome, and
    for a repeated feature (104 near-identical thread faces on
    `fasteners/tapped_plate`) it is the *only* correct outcome. Loosening a
    tolerance to raise the hit rate buys mis-pins: at `AMBIGUITY_MARGIN 0.15`
@@ -396,10 +423,14 @@ build — rather than through the unit seams (`tests/test_comments.py`,
     consulted only to break a tie between two or more copies, so deleting the
     anchored one of two identical lines re-pinned the thread onto the
     unrelated survivor and reported `moved` at **confidence 1.0**. A lone hit
-    must now be corroborated by at least one side of the stored context — not
-    both, because a real edit routinely rewrites one side, and demanding both
-    would orphan the ordinary case to catch the rare one. The uncovered shape
-    is stated rather than hidden: an anchor that stored **no** context has
+    must be contradicted by **neither** side of the stored context. 0124 asked
+    only for one *agreeing* side — a real edit routinely rewrites the other —
+    and `0125` showed that is too weak, because duplicated blocks end the same
+    way far more often than they begin the same way, so the surviving twin
+    coincides on one side routinely. What makes the strict rule affordable is
+    that a refused hit goes to tier 2's diff, which is exactly what answers a
+    block that stayed put with one side rewritten. The uncovered shape is
+    stated rather than hidden: an anchor that stored **no** context has
     nothing to corroborate. Related, same round: the cross-branch rule
     (Decision 7) now runs before *every* absence verdict, not only a missing
     part, so a parameter/range/face missing from a part that exists on both
@@ -408,11 +439,17 @@ build — rather than through the unit seams (`tests/test_comments.py`,
 12. **Presence is bounded, and the bounds are part of the design.** Identity
     is a self-asserted header on an unauthenticated server, so `MAX_ID_CHARS`
     (refused, never truncated — truncation would merge two identities into one
-    roster/claim/mention key), `MAX_CLIENTS` (a full roster refuses a *new*
-    row rather than evicting an incumbent, because a rotating flood is by
-    construction the newest rows) and `MAX_BUCKETS` on the rate limiter, which
-    is what stops rotation bypassing the limit outright. The
-    `presence_changed` broadcast *is* the roster, so bounding one bounds both.
+    roster/claim/mention key), `MAX_CLIENTS` (**process-wide**, and a full
+    roster refuses a *new* row rather than evicting an incumbent, because a
+    rotating flood is by construction the newest rows) and `MAX_BUCKETS` on the
+    rate limiter, which bounds the limiter's memory — a rotating identity is
+    granted its first beat exactly like a real newcomer, and what stops the
+    flood is that a table with nothing refilled in it has no room to mint
+    another (`0125`). The `presence_changed` broadcast *is* the roster, so
+    bounding one bounds both. The identity check itself lives in
+    `locks.check_client_id`, not on the presence router: a part write reaches
+    the claim registry from the write guard with the same header and never
+    passes a presence route (`0125`).
 13. **Three deliberate UI gaps**, named rather than left to be discovered: the
     assembly-`instance` anchor has no create affordance in the browser (it is
     creatable over tools/REST and focuses correctly); comment attachments have
@@ -424,7 +461,8 @@ build — rather than through the unit seams (`tests/test_comments.py`,
 
 - **Re-anchoring is heuristic** — signatures can mismatch after large
   topology changes. The contract is honesty: orphan rather than guess, and
-  publish the mis-pin rate (2 in 2 693) rather than claim there is none;
+  publish both mis-pin rates (2 in 2 693 across a parameter change, 4 in 327
+  across a deletion) rather than claim there are none;
   tolerances tuned on the bundled examples. PRD-002's hunk anchors
   sidestep the problem by anchoring to immutable diffs.
 - **Two coordination mechanisms** (turns + claims) risk confusion — one

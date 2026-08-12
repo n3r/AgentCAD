@@ -40,7 +40,10 @@ Every identity that reaches this router is bounded first
 because the rate limiter allocates a bucket keyed by the raw string and runs
 before the roster does. An id longer than ``MAX_ID_CHARS`` is a 422 rather than
 a truncation: two ids cut to the same 64 characters would be one client to the
-roster, the claims and the mentions.
+roster, the claims and the mentions. This router is **not** the only door,
+which is why the check itself lives in ``locks.check_client_id``: a part write
+reaches the claim registry from the write guard carrying the same header and
+never passes through here at all.
 
 The response is the mechanism. Every call, including a throttled one, answers
 with the whole roster, so a client that misses every ``presence_changed``

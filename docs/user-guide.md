@@ -683,9 +683,14 @@ closed curved faces (a cylinder's side), which orphan on any edit. **Orphan
 rather than guess**: a comment pointing at nothing is recoverable, a comment
 pointing at the wrong face is not — so the matcher refuses a match it cannot
 support, including one that only looks certain because no other face was left
-to compare it with. Measured over 2 693 faces, about half resolve, the rest
-orphan, and **2 pointed at the wrong face** — rare, not impossible, so a pin on
-a part you have reshaped heavily is worth a glance before you act on it.
+to compare it with. Two things were measured, and they are different numbers.
+Across a **parameter change** (2 693 faces) about half resolve, the rest
+orphan, and **2 pointed at the wrong face**. Across a **deleted feature** (327
+faces that no longer exist) 99% orphan and **4 re-pinned onto the surface that
+was underneath** — all four a square pad on a square plate, where the face left
+behind has the same shape, the same place and nearly the same size as the one
+you deleted. So a pin can survive onto the wrong face after you delete
+something: rare, not impossible, and worth a glance before you act on it.
 
 One ceiling is worth knowing because it looks like a bug and is not: when no
 other face on the part is even a candidate — a lone face at that orientation

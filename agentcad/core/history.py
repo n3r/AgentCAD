@@ -397,9 +397,10 @@ class ProjectHistory:
         arrived in that one merge. Reverting only the tip there leaves the
         merge half undone. A ``since`` that is not an ancestor of ``commit``
         is ignored (the single-commit revert is the honest fallback), and a
-        range that contains a merge commit fails cleanly rather than
-        half-applying: git needs a per-commit mainline it cannot be given for
-        a range, and :meth:`_rollback_revert` puts the tree back.
+        range that contains a merge commit is refused *before* git is asked —
+        a mainline cannot be meaningful for every commit of a range at once —
+        as a ``ConflictError`` with ``reason: "merge_in_range"`` naming the
+        merge, in the same shape as every other refusal here.
 
         This is what a ``scope: "mine"`` undo does when the caller's edit is no
         longer the branch head: ``restore`` would overlay a whole past tree and
@@ -415,7 +416,8 @@ class ProjectHistory:
         leaves the inverse patch applied and staged, which is a mutated project
         behind an error saying nothing happened. A commit whose changes are
         already gone from the tree raises the same error with
-        ``reason: "already_reverted"`` rather than an empty commit.
+        ``reason: "already_reverted"`` rather than an empty commit, and a
+        range containing a merge with ``reason: "merge_in_range"``.
 
         **A dirty tree is refused before git is asked to start** (``reason:
         "uncommitted_changes"``, with the tracked paths). Two reasons, and the
@@ -465,7 +467,23 @@ class ProjectHistory:
             rev = [commit]
         else:
             # A range is inverted commit by commit, so a mainline cannot be
-            # meaningful for all of them at once; git says so and we roll back.
+            # meaningful for all of them at once. git says so *after* it has
+            # started, and it used to be discovered by finding no unmerged
+            # paths in the wreckage and raising a bare HistoryError — the one
+            # refusal here that did not say why in the shape the others do.
+            # Ask first instead: it is one rev-list, it names the commit in the
+            # way, and nothing has to be rolled back.
+            merges = self._run(path, "rev-list", "--merges",
+                               f"{base}..{commit}", check=False)
+            found = merges.stdout.split() if merges.returncode == 0 else []
+            if found:
+                raise ConflictError(
+                    f"cannot undo {commit[:8]}: the range back to "
+                    f"{base[:8]} contains a merge, which cannot be inverted "
+                    "commit by commit",
+                    {"commit": commit, "reason": "merge_in_range",
+                     "paths": [], "blocked_by": found},
+                )
             mainline = []
             rev = [f"{base}..{commit}"]
 

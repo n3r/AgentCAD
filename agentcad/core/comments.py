@@ -108,6 +108,10 @@ MAX_BODY_BYTES = 16 * 1024
 # The cap on the snippet a script_range anchor stores as its evidence; read by
 # the anchor builder in core/anchors.py, which writes into this envelope.
 MAX_SNIPPET_LINES, MAX_SNIPPET_BYTES = 40, 4096
+#: How many append-only logs the line-number cache remembers at once. One per
+#: thread plus one per project, on a store that outlives every one of them, so
+#: it needs a ceiling; forgetting an entry costs one re-count (_append_line).
+MAX_SEQ_PATHS = 512
 
 _ID_RE = re.compile(r"^[1-9][0-9]{0,17}$")
 
@@ -227,9 +231,9 @@ class CommentStore:
     def __init__(self, store: ProjectStore) -> None:
         self.store = store
         self._lock = threading.RLock()
-        # Line counts of the append-only logs, carried forward instead of
-        # recounted — see _next_seq.
-        self._seq: dict[Path, int] = {}
+        # path -> (lines, size in bytes) as of OUR last append. Carried forward
+        # instead of recounted, and checked against the file — see _append_line.
+        self._seq: dict[Path, tuple[int, int]] = {}
 
     # ------------------------------------------------------------ locations
 
@@ -382,19 +386,14 @@ class CommentStore:
         path = self._thread_dir(proj, tid) / "audit.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         actor = entry.get("actor") or locks.current_client_id()
-        with self._lock:
-            record = {
-                "seq": self._next_seq(path),
-                "ts": entry.get("ts") or _now(),
-                "actor": actor,
-                "actor_kind": entry.get("actor_kind") or actor_kind(actor),
-                "action": entry.get("action") or "updated",
-                "details": entry.get("details") or {},
-            }
-            with open(path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record) + "\n")
-                handle.flush()
-        return record
+        return self._append_line(path, lambda seq: {
+            "seq": seq,
+            "ts": entry.get("ts") or _now(),
+            "actor": actor,
+            "actor_kind": entry.get("actor_kind") or actor_kind(actor),
+            "action": entry.get("action") or "updated",
+            "details": entry.get("details") or {},
+        })
 
     def audit(self, proj: str, tid: str) -> list[dict]:
         """Every entry, in order. A corrupt line (a torn write) is skipped
@@ -418,16 +417,12 @@ class CommentStore:
         """
         path = self.notifications_path(proj)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock:
-            record = {"seq": self._next_seq(path),
-                      "kind": entry.get("kind") or "mention",
-                      **{key: value for key, value in entry.items()
-                         if key not in ("seq", "kind")},
-                      "ts": entry.get("ts") or _now()}
-            with open(path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record) + "\n")
-                handle.flush()
-        return record
+        return self._append_line(path, lambda seq: {
+            "seq": seq,
+            "kind": entry.get("kind") or "mention",
+            **{key: value for key, value in entry.items()
+               if key not in ("seq", "kind")},
+            "ts": entry.get("ts") or _now()})
 
     def notifications(self, proj: str) -> list[dict]:
         """Every line of the project's log, in order, corrupt lines skipped."""
@@ -452,21 +447,44 @@ class CommentStore:
                 entries.append(record)
         return entries
 
-    def _next_seq(self, path: Path) -> int:
-        """The next 1-based line number for an append-only log.
+    def _append_line(self, path: Path, build) -> dict:
+        """Number one line, write it, and remember where the file now ends.
 
-        Counted *forward* rather than by re-reading the file, which made every
-        append O(n) and a burst of them O(n²) — and a single comment can drive
-        :data:`MAX_MENTIONS` appends. The count is re-derived from the file
-        whenever it is not already known or the file is not there (a project
-        deleted and recreated under a long-lived store), so it is always the
-        number a full re-count would give. Callers hold ``self._lock``.
+        The line number is counted *forward* rather than by re-reading the
+        file, which made every append O(n) and a burst of them O(n²) — a single
+        comment can drive :data:`MAX_MENTIONS` appends. What makes that safe is
+        that the carried count is **keyed to the byte offset our own last
+        append left the file at**: a second store on the same project (a second
+        service in one process, a second process, a test) leaves the file
+        longer than we remember, and a count that only checked "does the file
+        exist" would then hand out numbers somebody else already used, in the
+        one log whose point is that its order is a record. A size that does not
+        match is re-derived, so the answer is always the number a full re-count
+        would give.
+
+        The cache is :data:`MAX_SEQ_PATHS` entries — a project holds one log
+        per *thread* — and it is dropped wholesale when it is full, like
+        ``anchors._TABLE_CACHE``: forgetting a count costs one re-count and
+        nothing else, so an eviction policy would be machinery for a decision
+        with no consequences.
         """
-        known = self._seq.get(path)
-        if known is None or not path.exists():
-            known = self._line_count(path)
-        self._seq[path] = known + 1
-        return known + 1
+        with self._lock:
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = 0
+            cached = self._seq.get(path)
+            lines = cached[0] if cached and cached[1] == size \
+                else self._line_count(path)
+            record = build(lines + 1)
+            blob = json.dumps(record) + "\n"
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(blob)
+                handle.flush()
+            if len(self._seq) >= MAX_SEQ_PATHS and path not in self._seq:
+                self._seq.clear()
+            self._seq[path] = (lines + 1, size + len(blob.encode("utf-8")))
+        return record
 
     @staticmethod
     def _line_count(path: Path) -> int:

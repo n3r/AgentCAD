@@ -74,6 +74,52 @@ WIDE_NO_BOSS = WIDE_BOSS.replace(
     "    return plate\n")
 assert "boss" not in WIDE_NO_BOSS.split("def build")[1]
 
+# The verifier's geometry: a *pad* wide enough that the plate top left behind
+# is also inside the tightened lone-candidate area bar. r=20 on a 40 mm plate
+# reproduced at area_rel 0.237, confidence 0.9289 — inside LONE_AREA_REL.
+PAD = '''\
+import build123d as b3d
+
+PARAMS = {
+    "plate_w": {"default": 40.0, "min": 20.0, "max": 80.0, "unit": "mm"},
+    "pad_r":   {"default": 20.0, "min": 4.0,  "max": 20.0, "unit": "mm"},
+    "pad_h":   {"default": 1.0,  "min": 1.0,  "max": 8.0,  "unit": "mm"},
+}
+
+
+def build(p):
+    plate = b3d.Box(p.plate_w, p.plate_w, 10)
+    pad = b3d.Cylinder(radius=p.pad_r, height=p.pad_h).moved(
+        b3d.Location((0, 0, 5 + p.pad_h / 2)))
+    return plate + pad
+'''
+
+PAD_GONE = PAD.replace(
+    "    pad = b3d.Cylinder(radius=p.pad_r, height=p.pad_h).moved(\n"
+    "        b3d.Location((0, 0, 5 + p.pad_h / 2)))\n    return plate + pad\n",
+    "    return plate\n")
+assert "pad =" not in PAD_GONE.split("def build")[1]
+
+# The same story with a SQUARE pad, which is the shape the plate top under it
+# also has. This one is the residue: nothing in a mesh-derived signature tells
+# a 38 mm square apart from the 40 mm square beneath it.
+SQUARE_PAD = '''\
+import build123d as b3d
+
+PARAMS = {"plate_w": {"default": 40.0, "min": 20.0, "max": 80.0, "unit": "mm"}}
+
+
+def build(p):
+    plate = b3d.Box(p.plate_w, p.plate_w, 10)
+    pad = b3d.Box(38, 38, 1).moved(b3d.Location((0, 0, 5.5)))
+    return plate + pad
+'''
+
+SQUARE_PAD_GONE = SQUARE_PAD.replace(
+    "    pad = b3d.Box(38, 38, 1).moved(b3d.Location((0, 0, 5.5)))\n"
+    "    return plate + pad\n", "    return plate\n")
+assert "pad =" not in SQUARE_PAD_GONE.split("def build")[1]
+
 TWO_SOLIDS = '''\
 import build123d as b3d
 
@@ -249,6 +295,71 @@ def test_a_cut_away_face_does_not_re_pin_onto_the_survivor_under_it(demo):
     assert resolution["status"] == "orphaned", resolution
     assert resolution["reason"] == "area_mismatch", resolution
     assert resolution["hint"]
+
+
+def test_a_cut_away_pad_does_not_re_pin_at_the_sizes_the_area_bar_misses(demo):
+    """The same class again, at the sizes the *tightened area bar* still lets
+    through — which is how the verification round showed the first fix did not
+    close what it claimed to.
+
+    A 20 mm pad on a 40 mm plate leaves a plate top whose share of the area is
+    0.24 away from the pad top's, comfortably inside ``LONE_AREA_REL`` (0.30),
+    and the thread moved onto it at confidence 0.9289. Reproduced at
+    (r, h) = (20, 1), (20, 2), (19.5, 1) and (20, 4); refused at (19, 1) and
+    (18, 2) only because those clear the area bar.
+
+    What separates them is not a size at all: the pad top is a disc bounded by
+    one cylindrical wall, and the plate top is a square bounded by four sides.
+    """
+    service, manager = demo
+    for radius, height in ((20.0, 1.0), (20.0, 2.0), (19.5, 1.0), (20.0, 4.0)):
+        part = f"pad{int(radius * 10)}_{int(height * 10)}"
+        service.store.add_part("demo", part, part, "al6061", PAD)
+        service.set_params("demo", part, {"pad_r": radius, "pad_h": height})
+        assert service.get_part("demo", part)["status"]["state"] == "ok"
+        anchors.forget_tables()
+        face = _top_of_boss(service, part)
+        thread = manager.create(
+            "demo", {"kind": "face", "part": part,
+                     "face_index": face["index"]}, "chamfer this pad")
+        assert thread["resolution"]["status"] == "ok"
+
+        service.update_part("demo", part, script=PAD_GONE)
+        resolution = manager.get("demo", thread["id"])["resolution"]
+        assert resolution["status"] == "orphaned", (radius, height, resolution)
+        assert resolution["reason"] == "topology_mismatch", resolution
+        assert resolution["hint"]
+
+
+def test_a_square_pad_the_shape_of_the_face_under_it_still_re_pins(demo):
+    """**The residue, on purpose.** This class is narrowed, not closed.
+
+    Delete a 38 mm square pad from a 40 mm square plate and the face left
+    behind has the same normal, the same normalized position, four neighbors
+    just like the pad top, the same square outline and a share of the area
+    0.13 away — every feature a mesh-derived signature has. The thread moves
+    onto the plate top and reports it as ``moved``, which is a mis-pin.
+
+    It is measured (4 of 327 destroyed faces in the deletion sweep, all of
+    this shape) and it is what every surface that quotes a rate says out loud:
+    a cut-away face can still re-pin, so confirm with ``face_info`` before
+    acting on an expensive decision. A test that asserts the honest outcome is
+    worth more than a comment claiming it cannot happen.
+    """
+    service, manager = demo
+    service.store.add_part("demo", "sq", "Square pad", "al6061", SQUARE_PAD)
+    assert service.get_part("demo", "sq")["status"]["state"] == "ok"
+    anchors.forget_tables()
+    face = _top_of_boss(service, "sq")
+    thread = manager.create(
+        "demo", {"kind": "face", "part": "sq", "face_index": face["index"]},
+        "chamfer this pad")
+
+    service.update_part("demo", "sq", script=SQUARE_PAD_GONE)
+    resolution = manager.get("demo", thread["id"])["resolution"]
+
+    assert resolution["status"] == "moved", resolution
+    assert resolution["reason"] == "rematched_by_signature"
 
 
 def test_an_orphaned_thread_is_still_listable_and_resolvable(demo):

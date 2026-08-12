@@ -64,8 +64,10 @@ This project is built skill-first. Use the Superpowers process skills:
   screw threads) · threads live in `.history/agentcad/comments/` (canonical,
   branch-free, restore-proof) and are **never** `project_changed` · an anchor is
   immutable and its status is computed on every read — `unverified` means *we
-  did not look*, and **orphan, never mis-pin** (a bounds-moving param or a
-  closed curved face orphans, by design) · resolution makes **zero kernel
+  did not look*, and **orphan rather than guess, a bias and not a guarantee**
+  (a bounds-moving param or a closed curved face orphans by design; mis-pins
+  are 2 in 2 693 across a parameter change and 4 in 327 when a feature is
+  deleted — quote both, never "never") · resolution makes **zero kernel
   calls** · claims are per-part, human-vs-human, never for the turn holder, and
   reach `write_guard` through `locks.write_scope` (its signature is unchanged) ·
   presence is an **HTTP heartbeat**, not client→server WS · `undo {scope}`

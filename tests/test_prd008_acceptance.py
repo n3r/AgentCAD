@@ -35,20 +35,36 @@ so a reviewer can map AC → test without reading the unit suites.
         ``test_ac9_the_full_suite_count_is_cited`` |
 
 **AC2 is asserted at the wording the measurements support, not at the wording
-the PRD was written with.** The slice-2 spike, **re-measured after code review**
-(``docs/changelog/0123-prd008-review-fixes.md``, 2 693 face pairs with a
+the PRD was written with**, and there are now two measurements because there
+are two classes.
+
+*A parameter changed* — the slice-2 spike, re-measured after code review
+(``docs/changelog/0123-prd008-review-fixes.md``, 2 693 face pairs against a
 stricter ground-truth oracle): face ordinals move (about one in ten for a 1%
-tweak), the matcher resolves 53.9% of surviving faces, orphans the rest — and
-**mis-pins 2 of 2 693**, so "never" is not a claim this suite makes. Slices 8-9
+tweak), the matcher resolves 53.9% of surviving faces, orphans the rest, and
+**mis-pins 2 of 2 693**.
+
+*A feature was deleted* — measured separately
+(``docs/changelog/0125-prd008-verifier-fixes.md``, 327 faces that no longer
+exist, ground truth from a geometric oracle), because the sweep above never
+deletes anything and therefore cannot speak for this at all: **98.8% correctly
+orphaned, 4 mis-pinned**, where the area bar alone left 27. The four are a
+square pad on a square plate, and
+``test_a_square_pad_the_shape_of_the_face_under_it_still_re_pins`` in
+``tests/test_anchors_kernel.py`` asserts that outcome rather than a comment
+claiming it cannot happen.
+
+So "never" is not a claim this suite makes in either direction. Slices 8-9
 added two more ceilings (changelog 0119): a parameter change that moves a
 face's position *relative to the shape's bounds* orphans it even though the
-face still exists, and a closed curved face orphans on any edit at all. So the
+face still exists, and a closed curved face orphans on any edit at all. The
 honest criterion — recorded as a divergence in the PRD's as-built section — is
 **"survives a parameter tweak where the face's position within the shape's
 bounds is stable, or says `orphaned` with a reason, and rarely points at the
-wrong face"**, and this module tests exactly that: `orphaned` is asserted as a
-*correct* outcome, and every non-orphaned answer is verified geometrically
-rather than by trusting the resolver's own reply.
+wrong face — rarely, not never, in both classes"**, and this module tests
+exactly that: `orphaned` is asserted as a *correct* outcome, and every
+non-orphaned answer is verified geometrically rather than by trusting the
+resolver's own reply.
 
 Marks: ``integration`` + ``portability`` throughout (git, subprocesses, local
 sockets); every case that builds geometry is additionally ``slow``.

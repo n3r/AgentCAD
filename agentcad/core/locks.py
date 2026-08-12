@@ -43,7 +43,7 @@ import threading
 import time
 from contextlib import contextmanager
 
-from .model import ConflictError
+from .model import ConflictError, ValidationError
 
 DEFAULT_TTL_S = 120.0
 MIN_TTL_S = 5.0
@@ -69,6 +69,36 @@ write_part_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 override_var: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "agentcad_claim_override", default=False
 )
+
+
+#: How long a client identity may be, anywhere it becomes a dict key or is
+#: echoed to another client. It arrives on a header anyone can set, on a server
+#: with no authentication, so it is bounded rather than trusted — and it is
+#: bounded HERE, next to the ContextVar it arrives in, because the presence
+#: route is not the only door: a part write reaches
+#: :meth:`ClaimRegistry.claim_write` from the write guard carrying the same
+#: unvalidated header. ``presence.MAX_ID_CHARS`` is this number.
+MAX_CLIENT_ID_CHARS = 64
+
+
+def check_client_id(value: object) -> str:
+    """A client id fit to be a key, or a ValidationError saying why not.
+
+    **Refused rather than truncated.** Two identities cut to the same 64
+    characters would be *one* client to the claim map, the roster and the
+    mentions, and a silent identity merge is a worse answer than an error.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError("this call needs a client identity")
+    who = value.strip()
+    if len(who) > MAX_CLIENT_ID_CHARS:
+        raise ValidationError(
+            f"client identity is longer than {MAX_CLIENT_ID_CHARS} characters",
+            {"max": MAX_CLIENT_ID_CHARS, "given": len(who)},
+        )
+    if not who.isprintable():
+        raise ValidationError("client identity has non-printable characters")
+    return who
 
 
 def current_client_id() -> str:
@@ -319,6 +349,7 @@ class ClaimRegistry:
         callers use ``with claim_override():`` instead — one mechanism, two
         entry points.
         """
+        client_id = check_client_id(client_id)
         expires_at = time.time() + max(float(ttl_s), 1.0)
         with self._lock:
             self._armed[(key, part, client_id)] = expires_at
@@ -386,14 +417,19 @@ class ClaimRegistry:
         ``claim_override()`` all pass. The error names the holder and says
         ``overridable`` so a UI can offer the one button that resolves it.
         """
-        # Spent first and unconditionally (see :meth:`_consume`): an arming
-        # that survives the write it was shown for is a steal waiting for a
-        # claim to appear.
-        armed = part is not None and self._consume(key, part, client_id)
+        client_id = check_client_id(client_id)
         claim = self._blocking(key, part, client_id)
-        if claim is None:
+        if claim is None or override or override_var.get():
             return
-        if override or override_var.get() or armed:
+        # The arming is spent HERE and nowhere earlier: it is single-use, and
+        # spending it on a call that was never going to be refused throws away
+        # the confirmation the dialog collected for the write that IS refused.
+        # (``claim_write`` spends it unconditionally on purpose and for the
+        # opposite reason — see its docstring: there, an arming left behind
+        # steals the next claim. The difference is that every write passes
+        # through that one.) Unreachable today, since ``claim_write`` is the
+        # only caller that both consumes and conflicts, and a trap either way.
+        if part is not None and self._consume(key, part, client_id):
             return
         raise self._refusal(claim, part)
 
@@ -418,6 +454,7 @@ class ClaimRegistry:
         """
         if part is None:
             return None
+        client_id = check_client_id(client_id)
         before = self.get(key, part)
         armed = self._consume(key, part, client_id)
         blocking = self._blocking(key, part, client_id)

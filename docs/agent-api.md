@@ -135,7 +135,7 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 | `push_pull` | **project, part_id, face_index, distance_mm** | Direct-manipulation face offset recorded as code: validates the face is planar, then APPENDS an auto-generated wrapper to the script (`push_face(build(p), i, d)` — visible, editable, composable) and rebuilds. Positive distance grows the solid along the outward normal; negative cuts inward. The script stays the source of truth. |
 | `project_history` | **project**, limit, ref | List the project's automatic history snapshots, newest first (`{id, message, ts, author}` — `author` is the client id that made it, read from the commit's `Client:` trailer, and `null` for a snapshot taken before authorship was recorded); entry [0] is the current state. History is **per branch**: you see your own branch's unless you pass `ref` — a branch or tag name — which reads that ref's history without switching you. `available: false` + empty list when git is missing on the server. |
 | `project_restore` | **project, commit** | Restore the project to a snapshot id **or a branch/tag name** (`{commit: "shop-rev-a"}` restores a version) and append a linear "restore" commit on your current branch. Returns refreshed history + `{restored}`; validation_error on unknown commit/no git, conflict_error under someone else's turn lock. A manual restore is itself one undoable step. |
-| `undo` | **project**, scope | Undo the last mutation by stepping back through the git history: `{undone, history: {available, undo, redo, mine}}`. `scope` is `any` (**default** — one shared stack, so you may take back another client's edit, which is the point of Cmd+Z next to a working agent) or `mine` (skip other clients' entries and take back your own most recent one). A `mine` undo of an entry that is no longer the branch head is a **`git revert` of exactly that commit**, so nobody else's later work moves; a later change that overlaps it is a `conflict_error` with `details: {commit, reason: "overlapping_changes", paths, blocked_by}` — never a merge, never a partial apply. conflict_error when there is nothing to undo; after a server restart one step remains available. |
+| `undo` | **project**, scope | Undo the last mutation by stepping back through the git history: `{undone, history: {available, undo, redo, mine}}`. `scope` is `any` (**default** — one shared stack, so you may take back another client's edit, which is the point of Cmd+Z next to a working agent) or `mine` (skip other clients' entries and take back your own most recent one). A `mine` undo of an entry that is no longer the branch head is a **`git revert` of exactly that commit**, so nobody else's later work moves; a later change that overlaps it is a `conflict_error` with `details: {commit, reason: "overlapping_changes", paths, blocked_by}` — never a merge, never a partial apply. Every other refusal has the same shape: `uncommitted_changes`, `already_reverted`, and `merge_in_range` when the range an undo would invert contains a merge commit. conflict_error when there is nothing to undo; after a server restart one step remains available. |
 | `redo` | **project**, scope | Redo the most recently undone mutation. The redo stack clears when any new mutation happens. A step that was undone by a revert is redone by reverting that revert. |
 | `get_history` | **project** | Undoable/redoable action labels, newest first, plus `available` (false when git is missing) and `mine: {undo, redo}` — how many entries on each stack are yours. The full durable snapshot log with commit ids is `project_history`. |
 | `render_view` | **project**, part_id, view, width, height | Server-side shaded orthographic render of built geometry so the agent can *see* the shape. `part_id` renders one part; omit it to render the whole placed assembly (instance transforms and colors honored; unbuildable instances are listed in `skipped`). `view` is `iso` (default), `front`, `top` or `right`; `width`/`height` are 64..2048 px (default 800×600). Writes `exports/renders/<part|assembly>_<view>.png` and returns `{path, width, height, view, png_base64}`; over MCP and in chat the PNG arrives as actual image content. |
@@ -594,9 +594,13 @@ bundled part renumbered 20 of its 44 faces for a **1%** tweak), so a face
 anchor is re-matched from its stored mesh signature: measured over 2 693 faces
 whose identity is known it resolves about **half** the time and comes back
 honestly `orphaned` otherwise, with **2 mis-pins in 2 693** (both on a body of
-revolution). Orphan rather than guess — a strong bias, not a guarantee, so
-treat a resolved face as strong evidence and confirm with `face_info` when the
-answer decides something expensive. Two ceilings are worth knowing before you
+revolution). That sweep only ever changes a *parameter*, so it says nothing
+about the class you hit when you **delete** a feature; that one was measured
+separately over 327 faces that no longer exist, and **4 of them re-pinned onto
+the face that was underneath** (98.8% correctly orphaned). Orphan rather than
+guess — a strong bias, not a guarantee: **a cut-away face can still re-pin**,
+so treat a resolved face as strong evidence, and confirm with `face_info` when
+the answer decides something expensive. Two ceilings are worth knowing before you
 read an `orphaned` as a bug: a parameter change that moves a face's
 position *relative to the shape's bounds* orphans it even though the face still
 exists (`bbox_uvw` is measured against those bounds — which is exactly what
@@ -605,13 +609,19 @@ cylinder's side orphans on any edit, because its area-weighted normal nearly
 cancels and no candidate clears the normal gate.
 
 **A script range is re-found by its text plus its context, never by its text
-alone.** Tier 1 looks for the stored snippet verbatim; a copy found elsewhere
-has to be corroborated by at least one side of the stored surrounding lines,
-**including when it is the only copy left** — deleting the anchored one of two
-identical lines used to re-pin the thread onto the unrelated survivor and
-report `moved` at confidence 1.0. A hit the context contradicts falls through
-to tier 2, a `difflib` map over the blob at the anchor's own head, which
-answers from the real diff or `orphaned`s.
+alone.** Tier 1 looks for the stored snippet verbatim; a lone copy must be
+contradicted by neither side of the stored surrounding lines — deleting the
+anchored one of two identical lines used to re-pin the thread onto the
+unrelated survivor and report `moved` at confidence 1.0, and one *agreeing*
+side is not enough to rule that out, because duplicated blocks routinely end
+with the same line. The same rule guards the address the anchor already has: a
+range that still holds its exact text but whose context says a different block
+now sits there is put to the diff rather than answered `ok` (with no diff to
+read — no git, no head — the address still wins, so an ordinary edit near a
+thread never costs it its pin). With two or more copies the context is a
+tie-break, as before. A refused hit falls through to tier 2, a `difflib` map
+over the blob at the anchor's own head, which answers from the real diff or
+`orphaned`s.
 
 **Listing never builds.** Resolution reads the manifest, the meshes a build
 already wrote and at most one git blob per anchor — so a face anchor on a part
