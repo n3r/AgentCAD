@@ -12,6 +12,12 @@ dependencies = [
     "mcp>=1.2",
     "httpx>=0.27",
     "ezdxf>=1.1",
+    # The constraint solver (agentcad/toolkit/sketch.py) imports both, and it
+    # runs in the SERVER process, which must never import build123d. They were
+    # previously only transitive through build123d — see PRD-009 design
+    # Decision 1.
+    "numpy>=2.0",
+    "scipy>=1.14",
 ]
 
 [project.optional-dependencies]
