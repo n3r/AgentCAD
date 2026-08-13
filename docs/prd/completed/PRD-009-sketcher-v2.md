@@ -1,8 +1,6 @@
 # PRD-009 — Sketcher v2
 
-- **Status:** implemented — AC1–AC7 verified on `prd-009-sketcher-v2`
-  (see [Verification](#verification-slice-14) and
-  [As built](#as-built--divergences-from-this-document))
+- **Status:** completed — merged to main in PR #13 (AC1–AC7 verified)
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026) + explicit v3 residual
