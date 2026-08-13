@@ -101,7 +101,7 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   change proposal, where a red or stale report blocks the merge. See
   [docs/geometry-ci.md](docs/geometry-ci.md).
 
-The agent tool surface is now **71 tools** (was 17; 74 with the `[fem]`
+The agent tool surface is now **72 tools** (was 17; 75 with the `[fem]`
 extra), and multi-part rebuilds fan out across a small pool of warm kernel
 workers. v3 added typed parameters, per-solid semantics, sheet metal with
 flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,

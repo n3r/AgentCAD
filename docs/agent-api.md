@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 71 tools (74 with the
+Agents drive AgentCAD through a single tool surface — 72 tools (75 with the
 `[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -140,6 +140,26 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 | `get_history` | **project** | Undoable/redoable action labels, newest first, plus `available` (false when git is missing) and `mine: {undo, redo}` — how many entries on each stack are yours. The full durable snapshot log with commit ids is `project_history`. |
 | `render_view` | **project**, part_id, view, width, height | Server-side shaded orthographic render of built geometry so the agent can *see* the shape. `part_id` renders one part; omit it to render the whole placed assembly (instance transforms and colors honored; unbuildable instances are listed in `skipped`). `view` is `iso` (default), `front`, `top` or `right`; `width`/`height` are 64..2048 px (default 800×600). Writes `exports/renders/<part|assembly>_<view>.png` and returns `{path, width, height, view, png_base64}`; over MCP and in chat the PNG arrives as actual image content. |
 | `analyze_part` | **project, part_id, kind**, plane, axis, min_required | `kind=section` (cross-section area on `plane` XY\|XZ\|YZ), `wall` (min wall thickness; with `min_required` it adds an `ok` flag), `inertia` (mass-properties tensor + centre of mass), `projected_area` (silhouette area along `axis` X\|Y\|Z), `curvature` (per-face gaussian K in 1/mm² and mean H in 1/mm sampled on an 8×8 UV grid: `faces[]` with min/max/mean per face, `worst_gaussian_abs`, `n_faces`, `sampled_points`; H's sign is orientation-dependent — compare magnitudes; a true G2 blend shows no jump in K/H across the seam). Script parts only. |
+
+### Hole standards
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `hole_standards` | family, size, std | The vendored ISO hole tables, as data — no kernel call, no geometry. Omit everything for `{families, sizes, fits, csk_angle_deg}`; give `family` alone for its tabulated sizes; give `family` + `size` for the row. `family` is `clearance` \| `tapped` \| `counterbore` \| `countersink` (`cbore`/`csk`/`thread` also accepted); `std` is `iso` (default) — **ANSI/ASME tables do not ship yet and `std: "ansi"` is a validation error, never a silent fallback to the ISO numbers**. A `clearance` row returns **all three fits at once** (`{fine, medium, coarse}`, also spelled `{close, normal, loose}`); a `tapped` row returns `{pitch, tap_drill, series, thread, pitches}`; a `counterbore` row returns the ISO 4762 head (`head_d`, `head_h`) *and* the bore (`d`, `depth`) with the `rule` that derived it. Every answer carries `standard`, `revision` and the two published `sources` the numbers were transcribed from. |
+
+Two things this surface says out loud rather than hiding:
+
+- **The counterbore diameter is not a standard.** The published charts disagree
+  materially (M8: 15.0, 14.5 and 14.25 mm in three widely-republished
+  conventions), so no counterbore diameter is transcribed as if it were ISO.
+  What ships is the **fastener head geometry**, which the standards do fix and
+  which two independent sources print identically; the bore is head + a named
+  clearance, and `rule` says so in every answer.
+- **The tap drill is a shop number**, the stock drill nearest `d − P`. Rows
+  where the two sources printed different drills are absent rather than
+  averaged; the data file's `notes` names them.
+
+Sizes for a UI picker come from here, never from a hard-coded list.
 
 ### Design specs
 
