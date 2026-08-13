@@ -147,6 +147,31 @@ ERROR_DOCTOR: list[dict[str, str]] = [
         ),
     },
     {
+        "id": "draft_angle_too_large",
+        # Two measured signatures, one cause (PRD-010 slice 10, changelog
+        # 0156): OCCT raises `Standard_Failure` with an **empty message** — so
+        # the traceback is the only text there is — and build123d raises
+        # `DraftAngleError` where it can name the face. `(?s)` + lookaheads
+        # because neither message alone identifies the operation.
+        "regex": r"(?s)^(?=.*(?:Standard_Failure|DraftAngleError))(?=.*[Dd]raft)",
+        "diagnosis": (
+            "A draft (BRepOffsetAPI_DraftAngle) failed for these faces at this "
+            "angle. OCCT gives no reason — the Standard_Failure it raises "
+            "carries an empty message — and the ceiling is geometry-dependent "
+            "and low: measured, a plain box takes 35 deg, a box with R4 "
+            "vertical fillets 10, a shelled box 2.5, and a shelled enclosure "
+            "0.25."
+        ),
+        "fix": (
+            "Reduce the angle, or draft BEFORE shelling/filleting, or draft "
+            "fewer faces — or use toolkit.features.draft(), which searches "
+            "down to the largest angle that yields a valid solid (failure is "
+            "monotone in the angle, measured on 8 parts) and reports what it "
+            "applied. Note draft also fails silently: it can RETURN an invalid "
+            "solid without raising, so check part.is_valid."
+        ),
+    },
+    {
         "id": "spline_degenerate_points",
         "regex": r"(?s)^(?=.*Standard_Failure)(?=.*GeomAPI_Interpolate)",
         "diagnosis": (

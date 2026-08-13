@@ -409,6 +409,61 @@ but heavy (~9k triangles per M8 thread at mesh tolerance 0.1), so:
   `analyze_part(kind="curvature")`: a true G2 blend shows no jump in
   curvature across the seam.
 
+### Ribs, bosses and draft
+
+`from agentcad.toolkit import features` — three shape features under the same
+honest-warning contract. `plane` is resolved by the same predicate `holes.*`
+uses (a `Plane`, or `top|bottom|front|back|left|right` → the extreme planar
+face along that axis, by area), and the normal points **out of the material**:
+holes drill along `-z_dir`, ribs and bosses grow along `+z_dir`. For a feature
+inside a cavity pass an explicit `Plane(origin=(0, 0, floor_t), z_dir=(0,0,1))`
+— a *name* can only ever resolve to an outer face, and after you add a rib
+`"top"` resolves to the **rib's** top face.
+
+- `features.rib(part, profile, thickness, *, to, plane="top", draft_deg=None)
+  -> (part, warning|None)` — the `profile` polyline (points in plane
+  coordinates) traced to `thickness` and extruded away from the seat.
+  `to=<mm>` is the rib height and is exact (measured equal to a hand-built rib
+  to the last bit). `to="part"` extrudes generously and intersects the part's
+  **bounding solid**, which is an envelope and not the part: on a convex part
+  the rib lands inside existing material and adds **0 mm³** (measured), on a
+  shelled part it runs to the top of the bounding box. That mode always warns.
+  `draft_deg` tapers the extrusion — it never calls the draft operation,
+  because a finished shelled part refuses draft (see below).
+- `features.boss(part, at, d, h, *, hole=None, hole_depth=None, draft_deg=None)
+  -> (part, warning|None)` — a cylinder standing `h` above the seat at `at`.
+  `hole="M3"` bores the tap drill with `holes.tapped` (blind at the seat by
+  default) so the screw boss carries a **record** and reaches the drawing
+  callouts; read it back with `holes.records(part)`.
+- `features.draft(part, faces, angle_deg, neutral_plane, *, min_angle=0.25)
+  -> (part, achieved_deg, warning|None)` — `faces` is a list of `Face`s **or a
+  selector callable** `f(part) -> faces`, never indices. On failure it binary-
+  searches down to the largest angle that yields a *valid* solid and names what
+  it applied.
+
+**Draft's ceilings are low, and they are lowest exactly where draft matters.**
+Swept 0.25 → 60° through the kernel worker (changelog 0156); failure was
+**monotone in the angle on all eight shapes** — no islands, which is what makes
+the search sound:
+
+| part | largest angle that produced a valid solid |
+|---|---|
+| box 40×30×20 (4 side faces) | 35° |
+| box + boss (5 faces) | 15° |
+| box + R4 vertical fillets (8 faces) | 10° |
+| shelled box t=2 (8 faces) | 2.5° |
+| `construction/gusset_plate` (18 faces) | 17.5° |
+| `prototyping/enclosure_base` (56 faces) | **0.25°** |
+| `rocketry/nozzle`, `construction/angle_bracket` | **none** — every angle fails |
+
+Draft before you shell or fillet. And note the failure mode: only the extreme
+angles raise (`Standard_Failure` with an **empty** message, or build123d's
+`DraftAngleError`); most failing angles **return a shape** with
+`is_valid False` and a plausible volume, so a hand-written `draft()` call must
+check `is_valid` itself. When nothing works down to `min_angle`,
+`features.draft` returns the part **unchanged** with a warning naming the
+failing angle and what OCCT said — never a silently undrafted part.
+
 ### Sheet metal
 
 `agentcad.toolkit.sheetmetal.SheetPart` is a declarative builder: one spec
