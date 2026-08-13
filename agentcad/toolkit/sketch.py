@@ -322,9 +322,18 @@ JUNCTION_ROWSPACE_TOL = 1e-7
 
 # How well the non-tangency rows must be satisfied for the configuration to
 # count as a point of their manifold, i.e. for the junction question to have an
-# answer at all — as a fraction of the sketch's own largest length, for the
-# same reason as `JUNCTION_TOL_REL`. At millimetre sizes it is `solve`'s own
-# `ok` threshold to within the drawing's aspect ratio.
+# answer at all. Read **twice, in two different units**, which is deliberate
+# and is why both readings are spelled out here:
+#
+#  - `_junction_probe`, as a *fraction of `_configuration_scale`* — the rows
+#    there are the sketch's own residuals, and they carry the sketch's length
+#    unit, for the same reason as `JUNCTION_TOL_REL`. At millimetre sizes it
+#    is `solve`'s own `ok` threshold to within the drawing's aspect ratio. The
+#    scale must be an *extent*, never a position: see `_configuration_scale`.
+#  - `resolve_tangencies`, choosing the re-solve's `start`, **unscaled** — the
+#    `tangent_dir` row it is applied to is a cross product of two *unit*
+#    tangents, a pure number with no length in it. Multiplying that by a
+#    millimetre would be the bug this constant already has a fix for.
 JUNCTION_MANIFOLD_TOL = 1e-7
 
 # `least_squares` settings for the main solve, named because the junction
@@ -1119,6 +1128,7 @@ class Sketch:
                 or name in self.arcs or name in self.splines
                 or name in self.slots or name in self.ellipses):
             raise SketchError(f"duplicate entity {name}")
+        self._invalidate_junction_cache()
         return name
 
     def point(self, name: str, x0: float, y0: float, fixed: bool = False, *,
@@ -1426,6 +1436,27 @@ class Sketch:
             else self._spec_index)
         return self._con_index
 
+    def _invalidate_junction_cache(self) -> None:
+        """Forget everything the junction criterion decided.
+
+        Called from `_claim` and `_add`, so from every entity and every row
+        the sketch gains. Both cached vectors are configurations of a
+        *particular* parameter vector: one more free point and they are the
+        wrong width, which is how `solve()` after `point()` after `solve()`
+        raised `IndexError: index 8 is out of bounds for axis 0 with size 6`
+        through the documented object API (0145). And the verdict itself is a
+        fact about the rows that existed when it was read — a tangency
+        declared after a solve has to be asked the question too, and one
+        answered before may have to answer it again.
+
+        Cheap by construction: three assignments on a path that already
+        appends to two lists, and after the last declaration the criterion is
+        computed exactly once, at `solve`.
+        """
+        self._tangencies_resolved = False
+        self._junction_x0 = None
+        self._provisional_x = None
+
     def _add(self, res: Residual) -> None:
         if self._origin is not None and res.origin is None:
             # Stamped here rather than threaded through every helper, so a
@@ -1434,6 +1465,7 @@ class Sketch:
             res = replace(res, origin=self._origin)
         self.residuals.append(res)
         self.n_res += res.rows
+        self._invalidate_junction_cache()
 
     def _line_refs(self, ln: str) -> tuple[PointRef, PointRef]:
         line = self.lines[ln]
@@ -1897,7 +1929,8 @@ class Sketch:
             # Jacobian the same question once every row exists, and swaps the
             # direction form in over this row if the answer is yes.
             self._pending_tangency.append(
-                {"row": len(self.residuals) - 1, "a": ln, "b": c, "ci": ci})
+                {"row": len(self.residuals) - 1, "a": ln, "b": c, "ci": ci,
+                 "flat": self.residuals[-1]})
             return
 
         # Named or structural, `at` is a point on both curves — so a *second*
@@ -2169,6 +2202,19 @@ class Sketch:
                    if p["row"] < len(self.residuals)]
         if not pending or not self.n_par:
             return
+        # A *second* pass — the sketch was drawn on after a solve, so
+        # `_invalidate_junction_cache` re-armed this one — re-decides from
+        # scratch, and that means starting from what was compiled: every
+        # provisional row back in its distance form first. Otherwise a row
+        # swapped by the last pass would survive a verdict that no longer
+        # holds, which is the one thing this pass must never do. A no-op on
+        # the first pass, where every row already is its own `flat`.
+        for entry in pending:
+            self.residuals[entry["row"]] = entry["flat"]
+        # Same for what the last pass *said*: this pass's verdict replaces it,
+        # it does not stack a second copy of it on the result.
+        self.warnings[:] = [w for w in self.warnings
+                            if w["code"] != "tangency_junction_undecided"]
         rows = {p["row"] for p in pending}
         others = [r for i, r in enumerate(self.residuals) if i not in rows]
         probe = self._junction_probe(others)
@@ -2396,15 +2442,27 @@ class Sketch:
     def _configuration_scale(self, xs: np.ndarray) -> float:
         """The sketch's own largest **length** at `xs`, never zero.
 
+        Its **extent** — how far apart its coordinates are, and how big its
+        radii are — not how far they sit from (0, 0). `max(|x|, |y|)` reads a
+        *position*, and a position is not a length: the same drawing moved
+        1e4 mm off the origin then reported a scale 1000x larger and every
+        gate written as a fraction of it (`JUNCTION_MANIFOLD_TOL`) opened by
+        the same factor, silently. Moving a drawing changes no length in it,
+        so this number may not move either (0145).
+
         Coordinates and radii only — not the raw parameter vector, whose angle
         slots are radians and would put a floor of ~pi under a sketch drawn in
         metres. A sketch with no lengths at all reads 1.0, which is the only
         number left when there is nothing to be relative to.
         """
-        best = 0.0
+        lo_x = lo_y = math.inf
+        hi_x = hi_y = -math.inf
         for ref in self._refs.values():
             x, y = ref.value(xs)
-            best = max(best, abs(float(x)), abs(float(y)))
+            x, y = float(x), float(y)
+            lo_x, hi_x = min(lo_x, x), max(hi_x, x)
+            lo_y, hi_y = min(lo_y, y), max(hi_y, y)
+        best = max(hi_x - lo_x, hi_y - lo_y) if hi_x >= lo_x else 0.0
         for rad in self._rads.values():
             best = max(best, abs(float(rad.value(xs))))
         return best if best > 0.0 else 1.0
@@ -2514,7 +2572,8 @@ class Sketch:
         self._add(Residual(ci, "tangent_circles", 1,
                            self._params(ra, rb, r1, r2), f, df))
         self._pending_tangency.append(
-            {"row": len(self.residuals) - 1, "a": c1, "b": c2, "ci": ci})
+            {"row": len(self.residuals) - 1, "a": c1, "b": c2, "ci": ci,
+             "flat": self.residuals[-1]})
 
     # ---------------- generalized constraints (slice 5) ----------------
     def tangent(self, a: str, b: str, at: str | None = None,

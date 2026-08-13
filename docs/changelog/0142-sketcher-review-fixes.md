@@ -120,7 +120,7 @@ an empty blame set says so instead of rendering the DOF number it just
 contradicted.
 
 One consequence worth naming: a `perpendicular` or `point_on_line` on that same
-1e-9 mm line now reports `did_not_converge` (max residual 4.6e-07 and 3.6e-04)
+1e-9 mm line now reports `did_not_converge` (max residual 4.6e-07 and 3.68e-07)
 rather than `over_constrained` with `conflicting: [that constraint]`. The rows
 really are independent; the sketch really does not solve. Blaming a constraint
 for a degenerate *entity* was the wrong answer.

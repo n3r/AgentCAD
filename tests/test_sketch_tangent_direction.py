@@ -713,6 +713,94 @@ def test_detection_reaches_exactly_as_far_as_the_solve_does():
     assert len(flat) == 22, flat
 
 
+@pytest.mark.parametrize("shift", [0.0, 1e2, 1e4, 1e6])
+def test_the_flat_form_is_always_the_loud_one_wherever_the_sketch_sits(shift):
+    """The half of the identity above that is a property of **the code**,
+    swept along the translation axis the test above does not move on.
+
+    `flat == undecided` says the pass is never quiet about refusing: every
+    seed that keeps the distance form carries the warning naming it, and no
+    seed carries the warning without it. That holds at every offset.
+
+    `== unsolved` does not, and deliberately is not asserted here. It is not
+    the junction pass's property: `ok` is an **absolute** `max_residual <
+    1e-7` and the criterion is relative, so far from the origin the two
+    yardsticks stop agreeing on the same drawing. Measured on this sweep, the
+    worst direction-form solve reads 6.8e-09 at shift 0 and 4.1e-07 at shift
+    1e4 — the same convergence in relative terms (4e-11 of a 1e4 mm
+    coordinate), scored differently by an absolute gate. That is `solve`'s
+    gate to answer for, not this one's.
+    """
+    flat, undecided = [], []
+    for off in range(-1000, 1025, 25):
+        spec = dimensional_junction_spec(off=float(off))
+        for p in spec["points"]:
+            p["x"] += shift
+            p["y"] += shift
+        sk = parse_sketch(spec)
+        res = sk.solve()
+        if "tangent_line_circle" in [r.kind for r in sk.residuals]:
+            flat.append(off)
+        if "tangency_junction_undecided" in [w["code"] for w in
+                                             res["warnings"]]:
+            undecided.append(off)
+    assert flat == undecided, (shift, flat, undecided)
+
+
+def test_the_object_api_may_keep_drawing_after_it_has_solved():
+    """`Sketch(); point(...); solve()` is the documented object API
+    (`agentcad/core/templates.py`), and a part script that keeps building
+    after a look at the answer is the ordinary way to use it.
+
+    The junction criterion cached a start configuration for the re-solve and
+    `_tangencies_resolved` blocked it from ever being recomputed, so the
+    *second* `solve()` started `least_squares` from a vector of the previous
+    sketch's width: measured `IndexError: index 6 is out of bounds for axis 0
+    with size 6` on this spec, and a tangency declared after a solve was never
+    asked the junction question at all. The cache is a fact about a
+    configuration, so it dies with the configuration it was read at.
+    """
+    sk = Sketch()
+    sk.point("c", 0.0, 0.0, fixed=True)
+    sk.point("t", 10.0, 0.0)
+    sk.point("p", 10.0, 0.0)
+    sk.point("q", 30.0, 0.0)
+    sk.circle("C", "c", 10.0, fixed_r=True)
+    sk.line("L", "p", "q")
+    sk.horizontal("L")
+    sk.distance_y("t", "p", 0.0)
+    sk.point_on_circle("t", "C")
+    sk.tangent("L", "C")
+    def forms():
+        return [r.kind for r in sk.residuals if r.kind.startswith("tangent")]
+
+    first = sk.solve()
+    assert first["ok"] is True, first["diagnostics"]
+    assert forms() == ["tangent_dir"], forms()
+
+    # more entities, then solve again
+    sk.point("z", 40.0, 40.0)
+    sk.distance("z", "c", 50.0)
+    second = sk.solve()
+    assert second["ok"] is True, second["diagnostics"]
+    assert math.dist((second["points"]["z"]["x"], second["points"]["z"]["y"]),
+                     (0.0, 0.0)) == pytest.approx(50.0, abs=1e-6)
+    # the re-decision reached the same verdict, because the junction is still
+    # pinned — a re-run is not a reset
+    assert forms() == ["tangent_dir"], forms()
+
+    # a second tangency declared after a solve is asked the question on its
+    # own terms: nothing pins L2 to the circle, so it keeps the distance form
+    sk.point("p2", -30.0, 10.0)
+    sk.point("q2", -10.0, 10.0)
+    sk.line("L2", "p2", "q2")
+    sk.tangent("L2", "C")
+    third = sk.solve()
+    assert third["ok"] is True, third["diagnostics"]
+    assert forms() == ["tangent_dir", "tangent_line_circle"], forms()
+    assert [w["code"] for w in third["warnings"]] == [], third["warnings"]
+
+
 def test_a_tangency_seeded_at_the_direction_residuals_own_stationary_point():
     """`t_L x t_C` has a stationary point of its own, and 0143 drove into it.
 
@@ -777,6 +865,47 @@ def test_the_junction_verdict_does_not_depend_on_the_unit_it_was_drawn_in(
     kinds = [k for k in (r.kind for r in parse_sketch(spec).residuals)
              if k.startswith("tangent")]
     assert kinds == [form], (scale, rel_delta, kinds)
+
+
+@pytest.mark.parametrize("shift", [0.0, 1e2, 1e4, 1e6])
+@pytest.mark.parametrize("rel_delta,form", [(0.0, "tangent_dir"),
+                                            (1e-9, "tangent_dir"),
+                                            (1e-8, "tangent_dir"),
+                                            (1e-6, "tangent_line_circle"),
+                                            (1e-4, "tangent_line_circle"),
+                                            (1e-2, "tangent_line_circle")])
+def test_the_junction_verdict_does_not_depend_on_where_the_sketch_sits(
+        shift, rel_delta, form):
+    """**A sketch has no origin either.** The twin of the unit sweep above,
+    along the *translation* axis: the same drawing (r = 10) moved away from
+    (0, 0) must give the same verdict, because moving a drawing changes no
+    length in it.
+
+    It did not. `_configuration_scale` was `max(|x|, |y|)` over the
+    coordinates — a *position*, not a length — so the manifold gate
+    `JUNCTION_MANIFOLD_TOL * scale` grew with the distance from the origin:
+    2.0e-06 at shift 0, 1.0e-03 at 1e4. Inside that band `_junction_probe`
+    took its fast path, trusted a seed that is **not** on the other rows'
+    manifold, and read the criterion at a configuration the user never gets —
+    exactly what 0144 deleted the projection to prevent. Measured at
+    d = 1e-4, shift 1e4: `tangent_dir`, `ok: true`, rank 3/3, no warning, and
+    a true tangency error of +1.0e-03 mm.
+    """
+    r = 10.0
+    spec = {
+        "points": [{"name": "c", "x": shift, "y": shift, "fixed": True},
+                   {"name": "p", "x": shift + r, "y": shift},
+                   {"name": "q", "x": shift + r, "y": shift + 20.0}],
+        "circles": [{"name": "C", "center": "c", "r": r}],
+        "lines": [{"name": "L", "p1": "p", "p2": "q"}],
+        "constraints": [
+            {"type": "distance", "p": "p", "q": "c", "d": r * (1 + rel_delta)},
+            {"type": "radius", "c": "C", "r": r},
+            {"type": "tangent", "a": "L", "b": "C"}],
+    }
+    kinds = [k for k in (r.kind for r in parse_sketch(spec).residuals)
+             if k.startswith("tangent")]
+    assert kinds == [form], (shift, rel_delta, kinds)
 
 
 def test_a_curve_with_no_size_holds_nothing_on_it():
