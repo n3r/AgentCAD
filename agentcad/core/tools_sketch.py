@@ -3,13 +3,137 @@
 Wraps the first-party scipy solver (agentcad.toolkit.sketch) so agents can
 solve a constrained sketch to exact coordinates, then feed those into a normal
 build123d BuildLine/BuildSketch in a part script.
+
+**`over_constrained` is not an error; unsatisfiable is.** A redundant but
+consistent constraint set solves fine and comes back `ok: true` with
+`diagnostics.redundant` listing what was ignored — every incumbent sketcher
+tells you about a duplicate and carries on. Only a non-empty
+`diagnostics.conflicting` (equivalently `max_residual > 1e-7`) raises, and it
+raises with the whole diagnostics block attached so an agent can act on it.
 """
 
 from __future__ import annotations
 
 from ..toolkit.sketch import SketchError, solve_sketch
 from .model import ValidationError
+from .sketch_emit import EmitError
+from .sketch_emit import emit as emit_code
 from .tools import Tool, schema
+
+FACE_INDEX_CAVEAT = (
+    "Face indices are mesh-order ordinals; a parameter change that alters the "
+    "part's topology can renumber them. Re-pick the face if the rebuild moves."
+)
+
+# The face properties that identify it across a rebuild. Both come back from
+# `sketch_plane` already; recording them is what turns the caveat above from a
+# warning into a *check*.
+FACE_ID_KEYS = ("area_mm2", "normal", "origin")
+
+# How far a face's area may move before the ordinal is reported as pointing
+# somewhere else. A renumber changes it by orders of magnitude — measured on
+# the prototyping enclosure, `corner_r: 6.0` turns ordinal 37 from a 5989 mm^2
+# base plate into a 51 mm^2 sliver, a 99% drop — while an ordinary resize
+# (`wall`, `length`) moves it a few percent and must not raise an alarm. The
+# threshold sits between the two, and **both numbers are in the payload**, so a
+# caller never has to trust it: the verdict is a summary of a measurement it
+# also reports.
+FACE_MOVED_AREA_REL = 0.25
+
+# Two unit normals this far apart in any component are not the same direction.
+# `Plane(face)` is measured bit-identical across rebuilds, so this is slack.
+FACE_NORMAL_TOL = 1e-6
+
+
+def face_id(info: dict) -> dict:
+    """The identity of the face `sketch_plane` just measured."""
+    return {key: info[key] for key in FACE_ID_KEYS}
+
+
+def face_check(info: dict, expect: dict | None) -> dict:
+    """Is the face at this ordinal still the face the sketch was taken on?
+
+    `unchecked` when the caller recorded nothing (every sketch saved before
+    the identity was recorded), `ok` when the area and the normal still match,
+    `moved` otherwise — with both measurements, because "the ordinal moved" is
+    a claim a user has to be able to see for themselves. Never repaired: which
+    face the user meant is not something this can know (the PRD-008 rule).
+    """
+    if not isinstance(expect, dict) or not expect:
+        return {"status": "unchecked", "message":
+                "no recorded face identity to compare against; " +
+                FACE_INDEX_CAVEAT}
+    actual = face_id(info)
+    want_area = expect.get("area_mm2")
+    want_normal = expect.get("normal") or []
+    turned = (len(want_normal) != 3
+              or any(abs(float(a) - float(b)) > FACE_NORMAL_TOL
+                     for a, b in zip(actual["normal"], want_normal)))
+    resized = (not isinstance(want_area, (int, float)) or want_area <= 0.0
+               or abs(actual["area_mm2"] - want_area) / want_area
+               > FACE_MOVED_AREA_REL)
+    if not turned and not resized:
+        return {"status": "ok", "expected": expect, "actual": actual,
+                "message": (f"face {info['face_index']} is still the face "
+                            "this sketch was taken on")}
+    why = []
+    if turned:
+        why.append(f"its normal is {actual['normal']} and was {want_normal}")
+    if resized:
+        why.append(f"its area is {actual['area_mm2']:.4g} mm^2 and was "
+                   f"{float(want_area):.4g} mm^2")
+    return {
+        "status": "moved", "expected": expect, "actual": actual,
+        "message": (
+            f"face {info['face_index']} is not the face this sketch was taken "
+            f"on: {'; '.join(why)}. Face indices are mesh-order ordinals and a "
+            "topology change renumbers them, so re-pick the face — the sketch "
+            "is left exactly as it was, because which face you meant is not "
+            "something this can guess."),
+    }
+
+
+def reference_entities(refs: list[dict]) -> dict:
+    """Projected boundary edges, in `solve_sketch`'s entity shape.
+
+    **Fixed and construction-marked, both deliberately.** Fixed means a
+    reference contributes zero parameters: it adds no DOF, cannot be dragged,
+    and can never turn up in a conflict report as something the user could
+    change (design Decision 12). Construction means it constrains but is not
+    emitted as geometry — a projected edge belongs to the part, not to the new
+    profile, and emitting it would duplicate the face's own boundary.
+
+    Names are flat (`ref0`, `ref0_a`): a dot is the solver's namespace for
+    virtual handles, and an entity may not contain one.
+
+    A `kind: "other"` reference (anything that is not a line or a circle) is
+    **skipped**: it has no exact entity in the solver's vocabulary, and a
+    polyline the user could constrain to is not the curve they can see.
+    """
+    points, lines, circles, arcs = [], [], [], []
+    for ref in refs:
+        name = ref["name"]
+        if ref["kind"] == "line":
+            points.append({"name": f"{name}_a", "x": ref["p1"][0],
+                           "y": ref["p1"][1], "fixed": True})
+            points.append({"name": f"{name}_b", "x": ref["p2"][0],
+                           "y": ref["p2"][1], "fixed": True})
+            lines.append({"name": name, "p1": f"{name}_a", "p2": f"{name}_b",
+                          "construction": True})
+        elif ref["kind"] in ("circle", "arc"):
+            points.append({"name": f"{name}_c", "x": ref["center"][0],
+                           "y": ref["center"][1], "fixed": True})
+            if ref["kind"] == "circle":
+                circles.append({"name": name, "center": f"{name}_c",
+                                "r": ref["r"], "fixed_r": True,
+                                "construction": True})
+            else:
+                arcs.append({"name": name, "center": f"{name}_c",
+                             "r": ref["r"], "start_deg": ref["start_deg"],
+                             "end_deg": ref["end_deg"], "fixed": True,
+                             "construction": True})
+    return {"points": points, "lines": lines, "circles": circles, "arcs": arcs}
+
 
 _USAGE = (
     "Provide rough starting coordinates in the shape you want — the solver "
@@ -17,45 +141,373 @@ _USAGE = (
     "mirrored result. Constraint types: fixed, coincident, distance, "
     "distance_x, distance_y, horizontal, vertical, parallel, perpendicular, "
     "angle, point_on_line, point_on_circle, radius, equal_radius, midpoint, "
-    "tangent_line_circle, tangent_circles."
+    "tangent_line_circle, tangent_circles, tangent, symmetric, equal_length, "
+    "concentric."
+)
+
+_ARCS = (
+    "Arcs are authored either centre-form ({name, center: <point>, r, "
+    "start_deg, end_deg, fixed_r?}) or 3-point ({name, start: [x,y], mid: "
+    "[x,y], end: [x,y]}, compiled to the centre form at ingestion). Angles "
+    "are **degrees, counter-clockwise**, and an arc adds exactly three "
+    "parameters — r, start, end — plus the two its centre point costs. Its "
+    "endpoints are the **virtual handles** `<name>.start` and `<name>.end`: "
+    "write them anywhere a point name goes (`{type: coincident, p: "
+    "\"arc1.end\", q: \"p3\"}`) and the whole point vocabulary applies to "
+    "them for free. `radius`, `equal_radius`, `point_on_circle` and both v1 "
+    "tangency types accept an arc wherever they accept a circle. Entity names "
+    "may not contain a '.' — that namespace belongs to handles and compiled "
+    "sub-entities. Reported angles are normalized so start is in [0, 360) and "
+    "end carries the full signed sweep."
+)
+
+_NEW_CONSTRAINTS = (
+    "`tangent {a, b, at?, kind?}` is one constraint dispatched on what a and b "
+    "are: line+circle/arc (1 row, or 3 when `at` names the tangency point), or "
+    "curve+curve (1 row, kind external|internal). `symmetric {a, b, about}` "
+    "mirrors two points — or two lines, endpoint-for-endpoint in declaration "
+    "order — about a line, in **two rows**: the midpoint lies on the axis and "
+    "the pair is perpendicular to it. `equal_length {l1, l2}` and `concentric "
+    "{a, b}` (2 rows, centre coincidence) complete the set. The v1 names "
+    "`tangent_line_circle` and `tangent_circles` keep working unchanged — "
+    "`tangent` is a new front door, not a rename. When the two curves already "
+    "meet at a point — the line is built on `arc1.end`, or a `coincident` ties "
+    "a junction point to it — tangency compiles to a **direction** residual "
+    "(the two tangents are parallel there) instead of a distance one, still 1 "
+    "row: the distance form is second-order flat at a junction and reports "
+    "itself as redundant (measured singular value 1.8e-16 against a 8.5e-9 "
+    "rank tolerance) while doing real work. At such a junction `kind` has no "
+    "meaning — the coincidence has already chosen where the curves touch — so "
+    "it is accepted and unused."
+)
+
+_ELLIPSES = (
+    "An **ellipse** is {name, center: <point>, a, b, rotation?} — a full "
+    "ellipse — or the same plus {start_deg, end_deg} for an elliptical arc. It "
+    "costs 3 parameters (a, b, rotation) plus 2 when bounded. Angles are the "
+    "**eccentric anomaly** in degrees: the point at t is center + R(rotation) "
+    "(a cos t, b sin t), which is exactly build123d's `EllipticalCenterArc` "
+    "parametrization (measured to 8.9e-16 mm), so the solved angles are the "
+    "emitted ones. Handles: `<name>.center`; `<name>.major` and "
+    "`<name>.minor`, the ends of the two semi-axes, which are ordinary point "
+    "handles — so `distance`, `coincident`, `horizontal` and the rest pin an "
+    "ellipse's size and orientation with no new constraint type; and "
+    "`<name>.start` / `<name>.end` on a bounded arc. The semi-axes are also "
+    "scalar handles `<name>.a` / `<name>.b`, which `radius` and `equal_radius` "
+    "accept (an ellipse has two radii, so you name the one you mean). "
+    "`concentric` accepts an ellipse. `tangent` accepts ellipse+line and "
+    "ellipse+circle/arc: point-to-ellipse distance has no closed form, so it "
+    "carries the tangency point's anomaly as an auxiliary parameter "
+    "(`<name>.tangency`, +1 parameter and +2 rows — still one degree of "
+    "freedom removed) unless the two curves already meet at a pinned "
+    "junction, where the direction residual applies and there is no auxiliary "
+    "parameter at all. **Out of scope, deliberately:** tangency between two "
+    "ellipses (it needs an auxiliary anomaly on each and was not measured), "
+    "on-ellipse point constraints, and parabolas/hyperbolas (a PRD non-goal — "
+    "elliptical arcs cover the CAD-practical conics)."
+)
+
+_DIAGNOSTICS = (
+    "Every result carries a `diagnostics` block: {status: well_constrained|"
+    "under_constrained|over_constrained|did_not_converge, dof, rank, "
+    "n_params, n_residuals, free_entities, redundant, conflicting, "
+    "analysis_ms, analysis_complete}. `dof` is n_params - rank(J), so it is "
+    "never negative; `free_entities` names the entities an under-constrained "
+    "sketch can still move. `redundant` and `conflicting` are *a* dependent "
+    "set, not necessarily the unique culprit: removing any one member "
+    "resolves the dependency, and the member that gets named is chosen by "
+    "declaration order — the later constraint is blamed, on the heuristic "
+    "that it is the one you just added, so a spec submitted in arbitrary "
+    "order gets an arbitrary (but still correct) member. A redundant but "
+    "consistent constraint is not an error; a conflicting one is. When the "
+    "analysis runs out of its time budget, `analysis_complete` is false and "
+    "the two sets are omitted rather than reported as empty."
+)
+
+_INITIAL = (
+    "Optional warm start: {points:{name:{x,y}}, circles:{name:{r}}, "
+    "arcs:{name:{r,start_deg,end_deg}}, slots:{name:{r}}, "
+    "ellipses:{name:{a,b,rotation,start_deg?,end_deg?}}}. It seeds "
+    "the starting coordinates only — it cannot fix a point, override fixed_r "
+    "or introduce an entity — so its job is to **select the solution branch** "
+    "(which side of a mirror pair you land on), not to make the solve faster. "
+    "An unknown entity name is an error; an `initial` that does not cover "
+    "every free entity degrades to a cold start with warm_started: false and "
+    "an `initial_incomplete` warning."
+)
+
+
+_SPLINES_AND_SLOTS = (
+    "A **spline** is an ordered list of named points, degree 3, non-periodic, "
+    "and it owns no parameters: its points are ordinary points, so every "
+    "point constraint works on them. It emits as build123d `Spline`, which "
+    "interpolates them (measured to 7.1e-15 mm, well inside the emission "
+    "tolerance), so the solved coordinates *are* the curve's. Constraints "
+    "apply to the control points and to the **end tangents** (`{type: "
+    "tangent, a: \"sp1.start\", b: \"ln4\"}`, a direction residual against "
+    "the first control-polygon leg); **on-curve point constraints are out of "
+    "scope** — say what you mean with a control point. A **slot** {name, c1, "
+    "c2, width} compiles at ingestion into two arcs and two lines with **one "
+    "shared radius** and structural junctions, so it contributes exactly five "
+    "rows: radius = width/2 and four tangencies. Its sub-entities are named "
+    "`<name>.arc_a`, `<name>.arc_b`, `<name>.side_1`, `<name>.side_2`; you "
+    "may reference them in constraints but not declare them, and a diagnostic "
+    "reports the slot with `origin: \"slot:<name>\"` and `index: null` "
+    "rather than blaming a constraint you did not write. `initial` seeds a "
+    "slot by its radius alone (`slots: {name: {r}}`) — the caps' angles are "
+    "re-derived from the seeded centres."
+)
+
+
+_DRAG = (
+    "Optional drag frame: {point, x, y, weight?} pulls `point` (any point "
+    "name or virtual handle) toward the cursor. It is an **objective, not a "
+    "constraint** — excluded from `ok`, `max_residual`, `n_residuals`, `rank`, "
+    "`dof` and `diagnostics`, all of which describe the constraint rows alone; "
+    "the pull's own slack is reported as `drag.gap`. Default weight 0.05, "
+    "measured. Send it with `initial` seeded from the **previous frame's "
+    "solution**, never from the cursor: seeding the dragged point at the "
+    "cursor is what causes a mirror-branch flip when the cursor crosses the "
+    "boundary, and the weak pull is what prevents one. Dragging a "
+    "fully-constrained entity moves it (almost) not at all — that is correct, "
+    "and the old behaviour that looked responsive was it teleporting to "
+    "another solution."
+)
+
+_DIAGNOSTICS_MODE = (
+    "Optional: 'auto' (default) computes the diagnostics block, except on a "
+    "drag frame, where the constraint set cannot have changed and the cached "
+    "block is served; 'full' always recomputes; 'cached' prefers the cache. "
+    "The cache is keyed on the compiled residual structure and the constraint "
+    "targets, so any constraint edit invalidates it. `diagnostics_source` in "
+    "the result says which you got — a cached block reports the "
+    "`analysis_ms` of the solve that produced it."
+)
+
+_EMIT = (
+    "Optional: also return idiomatic build123d source for the solved sketch, "
+    "as `emit: {code, warnings, style}`. `\"function\"` wraps it in a "
+    "`sketch_profile()` you call from `build(p)`; `\"buildline\"` is the bare "
+    "`with BuildSketch(...)` block. Omit it (or send null/false) to skip "
+    "emission. The GUI and agents share **this** emitter, so the same spec "
+    "produces byte-identical code either way. Curves are anchored on their "
+    "shared solved endpoints at 9 decimals behind a 1e-8 mm closure gate: "
+    "measured, a centre-parametrized arc chain at 6 decimals leaves a 7.58e-7 "
+    "mm gap and `make_face()` refuses it, so an emission that would not "
+    "rebuild is a validation_error naming the junction rather than code you "
+    "find out about later."
+)
+
+
+_PERSIST = (
+    "Optional: also write the **round-trip block** (FR10) around the emitted "
+    "code, named by this string (a Python identifier — it becomes "
+    "`def sketch_<name>()`). The block is a `push_pull`-style marker, an "
+    "`# agentcad-sketch-spec:` line carrying this whole spec as JSON, an "
+    "`# agentcad-sketch-hash:` line over the code, and an end marker — in the "
+    "script, because the part script is the only artifact this project keeps, "
+    "and a script-resident block gets branching, restore, undo, merge and the "
+    "proposal diff for free. Reopening reads it back: the GUI does, and so can "
+    "you (`agentcad.core.sketch_emit.parse_blocks` is the reference reader). "
+    "**The code is the source of truth for geometry; the spec block is "
+    "provenance** — if the hash no longer matches, the code was hand-edited "
+    "and the block reports `diverged` rather than being repaired or silently "
+    "overwritten; an unreadable spec reports `unverified`, never 'no sketch'. "
+    "Pick a name no block in the target script already uses: two blocks of one "
+    "name define the same function twice and the second silently wins."
+)
+
+_PLANE = (
+    "Optional: the plane this sketch lives on, as returned by `sketch_plane` "
+    "({origin, x_dir, y_dir, normal, face_index, part}). The solver is 2D and "
+    "ignores it; **emission does not** — it writes `BuildSketch(Plane(origin=" 
+    "..., x_dir=..., z_dir=...))` instead of `Plane.XY`, with the face "
+    "reference and its caveat as comments above the block. Sketch-on-face "
+    "coordinates are meaningless without the basis they were solved in, so "
+    "the basis goes in the script."
+)
+
+_EXPECT = (
+    "Optional: the `face_id` a previous `sketch_plane` returned for this "
+    "sketch ({area_mm2, normal, origin}). Face indices are mesh-order ordinals "
+    "and a topology-changing parameter edit renumbers them, so reopening a "
+    "saved sketch-on-face can land on a different face with the same number — "
+    "measured: `corner_r: 6.0` turns the prototyping enclosure's face 37 from "
+    "a 5989 mm^2 base plate into a 51 mm^2 sliver. Pass it and `face_check` "
+    "comes back `ok` or `moved` **with both measurements**; omit it and "
+    "`face_check` is `unchecked`, which is what every sketch saved before this "
+    "existed gets. Nothing is ever repaired: which face you meant is not "
+    "something this can guess."
+)
+
+_SKETCH_PLANE = (
+    "Return the sketch plane of a planar B-rep face of a script part, plus "
+    "that face's own boundary edges expressed **in the plane's 2D "
+    "coordinates** — the external geometry a sketch on that face references. "
+    "`face_info` reports a normal and a centre, which is a plane but not a "
+    "basis; without a deterministic in-plane X axis every emitted coordinate "
+    "is arbitrary, so this returns build123d's `Plane(face)` basis "
+    "(`origin`, `x_dir`, `y_dir`, `normal`). Measured stable: `x_dir` is "
+    "bit-identical across rebuilds, across a fresh worker process, and across "
+    "parameter changes that do not renumber the faces. `refs` entries are "
+    "{name, kind: line|arc|circle|other, constrainable, ...}: lines and "
+    "circles come back as themselves; **anything else comes back "
+    "`kind: \"other\"` with a polyline approximation and cannot be "
+    "constrained to** — a documented gap, not a silent one. `entities` is the "
+    "same references already in `solve_sketch`'s entity shape, **fixed and "
+    "construction-marked**: they add no parameters, cannot be dragged, cannot "
+    "appear in a conflict report, and are not emitted as geometry. Face "
+    "indices are mesh-order ordinals and a topology-changing parameter edit "
+    "can renumber them — the emitted script says so inline, and `face_id` "
+    "(`{area_mm2, normal, origin}`) plus the `expect` argument turn that "
+    "caveat into a check: store `face_id` with the sketch and pass it back as "
+    "`expect` on reopen to get `face_check: ok | moved | unchecked`."
 )
 
 
 def register(registry, service) -> None:
-    def solve(entities: dict, constraints: list, initial: dict | None = None) -> dict:
+    def solve(entities: dict, constraints: list, initial: dict | None = None,
+              emit: str | bool | None = None, drag: dict | None = None,
+              diagnostics: str | None = None,
+              plane: dict | None = None,
+              persist: str | bool | None = None) -> dict:
         spec = {
             "points": entities.get("points", []),
             "lines": entities.get("lines", []),
             "circles": entities.get("circles", []),
+            "arcs": entities.get("arcs", []),
+            "ellipses": entities.get("ellipses", []),
+            "splines": entities.get("splines", []),
+            "slots": entities.get("slots", []),
             "constraints": constraints,
+            "initial": initial,
+            "drag": drag,
+            "diagnostics": diagnostics,
+            "plane": plane,
         }
         try:
             result = solve_sketch(spec)
         except SketchError as exc:
             raise ValidationError(str(exc)) from exc
+
+        diag = result["diagnostics"]
+        # `warnings` too: the failure paths below raise instead of returning
+        # the result, and a warning that only survives on the happy path is a
+        # warning nobody sees when it matters most. `tangency_junction_undecided`
+        # is emitted exactly when the sketch also fails to converge (changelog
+        # 0144), so without this it would never reach a caller at all.
+        details = {"diagnostics": diag,
+                   "warnings": result["warnings"],
+                   "max_residual": result["max_residual"],
+                   "dof": result["dof"]}
+        conflicting = diag.get("conflicting") or []
+        if conflicting:
+            named = ", ".join(
+                # `index` is None for a constraint compiled from an entity (a
+                # slot's internal machinery): there is no entry of
+                # `constraints` to point at, so name the origin instead.
+                (f"#{c['index']} {c['type']}" if c.get("index") is not None
+                 else f"{c['type']} compiled from {c['origin']}")
+                + (f" (from {c['origin']})"
+                   if c.get("origin") and c.get("index") is not None else "")
+                for c in conflicting)
+            raise ValidationError(
+                f"sketch is over-constrained and cannot be satisfied (max "
+                f"residual {result['max_residual']:.2e}): {named} conflicts "
+                "with the constraints declared before it. That is *a* "
+                "dependent set, not necessarily the unique culprit — removing "
+                "any one member of it resolves the conflict.",
+                details,
+            )
         if not result["ok"]:
             raise ValidationError(
-                f"sketch did not converge (max residual {result['max_residual']:.2e}; "
-                f"dof {result['dof']}); check for over/under-constraint or a bad "
-                f"initial guess. {_USAGE}",
-                {"max_residual": result["max_residual"], "dof": result["dof"]},
+                f"sketch did not converge (max residual "
+                f"{result['max_residual']:.2e}; dof {result['dof']}). No "
+                "dependent constraint set was found, so this is a solver "
+                "failure rather than a contradiction between two constraints: "
+                f"check the starting coordinates and the targets. {_USAGE}",
+                details,
             )
+        if emit:
+            # After the conflict/convergence gates: emitting code for a sketch
+            # that did not solve would be emitting the wrong geometry.
+            try:
+                result["emit"] = emit_code(
+                    result, spec, style="function" if emit is True else emit,
+                    persist=persist)
+            except EmitError as exc:
+                raise ValidationError(str(exc), details) from exc
         return result
 
     registry.register(Tool(
         "solve_sketch",
         "Solve a 2D constrained sketch to exact coordinates you can feed into "
-        "build123d BuildLine/BuildSketch. " + _USAGE,
+        "build123d BuildLine/BuildSketch. " + _USAGE + " " + _ARCS + " "
+        + _ELLIPSES + " " + _SPLINES_AND_SLOTS + " " + _NEW_CONSTRAINTS
+        + " " + _DIAGNOSTICS
+        + " " + _DRAG + " " + _DIAGNOSTICS_MODE + " " + _EMIT + " " + _PERSIST
+        + " " + _PLANE,
         schema(
             {
                 "entities": {"type": "object", "description":
                              "{points:[{name,x,y,fixed?}], lines:[{name,p1,p2}], "
-                             "circles:[{name,center,r,fixed_r?}]}"},
+                             "circles:[{name,center,r,fixed_r?}], "
+                             "arcs:[{name,center,r,start_deg,end_deg,fixed_r?}], "
+                             "ellipses:[{name,center,a,b,rotation?,"
+                             "start_deg?,end_deg?}], "
+                             "splines:[{name,points:[<point names>]}], "
+                             "slots:[{name,c1,c2,width}]}"
+                             + " " + _ARCS + " " + _ELLIPSES + " "
+                             + _SPLINES_AND_SLOTS},
                 "constraints": {"type": "array", "description":
                                 "[{type, ...kwargs}] — see tool description"},
-                "initial": {"type": "object", "description": "unused; reserved"},
+                "initial": {"type": "object", "description": _INITIAL},
+                "drag": {"type": "object", "description": _DRAG},
+                "diagnostics": {"type": "string",
+                                "description": _DIAGNOSTICS_MODE},
+                "emit": {"type": "string", "description": _EMIT},
+                "persist": {"type": "string", "description": _PERSIST},
+                "plane": {"type": "object", "description": _PLANE},
             },
             ["entities", "constraints"],
         ),
         solve,
     ))
+
+    def sketch_plane(project: str, part_id: str, face_index: int,
+                     expect: dict | None = None) -> dict:
+        record = service.store.get_part(project, part_id)
+        if record.kind != "script":
+            raise ValidationError(
+                "sketch-on-face works on script parts only (an imported "
+                "reference has no script to emit into)")
+        script = service.store.read_script(project, part_id)
+        info = service.kernel.request(
+            "sketch_plane",
+            {"script": script, "params": record.params,
+             "face_index": int(face_index)},
+            timeout_s=300.0,          # may rebuild the shape from scratch
+        )
+        return {
+            "project": project, "part_id": part_id,
+            **info,
+            "entities": reference_entities(info["refs"]),
+            "caveat": FACE_INDEX_CAVEAT,
+            # Record it with the sketch and send it back on reopen: that is
+            # what turns the caveat into a check instead of a warning nobody
+            # can act on.
+            "face_id": face_id(info),
+            "face_check": face_check(info, expect),
+        }
+
+    registry.register(Tool("sketch_plane", _SKETCH_PLANE, schema(
+        {
+            "project": {"type": "string", "description": "Project name"},
+            "part_id": {"type": "string", "description": "Part id"},
+            "face_index": {"type": "integer",
+                           "description": "Mesh-order B-rep face index "
+                                          "(must be planar)"},
+            "expect": {"type": "object", "description": _EXPECT},
+        },
+        ["project", "part_id", "face_index"],
+    ), sketch_plane))

@@ -139,9 +139,8 @@ that must stay portable should not import them).
 CONSTRAINT SKETCH SOLVER  (agentcad.toolkit.sketch; tool: solve_sketch)
 ----------------------------------------------------------------------
 A first-party 2D constraint solver (scipy least-squares, ms-scale, machine
-precision). Use it to COMPUTE exact coordinates from geometric constraints,
-then draw the result with ordinary build123d lines/arcs -- it does not emit
-geometry itself. JSON front-end:
+precision). Use it to COMPUTE exact coordinates from geometric constraints;
+it can also EMIT the build123d source for the solved profile. JSON front-end:
 
     from agentcad.toolkit.sketch import solve_sketch
     r = solve_sketch({
@@ -155,18 +154,41 @@ geometry itself. JSON front-end:
             {"type": "radius", "c": "c", "r": 5},
         ],
     })
-    # r -> {"ok", "max_residual", "dof", "n_residuals",
+    # r -> {"ok", "max_residual", "rank", "dof", "n_residuals", "diagnostics",
     #       "points": {"b": {"x": .., "y": ..}}, "circles": {"c": {"cx","cy","r"}}}
+
+Entities: points, lines, circles,
+  arcs     {name, center, r, start_deg, end_deg} or {name, start, mid, end}
+  ellipses {name, center, a, b, rotation} (+ start_deg/end_deg = elliptical arc)
+  splines  {name, points: [<point names>]}          (degree 3, through-points)
+  slots    {name, c1, c2, width}                    (compiled: 2 arcs + 2 lines)
+Any entity may carry "construction": True -- it constrains but never emits.
+VIRTUAL HANDLES cost nothing and take the whole point vocabulary: <arc>.start,
+<arc>.end, <ellipse>.center/.major/.minor/.start/.end, <spline>.start/.end,
+<slot>.arc_a/.side_1..., plus the scalar handles <ellipse>.a / <ellipse>.b for
+radius/equal_radius (an ellipse has two radii; name the one you mean).
 
 Constraint types: fixed, coincident, distance, distance_x, distance_y,
 horizontal, vertical, parallel, perpendicular, angle(l1,l2,deg),
 point_on_line, point_on_circle, radius, equal_radius, midpoint,
-tangent_line_circle(ln,c,at=None), tangent_circles(c1,c2,kind="external").
+tangent_line_circle(ln,c,at=None), tangent_circles(c1,c2,kind="external"),
+tangent(a,b,at?,kind?), symmetric(a,b,about), equal_length(l1,l2),
+concentric(a,b).
 Reading the result: ok=False or a large max_residual means the system is
-unsatisfiable/over-constrained; dof>0 means UNDER-constrained (the answer is
-not unique). Give points a good initial (x,y) -- tangent/mirror problems have
-several valid branches and the solver walks to the nearest one. An object API
-exists too: sk = sketch.Sketch(); sk.point(...); sk.distance(...); sk.solve().
+unsatisfiable; "diagnostics" carries status/dof/rank/free_entities and, when
+over-constrained, redundant/conflicting naming the dependent constraints by
+their index (a redundant-but-consistent one is NOT an error; a conflicting one
+raises). dof = n_params - rank(J) and is never negative; dof>0 means
+UNDER-constrained (the answer is not unique). Give points a good initial (x,y),
+or pass "initial" -- it selects the solution BRANCH (tangent/mirror problems
+have several), it is not the speed knob.
+Emission: "emit": "function"|"buildline" returns {code, warnings} -- the same
+emitter the GUI uses, at 9 decimals behind a 1e-8 mm closure gate. Add
+"persist": "<name>" and the code is wrapped in a round-trip block carrying the
+spec and a hash, so the sketch can be reopened; "plane": {origin, x_dir,
+normal, ...} from the sketch_plane tool emits onto a picked face's plane.
+An object API exists too: sk = sketch.Sketch(); sk.point(...); sk.distance(...);
+sk.solve().
 
 THREADS & FASTENERS  (from agentcad.toolkit import threads; needs bd_warehouse)
 ------------------------------------------------------------------------------

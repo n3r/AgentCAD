@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 70 tools (73 with the
+Agents drive AgentCAD through a single tool surface — 71 tools (74 with the
 `[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -754,12 +754,104 @@ authentication or access control. That is honest for a single-node,
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `solve_sketch` | **entities, constraints** | Solve a 2D constrained sketch to exact coordinates you can feed into a build123d `BuildLine`/`BuildSketch`. `entities = {points:[{name,x,y,fixed?}], lines:[{name,p1,p2}], circles:[{name,center,r,fixed_r?}]}`; `constraints = [{type, …}]`. Returns `{ok, points, circles, dof, max_residual, …}`; a sketch that does not converge comes back as a validation error (the solver homes to the *nearest* solution, so a mirrored initial guess yields a mirrored result). |
+| `solve_sketch` | **entities, constraints**, initial, drag, diagnostics, emit, persist, plane | Solve a 2D constrained sketch to exact coordinates you can feed into a build123d `BuildLine`/`BuildSketch`. `entities = {points:[{name,x,y,fixed?}], lines:[{name,p1,p2}], circles:[{name,center,r,fixed_r?}], arcs:[{name,center,r,start_deg,end_deg,fixed_r?}] (radii must be positive), ellipses:[{name,center,a,b,rotation?,start_deg?,end_deg?}], splines:[{name,points}], slots:[{name,c1,c2,width}]}`; `constraints = [{type, …}]`; `initial = {points:{name:{x,y}}, circles:{name:{r}}, arcs:{name:{r,start_deg,end_deg}}}` seeds the starting coordinates to pick the solution *branch* (unknown name → validation error; incomplete → cold start with `warm_started:false` and an `initial_incomplete` warning). Returns `{ok, points, circles, arcs, splines, slots, dof, rank, max_residual, diagnostics, warnings, warm_started, …}` (each arc reporting `cx, cy, r, start_deg, end_deg, start, end, authored`, with `start_deg` normalized to [0, 360) and `end_deg` carrying the full signed sweep). `diagnostics = {status, dof, rank, free_entities, redundant, conflicting, analysis_complete, …}` — `dof` is `n_params − rank(J)`, so it is never negative, and `redundant`/`conflicting` are *a* dependent set (declaration order picks the member, so the later constraint is blamed), not the unique culprit. A redundant-but-consistent constraint is **not** an error; a non-empty `conflicting` set is, and it raises a validation error carrying `details.diagnostics`, as does a sketch that does not converge (the solver homes to the *nearest* solution, so a mirrored initial guess yields a mirrored result). `drag = {point, x, y, weight?}` is a **weighted soft objective, not a constraint**: it pulls a point (or a virtual handle) toward the cursor and is excluded from `ok`, `max_residual`, `n_residuals`, `rank`, `dof` and `diagnostics`, reporting its own slack as `drag.gap`. Seed it with `initial` from the **previous frame's solution** — seeding the dragged point at the cursor is what *causes* a mirror-branch flip. `diagnostics = "auto"|"full"|"cached"` controls the diagnostics cache (keyed on the compiled residual structure and the constraint targets; `auto` reuses the cached block on a drag frame, since a drag changes no constraints). The cache holds the **dependent-row set**, not the verdict: the rank is recomputed every frame and the cached set is used only if it matches, so `status`, `dof`, `free_entities` and the blame sets always describe the sketch you sent. `diagnostics_source` says whether that set was `computed` or `cached`. `emit = "function"|"buildline"` additionally returns `emit = {code, warnings, style}`: idiomatic build123d from the **one** emitter the GUI and agents share, with shared vertex literals at 9 decimals, endpoint-anchored arcs, and a 1e-8 mm closure gate that turns an emission which would not rebuild into a validation error naming the junction. `persist = "<name>"` additionally wraps that code in the **round-trip block** (FR10) — a marker, an `# agentcad-sketch-spec:` line carrying this spec as JSON (plus an `initial` taken from the **solution**, so reopening lands on the branch the code was emitted from), an `# agentcad-sketch-hash:` line over **the spec line and the code together**, and an end marker — so the sketch can be reopened and re-solved from the script it was written into. `status: "ok"` from `sketch_blocks` therefore means *this spec produced this code*: editing either one is `diverged`. A spec that is missing, of another version (the current one is 2) or not shaped like a sketch spec is `unverified` — "we cannot tell", never "there is no sketch". The name becomes `def sketch_<name>()`, so pick one no block in that script already uses. |
+| `sketch_plane` | **project, part_id, face_index**, expect | The sketch plane of a planar B-rep face, plus that face's own boundary edges in the plane's 2D coordinates. Returns `{origin, x_dir, y_dir, normal, refs, ref_kinds, entities, caveat, n_faces, face_id, face_check}`. `face_id` is `{area_mm2, normal, origin}` — the face's identity; store it with the sketch and pass it back as `expect` when you reopen, and `face_check` comes back `ok`, `moved` (**with both measurements**) or `unchecked`. A topology-changing parameter edit renumbers the ordinals — measured: `corner_r: 6.0` turns the prototyping enclosure's face 37 from a 5989 mm² base plate into a 51 mm² sliver — and a `moved` verdict is surfaced, never repaired. `face_info` gives a normal and a centre — a plane but not a basis, and without a deterministic in-plane X axis every emitted coordinate is arbitrary; `x_dir` comes from build123d's `Plane(face)` and is measured stable across rebuilds, across a fresh worker and across parameter changes that do not renumber the faces. `refs` are `{name, kind: line|arc|circle|other, constrainable, …}`: **anything that is not a line or a circle comes back `other` with a polyline approximation and cannot be constrained to** — a documented gap, not a silent one. `entities` is the same references in `solve_sketch`'s entity shape, fixed and construction-marked: zero parameters, undraggable, never in a conflict report, never emitted. Face indices are mesh-order ordinals and a topology-changing parameter edit can renumber them; the emitted script says so inline. |
 
 Constraint types: `fixed, coincident, distance, distance_x, distance_y,
 horizontal, vertical, parallel, perpendicular, angle, point_on_line,
 point_on_circle, radius, equal_radius, midpoint, tangent_line_circle,
-tangent_circles`.
+tangent_circles, tangent, symmetric, equal_length, concentric`.
+
+**Tangency at a junction is a *direction* residual.** When the sketch already
+holds a point on **both** curves — the line is built on `arc1.end`, a
+`coincident` ties a junction point to it, or a `point_on_circle`,
+`point_on_line`, `midpoint` or a `tangent`'s own `at` does — `tangent` compiles
+to "the two tangents are parallel" instead of to a distance. The distance form
+sits at an extremum of the manifold the pinning rows cut out, so its gradient
+falls into their span: it reports itself as redundant while doing real work
+(measured singular value 1.8e-16 against a 8.5e-9 rank tolerance), and
+`max_residual` measures the *square* of the geometric error rather than the
+error (measured 1.76e-10 reported on a sketch 7.9e-05 mm off tangency). You do
+not ask for this — the compiler reads it off the constraint graph — but you can
+rely on it: a tangency you wrote is never blamed for a redundancy it does not
+have, and `max_residual` stays proportional to the geometric error. At such a
+junction `kind` has no meaning and is unused.
+
+**Ellipses** (`"ellipses": [{name, center, a, b, rotation?, start_deg?,
+end_deg?}]`) cost 3 parameters (plus 2 when bounded by both angles). Angles are
+the **eccentric anomaly**, matching build123d's `EllipticalCenterArc` (measured
+to 8.9e-16 mm). Handles: `<name>.center`, `<name>.major`/`<name>.minor` (the
+semi-axis ends — ordinary point handles, so `distance`, `coincident` and
+`horizontal` pin an ellipse's size and orientation), `<name>.start`/`.end` when
+bounded, and the scalar handles `<name>.a`/`<name>.b` that `radius` and
+`equal_radius` take. `tangent` accepts ellipse+line and ellipse+circle/arc: with
+no closed form for point-to-ellipse distance it carries the tangency point's
+anomaly as an auxiliary parameter (+1 parameter, +2 rows — still one degree of
+freedom removed), unless the curves already meet at a pinned junction, where the
+direction residual applies. Ellipse-to-ellipse tangency, on-ellipse point
+constraints and parabolas/hyperbolas are out of scope.
+
+**Construction geometry** (`"construction": true` on **any** entity kind —
+line, circle, arc, ellipse, spline or slot) constrains but is never emitted, in
+any form: a construction slot emits neither its `SlotCenterToCenter` face nor
+its compiled `<name>.arc_a` / `<name>.side_1` primitives. Every projected reference from `sketch_plane` arrives that
+way, and fixed (`"fixed": true` on an arc pins its angles as well as its
+radius, so a reference costs **zero** parameters).
+
+**Round-trip persistence** (`persist`, FR10). The block goes in the script,
+not in a sidecar: the part script is the only artifact this project keeps, so
+a script-resident block gets branching, restore, undo, merge and the proposal
+diff for free. Read it back with
+`agentcad.core.sketch_emit.parse_blocks(script)` (or `POST
+/api/sketch/blocks`, which the GUI uses), which returns one
+`{name, status, spec, code, hash, computed_hash, start_line, end_line,
+message}` per block. **The code is the source of truth for geometry; the spec
+block is provenance** — a hash that no longer matches the code is reported as
+`diverged` and never repaired, and a spec that will not parse (or a block with
+no hash, or one with no end marker) is `unverified`, which is "we cannot
+tell", not "there is no sketch". The spec is stored **as submitted**, so
+posting back your solved coordinates reopens on the same solution branch.
+
+**`plane`** (from `sketch_plane`) does not affect the solve — it is 2D — but
+emission writes `BuildSketch(Plane(origin=…, x_dir=…, z_dir=…))` instead of
+`Plane.XY`, with the face reference and its caveat as comments. Sketch-on-face
+coordinates are meaningless without the basis they were solved in. It is
+**caller data, not source**: `face_index` must be an integer ordinal, `part`
+must be an expression naming the part (`build(p)`, `p`, `build(p).part`), and
+the three basis vectors must be three numbers each — anything else is a
+`validation_error` rather than text in your generated script. Carry
+`face_id` through as well (see `sketch_plane`) so a reopened sketch can check
+that the ordinal still points at the same face.
+
+**Splines** (`"splines": [{name, points:[<point names>]}]`) are ordered lists
+of named points, degree 3, non-periodic; the points are ordinary points, so
+every point constraint applies to them, and the emitted build123d `Spline`
+interpolates them (measured to 7.1e-15 mm). Constraints reach the curve only
+through its control points and its **end tangents** (`{"type": "tangent", "a":
+"sp1.start", "b": "ln4"}`); on-curve point constraints are out of scope. A
+pinned end tangent needs `tangents=` at emission — a free-end `Spline` drifts
+up to 44.6 deg from the control-polygon leg — and the result reports
+`splines[name]["end_tangent"]` and the solved directions to say so.
+
+**Slots** (`"slots": [{name, c1, c2, width}]`) compile at ingestion into
+`<name>.arc_a`, `<name>.arc_b`, `<name>.side_1`, `<name>.side_2` with **one
+shared radius** and structural junctions, contributing five rows in total
+(`radius = width/2` plus four tangencies). Sub-entities may be referenced in
+constraints but not declared; a diagnostic reports the slot with `origin:
+"slot:<name>"` and `index: null` rather than a constraint you did not write.
+
+**Arcs** (`"arcs": [{name, center, r, start_deg, end_deg, fixed_r?}]`, or the
+3-point form `{name, start:[x,y], mid:[x,y], end:[x,y]}`) add three parameters
+each — radius and the two angles, counter-clockwise degrees — and expose their
+endpoints as the **virtual handles** `<name>.start` / `<name>.end`, which can
+be written wherever a point name is accepted, so `{"type": "coincident", "p":
+"arc1.end", "q": "p3"}` closes a chain with no extra entities. `radius`,
+`equal_radius`, `point_on_circle` and both tangency constraints accept an arc
+wherever they accept a circle. Entity names may not contain a `.` — that
+namespace belongs to handles and compiled sub-entities. `tangent {a, b, at?,
+kind?}` dispatches on what `a` and `b` are (line+circle/arc, or curve+curve);
+`symmetric {a, b, about}` mirrors two points or two lines about a line in two
+rows (midpoint on the axis **and** perpendicular to it).
 
 ### FEM — present only with the `[fem]` extra
 

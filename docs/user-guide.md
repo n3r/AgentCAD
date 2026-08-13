@@ -378,16 +378,58 @@ only if the optional `agentcad[fem]` extra is installed (otherwise the tool
 and its route are absent).
 
 **Sketching & push/pull.** The ✏️ Sketch button (part mode) opens a 2D
-sketch editor over the viewport: draw points, lines, and circles, apply
-constraints (distance, horizontal/vertical, parallel/perpendicular, radius,
-coincident, fix), and watch the constraint solver keep the sketch consistent
-live — the status line shows solved/DOF state. "Insert into script" appends a
-`sketch_profile()` build123d function to the code editor; call it from
-`build(p)` and save. Clicking a face of a part highlights it and opens a
-small face card (area, normal) with a push/pull distance — applying it
-records the edit *in the script* as a visible, editable `push_face(...)`
-wrapper, so direct manipulation never bypasses the code. Alt+click clears
-the selection.
+sketch editor over the viewport. Draw **points, lines, circles, arcs** (centre,
+3-point, or tangent to the chain you are drawing), **ellipses, splines and
+slots**; apply constraints (distance, horizontal/vertical,
+parallel/perpendicular, radius, coincident, fix, **tangent, symmetric, equal,
+concentric**), and watch the constraint solver keep the sketch consistent live.
+
+- **The DOF chip** (top right of the toolbar) reads `fully constrained`,
+  `3 DOF`, `over-constrained (n)` (amber — redundant but consistent, which is
+  not an error) or `conflicting (n)` (red). Click it to highlight what it
+  names: the entities that can still move, or every member of the dependent
+  set. The tooltip says plainly that the reported set is *a* dependent set,
+  not necessarily the unique culprit — the later constraint is the one blamed.
+- **Drag to solve.** With the Select tool, drag any point, arc handle or
+  centre: the sketch re-solves every frame, warm-started from the previous
+  one, so the profile deforms continuously instead of flipping to a mirrored
+  solution. The dragged handle follows the cursor immediately (a ring), and a
+  dotted hairline appears when the constraints are holding the geometry back —
+  dragging a fully constrained sketch *should* move nothing.
+- **Sketch on a face.** Click a planar face and press **Sketch on face**: the
+  sketcher opens in that face's plane with the face's own boundary edges
+  ghosted as reference geometry you can constrain to (they are fixed, so they
+  add no DOF and are never emitted). The inserted code carries the plane's
+  basis and the face reference, with the caveat that face indices can be
+  renumbered by a topology-changing parameter edit — and reopening a saved
+  sketch-on-face **checks** it: if the ordinal now points at a different face
+  (a different area or normal), a toast says so with both measurements. It is
+  never repaired for you, because which face you meant is not guessable.
+- **Insert → script** appends a `sketch_profile()` build123d function to the
+  code editor; call it from `build(p)` and save. The block it writes also
+  carries the sketch's **constraint spec**, so reopening the sketcher on that
+  part loads the sketch back, constraints and all (several blocks in one
+  script are offered as a list). Each insert writes a **new** block —
+  `sketch_profile`, then `sketch_profile2`, … — and the toast names the
+  function it just wrote, because two blocks of one name would define the same
+  function twice. Nothing you wrote is ever removed for you: delete a
+  superseded block yourself when you have pointed `build(p)` at the new one.
+- **A sketch belongs to its part.** Switching to another part (or another
+  project) starts a new sketch: the canvas, the plane and the block it came
+  from are cleared, so Insert can never append one part's profile into
+  another's script. Insert first if you want to keep what you drew.
+- **The divergence banner.** If you hand-edit the emitted code, reopening
+  shows a red banner: the code no longer matches the saved spec. The sketch
+  opens **read-only** — every tool, every constraint button and every
+  constraint chip is disabled — with two explicit choices: *Re-solve from the
+  spec* (edit the constraints again; inserting writes a new block and leaves
+  your edit in place) or *Discard the spec* (keep your code exactly as it is and
+  drop the constraints). Nothing is ever silently overwritten.
+
+Clicking a face of a part also opens a small face card (area, normal) with a
+push/pull distance — applying it records the edit *in the script* as a
+visible, editable `push_face(...)` wrapper, so direct manipulation never
+bypasses the code. Alt+click clears the selection.
 
 **Huge meshes.** Heavy parts (over ~150k triangles) appear almost instantly
 as a coarse preview while the full-resolution mesh streams in behind it;
