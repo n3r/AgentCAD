@@ -75,7 +75,8 @@ def test_tapped_bores_the_tap_drill_and_records_the_thread():
     record = records[0]
     assert warning is None
     assert record["d"] == 4.2                      # the tap drill, not 5.0
-    assert record["tap"] == {"pitch": 0.8, "class": "6H", "drill_mm": 4.2,
+    assert record["tap"] == {"pitch": 0.8, "tpi": None, "class": "6H",
+                             "drill_mm": 4.2, "drill": None,
                              "thread": "M5×0.8", "series": "coarse",
                              "geometry": "none"}
     assert record["designation"] == "M5×0.8 - 6H ↧12"
@@ -354,9 +355,157 @@ def test_the_hole_route_falls_back_to_safe_bool_and_says_so(monkeypatch):
     assert holes.records(out) == records
 
 
+# ------------------------------------------------- counterbore / countersink
+
+def _frustum_volume(r_big: float, r_small: float, h: float) -> float:
+    return math.pi * h / 3.0 * (r_big ** 2 + r_big * r_small + r_small ** 2)
+
+
+def test_counterbore_removes_the_clearance_hole_plus_the_head_pocket():
+    """The through hole is the ISO 273 clearance hole for the fastener; the
+    pocket above it is the head, plus this repo's named clearance rule (the
+    published counterbore charts disagree with each other — changelog 0148)."""
+    from agentcad.toolkit import holes
+
+    plate = _plate(t=20.0)
+    out, records, warning = holes.counterbore(plate, [(0, 0)], "M5")
+    record = records[0]
+    assert warning is None
+    assert record["family"] == "counterbore"
+    assert record["d"] == 5.5                       # ISO 273 medium
+    assert record["cbore"] == {"d": 10.0, "depth": 5.8,
+                               "fastener": "iso4762"}
+    assert record["designation"] == "⌀5.5 ⌴⌀10↧5.8"
+    expected = (_cyl_volume(5.5, 20.0)
+                + math.pi * (5.0 ** 2 - 2.75 ** 2) * 5.8)
+    assert plate.volume - out.volume == pytest.approx(expected, rel=1e-9)
+
+
+def test_countersink_uses_the_standards_angle_not_build123ds_default():
+    """build123d's `CounterSinkHole` defaults to 82 deg — an ASME default that
+    would otherwise arrive inside an ISO-labelled call. `holes.countersink`
+    passes the angle explicitly, always, and the removed volume is the proof:
+    at 90 deg the cone is shallower than at 82 and the two differ by a
+    measurable amount, so a silently-inherited default cannot pass this."""
+    from agentcad.toolkit import holes
+
+    plate = _plate(t=20.0)
+    out, records, warning = holes.countersink(plate, [(0, 0)], "M5")
+    record = records[0]
+    assert warning is None
+    assert record["csk"] == {"d": 11.2, "angle_deg": 90.0,
+                             "fastener": "iso10642"}
+    assert record["designation"] == "⌀5.5 ⌵⌀11.2×90°"
+
+    def removed(angle_deg: float) -> float:
+        cone_h = (5.6 - 2.75) / math.tan(math.radians(angle_deg / 2.0))
+        return (_cyl_volume(5.5, 20.0)
+                + _frustum_volume(5.6, 2.75, cone_h)
+                - math.pi * 2.75 ** 2 * cone_h)
+
+    measured = plate.volume - out.volume
+    assert measured == pytest.approx(removed(90.0), rel=1e-6)
+    assert measured != pytest.approx(removed(82.0), rel=1e-3)
+
+
+def test_an_explicit_countersink_angle_is_honoured():
+    from agentcad.toolkit import holes
+
+    _out, records, _warning = holes.countersink(
+        _plate(t=20.0), [(0, 0)], "M5", angle=82.0)
+    assert records[0]["csk"]["angle_deg"] == 82.0
+    assert records[0]["designation"] == "⌀5.5 ⌵⌀11.2×82°"
+
+
+def test_a_counterbore_deeper_than_the_stock_warns():
+    from agentcad.toolkit import holes
+
+    _out, _records, warning = holes.counterbore(
+        _plate(t=4.0), [(0, 0)], "M8", verify="off")
+    assert "counterbore" in warning and "4" in warning
+
+
+def test_ansi_holes_measure_in_millimetres_and_call_out_in_inches():
+    """The unit split, end to end: the geometry is a 0.281 in hole in
+    millimetres, and the callout is what a US drawing prints."""
+    from agentcad.toolkit import holes
+
+    plate = _plate(w=60.0, d=60.0, t=25.0)
+    out, records, _warning = holes.counterbore(
+        plate, [(0, 0)], "1/4", std="ansi")
+    record = records[0]
+    assert record["d"] == pytest.approx(0.281 * 25.4)
+    assert record["designation"] == "⌀0.281 ⌴⌀0.4375↧0.2812"
+    assert plate.volume - out.volume == pytest.approx(
+        _cyl_volume(0.281 * 25.4, 25.0)
+        + math.pi * ((0.4375 * 25.4 / 2) ** 2 - (0.281 * 25.4 / 2) ** 2)
+        * 0.28125 * 25.4, rel=1e-9)
+
+    _o, tapped, _w = holes.tapped(out, [(20, 20)], "1/4", std="ansi", depth=12.7)
+    assert tapped[0]["d"] == pytest.approx(0.201 * 25.4)
+    assert tapped[0]["designation"] == "1/4-20 UNC - 2B ↧0.5"
+
+
+# --------------------------------------------------------- the drilled hole
+
+def test_drill_cuts_the_stated_diameter_and_records_no_standard_size():
+    """A structural bolt hole is millimetres, not an ISO row.
+
+    `construction/gusset_plate` drills 18 mm for an M16 bolt — EN 1090's 2 mm
+    clearance, which is not any of ISO 273's M16 values (17.0/17.5/18.5). The
+    diameter is the design's own number, so `drill` takes it directly and the
+    record claims no `size` and no table provenance. Inventing one would be a
+    false provenance claim on a surface whose whole point is provenance.
+    """
+    from agentcad.toolkit import holes
+
+    plate = _plate(t=10.0)
+    out, records, warning = holes.drill(plate, [(0, 0), (30, 0)], 18.0)
+    record = records[0]
+    assert warning is None
+    assert (record["family"], record["d"]) == ("drilled", 18.0)
+    assert record["size"] is None and record["fit"] is None
+    assert record["designation"] == "⌀18"
+    assert plate.volume - out.volume == pytest.approx(
+        2 * _cyl_volume(18.0, 10.0), rel=1e-9)
+
+
+def test_drill_blind_records_the_depth_in_the_designation():
+    from agentcad.toolkit import holes
+
+    plate = _plate(t=20.0)
+    _out, records, _warning = holes.drill(plate, [(0, 0)], 12.5, depth=8.0)
+    assert records[0]["designation"] == "⌀12.5 ↧8"
+    assert records[0]["thru"] is False
+
+
+def test_a_drilled_hole_under_an_asme_label_calls_out_in_inches():
+    """The diameter is millimetres either way — it is what gets drilled — but
+    `⌀12.7` printed under an ASME label would read as a 12.7 INCH hole."""
+    from agentcad.toolkit import holes
+
+    _out, records, _warning = holes.drill(
+        _plate(t=20.0), [(0, 0)], 12.7, depth=6.35, std="ansi")
+    assert records[0]["d"] == 12.7
+    assert records[0]["designation"] == "⌀0.5 ↧0.25"
+
+
+def test_drill_shares_the_guard_with_the_table_driven_helpers():
+    """One `_drill`, one guard: an off-part instance is named here too."""
+    from agentcad.toolkit import holes
+
+    plate = _plate()
+    _out, _records, warning = holes.drill(plate, [(0, 0), (400, 0)], 10.0)
+    assert "instance(s) [1]" in warning
+
+
 # ---------------------------------------------------------------- the raises
 
 @pytest.mark.parametrize("call,message", [
+    (lambda h, part: h.drill(part, [(0, 0)], 0.0), "diameter"),
+    (lambda h, part: h.drill(part, [(0, 0)], -3.0), "diameter"),
+    (lambda h, part: h.drill(part, [(0, 0)], float("nan")), "diameter"),
+    (lambda h, part: h.drill(part, [(0, 0)], "M5"), "diameter"),
     (lambda h, part: h.clearance(part, [(0, 0)], "M4.5"), "size"),
     (lambda h, part: h.clearance(part, [(0, 0)], "M5", fit="snug"), "fit"),
     (lambda h, part: h.clearance(part, [(0, 0)], "M5", std="jis"), "std"),

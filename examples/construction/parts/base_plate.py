@@ -14,6 +14,8 @@ less than 20 mm would remain.
 
 from build123d import *
 
+from agentcad.toolkit import patterns
+
 PARAMS = {
     "plate_w": {"default": 300.0, "min": 150.0, "max": 450.0, "unit": "mm",
                 "description": "Base plate width (X)"},
@@ -52,7 +54,11 @@ def build(p):
         Box(w, l, t, align=(Align.CENTER, Align.CENTER, Align.MIN))
         fillet(part.edges().filter_by(Axis.Z), radius=10.0)
         with BuildSketch(Plane.XY):
-            with Locations((cx, cy), (-cx, cy), (cx, -cy), (-cx, -cy)):
+            # The four anchor slots are a 2 x 2 grid about the plate centre.
+            # patterns.grid is pure arithmetic and feeds a plain Locations
+            # block as readily as it feeds holes.*: these are slots, not
+            # holes, so there is no hole record to carry here.
+            with Locations(*patterns.grid(2, 2, 2 * cx, 2 * cy)):
                 SlotOverall(slot_l, p.slot_w)
         extrude(amount=t, mode=Mode.SUBTRACT)
         if rec >= 20.0:

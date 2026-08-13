@@ -12,6 +12,8 @@ clear the inner fillet and the leg ends.
 
 from build123d import *
 
+from agentcad.toolkit import holes
+
 PARAMS = {
     "leg_a": {"default": 90.0, "min": 50.0, "max": 150.0, "unit": "mm",
               "description": "Vertical leg length (Z)"},
@@ -55,11 +57,19 @@ def build(p):
         inner = [e for e in part.edges().filter_by(Axis.Y)
                  if abs(e.center().X - t) < 1e-4 and abs(e.center().Z - t) < 1e-4]
         fillet(inner, radius=r)
-        # Horizontal leg: two holes drilled along Z.
-        with Locations((hx, ys[0], 0), (hx, ys[1], 0)):
-            Hole(radius=hole_r)
-        # Vertical leg: two holes drilled along X.
-        with Locations(Plane(origin=(0, ys[0], hz), z_dir=(1, 0, 0)),
-                       Plane(origin=(0, ys[1], hz), z_dir=(1, 0, 0))):
-            Hole(radius=hole_r)
-    return part.part
+    # Two drilled groups, one per leg. "top" is the extreme +Z planar face,
+    # resolved by predicate on every rebuild — never by a face index, which
+    # renumbers on any topology change — and its points read (x, y).
+    bracket, _rec, _warn = holes.drill(part.part, [(hx, y) for y in ys],
+                                       p.hole_d, plane="top")
+    # The vertical leg is drilled through an explicit plane rather than the
+    # named "left" face. Both cut the same holes, but a named face carries its
+    # own frame (x_dir = -Y there), and rotating the tool about its own axis
+    # re-tessellates the part: measured, "left" keeps every metric and changes
+    # the mesh bytes. Sliding the workplane ALONG the hole axis is free, which
+    # is why "top" above costs nothing. In this plane +v runs along -Y, hence
+    # the negated width positions.
+    leg = Plane(origin=(0, 0, hz), z_dir=(1, 0, 0))
+    bracket, _rec, _warn = holes.drill(bracket, [(0, -y) for y in ys],
+                                       p.hole_d, plane=leg)
+    return bracket

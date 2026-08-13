@@ -67,16 +67,20 @@ HOLES_SIDECAR_VERSION = 1
 _WRAPPED = "_agentcad_holes_wrapper"
 
 DESCRIPTION = (
-    "Look up ISO hole standards: clearance diameters (ISO 273, fine/medium/"
-    "coarse — also spelled close/normal/loose), thread pitch and tap drill "
-    "(ISO 261/262), and counterbore/countersink geometry from the fastener "
-    "head standards (ISO 4762, ISO 10642). Omit everything to list the "
-    "families and their tabulated sizes; give family+size for the row. "
-    "Clearance returns all three fits at once. Every answer carries the "
-    "standard, the revision and the two published sources it was transcribed "
-    "from. Counterbore answers name the head dimensions (the standard part) "
-    "separately from the bore (a documented shop clearance rule, since the "
-    "published counterbore charts disagree). Data only — it drills nothing."
+    "Look up ISO or ASME hole standards: clearance diameters (ISO 273 fine/"
+    "medium/coarse, ASME B18.2.8 close/normal/loose — either spelling is "
+    "accepted), thread pitch and tap drill (ISO 261/262, or the Unified inch "
+    "UNC/UNF series with its number/letter/fraction drill designations), and "
+    "counterbore/countersink geometry from the fastener head standards (ISO "
+    "4762, ISO 10642, ASME B18.3). Omit everything to list the families and "
+    "their tabulated sizes; give family+size for the row. Clearance returns "
+    "all three fits at once. Every answer carries the standard, the revision "
+    "and the two published sources it was transcribed from. Lengths are "
+    "millimetres, with the table's own unit alongside in `*_native` — an ASME "
+    "row is inches and its designation prints inches. Counterbore answers "
+    "name the head dimensions (the standard part) separately from the bore (a "
+    "documented shop clearance rule, since the published counterbore charts "
+    "disagree). Data only — it drills nothing."
 )
 
 
@@ -389,7 +393,9 @@ def register(registry, service) -> None:
                                           "countersink (cbore/csk/thread also "
                                           "accepted)"},
                 "size": {"type": "string",
-                         "description": "Metric designation, e.g. M5"},
+                         "description": "Size designation in the standard's "
+                                        "own vocabulary: M5 for iso, #10 or "
+                                        "1/4 for ansi"},
                 "std": {"type": "string", "description": "iso (default) | ansi"},
             },
             [],

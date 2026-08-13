@@ -265,6 +265,45 @@ def test_goldens_cover_every_construction_part(opened):
 
 
 @pytest.mark.integration
+def test_the_rewritten_construction_parts_carry_hole_records(kernel, tmp_path):
+    """Slice 7's *other* half, and the one the goldens above cannot see.
+
+    A byte-identity gate is passed trivially by an edit that changes nothing.
+    What makes the rewrite worth doing is that every bolt hole in the bundled
+    ``construction`` example is now a machine-readable record — which is what
+    reaches the drawing callouts (slice 6) and PRD-021's DFM rules. If someone
+    reverts a script to a hand-rolled ``Locations``/``Hole`` block, the goldens
+    stay green and this fails.
+
+    ``base_plate``'s anchor **slots** are not holes, so it carries no records
+    at all. It is read with ``.get`` on purpose: "declares none" (``null``) and
+    "not harvested" (key **absent**) are different facts, and which one this
+    part gives depends on whether the session-scoped worker already has its
+    shape cached from an earlier test — a harvest that took a shape-cache hit
+    measured nothing and must not persist an empty answer (changelog 0151).
+    The assertion here is the part they agree on: no records.
+    """
+    from agentcad.core.tools import build_registry
+
+    service = make_test_service(tmp_path / "projects", kernel)
+    dest = tmp_path / "construction"
+    shutil.copytree(EXAMPLES_DIR / "construction", dest,
+                    ignore=shutil.ignore_patterns(".cache", "exports"))
+    name = service.open_project(str(dest))["name"]
+    build_registry(service)          # installs the hole-metadata rebuild seam
+
+    gusset = service._rebuild(name, "gusset_plate")
+    assert [(r["family"], r["designation"], r["count"])
+            for r in gusset["holes"]] == [("drilled", "⌀18", 12)]
+
+    bracket = service._rebuild(name, "angle_bracket")
+    assert [(r["designation"], r["count"]) for r in bracket["holes"]] == [
+        ("⌀14", 2), ("⌀14", 2)]
+
+    assert service._rebuild(name, "base_plate").get("holes") is None
+
+
+@pytest.mark.integration
 def test_two_routes_to_one_geometry_differ_in_bytes(kernel, tmp_path):
     """The evidence that (b) is a real constraint and not implied by (a).
 

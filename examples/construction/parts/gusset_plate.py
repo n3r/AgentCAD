@@ -15,6 +15,8 @@ import math
 
 from build123d import *
 
+from agentcad.toolkit import holes, patterns
+
 PARAMS = {
     "plate_t": {"default": 10.0, "min": 6.0, "max": 25.0, "unit": "mm",
                 "description": "Gusset plate thickness"},
@@ -93,17 +95,16 @@ def build(p):
         (-chord_half, w_chord), (chord_half, w_chord),
     ]
 
-    holes = []
-    for i in range(n):
-        x = -group_len / 2 + i * pitch
-        holes.append((x, yc - gauge_c / 2))
-        holes.append((x, yc + gauge_c / 2))
+    # Chord bolt group: n rows along X x 2 columns across the band, centred
+    # on the work point. That is exactly patterns.grid's arithmetic.
+    points = [(x, yc + dy) for x, dy in patterns.grid(n, 2, pitch, gauge_c)]
 
     # Diagonal strips radiate from the work point; the first bolt row is
     # pushed one chord half-width + end distance + hole diameter up the
     # axis so diagonal holes always clear the chord group.
     s0 = w_chord / 2 + e_end + p.hole_d
     s_start, s_end = s0 - e_end, s0 + group_len + e_end
+    s_mid = s0 + group_len / 2
     for side in (1.0, -1.0):
         ux, uy = side * math.cos(a), math.sin(a)
         vx, vy = -side * math.sin(a), math.cos(a)
@@ -113,19 +114,25 @@ def build(p):
                     (ux * s + vx * sg * w_diag / 2,
                      yc + uy * s + vy * sg * w_diag / 2)
                 )
-        for i in range(n):
-            s = s0 + i * pitch
-            for sg in (1.0, -1.0):
-                holes.append(
-                    (ux * s + vx * sg * gauge_d / 2,
-                     yc + uy * s + vy * sg * gauge_d / 2)
-                )
+        # The same 2 x n grid, laid out in the member's own (along, across)
+        # frame and rotated onto the diagonal axis. Building the grid in the
+        # local frame keeps the trig where it belongs: the rotated
+        # coordinates are irrational and must not be rounded, and
+        # patterns.grid rounds its output to 9 decimals.
+        for ds, dt in patterns.grid(n, 2, pitch, gauge_d):
+            s = s_mid + ds
+            points.append((ux * s + vx * dt, yc + uy * s + vy * dt))
 
     outline = _hull(corners)
     with BuildPart() as part:
         with BuildSketch(Plane.XY):
             Polygon(*outline, align=None)
         extrude(amount=p.plate_t)
-        with Locations(*holes):
-            Hole(radius=hole_r)
-    return part.part
+    # One drilled group for every bolt: the record carries the diameter and
+    # the count to the drawing callouts, and the helper's guard names any
+    # instance that misses the plate (a misplaced cut is a silent no-op in
+    # OCCT, not an error). hole_d is a structural clearance in millimetres,
+    # not an ISO 273 row, so this is holes.drill and not holes.clearance.
+    plate, _records, _warn = holes.drill(part.part, points, p.hole_d,
+                                         plane="top")
+    return plate

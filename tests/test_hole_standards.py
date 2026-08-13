@@ -27,13 +27,16 @@ DATA = Path(hs.__file__).resolve().parent / "data"
 
 # ----------------------------------------------------------------- the files
 
-@pytest.mark.parametrize("name", ["iso_clearance", "iso_thread", "iso_cbore_csk"])
-def test_every_data_file_carries_the_provenance_header(name):
+@pytest.mark.parametrize("name,units", [
+    ("iso_clearance", "mm"), ("iso_thread", "mm"), ("iso_cbore_csk", "mm"),
+    ("ansi_clearance", "in"), ("ansi_thread", "in"), ("ansi_cbore_csk", "in"),
+])
+def test_every_data_file_carries_the_provenance_header(name, units):
     """Decision 5's header, including TWO named sources. A table with one
     source is a transcription nobody checked."""
     doc = json.loads((DATA / f"{name}.json").read_text(encoding="utf-8"))
     assert doc["schema"] == 1
-    assert doc["units"] == "mm"
+    assert doc["units"] == units
     assert doc["standard"] and doc["revision"]
     assert len(doc["sources"]) >= 2, f"{name}: fewer than two published sources"
     assert doc["rows"]
@@ -170,6 +173,127 @@ def test_countersink_angle_default_is_per_standard_not_per_build123d():
     assert hs.csk("M5", angle=100.0)["angle_deg"] == 100.0
 
 
+# ------------------------------------------------------- ANSI (slice 8)
+
+@pytest.mark.parametrize("size,close,normal,loose", [
+    ("#6", 0.154, 0.170, 0.185),
+    ("#10", 0.206, 0.221, 0.238),
+    ("1/4", 0.266, 0.281, 0.297),
+    ("3/8", 0.391, 0.406, 0.422),
+    ("1/2", 0.531, 0.562, 0.609),
+])
+def test_ansi_clearance_spot_checks_against_the_published_table(
+        size, close, normal, loose):
+    """ASME B18.2.8's own numbers, as literals from the two named sources.
+
+    Note these are NOT the traditional Machinery's-Handbook 'close/free fit'
+    inch chart, which gives a #10 screw 0.196/0.201 — a different published
+    convention, not a rounding of this one. The file names the standard it
+    transcribes; see its `notes`.
+    """
+    for fit, expected in (("close", close), ("normal", normal),
+                          ("loose", loose)):
+        row = hs.clearance(size, fit=fit, std="ansi")
+        assert row["d_native"] == expected
+        assert row["d"] == pytest.approx(expected * 25.4)
+        assert row["designation"] == f"⌀{expected:g}"
+
+
+def test_ansi_clearance_carries_the_drill_designation():
+    """A number/letter/fraction drill is part of the callout an operator reads
+    and cannot be derived from the decimal — 0.221 in is drill #2, and no
+    amount of arithmetic gets you from one to the other."""
+    assert hs.clearance("#10", fit="normal", std="ansi")["drill"] == "#2"
+    assert hs.clearance("1/4", fit="close", std="ansi")["drill"] == "17/64"
+    assert hs.clearance("#10", fit="loose", std="ansi")["drill"] == "B"
+    assert hs.clearance("M5")["drill"] is None      # ISO has no drill column
+
+
+def test_ansi_fit_spellings_answer_in_the_asme_names():
+    assert hs.clearance("1/4", fit="medium", std="ansi")["fit"] == "normal"
+    assert hs.clearance("1/4", fit="fine", std="ansi")["fit"] == "close"
+    assert hs.clearance_fits("1/4", std="ansi") == {
+        "close": 0.266, "normal": 0.281, "loose": 0.297}
+
+
+@pytest.mark.parametrize("size,tpi,drill,decimal,series", [
+    ("#6", 32, "#36", 0.1065, "UNC"),
+    ("#10", 24, "#25", 0.1495, "UNC"),
+    ("1/4", 20, "#7", 0.2010, "UNC"),
+    ("5/16", 18, "F", 0.2570, "UNC"),
+    ("3/8", 16, "5/16", 0.3125, "UNC"),
+    ("1/2", 13, "27/64", 0.4219, "UNC"),
+])
+def test_ansi_tap_drill_spot_checks_against_the_published_table(
+        size, tpi, drill, decimal, series):
+    row = hs.thread(size, std="ansi")
+    assert (row["tpi"], row["drill"], row["series"]) == (tpi, drill, series)
+    assert row["tap_drill_native"] == decimal
+    assert row["tap_drill"] == pytest.approx(decimal * 25.4)
+    # tpi is a COUNT; the millimetre pitch is derived from it, and both are
+    # reported so neither can be mistaken for the other.
+    assert row["pitch"] == pytest.approx(25.4 / tpi)
+
+
+def test_a_unified_thread_designation_is_not_a_metric_one():
+    assert hs.thread("1/4", std="ansi")["designation"] == "1/4-20 UNC - 2B"
+    assert hs.thread("1/4", pitch=28, std="ansi")["designation"] == \
+        "1/4-28 UNF - 2B"
+    # depth crosses the boundary in millimetres and prints in inches
+    assert hs.thread("1/4", depth=12.7, std="ansi")["designation"] == \
+        "1/4-20 UNC - 2B ↧0.5"
+    assert hs.default_thread_class("ansi") == "2B"
+    assert hs.default_thread_class("iso") == "6H"
+
+
+def test_a_unified_pitch_is_a_whole_count_of_threads():
+    with pytest.raises(ValueError, match=r"pitch"):
+        hs.thread("1/4", pitch=1.25, std="ansi")     # a millimetre pitch
+    with pytest.raises(ValueError, match=r"pitch"):
+        hs.thread("1/4", pitch=19, std="ansi")       # not tabulated
+
+
+def test_ansi_cbore_and_csk_report_the_published_head_geometry():
+    """ASME B18.3: A max = 1.5 d and H max = d across the whole socket-head
+    table, which is its own internal check. The bore is still the named shop
+    rule — in the inch shop's round numbers, 1/16 on diameter and 1/32 on
+    depth, which puts a 1/4 in head in a 7/16 counterbore 9/32 deep."""
+    bore = hs.cbore("1/4", std="ansi")
+    assert (bore["head_d_native"], bore["head_h_native"]) == (0.375, 0.250)
+    assert bore["head_d"] == pytest.approx(0.375 * 25.4)
+    assert bore["d_native"] == pytest.approx(0.4375)      # 7/16
+    assert bore["depth_native"] == pytest.approx(0.28125)  # 9/32
+    assert bore["fastener"] == "asme_b18_3"
+    assert "not a standard" in bore["rule"].lower()
+
+    sink = hs.csk("1/4", std="ansi")
+    assert sink["d_native"] == 0.531        # max theoretical sharp
+    assert sink["angle_deg"] == 82.0        # ASME's angle, not ISO's 90
+    assert hs.csk("M5")["angle_deg"] == 90.0
+
+
+def test_ansi_sizes_come_back_in_table_order_not_sorted():
+    """`#8 < #10 < 1/4` is an ordering only the table knows: `float(size[1:])`
+    reads `1/4` as 1.0 and cannot read `B` at all."""
+    sizes = hs.sizes("clearance", std="ansi")
+    assert sizes[:4] == ["#0", "#1", "#2", "#3"]
+    assert sizes.index("#8") < sizes.index("#10") < sizes.index("1/4")
+    assert hs.sizes("countersink", std="ansi")[0] == "#4"
+
+
+def test_the_ansi_lookup_answers_the_tool_the_same_shape_as_iso():
+    answer = hs.lookup(family="clearance", size="1/4", std="ansi")
+    assert answer["fits"] == {"close": 0.266, "normal": 0.281, "loose": 0.297}
+    assert answer["designations"]["normal"] == "⌀0.281"
+    assert answer["units"] == "in"
+    tapped = hs.lookup(family="tapped", size="1/4", std="ansi")
+    assert [entry["tpi"] for entry in tapped["pitches"]] == [20.0, 28.0]
+    index = hs.lookup(std="ansi")
+    assert index["fits"] == {"fine": "close", "medium": "normal",
+                             "coarse": "loose"}
+    assert index["csk_angle_deg"] == 82.0
+
+
 # ------------------------------------------------------------- designations
 
 def test_designations_for_all_four_families_in_both_symbologies():
@@ -224,11 +348,14 @@ def test_unknown_standard_raises_value_error_naming_the_argument():
         hs.default_csk_angle("jis")
 
 
-def test_a_standard_with_no_table_yet_says_so_rather_than_answering_wrong():
-    """ANSI tables land in slice 8. Until then an ANSI lookup is an error that
-    names the standard — never a silent fallback to the ISO numbers."""
-    with pytest.raises(ValueError, match=r"std"):
+def test_a_metric_size_is_not_in_the_ansi_table_and_says_so():
+    """The two standards' size vocabularies do not overlap, and asking one for
+    the other's designation is a `size` error naming what IS tabulated — never
+    a silent fallback to the other standard's numbers under this label."""
+    with pytest.raises(ValueError, match=r"size 'M5' is not in the ANSI"):
         hs.clearance("M5", std="ansi")
+    with pytest.raises(ValueError, match=r"size '1/4' is not in the ISO"):
+        hs.clearance("1/4", std="iso")
 
 
 def test_unknown_pitch_and_unknown_fastener_name_their_argument():

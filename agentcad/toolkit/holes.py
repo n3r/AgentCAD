@@ -1,9 +1,13 @@
-"""ISO clearance and tapped holes, with a machine-readable record per call.
+"""Holes, with a machine-readable record per call.
 
     from agentcad.toolkit import holes, patterns
 
     part, recs, warn = holes.clearance(part, patterns.bolt_circle(40, 6), "M5")
     part, recs, warn = holes.tapped(part, [(0, 0)], "M6", depth=12)
+    part, recs, warn = holes.counterbore(part, [(20, 0)], "M8")
+    part, recs, warn = holes.countersink(part, [(-20, 0)], "M6")
+    part, recs, warn = holes.drill(part, [(0, 30)], 18.0)      # no table
+    part, recs, warn = holes.clearance(part, [(0, 0)], "1/4", std="ansi")
 
 Each call returns `(part, records, warning|None)`: the new part, the records
 *this call* created, and one warning string naming what it found — the `safe_*`
@@ -11,8 +15,16 @@ contract, extended with the metadata the drawing callouts and PRD-021's DFM
 rules read.
 
 Diameters are never invented here. They come from
-`agentcad.toolkit.hole_standards`, which is the vendored ISO tables with their
-provenance — `clearance(size, fit)["d"]` and `thread(size)["tap_drill"]`.
+`agentcad.toolkit.hole_standards`, which is the vendored ISO/ASME tables with
+their provenance — `clearance(size, fit)["d"]` and `thread(size)["tap_drill"]`.
+The one helper with no table behind it is `drill`, which takes millimetres
+because a structural bolt hole *has* no fastener row (18 mm for an M16 is
+none of ISO 273's M16 values), and its record says so by carrying no `size`.
+
+**Every length crossing this module is millimetres**, including under
+`std="ansi"`; only the designation text is in the standard's own unit. See
+`hole_standards`' "Units" section — a millimetre formatted as an inch callout
+is a 25.4x error that looks like a plausible number.
 
 Where the records live, and why it is not a registry
 ----------------------------------------------------
@@ -231,6 +243,42 @@ def resolve_plane(part, plane="top") -> Plane:
 
 # ------------------------------------------------------------------- holes
 
+def drill(part, points, diameter: float, *, plane="top", std: str = "iso",
+          depth: float | None = None, thru: bool = True,
+          verify: str = "bbox"):
+    """A plain drilled hole of a stated diameter — no fastener, no table.
+
+    `clearance` and `tapped` exist because a hole *for a fastener* has a right
+    diameter that a published table owns. A hole in a structural plate often
+    has none: `construction/gusset_plate` drills 18 mm for an M16 bolt (EN 1090
+    gives structural bolts 2 mm of clearance, so it is none of ISO 273's M16
+    values 17.0/17.5/18.5), and the diameter is a *parameter* the designer
+    sweeps. So this takes the millimetres, and the record carries no `size` and
+    no table provenance — claiming one would put a standard's name on a number
+    the standard did not supply.
+
+    `std` selects the callout **symbology** only (the `⌀`/`↧` grammar), which
+    is why it is still an argument: it decides how the number is written, not
+    what the number is.
+    """
+    d = _check_diameter(diameter, "holes.drill")
+    record = {
+        "family": "drilled", "standard": hole_standards.check_std(std),
+        "size": None, "fit": None, "d": d, "tap": None, "cbore": None,
+        "csk": None,
+        # The diameter is millimetres; the callout prints the standard's own
+        # unit, so it goes through the one named conversion. `⌀18` under an
+        # ASME label would be an 18-inch hole.
+        "designation": hole_standards.designation(
+            "clearance", std=std,
+            d=hole_standards.in_designation_units(d, std),
+            depth=None if depth is None
+            else hole_standards.in_designation_units(depth, std)),
+    }
+    return _drill(part, points, d / 2.0, record, plane=plane, depth=depth,
+                  thru=thru, verify=verify, label="holes.drill")
+
+
 def clearance(part, points, size: str, *, plane="top", fit: str = "medium",
               std: str = "iso", depth: float | None = None, thru: bool = True,
               verify: str = "bbox"):
@@ -255,8 +303,9 @@ def clearance(part, points, size: str, *, plane="top", fit: str = "medium",
 
 
 def tapped(part, points, size: str, *, pitch: float | None = None,
-           depth: float | None = None, thread_class: str = "6H", plane="top",
-           std: str = "iso", thread: str = "none", verify: str = "bbox"):
+           depth: float | None = None, thread_class: str | None = None,
+           plane="top", std: str = "iso", thread: str = "none",
+           verify: str = "bbox"):
     """Tapped holes: bore the **tap drill** and record the thread.
 
     `thread="none"` (the default) builds no thread geometry — a tapped hole on
@@ -285,8 +334,9 @@ def tapped(part, points, size: str, *, pitch: float | None = None,
         "family": "tapped", "standard": row["std"], "size": row["size"],
         "fit": None, "d": row["tap_drill"], "cbore": None, "csk": None,
         "designation": row["designation"],
-        "tap": {"pitch": row["pitch"], "class": thread_class,
-                "drill_mm": row["tap_drill"], "thread": row["thread"],
+        "tap": {"pitch": row["pitch"], "tpi": row["tpi"],
+                "class": row["thread_class"], "drill_mm": row["tap_drill"],
+                "drill": row["drill"], "thread": row["thread"],
                 "series": row["series"], "geometry": thread},
     }
     radius = row["tap_drill"] / 2.0
@@ -305,6 +355,148 @@ def tapped(part, points, size: str, *, pitch: float | None = None,
                   fuse=thread_solid)
 
 
+def counterbore(part, points, size: str, *, plane="top", fit: str = "medium",
+                std: str = "iso", fastener: str | None = None,
+                cbore_d: float | None = None, cbore_depth: float | None = None,
+                depth: float | None = None, thru: bool = True,
+                verify: str = "bbox"):
+    """A clearance hole with a flat-bottomed pocket for the fastener's head.
+
+    The through hole is the standard's clearance hole for `size` at `fit`. The
+    **pocket is not a table value**: the published counterbore charts disagree
+    by up to 0.75 mm on one M8 (measured, changelog 0148), so
+    `hole_standards.cbore` returns the corroborated *head* geometry and applies
+    a named clearance rule to it. Pass `cbore_d`/`cbore_depth` (millimetres) to
+    use your own shop's numbers; the record then carries yours.
+
+    Returns `(part, records, warning|None)`.
+    """
+    row = hole_standards.clearance(size, fit=fit, std=std)
+    head = hole_standards.cbore(size, fastener=fastener, std=std)
+    bore_d = float(head["d"] if cbore_d is None else cbore_d)
+    bore_depth = float(head["depth"] if cbore_depth is None else cbore_depth)
+    if bore_d <= row["d"]:
+        raise ValueError(
+            f"holes.counterbore: cbore_d {bore_d:g} mm is not larger than the "
+            f"{row['designation']} clearance hole it sits over")
+    if not math.isfinite(bore_depth) or bore_depth <= 0:
+        raise ValueError(
+            f"holes.counterbore: cbore_depth must be > 0, got {cbore_depth!r}")
+    record = {
+        "family": "counterbore", "standard": row["std"], "size": row["size"],
+        "fit": row["fit"], "d": row["d"], "tap": None, "csk": None,
+        "cbore": {"d": _round(bore_d), "depth": _round(bore_depth),
+                  "fastener": head["fastener"]},
+        "designation": hole_standards.designation(
+            "counterbore", std=std,
+            d=hole_standards.in_designation_units(row["d"], std),
+            cbore_d=hole_standards.in_designation_units(bore_d, std),
+            cbore_depth=hole_standards.in_designation_units(bore_depth, std)),
+    }
+    # Resolved once and passed on as a Plane: the named-plane predicate walks
+    # every face, and the tool factory below and the bore itself must agree on
+    # the answer, not merely on the question.
+    workplane = resolve_plane(part, plane)
+    radius = row["d"] / 2.0
+    bore_r = bore_d / 2.0
+
+    def cut():
+        from build123d import CounterBoreHole
+
+        CounterBoreHole(radius=radius, counter_bore_radius=bore_r,
+                        counter_bore_depth=bore_depth,
+                        depth=None if depth is None else depth)
+
+    def tool(loc, reach):
+        from build123d import Align, Cylinder
+
+        plane_at = _bore_plane(loc, workplane)
+        align = (Align.CENTER, Align.CENTER, Align.MIN)
+        return plane_at.location * (Cylinder(radius, reach, align=align)
+                                    + Cylinder(bore_r, bore_depth, align=align))
+
+    out, records_, warning = _drill(
+        part, points, radius, record, plane=workplane, depth=depth, thru=thru,
+        verify=verify, label="holes.counterbore", cut=cut, tool=tool,
+        envelope_r=bore_r)
+    stock = _extent(part, workplane)
+    if bore_depth >= stock - _VOLUME_TOL:
+        note = (f"holes.counterbore: the {bore_depth:g} mm pocket is not "
+                f"shallower than the {stock:g} mm of stock below this plane, "
+                f"so the head has nothing to bear on")
+        warning = f"{warning}; {note}" if warning else note
+    return out, records_, warning
+
+
+def countersink(part, points, size: str, *, plane="top", fit: str = "medium",
+                std: str = "iso", fastener: str | None = None,
+                angle: float | None = None, csk_d: float | None = None,
+                depth: float | None = None, thru: bool = True,
+                verify: str = "bbox"):
+    """A clearance hole with a conical seat for a flat-head fastener.
+
+    **The angle is passed to build123d explicitly, always.** `CounterSinkHole`
+    defaults to 82 deg, which is an ASME default; an ISO countersink is 90, and
+    a default inherited from the geometry library would put an ASME cone inside
+    an ISO-labelled call. `hole_standards.default_csk_angle` owns the number.
+
+    `csk_d` is the seat diameter at the surface and defaults to the fastener's
+    **theoretical sharp** head diameter — the dimension a countersink callout
+    names, which already stands off the machined head max, so no clearance is
+    added to it.
+
+    Returns `(part, records, warning|None)`.
+    """
+    row = hole_standards.clearance(size, fit=fit, std=std)
+    head = hole_standards.csk(size, angle=angle, fastener=fastener, std=std)
+    seat_d = float(head["d"] if csk_d is None else csk_d)
+    included = float(head["angle_deg"])
+    if seat_d <= row["d"]:
+        raise ValueError(
+            f"holes.countersink: csk_d {seat_d:g} mm is not larger than the "
+            f"{row['designation']} clearance hole it sits over")
+    if not 0.0 < included < 180.0:
+        raise ValueError(
+            f"holes.countersink: angle must be an included angle in "
+            f"(0, 180) degrees, got {angle!r}")
+    record = {
+        "family": "countersink", "standard": row["std"], "size": row["size"],
+        "fit": row["fit"], "d": row["d"], "tap": None, "cbore": None,
+        "csk": {"d": _round(seat_d), "angle_deg": _round(included),
+                "fastener": head["fastener"]},
+        "designation": hole_standards.designation(
+            "countersink", std=std,
+            d=hole_standards.in_designation_units(row["d"], std),
+            csk_d=hole_standards.in_designation_units(seat_d, std),
+            angle=included),
+    }
+    workplane = resolve_plane(part, plane)
+    radius = row["d"] / 2.0
+    seat_r = seat_d / 2.0
+    cone_h = (seat_r - radius) / math.tan(math.radians(included / 2.0))
+
+    def cut():
+        from build123d import CounterSinkHole
+
+        CounterSinkHole(radius=radius, counter_sink_radius=seat_r,
+                        depth=None if depth is None else depth,
+                        counter_sink_angle=included)
+
+    def tool(loc, reach):
+        from build123d import Align, Cone, Cylinder
+
+        plane_at = _bore_plane(loc, workplane)
+        align = (Align.CENTER, Align.CENTER, Align.MIN)
+        return plane_at.location * (
+            Cylinder(radius, reach, align=align)
+            + Cone(bottom_radius=seat_r, top_radius=radius, height=cone_h,
+                   align=align))
+
+    return _drill(part, points, radius, record, plane=workplane, depth=depth,
+                  thru=thru, verify=verify, label="holes.countersink",
+                  cut=cut, tool=tool, envelope_r=seat_r)
+
+
 def _major_diameter(size: str) -> float:
     """`M5` -> 5.0. The tables key on the ISO designation, the thread builder
     wants the nominal diameter."""
@@ -319,12 +511,21 @@ def _major_diameter(size: str) -> float:
 # ------------------------------------------------------------------ drilling
 
 def _drill(part, points, radius: float, record: dict, *, plane, depth,
-           thru: bool, verify: str, label: str, fuse=None):
-    """One bore, one record. The single place a hole is cut, so `clearance` and
-    `tapped` cannot drift apart in how they place, guard or record it.
+           thru: bool, verify: str, label: str, fuse=None, cut=None,
+           tool=None, envelope_r=None):
+    """One bore, one record. The single place a hole is cut, so `clearance`,
+    `tapped`, `drill`, `counterbore` and `countersink` cannot drift apart in
+    how they place, guard or record it.
 
     `fuse` is an optional solid added at every instance after the bore (real
     thread geometry), placed on the same into-the-material frame as the tool.
+
+    `cut` is the build123d operator to run inside the `Locations` block — the
+    default is `Hole`, and `counterbore`/`countersink` pass their own so the
+    primary (byte-faithful) route stays build123d's own operator rather than a
+    hand-rolled boolean. `tool` builds the equivalent solid for the guard's
+    exact probe and for the `safe_bool` fallback; `envelope_r` is the radius of
+    the bbox screen, which for a counterbore is the *pocket*, not the bore.
     """
     global _CREATED
 
@@ -342,22 +543,31 @@ def _drill(part, points, radius: float, record: dict, *, plane, depth,
 
     stock = _extent(part, workplane)
     reach = stock if thru else float(depth)
+    envelope_r = radius if envelope_r is None else float(envelope_r)
+    if tool is None:
+        def tool(loc, reach_mm):
+            return _tool_solid(loc, workplane, radius, reach_mm)
     warnings = []
     report, guard_warnings = _guard(
-        part, workplane, locations, radius, reach, stock, thru, verify, label)
+        part, workplane, locations, radius, reach, stock, thru, verify, label,
+        tool=tool, envelope_r=envelope_r)
     warnings += guard_warnings
-    warnings += _spacing_warnings(pts, radius * 2.0, label)
-    warnings += _proximity_warnings(records(part), centers, radius * 2.0, label)
+    warnings += _spacing_warnings(pts, envelope_r * 2.0, label)
+    warnings += _proximity_warnings(records(part), centers, envelope_r * 2.0,
+                                    label)
 
     def place():
         with Locations(*locations):
-            Hole(radius=radius, depth=None if thru else depth)
+            if cut is None:
+                Hole(radius=radius, depth=None if thru else depth)
+            else:
+                cut()
         if fuse is not None:
             for loc in locations:
                 add(_bore_plane(loc, workplane).location * fuse)
 
     out, fallback = _bore(
-        part, place, locations, workplane, radius, reach, label,
+        part, place, locations, workplane, reach, label, tool,
         extra=[] if fuse is None else
         [_bore_plane(loc, workplane).location * fuse for loc in locations])
     if fallback:
@@ -399,7 +609,7 @@ def _drill(part, points, radius: float, record: dict, *, plane, depth,
     return out, [full], "; ".join(warnings) if warnings else None
 
 
-def _bore(part, place, locations, workplane, radius, reach, label, extra=()):
+def _bore(part, place, locations, workplane, reach, label, tool, extra=()):
     """Run `place()` inside a `BuildPart` that has `add(part)`-ed the caller's
     part; on failure fall back to one `safe_bool` cut of all the tools at once.
 
@@ -420,8 +630,7 @@ def _bore(part, place, locations, workplane, radius, reach, label, extra=()):
 
         from .boolean import safe_bool
 
-        tools = Compound(children=[_tool_solid(loc, workplane, radius, reach)
-                                   for loc in locations])
+        tools = Compound(children=[tool(loc, reach) for loc in locations])
         out, fuzzy = safe_bool(part, tools, "cut")
         notes = [fuzzy] if fuzzy else []
         for solid in extra:
@@ -438,7 +647,7 @@ def _bore(part, place, locations, workplane, radius, reach, label, extra=()):
 
 
 def _guard(part, workplane, locations, radius, reach, stock, thru, verify,
-           label):
+           label, *, tool, envelope_r):
     """The two-tier per-instance contract, shared with `patterns`.
 
     The free tier builds no geometry at all: a hole's tool is a cylinder, so
@@ -451,14 +660,14 @@ def _guard(part, workplane, locations, radius, reach, stock, thru, verify,
     warnings = []
     if verify == "exact":
         report = engagement(
-            part, [(i, _tool_solid(loc, workplane, radius, reach))
-                   for i, loc in enumerate(locations)], verify="exact")
+            part, [(i, tool(loc, reach)) for i, loc in enumerate(locations)],
+            verify="exact")
     else:
         part_box = bbox_of(part)
         report = [
             {"i": i,
              "status": "engaged" if boxes_overlap(
-                 part_box, _tool_box(loc, workplane, radius, reach))
+                 part_box, _tool_box(loc, workplane, envelope_r, reach))
              else "missed",
              "probe": "bbox", "engaged_mm3": None}
             for i, loc in enumerate(locations)]
@@ -575,6 +784,20 @@ def _check_points(points, label) -> list[tuple[float, float]]:
     if not pts:
         raise ValueError(f"{label}: points is empty; there is no hole to drill")
     return pts
+
+
+def _check_diameter(diameter, label) -> float:
+    try:
+        value = float(diameter)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{label}: diameter must be a number of millimetres, got "
+            f"{diameter!r}. For a fastener size like 'M5', use "
+            f"holes.clearance or holes.tapped, which read the table.") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(
+            f"{label}: diameter must be > 0, got {diameter!r}")
+    return value
 
 
 def _check_depth(depth, label) -> float | None:

@@ -152,7 +152,7 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `hole_standards` | family, size, std | The vendored ISO hole tables, as data — no kernel call, no geometry. Omit everything for `{families, sizes, fits, csk_angle_deg}`; give `family` alone for its tabulated sizes; give `family` + `size` for the row. `family` is `clearance` \| `tapped` \| `counterbore` \| `countersink` (`cbore`/`csk`/`thread` also accepted); `std` is `iso` (default) — **ANSI/ASME tables do not ship yet and `std: "ansi"` is a validation error, never a silent fallback to the ISO numbers**. A `clearance` row returns **all three fits at once** (`{fine, medium, coarse}`, also spelled `{close, normal, loose}`); a `tapped` row returns `{pitch, tap_drill, series, thread, pitches}`; a `counterbore` row returns the ISO 4762 head (`head_d`, `head_h`) *and* the bore (`d`, `depth`) with the `rule` that derived it. Every answer carries `standard`, `revision` and the two published `sources` the numbers were transcribed from. |
+| `hole_standards` | family, size, std | The vendored ISO **and ASME** hole tables, as data — no kernel call, no geometry. Omit everything for `{families, sizes, fits, csk_angle_deg}`; give `family` alone for its tabulated sizes; give `family` + `size` for the row. `family` is `clearance` \| `tapped` \| `counterbore` \| `countersink` (`cbore`/`csk`/`thread` also accepted); `std` is `iso` (default) or `ansi`. **The two standards have different size vocabularies** — `M5` for ISO, `#10` or `1/4` for ASME — and asking one for the other's designation is a `size` error naming what is tabulated, never a silent fallback. A `clearance` row returns **all three fits at once** (`{fine, medium, coarse}`, also spelled `{close, normal, loose}`) plus the `drill` designation where the table has one; a `tapped` row returns `{pitch, tpi, tap_drill, drill, series, thread, pitches}`; a `counterbore` row returns the head (`head_d`, `head_h`) *and* the bore (`d`, `depth`) with the `rule` that derived it. Every answer carries `standard`, `revision`, `units` and the two published `sources` the numbers were transcribed from. |
 
 Two things this surface says out loud rather than hiding:
 
@@ -165,6 +165,19 @@ Two things this surface says out loud rather than hiding:
 - **The tap drill is a shop number**, the stock drill nearest `d − P`. Rows
   where the two sources printed different drills are absent rather than
   averaged; the data file's `notes` names them.
+- **There is more than one published inch clearance chart**, and they are not
+  roundings of each other: ASME B18.2.8 gives a #10 screw 0.206/0.221/0.238 in
+  while the traditional Machinery's-Handbook close/free-fit table gives
+  0.196/0.201. The file names the standard it transcribes and does not blend
+  them.
+- **Lengths are millimetres; designations print the standard's own unit.**
+  Every numeric field a lookup returns (`d`, `depth`, `head_d`, `tap_drill`) is
+  in millimetres, because that is what the kernel drills in; `*_native` repeats
+  it in the table's unit, and an ASME `designation` reads `⌀0.281`, not `⌀7.14`.
+- **A Unified "pitch" is threads per inch**, a whole count, and it is reported
+  as `tpi` alongside the derived millimetre `pitch` so neither can be mistaken
+  for the other. The tolerance class default is per standard too: ISO `6H`,
+  ASME `2B`.
 
 Sizes for a UI picker come from here, never from a hard-coded list.
 
@@ -172,9 +185,14 @@ Sizes for a UI picker come from here, never from a hard-coded list.
 
 Every hole drilled through `agentcad.toolkit.holes` carries a machine-readable
 record — family, standard, size, designation, diameter, count, positions,
-global `centers`, plane, depth, thru, and (for a tapped hole) `tap: {pitch,
-class, drill_mm, thread, series}`. One call is one **group** record, so a
-bolt-circle of 8 holes is one record with `count: 8`, not eight records.
+global `centers`, plane, depth, thru, and, per family, `tap: {pitch, tpi,
+class, drill_mm, drill, thread, series}`, `cbore: {d, depth, fastener}` or
+`csk: {d, angle_deg, fastener}`. `family` is `clearance`, `tapped`,
+`counterbore`, `countersink` or `drilled` — the last is a hole whose diameter
+is the design's own number rather than a table row (a structural bolt hole is
+millimetres, not an ISO 273 fit), and its record claims no `size` and no table
+provenance. One call is one **group** record, so a bolt-circle of 8 holes is
+one record with `count: 8`, not eight records.
 
 The records reach clients on **rebuild results** and on **`get_part`** under
 the `holes` key, and are persisted in a `.cache/<cache_key>.holes.json` sidecar
@@ -199,6 +217,10 @@ Two limits, stated rather than discovered:
 - **A hole record is not automatically a drawing callout.** `generate_drawing`
   reads the top view only, so a record on a side face has no callout. That is
   PRD-014.
+- **A counterbore or countersink is matched to its BORE circle**, not to its
+  seat: the record's `d` is the through hole, and the two circles are
+  concentric, so the leader lands in the same place either way. The seat's own
+  circle carries no separate callout.
 
 ### Design specs
 

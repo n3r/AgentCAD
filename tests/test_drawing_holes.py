@@ -35,6 +35,23 @@ def build(p):
     return part
 '''
 
+# Slice 8's families on one plate: a counterbore, a countersink, and the same
+# pair called out in ASME symbology.
+SEATS = '''\
+from build123d import Box
+from agentcad.toolkit import holes
+
+PARAMS = {"t": {"default": 20.0, "min": 10.0, "max": 40.0, "unit": "mm",
+                "description": "plate thickness"}}
+
+def build(p):
+    part = Box(140, 140, p.t)
+    part, _r, _w = holes.counterbore(part, [(-40, 0)], "M8")
+    part, _r, _w = holes.countersink(part, [(40, 0)], "M6")
+    part, _r, _w = holes.counterbore(part, [(0, 45)], "1/4", std="ansi")
+    return part
+'''
+
 # The same geometry, hand-cut: no toolkit call, so no records anywhere.
 HANDCUT = '''\
 from build123d import *
@@ -119,6 +136,33 @@ def test_a_hand_cut_hole_keeps_the_geometric_callout(demo):
     assert group["count"] == 8
     assert "8× ⌀6.60" in svg                 # measured, and it looks measured
     assert "6H" not in svg
+
+
+@pytest.mark.integration
+def test_a_counterbore_and_a_countersink_print_their_seat(demo):
+    """Slice 8's families reach the sheet. The projected circle is only ever
+    the *seat* diameter — a top view cannot see how deep a pocket is, or that
+    there is a smaller hole under it — so this is exactly the text the
+    geometric detector can never produce."""
+    detected, svg = _draw(demo, "seats", SEATS)
+
+    assert "⌀9 ⌴⌀14.5↧8.8" in svg               # M8 clearance + ISO 4762 head
+    assert "⌀6.6 ⌵⌀13.44×90°" in svg            # M6 clearance + a 90 deg seat
+    assert "⌀0.281 ⌴⌀0.4375↧0.2812" in svg      # the same idea in inches
+
+    # A record matches on its `d`, which is the BORE — the through hole the
+    # fastener passes through — not the seat. Both circles are projected and
+    # they are concentric, so the leader lands in the same place either way;
+    # what matters is that the group carrying the callout is the one whose
+    # diameter the record actually states.
+    cbore = _group(detected, 9.0)
+    assert (cbore["from_metadata"], cbore["family"]) == (True, "counterbore")
+    assert 14.5 in detected["diameters_mm"]   # the seat is on the sheet, and
+    assert not [g for g in detected["hole_groups"]      # carries no callout of
+                if g["diameter_mm"] == pytest.approx(14.5, abs=0.01)]  # its own
+    csk = _group(detected, 6.6)
+    assert (csk["from_metadata"], csk["family"]) == (True, "countersink")
+    assert detected["hole_warnings"] == []
 
 
 # ------------------------------------------------------------------- AC5
