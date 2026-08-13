@@ -224,10 +224,12 @@ SHEET METAL  (from agentcad.toolkit.sheetmetal import SheetPart; tool: flat_patt
 One declarative spec yields BOTH the folded solid and the manufacturing flat
 pattern, so they can never disagree. Base plate centered on the origin, width
 along X, depth along Y, z in [0, t]; edges left/right/front/back (x=-w/2,
-x=+w/2, y=-d/2, y=+d/2). Flanges bend UP (+Z), span the full edge, one per
-edge; angle in (0, 180) exclusive; inner_radius defaults to the thickness.
-Bend allowance BA = radians(angle) * (R + K*t); each flange adds BA + length
-of flat stock beyond its edge (K=0.44 default suits air-bent steel/aluminum).
+x=+w/2, y=-d/2, y=+d/2). Flanges bend UP (+Z); angle in (0, 180) exclusive;
+inner_radius defaults to the thickness. start/width place a PARTIAL flange
+(start from the edge's low-coordinate end, X- or Y-; width=None = whole edge);
+several per edge as long as their spans do not overlap. Bend allowance
+BA = radians(angle) * (R + K*t); each flange adds BA + length of flat stock
+beyond its edge (K=0.44 default suits air-bent steel/aluminum).
 
     def _sheet(p):
         return (SheetPart(p.thick, k_factor=0.44)
@@ -240,14 +242,34 @@ of flat stock beyond its edge (K=0.44 default suits air-bent steel/aluminum).
         return sp.unfold(), sp.bend_lines()
 
     sp.unfold()       -> flat blank as a solid (base + BA+length tab per edge)
-    sp.flat_outline() -> [(x, y), ...] CCW outline polygon of the blank
+    sp.flat_outline() -> [(x, y), ...] CCW outline polygon of the blank; it is
+                         a discretization of unfold()'s OWN top face, not a
+                         second model, so it cannot disagree with the blank
+    sp.flat_outline_edges() -> the same outline as exact lines and arcs
     sp.bend_lines()   -> [{"edge","a","b","angle_deg","inner_radius"}, ...]
                          midlines BA/2 beyond each edge, in flat coords
 
+Bend relief is cut automatically wherever a partial flange stops in the middle
+of an edge, in BOTH fold() and unfold(): relief="auto"|"rect"|"round"|"tear"
+or {"kind","width","depth"}. The default size (1.5*t wide, R+t past the bend
+line) is a SHOP RULE, not a standard. "tear" removes nothing and warns.
+
+    sp.hem(edge, kind="open"|"closed", length, start=0.0, width=None)
+        a 180 deg bend folding the leaf back over the sheet; the air gap is
+        2R -- open R=t (gap 2t), closed R=t/2 (gap t), both shop defaults.
+        kind="teardrop" RAISES: past 180 deg the leaf descends into the sheet
+        after R*(1-cos a)/-sin a (2.41*R at 225 deg) while a hem leaf needs
+        >= 4t, and the fuse swallows the overlap silently. Not approximated.
+    sp.corner(edge_a, edge_b, "close"|"gap"|"rip")
+        close mitres the two leaves on the 45 deg bisector; gap opens one
+        thickness; rip is the untreated corner. Declare the flanges first.
+
 The flat_pattern tool renders the unfolded blank to SVG (outline + dashed
 bend lines with angle/radius callouts) or DXF (layers OUTLINE and BEND) at
-exports/<part>_flat.<ext>. Duplicate edges, angle 0/180, or flange() before
-base() raise ValueError; read sp.warnings after fold() if fusion fell back.
+exports/<part>_flat.<ext>. Overlapping spans on one edge, angle 0/180 in
+flange(), or flange() before base() raise ValueError; read sp.warnings after
+fold() -- it records fusion fallbacks AND a fold that did not come out as one
+valid solid, because OCCT reporting success is not evidence that it did.
 
 DESIGN SPECS  (optional; from agentcad.toolkit.specs import ...)
 ----------------------------------------------------------------

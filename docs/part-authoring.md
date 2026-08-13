@@ -470,9 +470,12 @@ failing angle and what OCCT said — never a silently undrafted part.
 yields BOTH the folded solid and the manufacturing flat pattern, so they can
 never disagree. `base(width, depth)` is a plate centered on the origin (width
 along X, depth along Y, z in `[0, t]`); `flange(edge, angle_deg, length,
-inner_radius=None)` adds a full-edge flange bending up (+Z) on `left`/`right`/
-`front`/`back` (one per edge; angle exclusive `(0, 180)`; `inner_radius`
-defaults to the thickness). Bend allowance is
+inner_radius=None, start=0.0, width=None, relief="auto")` adds a flange bending
+up (+Z) on `left`/`right`/`front`/`back` (angle exclusive `(0, 180)`;
+`inner_radius` defaults to the thickness). `start` is measured from the edge's
+low-coordinate end (X− for `front`/`back`, Y− for `left`/`right`) and
+`width=None` spans the whole edge; several flanges may share an edge as long as
+their spans do not overlap. Bend allowance is
 `BA = radians(angle) * (inner_radius + k_factor * thickness)` — each flange
 adds `BA + length` of flat stock beyond its edge (`k_factor=0.44` suits
 air-bent steel/aluminum).
@@ -494,11 +497,42 @@ def flat_pattern(p):                 # optional contract → flat_pattern tool
 ```
 
 `unfold()` returns the flat blank as a solid, `flat_outline()` its CCW outline
-polygon, and `bend_lines()` the bend midlines (`BA/2` beyond each edge, in
-flat coordinates). Declaring `flat_pattern(p)` enables the `flat_pattern`
-export tool (SVG, or DXF with `OUTLINE`/`BEND` layers). Duplicate edges,
+polygon, `flat_outline_edges()` the same outline as exact lines and arcs, and
+`bend_lines()` the bend midlines (`BA/2` beyond each edge, in flat
+coordinates). Declaring `flat_pattern(p)` enables the `flat_pattern` export
+tool (SVG, or DXF with `OUTLINE`/`BEND` layers). Overlapping spans on one edge,
 angle 0/180, or `flange()` before `base()` raise `ValueError`; read
 `sp.warnings` after `fold()` if fusion needed a fallback.
+
+**The outline is the unfold.** `flat_outline()` is a discretization of
+`unfold()`'s own top face at a chord tolerance, not a second model of the
+blank — so consistency is a fact rather than an invariant to maintain. For a
+straight-edged blank its enclosed area equals that face's area exactly; where a
+round relief or a hem puts arcs in the boundary it is within the tolerance.
+Base corners are vertices only where the blank actually turns.
+
+**Bend relief.** Wherever a partial flange stops in the middle of an edge, a
+relief is cut **through the base plate**, in both `fold()` and `unfold()`, from
+one computation. `relief="auto"` (= `"rect"`), `"round"`, or `"tear"`; or an
+explicit `{"kind", "width", "depth"}`. The default sizing —
+`1.5 × thickness` wide, `inner_radius + thickness` past the bend line — is a
+**common shop rule, not a standard**; no ISO governs it. `"tear"` removes no
+material and says so in `sp.warnings`.
+
+**Hems and corners.** `hem(edge, kind="open"|"closed", length, start, width)`
+is a 180° bend folding the leaf back over the sheet, with an air gap of `2R`:
+`open` uses `R = t` (gap `2t`), `closed` `R = t/2` (gap `t`). Both are shop
+defaults, overridable with `inner_radius=`. **`kind="teardrop"` raises** — it
+wraps past 180°, where this model's tangential leaf descends into the sheet
+after `R·(1−cos a)/−sin a` (2.41·R at 225°) while a hem leaf needs ≥ 4t; the
+overlap would be swallowed silently by the fuse. `corner(edge_a, edge_b,
+treatment)` treats the corner where two flanged edges meet: `close` mitres the
+two leaves on the 45° bisector, `gap` opens one thickness on both, `rip` is the
+untreated corner. Declare the two flanges before the corner.
+
+Every `fold()` and `unfold()` checks `is_valid` **and** the solid count and
+warns if the declared features did not join into one body — OCCT reporting
+success is not evidence that they did.
 
 ## Analysis stand-ins for interference checking
 
