@@ -339,6 +339,18 @@ Three properties follow, and they are the whole design:
   takes a part and returns a part (`holes.*`, `patterns.*`, `features.*`,
   `safe_fillet`, `safe_shell`, `safe_bool`) carries the attribute forward.
 
+  > **Amended by spike S2, slice 4 (changelog 0150).** This was written as a
+  > property and measured as false: through the worker, `safe_fillet`,
+  > `safe_bool` (fuse *and* cut), a raw `part - tool` and even the helpers' own
+  > re-entered `BuildPart()` + `add(part)` all return a brand-new object
+  > carrying **none** of the original's attributes. Only `.clean()`, `.moved()`
+  > and `copy`/`deepcopy` preserve it. Composition is therefore something the
+  > code has to *do*: `holes.carry()` is called explicitly by every helper, and
+  > `fillet.py` / `shell.py` / `boolean.py` gained a two-line
+  > `@holes.carries_records` decorator — a deliberate departure from the plan's
+  > file list, because the alternative was a warning on every script that
+  > drills and then fillets.
+
 **The gap, stated:** a script that performs a *raw* build123d operation after
 its last helper call returns a new object with no attribute, and the records
 are lost. This is detectable without any resettable global: `toolkit.holes`
@@ -376,6 +388,15 @@ this **through the real worker**, not in-process.
  "cbore": null, "csk": null,
  "pattern": {"kind": "polar", "id": "p1", "count": 4}}
 ```
+
+> **Amended in slice 4 (changelog 0150):** the record also carries
+> **`centers`** — the instance centres in *part* coordinates, rounded to 9
+> decimals — plus `removed_mm3` and the per-instance `instances` report.
+> `positions` are plane-local, and slice 6 has to match a record to a detected
+> circle group **by centre proximity in the top view**, which plane-local
+> positions cannot answer. Without `centers` the drawing slice would have had
+> to re-derive them from `plane` + `positions`, i.e. re-implement the plane
+> transform in the drawing pack.
 
 A **group is the unit**, not an instance: one call with N points is one record
 with `count: N` and N `positions`. FR3's "a pattern of a wizard hole replicates
@@ -489,6 +510,16 @@ numbers the geometry used.
 | seed = a **feature callable** | **phase 2** | see below |
 | along-path patterns | **out** — not in the PRD's FR list; named here so nobody adds it quietly |
 
+> **Settled by measurement in slice 3 (changelog 0149):** for a shape pattern
+> the seed is **already fused into the part**, so `count` is the total instance
+> count (CAD convention), `count=1` is a no-op, and the helper places
+> instances 1..count-1. The natural hand-written form
+> `with PolarLocations(0, n): add(seed)` re-adds the seed onto itself at
+> instance 0; measured, that coincident re-fuse is *safe* (one valid solid,
+> identical volume) but **not byte-free** (`85dd9044…` vs `930d1ee7…`). The
+> helpers skip instance 0 and are byte-identical to the hand-written form that
+> also skips it.
+
 **Points-first, because the PRD's own example is points-first.** A pattern of a
 *hole* is spelled `holes.clearance(part, points=patterns.bolt_circle(...))` —
 one hole call, one group record, one boolean. That is FR3 satisfied by
@@ -525,6 +556,12 @@ geometry" is not something OCCT gives us; it is something the helper has to
 
 An exact probe **triples** the cost of a 50-hole pattern. So the contract is
 two-tier and the tier is in the API:
+
+> **Re-measured through the worker (spike S3, changelog 0149):** bbox
+> **0.014 ms** per instance and `&` **2.1 ms** (50-hole plate) / **2.43 ms**
+> (`gusset_plate`'s real bolt group) — so the exact tier roughly *doubles* a
+> 50-instance pattern rather than tripling it. The split below is what shipped;
+> only the multiplier moved, and in the kinder direction.
 
 - **Always on (free):** bbox-overlap per instance; pairwise point spacing vs
   the feature's own diameter (overlap detection is arithmetic on the point set,
@@ -834,9 +871,9 @@ contradicts the design is a design change, not a bug to work around.
 | # | Claim the design rests on | Spike | Slice | Status now |
 |---|---|---|---|---|
 | S1 | A helper that re-enters `BuildPart` + `add()` reproduces the hand-written script's mesh byte-for-byte, **on real example parts through the kernel worker** | rebuild `construction/gusset_plate`, `rocketry/flange`, `prototyping/enclosure_lid` both ways; compare `.acm` sha + metrics | 1 | measured in-process on a synthetic plate (§M1/§M2) — **not yet on real parts** |
-| S2 | A build123d shape carries a Python attribute through `_SHAPE_CACHE`, a real rebuild, and `handle_build`'s tessellation | attach records in a part script, drive `build` then `hole_records` through the worker, then repeat for a **cache hit** and after 17 other builds (LRU eviction) | 4 | measured in-process (§M3) — **not yet through the worker** |
-| S3 | Per-instance engagement can be reported without tripling the cost | bbox vs `&` probe cost on a 50-hole plate and on `gusset_plate`'s real bolt groups | 3 | measured on a synthetic plate (§M4/§M5) |
-| S4 | A misplaced instance is a silent no-op that only we can catch | cut off-part, cut through air, cut a hole larger than the stock | 3 | **measured** (§M4) |
+| S2 | A build123d shape carries a Python attribute through `_SHAPE_CACHE`, a real rebuild, and `handle_build`'s tessellation | attach records in a part script, drive `build` then `hole_records` through the worker, then repeat for a **cache hit** and after 17 other builds (LRU eviction) | 4 | **measured through the worker — holds** (changelog 0150): cache hit returns the same object with the records, LRU eviction + rebuild reproduces them, and they survive a build that writes an `lod1` tier. No fallback rung needed. The service's cached rebuild makes **0 kernel calls**, so the sidecar is mandatory, not an optimisation |
+| S3 | Per-instance engagement can be reported without tripling the cost | bbox vs `&` probe cost on a 50-hole plate and on `gusset_plate`'s real bolt groups | 3 | **measured through the worker** (changelog 0149): bbox 0.014 ms/instance, `&` 2.1–2.4 ms/instance vs ~98–111 ms for the whole 50-instance boolean — the exact tier roughly **doubles** the cost rather than tripling it. API split unchanged |
+| S4 | A misplaced instance is a silent no-op that only we can catch | cut off-part, cut through air, cut a hole larger than the stock | 3 | **measured through the worker** (changelog 0149): 0.89 ms on a 50-hole plate and 1.01 ms on `gusset_plate`'s blank, volume delta **exactly 0.0**, `is_valid True`, nothing raised. `&` on a disjoint pair: empty `Compound`, `.volume == 0`, 0 solids |
 | S5 | `hole_records` after a rebuild is cheap (shape-cache hit) | time `build` + `hole_records` back-to-back on `enclosure_base` (0.86 s cold) and `intake_manifold` (38 s cold) | 5 | unmeasured — this is the one that could make the seam too expensive |
 | S6 | Draft failure is **monotone** in the angle | sweep 0.5→60° on ≥ 8 faces sets across `enclosure_base`, `nozzle`, `gusset_plate`, `angle_bracket` | 10 | measured on 4 synthetic shapes, monotone on all (§M6) |
 | S7 | A rib's trim-to-part step produces one valid solid on a real part | rib on `enclosure_base`'s floor, both `to=` modes | 9 | unmeasured |

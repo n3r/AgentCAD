@@ -12,6 +12,8 @@ from typing import Literal
 
 from build123d import Compound, Shape, Solid
 
+from .holes import carries_records
+
 
 def _occt_bool(a: Shape, b: Shape, op: str, fuzzy: float):
     from OCP.BRepAlgoAPI import (
@@ -42,6 +44,7 @@ def _occt_bool(a: Shape, b: Shape, op: str, fuzzy: float):
     return Solid(shape)
 
 
+@carries_records  # the result keeps `a`'s hole records (PRD-010)
 def safe_bool(a, b, op: Literal["fuse", "cut", "common"] = "fuse", *,
               fuzzy: float = 1e-4, clean: bool = True, expect_single: bool = True):
     """Boolean ``a <op> b`` with fuzzy-tolerance escalation. Returns

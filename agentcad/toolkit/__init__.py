@@ -11,6 +11,8 @@ write robust, non-trivial geometry:
     from agentcad.toolkit import facemod                              # face indexing + push/pull
     from agentcad.toolkit import specs                                # design-spec declarations
     from agentcad.toolkit import hole_standards                       # ISO hole tables (no OCP)
+    from agentcad.toolkit import patterns                             # linear/polar/mirror + points
+    from agentcad.toolkit import holes                                # ISO holes + records
 
 Submodules are importable directly; the convenience names below are re-exported
 lazily so importing the package never hard-fails if one submodule is mid-build.
@@ -19,7 +21,8 @@ lazily so importing the package never hard-fails if one submodule is mid-build.
 from __future__ import annotations
 
 __all__ = ["safe_fillet", "safe_shell", "safe_bool", "sketch", "threads",
-           "sheetmetal", "surfacing", "facemod", "specs", "hole_standards"]
+           "sheetmetal", "surfacing", "facemod", "specs", "hole_standards",
+           "patterns", "holes"]
 
 
 def __getattr__(name: str):
@@ -29,7 +32,7 @@ def __getattr__(name: str):
         import importlib
         return getattr(importlib.import_module(f".{module}", __name__), name)
     if name in ("sketch", "threads", "sheetmetal", "surfacing", "facemod",
-                "specs", "hole_standards"):
+                "specs", "hole_standards", "patterns", "holes"):
         import importlib
         return importlib.import_module(f".{name}", __name__)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
