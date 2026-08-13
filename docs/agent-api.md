@@ -26,10 +26,17 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
   carry `details.traceback` and `details.line`.
 - Mutating tools return the post-state you need next (metrics, warnings,
   status), so a create → inspect → fix loop converges in few turns.
-- Rebuild results have `{"ok": true, "metrics", "warnings", "specs"}` or
-  `{"ok": false, "error", "hint"}`. On failure the previous good geometry is
+- Rebuild results have `{"ok": true, "metrics", "warnings", "specs", "holes"}`
+  or `{"ok": false, "error", "hint"}`. On failure the previous good geometry is
   kept. `specs` is the design-spec verdict for that part (below) — `null` when
   the part declares none, and absent entirely on a failed build.
+- `holes` is the part's machine-readable hole metadata (below), on rebuild
+  results and on `get_part`. It has **four** states and they are different
+  answers: `[...]` the records; `null` the part declares none; `[]` **plus a
+  warning** records were created and a later raw build123d operation dropped
+  them before the part was returned; **absent** not harvested — the build
+  failed, or the harvest could not measure. Never read an absent key as "no
+  holes".
 - Units: mm, grams, degrees. Instance rotations are intrinsic XYZ Euler.
 - One error type is **returned rather than raised**: `merge_conflict`
   (`merge_branch` / `resolve_merge`). It arrives as an ordinary
@@ -65,7 +72,7 @@ of truth, and it omits the FEM tools unless the `[fem]` extra is installed.
 | `open_project` | **path** | Opens an existing project directory (e.g. a bundled example) by absolute path. |
 | `get_project` | **project** | Manifest: parts (with build state), assembly instances, and a `materials` map (`id → {label, density_g_cm3}`). |
 | `create_part` | **project, part_id**, label, script, material | Part detail with metrics (default template if no `script`; `material` defaults to `al6061`). |
-| `get_part` | **project, part_id** | Script, `params_spec`, current params, status (state/error/warnings), metrics, `specs` (the part's design-spec verdict, from cache — `null` when it declares none, and absent when the part does not build), plus `kind` (`script`\|`reference`) and `source`. For reference parts `script`/`params_spec` are `null` and `source` is the imported file. |
+| `get_part` | **project, part_id** | Script, `params_spec`, current params, status (state/error/warnings), metrics, `specs` (the part's design-spec verdict, from cache — `null` when it declares none, and absent when the part does not build), `holes` (the part's hole records, read from the sidecar — never a kernel call; see [Hole metadata](#hole-metadata-holes) for its four states), plus `kind` (`script`\|`reference`) and `source`. For reference parts `script`/`params_spec` are `null` and `source` is the imported file. |
 | `update_part_script` | **project, part_id**, script, label, material | Rebuild result. On failure: traceback + failing line + hint; previous geometry kept. |
 | `set_params` | **project, part_id, values** | Rebuild result. Values (numbers, booleans, enum choices, or strings, per each param's `type` in `params_spec`) merge with existing overrides; numeric values clamp to min/max with warnings, while a wrong-typed value or non-member enum choice is rejected. Unknown names are rejected before anything is written, and a `null` value removes an override. |
 | `delete_part` | **project, part_id** | `{deleted}` — fails with a conflict while assembly instances reference the part. |
@@ -127,7 +134,7 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `generate_drawing` | **project, part_id**, views, format | Projected front/top/right/iso views with overall dimensions and hole callouts detected from the geometry. `views` is a subset of `[top, front, right, iso]` (default all); `format` is `svg` (default) or `dxf`. Writes `exports/<part_id>_drawing.<ext>` and returns `{path, size_bytes, detected: {diameters_mm, hole_groups, label}}`. When the part has PMI (`set_part_pmi`), the SVG gains tolerance suffixes on the overall/diameter dimensions, boxed datum flags, and feature control frames; `detected` then also carries `pmi_rendered: {dims, datums, fcf}` and `pmi_warnings`. DXF output ignores PMI (v1). Script parts only. |
+| `generate_drawing` | **project, part_id**, views, format | Projected front/top/right/iso views with overall dimensions and hole callouts detected from the geometry. `views` is a subset of `[top, front, right, iso]` (default all); `format` is `svg` (default) or `dxf`. Writes `exports/<part_id>_drawing.<ext>` and returns `{path, size_bytes, detected: {diameters_mm, hole_groups, hole_warnings, label}}`. A hole drilled through `agentcad.toolkit.holes` prints its **designation** (`8× M5×0.8 - 6H ↧12`) instead of a measured diameter: its `hole_groups` entry carries `from_metadata: true` plus `designation`, `family` and `record_id`, and a record is drawn whatever its count (the `count >= 3` grouping threshold applies to *guessing*, not to intent). A group with no record keeps the measured text (`8× ⌀6.60`) and `from_metadata: false`. **Callouts come from the top view only**, so a record on a side face — or any record when `views` omits `top` — is named in `hole_warnings` rather than silently dropped (PRD-014). When the part has PMI (`set_part_pmi`), the SVG gains tolerance suffixes on the overall/diameter dimensions, boxed datum flags, and feature control frames; `detected` then also carries `pmi_rendered: {dims, datums, fcf}` and `pmi_warnings`. DXF output ignores PMI (v1). Script parts only. |
 | `flat_pattern` | **project, part_id**, format | Sheet-metal flat pattern: the unfolded blank's outline plus dashed bend lines with angle/radius callouts. Requires the script to define `flat_pattern(p)` returning a flat part or `(part, bend_lines)` — `SheetPart` from `agentcad.toolkit.sheetmetal` provides both. `format` is `svg` (default) or `dxf` (layers `OUTLINE`/`BEND`). Writes `exports/<part_id>_flat.<ext>` and returns `{path, size_bytes, flat_bbox_mm: {w, h}, n_bend_lines}`. Script parts only. |
 | `set_part_pmi` | **project, part_id, pmi** | Replaces the part's PMI / GD&T section (`{}` clears it): `dims` (`{id, kind: linear\|diameter, target: width\|height\|depth or nominal hole ⌀ mm, plus, minus, note?}`), `datums` (`{id: "A".."Z", face: top\|bottom\|left\|right\|front\|back}`), `fcf` (`{id, type: flatness\|position\|perpendicularity\|parallelism\|cylindricity, tol_mm, datums: [letters], note?}`). Validated before writing; works for script and reference parts. Returns `{part_id, pmi}`. |
 | `get_part_pmi` | **project, part_id** | The part's stored PMI section, with empty `dims`/`datums`/`fcf` when unset. |
@@ -160,6 +167,38 @@ Two things this surface says out loud rather than hiding:
   averaged; the data file's `notes` names them.
 
 Sizes for a UI picker come from here, never from a hard-coded list.
+
+### Hole metadata (`holes`)
+
+Every hole drilled through `agentcad.toolkit.holes` carries a machine-readable
+record — family, standard, size, designation, diameter, count, positions,
+global `centers`, plane, depth, thru, and (for a tapped hole) `tap: {pitch,
+class, drill_mm, thread, series}`. One call is one **group** record, so a
+bolt-circle of 8 holes is one record with `count: 8`, not eight records.
+
+The records reach clients on **rebuild results** and on **`get_part`** under
+the `holes` key, and are persisted in a `.cache/<cache_key>.holes.json` sidecar
+beside `.metrics.json` — content-addressed on the same key, discarded whenever
+the script or params change, never merged, and never part of `project.json`
+(they are derived data, like metrics, not authored state like PMI).
+
+**Four states, four meanings.** `[...]` the records; `null` the part declares
+none; `[]` **with a warning** records were created and something dropped them
+(a raw build123d operation after the last toolkit call returns a new object
+that carries nothing — call `holes.carry(new_part, old_part)` or route the
+operation through a toolkit helper); **absent** not harvested, so the answer is
+unknown — the build failed, or the harvest could not measure. An absent key is
+not "no holes".
+
+Two limits, stated rather than discovered:
+
+- **Records describe the call, not the current geometry.** A later cut that
+  removes a hole leaves its record behind; re-verifying every record against
+  the solid costs ~2.1 ms per instance and is PRD-021's job, not the
+  harvest's.
+- **A hole record is not automatically a drawing callout.** `generate_drawing`
+  reads the top view only, so a record on a side face has no callout. That is
+  PRD-014.
 
 ### Design specs
 

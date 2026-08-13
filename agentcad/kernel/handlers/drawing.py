@@ -14,6 +14,27 @@ and a column of feature control frames above the title block.
 ``detected["pmi_rendered"]`` counts what was actually drawn and
 ``detected["pmi_warnings"]`` names PMI entries that could not be placed.
 DXF output ignores PMI (v1).
+
+Hole callouts read the part's **hole records** when it has them (PRD-010): the
+records ride on the built shape, this handler already builds it, so they are
+read in-process — no second kernel call and no service round trip. A record
+that matches a detected circle group by diameter *and* centre prints its
+designation (``8× M5×0.8 - 6H ↧12``) and marks that group
+``from_metadata: true``; a group with no record keeps the measured text
+(``8× ⌀6.60``) and ``from_metadata: false``. The distinction is the point: a
+⌀4.2 circle on a projection cannot tell a drilled hole from an M5 tap, and only
+the record knows which one the author meant.
+
+**Known limitation, inherited and deliberate: this reads the TOP VIEW only.**
+``_detect_circles`` collects closed CIRCLE edges from the top projection, so a
+hole on a side face has a perfect record and no callout — and a drawing with
+no top view has none at all. Rather than partially patch it here, every record
+that could not be drawn is named in ``detected["hole_warnings"]``; making side
+views carry callouts is PRD-014's job.
+
+Also inherited: ``_detect_circles`` only reports a *geometric* group at
+``count >= 3``. A record is drawn whatever its count — a single tapped hole is
+a callout — so the threshold applies to guessing, not to intent.
 """
 
 from __future__ import annotations
@@ -182,10 +203,102 @@ def _detect_circles(vis_edges):
             if e.geom_type.name == "CIRCLE" and e.is_closed]
 
 
-def _build_svg(part, views, detected_out, pmi=None):
+# ---- hole records -> callouts ----------------------------------------------
+
+# The diameter window a record has to fall in to claim a detected group. Same
+# 0.05 mm the PMI diameter dims already use, so intent and tolerance agree
+# about what "this circle" means.
+_HOLE_DIA_TOL = 0.05
+# Centre proximity. The top view is an orthographic projection along Z with no
+# scaling, so a matching centre agrees to floating-point noise; 0.05 mm is
+# already three orders of magnitude of slack, and keeping it tight is what
+# stops two same-diameter groups on one part from swapping designations.
+_HOLE_CENTER_TOL = 0.05
+
+#: What a record must carry before this handler will draw it. `hole_records`
+#: (the harvest handler) is where record shape is *enforced*; a consumer that
+#: raises on residue would take a whole drawing down over one bad dict, so
+#: here a malformed record is reported and skipped.
+_RECORD_KEYS = ("id", "designation", "d", "count", "centers")
+
+
+def _record_problem(record) -> str | None:
+    if not isinstance(record, dict):
+        return (f"hole record is a {type(record).__name__}, not a dict; it was "
+                f"not produced by a toolkit.holes helper and cannot be drawn")
+    missing = [key for key in _RECORD_KEYS if key not in record]
+    if missing:
+        return (f"hole record {record.get('id', '?')!r} is missing "
+                f"{missing} and cannot be drawn")
+    if not isinstance(record["centers"], list) or not record["centers"]:
+        return (f"hole record {record.get('id', '?')!r} carries no centers, so "
+                f"there is nowhere to point a leader")
+    return None
+
+
+def _top_xy(center):
+    """A record's world centre in TOP-view coordinates.
+
+    The top view looks down -Z with +Y up (``_VIEW_DIRS``), so the projection
+    is the identity on X and Y — asserted by the callouts landing on their
+    circles in ``tests/test_drawing_holes.py`` rather than assumed here.
+    """
+    return (float(center[0]), float(center[1]))
+
+
+def _match_record(record, groups):
+    """The detected group this record describes: ``(diameter, circles)`` or
+    None.
+
+    Both halves are required. Diameter alone would let one of two ⌀5.5 groups
+    on the same plate claim the other's circles — which is exactly the kind of
+    silent mislabelling a drawing must not do — so a record must also land on
+    the circles' centres.
+    """
+    wanted = [_top_xy(c) for c in record["centers"]]
+    best = None
+    for dia, centers in groups:
+        if abs(dia - float(record["d"])) > _HOLE_DIA_TOL:
+            continue
+        hit = [c for c in centers
+               if any(math.dist((c.X, c.Y), w) <= _HOLE_CENTER_TOL
+                      for w in wanted)]
+        if hit and (best is None or len(hit) > len(best[1])):
+            best = (dia, hit)
+    return best
+
+
+def _records_on(shape) -> list:
+    """The hole records riding on the built shape — in-process, no kernel call.
+
+    This handler already has the shape (design Decision 10), and the records
+    are an attribute on it, so reading them costs one `getattr`. Whether they
+    are *complete* is the harvest's question, not this one: a script that drops
+    its records is warned about on the rebuild, and a drawing must not fail
+    because of it.
+    """
+    try:
+        from agentcad.toolkit import holes
+
+        return list(holes.records(shape))
+    except Exception:                                          # noqa: BLE001
+        return []
+
+
+def _callout_text(designation: str, count: int) -> str:
+    """``8× ⌀6.6``; a lone hole is just ``⌀6.6``.
+
+    ``1×`` is not a drafting convention — it reads as a quantity someone forgot
+    to finish — so the prefix appears only where it carries information.
+    """
+    return f"{count}× {designation}" if count > 1 else designation
+
+
+def _build_svg(part, views, detected_out, pmi=None, hole_records=()):
     proj = {name: part.project_to_viewport(look_at=(0, 0, 0), **_VIEW_DIRS[name])
             for name in views}
     W, H = 420, 297
+    hole_warnings: list[str] = []
 
     # PMI callout state. `pmi` is the normalized section from core/pmi.py.
     pmi = pmi or {}
@@ -259,15 +372,41 @@ def _build_svg(part, views, detected_out, pmi=None):
         for c, r in circles:
             by_r[round(r, 2)].append(c)
         detected_out["diameters_mm"] = sorted(round(2 * r, 2) for r in by_r)
-        detected_out["hole_groups"] = [
-            {"diameter_mm": round(2 * r, 2), "count": len(cs)}
+        # The GEOMETRIC groups, at the inherited count >= 3 threshold. A record
+        # below it is added from metadata further down: the threshold is a
+        # guard against calling two coincidental circles a hole pattern, and
+        # intent needs no such guard.
+        hole_groups = [
+            {"diameter_mm": round(2 * r, 2), "count": len(cs),
+             "from_metadata": False}
             for r, cs in sorted(by_r.items()) if len(cs) >= 3
         ]
+        by_dia = {group["diameter_mm"]: group for group in hole_groups}
         # PMI diameter dims: attach a toleranced callout to the detected
         # circle group whose diameter is within 0.05 mm of the target.
         groups = [(round(2 * r, 2), cs) for r, cs in sorted(by_r.items())]
+        pmi_drawn: set = set()      # group diameters PMI already annotated
         ox_t, oy_t, sc_t, _bounds = placements["top"]
         slot = 0
+
+        def _leader(centers, text):
+            """One callout: a leader from the column to a circle, and the text.
+
+            The target is the extreme circle by (x, y), so two runs of the same
+            part put the leader on the same hole. One implementation for all
+            three kinds of callout — PMI, record and measured — because their
+            only real difference is what the text says.
+            """
+            nonlocal slot
+            tx, ty = 196.0, 40.0 + 8.0 * slot   # column right of the top view
+            c = max(centers, key=lambda c: (c.X, c.Y))
+            tip = (ox_t + sc_t * c.X, oy_t - sc_t * c.Y)
+            tail = (tx - 1.5, ty - 1.2)
+            svg.append(_line(tail, tip))
+            svg.append(_arrow(tip, (tip[0] - tail[0], tip[1] - tail[1])))
+            svg.append(_text((tx, ty), _esc(text), anchor="start"))
+            slot += 1
+
         for d in dia_dims:
             best = None
             for dia, cs in groups:
@@ -281,21 +420,78 @@ def _build_svg(part, views, detected_out, pmi=None):
                 continue
             _err, dia, cs = best
             prefix = f"{len(cs)}x " if len(cs) > 1 else ""
-            callout = f"{prefix}⌀{dia:.2f}{_tol_suffix(d['plus'], d['minus'])}"
-            tx, ty = 196.0, 40.0 + 8.0 * slot  # column right of the top view
-            c = max(cs, key=lambda c: (c.X, c.Y))  # deterministic leader target
-            tip = (ox_t + sc_t * c.X, oy_t - sc_t * c.Y)
-            tail = (tx - 1.5, ty - 1.2)
-            svg.append(_line(tail, tip))
-            svg.append(_arrow(tip, (tip[0] - tail[0], tip[1] - tail[1])))
-            svg.append(_text((tx, ty), callout, anchor="start"))
+            _leader(cs, f"{prefix}⌀{dia:.2f}"
+                        f"{_tol_suffix(d['plus'], d['minus'])}")
             n_dia_rendered += 1
-            slot += 1
+            pmi_drawn.add(dia)
+
+        # Hole records: what the author asked for, printed instead of guessed.
+        for record in hole_records:
+            problem = _record_problem(record)
+            if problem is not None:
+                hole_warnings.append(problem)
+                continue
+            match = _match_record(record, groups)
+            if match is None:
+                hole_warnings.append(
+                    f"hole record {record['id']!r} ({record['designation']}, "
+                    f"⌀{float(record['d']):g}, {record['count']} instance(s)) "
+                    f"has no matching circle in the top view, so it has no "
+                    f"callout — drawings read the TOP VIEW only, and a hole on "
+                    f"another face has a record and no callout (PRD-014)")
+                continue
+            dia, centers = match
+            group = by_dia.get(dia)
+            if group is None:
+                # Below the detector's count >= 3 threshold: the record is the
+                # authority, so the group is created from it.
+                group = {"diameter_mm": dia, "count": int(record["count"]),
+                         "from_metadata": False}
+                hole_groups.append(group)
+                by_dia[dia] = group
+            if (group["from_metadata"]
+                    and group.get("designation") != record["designation"]):
+                hole_warnings.append(
+                    f"hole records {group.get('record_id')!r} and "
+                    f"{record['id']!r} both claim the ⌀{dia:g} circles with "
+                    f"different designations "
+                    f"({group.get('designation')!r} vs "
+                    f"{record['designation']!r}); the group reports the first")
+            else:
+                group.update({"from_metadata": True,
+                              "designation": record["designation"],
+                              "family": record.get("family"),
+                              "record_id": record["id"]})
+            if dia not in pmi_drawn:
+                _leader(centers,
+                        _callout_text(record["designation"],
+                                      int(record["count"])))
+
+        # Whatever is left is a hole we can only measure: same callout shape,
+        # measured text, and `from_metadata: false` says which is which.
+        for group in hole_groups:
+            dia = group["diameter_mm"]
+            if group["from_metadata"] or dia in pmi_drawn:
+                continue
+            centers = next((cs for gd, cs in groups if gd == dia), None)
+            if centers:
+                _leader(centers, _callout_text(f"⌀{dia:.2f}", group["count"]))
+
+        detected_out["hole_groups"] = sorted(
+            hole_groups, key=lambda g: g["diameter_mm"])
+        detected_out["hole_warnings"] = hole_warnings
     else:
         for d in dia_dims:
             pmi_warnings.append(
                 f"pmi dim {d['id']!r}: no detected diameter for target "
                 f"{d['target']:g} (top view not rendered)")
+        for record in hole_records:
+            problem = _record_problem(record)
+            hole_warnings.append(problem if problem is not None else (
+                f"hole record {record['id']!r} ({record['designation']}) has "
+                f"no callout: hole callouts are detected in the top view and "
+                f"this drawing does not render one"))
+        detected_out["hole_warnings"] = hole_warnings
 
     # title block
     tb_x, tb_y, tb_w, tb_h = W - 6 - 150, H - 6 - 28, 150, 28
@@ -389,7 +585,8 @@ def register(toolbox: dict):
         shape, _values, _warnings = build_shape(params["script"], params.get("params", {}))
         detected: dict = {"label": params.get("label", "part")}
         if fmt == "svg":
-            svg = _build_svg(shape, views, detected, pmi=params.get("pmi"))
+            svg = _build_svg(shape, views, detected, pmi=params.get("pmi"),
+                             hole_records=_records_on(shape))
             atomic_write(out_path, svg.encode())
         elif fmt == "dxf":
             _build_dxf(shape, out_path)  # DXF ignores PMI (v1)
