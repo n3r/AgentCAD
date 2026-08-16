@@ -439,3 +439,93 @@ def test_polar_helper_is_byte_identical_to_the_handwritten_form(kernel,
     assert sha_helper == sha_hand, (
         "patterns.polar no longer reproduces the hand-written PolarLocations "
         "form byte for byte — the helper has stopped being a wrapper")
+
+
+# ---------------------- R7: the exact tier must tell a seat from a miss
+
+def _pocketed_plate_with_boss():
+    """A plate with a 20x20 hole clean through at x = +40, and a boss already
+    fused on top at x = -40. Patterning that boss along +X by 80 lands the
+    copy squarely over the hole: its bounding box overlaps the plate, and it
+    has nothing whatsoever to weld to.
+    """
+    from build123d import Align, Box, Pos
+
+    plate = Box(120, 120, 10) - (Pos(40, 0, 0) * Box(20, 20, 30))
+    boss = Pos(-40, 0, 5) * Box(10, 10, 8,
+                                align=(Align.CENTER, Align.CENTER, Align.MIN))
+    return plate + boss, boss
+
+
+def test_exact_verify_does_not_warn_about_a_correctly_seated_instance():
+    """**Regression.** A helper-built rib or boss sits ON its seat plane, so
+    its interpenetration with the part is 0 **by construction**. The `exact`
+    tier called that `flush` and warned about every one of them — the strong
+    tier crying wolf on the happy path, which trains a reader to ignore it.
+
+    A seat and an accidental tangency are not the same thing, and the
+    difference is measurable: a seat shares a face of positive AREA.
+    """
+    from build123d import Box, Pos
+
+    from agentcad.toolkit import patterns
+
+    part = _plate()
+    seat = Pos(0, 0, 10) * Box(20, 20, 10)      # face-to-face on the top face
+    report = patterns.engagement(part, [(0, seat)], verify="exact")
+    assert report[0]["status"] == "flush"
+    assert report[0]["engaged_mm3"] == 0.0
+    assert report[0]["contact_mm2"] == pytest.approx(400.0)
+
+    # and through a real helper: a boss patterned onto the plate is correct
+    # construction, so the strong tier has nothing to say about it
+    seeded, boss = _seeded_plate()
+    out, warning = patterns.linear(seeded, boss, (0, 1, 0), 2, 20,
+                                   verify="exact")
+    assert warning is None, warning
+    assert patterns.instances(out)[1]["status"] == "flush"
+    assert patterns.instances(out)[1]["contact_mm2"] > 0.0
+
+
+def test_exact_verify_sees_a_miss_into_existing_void_that_bbox_cannot():
+    """The other half. The default `bbox` tier only asks whether the bounding
+    boxes overlap, so an instance dropped into a pocket that was already cut
+    out of the part reads as `engaged` — the boxes do overlap, and nothing
+    about them knows the material is gone. Only a measurement can see it, and
+    the exact tier used to call this `flush` too, i.e. exactly what it called
+    a correct seat.
+    """
+    from build123d import Box, Pos
+
+    from agentcad.toolkit import patterns
+
+    part, boss = _pocketed_plate_with_boss()
+    over_hole = Pos(80, 0, 0) * boss             # the copy the pattern makes
+
+    loose = patterns.engagement(part, [(0, over_hole)])
+    assert loose[0]["status"] == "engaged", "the bbox tier cannot see this"
+
+    strict = patterns.engagement(part, [(0, over_hole)], verify="exact")
+    assert strict[0]["status"] == "missed"
+    assert strict[0]["contact_mm2"] == 0.0
+
+    # and the helper says so instead of fusing a floating solid in silence
+    _out, warning = patterns.linear(part, boss, (1, 0, 0), 2, 80,
+                                    verify="exact")
+    assert warning is not None and "[1]" in warning
+
+
+def test_exact_verify_still_flags_an_edge_only_tangency():
+    """An instance meeting the part along an edge has zero interpenetration
+    AND zero contact area: there is nothing to weld. It reads as a miss, which
+    is what it structurally is, and not as the valid flush join a face seat
+    is."""
+    from build123d import Box, Pos
+
+    from agentcad.toolkit import patterns
+
+    part = _plate()
+    tangent = Pos(65, 65, 10) * Box(10, 10, 10)   # corner-to-corner only
+    report = patterns.engagement(part, [(0, tangent)], verify="exact")
+    assert report[0]["status"] == "missed"
+    assert report[0]["contact_mm2"] == 0.0

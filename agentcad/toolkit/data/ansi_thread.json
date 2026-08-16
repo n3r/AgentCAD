@@ -7,6 +7,9 @@
     "RivCut, \"Tap Drill Chart: Inch + Metric Sizes (UNC/UNF/ISO)\", https://www.rivcut.com/resources/tap-drill-chart (read 2026-08-13)"
   ],
   "revision": "2026-08-13",
+  "provenance": {
+    "default": {"sources": [0, 1]}
+  },
   "notes": [
     "The pitch column here is THREADS PER INCH, an integer count, not a length. hole_standards reports it as `tpi` and also as `pitch` in millimetres (25.4 / tpi) so a caller that only speaks pitch is not silently handed a count.",
     "coarse_pitch names the FIRST-CHOICE series for the size, which for Unified inch threads is UNC. It is the tpi, not a millimetre pitch.",

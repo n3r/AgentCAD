@@ -64,6 +64,7 @@ from ..kernel.client import KernelError
 from ..kernel.protocol import ERROR_CONTRACT
 from .model import ValidationError
 from .project import ProjectStore
+from .script_blocks import apply_generated_block, next_build_alias
 from .tools import Tool, schema, with_hint
 
 #: Sidecar format. Bump it and every stored file is discarded on read.
@@ -82,8 +83,11 @@ DESCRIPTION = (
     "counterbore/countersink geometry from the fastener head standards (ISO "
     "4762, ISO 10642, ASME B18.3). Omit everything to list the families and "
     "their tabulated sizes; give family+size for the row. Clearance returns "
-    "all three fits at once. Every answer carries the standard, the revision "
-    "and the two published sources it was transcribed from. Lengths are "
+    "all three fits at once — millimetres under `fits`, the table's own unit "
+    "under `fits_native`. Every answer carries the standard, the revision, and "
+    "the sources that back THAT row (the file's list is their union), with "
+    "`corroborated` (false when only one source backs it) and `conflicts` (a "
+    "source disagreement that was resolved rather than dropped). Lengths are "
     "millimetres, with the table's own unit alongside in `*_native` — an ASME "
     "row is inches and its designation prints inches. Counterbore answers "
     "name the head dimensions (the standard part) separately from the bore (a "
@@ -404,11 +408,11 @@ _ADD_HOLES_BLOCK = """
 
 {marker}
 {caveat}from agentcad.toolkit import holes as _agentcad_holes
-{imports}_agentcad_prev_build_{n} = build
+{imports}{alias} = build
 
 
 def build(p):
-    _agentcad_part = _agentcad_prev_build_{n}(p)
+    _agentcad_part = {alias}(p)
     _agentcad_part, _agentcad_recs, _agentcad_warn = _agentcad_holes.{helper}(
 {args}
     )
@@ -512,6 +516,14 @@ def _hole_call_args(family: str, size, fit, std, depth) -> tuple[list[str], dict
             # No table row: the caller states millimetres, and the record
             # carries no `size` because no standard supplied the number.
             diameter = _number(size, "size")
+            # The table families are validated by the lookup itself — a row
+            # exists or it does not. `drilled` has no row, so it needs the
+            # same `> 0` guard `depth` has: without one a zero or negative
+            # diameter is emitted into the script and only fails at rebuild,
+            # by which time it is on disk.
+            if float(size) <= 0:
+                raise ValidationError(
+                    f"size must be > 0 mm for a drilled hole, got {size!r}")
             echo["diameter_mm"] = float(size)
         else:
             row = tables.lookup(family=family, size=size, std=std_name)
@@ -613,18 +625,23 @@ def register(registry, service) -> None:
             f"        {_size_literal(key, size)},",
             f"        plane={plane_src},",
         ] + [f"        {arg}," for arg in args]
-        n = script.count(ADD_HOLES_MARKER)
         block = _ADD_HOLES_BLOCK.format(
             marker=ADD_HOLES_MARKER,
             caveat=caveat,
             imports=("from build123d import Plane as _agentcad_Plane\n"
                      if needs_plane else ""),
-            n=n,
+            # Allocated against the aliases ALREADY IN THE SCRIPT — not off
+            # this marker's count — so `add_holes` cannot collide with a
+            # `push_pull` block, with itself after a middle block is deleted,
+            # or with any future pack. See `script_blocks`: a collision is a
+            # self-recursing `build`, not a harmless shadow.
+            alias=next_build_alias(script),
             helper=_HELPERS[key],
             args="\n".join(call),
         )
-        result = service.update_part(
-            project, part_id, script=script.rstrip("\n") + block)
+        result = apply_generated_block(
+            service, project, part_id, script,
+            script.rstrip("\n") + block)
         return {
             **with_hint(result),
             "family": key,

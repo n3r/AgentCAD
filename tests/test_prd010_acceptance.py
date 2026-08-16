@@ -11,7 +11,8 @@ slice 7's rewrite of the bundled examples could not be graded by the person
 making it — and `tests/test_tools_holes.py` for the hole-on-face tool.
 
 This file is the **contract** layer: it walks each acceptance criterion of
-`docs/prd/completed/PRD-010-feature-toolkit-ii.md` through the surfaces a human
+`docs/prd/*/PRD-010-feature-toolkit-ii.md` (the PRD moves from `in-progress/`
+to `completed/` at merge, so this file locates it) through the surfaces a human
 and an agent actually touch — the registered tools, a real service rebuild and
 a real kernel build — so a reviewer can map AC → test without reading the unit
 suites.
@@ -54,6 +55,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import shutil
 from pathlib import Path
 
@@ -73,8 +75,28 @@ from .test_examples_golden import (
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CHANGELOG = REPO_ROOT / "docs" / "changelog"
 FRONTEND = REPO_ROOT / "frontend"
-PRD = (REPO_ROOT / "docs" / "prd" / "completed"
-       / "PRD-010-feature-toolkit-ii.md")
+PRD_NAME = "PRD-010-feature-toolkit-ii.md"
+
+
+def _find_prd() -> Path:
+    """Locate the PRD wherever it currently lives.
+
+    A PRD moves from `in-progress/` to `completed/` at **merge**, not when the
+    build finishes, so a test that hard-codes one directory is red for the
+    whole review window (and again if anyone ever files it elsewhere). The
+    contract this file grades is the PRD's *content*, not its filing cabinet.
+    """
+    prd_root = REPO_ROOT / "docs" / "prd"
+    for stage in ("in-progress", "completed", "pending"):
+        candidate = prd_root / stage / PRD_NAME
+        if candidate.is_file():
+            return candidate
+    found = sorted(prd_root.rglob(PRD_NAME))
+    assert found, f"{PRD_NAME} is not anywhere under {prd_root}"
+    return found[0]
+
+
+PRD = _find_prd()
 
 
 @pytest.fixture
@@ -206,7 +228,10 @@ def test_ac3_hole_standards_returns_the_published_iso_273_diameters(demo):
     assert answer["designations"]["medium"] == "⌀5.5"
     assert answer["standard"].startswith("ISO 273")
     assert len(answer["sources"]) >= 2, (
-        "every row ships with two independent published sources")
+        "THIS row ships with two independent published sources")
+    # "every row does" is the claim the review disproved: the file-level list
+    # is a union, and `corroborated` is the per-row answer.
+    assert answer["corroborated"] is True
 
     # one tap-drill row and one counterbore row, as the criterion asks
     tapped = registry.call("hole_standards", {"size": "M5", "family": "tapped"})
@@ -543,31 +568,386 @@ def test_ac8_the_full_suite_count_is_cited():
 
 
 # ------------------------------------------------------------------- FR14
+#
+# The helpers below exist because a plain substring grep over `main.js`
+# is not a gate: `"renderHoleControls" in main` is satisfied by the *comment*
+# that names it, and the "no hard-coded size" rule was satisfied by needles
+# (`M2.5`, `M16`, `M36`) that were absent while a literal `"M5"` sat in the
+# defaulting line the rule is about (review 3, R21). So the wiring assertions
+# below are made **inside the function that has to carry them**, and the
+# behavioural half runs the shipped source in node.
+
+MAIN_JS = FRONTEND / "js" / "main.js"
+
+# `M5`, `M2.5`, `#10`, `1/4`, `1/4-20` — a whole string literal that IS a
+# fastener designation. Deliberately a prohibition rather than a needle: a rule
+# of the form "this text is absent" cannot be satisfied by unrelated text.
+DESIGNATION = re.compile(r"^(?:M\d+(?:\.\d+)?|#\d+|\d+/\d+(?:-\d+)?)$")
+
+
+def _strip_js_comments(text: str) -> str:
+    """`text` with its comments blanked, string and template literals intact.
+
+    Every structural assertion below runs on this, because a comment is not
+    wiring: commenting the `renderHoleControls(body, planar)` call out left the
+    old grep — and the first draft of this one — perfectly green.
+    """
+    out: list[str] = []
+    i, n, quote = 0, len(text), ""
+    while i < n:
+        ch = text[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            i += 1
+        elif ch in "\"'`":
+            quote = ch
+            out.append(ch)
+            i += 1
+        elif text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            out.append("\n" * text.count("\n", i, n if end < 0 else end))
+            i = n if end < 0 else end + 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _js_function(text: str, name: str) -> str:
+    """The source of a top-level `function name(…)`, closer included, with its
+    comments blanked.
+
+    Ends at the first line that is exactly `}` — the repo's style for a
+    top-level function — rather than counting braces, which a template
+    literal or a comment can unbalance.
+    """
+    text = _strip_js_comments(text)
+    match = re.search(rf"^(?:async )?function {re.escape(name)}\(", text, re.M)
+    assert match, f"main.js has no top-level `function {name}(`"
+    end = text.index("\n}\n", match.start())
+    return text[match.start():end + 3]
+
+
+def _hole_section(text: str) -> str:
+    """Everything between the `hole on face` banner and the next one.
+
+    Raw — comments and all — because this is what the node harness executes.
+    """
+    start = re.search(r"^// -+ hole on face.*$", text, re.M)
+    assert start, "main.js has lost the `hole on face` section banner"
+    end = re.search(r"^// -+ widgets\s*$", text[start.end():], re.M)
+    assert end, "the `hole on face` section has no following banner"
+    return text[start.end():start.end() + end.start()]
+
+
+def _hole_form_reset_hook(text: str) -> str:
+    """The name of the function the hole section resets its form from.
+
+    Found through the wiring, not by name: whatever `onKeys` hands the
+    `selectedPart` change that is *defined in the hole section* is the reset
+    hook, so this fails if the reset is never subscribed at all.
+    """
+    section = _strip_js_comments(_hole_section(text))
+    handlers = re.findall(r"onKeys\(\[([^\]]*)\],\s*([A-Za-z_$][\w$]*)\s*\)",
+                          _strip_js_comments(text))
+    owned = [name for keys, name in handlers
+             if '"selectedPart"' in keys
+             and re.search(rf"^function {re.escape(name)}\(", section, re.M)]
+    assert owned, (
+        "nothing in the hole section is subscribed to the `selectedPart` "
+        "change — the hole form is module-level, so a depth or a set of "
+        "points typed against one part is applied to the next one")
+    return owned[0]
+
 
 def test_fr14_the_face_card_hole_controls_are_wired_into_the_shipped_frontend():
     """**FR14's structural gate.** The browser session is evidence
     (changelog 0159); this fails if the wiring is deleted, which the prose
     alone cannot.
 
-    It also pins the one rule the card must not lose: the size list comes from
-    the `hole_standards` tool, never from a literal in JS, so the picker
-    cannot offer a size the tables do not have.
+    Every assertion here is positional — it is made against the body of the
+    function that must contain it — so no comment, string or unrelated literal
+    elsewhere in `main.js` can stand in for the wiring.
+
+    It also pins the rule the card must not lose: **a size the picker offers is
+    a row of the `hole_standards` answer**, never a literal in JS. That is
+    graded as a prohibition on designation-shaped string literals anywhere in
+    the file, which is what the previous three-needle spelling only pretended
+    to do.
     """
-    main = (FRONTEND / "js" / "main.js").read_text(encoding="utf-8")
+    main = MAIN_JS.read_text(encoding="utf-8")
     css = (FRONTEND / "css" / "app.css").read_text(encoding="utf-8")
 
-    assert "renderHoleControls" in main and "applyAddHoles" in main
-    assert 'callTool("add_holes"' in main
-    assert 'callTool("hole_standards"' in main
-    assert "renderHoleControls(body" in main, (
-        "the controls must be rendered by the face card, not orphaned")
+    card = _js_function(main, "renderFaceCard")
+    controls = _js_function(main, "renderHoleControls")
+    drill = _js_function(main, "applyAddHoles")
+    standards = _js_function(main, "holeStandardsFor")
+
+    # the card renders the controls — not an orphaned function nobody calls
+    assert re.search(r"\brenderHoleControls\(\s*body\b", card), (
+        "renderFaceCard does not render the hole controls")
+    assert re.search(r'className = "facecard-holes"', controls)
     assert ".facecard-holes" in css
 
-    # No hard-coded size list: the only sizes in the file come from the tool.
-    for size in ("M2.5", "M16", "M36"):
-        assert size not in main, (
-            f"{size} is a literal in main.js — the picker must read "
-            "`hole_standards`, not embed a table")
+    # the button is wired to the tool call, and the tool call is in the button's
+    # function — not merely somewhere in the file
+    assert re.search(r'addEventListener\(\s*"click",[^\n]*applyAddHoles\(',
+                     controls), "the Drill button does not call applyAddHoles"
+    assert re.search(r'callTool\(\s*"add_holes"', drill), (
+        "applyAddHoles does not call the add_holes tool")
+    assert re.search(r'callTool\(\s*"hole_standards"', standards), (
+        "the size tables do not come from the hole_standards tool")
+
+    # the picker's options are the fetched table's rows
+    assert re.search(r"tables\.sizes\[", controls), (
+        "renderHoleControls does not read its sizes from the fetched tables")
+    assert re.search(r"\bsizes\.map\(", controls), (
+        "the size options are not built from the fetched sizes")
+
+    # …and no size is written in this file, in any spelling. (Prose may name
+    # one — `M4.5` in the comment above `holeTables` is the rule being stated —
+    # so this reads the code, not the comments.)
+    code = _strip_js_comments(main)
+    literals = (re.findall(r'"([^"\\\n]*)"', code)
+                + re.findall(r"'([^'\\\n]*)'", code))
+    offenders = sorted({s for s in literals if DESIGNATION.match(s)})
+    assert not offenders, (
+        f"{offenders} are size designations written into main.js — every size "
+        "the picker offers must be a row `hole_standards` returned")
+
+    # the form is reset on a part switch (R16); the *behaviour* is graded in
+    # node below, this is the subscription itself
+    assert _hole_form_reset_hook(main)
+
+
+# The pickers, the Enter key and the part switch are DOM behaviour, so they are
+# graded by running the shipped source. `main.js` is the app entry — importing
+# it boots the whole UI — so the harness evaluates the `hole on face` section
+# with a stub for each of the seven names it reaches outside itself. That makes
+# the section boundary load-bearing, which is why `_hole_section` fails loudly
+# rather than silently matching less.
+_HOLE_HARNESS = r"""
+const CALLS = [];
+const TOASTS = [];
+const STANDARDS = JSON.parse(process.env.AGENTCAD_STANDARDS);
+let pendingDrill = null;
+let cleared = 0;
+let card = null;
+
+function makeEl(tag) {
+  return {
+    tagName: tag, kids: [], attrs: {}, handlers: {},
+    className: "", textContent: "", value: "", title: "", type: "",
+    step: "", min: "", placeholder: "", disabled: false, selected: false,
+    setAttribute(key, value) { this.attrs[key] = value; },
+    appendChild(kid) { this.kids.push(kid); return kid; },
+    append(...kids) { for (const kid of kids) this.kids.push(kid); },
+    addEventListener(name, fn) {
+      (this.handlers[name] = this.handlers[name] || []).push(fn);
+    },
+    fire(name, event) {
+      for (const fn of this.handlers[name] || []) fn(event || {});
+    },
+  };
+}
+
+const document = { createElement: makeEl, getElementById: () => null };
+const api = {
+  callTool(name, args) {
+    CALLS.push({ name, args });
+    if (name === "hole_standards") return Promise.resolve(STANDARDS);
+    return new Promise((resolve) => { pendingDrill = resolve; });
+  },
+};
+const state = { projectName: "demo", selectedPart: null, mode: "part" };
+let faceSel = { partId: "plate", faceIndex: 3, key: "k", info: { planar: true } };
+function toast(message, kind) { TOASTS.push([message, kind || ""]); }
+function clearFaceSelection() { cleared += 1; }
+function renderFaceCard() { card = makeEl("div"); renderHoleControls(card, true); }
+
+/*REGION*/
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+const walk = (node, out = []) => {
+  out.push(node);
+  for (const kid of node.kids) walk(kid, out);
+  return out;
+};
+const nodes = () => walk(card);
+const numbers = () =>
+  nodes().filter((n) => n.tagName === "input" && n.type === "number");
+const familySelect = () => nodes().find(
+  (n) => n.tagName === "select" && n.kids.some((o) => o.value === "drilled"));
+const drills = () => CALLS.filter((c) => c.name === "add_holes").length;
+const enter = (input) => input.fire("keydown", {
+  key: "Enter", preventDefault() {},
+});
+
+const out = { toolsCalled: [] };
+renderFaceCard();
+await tick();                       // the hole_standards answer lands
+out.tableSizes = STANDARDS.sizes.clearance;
+out.sizeFromTables = holeForm.size;
+
+// R15 — a designation must not survive into the millimetre control
+holeForm.size = STANDARDS.sizes.clearance[2];
+renderFaceCard();
+out.designationPicked = holeForm.size;
+const family = familySelect();
+family.value = "drilled";
+family.fire("change");
+out.sizeAfterDrilled = holeForm.size;
+out.numbersAfterDrilled = numbers().map((n) => n.value);
+
+// …and a diameter must not survive back into the picker
+holeForm.size = "7.5";
+renderFaceCard();
+const back = familySelect();
+back.value = "clearance";
+back.fire("change");
+out.sizeBackFromDrilled = holeForm.size;
+
+// R17 — Enter honours the guard the click path gets from the attribute
+renderFaceCard();
+const points = nodes().find(
+  (n) => n.tagName === "input" && n.type === "text" && n.handlers.keydown);
+const button = nodes().find((n) => n.tagName === "button");
+out.foundPointsInput = !!points;
+out.foundButton = !!button;
+const before = drills();
+button.disabled = true;
+enter(points);
+await tick();
+out.drillsWhileDisabled = drills() - before;
+button.disabled = false;
+enter(points);
+await tick();
+out.drillsAfterEnter = drills() - before;
+out.disabledInFlight = button.disabled;
+enter(points);                      // a second Enter while the first is out
+await tick();
+out.drillsAfterSecondEnter = drills() - before;
+if (pendingDrill) pendingDrill({ ok: true });
+await tick();
+out.drillArgs = CALLS.filter((c) => c.name === "add_holes").map((c) => c.args);
+
+// R16 — the form belongs to the part it was typed against
+state.selectedPart = "plate";
+/*RESET*/();
+holeForm.depth = "12";
+holeForm.points = "5, 5";
+/*RESET*/();                        // the same part, announced again
+out.depthSameSelection = holeForm.depth;
+out.pointsSameSelection = holeForm.points;
+state.selectedPart = "bracket";
+/*RESET*/();
+out.depthAfterSwitch = holeForm.depth;
+out.pointsAfterSwitch = holeForm.points;
+
+out.toolsCalled = CALLS.map((c) => c.name);
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+def _drive_hole_controls() -> dict:
+    """Run the shipped hole-on-face section against a stub DOM, in node."""
+    import os
+    import subprocess
+
+    main = MAIN_JS.read_text(encoding="utf-8")
+    script = (_HOLE_HARNESS
+              .replace("/*REGION*/", _hole_section(main))
+              .replace("/*RESET*/", _hole_form_reset_hook(main)))
+    # The picker is fed exactly what the tool answers — a shape the UI is not
+    # free to invent. A failure here is the tables', not the card's.
+    try:
+        standards = hole_standards.lookup(std="iso")
+    except Exception as err:  # pragma: no cover - the tables have their own suite
+        pytest.fail(f"hole_standards.lookup(std='iso') raised {err!r}; that is "
+                    "a table failure, not a frontend one")
+    out = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "AGENTCAD_STANDARDS": json.dumps(standards)})
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+needs_node = pytest.mark.skipif(shutil.which("node") is None,
+                                reason="node is not installed")
+
+
+@needs_node
+def test_fr14_a_size_is_never_carried_into_a_control_that_cannot_mean_it():
+    """A `drilled` hole's size is a **diameter in millimetres**; every other
+    family's is a **table designation**. Switching family used to carry `M5`
+    straight into the numeric input (review 3, R15) — the browser shows an
+    empty number field and the next Drill sends `size: "M5"` for a diameter.
+
+    Graded by driving the real controls: pick a designation, switch to
+    Drilled, and no number input may be holding it.
+    """
+    out = _drive_hole_controls()
+
+    assert out["sizeFromTables"] in out["tableSizes"], (
+        "the default size is not a row of the hole_standards answer")
+    assert DESIGNATION.match(out["designationPicked"]), out["designationPicked"]
+
+    assert not DESIGNATION.match(out["sizeAfterDrilled"]), (
+        f"switching to Drilled kept {out['sizeAfterDrilled']!r} — a "
+        "designation is not a diameter")
+    assert float(out["sizeAfterDrilled"]) > 0, out["sizeAfterDrilled"]
+    for value in out["numbersAfterDrilled"]:
+        assert value == "" or float(value) > 0, (
+            f"a numeric input holds {value!r}")
+
+    assert out["sizeBackFromDrilled"] in out["tableSizes"], (
+        f"switching back to a table family kept {out['sizeBackFromDrilled']!r},"
+        " which is a diameter, not a row the picker can offer")
+
+
+@needs_node
+def test_fr14_enter_cannot_fire_a_drill_the_button_would_refuse():
+    """Enter in the positions field called `applyAddHoles` with no guard
+    (review 3, R17). A disabled `<button>` never fires `click`, so the
+    attribute *is* the click path's guard — and `applyAddHoles` sets it for
+    the round trip, which makes it the in-flight guard too. Two `add_holes`
+    calls appending to one script clobber each other.
+
+    Also grades R16 at the far end: the module-level form is reset when the
+    selected part changes, and **only** when it changes — `setState`
+    re-announces a key whether or not its value moved, so a reset that does
+    not compare would throw away half-typed input on every re-selection.
+    """
+    out = _drive_hole_controls()
+    assert out["foundPointsInput"] and out["foundButton"]
+
+    assert out["drillsWhileDisabled"] == 0, (
+        "Enter fired a drill while the button was disabled")
+    assert out["drillsAfterEnter"] == 1, "Enter did not fire the drill"
+    assert out["disabledInFlight"], (
+        "applyAddHoles left the button enabled during the round trip")
+    assert out["drillsAfterSecondEnter"] == 1, (
+        "a second Enter fired a concurrent add_holes call")
+    assert out["drillArgs"][0]["part_id"] == "plate"
+    assert out["drillArgs"][0]["face_index"] == 3
+
+    # R16 — same part: keep what was typed; different part: forget it.
+    assert out["depthSameSelection"] == "12"
+    assert out["pointsSameSelection"] == "5, 5"
+    assert out["depthAfterSwitch"] == "", (
+        "a depth typed against one part survived onto the next")
+    assert out["pointsAfterSwitch"] != "5, 5", (
+        "hole positions typed against one part survived onto the next")
 
 
 def test_fr14_the_add_holes_tool_is_registered_with_its_schema(demo):
@@ -606,18 +986,28 @@ def test_the_prd_records_every_divergence_the_design_measured():
         in text, "AC4's row must name the test that renders the SVG"
 
 
-def test_the_roadmap_points_at_the_moved_prd():
-    """The roadmap's link is the one a reader follows. It pointed at
-    `prd/pending/` while the file lived in `prd/in-progress/` for the whole of
-    this PRD's build."""
+def test_the_roadmap_link_resolves_to_the_prd_where_it_actually_lives():
+    """The roadmap's link is the one a reader follows, so it must resolve.
+
+    It pointed at `prd/pending/` while the file lived in `prd/in-progress/`
+    for the whole of this PRD's build — a dead link. What is gradeable *now*
+    is that the link resolves to a real file and names the stage the PRD is
+    filed under; the move to `completed/` happens at merge, so asserting that
+    stage here would only make this test pass on the far side of an event the
+    tree cannot observe.
+    """
     roadmap = (REPO_ROOT / "docs" / "roadmap.md").read_text(encoding="utf-8")
     row = next(line for line in roadmap.splitlines()
                if line.startswith("| [010]"))
-    assert "prd/completed/PRD-010-feature-toolkit-ii.md" in row, row
-    assert "completed" in row
-    assert PRD.is_file()
-    assert not (REPO_ROOT / "docs" / "prd" / "in-progress"
-                / "PRD-010-feature-toolkit-ii.md").exists()
+    match = re.search(r"\((prd/[^)]+\.md)\)", row)
+    assert match, f"the roadmap's 010 row has no PRD link: {row}"
+    linked = REPO_ROOT / "docs" / match.group(1)
+    assert linked.is_file(), f"the roadmap's 010 link is dead: {match.group(1)}"
+    assert linked.resolve() == PRD.resolve(), (
+        f"the roadmap links {linked} but the PRD lives at {PRD}")
+    # the PRD is filed exactly once
+    duplicates = sorted((REPO_ROOT / "docs" / "prd").rglob(PRD_NAME))
+    assert len(duplicates) == 1, f"the PRD is filed more than once: {duplicates}"
 
 
 def test_the_toolkit_module_that_must_stay_ocp_free_is_declared():

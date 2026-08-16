@@ -441,14 +441,43 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=()):
                     f"another face has a record and no callout (PRD-014)")
                 continue
             dia, centers = match
+            # What the leader is actually drawn over. `_match_record` already
+            # worked this out — it is the set of projected circles that both
+            # share the record's diameter and land on one of its centres — and
+            # the callout used to discard it and print `record["count"]`
+            # instead. The record is INTENT ("drill four"); the circles are
+            # what the geometry ended up with, and a drawing describes the
+            # part in front of it. Print the circles; report the divergence.
+            drawn = len(centers)
+            claimed = int(record["count"])
             group = by_dia.get(dia)
             if group is None:
                 # Below the detector's count >= 3 threshold: the record is the
-                # authority, so the group is created from it.
-                group = {"diameter_mm": dia, "count": int(record["count"]),
+                # authority for the designation, but the count still comes
+                # from the circles that are there to be counted.
+                group = {"diameter_mm": dia, "count": drawn,
                          "from_metadata": False}
                 hole_groups.append(group)
                 by_dia[dia] = group
+            if drawn != claimed:
+                hole_warnings.append(
+                    f"hole record {record['id']!r} ({record['designation']}) "
+                    f"states {claimed} instance(s) but {drawn} matching "
+                    f"⌀{dia:g} circle(s) are in the top view; the callout "
+                    f"reads {drawn} — the count the sheet can be measured "
+                    f"against — and the record is stale about the rest")
+            elif group["count"] > drawn:
+                # The record accounts for only part of a group of same-diameter
+                # circles. The unmatched ones are deliberately NOT swept into
+                # this callout: a second feature that happens to share a
+                # diameter would then be mislabelled, which is the exact
+                # mistake `_match_record` requires centre agreement to avoid.
+                hole_warnings.append(
+                    f"hole record {record['id']!r} ({record['designation']}) "
+                    f"accounts for {drawn} of the {group['count']} ⌀{dia:g} "
+                    f"circles in the top view; the remaining "
+                    f"{group['count'] - drawn} carry no callout because no "
+                    f"record claims them")
             if (group["from_metadata"]
                     and group.get("designation") != record["designation"]):
                 hole_warnings.append(
@@ -464,8 +493,7 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=()):
                               "record_id": record["id"]})
             if dia not in pmi_drawn:
                 _leader(centers,
-                        _callout_text(record["designation"],
-                                      int(record["count"])))
+                        _callout_text(record["designation"], drawn))
 
         # Whatever is left is a hole we can only measure: same callout shape,
         # measured text, and `from_metadata: false` says which is which.

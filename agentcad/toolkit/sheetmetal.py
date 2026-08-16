@@ -37,11 +37,22 @@ The solid model puts the neutral fibre at t/2 (a bend sector of volume
 
     fold().volume - unfold().volume = angle_rad * (0.5 - k) * t^2 * span
 
-per bend, and nothing else. Measured on the AC4 bracket (60x40x2 plate, one
-90 deg flange spanning 30 mm of the front edge, R=3, leaf 30): fold 6916.991118,
-unfold 6905.681385, difference 11.309734 mm^3 — the predicted gap to within
-1e-9. That difference is the model's own tolerance; it is not an error and it
-does not grow with the number of features.
+per bend, and — *for a part with no mitred corner* — nothing else. Measured on
+the AC4 bracket (60x40x2 plate, one 90 deg flange spanning 30 mm of the front
+edge, R=3, leaf 30): fold 6916.991118, unfold 6905.681385, difference
+11.309734 mm^3 — the predicted gap to within 1e-9. That difference is the
+model's own tolerance; it is not an error and it does not grow with the number
+of features.
+
+A ``close`` corner adds a second, larger term, because a mitre is cut through
+the sheet's *thickness* in the fold (a 45 deg plane, so the outer skin runs
+t further past the corner than the inner one) and at the *neutral fibre* in
+the blank, where there is no thickness to cut through. Measured on the corner
+bracket (60x40x2, two 90 deg R3 flanges, leaf 20, ``close``): fold
+10441.970395, unfold 10376.632742, difference 65.337653 against the 37.699112
+the two bends alone would give. Neither number is wrong; they are the same
+model measured on two sides of one k-factor. See ``_mitre_cuts`` for the shape
+of the blank's mitre, which is the part of this that is an approximation.
 
 **The outline is the unfold.** ``flat_outline()`` is a discretization of
 ``unfold()``'s own top face (4.4 ms, measured), not a parallel walker. Its
@@ -293,36 +304,66 @@ class SheetPart:
         """The folded solid: base plate + per-flange bend sector and leaf,
         corner treatments and bend reliefs, fused into a single valid solid.
         Exact volume with no reliefs or corners:
-        w*d*t + sum(angle_rad*t*(R + t/2)*span + length*t*span)."""
-        self._require_base()
+        w*d*t + sum(angle_rad*t*(R + t/2)*span + length*t*span).
+
+        That closed form is also the conservation check: every declared piece
+        is counted, every cut is credited with what it *measurably* removed,
+        and `_conserved` says so when the fuse kept less than the difference.
+        """
+        width, depth = self._require_base()
         part = self._base_plate()
+        declared = width * depth * self.thickness
         for flange in self._flanges:
             lo, hi = self._effective_span(flange, flat=False)
             solid = self._flange_solid(flange, lo, hi)
+            declared += self._declared_flange_volume(flange, hi - lo)
             for cut in self._mitre_cuts(flange):
-                solid = self._cut(solid, cut)
+                solid, removed = self._cut_measured(solid, cut)
+                declared -= removed
             part = self._fuse(part, solid)
         for cut in self._relief_cuts():
-            part = self._cut(part, cut)
+            part, removed = self._cut_measured(part, cut)
+            declared -= removed
+        self._conserved(part, declared, "fold")
         return self._checked(part, "fold")
 
     def unfold(self) -> Part:
         """The flat pattern as a solid in the base plane: base plate plus a
         (BA + length) x span tab per flange, with the same reliefs and corner
-        treatments cut from it, thickness unchanged."""
-        self._require_base()
+        treatments cut from it, thickness unchanged.
+
+        A ``close`` corner is **mitred here too** — the blank has to be
+        foldable into the model, and two tabs both running past the corner are
+        two tabs claiming one piece of sheet. ``_mitre_cuts(flat=True)`` is
+        that cut and carries the one number that differs from the fold's.
+        """
+        width, depth = self._require_base()
         part = self._base_plate()
+        declared = width * depth * self.thickness
         for flange in self._flanges:
             lo, hi = self._effective_span(flange, flat=True)
-            part = self._fuse(part, self._tab_solid(flange, lo, hi))
+            tab = self._tab_solid(flange, lo, hi)
+            declared += ((self.bend_allowance(flange) + flange.length)
+                         * (hi - lo) * self.thickness)
+            for cut in self._mitre_cuts(flange, flat=True):
+                tab, removed = self._cut_measured(tab, cut)
+                declared -= removed
+            part = self._fuse(part, tab)
         for cut in self._relief_cuts():
-            part = self._cut(part, cut)
+            part, removed = self._cut_measured(part, cut)
+            declared -= removed
+        self._conserved(part, declared, "unfold")
         return self._checked(part, "unfold")
 
     def flat_outline(self, tolerance: float = OUTLINE_TOLERANCE
                      ) -> list[tuple[float, float]]:
         """The flat pattern's 2D outline polygon (XY, mm), counter-clockwise,
-        starting at the vertex nearest the (-width/2, -depth/2) base corner.
+        starting at the outline VERTEX nearest the (-width/2, -depth/2) base
+        corner — the same vertex ``flat_outline_edges()`` starts at, because
+        the two are one list sampled two ways and pick their start once.
+        (A sampled point in the middle of an arc can be nearer that corner
+        than any vertex is; when the two decisions were taken separately,
+        that is exactly where they came apart.)
 
         This is a **discretization of ``unfold()``'s own top face**, not a
         parallel model, so it cannot disagree with the blank: its enclosed area
@@ -337,7 +378,8 @@ class SheetPart:
 
     def flat_outline_edges(self, tolerance: float = OUTLINE_TOLERANCE
                            ) -> list[dict]:
-        """The same outline as exact geometry, in order and end-to-end:
+        """The same outline as exact geometry, from the same start vertex as
+        ``flat_outline()``, in order and end-to-end:
         ``{"kind": "line", "a": (x, y), "b": (x, y)}`` or
         ``{"kind": "arc", "a", "b", "center", "radius", "ccw"}``. For DXF and
         anyone who should not be handed a polyline."""
@@ -347,13 +389,30 @@ class SheetPart:
         """Bend midlines in FLAT coordinates: the bend zone spans [edge,
         edge + BA] outward from the base edge, so each midline sits BA/2
         beyond the edge and spans the flange's own extent along the edge.
-        Endpoints a -> b run in ascending order along the edge direction."""
+        Endpoints a -> b run in ascending order along the edge direction.
+
+        A midline stops where the BLANK does, which at a ``close`` corner is
+        not where the tab's span ends: the mitre chord crosses the midline
+        half a bend allowance out, having reached only ``rho*sin(a)/2`` past
+        the corner instead of the tab's full ``rho`` (1.94 mm against 3.88 on
+        the 60x40x2 R3 90 deg corner). Drawn to the span, a bend line would
+        hang off the edge of the blank it is drawn on.
+        """
         width, depth = self._require_base()
         out = []
         for flange in self._flanges:
             m = {"front": depth, "back": depth, "left": width, "right": width
                  }[flange.edge] / 2 + self.bend_allowance(flange) / 2
             lo, hi = self._effective_span(flange, flat=True)
+            rho = flange.inner_radius + self.k_factor * self.thickness
+            back = rho * (1 - math.sin(math.radians(flange.angle_deg)) / 2)
+            for corner, end in self._corners_of(flange):
+                if corner.treatment != "close":
+                    continue
+                if end == "hi":
+                    hi -= back
+                else:
+                    lo += back
             a, b = {
                 "front": ((lo, -m), (hi, -m)),
                 "back": ((lo, m), (hi, m)),
@@ -481,6 +540,51 @@ class SheetPart:
         if warning:
             self._warn(warning)
         return out
+
+    def _cut_measured(self, a, b) -> tuple:
+        """``_cut``, reporting what the cut *measurably* removed. A tool that
+        overhangs the part removes less than its own volume, so conservation
+        must credit the measurement and never the assumption."""
+        before = _volume(a)
+        out = self._cut(a, b)
+        return out, before - _volume(out)
+
+    def _declared_flange_volume(self, flange: _Flange, span: float) -> float:
+        """The material this flange declares, before any cut: the fold()
+        docstring's closed form for one flange, over *span*."""
+        t = self.thickness
+        return (math.radians(flange.angle_deg) * t
+                * (flange.inner_radius + t / 2) + flange.length * t) * span
+
+    def _conserved(self, part, declared: float, label: str) -> None:
+        """Material conservation — the failure ``_checked`` structurally
+        cannot see.
+
+        Two declared features that occupy the same space fuse into ONE valid
+        solid whose volume is simply smaller than the sum of its parts. OCCT
+        raises nothing, ``is_valid`` stays True and the count stays 1, so
+        every property ``_checked`` looks at is fine. Measured:
+        ``base(60, 40).hem("front", "open", length=50).flange("back", 90, 25)``
+        declares 15496.4600 mm^3 and folds to 15256.4600 — the hem leaf,
+        50 mm of it on a 40 mm plate, lies inside the back flange's leaf and
+        240.0 mm^3 of it is gone with no warning of any kind.
+
+        Only the shortfall is a failure mode here: every piece is declared by
+        a closed form and every cut is credited with what it measurably
+        removed, so nothing in this construction can hand back more material
+        than it was given.
+        """
+        measured = _volume(part)
+        lost = declared - measured
+        if lost > max(1e-6, 1e-9 * abs(declared)):
+            self._warn(
+                f"sheetmetal: {label}() declares {declared:.4f} mm^3 of "
+                f"material and measures {measured:.4f} — {lost:.6g} mm^3 was "
+                "swallowed. Two declared features occupy the same space and "
+                "the fuse absorbed the overlap silently (is_valid stays true "
+                "and the count does not change, so nothing else can tell "
+                "you). Check a hem or flange leaf long enough to reach "
+                "another feature.")
 
     def _checked(self, part, label: str):
         """OCCT's 'success' is not evidence: check the shape, not the absence
@@ -639,9 +743,33 @@ class SheetPart:
                 cuts.append(solid.rotate(Axis.Z, rot) if rot else solid)
         return cuts
 
-    def _mitre_cuts(self, flange: _Flange) -> list:
+    def _mitre_cuts(self, flange: _Flange, *, flat: bool = False) -> list:
         """For each `close` corner this flange reaches, the half-space beyond
-        the 45 degree bisector — cut it away and the two leaves meet on it."""
+        the mitre — cut it away and the two leaves meet on it.
+
+        In the FOLD the mitre is the 45 degree bisector through the corner
+        (normal ``n_b - n_a``): both leaves stand in that plane, so one plane
+        cuts both and they meet on it.
+
+        In the BLANK the same joint is not 45 degrees, because the bisector
+        crosses the bend zone while the sheet is still rolled up. At a
+        distance ``u`` along the tab the material has travelled only
+        ``rho*sin(u/rho)`` past the bend line once folded
+        (``rho = R + k*t``, the neutral fibre), so the exact unrolled mitre is
+        the curve ``v = rho*sin(u/rho)`` — neither a line nor an arc. A
+        spline through it would make the blank an approximation of itself and
+        hand ``flat_outline_edges()`` a curve kind it has no word for, so we
+        cut the CHORD of that curve instead: the line through its two ends,
+        slope ``sin(a)/a``, which is exact at the bend line and again at the
+        end of the bend zone. Sine is concave over (0, 90 deg], so the chord
+        is the **steepest straight mitre that never over-runs the bisector**:
+        the blank comes out a little small and never a little large. Measured
+        on the 60x40x2 R3 90 deg corner it is 3.231 mm^2 per tab (12.923 mm^3
+        of blank), a mitre gap peaking at 0.815 mm a third of the way through
+        the bend zone and closing to zero at both ends of it. Over-running
+        would instead fold two leaves into the same space — the silent
+        overlap `_conserved` exists to catch.
+        """
         width, depth = self._require_base()
         big = 4 * (width + depth)
         out = []
@@ -650,7 +778,11 @@ class SheetPart:
                 continue
             other = corner.edges[1] if corner.edges[0] == flange.edge else corner.edges[0]
             na, nb = _OUT_N[flange.edge], _OUT_N[other]
-            nx, ny = nb[0] - na[0], nb[1] - na[1]
+            slope = 1.0
+            if flat:
+                angle = math.radians(flange.angle_deg)
+                slope = math.sin(angle) / angle
+            nx, ny = nb[0] - slope * na[0], nb[1] - slope * na[1]
             norm = math.hypot(nx, ny)
             nx, ny = nx / norm, ny / norm
             cx = (width / 2 if "right" in corner.edges else -width / 2)
@@ -673,14 +805,17 @@ class SheetPart:
         flat = self.unfold()
         face = flat.faces().filter_by(Plane.XY).sort_by(Axis.Z)[-1]
         edges = face.outer_wire().order_edges()
-        points: list[tuple[float, float]] = []
         exact: list[dict] = []
+        # the polygon is the edge list, sampled: each edge contributes its
+        # start vertex (kept in `exact`) plus its own interior samples, so the
+        # two lists stay index-aligned and ONE start decision serves both
+        interiors: list[list[tuple[float, float]]] = []
         for edge in edges:
             kind = getattr(edge.geom_type, "name", str(edge.geom_type))
             a, b = edge @ 0, edge @ 1
             if kind == "LINE":
                 exact.append({"kind": "line", "a": _xy(a), "b": _xy(b)})
-                points.append(_xy(a))
+                interiors.append([])
                 continue
             radius = float(getattr(edge, "radius", 0.0) or 0.0)
             centre = edge.arc_center
@@ -688,20 +823,23 @@ class SheetPart:
                           "center": _xy(centre), "radius": round(radius, 9),
                           "ccw": _arc_is_ccw(edge)})
             n = _arc_samples(edge, radius, tolerance)
-            for i in range(n - 1):
-                points.append(_xy(edge @ (i / (n - 1))))
-        if _signed_area(points) < 0:
-            points.reverse()
+            interiors.append([_xy(edge @ (i / (n - 1)))
+                              for i in range(1, n - 1)])
+        if _signed_area([p for e, ins in zip(exact, interiors)
+                         for p in (e["a"], *ins)]) < 0:
+            # walk the loop the other way: each edge keeps its own interior
+            # samples, reversed, but starts at what used to be its end
             exact = [{**e, "a": e["b"], "b": e["a"],
                       **({"ccw": not e["ccw"]} if e["kind"] == "arc" else {})}
                      for e in reversed(exact)]
-        start = min(range(len(points)),
-                    key=lambda i: math.dist(points[i], (-width / 2, -depth / 2)))
-        points = points[start:] + points[:start]
-        estart = min(range(len(exact)),
-                     key=lambda i: math.dist(exact[i]["a"],
-                                             (-width / 2, -depth / 2)))
-        exact = exact[estart:] + exact[:estart]
+            interiors = [list(reversed(ins)) for ins in reversed(interiors)]
+        start = min(range(len(exact)),
+                    key=lambda i: math.dist(exact[i]["a"],
+                                            (-width / 2, -depth / 2)))
+        exact = exact[start:] + exact[:start]
+        interiors = interiors[start:] + interiors[:start]
+        points = [p for e, ins in zip(exact, interiors)
+                  for p in (e["a"], *ins)]
         out = _Outline(points, exact)
         self._outline_cache[tolerance] = out
         return out
@@ -711,6 +849,12 @@ class SheetPart:
 
 def _xy(p) -> tuple[float, float]:
     return (round(p.X, 9), round(p.Y, 9))
+
+
+def _volume(shape) -> float:
+    """A boolean result is routinely a nested Compound, whose ``.volume``
+    reports only the first child subtree — sum the solids instead."""
+    return sum(s.volume for s in shape.solids())
 
 
 def _signed_area(points) -> float:

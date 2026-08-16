@@ -8,6 +8,14 @@
     "Calc-Tools, \"Clearance Hole Size Calculator\", https://www.calc-tools.com/formulas/clearance-hole-size-calculator (read 2026-08-13; spot-check reproduction of the #4 and #10 rows, not a transcription source)"
   ],
   "revision": "2026-08-13",
+  "provenance": {
+    "default": {"sources": [0, 1]},
+    "scopes": {
+      "#4": {"sources": [0, 1, 2]},
+      "#10": {"sources": [0, 1, 2]},
+      "#8/normal": {"sources": [0, 1], "conflict": "The two transcription sources printed this one cell differently. Both print drill #9; one prints 0.196 (drill #9's tabulated diameter) and the other 0.190 (not any drill size - it is the #10 screw's nominal diameter). The agreeing datum is the drill designation and every other row's diameter column in both sources is exactly its drill's diameter, so the cell ships as #9 / 0.196. This is the one place slice 8 resolved a source disagreement instead of dropping the row, and it is recorded on the cell rather than resolved silently."}
+    }
+  },
   "fits": ["close", "normal", "loose"],
   "notes": [
     "ASME B18.2.8 names the three series close / normal / loose; ISO 273 names the same idea fine / medium / coarse. hole_standards accepts both spellings and reports the requested standard's.",

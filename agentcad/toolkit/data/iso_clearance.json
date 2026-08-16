@@ -7,6 +7,9 @@
     "EKINSUN, \"Metric Clearance Hole Chart - ISO 273 Close/Normal/Loose + Tap Drill Sizes\", https://www.ekinsun.com/custom-fasteners/clearance-hole-chart/ (read 2026-08-13)"
   ],
   "revision": "2026-08-13",
+  "provenance": {
+    "default": {"sources": [0, 1]}
+  },
   "fits": ["fine", "medium", "coarse"],
   "notes": [
     "ISO 273 names the three series fine / medium / coarse and assigns them tolerance fields H12 / H13 / H14. ASME B18.2.8 (and this repo's PRD) names the same idea close / normal / loose; hole_standards accepts both spellings and canonicalizes per standard.",

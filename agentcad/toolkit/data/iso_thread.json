@@ -7,6 +7,9 @@
     "AIMS Industrial Supplies, \"Tap Drill Size Chart: Metric & Imperial Thread Sizes\", https://aimsindustrial.com.au/blogs/product-guides/blog-threading-tap-metric-imperial-size-chart (read 2026-08-13)"
   ],
   "revision": "2026-08-13",
+  "provenance": {
+    "default": {"sources": [0, 1]}
+  },
   "notes": [
     "The pitch column is ISO 261/262 and is not in dispute. The tap drill column is a SHOP number, not a standard: it is the stock drill nearest the theoretical d - P for a nominal ~70-75% thread engagement, and published tables round it differently. Only rows where both sources print the same drill ship.",
     "Casualties of that rule, recorded so nobody thinks they were forgotten: M3.5, M14, M18 and M22 coarse, and the M12x1.5 / M12x1.25 / M6x0.75 fine rows, appear in one source only or with two different drills. Add them when a second source corroborates, not before.",

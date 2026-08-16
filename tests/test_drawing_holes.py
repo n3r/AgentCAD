@@ -81,6 +81,45 @@ def build(p):
     return part
 '''
 
+# Four clearance holes drilled as ONE record, then two of them welded shut and
+# the records carried across with `holes.carry` — whose own docstring names
+# this exact hazard ("carrying records across a cut that removed one of the
+# holes leaves a record for a hole that is no longer there"). The record still
+# says `count: 4`; the top view has two circles.
+REFILLED = '''\
+from build123d import Box, Cylinder, Pos
+from agentcad.toolkit import holes
+
+PARAMS = {"t": {"default": 12.0, "min": 6.0, "max": 30.0, "unit": "mm",
+                "description": "plate thickness"}}
+
+def build(p):
+    part = Box(120, 120, p.t)
+    part, _r, _w = holes.clearance(
+        part, [(-40, -40), (-40, 40), (40, -40), (40, 40)], "M5")
+    for x, y in ((40, -40), (40, 40)):
+        part = holes.carry(part + Pos(x, y, 0) * Cylinder(5.5 / 2, p.t), part)
+    return part
+'''
+
+# Two clearance holes drilled as ONE record, then mirrored: four circles in
+# the top view, and a record that only ever knew about two. The plate sits
+# entirely in +X and butts against the mirror plane, so the union is one solid
+# and `patterns.mirror` itself has nothing to warn about.
+MIRRORED = '''\
+from build123d import Box, Pos
+from agentcad.toolkit import holes, patterns
+
+PARAMS = {"t": {"default": 12.0, "min": 6.0, "max": 30.0, "unit": "mm",
+                "description": "plate thickness"}}
+
+def build(p):
+    part = Pos(55, 0, 0) * Box(110, 120, p.t)
+    part, _r, _w = holes.clearance(part, [(60, -40), (60, 40)], "M5")
+    part, _w2 = patterns.mirror(part, "YZ")
+    return part
+'''
+
 
 @pytest.fixture
 def demo(kernel, tmp_path):
@@ -288,3 +327,62 @@ def test_the_dxf_path_is_unaffected(demo):
         "project": "demo", "part_id": "plate", "format": "dxf"})
     assert "error" not in result, result
     assert result["detected"].get("hole_groups") is None
+
+
+# ------------------------- R3: the callout counts what it is actually over
+
+@pytest.mark.integration
+def test_a_callout_counts_the_circles_it_is_drawn_over_not_the_intent(demo):
+    """**Regression.** The callout printed `record["count"]` — what the drill
+    call *asked for* — while the leader was drawn over whatever circles
+    actually matched. `_match_record` computes exactly that set (its `hit`)
+    and used to throw it away.
+
+    Here four holes are drilled as one record and two are welded shut. The
+    record still says four; the top view has two circles. A sheet that prints
+    `4× ⌀5.5` over two circles is a drawing that lies to a machinist, and it
+    did so silently.
+    """
+    detected, svg = _draw(demo, "refilled", REFILLED)
+
+    group = _group(detected, 5.5)
+    assert group["from_metadata"] is True
+    assert "2× ⌀5.5" in svg
+    assert "4× ⌀5.5" not in svg
+    # and the divergence is named, not swallowed
+    warning = next(w for w in detected["hole_warnings"] if "h0" in w)
+    assert "4" in warning and "2" in warning
+
+
+@pytest.mark.integration
+def test_a_callout_over_more_circles_than_the_record_claims_warns(demo):
+    """The other direction. Two holes are drilled as one record and the plate
+    is then mirrored, so the top view has four ⌀5.5 circles. The detected
+    group counts four and the record claims two — the sheet printed
+    `2× ⌀5.5` beside a `count: 4` group **in the same result**, with nothing
+    saying which to believe.
+
+    The callout still reads `2×`, and deliberately so: the two unmatched
+    circles are not swept into it, because a second feature that merely shared
+    a diameter would then be mislabelled — the mistake `_match_record` demands
+    centre agreement to avoid. What changes is that the shortfall is now
+    *stated* instead of leaving the reader to spot it.
+    """
+    detected, svg = _draw(demo, "mirrored", MIRRORED)
+
+    group = _group(detected, 5.5)
+    assert group["count"] == 4, detected["hole_groups"]
+    assert "2× ⌀5.5" in svg
+    warning = next(w for w in detected["hole_warnings"] if "h0" in w)
+    assert "2 of the 4" in warning
+    assert "no record claims them" in warning
+
+
+@pytest.mark.integration
+def test_a_record_that_matches_exactly_still_warns_about_nothing(demo):
+    """The guard must not cry wolf: the bolt circle's record says 8 and the
+    top view has 8, so nothing is reported and the callout is unchanged."""
+    detected, svg = _draw(demo, "plate", PLATE)
+
+    assert "8× ⌀6.6" in svg
+    assert detected["hole_warnings"] == []

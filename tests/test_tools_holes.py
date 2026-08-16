@@ -14,6 +14,8 @@ a key into a table this module owns, and every number goes through
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from agentcad.core.tools import build_registry
@@ -282,3 +284,148 @@ def test_every_family_emits_a_block_that_rebuilds(demo, family):
     helper = "drill" if family == "drilled" else family
     assert f"holes.{helper}(" in script
     assert res["metrics"]["volume_mm3"] > 0
+
+
+# ------------------------------------- R2: the saved-previous-build name
+
+def _push_pull(service, **params):
+    return build_registry(service).call("push_pull",
+                                        {"project": "demo", **params})
+
+
+def test_add_holes_and_push_pull_do_not_mint_the_same_global(demo):
+    """**Regression.** Both packs saved the previous `build` under
+    `_agentcad_prev_build_{n}` with `n` counted off *their own* marker, so the
+    first block of each pack claimed `_agentcad_prev_build_0`. The name is
+    resolved as a module global at *call* time, so the second block rebound it
+    to the first block's wrapper and `build` recursed into itself —
+    `RecursionError`, persisted, with only a toast.
+    """
+    assert _call(demo, part_id="plate", points=[[20, 10]],
+                 family="clearance", size="M5").get("ok") is True
+    res = _push_pull(demo, part_id="plate", face_index=0, distance_mm=2.0)
+    assert res.get("ok") is True, res
+    script = demo.store.read_script("demo", "plate")
+    names = re.findall(r"^_agentcad_prev_build_\w+ = build$", script,
+                       flags=re.MULTILINE)
+    assert len(names) == len(set(names)), script
+
+
+def test_push_pull_then_add_holes_do_not_mint_the_same_global(demo):
+    """Order-symmetric: the collision does not depend on who goes first."""
+    assert _push_pull(demo, part_id="plate", face_index=0,
+                      distance_mm=2.0).get("ok") is True
+    res = _call(demo, part_id="plate", points=[[20, 10]],
+                family="clearance", size="M5")
+    assert res.get("ok") is True, res
+    script = demo.store.read_script("demo", "plate")
+    names = re.findall(r"^_agentcad_prev_build_\w+ = build$", script,
+                       flags=re.MULTILINE)
+    assert len(names) == len(set(names)), script
+
+
+def test_deleting_a_middle_block_does_not_make_the_next_name_collide(demo):
+    """The marker says "edit or remove freely", so removal is a *supported*
+    edit. A per-marker count regresses onto a name that is still live."""
+    for uv in ([20, 10], [0, 10], [-20, 10]):
+        assert _call(demo, part_id="plate", points=[uv],
+                     family="clearance", size="M5").get("ok") is True
+    script = demo.store.read_script("demo", "plate")
+    blocks = script.split(ADD_HOLES_MARKER)
+    # drop the middle block, keeping the head and the first and last blocks
+    trimmed = blocks[0] + ADD_HOLES_MARKER + blocks[1] \
+        + ADD_HOLES_MARKER + blocks[3]
+    demo.store.write_script("demo", "plate", trimmed)
+    assert demo._rebuild("demo", "plate").get("ok") is True
+
+    res = _call(demo, part_id="plate", points=[[0, -10]],
+                family="clearance", size="M5")
+    assert res.get("ok") is True, res
+    script = demo.store.read_script("demo", "plate")
+    names = re.findall(r"^_agentcad_prev_build_\w+ = build$", script,
+                       flags=re.MULTILINE)
+    assert len(names) == len(set(names)), script
+    # the two surviving blocks plus the new one; a self-recursing or shadowed
+    # wrapper loses holes (or blows the stack)
+    assert len(res["holes"]) == 3
+
+
+# -------------------------------------------- R10: a diameter must be > 0
+
+@pytest.mark.parametrize("size", ["0", "-4", "0.0", "-0.5"])
+def test_a_non_positive_drilled_diameter_is_refused(demo, size):
+    """**Regression.** `depth` had a `> 0` guard and `size` did not, so a
+    drilled diameter of 0 or less was written into the script and only *then*
+    failed in the kernel — and the write is not undone by `update_part`."""
+    before = demo.store.read_script("demo", "plate")
+    res = _call(demo, part_id="plate", points=[[0, 0]], family="drilled",
+                size=size)
+    assert res["error"]["type"] == "validation_error", res
+    assert "> 0" in res["error"]["message"]
+    assert demo.store.read_script("demo", "plate") == before
+    assert ADD_HOLES_MARKER not in demo.store.read_script("demo", "plate")
+
+
+# ------------------------------- R2b: a block that does not build is undone
+
+def test_a_generated_block_that_fails_to_build_is_rolled_back(demo):
+    """A tool appends source the user never typed. `update_part` writes before
+    it rebuilds and deliberately does not roll back — a human must be able to
+    save a broken script of their own. Generated text is the other case: if it
+    does not build, the pack puts the script back rather than leaving the user
+    holding an unbuildable part they did not author.
+    """
+    before = demo.store.read_script("demo", "plate")
+    good = demo.get_metrics("demo", "plate")["volume_mm3"]
+    # push/pull the top face 1000 mm *into* a 10 mm plate: the face passes
+    # through the far side and the solid is consumed.
+    res = _push_pull(demo, part_id="plate", face_index=0, distance_mm=-1000.0)
+    assert res.get("ok") is False, res
+    assert res.get("rolled_back") is True and res.get("restored") is True
+    assert demo.store.read_script("demo", "plate") == before
+    assert demo.get_metrics("demo", "plate")["volume_mm3"] == good
+
+
+# ------------------------------------- the allocator itself, in isolation
+
+def test_next_build_alias_never_returns_a_name_the_script_already_binds():
+    """The one guarantee the allocator makes, stated directly.
+
+    Numbering densely from the top is a readability nicety; being absent from
+    the script is the correctness property, and it has to survive names
+    written by another pack and gaps left by a deleted block.
+    """
+    from agentcad.core.script_blocks import (
+        existing_build_aliases,
+        next_build_alias,
+    )
+
+    assert next_build_alias("def build(p):\n    return None\n") == \
+        "_agentcad_prev_build_0"
+
+    # a gap left by a deleted middle block: 1 is free, 2 is live
+    gappy = "_agentcad_prev_build_0 = build\n_agentcad_prev_build_2 = build\n"
+    alias = next_build_alias(gappy)
+    assert alias not in existing_build_aliases(gappy)
+    assert alias == "_agentcad_prev_build_1"
+
+    # and the allocated name is never handed out twice
+    script = ""
+    seen = set()
+    for _ in range(5):
+        alias = next_build_alias(script)
+        assert alias not in seen
+        seen.add(alias)
+        script += f"{alias} = build\n"
+
+
+def test_a_name_is_taken_even_where_it_only_appears_in_a_comment():
+    """A textual scan, deliberately: the script may not parse — that is
+    exactly the state a user repairing one is in — and a name mentioned
+    anywhere is a name not worth reusing."""
+    from agentcad.core.script_blocks import next_build_alias
+
+    assert next_build_alias("# see _agentcad_prev_build_0 above\n") == \
+        "_agentcad_prev_build_1"
+    assert next_build_alias("def build(p:  # unclosed\n") == \
+        "_agentcad_prev_build_0"

@@ -12,6 +12,18 @@ treatment="close"|"gap"|"rip")` treats the corner where two flanged edges meet.
 Both ride slice 11's structure, so they appear in `unfold()` and in the derived
 outline by construction.
 
+> **Correction (review, 2026-08-16).** Not the corner they don't. Riding the
+> structure carried the corner's *span extension* into `unfold()` and nothing
+> else: the mitre itself was cut from `fold()` only, so the blank had a square
+> corner where the model has a joint and **could not be bent into the model**.
+> Measured on the corner bracket: `fold − unfold` 48.151660 mm³, and the two
+> tabs declared 10423.927534 mm³ against a blank of 10393.818734 — 30.108800
+> mm³ of sheet claimed twice and swallowed by the fuse in silence. The mitre is
+> now cut from the blank too (0161), and because a mitre crosses the bend zone
+> while the sheet is still rolled up, the blank's mitre is the **chord of the
+> unrolled bisector** (slope `sin(a)/a`), not a 45° line. Blank 10376.632742,
+> `fold − unfold` 65.337653.
+
 **`kind="teardrop"` raises.** The design gated it on spike S8 and said it would
 be refused with a reason rather than approximated if the spike said so. The
 spike says so, and the measurement is specific enough to put in the error
@@ -117,6 +129,13 @@ not approximated as a closed hem.
     the flat pattern the extension is `inner_radius + k·t` — a blank has no
     through-thickness, so the neutral fibre is the one honest value, and the
     two extended tabs simply fuse where they overlap.
+
+    > **Correction (review, 2026-08-16).** "Simply fuse where they overlap" is
+    > the bug, stated as if it were the design: one piece of sheet cannot fold
+    > two ways, so an overlap there is material claimed twice (30.1088 mm³
+    > measured) and a blank that will not fold. Both tabs are now mitred
+    > (0161) — see `SheetPart._mitre_cuts`, and `_conserved`, which is the
+    > check that would have caught this at the time.
   - **`gap`** shortens both flanges by `CORNER_GAP_FACTOR × t` at that corner;
     **`rip`** adds and removes nothing (v1's untreated corner, asserted equal
     to the no-corner fold at `rel=1e-12`).

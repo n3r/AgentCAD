@@ -54,8 +54,19 @@ for the socket-head table (identical on all 13 rows: M5 dk 8.5 / k 5.0, M8 13.0
 / 8.0, M12 18.0 / 12.0, M24 36.0 / 24.0), and
 `fullerfasteners.com/tech/iso-10642-specifications-hex-socket-countersunk-head-screws/`
 corroborated by a search-result reproduction of the same theoretical-sharp
-figures from two fastener datasheets (M3 6.72, M5 11.2, M8 17.92 — the series
-is exactly `2.24 × d`, which is its own internal check).
+figures from two fastener datasheets (M3 6.72, M5 11.2, M8 17.92).
+
+> **Correction (review, 2026-08-16).** This paragraph originally added "the
+> series is exactly `2.24 × d`, which is its own internal check". **It is not a
+> check on the column**: the ratio holds for M3…M12 and the two largest rows
+> are below it — M16 is 33.6 against 35.84, M20 is 40.32 against 44.8. The rows
+> were re-read against the source and **the data is right**; the corroborating
+> *rule* was the false part, so the claim is now restricted to the range where
+> it holds (in the JSON's `notes` and in
+> `test_the_iso_10642_head_ratio_is_claimed_only_where_it_holds`). Separately,
+> the search-result reproduction quoted above is **not a named source in the
+> file**: `iso_cbore_csk.json` names exactly one for the ISO 10642 column, so
+> all nine of those rows now answer `corroborated: false`.
 
 ### The finding that changed what this file contains
 
@@ -82,10 +93,23 @@ that the bore is a shop default, not a standard. For M5 that lands on 10.0 /
 published convention from M5 up, because a counterbore that is too big fails
 visibly and one that is too small traps the head.
 
+> **Correction (review, 2026-08-16).** "From M5 up" was the range the rule was
+> *chosen* over and the code applied it **unguarded** below that: measured,
+> `cbore("M2")` bored **5.3** where DIN 974-1 gives 4.3, because a flat 1.5 mm
+> on a 3.8 mm head is a third of the whole hole. Below the head the flat number
+> was set on (`CBORE_DIA_FLAT_MIN_HEAD` = the 8.5 mm ISO 4762 M5 head, and
+> 0.375 in on the inch side), the diameter clearance is now applied as the same
+> **proportion** of the head it has there. Continuous at the threshold, so M5
+> is still 10.0 and a 1/4 in head still gets 7/16; M2 becomes 4.47, still large
+> rather than small. The depth clearance is deliberately left flat — no
+> published small-size depth was measured, and inventing a second guard would
+> be the very thing this section refuses to do.
+
 For countersinks the equivalent trap is avoided differently: `csk()` returns the
-**theoretical sharp** head diameter (ISO 10642 `dk = 2.24 d`), which is the
-dimension a countersink callout names and already stands off the machined head
-max, so no invented clearance is added.
+**theoretical sharp** head diameter (ISO 10642's `dk`, which is `2.24 d` for
+M3…M12 and is transcribed rather than derived above M12 — see the correction
+above), which is the dimension a countersink callout names and already stands
+off the machined head max, so no invented clearance is added.
 
 ## Changes
 

@@ -611,3 +611,72 @@ def test_the_named_top_plane_is_byte_identical_to_plane_xy_for_a_through_hole(
         metrics_xy["volume_mm3"], rel=REL)
     assert metrics_top["n_faces"] == metrics_xy["n_faces"]
     assert sha_top == sha_xy
+
+
+# ------------------------------- R6: a normal that points INTO the material
+
+def _inward_normal_slab():
+    """A 40x60x20 slab spanning x in [0, 40], and a plane on its x=0 face
+    whose z_dir is +X — pointing **into** the stock.
+
+    This is the frame the bundled `angle_bracket` deliberately uses for its
+    vertical leg (`Plane(origin=(0, 0, hz), z_dir=(1, 0, 0))`), chosen there
+    because sliding a workplane along the hole axis is free while a named face
+    would rotate the tool and re-tessellate the part.
+    """
+    from build123d import Box, Plane, Pos
+
+    return Pos(20, 0, 0) * Box(40, 60, 20), Plane(origin=(0, 0, 0),
+                                                  z_dir=(1, 0, 0))
+
+
+def test_stock_is_measured_on_the_side_the_material_is_actually_on():
+    """**Regression.** `_extent` measured only along `-z_dir`, so a plane whose
+    normal points into the material reported **0 mm of stock** — for the
+    repo's own flagship rewrite. Everything derived from it was then wrong."""
+    from agentcad.toolkit import holes
+
+    part, plane = _inward_normal_slab()
+    assert holes._extent(part, plane) == pytest.approx(40.0)
+
+
+def test_exact_verify_does_not_cry_wolf_on_an_inward_pointing_normal():
+    """The hole is really cut — `Hole` drills a thru hole in both directions,
+    which is why the primary route always worked — but the `exact` guard built
+    its probe tool on the conventional `-z_dir` frame, i.e. in fresh air, and
+    reported `flush, engaged 0.0` with a warning, on correct geometry."""
+    from agentcad.toolkit import holes
+
+    part, plane = _inward_normal_slab()
+    out, records, warning = holes.drill(part, [(0, 0)], 10.0, plane=plane,
+                                        verify="exact")
+
+    removed = part.volume - out.volume
+    assert removed == pytest.approx(_cyl_volume(10.0, 40.0), rel=1e-6)
+    instance = records[0]["instances"][0]
+    assert instance["status"] == "engaged", records[0]["instances"]
+    assert instance["engaged_mm3"] == pytest.approx(removed, rel=1e-6)
+    assert warning is None, warning
+    # the recorded axis is the direction the tool actually travelled
+    assert records[0]["axis"] == [1.0, 0.0, 0.0]
+
+
+def test_the_safe_bool_fallback_cuts_through_an_inward_pointing_normal(
+        monkeypatch):
+    """`_bore`'s fallback builds the tool solid itself, so on this frame it
+    built a **zero-height** cylinder (`reach = stock = 0`) and cut nothing —
+    a silent no-op on the rung that exists to rescue the primary route."""
+    from build123d import BuildPart
+
+    from agentcad.toolkit import holes
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("primary route down")
+
+    monkeypatch.setattr(BuildPart, "__enter__", explode)
+
+    part, plane = _inward_normal_slab()
+    out, _records, warning = holes.drill(part, [(0, 0)], 10.0, plane=plane)
+    assert "fell back to a safe_bool cut" in (warning or "")
+    assert part.volume - out.volume == pytest.approx(
+        _cyl_volume(10.0, 40.0), rel=1e-6)

@@ -92,6 +92,35 @@ _REPORT_ATTR = "_agentcad_pattern_instances"
 # exactly 0.0), so this only has to be non-zero.
 _VOLUME_TOL = 1e-9
 
+# Shared face area below which two shapes are "not welded together". Looser
+# than the volume tolerance on purpose: this number is a *difference of three
+# areas*, so it carries their rounding, and the thing it has to separate is a
+# real seat (hundreds of mm^2 on anything a rib or a boss sits on) from an
+# edge tangency (exactly 0 — an edge has no area).
+_AREA_TOL = 1e-6
+
+
+def _contact_area(part, tool) -> float:
+    """The face area `part` and `tool` share, in mm^2.
+
+    Arithmetic, from the areas of the two shapes and of their fusion: a fusion
+    that welds them along a face hides that face from BOTH sides, so the area
+    it loses is twice the contact. Disjoint shapes lose nothing and give 0.
+
+    This is measured rather than intersected because `part & tool` is an empty
+    Compound for a face-to-face seat, an edge tangency and a shape adrift in an
+    existing void alike — same volume (0), same area (0), three very different
+    situations.
+    """
+    try:
+        fused = part + tool
+    except Exception:                                          # noqa: BLE001
+        # An OCCT fuse that will not run tells us nothing about contact; the
+        # caller's own fuse is the one that decides, and it reports separately.
+        return 0.0
+    shared = (float(part.area) + float(tool.area) - float(fused.area)) / 2.0
+    return max(0.0, shared)
+
 
 # --------------------------------------------------------------- validation
 
@@ -201,15 +230,28 @@ def engagement(part, tools: Sequence[tuple[int, object]], *,
 
     Statuses:
 
-    * `missed` — the bounding boxes are disjoint. The instance **cannot** touch
-      the part: a cut there removes nothing, a fuse there leaves a floating
-      solid.
+    * `missed` — nothing to work with. Under `bbox` that means the bounding
+      boxes are disjoint; under `exact` it also covers the case the boxes
+      cannot see — zero interpenetration **and** zero shared face area, i.e.
+      an instance floating in a void that was already cut out of the part, or
+      one meeting it along a single edge. A cut there removes nothing and a
+      fuse there leaves a floating solid.
     * `engaged` — bounding boxes overlap (`probe="bbox"`), or the intersection
       has volume (`probe="exact"`).
-    * `flush` — `verify="exact"` only: the boxes overlap but
-      `(part & tool).volume` is 0. For a cut that means nothing was removed;
-      for a fuse it may still be a valid face-to-face join, which is why this
-      is its own status and not a "missed".
+    * `flush` — `verify="exact"` only: no interpenetration, but a shared face
+      of positive area — a real seat. A helper-built rib or boss lands here **by
+      construction**, because it sits ON its seat plane; that is why a fuse does
+      not warn about it. For a *cut* it still means nothing was removed, which
+      is why `holes` does warn.
+
+    Under `exact`, `contact_mm2` is the area the two shapes share, from the
+    identity ``(part.area + tool.area - (part + tool).area) / 2``. It is the
+    only thing that separates a seat from a tangency or from a drop into
+    existing void: `part & tool` is an empty compound in **all three** cases
+    (measured), so its volume and its area alike are 0 and it cannot tell them
+    apart. The extra fuse is only run on instances that already measured zero
+    interpenetration, and `exact` is opt-in precisely because it buys accuracy
+    with booleans.
 
     Shared with `holes.*` — the guard is written once, per the plan.
     """
@@ -233,10 +275,17 @@ def engagement(part, tools: Sequence[tuple[int, object]], *,
         # (AGENTS.md). On a disjoint pair it is an empty Compound with
         # `.volume == 0` (measured through the worker, changelog 0149).
         engaged = float((part & tool).volume)
+        if engaged > _VOLUME_TOL:
+            report.append({"i": i, "status": "engaged", "probe": "exact",
+                           "engaged_mm3": _round(engaged),
+                           "contact_mm2": _round(_contact_area(part, tool))})
+            continue
+        contact = _contact_area(part, tool)
         report.append({
             "i": i,
-            "status": "engaged" if engaged > _VOLUME_TOL else "flush",
-            "probe": "exact", "engaged_mm3": _round(engaged)})
+            "status": "flush" if contact > _AREA_TOL else "missed",
+            "probe": "exact", "engaged_mm3": _round(engaged),
+            "contact_mm2": _round(contact)})
     return report
 
 
@@ -336,12 +385,13 @@ def _fuse_warnings(label: str, part, out, report: list[dict],
             f"{label}: instance(s) {missed} do not reach the part "
             f"(bounding-box probe); a fused instance that touches nothing "
             f"leaves a floating solid")
-    flush = _flush(report)
-    if flush:
-        warnings.append(
-            f"{label}: instance(s) {flush} touch the part but do not "
-            f"interpenetrate it (engaged volume 0) — a flush join is valid, "
-            f"an accidental tangency is not")
+    # `flush` is NOT warned about here, and that is the point. A fused
+    # instance is a rib, a boss or a shape sitting on its seat plane, so zero
+    # interpenetration is what correct construction looks like — warning on it
+    # meant the strong tier fired on every happy path, which is how a reader
+    # learns to ignore it. `flush` now carries a positive shared face area, so
+    # the cases that used to hide inside it (an edge tangency, an instance in
+    # existing void) come back as `missed` above and are reported there.
     solids = len(out.solids())
     if solids > 1:
         warnings.append(

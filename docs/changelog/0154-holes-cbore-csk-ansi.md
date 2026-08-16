@@ -80,15 +80,25 @@ would have put a fine thread in the first-choice slot), `#5-44`, `#12-28`,
 Socket head cap screws (18 rows, #0…1 in) from
 `fullerfasteners.com/tech/ansi-asme-b18-3-specifications-hex-socket-head-cap-screws/`
 and `aftfasteners.com/socket-cap-screws-dimensions-and-mechanical-properties/`
-— identical on every row, and with an internal check the metric table has too:
-`A max = 1.5 d` and `H max = d` throughout. The two sources print H for 5/16 as
-0.3125 and 0.312 and for 7/16 as 0.4375 and 0.438; those are the same number at
-two precisions (both equal the nominal diameter) and the unrounded value ships.
+— identical on every row. `H max = d` holds throughout, which is why the two
+sources printing H for 5/16 as 0.3125 and 0.312 and for 7/16 as 0.4375 and
+0.438 are the same number at two precisions (both equal the nominal diameter);
+the unrounded value ships.
+
+> **Correction (review, 2026-08-16).** This paragraph originally claimed
+> "`A max = 1.5 d` and `H max = d` throughout … an internal check the metric
+> table has too". `H max = d` is true throughout. **`A max = 1.5 d` is not**:
+> it holds on the fractional sizes (1/4 in and up) and all **nine numbered
+> sizes are above it** — #0 is 0.096 against 0.090, #10 is 0.312 against 0.285.
+> The rows were re-read against both sources and **the data is right**; the
+> corroborating rule was the false part. Each rule is now claimed only over the
+> range where it holds, in the JSON's `notes` and in
+> `test_the_asme_b18_3_head_ratio_is_claimed_only_on_the_fractional_sizes`.
 82° flat head socket cap screws (12 rows, #4…3/4) from MSC Direct's
 `FlatSocketHeadCapScrews.pdf` and the Purchase Partners Fastener Reference
 Guide's `Flat Head.pdf` — identical on every shipped row, taking the **max
 theoretical sharp** head diameter, which is the dimension a countersink callout
-names (the same choice slice 2 made for ISO 10642's `dk = 2.24 d`).
+names (the same choice slice 2 made for ISO 10642's theoretical-sharp `dk`).
 *Not shipped:* csk `#2`, `#3`, `7/8` and `1` (one source only), and ASME B18.21
 button-head geometry (no corroborated table found at all).
 
@@ -137,6 +147,22 @@ than `rel=1e-3`. A silently inherited default cannot pass that.
     `tap_drill` with a `*_native` companion, and `_provenance` reports `units`.
     This is the one place a 25.4x error could hide, so the conversion is a
     named function, not a division inside a formatter.
+
+    > **Correction (review, 2026-08-16).** It hid there anyway, twice, on the
+    > path that does not go through a lookup's own return dict.
+    > `lookup(family="clearance", std="ansi")` returned the table's **inches**
+    > under `fits` (0.281 where `clearance(...)["d"]` is 7.1374 mm), and
+    > `lookup(family="tapped")` spliced the raw table entry in, so
+    > `pitches[…]["tap_drill"]` answered 0.213 in under the same key whose top
+    > level answers 5.1054 mm — i.e. the documented way to pick UNF over UNC
+    > was the wrong unit. Both now answer millimetres under the bare key, with
+    > `fits_native` / `tap_drill_native` alongside, and `clearance_fits` was
+    > moved to millimetres with `clearance_fits_native` added. `_mm()` also
+    > converted **iff** the units string was exactly `"in"` while `table()`
+    > only checked the field for truthiness, so a file spelling it `"inch"`
+    > would have shipped inches as millimetres silently; unit handling is now
+    > total (`_UNIT_FACTORS`, `_unit_factor`) and an unreadable unit is refused
+    > at load.
   - **A Unified "pitch" is threads per inch**, a whole count: `_pitch_key` is
     std-aware (`"20"`, never `"20.0"`) and refuses a non-integer for ASME with
     a message saying why. `thread()` reports `tpi` *and* the derived millimetre

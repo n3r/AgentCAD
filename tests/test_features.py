@@ -16,6 +16,8 @@ kernel worker (changelogs 0155 and 0156):
   validates every attempt and these tests assert the result is always valid.
 """
 
+import math
+
 import pytest
 
 
@@ -424,3 +426,66 @@ def test_a_floating_feature_reports_its_engaged_volume_exactly():
     _out, warning = features.rib(part, [(-40, 0), (40, 0)], 3.0, to=8.0,
                                  plane=above)
     assert "engages 0 mm^3" in warning
+
+
+# ---------- R18: the "how much of it arrived" check, which ribs never ran
+
+def _padded_plate():
+    """A 100x100x10 plate (z in [-5, 5]) carrying a 40x40x10 pad on top, so
+    the plane at z = 5 already has material standing on part of it."""
+    from build123d import Box, Pos
+
+    return Box(100, 100, 10) + Pos(0, 0, 5) * Box(40, 40, 10)
+
+
+def test_a_boss_that_lands_partly_inside_existing_material_says_so():
+    """**Regression.** `_fuse_warnings` grows a second check when it is given
+    the `seed`: what the instances *contain* against what actually *arrived*.
+    `patterns` passed the seed and got the check; `features.rib` and
+    `features.boss` did not, so a rib or a boss half-buried in material it
+    overlaps fused quietly and only the volume knew.
+    """
+    from build123d import Plane
+
+    from agentcad.toolkit import features
+
+    part = _padded_plate()
+    seat = Plane(origin=(0, 0, 5), z_dir=(0, 0, 1))
+    before = part.volume
+    out, warning = features.boss(part, (25, 0), 20.0, 10.0, plane=seat)
+
+    added = out.volume - before
+    contained = math.pi * 10.0 ** 2 * 10.0
+    assert added < contained - 1.0, (added, contained)
+    assert warning is not None, "a boss that loses material fused in silence"
+    assert "overlap each other or existing material" in warning
+
+
+def test_a_rib_that_lands_partly_inside_existing_material_says_so():
+    from build123d import Plane
+
+    from agentcad.toolkit import features
+
+    part = _padded_plate()
+    seat = Plane(origin=(0, 0, 5), z_dir=(0, 0, 1))
+    out, warning = features.rib(part, [(-40, 0), (40, 0)], 6.0, to=10.0,
+                                plane=seat)
+
+    assert out.volume < part.volume + 80 * 6.0 * 10.0
+    assert warning is not None, "a rib that loses material fused in silence"
+    assert "overlap each other or existing material" in warning
+
+
+def test_a_boss_on_clear_stock_still_says_nothing():
+    """The check must not fire on correct construction."""
+    from build123d import Plane
+
+    from agentcad.toolkit import features
+
+    part = _padded_plate()
+    seat = Plane(origin=(0, 0, 5), z_dir=(0, 0, 1))
+    out, warning = features.boss(part, (40, 40), 12.0, 8.0, plane=seat)
+
+    assert warning is None, warning
+    assert out.volume == pytest.approx(
+        part.volume + math.pi * 6.0 ** 2 * 8.0, rel=1e-6)

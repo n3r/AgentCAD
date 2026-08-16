@@ -9,10 +9,19 @@
     "Purchase Partners Fastener Reference Guide, \"Sockets - Flat Head Socket Cap Screws, Alloy Steel\" (ASME B18.3-1998), https://www.purchasepartners.com/files/Fastener-Reference-Guide/Sockets/Flat%20Head.pdf (read 2026-08-13)"
   ],
   "revision": "2026-08-13",
+  "provenance": {
+    "default": {"sources": [0, 1]},
+    "scopes": {
+      "cbore/asme_b18_3": {"standard": "ASME B18.3 (hexagon socket head cap screws)", "sources": [0, 1]},
+      "csk/asme_b18_3_flat": {"standard": "ASME B18.3 (hexagon socket flat countersunk head cap screws, 82 deg)", "sources": [2, 3]}
+    }
+  },
   "notes": [
+    "THE TWO COLUMNS ARE NOT BACKED BY THE SAME SOURCES: the file-level `sources` list is their union. Sources 1 and 2 are the socket-head table, sources 3 and 4 the 82 deg flat-head table. Each column is corroborated by its own two, and a countersink answer names those two rather than all four.",
     "As in the ISO file, what ships here is FASTENER HEAD GEOMETRY, which the standard fixes and which two independent sources print identically. NO COUNTERBORE DIAMETER IS TRANSCRIBED: the published counterbore conventions disagree materially (see data/iso_cbore_csk.json's notes for the measured spread), so hole_standards.cbore() applies a named clearance to the head diameter and says so in the answer's `rule`.",
     "The inch clearance rule is 1/16 in on diameter and 1/32 in on depth - the shop's round numbers, and within 0.09 mm of the metric rule's 1.5 mm / 0.8 mm. For a 1/4 in socket head that lands exactly on a 7/16 counterbore 9/32 deep.",
-    "cbore head_d/head_h are A max and H max. The two sources print H for 5/16 as 0.3125 and 0.312, and for 7/16 as 0.4375 and 0.438: the same number at two precisions, both equal to the nominal screw diameter (H max = d and A max = 1.5 d across the whole table, which is its own internal check). The unrounded value ships.",
+    "cbore head_d/head_h are A max and H max. The two sources print H for 5/16 as 0.3125 and 0.312, and for 7/16 as 0.4375 and 0.438: the same number at two precisions, both equal to the nominal screw diameter. The unrounded value ships.",
+    "H max = d holds across the WHOLE socket-head table and is what makes those two the same number at two precisions. A max = 1.5 d DOES NOT: it holds on the fractional sizes (1/4 in and up) and every one of the nine NUMBERED sizes is above it - #0 is 0.096 against 1.5 x 0.060 = 0.090, #10 is 0.312 against 0.285. The file called both an internal check until a review measured them. The data was re-checked against the sources and is right; the corroborating rule was the false part, so each rule is now claimed only over the range where it holds.",
     "csk head_d is the MAX THEORETICAL SHARP diameter - the exact diameter of an 82 deg countersink in which a maximum-size head sits flush - which is the dimension a countersink callout names, so no clearance is added to it. The 'absolute minimum' column beside it in both sources is the machined head min and is not what a callout names.",
     "Not shipped, for want of a second source: csk rows #2 and #3 and 7/8 and 1 in (one source only). ASME B18.21 button-head geometry is not here at all."
   ],

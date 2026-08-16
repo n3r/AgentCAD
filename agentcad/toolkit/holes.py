@@ -397,6 +397,10 @@ def counterbore(part, points, size: str, *, plane="top", fit: str = "medium",
     # every face, and the tool factory below and the bore itself must agree on
     # the answer, not merely on the question.
     workplane = resolve_plane(part, plane)
+    # The same into-the-material frame `_drill` will derive from this plane;
+    # the tool factory below has to agree with it or the guard probes and the
+    # fallback cut are built facing the wrong way (see `_tool_frame`).
+    frame = _tool_frame(part, workplane)
     radius = row["d"] / 2.0
     bore_r = bore_d / 2.0
 
@@ -410,7 +414,7 @@ def counterbore(part, points, size: str, *, plane="top", fit: str = "medium",
     def tool(loc, reach):
         from build123d import Align, Cylinder
 
-        plane_at = _bore_plane(loc, workplane)
+        plane_at = _bore_plane(loc, frame)
         align = (Align.CENTER, Align.CENTER, Align.MIN)
         return plane_at.location * (Cylinder(radius, reach, align=align)
                                     + Cylinder(bore_r, bore_depth, align=align))
@@ -419,7 +423,7 @@ def counterbore(part, points, size: str, *, plane="top", fit: str = "medium",
         part, points, radius, record, plane=workplane, depth=depth, thru=thru,
         verify=verify, label="holes.counterbore", cut=cut, tool=tool,
         envelope_r=bore_r)
-    stock = _extent(part, workplane)
+    stock = _extent(part, frame)
     if bore_depth >= stock - _VOLUME_TOL:
         note = (f"holes.counterbore: the {bore_depth:g} mm pocket is not "
                 f"shallower than the {stock:g} mm of stock below this plane, "
@@ -471,6 +475,7 @@ def countersink(part, points, size: str, *, plane="top", fit: str = "medium",
             angle=included),
     }
     workplane = resolve_plane(part, plane)
+    frame = _tool_frame(part, workplane)      # see counterbore, and _tool_frame
     radius = row["d"] / 2.0
     seat_r = seat_d / 2.0
     cone_h = (seat_r - radius) / math.tan(math.radians(included / 2.0))
@@ -485,7 +490,7 @@ def countersink(part, points, size: str, *, plane="top", fit: str = "medium",
     def tool(loc, reach):
         from build123d import Align, Cone, Cylinder
 
-        plane_at = _bore_plane(loc, workplane)
+        plane_at = _bore_plane(loc, frame)
         align = (Align.CENTER, Align.CENTER, Align.MIN)
         return plane_at.location * (
             Cylinder(radius, reach, align=align)
@@ -541,15 +546,18 @@ def _drill(part, points, radius: float, record: dict, *, plane, depth,
                  for u, v in pts]
     centers = [_round3(loc.position) for loc in locations]
 
-    stock = _extent(part, workplane)
+    # Everything that has to know which way the material lies uses `frame`;
+    # everything that positions a hole uses `workplane`. See `_tool_frame`.
+    frame = _tool_frame(part, workplane)
+    stock = _extent(part, frame)
     reach = stock if thru else float(depth)
     envelope_r = radius if envelope_r is None else float(envelope_r)
     if tool is None:
         def tool(loc, reach_mm):
-            return _tool_solid(loc, workplane, radius, reach_mm)
+            return _tool_solid(loc, frame, radius, reach_mm)
     warnings = []
     report, guard_warnings = _guard(
-        part, workplane, locations, radius, reach, stock, thru, verify, label,
+        part, frame, locations, radius, reach, stock, thru, verify, label,
         tool=tool, envelope_r=envelope_r)
     warnings += guard_warnings
     warnings += _spacing_warnings(pts, envelope_r * 2.0, label)
@@ -564,12 +572,12 @@ def _drill(part, points, radius: float, record: dict, *, plane, depth,
                 cut()
         if fuse is not None:
             for loc in locations:
-                add(_bore_plane(loc, workplane).location * fuse)
+                add(_bore_plane(loc, frame).location * fuse)
 
     out, fallback = _bore(
-        part, place, locations, workplane, reach, label, tool,
+        part, place, locations, frame, reach, label, tool,
         extra=[] if fuse is None else
-        [_bore_plane(loc, workplane).location * fuse for loc in locations])
+        [_bore_plane(loc, frame).location * fuse for loc in locations])
     if fallback:
         warnings.append(fallback)
 
@@ -587,7 +595,10 @@ def _drill(part, points, radius: float, record: dict, *, plane, depth,
             f"thread='none' unless the thread has to be manufactured from this "
             f"mesh.")
 
-    axis = tuple(-Vector(workplane.z_dir))
+    # The direction the tool actually travelled, which is `frame`'s, not the
+    # caller's. `plane` below still reports the frame the caller gave, because
+    # that is the one the recorded (u, v) positions are expressed in.
+    axis = tuple(-Vector(frame.z_dir))
     full = dict(record)
     full.update({
         "id": f"h{len(records(part))}",
@@ -726,11 +737,15 @@ def _tool_box(loc, workplane, radius, reach):
     return (lo[0], lo[1], lo[2], hi[0], hi[1], hi[2])
 
 
-def _extent(part, workplane) -> float:
-    """How much stock there is below the plane, measured on the part's bounding
-    box along the plane's normal. A bounding-box measure, so it is an
-    over-estimate for anything but a prism — it warns about a depth that cannot
-    fit at all, not about a depth that misses a local pocket."""
+def _stock_sides(part, workplane) -> tuple[float, float]:
+    """``(into, behind)`` — how far the part's bounding box reaches from the
+    plane along ``-z_dir`` (the direction a tool conventionally travels) and
+    along ``+z_dir``.
+
+    A bounding-box measure, so both are over-estimates for anything but a
+    prism: they answer "could a depth fit at all", not "does it miss a local
+    pocket".
+    """
     box = part.bounding_box()
     corners = [Vector(x, y, z)
                for x in (box.min.X, box.max.X)
@@ -739,7 +754,49 @@ def _extent(part, workplane) -> float:
     normal = Vector(workplane.z_dir)
     origin = Vector(workplane.origin)
     depths = [(origin - corner).dot(normal) for corner in corners]
-    return max(0.0, max(depths))
+    return max(0.0, max(depths)), max(0.0, -min(depths))
+
+
+def _tool_frame(part, workplane):
+    """`workplane`, oriented so that ``-z_dir`` points at the material.
+
+    A workplane says WHERE to drill. Which way is "into the part" is a fact
+    about the part, not about the caller's frame — and a perfectly reasonable
+    frame can have its normal pointing inward. The bundled `angle_bracket`
+    uses exactly one: ``Plane(origin=(0, 0, hz), z_dir=(1, 0, 0))`` on a leg
+    whose material lies at +X, chosen deliberately because sliding a workplane
+    along the hole axis is free while the named "left" face would rotate the
+    tool and re-tessellate the part.
+
+    build123d's `Hole` does not care — a thru hole is cut in both directions —
+    which is why the primary route always produced correct geometry and only
+    the things *derived* from the frame were wrong: stock measured 0 mm, the
+    `exact` guard probed a tool standing in fresh air and reported
+    `flush, engaged 0` on a hole that had just removed real material, and
+    `_bore`'s `safe_bool` fallback built a zero-height cylinder (which does not
+    quietly cut nothing — it fails the boolean outright).
+
+    Placement is deliberately NOT re-based on this frame. The points are (u, v)
+    in the caller's plane, so flipping the plane they are placed on would move
+    the holes; this frame is used only to measure stock, to build tools, and to
+    place fused thread solids.
+    """
+    into, behind = _stock_sides(part, workplane)
+    if behind <= into:
+        return workplane
+    return Plane(origin=Vector(workplane.origin),
+                 x_dir=Vector(workplane.x_dir),
+                 z_dir=-Vector(workplane.z_dir))
+
+
+def _extent(part, workplane) -> float:
+    """How much stock lies along the drilling axis from the plane.
+
+    Measured on whichever side of the plane the material is actually on, so a
+    normal that points into the material reports the stock it points at rather
+    than the 0 mm of empty space behind it.
+    """
+    return max(_stock_sides(part, workplane))
 
 
 # ------------------------------------------------------------------ warnings

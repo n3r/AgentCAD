@@ -296,7 +296,7 @@ instead. Everything else in the app works normally.
 
 **With the key** (set in the environment before `make run` /
 `agentcad serve`) it becomes a full tool-using assistant with the same
-25-tool surface external agents get ([agent-api.md](agent-api.md)):
+73-tool surface external agents get ([agent-api.md](agent-api.md)):
 
 - The hint in the header reads `agent works on <project>` — each chat is
   scoped to the currently open project, with a separate in-memory history

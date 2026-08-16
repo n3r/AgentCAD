@@ -896,9 +896,16 @@ failures, and they all look like success:**
   parallel model — that is what makes FR12's consistency a fact instead of an
   invariant. It costs an `unfold()` (11–70 ms) where v1's walker was free.
   `fold()` and `unfold()` differ by **exactly** `angle_rad·(0.5 − k)·t²·span`,
-  the k-factor's own neutral-fibre offset (residual −0.0), and by nothing
-  else — that is the model's tolerance, not an error, and it does not
-  accumulate.
+  the k-factor's own neutral-fibre offset (residual −0.0), and — **for a part
+  with no mitred corner** — by nothing else; that is the model's tolerance,
+  not an error, and it does not accumulate. A `close` corner adds a second,
+  larger term, because the mitre is cut through the sheet's **thickness** in
+  the fold and at the **neutral fibre** in the blank: measured on the corner
+  bracket, 65.337653 against the 37.699112 the two bends alone give. Both
+  numbers are the same model seen from the two sides of one k-factor. The
+  mitre is cut from `unfold()` too — without it the blank has a square corner
+  and cannot be bent into the model, and the two tabs silently claim one piece
+  of sheet (0161).
 - **`add_holes` writes source, so nothing but a validated table key or a
   `repr(float(...))` reaches the output** — the same rule `sketch_emit`
   learned when a crafted `part` put `import os` on line 2 of a generated
@@ -976,7 +983,7 @@ Write the changelog from the real diff, not from memory.
 ## Where to read more
 
 - `docs/architecture.md` — processes, components, ACM1 format, rebuild flow
-- `docs/agent-api.md` — the 65/68 agent tools with schemas + a worked loop
+- `docs/agent-api.md` — the 73/76 agent tools with schemas + a worked loop
 - `docs/geometry-ci.md` — `agentcad check`, the report schema, the GitHub Action
 - `docs/part-authoring.md` — the script contract, toolkit, mates, sketch solver
 - `docs/user-guide.md` — the UI surface by surface

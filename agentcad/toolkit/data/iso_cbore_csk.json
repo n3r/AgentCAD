@@ -9,10 +9,19 @@
     "The Engineer's Bible, \"Counterbore Hole Size for Socket Head (ISO 4762)\", https://engineersbible.com/counterbore-socket-iso/ (read 2026-08-13; consulted for the counterbore convention, NOT transcribed - see notes)"
   ],
   "revision": "2026-08-13",
+  "provenance": {
+    "default": {"sources": [0, 1]},
+    "scopes": {
+      "cbore/iso4762": {"standard": "ISO 4762:2004 (hexagon socket head cap screws)", "sources": [0, 1]},
+      "csk/iso10642": {"standard": "ISO 10642:2004 (hexagon socket countersunk head screws)", "sources": [2]}
+    }
+  },
   "notes": [
-    "What ships here is FASTENER HEAD GEOMETRY, which the fastener standards do fix and which two independent sources print identically. The counterbore/countersink BORE is derived from it by hole_standards' documented clearance rule.",
+    "What ships here is FASTENER HEAD GEOMETRY, which the fastener standards do fix. The counterbore/countersink BORE is derived from it by hole_standards' documented clearance rule.",
+    "THE TWO COLUMNS ARE NOT BACKED BY THE SAME SOURCES, and the file-level `sources` list is their union rather than a claim about any row. The ISO 4762 socket-head column has two independent sources and is corroborated. The ISO 10642 countersunk column ships on ONE named source, so all nine of its rows answer `corroborated: false` - said out loud rather than inferred from the file's header. The fourth source was consulted for the counterbore CONVENTION and is deliberately not transcribed, so it backs no row at all.",
     "Why no counterbore diameter table: the published counterbore conventions disagree, materially. For M5, DIN 974-1-style charts give diameter 10.0 / depth 5.8; a Machinery's-Handbook-derived chart gives 9.75 / 5.0; for M8 the same three families of chart give 15.0, 14.25 and 14.5. That is not one tabulated fact with exceptions, it is three shop conventions, so no row is transcribed as if it were the standard. hole_standards.cbore() applies a named clearance to the head diameter instead and says so in every answer it returns.",
-    "ISO 10642's head is specified at 90 degrees and its dk here is the THEORETICAL SHARP diameter (dk = 2.24 x d), which is what a countersink callout names. It is deliberately larger than the actual machined head max, so no clearance is added to it.",
+    "ISO 10642's head is specified at 90 degrees and its dk here is the THEORETICAL SHARP diameter, which is what a countersink callout names. It is deliberately larger than the actual machined head max, so no clearance is added to it.",
+    "dk = 2.24 x d IS NOT AN INTERNAL CHECK ON THIS COLUMN, and it was described as one until a review measured it. It holds exactly for M3 through M12 and fails on the two largest rows: M16 is 33.6 against 2.24 x 16 = 35.84, and M20 is 40.32 against 44.8. Those two rows are TRANSCRIBED, not derived, and the data was re-checked against the source and is right - the corroborating rule was the false part. The ratio is stated here only for the range where it holds.",
     "ISO 7380 (button head) is not here yet: only one source was found for its head table, so it did not clear the two-source rule."
   ],
   "rows": {

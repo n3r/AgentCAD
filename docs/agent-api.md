@@ -1,7 +1,7 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 76 tools (79 with the
-`[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
+Agents drive AgentCAD through a single tool surface — 73 tools (76 with the
+optional `[fem]` extra installed), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
 
@@ -152,7 +152,7 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `hole_standards` | family, size, std | The vendored ISO **and ASME** hole tables, as data — no kernel call, no geometry. Omit everything for `{families, sizes, fits, csk_angle_deg}`; give `family` alone for its tabulated sizes; give `family` + `size` for the row. `family` is `clearance` \| `tapped` \| `counterbore` \| `countersink` (`cbore`/`csk`/`thread` also accepted); `std` is `iso` (default) or `ansi`. **The two standards have different size vocabularies** — `M5` for ISO, `#10` or `1/4` for ASME — and asking one for the other's designation is a `size` error naming what is tabulated, never a silent fallback. A `clearance` row returns **all three fits at once** (`{fine, medium, coarse}`, also spelled `{close, normal, loose}`) plus the `drill` designation where the table has one; a `tapped` row returns `{pitch, tpi, tap_drill, drill, series, thread, pitches}`; a `counterbore` row returns the head (`head_d`, `head_h`) *and* the bore (`d`, `depth`) with the `rule` that derived it. Every answer carries `standard`, `revision`, `units` and the two published `sources` the numbers were transcribed from. |
+| `hole_standards` | family, size, std | The vendored ISO **and ASME** hole tables, as data — no kernel call, no geometry. Omit everything for `{families, sizes, fits, csk_angle_deg}`; give `family` alone for its tabulated sizes; give `family` + `size` for the row. `family` is `clearance` \| `tapped` \| `counterbore` \| `countersink` (`cbore`/`csk`/`thread` also accepted); `std` is `iso` (default) or `ansi`. **The two standards have different size vocabularies** — `M5` for ISO, `#10` or `1/4` for ASME — and asking one for the other's designation is a `size` error naming what is tabulated, never a silent fallback. A `clearance` row returns **all three fits at once** (`{fine, medium, coarse}`, also spelled `{close, normal, loose}`) — `fits` in **millimetres**, `fits_native` in the table's own unit — plus the `drill` designation where the table has one; a `tapped` row returns `{pitch, tpi, tap_drill, drill, series, thread, pitches}`, each `pitches` entry carrying `{pitch, tpi, series, tap_drill (mm), tap_drill_native, drill}`; a `counterbore` row returns the head (`head_d`, `head_h`) *and* the bore (`d`, `depth`) with the `rule` that derived it. Every answer carries `standard`, `revision`, `units` and the `sources` backing **that row** (the file's list is their union), plus `corroborated` and `conflicts`. |
 
 Two things this surface says out loud rather than hiding:
 
@@ -160,8 +160,13 @@ Two things this surface says out loud rather than hiding:
   materially (M8: 15.0, 14.5 and 14.25 mm in three widely-republished
   conventions), so no counterbore diameter is transcribed as if it were ISO.
   What ships is the **fastener head geometry**, which the standards do fix and
-  which two independent sources print identically; the bore is head + a named
-  clearance, and `rule` says so in every answer.
+  which two independent sources print identically — except the ISO 10642
+  countersunk column, which ships on one source and says so
+  (`corroborated: false`); the bore is head + a named clearance, and `rule`
+  says so in every answer. **That flat clearance is guarded below the head
+  it was set on**: below an 8.5 mm (0.375 in) head it is applied as the same
+  proportion of the head instead, because a flat 1.5 mm bored 5.3 on an M2
+  where DIN 974-1 gives 4.3.
 - **The tap drill is a shop number**, the stock drill nearest `d − P`. Rows
   where the two sources printed different drills are absent rather than
   averaged; the data file's `notes` names them.

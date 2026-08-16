@@ -205,6 +205,18 @@ $ .venv/bin/python -m pytest -q -n 2 tests/test_examples.py
 skip is the long-standing `[fem]`-extra skip; no new skips, and no example's
 geometry moved.
 
+> **Correction (review, 2026-08-16).** **This run is not reproducible on the
+> tree it describes, and the branch was red when it was written.**
+> `tests/test_prd010_acceptance.py` pinned the PRD to `docs/prd/completed/`,
+> where a PRD only lands at **merge**, so three tests failed deterministically
+> at this commit — the chunk-A figure above cannot have been 2309 passed with
+> 0 failed. (The 2329 total is also arithmetic across two chunk runs rather
+> than one `make test`; that part is stated honestly above and is how this
+> machine has to run it.) The tests were fixed in **0161**, which cites its own
+> measured run. Left in place rather than rewritten, per this directory's rule
+> that entries are historical records: the wrong number is part of what the
+> review found.
+
 ## Notes
 
 - **The browser evidence and the structural gate are two different tests, on

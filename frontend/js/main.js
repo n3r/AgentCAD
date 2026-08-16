@@ -1656,12 +1656,31 @@ const HOLE_FAMILIES = [
 // will look up, so the picker cannot offer an M4.5 the tables do not have.
 const holeTables = new Map();
 
+// The diameter a `drilled` hole starts at, in mm. A number, not a designation:
+// the sizes the pickers offer are the tables' rows and nothing else.
+const HOLE_DRILL_DEFAULT_MM = "6";
+
 // Kept outside the card so a re-render (face_info landing, a highlight change)
 // does not throw away half-typed input.
-const holeForm = {
+//
+// **It is ONE part's form, though.** A depth or a set of points typed against
+// part A is a statement about A's face, and it used to be carried silently on
+// to part B — the next Drill applied it there. So it is reset when the
+// selection moves, off the same `selectedPart` change `updateHUD` listens to.
+const HOLE_FORM_DEFAULTS = Object.freeze({
   family: "clearance", std: "iso", size: "", fit: "",
   depth: "", points: "0, 0",
-};
+});
+const holeForm = { ...HOLE_FORM_DEFAULTS };
+let holeFormPart = null; // the part the form's numbers were typed against
+
+function syncHoleFormPart() {
+  // Same part: keep what the user typed. `setState` re-announces a key
+  // whether or not its value moved, so this has to compare, not just fire.
+  if (state.selectedPart === holeFormPart) return;
+  holeFormPart = state.selectedPart;
+  Object.assign(holeForm, HOLE_FORM_DEFAULTS);
+}
 
 function holeStandardsFor(std) {
   if (holeTables.has(std)) return holeTables.get(std);
@@ -1730,8 +1749,18 @@ function renderHoleControls(body, planar) {
   // A `drilled` hole has no table row — its "size" is a diameter in mm — so
   // it is the one family whose size control is a number, not a picker.
   const sizes = drilled ? [] : ((tables && tables.sizes && tables.sizes[family.id]) || []);
-  if (!drilled && sizes.length && !sizes.includes(holeForm.size)) {
-    holeForm.size = sizes.includes("M5") ? "M5" : sizes[0];
+  // …and the two kinds of "size" are not interchangeable: a designation is not
+  // a number of millimetres, so neither control may be handed the other's
+  // value. This normalizes whatever is in the form to what THIS control means.
+  if (drilled) {
+    if (!(Number.parseFloat(holeForm.size) > 0)) {
+      holeForm.size = HOLE_DRILL_DEFAULT_MM;
+    }
+  } else if (sizes.length && !sizes.includes(holeForm.size)) {
+    // The table's first row, deliberately: preferring a particular thread here
+    // would put a size literal in this file, and the rule the picker keeps is
+    // that every size it offers came from `hole_standards`.
+    holeForm.size = sizes[0];
   }
   const fitNames = (tables && tables.fits) || {};
   const fitOptions = ["fine", "medium", "coarse"]
@@ -1749,7 +1778,15 @@ function renderHoleControls(body, planar) {
     "family",
     HOLE_FAMILIES.map((entry) => ({ value: entry.id, label: entry.label })),
     family.id,
-    (value) => { holeForm.family = value; renderFaceCard(); }
+    (value) => {
+      // Crossing the `drilled` boundary changes what a size IS, so the old
+      // value is not one the new control can hold. The render above
+      // re-defaults it; clearing here is what keeps a stale diameter out of
+      // the picker while a size list is still in flight.
+      if ((value === "drilled") !== drilled) holeForm.size = "";
+      holeForm.family = value;
+      renderFaceCard();
+    }
   ));
   controls.push(holeSelect(
     "std",
@@ -1768,7 +1805,7 @@ function renderHoleControls(body, planar) {
     input.step = "any";
     input.min = "0";
     input.className = "placement-num";
-    input.value = holeForm.size || "6";
+    input.value = holeForm.size;
     input.setAttribute("aria-label", "hole diameter in millimetres");
     input.addEventListener("input", () => { holeForm.size = input.value; });
     wrap.append(caption, input);
@@ -1846,10 +1883,15 @@ function renderHoleControls(body, planar) {
     : "A hole needs a planar face";
   apply.addEventListener("click", () => applyAddHoles(apply));
   points.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && planar) {
-      event.preventDefault();
-      applyAddHoles(apply);
-    }
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    // A disabled button never fires `click`, so the attribute IS the button
+    // path's guard and Enter has to consult it. That covers both halves: a
+    // non-planar face (disabled at render) and a drill already in flight
+    // (`applyAddHoles` disables it for the round trip) — two `add_holes`
+    // calls appending to the same script clobber each other.
+    if (apply.disabled) return;
+    applyAddHoles(apply);
   });
   row.appendChild(apply);
   section.appendChild(row);
@@ -2085,6 +2127,7 @@ async function boot() {
   setupKeys();
   onKeys(["rebuilding", "connected"], renderIndicators);
   onKeys(["rebuilding", "part", "mode", "selectedPart", "selectedInstance"], updateHUD);
+  onKeys(["selectedPart"], syncHoleFormPart);
   onKeys(["gizmoMode"], () => viewport.setGizmoMode(state.gizmoMode));
   connectWS();
 

@@ -137,7 +137,12 @@ def rib(part, profile, thickness: float, *, to, plane="top",
     out, fallback = _fuse(part, lambda: add(solid), [solid], label)
     if fallback:
         warnings.append(fallback)
-    warnings += _fuse_warnings(label, part, out, report, 1)
+    # `seed=solid` is what buys the second check: what the instance
+    # CONTAINS against what actually arrived. Without it a rib or a boss
+    # that lands half inside existing material fuses in silence — the
+    # per-instance probe cannot see it, because the instance genuinely
+    # does engage the part; only the volume knows how little of it is new.
+    warnings += _fuse_warnings(label, part, out, report, 1, seed=solid)
     warnings += _floating_warning(label, part, out, solid)
     return holes.carry(out, part), _join(warnings)
 
@@ -260,7 +265,12 @@ def boss(part, at, d: float, h: float, *, hole: str | None = None,
     report = engagement(part, [(0, solid)], verify=verify)
     out, fallback = _fuse(part, lambda: add(solid), [solid], label)
     warnings = [fallback] if fallback else []
-    warnings += _fuse_warnings(label, part, out, report, 1)
+    # `seed=solid` is what buys the second check: what the instance
+    # CONTAINS against what actually arrived. Without it a rib or a boss
+    # that lands half inside existing material fuses in silence — the
+    # per-instance probe cannot see it, because the instance genuinely
+    # does engage the part; only the volume knows how little of it is new.
+    warnings += _fuse_warnings(label, part, out, report, 1, seed=solid)
     warnings += _floating_warning(label, part, out, solid)
     out = holes.carry(out, part)
 

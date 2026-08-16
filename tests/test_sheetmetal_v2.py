@@ -216,6 +216,26 @@ def test_outline_of_a_round_relief_is_a_polyline_within_the_chord_tolerance():
     assert arc["radius"] == pytest.approx(1.5, rel=1e-9)   # 1.5*t / 2
 
 
+def test_the_outline_and_its_edge_list_start_at_the_same_place():
+    """One start decision, not two. The polygon used to pick the nearest of
+    ALL its points and the edge list the nearest edge START, so an arc whose
+    middle is nearer the base corner than any vertex split them: measured on
+    this bracket, ``flat_outline()`` began at (1.634902, -6.809857) — a sample
+    34.2746 mm from the corner, in the middle of the relief arc — while
+    ``flat_outline_edges()`` began 36.0947 mm away at (-30, -56.094690). The
+    two describe the same loop from different places, and a reader that walks
+    them together (a DXF writer, a bend-line overlay) is off by an edge."""
+    sp = (_sp().base(60, 40)
+          .flange("front", 90, 30, inner_radius=3)
+          .flange("right", 90, 20, inner_radius=3, start=0, width=20,
+                  relief={"kind": "round", "width": 30, "depth": 30}))
+    pts, edges = sp.flat_outline(), sp.flat_outline_edges()
+    assert pts[0] == pytest.approx(edges[0]["a"], abs=1e-9)
+    # and every edge start is still a point of the polygon, in order
+    assert [e["a"] for e in edges] == [p for p in pts if p in
+                                       {e["a"] for e in edges}]
+
+
 def test_outline_edges_are_exact_and_join_end_to_end():
     edges = _ac4().flat_outline_edges()
     assert edges and all(e["kind"] in ("line", "arc") for e in edges)
@@ -337,14 +357,73 @@ def test_close_corner_mitre_fills_the_notch():
 
 
 def test_close_corner_appears_in_the_flat_pattern_too():
+    """The mitre is cut from the BLANK as well as from the fold, so the blank
+    can be bent into the model.
+
+    Measured while the mitre was cut from ``fold()`` only: both tabs ran the
+    full ``rho = R + k*t`` past the corner and both claimed the ``rho x rho``
+    square there, so the fuse swallowed 30.1088 mm^3 of declared material in
+    silence — one valid solid of 10393.8187 mm^3 where the two tabs declare
+    10423.9275. The blank was un-foldable and every total-volume assertion
+    passed anyway, because the 45 degree bisector cuts the square in two and
+    the two halves tile it exactly: the swallowed overlap and the missing
+    mitre are the same 30.1088 mm^3. Only the closed form below, which pays
+    for the mitre wedge the CHORD of the unrolled bisector removes, tells
+    them apart."""
     close, rip = _cornered("close"), _cornered("rip")
-    assert close.unfold().volume > rip.unfold().volume
+    flat = close.unfold()
+    assert _valid_single(flat)
+    assert flat.volume > rip.unfold().volume
+    # each tab is (BA + leaf) long and its span runs rho past the corner; the
+    # mitre chord (slope sin(a)/a) then takes rho^2 * a / (2 sin a) back off
+    # each mitred end -- see SheetPart._mitre_cuts for why it is the chord
+    rho = 3 + 0.44 * 2
+    ext = BA_90 + 20
+    wedge = rho ** 2 * math.radians(90) / (2 * math.sin(math.radians(90)))
+    expected = 2.0 * (60 * 40 + ext * (60 + rho) + ext * (40 + rho) - 2 * wedge)
+    assert expected == pytest.approx(10376.6327, abs=1e-3)
+    assert flat.volume == pytest.approx(expected, rel=1e-9)
+    # nothing is claimed twice: the two tabs meet on the mitre, they do not
+    # overlap on it (this is the assertion the square-cornered blank failed)
+    assert not any("swallow" in w for w in close.warnings), close.warnings
     a_close = _shoelace(close.flat_outline())
     a_rip = _shoelace(rip.flat_outline())
     assert a_close > a_rip
     # the mitred corner does not leave the blank in two coplanar top faces:
     # outline area x thickness is the whole blank's volume
     assert a_close * 2.0 == pytest.approx(close.unfold().volume, rel=1e-9)
+
+
+def test_the_flat_blank_carries_the_mitre_notch_not_a_square_corner():
+    """The shape, not just the number: the blank's corner is a V-notch whose
+    apex is the plate corner itself, because that is where the mitre plane
+    meets the bend line. Measured with the mitre missing from ``unfold()``,
+    the outline ran straight through the square corner at (33.88, -23.88)."""
+    close = _cornered("close")
+    pts = [(round(x, 6), round(y, 6)) for x, y in close.flat_outline()]
+    rho = 3 + 0.44 * 2
+    # the apex: both mitres start at the plate corner
+    assert (30.0, -20.0) in pts, pts
+    # and the square corner both tabs used to claim is gone
+    assert (round(30 + rho, 6), round(-20 - rho, 6)) not in pts, pts
+    # the two chord ends: the front tab reaches rho across at BA out, the
+    # right tab rho out at BA across
+    assert (round(30 + rho, 6), round(-20 - BA_90, 6)) in pts, pts
+    assert (round(30 + BA_90, 6), round(-20 - rho, 6)) in pts, pts
+
+
+def test_the_close_corner_bend_line_stays_inside_the_blank():
+    """A bend line is drawn on the blank, so it stops where the blank does.
+    The tab runs rho past the corner but the mitre crosses the bend MIDLINE
+    half a bend allowance out, where the chord has only reached
+    rho*sin(a)/2 — 1.94 mm here, not 3.88."""
+    rho = 3 + 0.44 * 2
+    lines = {b["edge"]: b for b in _cornered("close").bend_lines()}
+    assert lines["front"]["b"][0] == pytest.approx(30 + rho / 2, abs=1e-9)
+    assert lines["right"]["a"][1] == pytest.approx(-20 - rho / 2, abs=1e-9)
+    # and the untreated corner is untouched
+    rip = {b["edge"]: b for b in _cornered("rip").bend_lines()}
+    assert rip["front"]["b"][0] == pytest.approx(30.0, abs=1e-9)
 
 
 def test_gap_corner_shortens_both_bend_lines():
@@ -377,6 +456,44 @@ def test_corner_needs_flanges_that_reach_it():
           .flange("right", 90, 20))
     with pytest.raises(ValueError, match="reach"):
         sp.corner("front", "right", "close")
+
+
+# ---- material conservation ---------------------------------------------------
+
+def test_a_hem_leaf_that_lands_on_a_flange_warns_about_what_it_swallowed():
+    """A 50 mm open hem on a 40 mm deep plate folds back over the sheet and
+    straight through the back flange's leaf. OCCT reports nothing: one solid,
+    ``is_valid`` True, and a volume that is simply 240.0 mm^3 short of the
+    declaration (15496.4600 declared, 15256.4600 measured) -- 60 x 2 x 2 mm of
+    hem leaf inside the back flange. ``_checked`` cannot see this, because
+    every property it looks at is fine."""
+    sp = (_sp().base(60, 40)
+          .hem("front", "open", length=50)
+          .flange("back", 90, 25))
+    part = sp.fold()
+    assert _valid_single(part), "the failure this warns about is a SILENT one"
+    assert part.volume == pytest.approx(15256.460033, abs=1e-3)
+    swallowed = [w for w in sp.warnings if "swallow" in w]
+    assert swallowed, sp.warnings
+    assert "240" in swallowed[0], swallowed[0]
+
+
+@pytest.mark.parametrize("make", [
+    _ac4,
+    lambda: _cornered("close"),
+    lambda: _cornered("gap"),
+    lambda: _sp(thickness=1.5).base(60, 40).hem("front", "open", length=6),
+    lambda: (_sp().base(60, 40).flange("front", 90, 20, inner_radius=3)
+             .hem("back", "open", length=6)),
+])
+def test_features_that_do_not_overlap_lose_no_material(make):
+    """The conservation check must be quiet on every shape this module is for:
+    the mitre extension, the gap corner, the reliefs and a hem all land where
+    the declaration says, to OCCT's own precision."""
+    sp = make()
+    sp.fold()
+    sp.unfold()
+    assert not any("swallow" in w for w in sp.warnings), sp.warnings
 
 
 # ---- warnings ----------------------------------------------------------------
