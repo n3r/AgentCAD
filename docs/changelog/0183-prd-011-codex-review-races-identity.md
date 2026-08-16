@@ -419,3 +419,12 @@ three classes, all test-side and all previously-solved traps:
 `agentcad/core/packages/indexes.py`'s `fcntl` import was already guarded (the
 cross-process index lock degrades to the in-process RLock on platforms
 without it, documented in its docstring) — verified, not changed.
+
+**Second Windows round: the checkout was not byte-stable.** Every catalog
+package "does not hash to its advertised id" on windows-latest and nowhere
+else — Windows git defaults to `core.autocrlf=true`, which rewrites LF → CRLF
+at checkout, and a content-addressed index cannot survive a line-ending
+rewrite. `_git.run` now pins `-c core.autocrlf=false` on every invocation
+(`-c` beats every config scope, so a user's global gitconfig cannot re-break
+it). This was a real product bug, not a test bug: any Windows user's git
+index would have refused every install with a content-id mismatch.

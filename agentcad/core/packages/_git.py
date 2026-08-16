@@ -166,7 +166,13 @@ def run(*args: str, cwd=None, timeout: float = DEFAULT_TIMEOUT):
            "GIT_ASKPASS": "",
            "SSH_ASKPASS": ""}
     env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
-    cmd = [executable(), *args]
+    # A package index is CONTENT-ADDRESSED: the checkout must be byte-stable,
+    # or no content id survives the round trip. Windows git defaults to
+    # `core.autocrlf=true`, which rewrites LF -> CRLF at checkout — measured on
+    # PR #15's CI: every catalog package "does not hash to its advertised id"
+    # on windows-latest and nowhere else. Pinned per-invocation (`-c` beats
+    # every config scope), so a user's global gitconfig cannot re-break it.
+    cmd = [executable(), "-c", "core.autocrlf=false", *args]
     try:
         result = subprocess.run(cmd, cwd=None if cwd is None else str(cwd),
                                 env=env, capture_output=True, text=True,
