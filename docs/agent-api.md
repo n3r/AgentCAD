@@ -1,7 +1,7 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 71 tools (74 with the
-`[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
+Agents drive AgentCAD through a single tool surface — 73 tools (76 with the
+optional `[fem]` extra installed), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
 
@@ -26,10 +26,17 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
   carry `details.traceback` and `details.line`.
 - Mutating tools return the post-state you need next (metrics, warnings,
   status), so a create → inspect → fix loop converges in few turns.
-- Rebuild results have `{"ok": true, "metrics", "warnings", "specs"}` or
-  `{"ok": false, "error", "hint"}`. On failure the previous good geometry is
+- Rebuild results have `{"ok": true, "metrics", "warnings", "specs", "holes"}`
+  or `{"ok": false, "error", "hint"}`. On failure the previous good geometry is
   kept. `specs` is the design-spec verdict for that part (below) — `null` when
   the part declares none, and absent entirely on a failed build.
+- `holes` is the part's machine-readable hole metadata (below), on rebuild
+  results and on `get_part`. It has **four** states and they are different
+  answers: `[...]` the records; `null` the part declares none; `[]` **plus a
+  warning** records were created and a later raw build123d operation dropped
+  them before the part was returned; **absent** not harvested — the build
+  failed, or the harvest could not measure. Never read an absent key as "no
+  holes".
 - Units: mm, grams, degrees. Instance rotations are intrinsic XYZ Euler.
 - One error type is **returned rather than raised**: `merge_conflict`
   (`merge_branch` / `resolve_merge`). It arrives as an ordinary
@@ -65,7 +72,7 @@ of truth, and it omits the FEM tools unless the `[fem]` extra is installed.
 | `open_project` | **path** | Opens an existing project directory (e.g. a bundled example) by absolute path. |
 | `get_project` | **project** | Manifest: parts (with build state), assembly instances, and a `materials` map (`id → {label, density_g_cm3}`). |
 | `create_part` | **project, part_id**, label, script, material | Part detail with metrics (default template if no `script`; `material` defaults to `al6061`). |
-| `get_part` | **project, part_id** | Script, `params_spec`, current params, status (state/error/warnings), metrics, `specs` (the part's design-spec verdict, from cache — `null` when it declares none, and absent when the part does not build), plus `kind` (`script`\|`reference`) and `source`. For reference parts `script`/`params_spec` are `null` and `source` is the imported file. |
+| `get_part` | **project, part_id** | Script, `params_spec`, current params, status (state/error/warnings), metrics, `specs` (the part's design-spec verdict, from cache — `null` when it declares none, and absent when the part does not build), `holes` (the part's hole records, read from the sidecar — never a kernel call; see [Hole metadata](#hole-metadata-holes) for its four states), plus `kind` (`script`\|`reference`) and `source`. For reference parts `script`/`params_spec` are `null` and `source` is the imported file. |
 | `update_part_script` | **project, part_id**, script, label, material | Rebuild result. On failure: traceback + failing line + hint; previous geometry kept. |
 | `set_params` | **project, part_id, values** | Rebuild result. Values (numbers, booleans, enum choices, or strings, per each param's `type` in `params_spec`) merge with existing overrides; numeric values clamp to min/max with warnings, while a wrong-typed value or non-member enum choice is rejected. Unknown names are rejected before anything is written, and a `null` value removes an override. |
 | `delete_part` | **project, part_id** | `{deleted}` — fails with a conflict while assembly instances reference the part. |
@@ -127,7 +134,7 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `generate_drawing` | **project, part_id**, views, format | Projected front/top/right/iso views with overall dimensions and hole callouts detected from the geometry. `views` is a subset of `[top, front, right, iso]` (default all); `format` is `svg` (default) or `dxf`. Writes `exports/<part_id>_drawing.<ext>` and returns `{path, size_bytes, detected: {diameters_mm, hole_groups, label}}`. When the part has PMI (`set_part_pmi`), the SVG gains tolerance suffixes on the overall/diameter dimensions, boxed datum flags, and feature control frames; `detected` then also carries `pmi_rendered: {dims, datums, fcf}` and `pmi_warnings`. DXF output ignores PMI (v1). Script parts only. |
+| `generate_drawing` | **project, part_id**, views, format | Projected front/top/right/iso views with overall dimensions and hole callouts detected from the geometry. `views` is a subset of `[top, front, right, iso]` (default all); `format` is `svg` (default) or `dxf`. Writes `exports/<part_id>_drawing.<ext>` and returns `{path, size_bytes, detected: {diameters_mm, hole_groups, hole_warnings, label}}`. A hole drilled through `agentcad.toolkit.holes` prints its **designation** (`8× M5×0.8 - 6H ↧12`) instead of a measured diameter: its `hole_groups` entry carries `from_metadata: true` plus `designation`, `family`, `record_id`, `bottom_present` and `seat_present`, and a record is drawn whatever its count (the `count >= 3` grouping threshold applies to *guessing*, not to intent). **A callout never asserts more than the sheet supports**: the printed count is the number of circles actually matched (not the record's), a record whose designation is not what its own numbers spell is skipped with a warning, and a recorded blind depth whose material is gone in the final geometry is dropped from the callout — the recorded value travels in `hole_warnings`, where it cannot be read as a dimension. A counterbore's or countersink's **seat** is measured the same way — four points around its outer radius at its own mid-depth plus one inside it — and dropped from the callout when nothing surrounds it or its space is no longer empty. Each field is exactly its own measurement and no more: `bottom_present` catches a hole made deeper, **not** one made shallower from the top; `seat_present` catches a seat region milled off completely and a pocket filled back in, **not** one milled off that leaves anything at one azimuth, a slot cut across it, or a changed diameter/depth/angle (it asks `any` of four azimuths, measured against the alternative: a stricter rule catches those two and falsely degrades a correct seat beside an ordinary pocket); and nothing off the top view is measured at all. A group with no record keeps the measured text (`8× ⌀6.60`) and `from_metadata: false`. **Callouts come from the top view only**, so a record on a side face — or any record when `views` omits `top` — is named in `hole_warnings` rather than silently dropped (PRD-014). When the part has PMI (`set_part_pmi`), the SVG gains tolerance suffixes on the overall/diameter dimensions, boxed datum flags, and feature control frames; `detected` then also carries `pmi_rendered: {dims, datums, fcf}` and `pmi_warnings`. DXF output ignores PMI (v1). Script parts only. |
 | `flat_pattern` | **project, part_id**, format | Sheet-metal flat pattern: the unfolded blank's outline plus dashed bend lines with angle/radius callouts. Requires the script to define `flat_pattern(p)` returning a flat part or `(part, bend_lines)` — `SheetPart` from `agentcad.toolkit.sheetmetal` provides both. `format` is `svg` (default) or `dxf` (layers `OUTLINE`/`BEND`). Writes `exports/<part_id>_flat.<ext>` and returns `{path, size_bytes, flat_bbox_mm: {w, h}, n_bend_lines}`. Script parts only. |
 | `set_part_pmi` | **project, part_id, pmi** | Replaces the part's PMI / GD&T section (`{}` clears it): `dims` (`{id, kind: linear\|diameter, target: width\|height\|depth or nominal hole ⌀ mm, plus, minus, note?}`), `datums` (`{id: "A".."Z", face: top\|bottom\|left\|right\|front\|back}`), `fcf` (`{id, type: flatness\|position\|perpendicularity\|parallelism\|cylindricity, tol_mm, datums: [letters], note?}`). Validated before writing; works for script and reference parts. Returns `{part_id, pmi}`. |
 | `get_part_pmi` | **project, part_id** | The part's stored PMI section, with empty `dims`/`datums`/`fcf` when unset. |
@@ -140,6 +147,143 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 | `get_history` | **project** | Undoable/redoable action labels, newest first, plus `available` (false when git is missing) and `mine: {undo, redo}` — how many entries on each stack are yours. The full durable snapshot log with commit ids is `project_history`. |
 | `render_view` | **project**, part_id, view, width, height | Server-side shaded orthographic render of built geometry so the agent can *see* the shape. `part_id` renders one part; omit it to render the whole placed assembly (instance transforms and colors honored; unbuildable instances are listed in `skipped`). `view` is `iso` (default), `front`, `top` or `right`; `width`/`height` are 64..2048 px (default 800×600). Writes `exports/renders/<part|assembly>_<view>.png` and returns `{path, width, height, view, png_base64}`; over MCP and in chat the PNG arrives as actual image content. |
 | `analyze_part` | **project, part_id, kind**, plane, axis, min_required | `kind=section` (cross-section area on `plane` XY\|XZ\|YZ), `wall` (min wall thickness; with `min_required` it adds an `ok` flag), `inertia` (mass-properties tensor + centre of mass), `projected_area` (silhouette area along `axis` X\|Y\|Z), `curvature` (per-face gaussian K in 1/mm² and mean H in 1/mm sampled on an 8×8 UV grid: `faces[]` with min/max/mean per face, `worst_gaussian_abs`, `n_faces`, `sampled_points`; H's sign is orientation-dependent — compare magnitudes; a true G2 blend shows no jump in K/H across the seam). Script parts only. |
+
+### Hole standards
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `hole_standards` | family, size, std | The vendored ISO **and ASME** hole tables, as data — no kernel call, no geometry. Omit everything for `{families, sizes, fits, csk_angle_deg}`; give `family` alone for its tabulated sizes; give `family` + `size` for the row. `family` is `clearance` \| `tapped` \| `counterbore` \| `countersink` (`cbore`/`csk`/`thread` also accepted); `std` is `iso` (default) or `ansi`. **The two standards have different size vocabularies** — `M5` for ISO, `#10` or `1/4` for ASME — and asking one for the other's designation is a `size` error naming what is tabulated, never a silent fallback. A `clearance` row returns **all three fits at once** (`{fine, medium, coarse}`, also spelled `{close, normal, loose}`) — `fits` in **millimetres**, `fits_native` in the table's own unit — plus the `drill` designation where the table has one; a `tapped` row returns `{pitch, tpi, tap_drill, drill, series, thread, pitches}`, each `pitches` entry carrying `{pitch, tpi, series, tap_drill (mm), tap_drill_native, drill}`; a `counterbore` row returns the head (`head_d`, `head_h`) *and* the bore (`d`, `depth`) with the `rule` that derived it. Every answer carries `standard`, `revision`, `units` and the `sources` backing **that row** (the file's list is their union and is a claim about no row), plus `corroborated` — true only when two or more independent sources back the row **and agree** — and `conflicts`, which names any recorded disagreement and what was rejected. A one-source or disputed row ships labelled rather than silently; a row with no source declaration does not load at all. |
+
+Two things this surface says out loud rather than hiding:
+
+- **The counterbore diameter is not a standard.** The published charts disagree
+  materially (M8: 15.0, 14.5 and 14.25 mm in three widely-republished
+  conventions), so no counterbore diameter is transcribed as if it were ISO.
+  What ships is the **fastener head geometry**, which the standards do fix and
+  which two independent sources print identically — except the ISO 10642
+  countersunk column, which ships on one source and says so
+  (`corroborated: false`); the bore is head + a named clearance, and `rule`
+  says so in every answer. **That flat clearance is guarded below the head
+  it was set on**: below an 8.5 mm (0.375 in) head it is applied as the same
+  proportion of the head instead, because a flat 1.5 mm bored 5.3 on an M2
+  where DIN 974-1 gives 4.3.
+- **The tap drill is a shop number**, the stock drill nearest `d − P`. Rows
+  where the two sources printed different drills are absent rather than
+  averaged; the data file's `notes` names them.
+- **There is more than one published inch clearance chart**, and they are not
+  roundings of each other: ASME B18.2.8 gives a #10 screw 0.206/0.221/0.238 in
+  while the traditional Machinery's-Handbook close/free-fit table gives
+  0.196/0.201. The file names the standard it transcribes and does not blend
+  them.
+- **Lengths are millimetres; designations print the standard's own unit.**
+  Every numeric field a lookup returns (`d`, `depth`, `head_d`, `tap_drill`) is
+  in millimetres, because that is what the kernel drills in; `*_native` repeats
+  it in the table's unit, and an ASME `designation` reads `⌀0.281`, not `⌀7.14`.
+- **A Unified "pitch" is threads per inch**, a whole count, and it is reported
+  as `tpi` alongside the derived millimetre `pitch` so neither can be mistaken
+  for the other. The tolerance class default is per standard too: ISO `6H`,
+  ASME `2B`.
+
+Sizes for a UI picker come from here, never from a hard-coded list.
+
+### Drilling holes into a script part (`add_holes`)
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `add_holes` | project, part_id, points, family, size, plane?, face_index?, fit?, std?, depth? | Appends a marked, editable block to the part script that calls the matching `agentcad.toolkit.holes` helper, then rebuilds through the normal path. The rebuild result (with `holes`, `metrics`, `warnings`) plus `family`, `count`, `points`, `size`/`diameter_mm`, `fit`, `std`, `depth_mm` and the resolved `face_index`. |
+
+The `push_pull` pattern exactly: this is a **script-editing** tool, not a
+geometry tool. The script stays the source of truth, the appended block is
+ordinary reviewable code, and repeated calls compose (each block saves the
+previous `build` under a counter-suffixed name, so a second call cannot shadow
+the first). It is what the viewport's face card calls, and an agent may call it
+for the same reason a human clicks: it is the shortest path from "M3 clearance
+holes here" to a rebuilt part.
+
+- **`points` are `[u, v]` pairs in the target plane's own coordinates**, not
+  world XYZ.
+- **Name the plane or pick a face, not both.** `plane` is one of
+  `top|bottom|front|back|left|right` and stays a *name* in the generated
+  script, because a name is a predicate re-evaluated on every rebuild.
+  `face_index` is a mesh-order ordinal that is resolved **now**, via the
+  `sketch_plane` handler, into a literal `Plane(origin=…, x_dir=…, z_dir=…)`
+  with the renumbering caveat written into the block as a comment — the
+  ordinal never reaches the script, because it is the unstable thing.
+- **`family` is `clearance | tapped | counterbore | countersink | drilled`**;
+  `drilled` takes a diameter in millimetres as its `size` and records no table
+  provenance. Every other family's `size` is validated against the same tables
+  `hole_standards` answers from, so an `M4.5` is a `validation_error` naming
+  the tabulated sizes rather than a `script_error` on the next rebuild.
+- **A non-planar or out-of-range face is a `validation_error` and the script is
+  not touched.**
+- Everything that reaches the generated source is either a key into a table
+  this tool owns or a `repr(float(...))`. Nothing a caller types is
+  interpolated (the sketch emitter's lesson: a crafted `part` once put
+  `import os` on line 2 of a generated script).
+
+### Hole metadata (`holes`)
+
+Every hole drilled through `agentcad.toolkit.holes` carries a machine-readable
+record — family, standard, size, designation, diameter, count, positions,
+global `centers`, plane, depth, thru, and, per family, `tap: {pitch, tpi,
+class, drill_mm, drill, thread, series}`, `cbore: {d, depth, fastener}` or
+`csk: {d, angle_deg, fastener}`. `family` is `clearance`, `tapped`,
+`counterbore`, `countersink` or `drilled` — the last is a hole whose diameter
+is the design's own number rather than a table row (a structural bolt hole is
+millimetres, not an ISO 273 fit), and its record claims no `size` and no table
+provenance. One call is one **group** record, so a bolt-circle of 8 holes is
+one record with `count: 8`, not eight records.
+
+**`count` is measured, not requested.** OCCT does not fail on a cut that misses
+— it succeeds and changes nothing — so every instance is probed individually
+and any that removed no material is excluded from `count`, `positions` and
+`centers` and listed under `dropped: [{i, status, position}]`, with a warning
+naming the indices. `verify` records the mode that was **requested** (`bbox` by
+default, `exact` for per-instance volumes, `off` for none — and under `off` the
+count is intent, because nothing was measured); the tier that actually decided
+an instance is `instances[i].probe` (`bbox` | `axis` | `exact` | `off`), and
+one default-mode call routinely uses two of them. `designation` is derived from
+the record's own numbers and `designation_base` repeats it without the depth
+qualifier; a reader that has the geometry re-derives the first to detect a
+carrier whose text and numbers have drifted apart, and prints the second when
+it has measured that a recorded blind depth no longer holds.
+
+**`provenance` travels with the record**, so a callout is not the end of the
+paper trail: `{standard (a list), sources, corroborated, conflicts}`, unioned over every
+published row that fed the hole (a counterbore has two — the clearance hole and
+the fastener head). `corroborated` is true only for two or more independent
+sources that **agree**, so a single-sourced diameter (every ISO 10642
+countersink seat) or an adjudicated one (ASME `#8` normal clearance) says so
+where it is used and not only where it is looked up. A `drilled` hole carries
+`null`: no published table supplied its number.
+
+The records reach clients on **rebuild results** and on **`get_part`** under
+the `holes` key, and are persisted in a `.cache/<cache_key>.holes.json` sidecar
+beside `.metrics.json` — content-addressed on the same key, discarded whenever
+the script or params change, never merged, and never part of `project.json`
+(they are derived data, like metrics, not authored state like PMI).
+
+**Four states, four meanings.** `[...]` the records; `null` the part declares
+none; `[]` **with a warning** records were created and something dropped them
+(a raw build123d operation after the last toolkit call returns a new object
+that carries nothing — call `holes.carry(new_part, old_part)` or route the
+operation through a toolkit helper); **absent** not harvested, so the answer is
+unknown — the build failed, or the harvest could not measure. An absent key is
+not "no holes".
+
+Two limits, stated rather than discovered:
+
+- **Records describe the call, not the current geometry.** A later cut that
+  removes a hole leaves its record behind; re-verifying every record against
+  the solid costs ~2.1 ms per instance and is PRD-021's job, not the
+  harvest's.
+- **A hole record is not automatically a drawing callout.** `generate_drawing`
+  reads the top view only, so a record on a side face has no callout. That is
+  PRD-014.
+- **A counterbore or countersink is matched to its BORE circle**, not to its
+  seat: the record's `d` is the through hole, and the two circles are
+  concentric, so the leader lands in the same place either way. The seat's own
+  circle carries no separate callout.
 
 ### Design specs
 

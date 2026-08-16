@@ -27,7 +27,7 @@ def test_core_and_v2_tools_with_valid_schemas(registry):
     # v2 packs add import/sketch/mates/materials/drawing/analysis tools
     assert {"import_cad_file", "solve_sketch", "set_mate", "list_materials",
             "generate_drawing", "analyze_part"} <= names
-    assert len(tools) >= 25  # 25 without the optional [fem] extra
+    assert len(tools) >= 25  # a floor; 73 without the optional [fem] extra
     for tool in tools:
         assert tool.description
         assert tool.input_schema["type"] == "object"

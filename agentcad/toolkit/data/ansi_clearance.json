@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "standard": "ASME B18.2.8-1999 (R2017)",
+  "units": "in",
+  "sources": [
+    "AmesWeb, \"Bolt Clearance Hole Size Chart (Inch) | ASME B18.2.8\", https://amesweb.info/Screws/Clearance-Hole-Chart.aspx (read 2026-08-13)",
+    "Die Casting Mould, \"Bolt & Screw Clearance Hole Size Chart (Metric & Imperial)\", https://www.diecasting-mould.com/news/bolt-screw-clearance-hole-size-chart-metric-imperial (read 2026-08-13)",
+    "Calc-Tools, \"Clearance Hole Size Calculator\", https://www.calc-tools.com/formulas/clearance-hole-size-calculator (read 2026-08-13; spot-check reproduction of the #4 and #10 rows, not a transcription source)"
+  ],
+  "revision": "2026-08-16",
+  "row_shape": "size/fit",
+  "provenance": {
+    "groups": [
+      {"sources": [0, 1],
+       "cells": ["#0/close", "#0/normal", "#0/loose", "#1/close",
+                 "#1/normal", "#1/loose", "#2/close", "#2/normal",
+                 "#2/loose", "#3/close", "#3/normal", "#3/loose",
+                 "#5/close", "#5/normal", "#5/loose", "#6/close",
+                 "#6/normal", "#6/loose", "#8/close", "#8/loose",
+                 "1/4/close", "1/4/normal", "1/4/loose", "5/16/close",
+                 "5/16/normal", "5/16/loose", "3/8/close", "3/8/normal",
+                 "3/8/loose", "7/16/close", "7/16/normal", "7/16/loose",
+                 "1/2/close", "1/2/normal", "1/2/loose", "5/8/close",
+                 "5/8/normal", "5/8/loose", "3/4/close", "3/4/normal",
+                 "3/4/loose", "7/8/close", "7/8/normal", "7/8/loose",
+                 "1/close", "1/normal", "1/loose"]},
+      {"sources": [0, 1, 2],
+       "cells": ["#4/close", "#4/normal", "#4/loose", "#10/close",
+                 "#10/normal", "#10/loose"]}
+    ],
+    "scopes": {
+      "#8/normal": {"sources": [0, 1], "conflict": "DISPUTED CELL, shipped adjudicated rather than silently. The two transcription sources print this one cell differently: both print drill #9, one prints d = 0.196 (which is drill #9's own tabulated diameter) and the other 0.190 (which is not any drill size - it is the #10 screw's nominal diameter). The agreeing datum is the drill designation, and in both sources every other row's diameter column is exactly its drill's diameter, so the cell ships as drill #9 / d 0.196 and the rejected value 0.190 is named here. Because its sources disagreed, this cell answers corroborated: false - two sources that do not agree are not corroboration, and reporting it as corroborated said the transcription had been checked when what actually happened is that a disagreement was adjudicated."}
+    }
+  },
+  "fits": ["close", "normal", "loose"],
+  "notes": [
+    "ASME B18.2.8 names the three series close / normal / loose; ISO 273 names the same idea fine / medium / coarse. hole_standards accepts both spellings and reports the requested standard's.",
+    "THERE IS MORE THAN ONE PUBLISHED INCH CLEARANCE CHART, and they are not roundings of each other. The traditional Machinery's-Handbook 'close fit / free fit' table gives a #10 screw 0.196 / 0.201 in; another widely-reprinted chart gives 0.196 / 0.204 / 0.221. B18.2.8 gives 0.206 / 0.221 / 0.238. Those are three conventions, not three transcriptions, so this file names the standard it transcribes in its header and does not blend them. Both sources above print the B18.2.8 numbers.",
+    "d is the printed nominal hole diameter, which is the tabulated drill's own diameter; the standard also gives a max for each cell (e.g. #10 close is 0.206-0.211) which is a tolerance, not a second size, and is not stored. drill is the designation the shop reads - part of the callout, not a rounding of a millimetre value.",
+    "One cell the two sources printed differently: #8 NORMAL. Both print drill #9; one prints 0.196 (which is drill #9's tabulated diameter) and the other 0.190 (which is not any drill size, and is the #10 screw's nominal diameter). The agreeing datum is the drill designation, so the cell ships with drill #9 / 0.196 and the disagreement is recorded on the cell rather than resolved silently. It ships DISPUTED, not agreed: hole_standards answers corroborated: false for that cell and carries the adjudication in conflicts, while its two neighbours in the same row answer corroborated: true. Two sources that disagree are not corroboration.",
+    "PROVENANCE IS PER CELL AND IS ENFORCED PER CELL. Every cell above - each fit of each size - is named in a provenance group or scope with the sources it was transcribed from. There is no file-wide default AND no row-level fallback: both are the same mistake at different depths, and covering by row let a cell added later inherit that row's citations (measured on the thread table, where an undeclared M12x1.5 pitch answered corroborated: true over two publications). A cell added from one publication cannot inherit these citations - hole_standards refuses to load the file and names the cell. The file-level `sources` list is the union over the cells and is a claim about none of them: source 2 backs only the #4 and #10 spot checks.",
+    "Sizes above 1 in (1-1/8 through 1-1/2) appear in one source only and do not ship."
+  ],
+  "rows": {
+    "#0": {"close": {"d": 0.067, "drill": "#51"}, "normal": {"d": 0.076, "drill": "#48"}, "loose": {"d": 0.094, "drill": "3/32"}},
+    "#1": {"close": {"d": 0.081, "drill": "#46"}, "normal": {"d": 0.089, "drill": "#43"}, "loose": {"d": 0.104, "drill": "#37"}},
+    "#2": {"close": {"d": 0.094, "drill": "3/32"}, "normal": {"d": 0.102, "drill": "#38"}, "loose": {"d": 0.116, "drill": "#32"}},
+    "#3": {"close": {"d": 0.106, "drill": "#36"}, "normal": {"d": 0.116, "drill": "#32"}, "loose": {"d": 0.128, "drill": "#30"}},
+    "#4": {"close": {"d": 0.120, "drill": "#31"}, "normal": {"d": 0.128, "drill": "#30"}, "loose": {"d": 0.144, "drill": "#27"}},
+    "#5": {"close": {"d": 0.141, "drill": "9/64"}, "normal": {"d": 0.156, "drill": "5/32"}, "loose": {"d": 0.172, "drill": "11/64"}},
+    "#6": {"close": {"d": 0.154, "drill": "#23"}, "normal": {"d": 0.170, "drill": "#18"}, "loose": {"d": 0.185, "drill": "#13"}},
+    "#8": {"close": {"d": 0.180, "drill": "#15"}, "normal": {"d": 0.196, "drill": "#9"}, "loose": {"d": 0.213, "drill": "#3"}},
+    "#10": {"close": {"d": 0.206, "drill": "#5"}, "normal": {"d": 0.221, "drill": "#2"}, "loose": {"d": 0.238, "drill": "B"}},
+    "1/4": {"close": {"d": 0.266, "drill": "17/64"}, "normal": {"d": 0.281, "drill": "9/32"}, "loose": {"d": 0.297, "drill": "19/64"}},
+    "5/16": {"close": {"d": 0.328, "drill": "21/64"}, "normal": {"d": 0.344, "drill": "11/32"}, "loose": {"d": 0.359, "drill": "23/64"}},
+    "3/8": {"close": {"d": 0.391, "drill": "25/64"}, "normal": {"d": 0.406, "drill": "13/32"}, "loose": {"d": 0.422, "drill": "27/64"}},
+    "7/16": {"close": {"d": 0.453, "drill": "29/64"}, "normal": {"d": 0.469, "drill": "15/32"}, "loose": {"d": 0.484, "drill": "31/64"}},
+    "1/2": {"close": {"d": 0.531, "drill": "17/32"}, "normal": {"d": 0.562, "drill": "9/16"}, "loose": {"d": 0.609, "drill": "39/64"}},
+    "5/8": {"close": {"d": 0.656, "drill": "21/32"}, "normal": {"d": 0.688, "drill": "11/16"}, "loose": {"d": 0.734, "drill": "47/64"}},
+    "3/4": {"close": {"d": 0.781, "drill": "25/32"}, "normal": {"d": 0.812, "drill": "13/16"}, "loose": {"d": 0.906, "drill": "29/32"}},
+    "7/8": {"close": {"d": 0.906, "drill": "29/32"}, "normal": {"d": 0.938, "drill": "15/16"}, "loose": {"d": 1.031, "drill": "1-1/32"}},
+    "1": {"close": {"d": 1.031, "drill": "1-1/32"}, "normal": {"d": 1.094, "drill": "1-3/32"}, "loose": {"d": 1.156, "drill": "1-5/32"}}
+  }
+}

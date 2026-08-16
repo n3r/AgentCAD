@@ -799,6 +799,364 @@ Every item is traceable to a measurement in `docs/changelog/0127`–`0141`.
   generated header, and the basis vectors go through `fmt`: a crafted `part`
   put `import os` on line 2 of a generated script.
 
+## Feature-toolkit gotchas (PRD-010 — read before touching `toolkit/patterns`, `holes`, `features` or `sheetmetal`)
+
+Every item is traceable to a measurement in `docs/changelog/0147`–`0160`.
+
+**OCCT succeeding is not evidence. This PRD found four separate silent
+failures, and they all look like success:**
+
+- **A misplaced cut is a SILENT NO-OP.** A ⌀4.2 tool placed entirely off the
+  part cuts in 0.89 ms, leaves the volume **exactly** unchanged, reports
+  `is_valid True` and raises nothing (0149). "Never silent geometry" is not
+  something the kernel gives you — the helper has to *measure* engagement.
+  Two tiers: a bbox screen at **0.014 ms/instance** (always on) and the exact
+  `(part & tool)` probe at **2.1–2.4 ms/instance** (`verify="exact"`, which
+  roughly doubles a 50-instance pattern). Warnings name **indices**, never a
+  count.
+- **A floating rib is a SILENT SUCCESS whose volume delta is exactly right.**
+  A rib fused 25 mm above the part raises the volume by the rib's full amount,
+  `is_valid True`, nothing raised — the *only* tells are `len(solids()) > 1`
+  and `(part & rib).volume == 0` (0155). Same class as the misplaced cut, new
+  place.
+- **Draft's dominant failure returns `is_valid False` rather than raising**
+  (0156). Only the extreme angles raise; most failing angles hand back one
+  solid with a plausible positive volume. A hand-written `draft()` must check
+  `is_valid` itself. Failure **is monotone in the angle** on all eight shapes
+  measured (no islands — that is what makes the binary search sound), and the
+  real ceilings are low: `prototyping/enclosure_base` **0.25°**;
+  `rocketry/nozzle` and `construction/angle_bracket` refuse **every** angle.
+  When it raises it is `Standard_Failure` with an **empty message**, so every
+  word of the warning is ours.
+- **A >180° hem leaf penetrates the sheet and the fuse swallows it silently**
+  (0158): at 225° with a 4t leaf the result is one valid solid with 144.59 mm³
+  of declared material simply gone. Hence `kind="teardrop"` raises. And **a
+  180° hem's air gap is `2R`** — so "closed" is a small-R hem, not a
+  zero-R one: at `R = 0` the fold is still one valid solid of exactly the
+  right volume but with **8 faces instead of 10**, which is 2t of solid stock,
+  not a hem. `inner_radius=0` is refused.
+
+- **Two declared sheet-metal features in the same space fuse into ONE VALID
+  SOLID that is simply smaller** (0161, 0162). `is_valid` stays true, the solid
+  count stays 1, nothing raises — so `_checked` is structurally blind and
+  `_conserved` (declared closed form vs measured volume, every cut credited
+  with what it *measurably* removed) is the only thing that sees it. Two 30 mm
+  hems on a 40 mm-deep 60×1 plate declare 6565.486678 mm³ and measure
+  5365.486678: **1200 mm³ gone**. Only a shortfall is possible here, so the
+  check is one-sided by construction.
+- **A `close` corner is a whole seam only where the two CROSS-SECTIONS agree,
+  and each leaf fits its mitre extension** (0162), and that failure moves no volume at all: one
+  plane cuts both leaves, so neither can cross it and `_conserved` is silent by
+  construction while the two still fuse through the base plate into one valid
+  solid. The seam is the only casualty, so the seam is what is measured —
+  shared face area from `(A.area + B.area − (A+B).area)/2`, against the
+  `√2·min(profile area)` the mitre promises. Matched, ≥90°: **1.0 to within
+  8e-15** (a different *leaf length* is fine, the shorter face is seamed
+  whole). Worst mismatch measured 0.9586 (R 3 vs 2.9), so the screen — angles
+  equal, radii equal, reach within the extension — needs no tuned threshold and
+  the boolean is paid only where it has already fired. The second criterion is
+  the **reach, not the angle**: `_effective_span` runs the leaf `R + t` past
+  the corner, which is the outward reach of a **90° profile and of nothing
+  else**, while a profile reaches `(R+t)·sin a + L·cos a` — so it holds iff
+  `L ≤ (R+t)·tan(45° − a/2)` (`_max_mitre_leaf`; infinite at and above 90°,
+  where a vertical leaf adds no reach). **90° is a discontinuity, not a
+  limit** — `L_max` falls to 0 as `a → 90⁻` (4.36e-09 mm at 89.9999999°) and
+  is unbounded at 90°, because `L·cos a ≤ (R+t)(1 − sin a)` has both sides
+  vanish there and `L_max` divides through by that zero. Relatedly,
+  `_profile_reach` **must** drop the leaf term from 90° up: `cos a ≤ 0` there
+  mathematically, but `math.cos(math.radians(90.0))` is `6.123e-17`, and
+  letting it through made a *correct* 90° corner warn at a 16.33 km leaf and
+  print "the longest leaf that still mitres is **inf** mm". A test that pins
+  one leaf length cannot see that; pin the decades. A *matched acute* corner inside that
+  bound seams **whole and is silent** (measured 1.000000000000 at 60°/R3/L0.2,
+  45°/R3/L0.5, 30°/R5/L1, 10°/R5/L1, 20°/R4/L2); it is the long leaf that
+  breaks — 45°/R1/L12 wants 10.6066 mm of extension, gets 3.0, seams 0.2810.
+  Do not say "`close` needs 90°": that is more pessimistic than the code, which
+  has always tested the reach. Feeding the required reach in takes the failing
+  rows to `1.000000000` exactly, so it is a fixable modelling bug, left warned
+  rather than fixed because the blank's mitre chord is derived at 90° too and
+  fold/unfold may not diverge.
+- **`patterns.polar` skips the placement that moves the seed NOWHERE — never
+  index 0** (0162). With `radius=r` every placement translates onto the circle,
+  so none of them is the seed: skipping index 0 dropped the instance at angle 0
+  and counted the centre seed in its place, with `warning=None`, one valid
+  solid and the *expected* added volume — measured centres (−20,0), (0,−20),
+  (0,0), (0,20) for `count=4, radius=20`. Correct volume + valid + one solid +
+  wrong locations is a failure class the volume tiers cannot reach, so every
+  report row now carries the instance's `center` and the helpers assert those
+  centres (equidistant from the axis and evenly spaced for `polar`, one step
+  along one line for `linear`). The identity test is on the **transform**, not
+  the resulting position: a rotationally symmetric seed spun about its own axis
+  lands its bbox back where it started at every placement.
+- **A pattern instance's `center` is the rigid image of ONE reference point,
+  never the bounding box of the moved shape** (0162). A bbox is rotation-
+  invariant only for a seed with 180° point symmetry, so re-measuring it after
+  each placement makes a **correct** polar pattern look broken: measured on a
+  right-triangular gusset boss (one valid solid, added volume exact to 6e-11),
+  the moved-bbox centres spread **3.5196 mm** at `count=3`, 3.8507 at 5 and
+  3.0404 at 8, and the layout assertion called it "a placement bug, not a
+  tolerance". Rigid images of the seed's own bbox centre spread `0.0` (1e-9
+  after `POSITION_DECIMALS`) on the same patterns and still put 20 mm between
+  the seed and the circle in the real bug. **Every pattern test in the suite
+  used a box or a cylinder, which are immune** — that is what let it through,
+  so a pattern test needs an asymmetric seed at a non-90° step. The metric was
+  wrong, not the tolerance: widening one to cover 3.5 mm swallows the 20 mm bug.
+- **`polar` cannot consume a seed it was handed, so `radius > 0` always leaves
+  one over.** The route to exactly `count` on a circle is a seed built where
+  instance 0 goes plus `radius=None`; `radius` is for a seed authored at the
+  axis, where the leftover is deliberate (a hub with its bolt circle). Never
+  tell a caller to "author the seed at the axis and pass `radius`" for a clean
+  circle — that is advice that guarantees the thing it warns about.
+
+**Where the metadata lives, and why it is not where you would put it:**
+
+- **Hole records ride the built shape (`holes.ATTR`), not a registry.** The
+  worker's 16-entry `_SHAPE_CACHE` returns the cached shape **without calling
+  `build(p)`**, and the service's `.metrics.json` fast path makes **0 kernel
+  calls at all** — so a per-build registry drains empty on the second and every
+  later build of an unchanged part, silently (0150). The persisted copy is a
+  `.cache/<key>.holes.json` sidecar on the `.specs.json` precedent, and it is
+  mandatory, not an optimisation.
+- **Nothing composes the attribute for you.** `safe_fillet`, `safe_bool` (both
+  directions), a raw `part - tool` and even a re-entered `BuildPart()` +
+  `add(part)` all return a new object carrying **none** of the original's
+  attributes; only `.clean()`, `.moved()` and `copy` preserve it. Every helper
+  calls `holes.carry()`, and `fillet.py`/`shell.py`/`boolean.py` carry a
+  `@holes.carries_records` decorator. After a raw build123d op of your own,
+  call `holes.carry(new, old)` — or the harvest's delta will tell you.
+- **The harvest runs BEFORE the build, deliberately.** Run second it is always
+  a shape-cache hit, its delta is always 0, and the drop check is dead code
+  (measured `measured: false` on three parts, every time — 0151). It must also
+  pass `affinity=part_id`: `KernelPool._pick` round-robins an *unkeyed*
+  request, and an unkeyed harvest that lands on a cold worker paid **11 354 ms**
+  on `engine/intake_manifold` against **1 ms** keyed.
+- **The worker runs as `__main__`, so importing worker *state* from a handler
+  pack gets a second, always-empty copy.** `from ..worker import _SHAPE_CACHE`
+  re-executes the module (measured: every call then reports itself a fresh
+  build). Importing a worker *function* is fine and several packs do; reach
+  live state through `build_shape_ns.__globals__` instead (0151).
+- **`hole_standards.py` is the THIRD OCP-free toolkit module** (with `sketch`
+  and `specs`) because the server's `hole_standards` tool imports it;
+  `core/tools_holes.py` is OCP-free for the same reason and is asserted in a
+  fresh interpreter. **`tools_holes` loads at `h`** — before `tools_proposals`
+  (`p`), `tools_specs` (`s`) and `tools_versioning` (`v`) — so it reads
+  `service.branches`/`specs`/`gate_providers` **never** at registration, and it
+  *wraps* `_rebuild`/`get_part`, which no later pack replaces.
+
+**Round-2 review findings (0163), all in the hole half:**
+
+- **The default `verify="bbox"` is a THREE-rung per-instance probe, and the box
+  rung can only ever prove a MISS.** A tool compared against the *whole part's*
+  bounding box says nothing about the material under it, and the aggregate
+  volume delta cannot be attributed to an instance — so a ⌀10 drilled into a
+  frame's own 60×60 void reported `engaged`, `warning=None`, removed exactly
+  one cylinder for two instances and the record said `count: 2`. The rungs are
+  bbox (0.014 ms, a proved miss, because a box contains its shape), an axis
+  point classified `TopAbs_IN` (0.041 ms, a proved engagement, because the tool
+  contains a ball around any interior point on its own axis), then the exact
+  `(part & tool)` probe **for that instance alone**. The statuses therefore
+  equal `verify="exact"`'s; `exact` only adds `engaged_mm3`/`contact_mm2` on
+  every instance, at 372 ms against 115 ms for 50 holes. The sample count is a
+  performance knob, **not a tolerance**: `False` from the axis rung concludes
+  nothing and escalates.
+- **A record's `count`, `positions` and `centers` cover only the instances that
+  demonstrably removed material.** The rest are in `dropped` with their status,
+  in the helper's warning, and — because every bundled part spells the call
+  `part, _r, _w = holes.…` and throws that warning away — in the *harvest's*
+  warnings too. `verify="off"` is the one mode whose count is intent.
+- **`record["verify"]` is the mode REQUESTED; `instances[i].probe` is the tier
+  that answered.** The default runs up to three probes and one call routinely
+  uses two, so there is no single tier for the record to name: `"verify":
+  "bbox"` beside `"probe": "axis"` is the request beside the answer. Three
+  docs said `verify` named the tier and all three were wrong.
+- **A record is intent; a drawing is a measurement, and the drawing re-measures
+  THREE THINGS — not "everything it asserts", which is what this line used to
+  say.** `carry()` deliberately does not verify survival, so the drawing pack
+  (1) prints the count of circles it MATCHED, never the record's; (2) refuses a
+  record whose designation is not what its own numbers spell; (3) classifies
+  one point past a blind record's recorded bottom. On (3): an M8 recorded blind
+  at 6 mm and later drilled through printed `M8×1.25 - 6H ↧6` with no warning
+  at all; it now prints `designation_base` and puts the recorded number in a
+  warning. **Degrade the claim, never guess.**
+- **`bottom_present` and `seat_present` are named for exactly what they
+  measure.** `bottom_present` was once `depth_verified`, which claimed more: it
+  catches a hole made DEEPER and cannot catch one made SHALLOWER, because
+  milling 3 mm off the top of a 12 mm plate holding a 6 mm blind hole leaves
+  the bottom where the record says it is — the sheet prints `↧6` over a 3 mm
+  hole, `bottom_present: true`, byte-identical to the control. `seat_present`
+  exists because a counterbore's pocket and a countersink's cone travelled
+  inside `designation` and printed **unmeasured**: two seats milled entirely
+  off a 30 mm plate still printed `⌀9 ⌴⌀14.5↧8.8` and `⌀6.6 ⌵⌀13.44×90°`, four
+  numbers for features that did not exist, byte-identical to the control. It
+  is **"nothing surrounds it at any of four azimuths at its mid-depth, or its
+  space is not empty"** — that sentence and no wider one, because this line has
+  now been wrong three times by saying "catches a seat machined away". It
+  catches a seat region milled off completely and a pocket **filled back in**
+  (measured: volume 430 091 against the control's 429 198, *above* it, and the
+  around-probe alone read `true` at any sampling density — "is there material
+  around the seat" is not "is the seat a void"). It does **not** catch a seat
+  milled off that leaves anything at one azimuth (a 2×2 mm pin reads `true`), a
+  slot cut across it leaving 0.25 mm crescents, or a changed diameter/depth/
+  angle. That is the `any` bias and it is a **measured** choice: a
+  bbox-filtered `all` catches the pin and the slot and keeps both edge cases,
+  and reads `false` on a CORRECT counterbore beside an ordinary pocket —
+  degrading a true drawing on a routine layout, which is the worse failure.
+  Both degradations are spelled by `designation_for_record` from a modified
+  copy, so a degraded callout uses the honest grammar. The recorded diameter is
+  still not re-measured beyond `_HOLE_DIA_TOL`, and nothing off the top view is
+  measured at all.
+- **`corroborated` travels ON THE RECORD, not only in the tables.** Every
+  non-`drilled` record carries `provenance: {standard, sources, corroborated,
+  conflicts}`, unioned over every row that fed it (a counterbore has two), and
+  `add_holes` echoes it. It did not until round 3, and the consequence was
+  exact: the single-sourced ISO 10642 ⌀17.92 seat and the *adjudicated* ANSI
+  ⌀0.196 clearance hole both became manufacturing callouts with the label left
+  behind in the JSON. A **disputed** cell (`conflicts` non-empty) also warns; a
+  merely single-sourced one does not, deliberately — "ISO 10642 has one source"
+  is permanent and unfixable, and a warning nothing can ever clear teaches
+  readers to ignore warnings (PRD-004's `strict_exempt` lesson).
+  **`validate_record` RE-DERIVES the provenance from the record's own size,
+  fit, standard and fastener and compares it**, exactly as it does the
+  designation — and for the same reason, found the same way: checking only
+  internal consistency let the genuine disputed record, with its conflict note
+  deleted and `corroborated` flipped to `true`, validate clean, along with
+  citations naming publications in no table and one citation listed twice.
+  `provenance["standard"]` is **always a list**, even of one. **And `size`/`fit`
+  are typed record keys tied to `d`**, because they *select* the row everything
+  else re-derives from: mutating `size` `#8`→`#10` together with the provenance
+  it entitles — both sides consistently — left `d` at 4.9784 and the callout at
+  the disputed `⌀0.196` while the record claimed corroboration over agreeing
+  publications, and validated clean. A key that steers validation and is itself
+  unvalidated is the shape of this whole defect class.
+- **Two surfaces describing one hole must not disagree.** `add_holes` echoed a
+  single `lookup()`, which for a seat family is the fastener HEAD row, so it
+  told an agent `corroborated: true` about the very cell whose record said
+  `false` with a conflict. The echo now goes through `merge_provenance` over
+  the same rows the record uses. A comment there asserted the opposite of what
+  the code did, which is what stopped a reader from checking.
+- **One record contract, `hole_standards.validate_record`, and nothing else
+  anywhere.** The harvest raises it, the drawing skips on it, the
+  `.holes.json` reader discards on it. It was three checks — the drawing's was
+  five key *names* — and a plausible dict `setattr`-ed onto the shape printed a
+  fabricated callout. It is structural AND self-consistent: it re-derives
+  `designation` from the record's own diameter, depth and thread
+  (`designation_for_record`, which `toolkit.holes` also uses to *build* it).
+  **It is not an authentication boundary and must never be called one** — a part
+  script runs arbitrary code and can simply drill the hole; what it closes is
+  the *stale or inconsistent carrier*. Same for the sidecar, which now also
+  compares the **cache key it has always stored and no reader ever read**, and
+  enforces the four-state `holes`/`dropped`/`warnings` invariant:
+  `{"holes": [], "dropped": 0}` is an impossible fifth state that used to be
+  served as "records were lost", silently. `HOLES_SIDECAR_VERSION` is 2.
+- **A blind hole always prints its depth, and each `↧` qualifies the `⌀` group
+  it follows.** `clearance`/`counterbore`/`countersink` omitted the hole depth
+  entirely — a blind ⌀9 read `⌀9`, which a shop makes through — while a
+  counterbore showed only its POCKET depth. Blind is `⌀9 ↧6 ⌴⌀14.5↧8.8`;
+  through-hole strings are byte-identical. And **`depth >= stock` is not
+  blind**: the guard tested `>`, so `depth=t` on a `t` plate passed silently
+  and the drawing then called out a depth on a hole open at both ends.
+- **Hole-table provenance is PER CELL. No file-wide default AND no row-level
+  fallback — they are the same mistake at two depths.** "Two published sources
+  must agree or the row does not ship" was never what the loader checked: it
+  counted the FILE's source strings, so a row copied from one publication
+  shipped `corroborated: true` on its neighbours' citations. Fixing that at the
+  ROW level left the identical hole one level down — an `M12×1.5` pitch cell
+  with a fabricated `tap_drill: 99.9` added to the group-covered `M12` row
+  loaded and answered `corroborated: true` over two named publications, while a
+  whole new row was correctly refused. **`size/pitch` tables are exactly where
+  the data legitimately grows a cell**, so that was the likely real path. Each
+  file declares `row_shape`; `provenance.groups`/`scopes` name **every data
+  cell** — where a cell is the path `row_shape` names and **no finer**: one fit
+  of one clearance size, one pitch *or other scalar* of one thread size (the
+  scalars are the complement of the `pitches` container, not a list of names —
+  an allowlist let `M8/preferred_pitch` load), one size of one head table. The
+  fields INSIDE a cell (`{d, drill}`, `{head_d, head_h}`) are covered by that
+  cell's citation and are **not declared separately**: 248 declarations against
+  442 scalar leaves, said out loud in the refusal message itself, because a
+  cell is what one line of the published table prints and `_prov_scope`
+  resolves at exactly that depth. **The reason is NOT "a field no lookup
+  reads"** — that clause was checkably false and is the last thing this review
+  found: `cell.get("drill")` and `entry.get("drill")` read an *optional*
+  in-cell field, ISO thread pitch cells carry none, so `drill: "FAKE-99"` in
+  the declared `M8/1.25` cell loaded and `thread("M8")` served it as
+  corroborated. The true reason is that **a value added to an optional field is
+  exactly as uncatchable as a value edited in a required one**: coverage proves
+  citation, never correctness, at every granularity. What `_check_cell_fields`
+  does close is a field NAME no cell of that shape may carry — a fabricated
+  `fabricated_mm`, and a typo like `head_dd` that would otherwise surface as a
+  `KeyError` from inside `cbore()` rather than as a load error naming the
+  file.
+  `coarse_pitch` is a cell — it names the pitch `thread(size)` answers from,
+  and flipping `iso_thread`'s M8 from 1.25 to 1.0 changes the answered tap
+  drill from 6.8 to 7.0. An undeclared cell, an
+  entry naming a cell that is not there, or two cells whose `/`-joined names
+  collide all fail to load naming the cell. `sources` are compared
+  **normalised** — whitespace collapsed (which covers NBSP), zero-width
+  characters dropped (**eight named codepoints**, listed in `_INVISIBLE`, not
+  the unbounded claim "zero-width characters" — U+00AD, U+200E and U+180E were
+  outside the set while the docstring said otherwise), `http://` folded onto
+  `https://`, case folded — because
+  every one of those is a way to paste one publication twice and have the file
+  claim two behind one number. All six files are validated at
+  `hole_standards` **import** (`validate_all`, 0.58 ms) rather than one at a
+  time on first lookup — though the module itself is imported lazily by its
+  callers, so that means eager *within the module*, not at process start.
+  **`corroborated` means two or more sources that AGREE**: `ansi_clearance`'s
+  `#8 NORMAL` is two sources that disagreed, ships adjudicated (drill #9 /
+  0.196, the rejected 0.190 in `conflicts`) and answers `corroborated: false`;
+  the nine ISO 10642 countersink rows are single-sourced and answer false too.
+  **A one-source or disputed cell may ship, labelled** — dropping the ISO 10642
+  column would remove every metric countersink, and shipping it silently is
+  what the rule exists to prevent. No wrong numeric value has ever been found
+  in these tables (~90 spot-checked against the published standards); the
+  defect was always the claim.
+
+**Geometry facts worth not re-deriving:**
+
+- **Geometrically identical is not byte-identical.** Cutting `gusset_plate`'s
+  holes as `part - Compound(cylinders)` gives the same face count and a volume
+  differing by a relative 2e-16 — and a different mesh (0147). That is why the
+  example goldens assert an `.acm` sha and not just numbers, and why the
+  helpers re-enter build123d's own `BuildPart`/`Locations`/`Hole` rather than
+  hand-rolling booleans.
+- **For a through hole, sliding the workplane ALONG the hole axis is
+  byte-free; rotating it ABOUT the axis is not** (0153). `plane="top"` costs
+  nothing in bytes; the named `"left"` face carries its own frame
+  (`x_dir = -Y`) and a cutting cylinder rotated about its own axis
+  re-tessellates. `construction/angle_bracket`'s vertical leg therefore spells
+  its `Plane` out.
+- **The cache key hashes the SCRIPT TEXT**, so any rewrite whatsoever mints a
+  new `.cache/<key>.acm` — half of PRD-010's AC1 was never achievable, and the
+  `.holes.json` sidecar invalidates itself on the same key.
+- **`patterns.*` skip instance 0**, because a shape seed is already fused into
+  the part. Re-adding it is safe (one valid solid, identical volume) but **not
+  byte-free** (0149). `count` is the total, CAD-style; `count=1` is a no-op
+  with a warning.
+- **`flat_outline()` is derived from `unfold()`'s own top face**, not a
+  parallel model — that is what makes FR12's consistency a fact instead of an
+  invariant. It costs an `unfold()` (11–70 ms) where v1's walker was free.
+  `fold()` and `unfold()` differ by **exactly** `angle_rad·(0.5 − k)·t²·span`
+  **per bend**, the k-factor's own neutral-fibre offset (residual −0.0), and —
+  **for a part with no mitred corner** — by nothing else; that is the model's
+  tolerance, not an error, but **it is a sum over the bends and grows linearly
+  with the bend line**. Measured (t=2, k=0.44, R=3, 90°): one 60 mm bend
+  22.619467105842887, two 45.238934211700325 (exactly twice, residual 7.3e-12),
+  three totalling 160 mm 60.318578948928916. Judge the *sum* against your
+  process, never the 11 mm³ of one bend. A `close` corner adds a second,
+  larger term, because the mitre is cut through the sheet's **thickness** in
+  the fold and at the **neutral fibre** in the blank: measured on the corner
+  bracket, 65.337653 against the 37.699112 the two bends alone give. Both
+  numbers are the same model seen from the two sides of one k-factor. The
+  mitre is cut from `unfold()` too — without it the blank has a square corner
+  and cannot be bent into the model, and the two tabs silently claim one piece
+  of sheet (0161).
+- **`add_holes` writes source, so nothing but a validated table key or a
+  `repr(float(...))` reaches the output** — the same rule `sketch_emit`
+  learned when a crafted `part` put `import os` on line 2 of a generated
+  script. A picked `face_index` is resolved to a literal `Plane` basis at edit
+  time with the renumbering caveat inline; a *named* plane stays a name,
+  because a name is a predicate re-evaluated every rebuild.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script
@@ -869,7 +1227,7 @@ Write the changelog from the real diff, not from memory.
 ## Where to read more
 
 - `docs/architecture.md` — processes, components, ACM1 format, rebuild flow
-- `docs/agent-api.md` — the 65/68 agent tools with schemas + a worked loop
+- `docs/agent-api.md` — the 73/76 agent tools with schemas + a worked loop
 - `docs/geometry-ci.md` — `agentcad check`, the report schema, the GitHub Action
 - `docs/part-authoring.md` — the script contract, toolkit, mates, sketch solver
 - `docs/user-guide.md` — the UI surface by surface

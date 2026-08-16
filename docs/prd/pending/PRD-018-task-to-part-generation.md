@@ -14,7 +14,7 @@
 ## Problem & motivation
 
 AgentCAD has world-class *raw material* for generation — an agent with the
-42-tool surface can already draft a script, build it, render it, and read
+73-tool surface can already draft a script, build it, render it, and read
 the metrics — but no generation **front door**: no packaged intake for a
 prompt, sketch photo, PDF drawing, or datasheet; no termination contract; no
 candidate comparison; no provenance trail. A newcomer's first question

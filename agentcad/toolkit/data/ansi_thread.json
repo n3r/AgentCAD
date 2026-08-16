@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "standard": "ASME B1.1 Unified Inch Screw Threads (UNC/UNF series); tap drills per the published machinist tables named in sources",
+  "units": "in",
+  "sources": [
+    "PREMSA Industries, \"Tap & Drill Size Chart - UNC, UNF, Metric Tap Drills\", https://premsaindustries.com/en/resources/tap-drill-size-chart (read 2026-08-13)",
+    "RivCut, \"Tap Drill Chart: Inch + Metric Sizes (UNC/UNF/ISO)\", https://www.rivcut.com/resources/tap-drill-chart (read 2026-08-13)"
+  ],
+  "revision": "2026-08-13",
+  "row_shape": "size/pitch",
+  "provenance": {
+    "groups": [
+      {"sources": [0, 1],
+       "cells": ["#1/64", "#1/72", "#2/56", "#2/64", "#3/48", "#3/56",
+                 "#4/40", "#4/48", "#5/40", "#6/32", "#6/40", "#8/32",
+                 "#8/36", "#10/24", "#10/32", "#12/24", "1/4/20", "1/4/28",
+                 "5/16/18", "5/16/24", "3/8/16", "3/8/24", "7/16/14",
+                 "7/16/20", "1/2/13", "1/2/20", "9/16/12", "9/16/18",
+                 "5/8/11", "5/8/18", "3/4/10", "3/4/16", "7/8/9", "1/8",
+                 "1/12", "#1/coarse_pitch", "#2/coarse_pitch",
+                 "#3/coarse_pitch", "#4/coarse_pitch", "#5/coarse_pitch",
+                 "#6/coarse_pitch", "#8/coarse_pitch", "#10/coarse_pitch",
+                 "#12/coarse_pitch", "1/4/coarse_pitch",
+                 "5/16/coarse_pitch", "3/8/coarse_pitch",
+                 "7/16/coarse_pitch", "1/2/coarse_pitch",
+                 "9/16/coarse_pitch", "5/8/coarse_pitch",
+                 "3/4/coarse_pitch", "7/8/coarse_pitch", "1/coarse_pitch"]}
+    ]
+  },
+  "notes": [
+    "The pitch column here is THREADS PER INCH, an integer count, not a length. hole_standards reports it as `tpi` and also as `pitch` in millimetres (25.4 / tpi) so a caller that only speaks pitch is not silently handed a count.",
+    "coarse_pitch names the FIRST-CHOICE series for the size, which for Unified inch threads is UNC. It is the tpi, not a millimetre pitch.",
+    "The tap drill is a SHOP number, not a standard: it is the stock drill nearest ~75% thread engagement, and the drill DESIGNATION (#7, F, 27/64) is part of the callout an operator reads, not a rounding of a decimal. Only rows where both sources print the same drill and the same decimal ship.",
+    "Casualties of the two-source rule, recorded so nobody thinks they were forgotten: #0-80 UNF (no #0 UNC exists, so the size would have a fine thread sitting in the first-choice slot), #5-44 UNF, #12-28 UNF, 11/16 and 15/16 UNC, 11/16-24, 13/16-20, 7/8-14 and 15/16-16 UNF, and everything above 1 in. Each appears in one source only.",
+    "tap_drill is the diameter to BORE for a cosmetic/tapped hole. It is NOT the radius to bore when fusing real thread geometry - see the CHEATSHEET rule about boring at root_radius for real threads."
+  ],
+  "rows": {
+    "#1": {"coarse_pitch": 64, "pitches": {
+      "64": {"tap_drill": 0.0595, "drill": "#53", "series": "UNC"},
+      "72": {"tap_drill": 0.0595, "drill": "#53", "series": "UNF"}}},
+    "#2": {"coarse_pitch": 56, "pitches": {
+      "56": {"tap_drill": 0.0700, "drill": "#50", "series": "UNC"},
+      "64": {"tap_drill": 0.0700, "drill": "#50", "series": "UNF"}}},
+    "#3": {"coarse_pitch": 48, "pitches": {
+      "48": {"tap_drill": 0.0785, "drill": "#47", "series": "UNC"},
+      "56": {"tap_drill": 0.0820, "drill": "#45", "series": "UNF"}}},
+    "#4": {"coarse_pitch": 40, "pitches": {
+      "40": {"tap_drill": 0.0890, "drill": "#43", "series": "UNC"},
+      "48": {"tap_drill": 0.0935, "drill": "#42", "series": "UNF"}}},
+    "#5": {"coarse_pitch": 40, "pitches": {
+      "40": {"tap_drill": 0.1015, "drill": "#38", "series": "UNC"}}},
+    "#6": {"coarse_pitch": 32, "pitches": {
+      "32": {"tap_drill": 0.1065, "drill": "#36", "series": "UNC"},
+      "40": {"tap_drill": 0.1130, "drill": "#33", "series": "UNF"}}},
+    "#8": {"coarse_pitch": 32, "pitches": {
+      "32": {"tap_drill": 0.1360, "drill": "#29", "series": "UNC"},
+      "36": {"tap_drill": 0.1360, "drill": "#29", "series": "UNF"}}},
+    "#10": {"coarse_pitch": 24, "pitches": {
+      "24": {"tap_drill": 0.1495, "drill": "#25", "series": "UNC"},
+      "32": {"tap_drill": 0.1590, "drill": "#21", "series": "UNF"}}},
+    "#12": {"coarse_pitch": 24, "pitches": {
+      "24": {"tap_drill": 0.1770, "drill": "#16", "series": "UNC"}}},
+    "1/4": {"coarse_pitch": 20, "pitches": {
+      "20": {"tap_drill": 0.2010, "drill": "#7", "series": "UNC"},
+      "28": {"tap_drill": 0.2130, "drill": "#3", "series": "UNF"}}},
+    "5/16": {"coarse_pitch": 18, "pitches": {
+      "18": {"tap_drill": 0.2570, "drill": "F", "series": "UNC"},
+      "24": {"tap_drill": 0.2720, "drill": "I", "series": "UNF"}}},
+    "3/8": {"coarse_pitch": 16, "pitches": {
+      "16": {"tap_drill": 0.3125, "drill": "5/16", "series": "UNC"},
+      "24": {"tap_drill": 0.3320, "drill": "Q", "series": "UNF"}}},
+    "7/16": {"coarse_pitch": 14, "pitches": {
+      "14": {"tap_drill": 0.3680, "drill": "U", "series": "UNC"},
+      "20": {"tap_drill": 0.3906, "drill": "25/64", "series": "UNF"}}},
+    "1/2": {"coarse_pitch": 13, "pitches": {
+      "13": {"tap_drill": 0.4219, "drill": "27/64", "series": "UNC"},
+      "20": {"tap_drill": 0.4531, "drill": "29/64", "series": "UNF"}}},
+    "9/16": {"coarse_pitch": 12, "pitches": {
+      "12": {"tap_drill": 0.4844, "drill": "31/64", "series": "UNC"},
+      "18": {"tap_drill": 0.5156, "drill": "33/64", "series": "UNF"}}},
+    "5/8": {"coarse_pitch": 11, "pitches": {
+      "11": {"tap_drill": 0.5312, "drill": "17/32", "series": "UNC"},
+      "18": {"tap_drill": 0.5781, "drill": "37/64", "series": "UNF"}}},
+    "3/4": {"coarse_pitch": 10, "pitches": {
+      "10": {"tap_drill": 0.6562, "drill": "21/32", "series": "UNC"},
+      "16": {"tap_drill": 0.6875, "drill": "11/16", "series": "UNF"}}},
+    "7/8": {"coarse_pitch": 9, "pitches": {
+      "9": {"tap_drill": 0.7656, "drill": "49/64", "series": "UNC"}}},
+    "1": {"coarse_pitch": 8, "pitches": {
+      "8": {"tap_drill": 0.8750, "drill": "7/8", "series": "UNC"},
+      "12": {"tap_drill": 0.9219, "drill": "59/64", "series": "UNF"}}}
+  }
+}

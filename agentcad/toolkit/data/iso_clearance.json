@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "standard": "ISO 273:1979",
+  "units": "mm",
+  "sources": [
+    "Engineering Hardware, \"Clearance Hole Sizes (ISO 273)\", https://engineeringhardware.com/fastener/clearance-hole-sizes/ (read 2026-08-13)",
+    "EKINSUN, \"Metric Clearance Hole Chart - ISO 273 Close/Normal/Loose + Tap Drill Sizes\", https://www.ekinsun.com/custom-fasteners/clearance-hole-chart/ (read 2026-08-13)"
+  ],
+  "revision": "2026-08-13",
+  "row_shape": "size/fit",
+  "provenance": {
+    "groups": [
+      {"sources": [0, 1],
+       "cells": ["M1.6/fine", "M1.6/medium", "M1.6/coarse", "M2/fine",
+                 "M2/medium", "M2/coarse", "M2.5/fine", "M2.5/medium",
+                 "M2.5/coarse", "M3/fine", "M3/medium", "M3/coarse",
+                 "M4/fine", "M4/medium", "M4/coarse", "M5/fine",
+                 "M5/medium", "M5/coarse", "M6/fine", "M6/medium",
+                 "M6/coarse", "M8/fine", "M8/medium", "M8/coarse",
+                 "M10/fine", "M10/medium", "M10/coarse", "M12/fine",
+                 "M12/medium", "M12/coarse", "M14/fine", "M14/medium",
+                 "M14/coarse", "M16/fine", "M16/medium", "M16/coarse",
+                 "M18/fine", "M18/medium", "M18/coarse", "M20/fine",
+                 "M20/medium", "M20/coarse", "M22/fine", "M22/medium",
+                 "M22/coarse", "M24/fine", "M24/medium", "M24/coarse",
+                 "M27/fine", "M27/medium", "M27/coarse", "M30/fine",
+                 "M30/medium", "M30/coarse", "M36/fine", "M36/medium",
+                 "M36/coarse"]}
+    ]
+  },
+  "fits": ["fine", "medium", "coarse"],
+  "notes": [
+    "ISO 273 names the three series fine / medium / coarse and assigns them tolerance fields H12 / H13 / H14. ASME B18.2.8 (and this repo's PRD) names the same idea close / normal / loose; hole_standards accepts both spellings and canonicalizes per standard.",
+    "The clearance hole depends on the NOMINAL diameter only, never on the pitch: a fine-pitch M8x1 uses the same hole as an M8x1.25.",
+    "Every row below is present and identical in both sources. Rows the two sources do not both carry (M1, M1.2, M1.4, M3.5, M7, M33 and everything above M36) are deliberately absent: a row that cannot be corroborated does not ship. A third chart consulted (fractory.com) disagreed on M2.5, M3, M6, M12 and M16 and duplicated M30; it was rejected rather than averaged."
+  ],
+  "rows": {
+    "M1.6": {"fine": 1.7, "medium": 1.8, "coarse": 2.0},
+    "M2": {"fine": 2.2, "medium": 2.4, "coarse": 2.6},
+    "M2.5": {"fine": 2.7, "medium": 2.9, "coarse": 3.1},
+    "M3": {"fine": 3.2, "medium": 3.4, "coarse": 3.6},
+    "M4": {"fine": 4.3, "medium": 4.5, "coarse": 4.8},
+    "M5": {"fine": 5.3, "medium": 5.5, "coarse": 5.8},
+    "M6": {"fine": 6.4, "medium": 6.6, "coarse": 7.0},
+    "M8": {"fine": 8.4, "medium": 9.0, "coarse": 10.0},
+    "M10": {"fine": 10.5, "medium": 11.0, "coarse": 12.0},
+    "M12": {"fine": 13.0, "medium": 13.5, "coarse": 14.5},
+    "M14": {"fine": 15.0, "medium": 15.5, "coarse": 16.5},
+    "M16": {"fine": 17.0, "medium": 17.5, "coarse": 18.5},
+    "M18": {"fine": 19.0, "medium": 20.0, "coarse": 21.0},
+    "M20": {"fine": 21.0, "medium": 22.0, "coarse": 24.0},
+    "M22": {"fine": 23.0, "medium": 24.0, "coarse": 26.0},
+    "M24": {"fine": 25.0, "medium": 26.0, "coarse": 28.0},
+    "M27": {"fine": 28.0, "medium": 30.0, "coarse": 32.0},
+    "M30": {"fine": 31.0, "medium": 33.0, "coarse": 35.0},
+    "M36": {"fine": 37.0, "medium": 39.0, "coarse": 42.0}
+  }
+}

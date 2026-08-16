@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "standard": "ISO 4762:2004 (hexagon socket head cap screws); ISO 10642:2004 (hexagon socket countersunk head screws)",
+  "units": "mm",
+  "sources": [
+    "fasteners.eu, \"ISO 4762 - Hexagon socket Head Cap Screws\", https://www.fasteners.eu/standards/iso/4762/ (read 2026-08-13)",
+    "Fuller Fasteners, \"DIN 912 Specifications - Hex Socket Head Cap Screws\", https://fullerfasteners.com/tech/din-912-specifications-hex-socket-head-cap-screws/ (read 2026-08-13)",
+    "Fuller Fasteners, \"ISO 10642 Specifications - Hex Socket Countersunk Head Screws\", https://fullerfasteners.com/tech/iso-10642-specifications-hex-socket-countersunk-head-screws/ (read 2026-08-13)",
+    "The Engineer's Bible, \"Counterbore Hole Size for Socket Head (ISO 4762)\", https://engineersbible.com/counterbore-socket-iso/ (read 2026-08-13; consulted for the counterbore convention, NOT transcribed - see notes)"
+  ],
+  "revision": "2026-08-13",
+  "row_shape": "group/fastener/size",
+  "provenance": {
+    "groups": [
+      {"standard": "ISO 4762:2004 (hexagon socket head cap screws)", "sources": [0, 1],
+       "cells": ["cbore/iso4762/M1.6", "cbore/iso4762/M2",
+                 "cbore/iso4762/M2.5", "cbore/iso4762/M3",
+                 "cbore/iso4762/M4", "cbore/iso4762/M5", "cbore/iso4762/M6",
+                 "cbore/iso4762/M8", "cbore/iso4762/M10",
+                 "cbore/iso4762/M12", "cbore/iso4762/M16",
+                 "cbore/iso4762/M20", "cbore/iso4762/M24"]},
+      {"standard": "ISO 10642:2004 (hexagon socket countersunk head screws)", "sources": [2],
+       "cells": ["csk/iso10642/M3", "csk/iso10642/M4", "csk/iso10642/M5",
+                 "csk/iso10642/M6", "csk/iso10642/M8", "csk/iso10642/M10",
+                 "csk/iso10642/M12", "csk/iso10642/M16", "csk/iso10642/M20"]}
+    ]
+  },
+  "notes": [
+    "What ships here is FASTENER HEAD GEOMETRY, which the fastener standards do fix. The counterbore/countersink BORE is derived from it by hole_standards' documented clearance rule.",
+    "THE TWO COLUMNS ARE NOT BACKED BY THE SAME SOURCES, and the file-level `sources` list is their union rather than a claim about any row. The ISO 4762 socket-head column has two independent sources and is corroborated. The ISO 10642 countersunk column ships on ONE named source, so all nine of its rows answer `corroborated: false` - said out loud rather than inferred from the file's header. The fourth source was consulted for the counterbore CONVENTION and is deliberately not transcribed, so it backs no row at all.",
+    "Why no counterbore diameter table: the published counterbore conventions disagree, materially. For M5, DIN 974-1-style charts give diameter 10.0 / depth 5.8; a Machinery's-Handbook-derived chart gives 9.75 / 5.0; for M8 the same three families of chart give 15.0, 14.25 and 14.5. That is not one tabulated fact with exceptions, it is three shop conventions, so no row is transcribed as if it were the standard. hole_standards.cbore() applies a named clearance to the head diameter instead and says so in every answer it returns.",
+    "ISO 10642's head is specified at 90 degrees and its dk here is the THEORETICAL SHARP diameter, which is what a countersink callout names. It is deliberately larger than the actual machined head max, so no clearance is added to it.",
+    "dk = 2.24 x d IS NOT AN INTERNAL CHECK ON THIS COLUMN, and it was described as one until a review measured it. It holds exactly for M3 through M12 and fails on the two largest rows: M16 is 33.6 against 2.24 x 16 = 35.84, and M20 is 40.32 against 44.8. Those two rows are TRANSCRIBED, not derived, and the data was re-checked against the source and is right - the corroborating rule was the false part. The ratio is stated here only for the range where it holds.",
+    "ISO 7380 (button head) is not here yet: only one source was found for its head table, so it did not clear the two-source rule."
+  ],
+  "rows": {
+    "cbore": {
+      "iso4762": {
+        "M1.6": {"head_d": 3.0, "head_h": 1.6},
+        "M2": {"head_d": 3.8, "head_h": 2.0},
+        "M2.5": {"head_d": 4.5, "head_h": 2.5},
+        "M3": {"head_d": 5.5, "head_h": 3.0},
+        "M4": {"head_d": 7.0, "head_h": 4.0},
+        "M5": {"head_d": 8.5, "head_h": 5.0},
+        "M6": {"head_d": 10.0, "head_h": 6.0},
+        "M8": {"head_d": 13.0, "head_h": 8.0},
+        "M10": {"head_d": 16.0, "head_h": 10.0},
+        "M12": {"head_d": 18.0, "head_h": 12.0},
+        "M16": {"head_d": 24.0, "head_h": 16.0},
+        "M20": {"head_d": 30.0, "head_h": 20.0},
+        "M24": {"head_d": 36.0, "head_h": 24.0}
+      }
+    },
+    "csk": {
+      "iso10642": {
+        "M3": {"head_d": 6.72, "angle_deg": 90.0},
+        "M4": {"head_d": 8.96, "angle_deg": 90.0},
+        "M5": {"head_d": 11.2, "angle_deg": 90.0},
+        "M6": {"head_d": 13.44, "angle_deg": 90.0},
+        "M8": {"head_d": 17.92, "angle_deg": 90.0},
+        "M10": {"head_d": 22.4, "angle_deg": 90.0},
+        "M12": {"head_d": 26.88, "angle_deg": 90.0},
+        "M16": {"head_d": 33.6, "angle_deg": 90.0},
+        "M20": {"head_d": 40.32, "angle_deg": 90.0}
+      }
+    }
+  }
+}

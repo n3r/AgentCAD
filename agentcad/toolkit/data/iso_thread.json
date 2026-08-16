@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "standard": "ISO 261/262 (pitch series); tap drills per the published machinist tables named in sources",
+  "units": "mm",
+  "sources": [
+    "AmesWeb, \"Metric Tap Drill Chart & Calculator (ISO)\", https://amesweb.info/Screws/metric-tap-drill-chart.aspx (read 2026-08-13)",
+    "AIMS Industrial Supplies, \"Tap Drill Size Chart: Metric & Imperial Thread Sizes\", https://aimsindustrial.com.au/blogs/product-guides/blog-threading-tap-metric-imperial-size-chart (read 2026-08-13)"
+  ],
+  "revision": "2026-08-13",
+  "row_shape": "size/pitch",
+  "provenance": {
+    "groups": [
+      {"sources": [0, 1],
+       "cells": ["M1.6/0.35", "M2/0.4", "M2.5/0.45", "M3/0.5", "M4/0.7",
+                 "M5/0.8", "M6/1.0", "M8/1.25", "M8/1.0", "M10/1.5",
+                 "M10/1.0", "M12/1.75", "M16/2.0", "M16/1.5", "M20/2.5",
+                 "M20/1.5", "M24/3.0", "M24/2.0", "M1.6/coarse_pitch",
+                 "M2/coarse_pitch", "M2.5/coarse_pitch", "M3/coarse_pitch",
+                 "M4/coarse_pitch", "M5/coarse_pitch", "M6/coarse_pitch",
+                 "M8/coarse_pitch", "M10/coarse_pitch", "M12/coarse_pitch",
+                 "M16/coarse_pitch", "M20/coarse_pitch", "M24/coarse_pitch"]}
+    ]
+  },
+  "notes": [
+    "The pitch column is ISO 261/262 and is not in dispute. The tap drill column is a SHOP number, not a standard: it is the stock drill nearest the theoretical d - P for a nominal ~70-75% thread engagement, and published tables round it differently. Only rows where both sources print the same drill ship.",
+    "Casualties of that rule, recorded so nobody thinks they were forgotten: M3.5, M14, M18 and M22 coarse, and the M12x1.5 / M12x1.25 / M6x0.75 fine rows, appear in one source only or with two different drills. Add them when a second source corroborates, not before.",
+    "tap_drill is the diameter to BORE for a cosmetic/tapped hole. It is NOT the radius to bore when fusing real thread geometry - see the CHEATSHEET rule about boring at root_radius for real threads."
+  ],
+  "rows": {
+    "M1.6": {"coarse_pitch": 0.35, "pitches": {"0.35": {"tap_drill": 1.25, "series": "coarse"}}},
+    "M2": {"coarse_pitch": 0.4, "pitches": {"0.4": {"tap_drill": 1.6, "series": "coarse"}}},
+    "M2.5": {"coarse_pitch": 0.45, "pitches": {"0.45": {"tap_drill": 2.05, "series": "coarse"}}},
+    "M3": {"coarse_pitch": 0.5, "pitches": {"0.5": {"tap_drill": 2.5, "series": "coarse"}}},
+    "M4": {"coarse_pitch": 0.7, "pitches": {"0.7": {"tap_drill": 3.3, "series": "coarse"}}},
+    "M5": {"coarse_pitch": 0.8, "pitches": {"0.8": {"tap_drill": 4.2, "series": "coarse"}}},
+    "M6": {"coarse_pitch": 1.0, "pitches": {"1.0": {"tap_drill": 5.0, "series": "coarse"}}},
+    "M8": {"coarse_pitch": 1.25, "pitches": {"1.25": {"tap_drill": 6.8, "series": "coarse"}, "1.0": {"tap_drill": 7.0, "series": "fine"}}},
+    "M10": {"coarse_pitch": 1.5, "pitches": {"1.5": {"tap_drill": 8.5, "series": "coarse"}, "1.0": {"tap_drill": 9.0, "series": "fine"}}},
+    "M12": {"coarse_pitch": 1.75, "pitches": {"1.75": {"tap_drill": 10.2, "series": "coarse"}}},
+    "M16": {"coarse_pitch": 2.0, "pitches": {"2.0": {"tap_drill": 14.0, "series": "coarse"}, "1.5": {"tap_drill": 14.5, "series": "fine"}}},
+    "M20": {"coarse_pitch": 2.5, "pitches": {"2.5": {"tap_drill": 17.5, "series": "coarse"}, "1.5": {"tap_drill": 18.5, "series": "fine"}}},
+    "M24": {"coarse_pitch": 3.0, "pitches": {"3.0": {"tap_drill": 21.0, "series": "coarse"}, "2.0": {"tap_drill": 22.0, "series": "fine"}}}
+  }
+}

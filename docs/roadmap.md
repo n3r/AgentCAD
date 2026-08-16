@@ -78,7 +78,7 @@ part incumbents structurally cannot copy.
 | PRD | Feature | Status | Origin | Depends on |
 |---|---|---|---|---|
 | [009](prd/completed/PRD-009-sketcher-v2.md) | Sketcher v2 — arcs/splines/ellipses/slots/conics, full constraints, drag-to-solve, DOF diagnostics | completed (PR #13, AC1–AC7 verified) | analysis + residual | — |
-| [010](prd/pending/PRD-010-feature-toolkit-ii.md) | Feature toolkit II — patterns, ISO/ANSI hole wizard with flowing metadata, ribs/draft, sheet-metal v2 (relief, partial flanges) | pending | analysis + residual | — |
+| [010](prd/in-progress/PRD-010-feature-toolkit-ii.md) | Feature toolkit II — patterns, ISO/ANSI hole wizard with flowing metadata, ribs/draft, sheet-metal v2 (relief, partial flanges) | implemented; in review on `prd-010-feature-toolkit-ii` | analysis + residual | — |
 | [011](prd/pending/PRD-011-parts-library-registry.md) | Parts library & package registry — "pip for parts": versioned, kernel-validated packages; org/personal libraries; McMaster ingestion | pending | analysis + idea 1d | 003 |
 | [012](prd/pending/PRD-012-configurations.md) | Configurations — named variants with per-config metrics/BOM/drawings; matrix builds | pending | analysis | — |
 | [013](prd/pending/PRD-013-assembly-v2.md) | Assembly v2 — sub-assemblies, instance patterns, simplified reps for 1k+ instances, richer joints, exploded views, URDF export | pending | analysis + idea 6 | — |
@@ -127,8 +127,9 @@ constraint sketcher and face push/pull that emit script edits; server-side
 renders for agent vision; git-backed undo/history; turn locks and
 concurrent multi-agent sessions; mesh LOD streaming; macOS-sandboxed
 execution; a fast macOS PR gate, focused Linux/Windows portability jobs, and
-scheduled exhaustive macOS coverage; single-binary packaging; a 42-tool agent
-surface (45 with `[fem]`) over MCP, chat, and REST.
+scheduled exhaustive macOS coverage; single-binary packaging; a then-42-tool
+agent surface (45 with `[fem]`) over MCP, chat, and REST — 73/76 today, and
+this line is a v3 snapshot, not a current count.
 
 ## Deliberate non-goals
 

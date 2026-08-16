@@ -135,7 +135,11 @@ need:
 ```python
 from agentcad.toolkit import safe_fillet, safe_shell, safe_bool  # robustness
 from agentcad.toolkit import sketch                              # constraint solver
+from agentcad.toolkit import patterns                            # point sets + shape patterns
+from agentcad.toolkit import holes                               # ISO/ASME hole wizard
+from agentcad.toolkit import features                            # rib / boss / draft
 from agentcad.toolkit import threads                             # ISO threads / fasteners
+from agentcad.toolkit.sheetmetal import SheetPart                # folded + flat, one spec
 ```
 
 Each robustness helper returns a **warning string** (or `None`) alongside its
@@ -159,6 +163,283 @@ def build(p):
     if warn:
         print(warn)            # redirected to stderr; shows in kernel logs
     return solid
+```
+
+### Patterns
+
+`agentcad.toolkit.patterns` covers two different things, and the difference
+matters.
+
+**Point sets are pure arithmetic** and are what you want for holes. They are
+rounded to 9 decimals so trig noise (`cos(90°) = 6.1e-17`) never reaches a
+stored coordinate:
+
+```python
+patterns.bolt_circle(r=45, n=8, start_deg=0.0)   # -> [(x, y), ...]
+patterns.grid(nx=4, ny=2, dx=50, dy=70)          # -> row-major, centred
+```
+
+These are **not** `PolarLocations`: a point set translates copies, a
+`PolarLocations` block also *rotates* each copy, and the two tessellate to
+different bytes. If your group needs rotating, build it in its own frame and
+rotate the result — asking `grid` for rotated coordinates rounds an irrational
+number (`construction/gusset_plate`'s diagonals do exactly this).
+
+**Shape patterns copy a solid that is already in the part**, which is why
+`count` is the *total* instance count the way every CAD package counts it:
+
+```python
+part, warn = patterns.linear(part, seed, direction=(1, 0, 0), count=5, spacing=20)
+part, warn = patterns.polar(part, seed, axis=Axis.Z, count=6, span_deg=360)
+part, warn = patterns.mirror(part, plane=Plane.YZ)
+```
+
+The instance that leaves the seed where it already is gets skipped — that is
+the seed. Re-adding it is safe (one valid solid, identical volume) but not
+byte-free, and `count=1` is a genuine no-op with a warning. `span_deg < 360` is
+inclusive — three instances over 180° sit at 0/90/180, which is what a CAD user
+means and not build123d's `PolarLocations` default.
+
+**`polar(..., radius=r)` is the exception, and it warns.** A radius translates
+*every* instance onto the circle, so no placement leaves the seed alone: all
+`count` are added and the seed stays where you built it, giving `count + 1`
+copies. Author the seed **at the axis** and pass `radius`, or build it on the
+circle and use `radius=None`. (Skipping index 0 there used to drop the instance
+at angle 0 while leaving the seed off the circle — with the right volume, one
+valid solid and no warning at all.)
+
+Every row of `patterns.instances(part)` carries the instance's `center`, and
+the helpers assert those centres against the pattern that was asked for —
+equidistant from the axis and evenly spaced for `polar`, one step along one
+line for `linear`. A pattern can be one valid solid with exactly the right
+added volume and every instance in the wrong place; the volume checks cannot
+see that and the centres can.
+
+#### Why every one of them returns a warning
+
+**OCCT does not fail on a badly placed feature.** Measured through the kernel
+worker (changelog 0149): a ⌀4.2 tool placed entirely off the part cuts in
+0.89 ms, leaves the volume **exactly** unchanged, reports `is_valid True` and
+raises nothing. "Overlap and degenerate spacing produce warnings, never silent
+geometry" is therefore not something the kernel gives you — the helper has to
+measure engagement, and measuring costs:
+
+| probe | cost per instance | always on? |
+|---|---:|---|
+| bounding-box overlap | **0.014 ms** | yes |
+| `(part & tool).volume` | **2.1–2.4 ms** | only `verify="exact"` |
+
+So the tier is in the API. The free tier also checks the solid count, the
+whole-operation volume delta and the seed extent against the spacing;
+`verify="exact"` adds the intersection probe and reports `engaged_mm3` per
+instance. **Warnings name instance indices, never a count** — `instance(s) [2]
+do not reach the part` — and `patterns.instances(part)` reads the full
+per-instance report back off the returned shape.
+
+The bbox tier is a *screen*, not a verdict: it can call a near miss "engaged",
+but it never calls a real hit "missed". The direction of that error is the
+load-bearing part.
+
+An **impossible** request raises rather than warning: `count < 1`,
+`spacing <= 0`, a zero-length direction, a span outside `(0, 360]`. Inside a
+part script that surfaces as a normal `script_error` with `details.line`.
+
+### Holes — the wizard
+
+`agentcad.toolkit.holes` places holes **by intent**. The diameter comes from a
+vendored standards table (never from arithmetic in the helper), and every call
+leaves a machine-readable **record** that reaches `get_part`, the rebuild
+result and the drawing callouts.
+
+```python
+part, records, warn = holes.clearance(part, points, "M5", fit="medium")
+part, records, warn = holes.tapped(part, points, "M6", depth=12)
+part, records, warn = holes.counterbore(part, points, "M8")
+part, records, warn = holes.countersink(part, points, "M6")
+part, records, warn = holes.drill(part, points, 18.0)          # no table
+part, records, warn = holes.clearance(part, points, "1/4", std="ansi")
+```
+
+Shared keywords: `plane=`, `depth=` (omit for a through hole), `thru=`,
+`std="iso"|"ansi"`, `fit=` and `verify=` (the pattern tiers above).
+
+**`plane` is a predicate, never an ordinal.** It takes a build123d `Plane`, or
+one of six names resolved *on every rebuild* to the extreme planar face along
+that axis (largest area among coplanar candidates, then lowest centre — a
+documented tie-break). A face **index** would renumber on any topology change;
+a name and a literal basis do not. `points` are `(u, v)` in the resolved
+plane, and the plane's origin is the part origin projected onto it, so they
+stay part coordinates:
+
+| name | drills along | `(u, v)` means |
+|---|---|---|
+| `top` | −Z | `(x, y)` at z = max |
+| `bottom` | +Z | `(x, −y)` at z = min |
+| `front` | +Y | `(x, z)` at y = min |
+| `back` | −Y | `(−x, z)` at y = max |
+| `right` | −X | `(y, z)` at x = max |
+| `left` | +X | `(−y, z)` at x = min |
+
+A name that resolves to nothing (a lathe part with no planar top) raises,
+naming the reason — honouring it approximately would drill into a curve.
+
+**`holes.drill` is the one with no table behind it.** A structural bolt hole
+often has no fastener row: `construction/gusset_plate` drills 18 mm for an M16
+(EN 1090 clearance — none of ISO 273's 17.0/17.5/18.5) and the diameter is a
+swept parameter. `drill` takes millimetres and its record carries **no `size`
+and no provenance**, because printing a standard's name on a number the
+standard did not supply is worse than printing none.
+
+**`tapped` bores the tap drill and records the thread.** A tapped hole on a
+drawing is a callout, not a helix. `thread="real"` additionally fuses real ISO
+thread geometry — it needs a `depth`, costs ~9k triangles per hole, and bores
+at `root_radius` rather than the tap drill (boring at the physical tap drill
+buries the ridges: valid, fast, and invisible). **`countersink` always passes
+its angle explicitly**: build123d's `CounterSinkHole` defaults to 82°, an ASME
+default that would otherwise arrive inside an ISO-labelled call.
+
+#### Designation symbology
+
+Emitted per the hole's **declared standard**; the glyphs are ISO 129 /
+ASME Y14.5 and are shared, the numbers and the thread designation are what
+changes. Every ISO length prints millimetres, every ASME length prints inches
+— one named conversion (`hole_standards.in_designation_units`) sits between
+them, because everything geometric in AgentCAD is millimetres.
+
+| family | ISO | ASME |
+|---|---|---|
+| clearance | `⌀5.5` | `⌀0.217` |
+| clearance, blind | `⌀5.5 ↧6` | `⌀0.217 ↧0.25` |
+| tapped | `M5×0.8 - 6H ↧12` | `10-24 UNC - 2B ↧0.5` |
+| counterbore | `⌀5.5 ⌴⌀9.5↧5.4` | `⌀0.217 ⌴⌀0.375↧0.213` |
+| counterbore, blind | `⌀5.5 ↧6 ⌴⌀9.5↧5.4` | `⌀0.217 ↧0.25 ⌴⌀0.375↧0.213` |
+| countersink | `⌀5.5 ⌵⌀10.4×90°` | `⌀0.217 ⌵⌀0.41×82°` |
+| countersink, blind | `⌀5.5 ↧6 ⌵⌀10.4×90°` | `⌀0.217 ↧0.25 ⌵⌀0.41×82°` |
+
+**A blind hole always states its depth, and each `↧` qualifies the `⌀` group
+it follows.** A counterbore has two of them: `⌀5.5 ↧6 ⌴⌀9.5↧5.4` is a 6 mm
+deep ⌀5.5 hole under a 5.4 mm deep ⌀9.5 pocket. `clearance`, `counterbore`
+and `countersink` used to omit the hole depth entirely — a blind ⌀9 printed
+`⌀9`, which a shop makes as a through hole.
+
+ISO 273 names its three fits *fine / medium / coarse*; ASME B18.2.8 names them
+*close / normal / loose*. **Both spellings are accepted** and canonicalized to
+the requested `std`. The tables themselves are queryable without building
+anything — `hole_standards {family?, size?, std?}` (see `docs/agent-api.md`)
+answers out of the same files the geometry read, with the sources **that row**
+was transcribed from and `corroborated`, which is true only when two or more
+independent sources back it *and agree*.
+
+**The counterbore diameter is a shop rule, not a standard.** The published
+counterbore charts disagree by up to 0.75 mm on one M8, so
+`hole_standards.cbore` returns corroborated *head* geometry — the standard part
+of the answer — and applies a named clearance rule to it for the bore. Pass
+`cbore_d=` / `cbore_depth=` to use your shop's numbers; the record then carries
+yours.
+
+#### The records, and where they live
+
+One call makes **one group record**, so a pattern of a wizard hole is one hole
+group with `count: n` and `n` positions, not `n` unrelated records:
+
+```python
+{"id": "h0", "family": "tapped", "standard": "iso",
+ "designation": "M5×0.8 - 6H ↧12", "designation_base": "M5×0.8 - 6H",
+ "size": "M5", "d": 4.2,
+ "count": 8, "positions": [...], "centers": [...],   # plane-local, then global
+ "axis": [0, 0, -1], "plane": {...}, "depth_mm": 12.0, "thru": False,
+ "tap": {"pitch": 0.8, "class": "6H", "drill_mm": 4.2},
+ "provenance": {"standard": ["ISO 261/262"], "sources": [...],
+                "corroborated": True, "conflicts": []},   # standard is a LIST
+ "instances": [{"i": 0, "status": "engaged", "probe": "axis", ...}],
+ "verify": "bbox", "dropped": []}
+```
+
+**`count` is what was measured to come off, never what was asked for.** The
+guard proves per instance whether material was removed; anything it proves was
+a no-op is dropped from `count`, `positions` and `centers` and listed under
+`dropped` with its status, with a warning naming the indices —
+`verify="off"` is the one value under which `count` is intent, because the
+caller asked for no measurement.
+
+**`verify` is the mode you REQUESTED; `instances[i].probe` is the tier that
+answered.** The default runs up to three probes and one call routinely uses
+two, so `"verify": "bbox"` beside `"probe": "axis"` is the request beside the
+answer, not a contradiction. Read `probe` when the question is "how do we
+know".
+
+**`provenance` is the published backing for the DIAMETER**, unioned over every
+table row that fed the hole (a counterbore has two: the clearance hole and the
+fastener head). `corroborated` is true only for two or more independent sources
+that **agree**, so a single-sourced seat (every ISO 10642 countersink) or an
+adjudicated one (ASME `#8` normal) says so on the record itself — a disputed
+row additionally warns. `drilled` holes carry `None`: no table supplied the
+number. `standard` is always a **list**, even of one.
+
+It is not merely carried, it is **checkable**: `hole_standards.validate_record`
+re-derives the whole block from the record's own size, fit, standard and
+fastener and compares, exactly as it does the designation — and it ties `size`
+and `fit` to `d`, so the number that gets cut and the label that selects its
+provenance name one published row or neither is checkable. A record cannot
+claim a corroboration, a citation, a standard or a diameter its own fields do
+not earn.
+
+`designation` is **derived from the record** by
+`hole_standards.designation_for_record`, and `designation_base` is the same
+callout with no depth qualifier. Both readers that hold geometry re-derive the
+first to check a carrier and print the second when they have measured that the
+recorded depth no longer holds.
+
+The records **ride on the shape the helper returns** rather than in a registry
+the worker drains, and that is not a stylistic choice: the worker's 16-entry
+`_SHAPE_CACHE` returns a cached shape *without calling `build(p)`*, and the
+service's metrics fast path makes no kernel call at all — so a registry would
+drain empty on the second and every later build of an unchanged part, silently
+(changelog 0150).
+
+What that costs you: **any operation returning a new object drops the
+attribute**. `safe_fillet`, `safe_shell` and `safe_bool` carry it for you; a
+raw build123d operation of your own does not:
+
+```python
+part, records, warn = holes.clearance(part, pts, "M5")
+part = part - Cylinder(3, 40)              # a raw op: records are gone
+part = holes.carry(part, previous_part)    # carry them across yourself
+holes.records(part)                        # what this shape is carrying
+```
+
+You do not have to notice: the rebuild compares `holes.created()` before and
+after the build and warns when records went missing, naming what to do.
+
+The build result and `get_part` carry a `holes` key with four distinct
+answers — the records, `null` ("declares none"), `[]` plus a warning ("they
+were dropped") and **absent** ("not harvested") — described in
+`docs/agent-api.md`.
+
+#### Guards you will actually see
+
+Off-part and off-face instances (named by index), an instance that touches but
+removes nothing (`verify="exact"`), a whole call that removed nothing at all, a
+depth deeper than the stock below the plane (a bounding-box measure — it
+catches a depth that cannot fit in the part, not one that misses a local
+pocket), and a new hole within one diameter of another or of an existing
+record's centre. An unknown size, a negative depth or a counterbore smaller
+than its own clearance hole **raise**.
+
+One honest limit, from the function's own docstring: `carry()` is bookkeeping,
+not a proof. Carrying records across a cut that removed one of the holes leaves
+a record for a hole that is gone — re-verifying every record against the
+geometry on every call is priced at 2.1 ms per instance and is PRD-021's job.
+
+```python
+from build123d import Box
+from agentcad.toolkit import holes, patterns
+
+def build(p):
+    part = Box(120, 120, p.t)
+    part, recs, warn = holes.tapped(part, patterns.bolt_circle(45, 8),
+                                    "M5", depth=10)
+    return part          # the drawing prints: 8× M5×0.8 - 6H ↧10
 ```
 
 ### Constraint-solved sketches
@@ -409,15 +690,73 @@ but heavy (~9k triangles per M8 thread at mesh tolerance 0.1), so:
   `analyze_part(kind="curvature")`: a true G2 blend shows no jump in
   curvature across the seam.
 
+### Ribs, bosses and draft
+
+`from agentcad.toolkit import features` — three shape features under the same
+honest-warning contract. `plane` is resolved by the same predicate `holes.*`
+uses (a `Plane`, or `top|bottom|front|back|left|right` → the extreme planar
+face along that axis, by area), and the normal points **out of the material**:
+holes drill along `-z_dir`, ribs and bosses grow along `+z_dir`. For a feature
+inside a cavity pass an explicit `Plane(origin=(0, 0, floor_t), z_dir=(0,0,1))`
+— a *name* can only ever resolve to an outer face, and after you add a rib
+`"top"` resolves to the **rib's** top face.
+
+- `features.rib(part, profile, thickness, *, to, plane="top", draft_deg=None)
+  -> (part, warning|None)` — the `profile` polyline (points in plane
+  coordinates) traced to `thickness` and extruded away from the seat.
+  `to=<mm>` is the rib height and is exact (measured equal to a hand-built rib
+  to the last bit). `to="part"` extrudes generously and intersects the part's
+  **bounding solid**, which is an envelope and not the part: on a convex part
+  the rib lands inside existing material and adds **0 mm³** (measured), on a
+  shelled part it runs to the top of the bounding box. That mode always warns.
+  `draft_deg` tapers the extrusion — it never calls the draft operation,
+  because a finished shelled part refuses draft (see below).
+- `features.boss(part, at, d, h, *, hole=None, hole_depth=None, draft_deg=None)
+  -> (part, warning|None)` — a cylinder standing `h` above the seat at `at`.
+  `hole="M3"` bores the tap drill with `holes.tapped` (blind at the seat by
+  default) so the screw boss carries a **record** and reaches the drawing
+  callouts; read it back with `holes.records(part)`.
+- `features.draft(part, faces, angle_deg, neutral_plane, *, min_angle=0.25)
+  -> (part, achieved_deg, warning|None)` — `faces` is a list of `Face`s **or a
+  selector callable** `f(part) -> faces`, never indices. On failure it binary-
+  searches down to the largest angle that yields a *valid* solid and names what
+  it applied.
+
+**Draft's ceilings are low, and they are lowest exactly where draft matters.**
+Swept 0.25 → 60° through the kernel worker (changelog 0156); failure was
+**monotone in the angle on all eight shapes** — no islands, which is what makes
+the search sound:
+
+| part | largest angle that produced a valid solid |
+|---|---|
+| box 40×30×20 (4 side faces) | 35° |
+| box + boss (5 faces) | 15° |
+| box + R4 vertical fillets (8 faces) | 10° |
+| shelled box t=2 (8 faces) | 2.5° |
+| `construction/gusset_plate` (18 faces) | 17.5° |
+| `prototyping/enclosure_base` (56 faces) | **0.25°** |
+| `rocketry/nozzle`, `construction/angle_bracket` | **none** — every angle fails |
+
+Draft before you shell or fillet. And note the failure mode: only the extreme
+angles raise (`Standard_Failure` with an **empty** message, or build123d's
+`DraftAngleError`); most failing angles **return a shape** with
+`is_valid False` and a plausible volume, so a hand-written `draft()` call must
+check `is_valid` itself. When nothing works down to `min_angle`,
+`features.draft` returns the part **unchanged** with a warning naming the
+failing angle and what OCCT said — never a silently undrafted part.
+
 ### Sheet metal
 
 `agentcad.toolkit.sheetmetal.SheetPart` is a declarative builder: one spec
 yields BOTH the folded solid and the manufacturing flat pattern, so they can
 never disagree. `base(width, depth)` is a plate centered on the origin (width
 along X, depth along Y, z in `[0, t]`); `flange(edge, angle_deg, length,
-inner_radius=None)` adds a full-edge flange bending up (+Z) on `left`/`right`/
-`front`/`back` (one per edge; angle exclusive `(0, 180)`; `inner_radius`
-defaults to the thickness). Bend allowance is
+inner_radius=None, start=0.0, width=None, relief="auto")` adds a flange bending
+up (+Z) on `left`/`right`/`front`/`back` (angle exclusive `(0, 180)`;
+`inner_radius` defaults to the thickness). `start` is measured from the edge's
+low-coordinate end (X− for `front`/`back`, Y− for `left`/`right`) and
+`width=None` spans the whole edge; several flanges may share an edge as long as
+their spans do not overlap. Bend allowance is
 `BA = radians(angle) * (inner_radius + k_factor * thickness)` — each flange
 adds `BA + length` of flat stock beyond its edge (`k_factor=0.44` suits
 air-bent steel/aluminum).
@@ -439,11 +778,59 @@ def flat_pattern(p):                 # optional contract → flat_pattern tool
 ```
 
 `unfold()` returns the flat blank as a solid, `flat_outline()` its CCW outline
-polygon, and `bend_lines()` the bend midlines (`BA/2` beyond each edge, in
-flat coordinates). Declaring `flat_pattern(p)` enables the `flat_pattern`
-export tool (SVG, or DXF with `OUTLINE`/`BEND` layers). Duplicate edges,
+polygon, `flat_outline_edges()` the same outline as exact lines and arcs, and
+`bend_lines()` the bend midlines (`BA/2` beyond each edge, in flat
+coordinates). Declaring `flat_pattern(p)` enables the `flat_pattern` export
+tool (SVG, or DXF with `OUTLINE`/`BEND` layers). Overlapping spans on one edge,
 angle 0/180, or `flange()` before `base()` raise `ValueError`; read
 `sp.warnings` after `fold()` if fusion needed a fallback.
+
+**The outline is the unfold.** `flat_outline()` is a discretization of
+`unfold()`'s own top face at a chord tolerance, not a second model of the
+blank — so consistency is a fact rather than an invariant to maintain. For a
+straight-edged blank its enclosed area equals that face's area exactly; where a
+round relief or a hem puts arcs in the boundary it is within the tolerance.
+Base corners are vertices only where the blank actually turns.
+
+**Bend relief.** Wherever a partial flange stops in the middle of an edge, a
+relief is cut **through the base plate**, in both `fold()` and `unfold()`, from
+one computation. `relief="auto"` (= `"rect"`), `"round"`, or `"tear"`; or an
+explicit `{"kind", "width", "depth"}`. The default sizing —
+`1.5 × thickness` wide, `inner_radius + thickness` past the bend line — is a
+**common shop rule, not a standard**; no ISO governs it. `"tear"` removes no
+material and says so in `sp.warnings`.
+
+**Hems and corners.** `hem(edge, kind="open"|"closed", length, start, width)`
+is a 180° bend folding the leaf back over the sheet, with an air gap of `2R`:
+`open` uses `R = t` (gap `2t`), `closed` `R = t/2` (gap `t`). Both are shop
+defaults, overridable with `inner_radius=`. **`kind="teardrop"` raises** — it
+wraps past 180°, where this model's tangential leaf descends into the sheet
+after `R·(1−cos a)/−sin a` (2.41·R at 225°) while a hem leaf needs ≥ 4t; the
+overlap would be swallowed silently by the fuse. `corner(edge_a, edge_b,
+treatment)` treats the corner where two flanged edges meet: `close` mitres the
+two leaves on the 45° bisector, `gap` opens one thickness on both, `rip` is the
+untreated corner. Declare the two flanges before the corner.
+
+**A `close` corner is a whole seam when the two flanges' cross-sections agree
+and each leaf fits its mitre extension**, and it warns with the measurement
+when they do not. One plane cuts both leaves, so each leaf's cut face is its
+own profile: the faces coincide exactly when the profiles do (a different
+*leaf length* is fine — the shorter face is seamed whole — a different angle or
+inner radius is not). The second condition is the leaf's outward reach, which
+holds iff `L ≤ (R + t)·tan(45° − a/2)` — unbounded at and above 90°, where the
+leaf is vertical and adds no reach, and a small number below. Measured shares
+of the promised seam: 1.000000 for matched corners inside that bound, *acute
+ones included* (60°/R3/L0.2, 45°/R3/L0.5, 30°/R5/L1); 0.9586 for a 0.1 mm
+radius mismatch; 0.2674 for 90°/R3 against 45°/R1; and — for a *matched* 45°
+pair at t=2 whose leaf is 12 mm — 0.2810 at R1 (limit 1.2426 mm) and 0.4103 at
+R3 (limit 2.0711 mm), the seam growing with the limit. Nothing else sees it —
+both leaves are cut by the same plane so no material is lost, and they still
+fuse through the plate into one valid solid.
+
+Every `fold()` and `unfold()` checks `is_valid` **and** the solid count **and**
+material conservation, and warns if the declared features did not join into one
+body or if the fuse swallowed declared material — OCCT reporting success is not
+evidence that it did neither.
 
 ## Analysis stand-ins for interference checking
 

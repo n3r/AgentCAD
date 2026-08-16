@@ -18,7 +18,7 @@ the same service humans use through the browser UI.
 │ FastAPI server — 127.0.0.1:<port>   (agentcad serve)        │
 │                                                             │
 │   ToolRegistry ──► AgentCADService ──► ProjectStore (files) │
-│   (71 tools,       (cache, events,     ~/AgentCAD/projects  │
+│   (73 tools,       (cache, events,     ~/AgentCAD/projects  │
 │    single source    orchestration)     or --projects-dir    │
 │    of truth)             │                                  │
 │                          │ line-delimited JSON-RPC (stdio)  │
@@ -27,6 +27,10 @@ the same service humans use through the browser UI.
 │        (build123d/OCCT, restartable, affinity-routed)       │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+The registry registers **73 tools** (76 with the optional `[fem]` extra
+installed — `fem_static`, `fem_modal`, `fem_thermal` register only when their
+deps are importable).
 
 Two tiers of process: the **server** (FastAPI + service + store) and one or
 more **kernel workers** (`agentcad/kernel/worker.py`), each of which imports

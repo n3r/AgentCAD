@@ -15,21 +15,26 @@ defines and the ``.faces.u32`` mesh sidecar exposes to the GUI.
 from __future__ import annotations
 
 from .model import ValidationError
+from .script_blocks import apply_generated_block, next_build_alias
 from .tools import Tool, schema, with_hint
 
 PUSH_PULL_MARKER = (
     "# --- agentcad push/pull (auto-generated; edit or remove freely) ---"
 )
 
-# N is a counter derived from existing marker occurrences, so chained
-# push/pulls never shadow each other's saved previous build.
+# `alias` is allocated by `script_blocks.next_build_alias` against the names
+# ALREADY IN THE SCRIPT — not off this marker's count — so a chained push/pull
+# never shadows its own saved previous build, and never collides with a block
+# another pack (`add_holes`) appended or with the numbering left behind when a
+# middle block is deleted. A collision here is not a shadow: the alias resolves
+# as a global at call time, so the loser calls itself (`RecursionError`).
 _PUSH_PULL_BLOCK = """
 
 {marker}
 from agentcad.toolkit.facemod import push_face as _agentcad_push_face
-_agentcad_prev_build_{n} = build
+{alias} = build
 def build(p):
-    return _agentcad_push_face(_agentcad_prev_build_{n}(p), {face_index}, {distance})
+    return _agentcad_push_face({alias}(p), {face_index}, {distance})
 """
 
 
@@ -70,14 +75,14 @@ def register(registry, service) -> None:
                 "face",
                 info,
             )
-        n = script.count(PUSH_PULL_MARKER)
         new_script = script.rstrip("\n") + _PUSH_PULL_BLOCK.format(
             marker=PUSH_PULL_MARKER,
-            n=n,
+            alias=next_build_alias(script),
             face_index=face_index,
             distance=repr(distance),
         )
-        result = service.update_part(project, part_id, script=new_script)
+        result = apply_generated_block(
+            service, project, part_id, script, new_script)
         return {
             **with_hint(result),
             "face_index": face_index,

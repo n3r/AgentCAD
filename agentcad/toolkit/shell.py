@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from build123d import Compound, Face, Kind, offset, scale
 
+from .holes import carries_records
+
 
 def _inner_subtract_shell(part, thickness: float, opening_faces: list[Face]):
     bb = part.bounding_box()
@@ -34,6 +36,7 @@ def _inner_subtract_shell(part, thickness: float, opening_faces: list[Face]):
     return out if out.is_valid and out.volume > 0 else None
 
 
+@carries_records  # a shelled part keeps its hole records (PRD-010)
 def safe_shell(part, thickness: float, opening_faces: list[Face] | None = None,
                *, kind: Kind = Kind.ARC):
     """Shell ``part`` to ``thickness``, opening ``opening_faces``. Returns

@@ -4,7 +4,7 @@ A real AgentCAD server is started as a subprocess on a portctl-allocated port
 (service mcp-test, instance test; falls back to 8634) with a temp projects
 dir. The MCP stdio server is then spawned via ``uv run agentcad mcp`` with
 AGENTCAD_URL pointing at it, and driven with the mcp package's stdio client:
-handshake, list_tools (17 tools), a JSON round-trip, and a broken-script
+handshake, list_tools (73 tools, 76 with [fem]), a JSON round-trip, and a broken-script
 update whose error comes back as tool-result content.
 """
 

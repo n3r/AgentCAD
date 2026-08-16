@@ -12,7 +12,10 @@ from typing import Iterable
 
 from build123d import Edge, fillet
 
+from .holes import carries_records
 
+
+@carries_records  # a filleted part keeps its hole records (PRD-010)
 def safe_fillet(
     part,
     edges: Iterable[Edge],
