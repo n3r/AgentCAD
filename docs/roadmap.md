@@ -58,6 +58,67 @@ part incumbents structurally cannot copy.
    agents and a FeatureScript MCP; Autodesk ships MCP servers. Bolted-on.
    Ours is native — the ordering below ships it while that's still unique.
 
+## Sequencing decision — the marketplace chain (16 Aug 2026)
+
+**Decision: the marketplace moves from "someday in v6" onto the critical
+path, and a minimal hosted slice of PRD-005 is lifted out of the deferred
+deployment work to unblock it.**
+
+The reasoning, recorded because it reorders three phases:
+
+*The software is the copyable part.* A competent team with coding agents can
+reproduce this feature set. What compounds is a catalog of kernel-validated,
+mate-ready parametric parts plus a format others adopt — and an audience.
+That is the durable asset; thesis 2's validation loop is a *feature* until it
+is attached to a network, at which point it becomes the network's quality bar.
+
+*But the asset and the storefront are separable, and PRD-031 fuses them.*
+The asset needs none of 031's four hard dependencies: PRD-011's MVP already
+supports **git-hosted indexes — a repo is an index**, so a validated catalog
+can start compounding with no cloud, no auth and no sandbox. The storefront
+(identity, listings, moderation, economy) is where all four blockers live and
+is the commodity half.
+
+*There is a technical fork inside that split.* PRD-031's safety inversion —
+marketplace code never executes on a consumer's machine — is precisely what
+forces cloud + sandbox. A git-hosted registry has the opposite model: code
+runs locally, like pip. Normal for a developer tool, unacceptable for a
+consumer marketplace. Two distribution models, and only the first is
+reachable today.
+
+*Audience comes from share links before it comes from a market.* PRD-031's
+own cold-start mitigation is the PRD-007 customizer loop. A part that becomes
+a URL someone else opens is the growth surface; an empty shelf is not.
+
+*A gap between format and open publishing is healthy, not a delay.* Changing
+a published format breaks every pinned consumer. The seeded catalog is the
+format's proving ground.
+
+**Resulting order** (supersedes the phase ordering below where they conflict):
+
+| # | Step | Why it is here |
+|---|---|---|
+| 1 | **011, registry-first** | The git-hosted index and the agent-built COTS catalog become primary deliverables, not phase-2. Freeze the preset ↔ PRD-012 configuration schema in its design (011 warns of two variant systems otherwise). |
+| 2 | **005-lite** | Deploy + identity + public read only. Orgs, roles, audit principals and local-first sync stay deferred as genuine deployment work. |
+| 3 | **007** | Share links & customizer — the growth loop, and 031's own hard dependency. Needs hosting, not full multi-tenancy. |
+| 4 | **031a** | Public read-only catalog we seed, with add-to-library. Needs 011 + 005-lite + 007. |
+| 5 | **006** | Sandboxing becomes blocking only when third-party code runs on our servers — which is 031b, not 031a. |
+| 6 | **031b** | Open publishing, verified tiers, moderation, economy. |
+
+Demoted behind that chain: **013, 014, 015, 017** (daily-driver depth —
+they buy credibility but do not compound). **026/027** stay early-v5 movable:
+if we are inviting an audience, the shell is the shop window.
+
+Success metric for the catalog is **usefulness, not contributors**. We will
+not out-community GrabCAD's 7M engineers; we can plausibly out-*availability*
+McMaster and TraceParts on mate-ready parametric parts, because agents author
+and the kernel referees — and that bet is winnable without a contributor base.
+
+**Open blocker:** this repo still has **no LICENSE file and no license
+field** (surfaced when a GPL-3.0 solver was declined in PRD-009). It is a
+footnote for a private tool and blocking for a published package format with
+a `license` field. Resolve before 031a.
+
 ## PRD index
 
 ### v4 — the collaborative core
@@ -68,9 +129,9 @@ part incumbents structurally cannot copy.
 | [002](prd/completed/PRD-002-change-proposals-geometric-diff.md) | Change proposals & geometric diff — CAD pull requests with review packets (diffs, metric deltas, renders, 3D add/remove volumes) | completed (PR #9, AC1–AC9 verified) | analysis | 001 |
 | [003](prd/completed/PRD-003-design-specs-executable.md) | Executable design specs — machine-checkable intent (`check_wall`, `check_mass`, clearances, stack-ups) with requirement traceability | completed (PR #10, AC1–AC9 verified) | analysis | — |
 | [004](prd/completed/PRD-004-geometry-ci.md) | Geometry CI — `agentcad check` + GitHub Action: rebuild, specs, interference, drawings on every ref/proposal | completed (PR #11, AC1–AC10 verified) | analysis | 001 · 003 |
-| [005](prd/pending/PRD-005-multi-tenant-cloud.md) | Multi-tenant cloud — auth, orgs, roles, audit principals, local-first git sync, one-compose self-host | pending | analysis | — |
-| [006](prd/pending/PRD-006-sandboxing-quotas.md) | Cross-platform sandboxing & quotas — Linux/Windows confinement, cgroup budgets, per-tenant metering | pending | analysis | — |
-| [007](prd/pending/PRD-007-share-links-customizer.md) | Share links & customizer publishing — read-only viewer links; published parts with parameter sliders emitting B-rep artifacts | pending | analysis + idea 1e | 005 · 006 |
+| [005](prd/pending/PRD-005-multi-tenant-cloud.md) | Multi-tenant cloud — auth, orgs, roles, audit principals, local-first git sync, one-compose self-host | **005-lite (deploy + identity + public read) pulled onto the critical path — step 2**; the rest stays deferred | analysis | — |
+| [006](prd/pending/PRD-006-sandboxing-quotas.md) | Cross-platform sandboxing & quotas — Linux/Windows confinement, cgroup budgets, per-tenant metering | pending — **step 5**, blocking only for 031b (third-party code on our servers) | analysis | — |
+| [007](prd/pending/PRD-007-share-links-customizer.md) | Share links & customizer publishing — read-only viewer links; published parts with parameter sliders emitting B-rep artifacts | pending — **promoted to step 3** (the growth loop) | analysis + idea 1e | 005-lite (006 not required for our own content) |
 | [008](prd/completed/PRD-008-review-threads-presence.md) | Review threads & presence — comments anchored to faces/params/lines/diffs; per-part claims; per-user undo | completed (PR #12, AC1–AC9 verified) | analysis | 005 (soft) |
 
 ### v5 — daily-driver depth & the ecosystem
@@ -79,7 +140,7 @@ part incumbents structurally cannot copy.
 |---|---|---|---|---|
 | [009](prd/completed/PRD-009-sketcher-v2.md) | Sketcher v2 — arcs/splines/ellipses/slots/conics, full constraints, drag-to-solve, DOF diagnostics | completed (PR #13, AC1–AC7 verified) | analysis + residual | — |
 | [010](prd/completed/PRD-010-feature-toolkit-ii.md) | Feature toolkit II — patterns, ISO/ANSI hole wizard with flowing metadata, ribs/draft, sheet-metal v2 (relief, partial flanges) | completed (PR #14, AC1–AC8 + AC7b verified) | analysis + residual | — |
-| [011](prd/pending/PRD-011-parts-library-registry.md) | Parts library & package registry — "pip for parts": versioned, kernel-validated packages; org/personal libraries; McMaster ingestion | pending | analysis + idea 1d | 003 |
+| [011](prd/pending/PRD-011-parts-library-registry.md) | Parts library & package registry — "pip for parts": versioned, kernel-validated packages; org/personal libraries; McMaster ingestion | **in progress — step 1, registry-first** | analysis + idea 1d | 003 |
 | [012](prd/pending/PRD-012-configurations.md) | Configurations — named variants with per-config metrics/BOM/drawings; matrix builds | pending | analysis | — |
 | [013](prd/pending/PRD-013-assembly-v2.md) | Assembly v2 — sub-assemblies, instance patterns, simplified reps for 1k+ instances, richer joints, exploded views, URDF export | pending | analysis + idea 6 | — |
 | [014](prd/pending/PRD-014-drawings-v2.md) | Drawings v2 — ASME/ISO sheets, title/revision blocks, assembly drawings with BOM+balloons, sections, PDF, deterministic regen | pending | analysis | 010 · 012 · 015 (soft) |
@@ -104,7 +165,7 @@ part incumbents structurally cannot copy.
 | [023](prd/pending/PRD-023-auto-documentation.md) | Auto-documentation — assembly instructions from mate semantics, READMEs, release notes; human-approved | pending | analysis | 013 · 015 |
 | [024](prd/pending/PRD-024-agentcad-bench.md) | AgentCAD-Bench — public, kernel-scored agentic-CAD evals; our release gate | pending | analysis | 003 |
 | [030](prd/pending/PRD-030-motion-dynamics.md) | Motion & dynamics — closed-chain kinematics; MuJoCo rigid-body dynamics (reactions, motor sizing); loads→FEM handoff | pending | idea 6 | 013 |
-| [031](prd/pending/PRD-031-marketplace.md) | Marketplace & community hub — validated parametric components/projects/skills; server-side execution only; provenance & disclosure | pending | idea 1e | 005 · 006 · 007 · 011 |
+| [031](prd/pending/PRD-031-marketplace.md) | Marketplace & community hub — validated parametric components/projects/skills; server-side execution only; provenance & disclosure | pending — **split: 031a seeded read-only catalog (step 4) · 031b open publishing (step 6)** | idea 1e | 031a: 011 · 005-lite · 007 — 031b: + 006 |
 | [032](prd/pending/PRD-032-universal-cad-import.md) | Universal CAD import — neutral-deep + ODA opt-in + consent-gated cloud conversion; fidelity reports; re-import diffs | pending | idea 7 | 017 |
 
 Sequencing inside phases follows each PRD's dependency header; the phase
