@@ -399,3 +399,23 @@ first of a fluke.
   `handle_inspect` to stop dropping unknown keys); and Codex #9's root cause —
   specs cannot see parameters — which is a spec-language question, not a gate
   one.
+
+## Windows CI round (post-PR)
+
+PR #15's first CI run failed only on `pytest (windows-latest, portability)`,
+three classes, all test-side and all previously-solved traps:
+
+- `os.geteuid()` does not exist on Windows and was called at decorator
+  evaluation, breaking collection — now the `test_specs.py` idiom
+  (`getattr(os, "geteuid", lambda: 1)`) plus `os.name == "nt"` in the skip,
+  because chmod 0o000 does not make a file unreadable there either.
+- `shutil.which("git")` answers `...\git.EXE` on Windows, so
+  `argv[0].endswith("git")` was false — the assertion now compares the
+  basename case-insensitively.
+- `shutil.rmtree` of a bare fixture repo hit `WinError 5` on git's read-only
+  `objects/` — the PRD-004 trap, fixed with `test_checks_ref.py`'s
+  `_rmtree_repo` (clear the bit and retry), copied with attribution.
+
+`agentcad/core/packages/indexes.py`'s `fcntl` import was already guarded (the
+cross-process index lock degrades to the in-process RLock on platforms
+without it, documented in its docstring) — verified, not changed.

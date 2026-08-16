@@ -816,7 +816,10 @@ def test_an_empty_presets_document_is_legitimate():
 
 
 @pytest.mark.portability
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 0o000 file anyway")
+@pytest.mark.skipif(
+    os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="root reads a 0o000 file anyway; Windows has neither geteuid nor "
+           "POSIX mode bits (chmod 0o000 does not make a file unreadable)")
 def test_a_file_that_cannot_be_read_is_one_error_type(tmp_path):
     """`inventory` raises ValidationError and nothing else, so `cache.verify`
     (which must never propagate) has one thing to catch."""

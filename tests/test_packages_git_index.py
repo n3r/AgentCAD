@@ -26,7 +26,9 @@ lacking one — only for lacking `git`.
 """
 
 import json
+import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -37,6 +39,21 @@ from agentcad.core.packages import _git, cache, content, indexes
 from agentcad.core.packages.manager import PackageManager
 from agentcad.core.tools import build_registry
 from .conftest import make_test_service
+
+
+def _rmtree_repo(path) -> None:
+    """Delete a git directory on any OS (the `test_checks_ref` idiom).
+
+    Git marks everything under ``objects/`` read-only, and Windows refuses to
+    unlink a read-only file (``WinError 5``) where POSIX only consults the
+    parent directory. Clear the bit and retry.
+    """
+    def _retry(func, target, _exc):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    shutil.rmtree(path, onexc=_retry)
+
 
 pytestmark = pytest.mark.portability
 
@@ -200,7 +217,9 @@ def test_the_environment_blocks_prompts_and_leaves_home_alone(monkeypatch):
     assert seen["timeout"] == _git.DEFAULT_TIMEOUT >= 120, \
         "a clone routinely exceeds history._run's 10 s"
     assert "shell" not in seen, "fixed argv, never a shell"
-    assert seen["cmd"][0].endswith("git")
+    # `shutil.which("git")` answers `...\git.EXE` on Windows, so compare the
+    # basename case-insensitively rather than a raw suffix.
+    assert Path(seen["cmd"][0]).name.lower() in ("git", "git.exe")
     assert "--git-dir" not in seen["cmd"] and "--work-tree" not in seen["cmd"]
 
 
@@ -319,7 +338,7 @@ def test_an_unreachable_remote_is_a_warning_and_the_checkout_keeps_answering(
         remote, cache_root):
     index = make_git_index(remote)
     index.refresh()
-    shutil.rmtree(remote["bare"])
+    _rmtree_repo(remote["bare"])
     index.refresh(force=True)
     assert index.stale is True
     assert index.stale_reason and remote["url"] in index.stale_reason
@@ -332,7 +351,7 @@ def test_search_carries_the_staleness_and_its_reason(remote, cache_root):
     from agentcad.core.packages import search
     index = make_git_index(remote)
     index.refresh()
-    shutil.rmtree(remote["bare"])
+    _rmtree_repo(remote["bare"])
     index.refresh(force=True)
     result = search.search([index], query=WIDGET)
     assert result["hits"][0]["stale"] is True
@@ -427,8 +446,8 @@ def test_ac4_the_remote_disappears_and_everything_still_works(
     online = json.dumps(service.store.manifest("rig")["packages_lock"][WIDGET],
                         indent=2, sort_keys=True)
 
-    shutil.rmtree(remote["bare"])
-    shutil.rmtree(indexes.GitIndex("acme", remote["url"]).path)
+    _rmtree_repo(remote["bare"])
+    _rmtree_repo(indexes.GitIndex("acme", remote["url"]).path)
 
     detail = registry.call("use_part", {
         "project": "rig", "package": WIDGET, "part": "mount_block",
