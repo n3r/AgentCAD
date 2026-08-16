@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "name": "widget_good",
+  "version": "1.0.0",
+  "summary": "A bored, chamfered mounting block — the green publish-gate fixture",
+  "keywords": ["fixture", "block", "mount"],
+  "standards": [],
+  "license": "Apache-2.0",
+  "authors": [{"name": "AgentCAD"}],
+  "disclosure": "agent",
+  "min_agentcad": "0.1.0",
+  "provenance": {
+    "generator": {"name": "agentcad", "version": "0.1.0"},
+    "vendor": null
+  },
+  "parts": {
+    "mount_block": {
+      "file": "parts/mount_block.py",
+      "label": "Mounting block",
+      "summary": "Bored, chamfered block with a seat and a bore connector"
+    }
+  },
+  "remix": null,
+  "requires": {"extras": []}
+}

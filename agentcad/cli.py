@@ -7,6 +7,7 @@ Commands:
     agentcad new <name>              # create a project
     agentcad export <project> <part> --format step|stl|3mf [-o OUT]
     agentcad check [--project P] [--ref REF] [--report R] [--md M]
+    agentcad package validate <dir> [--strict] [--report R] [--jobs N]
 """
 
 from __future__ import annotations
@@ -536,12 +537,175 @@ def cmd_check(args) -> int:
     return override if override is not None else int(report.get("exit_code", 2))
 
 
+_PACKAGE_ROW = "  {:<11} {:<6} {:>5} {:>5} {:>5} {:>6} {:>6}  {:>7}"
+
+
+def _package_lines(report: dict, written: list[str]) -> list[str]:
+    """The stage table and what went wrong, for a human reading stderr."""
+    package = report.get("package") or {}
+    facts = [f"{package.get('name')}@{package.get('version')}"]
+    if package.get("content_id"):
+        facts.append(str(package["content_id"]))
+    if report.get("strict"):
+        facts.append("strict")
+    lines = [" · ".join(facts),
+             _PACKAGE_ROW.format("stage", "status", "pass", "fail", "skip",
+                                 "error", "total", "time")]
+    for stage in report.get("stages") or []:
+        summary = stage.get("summary") or {}
+        row = _PACKAGE_ROW.format(
+            str(stage.get("name")), str(stage.get("status")),
+            summary.get("passed", 0), summary.get("failed", 0),
+            summary.get("skipped", 0), summary.get("errors", 0),
+            summary.get("total", 0),
+            f"{float(stage.get('duration_s') or 0.0):.1f} s")
+        if stage.get("reason"):
+            row += f"  ({stage['reason']})"
+        lines.append(row)
+
+    broken = [item for stage in report.get("stages") or []
+              for item in stage.get("items") or []
+              if item.get("status") in ("fail", "error")]
+    if broken:
+        lines.append("failures:")
+        lines += _check_named(f"{item.get('id')} — {item.get('message')}"
+                              for item in broken)
+    if report.get("exempt_skips"):
+        # What was NOT measured, named — that is what stops "validated" from
+        # becoming a badge.
+        lines.append("not measured (exempt from the publish verdict):")
+        lines += _check_named(report["exempt_skips"])
+    if report.get("blockers") and not broken:
+        lines.append("blocking publication:")
+        lines += _check_named(report["blockers"])
+    if report.get("strict_failures"):
+        lines.append(f"strict: {len(report['strict_failures'])} skipped row(s) "
+                     f"count as failures")
+    if report.get("warnings"):
+        lines.append("warnings:")
+        lines += _check_named(report["warnings"])
+    if report.get("errors"):
+        lines.append("harness errors:")
+        lines += _check_named(f"{entry.get('type')}: {entry.get('message')}"
+                              for entry in report["errors"])
+    lines += [f"wrote {path}" for path in written]
+    return lines
+
+
+def _package_verdict(report: dict) -> str:
+    package = report.get("package") or {}
+    summary = report.get("summary") or {}
+    counts = (f"{summary.get('passed', 0)} passed, "
+              f"{summary.get('failed', 0)} failed, "
+              f"{summary.get('skipped', 0)} skipped, "
+              f"{summary.get('errors', 0)} errors "
+              f"of {summary.get('total', 0)}")
+    tail = "" if report.get("complete", True) else " — INCOMPLETE (budget)"
+    return (f"package validate: {report.get('status')} — "
+            f"{package.get('name')}@{package.get('version')} · {counts} in "
+            f"{float(report.get('duration_s') or 0.0):.1f} s · publishable: "
+            f"{'yes' if report.get('publishable') else 'no'} "
+            f"(exit {report.get('exit_code')}){tail}")
+
+
+def cmd_package(args) -> int:
+    if args.package_command == "validate":
+        return cmd_package_validate(args)
+    print("agentcad package: expected a subcommand (validate)",
+          file=sys.stderr)
+    return 2
+
+
+def cmd_package_validate(args) -> int:
+    """`agentcad package validate <dir>` — run the publish gate over a package.
+
+    ``cmd_check``'s shape exactly, for the same reasons: setup is **inside**
+    the exit-code mapping (an unwritable ``--work-dir`` or a projects dir that
+    is a file is exit 2, not a traceback), the kernel is stopped in a
+    ``finally`` so a crashed run leaves no workers, and the identity is ``ci``
+    so a run never collides with a human's per-client checkout.
+
+    The exit code is the API: ``0`` green · ``1`` red — **the package is
+    wrong** · ``2`` harness — we could not produce a verdict. A blown
+    ``--budget`` is 2 with the partial report written, because evidence beats
+    silence.
+
+    ``--report`` writes the JSON document `gate.validate_gate_report` accepts,
+    which is PRD-004's report shape with the gate's `package`, `note` and
+    verdict beside it.
+    """
+    import json
+
+    from .core import locks
+    from .core.model import AppError
+    from .core.packages.gate import SECURITY_NOTE, PackageGate
+
+    service = None
+    try:
+        work_dir = None
+        extra_writable: list[str] = []
+        if args.work_dir:
+            # Absolute and known before the workers spawn: the seatbelt profile
+            # is fixed at spawn, so a work dir outside the system temp dir can
+            # never be granted afterwards. Resolved here, but NOT created here —
+            # `PackageGate._work_root` creates it only after `_refuse_overlap`
+            # has accepted it.
+            work_dir = str(Path(args.work_dir).expanduser().resolve())
+            extra_writable.append(work_dir)
+        service = _build_service(
+            Path(args.projects_dir or DEFAULT_PROJECTS_DIR),
+            extra_writable=extra_writable or None)
+        locks.set_client_id("ci")
+        report = PackageGate(service).run(
+            args.path, strict=args.strict, jobs=args.jobs,
+            work_dir=work_dir, budget_s=args.budget)
+    except AppError as exc:
+        print(f"agentcad package validate: {exc.message}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001 — any harness failure is exit 2
+        print(f"agentcad package validate: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return 2
+    finally:
+        if service is not None:
+            try:
+                service.kernel.stop()
+            except Exception as exc:  # noqa: BLE001
+                print(f"agentcad package validate: the kernel did not stop "
+                      f"cleanly: {exc}", file=sys.stderr)
+
+    try:
+        written: list[str] = []
+        if args.report:
+            path = Path(args.report).expanduser()
+            try:
+                from .core.project import ProjectStore
+
+                ProjectStore._atomic_write(
+                    path, (json.dumps(report, indent=2) + "\n").encode())
+            except OSError as exc:
+                print(f"agentcad package validate: could not write {path}: "
+                      f"{exc}", file=sys.stderr)
+                return 2
+            written.append(str(path))
+        for line in _package_lines(report, written):
+            print(line, file=sys.stderr)
+        # Once, at the end, above the verdict — never a footnote nobody reads.
+        print(SECURITY_NOTE, file=sys.stderr)
+        print(_package_verdict(report))
+    except Exception as exc:  # noqa: BLE001 — any harness failure is exit 2
+        print(f"agentcad package validate: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return 2
+    return int(report.get("exit_code", 2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agentcad", description="Agentic-first CAD")
     parser.add_argument("--version", action="version", version=agentcad.__version__)
     # metavar hides the internal `worker` subcommand from usage/help.
     sub = parser.add_subparsers(
-        dest="command", metavar="{serve,open,mcp,new,export,check}")
+        dest="command", metavar="{serve,open,mcp,new,export,check,package}")
 
     for name in ("serve", "open"):
         p = sub.add_parser(name, help=f"{name} the AgentCAD server")
@@ -628,6 +792,45 @@ def main() -> None:
     out.add_argument("--json", action="store_true",
                      help="print the report to stdout instead of the summary")
 
+    p = sub.add_parser(
+        "package", help="work with parts packages (PRD-011)",
+        description="Package authoring commands. The publish gate is a "
+                    "CORRECTNESS gate, not a security boundary.")
+    package_sub = p.add_subparsers(dest="package_command",
+                                   metavar="{validate}")
+    v = package_sub.add_parser(
+        "validate", help="run the publish gate over a package directory",
+        description="Validate a package directory: its manifest and ceilings, "
+                    "its part contracts, every declared configuration, every "
+                    "parameter extreme, its specs, its connectors, its "
+                    "previews and its docs — headless, with no server, in a "
+                    "throwaway cell that never touches a project of yours. "
+                    "Exit 0 green, 1 the package is wrong, 2 harness.")
+    v.add_argument("path", help="the package directory (holding package.json)")
+    v.add_argument("--projects-dir", default=None)
+    v.add_argument("--strict", action="store_true",
+                   help="count skipped rows as failures (rows keep their "
+                        "status; only the verdict moves). A row marked "
+                        "strict_exempt — a skip that is a fact about this "
+                        "machine or about the world, never about the package "
+                        "— is never counted")
+    v.add_argument("--report", default=None, metavar="PATH",
+                   help="write the JSON report here")
+    v.add_argument("--jobs", type=int, default=None, metavar="N",
+                   help="parallel variant builds (default: min(pool size, 4); "
+                        "1 is serial and produces an identical report)")
+    v.add_argument("--work-dir", default=None, metavar="DIR",
+                   help="where the gate materialises its throwaway cell, in a "
+                        "unique subdirectory it creates and cleans up "
+                        "(default: a temp dir). It may not be, hold or sit "
+                        "inside the projects root or the package directory")
+    v.add_argument("--budget", default=None, metavar="SECONDS",
+                   type=_finite_arg("--budget",
+                                    "a NaN deadline is never in the past, so "
+                                    "it bounds nothing"),
+                   help="deadline read before every stage and every kernel "
+                        "call; a build already in flight cannot be preempted")
+
     args = parser.parse_args()
     if args.command in ("serve", "open"):
         cmd_serve(args, open_browser=args.command == "open")
@@ -641,5 +844,7 @@ def main() -> None:
         cmd_export(args)
     elif args.command == "check":
         raise SystemExit(cmd_check(args))
+    elif args.command == "package":
+        raise SystemExit(cmd_package(args))
     else:
         parser.print_help()

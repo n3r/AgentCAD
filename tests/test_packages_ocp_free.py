@@ -35,6 +35,11 @@ OCP_FREE: dict[str, str] = {
     "agentcad.core.packages.cache":
         'mod.receipt_path("iso4762", "1.0.0").name == "1.0.0.json"',
     "agentcad.core.packages.lockfile": 'mod.LOCK_KEY == "packages_lock"',
+    # `gate` sequences kernel calls *through a service* and imports
+    # `KernelError` from `kernel.client` — the module that spawns workers, not
+    # one that imports geometry — exactly as `checks.py` does.
+    "agentcad.core.packages.gate":
+        'mod.GATE_STAGES[0] == "format" and len(mod.GATE_STAGES) == 9',
     "agentcad.core.packages.indexes": 'mod.LocalIndex.kind == "local"',
     "agentcad.core.packages.manager":
         "mod.PackageManager(None, indexes=[]).indexes == []",

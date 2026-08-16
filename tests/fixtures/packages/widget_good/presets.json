@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "presets": {
+    "mount_block": {
+      "short": {
+        "params": {"length": 24.0, "bore_d": 5.0},
+        "label": "Short 24 × M5 clearance",
+        "description": "The shortest block the family allows, with a 5 mm bore."
+      },
+      "wide_16": {
+        "params": {"length": 80.0, "bore_d": 16.0, "grade": "wide"},
+        "label": "Wide 80 × 16",
+        "description": "A corner the one-at-a-time sweep never reaches: the longest, widest block with the largest bore. Declaring it as a preset is how an author asks the gate to build a combination (design Decision 9a)."
+      }
+    }
+  }
+}

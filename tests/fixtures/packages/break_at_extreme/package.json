@@ -1,0 +1,19 @@
+{
+  "format": 1,
+  "name": "break_at_extreme",
+  "version": "1.0.0",
+  "summary": "A strut that builds at its default and fails at length=max (AC2a)",
+  "keywords": ["fixture"],
+  "standards": [],
+  "license": "Apache-2.0",
+  "authors": [{"name": "AgentCAD"}],
+  "disclosure": "agent",
+  "min_agentcad": "0.1.0",
+  "parts": {
+    "strut": {
+      "file": "parts/strut.py",
+      "label": "Strut",
+      "summary": "Breaks at its own declared maximum length"
+    }
+  }
+}
