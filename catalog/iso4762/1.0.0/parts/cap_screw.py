@@ -37,9 +37,12 @@ from build123d import *  # noqa: F401 — standard part-script preamble
 from agentcad.toolkit import threads
 from agentcad.toolkit.specs import check_that, check_valid
 
-#: ISO 4762, dimensions in mm: ``dk`` is the head diameter (the standard's
-#: **max** column, which is what a solid model of a nominal screw measures) and
-#: ``k`` is the head height (max). Source: ISO 4762:2004 table 1.
+#: ISO 4762, dimensions in mm. ``dk`` is the head diameter at the standard's
+#: **knurled-head max** column — ISO 4762 gives two maxima and they are not the
+#: same (M3: 5.50 plain, 5.68 knurled); 5.68 is the one bd_warehouse models
+#: (``SocketHeadCapScrew.fastener_data["M3-0.5"]["iso4762:dk "] == "5.68"``),
+#: so it is the one a measurement of this solid can match. ``k`` is the head
+#: height (max). Source: ISO 4762:2004 table 1.
 ISO4762 = {
     "M3-0.5": {"d": 3.0, "dk": 5.68, "k": 3.0},
     "M4-0.7": {"d": 4.0, "dk": 7.22, "k": 4.0},

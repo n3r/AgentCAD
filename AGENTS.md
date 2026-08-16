@@ -1159,8 +1159,125 @@ failures, and they all look like success:**
 
 ## Package gotchas (PRD-011 — read before touching `core/packages/`, the gate or the catalog)
 
-Every item is traceable to a measurement in `docs/changelog/0166`–`0180`.
+Every item is traceable to a measurement in `docs/changelog/0166`–`0182`.
 User-facing reference: `docs/packages.md`.
+
+- **A subtraction inside `BuildSketch(Plane.XY.rotated(...))` can silently
+  subtract nothing.** In the catalog extrusion rewrite (0182), one of four
+  quarter-turn rotations of a channel polygon removed no area — 400 →
+  351.51 → 351.51 mm², no error, no warning. The shipped code rotates the
+  polygon's *coordinates* by exact quarter turns and sketches on the unrotated
+  plane instead. If you subtract on a rotated plane, assert the area actually
+  dropped.
+
+**The trust chain, in one line each — these are the review-0181 fixes and each
+one closed a way for `gate: green` to mean nothing:**
+
+- **`use_part` binds to `packages_lock[name].content_id`, never to the cache
+  receipt alone.** A receipt is written by whatever installed the tree, so two
+  indexes publishing the same `name@version` with different bytes both produce
+  *receipt-verified* caches. `cache.require_verified(name, version,
+  expected_content_id=…)` compares against the lock — the git-tracked
+  authority — and the header stamps the id **measured** from the copied bytes.
+  A lock entry with no content id is refused.
+- **Every JSON read in `core/packages/` goes through `packages/_json.py`.**
+  `json.loads` raises **`RecursionError`** on a deep document and that is *not*
+  a `ValueError`, so the hand-written `(OSError, ValueError,
+  UnicodeDecodeError)` at eleven sites let a ~400 kB `index.json` take an
+  unhandled exception out through `search`, `resolve` and `entries` — one
+  poisoned index stopped every healthy index *behind* it. `_json` also refuses
+  by **size before parsing** (`MAX_INDEX_BYTES`, `MAX_INDEX_PACKAGES`): a valid
+  126 MB document cost 1.66 GB RSS.
+- **The gate measures the INVENTORY, not the manifest.** `content.IGNORED`
+  excludes `*.tmp`/`*.pyc`/… from the id, so a part declared at
+  `parts/x.tmp` was proved by every stage and *not shipped* — a scriptless
+  package advertised green. Both directions are now red `format` rows: a
+  declared payload missing from the inventory, and an inventoried `parts/*.py`
+  no part declares (code a consumer receives that no stage opened).
+  `validate_package_manifest` refuses an ignored part path too.
+- **The stages read a SNAPSHOT in the work cell** (`gate.SNAPSHOT_DIR`), not
+  the live tree. The id used to be hashed once and the stages then read the
+  directory live, so a swap-in/swap-back between the two endpoint hashes was
+  measured and invisible. The published id is now the id of the bytes the
+  stages consumed, structurally. The closing re-hash of the **origin** stays,
+  as the publisher's earlier warning.
+- **`LocalIndex.publish` re-derives the verdict; it never reads
+  `report["publishable"]`.** It requires every gate stage exactly once, a
+  summary that is the summary of its own rows, a status those counts imply,
+  and `gate.verdict(rows)` + `complete`. A report whose rows said "build
+  failed" published green, and so did one with no stages at all.
+- **`provenance.header_sha256` covers the block.** `script_sha256` covers the
+  body *without* it and `strip` eats the whole block, so deleting the security
+  notice or laundering `index` read `ok`. It is an **integrity check, not
+  authentication** — no secret, so it detects edits, not forgers; say it that
+  way. A header with no digest is `unverified`, never `ok`.
+- **An omitted argument does not overwrite a declared one.** `add_package`
+  with no `version_req` used to write `"*"`, silently widening a `~1.0.0` pin,
+  jumping the lock a major version and flipping materialised parts to
+  `version_drift` — one Library-dialog click away. The declaration is read
+  *before* the resolve, and `requirement_change` names anything that moved.
+- **A C0 control character in a relative path is refused** in
+  `content._lexical_parts`. A NUL escapes nothing, but `os.stat` raises
+  `ValueError: embedded null character`, which nothing catches — an
+  unauthenticated 500 on the preview route and a validator that raised instead
+  of reporting.
+- **`_git.validate_url` checks the ssh HOST, not just the whole string.**
+  `ssh://-oProxyCommand=…/x.git` starts with `s`; git passes the host to
+  **ssh**, where a leading `-` is an option, and the `--` separator protects
+  git's argv only. `validate_ref` exists for the same reason (`--branch` is
+  before the `--`).
+
+**The second review pass (Codex xhigh, same changelog 0181 + 0183) — races,
+identity and resources:**
+
+- **A package tree must agree with its own `package.json`.** The index entry
+  names `foo@1.0.0`; the tree says what it says; the content id proves only
+  that the bytes are the bytes the index meant. `cache.refuse_identity_mismatch`
+  is called at install **and** at materialisation, because a cache populated by
+  an older build never saw the install-time check.
+- **The cache receipt is versioned (`RECEIPT_SCHEMA`) and must carry
+  `content_id`/`index`/`source`.** The offline path reconstructs a *git-tracked*
+  lock entry out of it, so a partial receipt produced an offline "success"
+  writing `null`s into both maps. A receipt that cannot do that reads
+  `tampered`; `add` heals it when the tree still hashes to the index's id.
+- **Publish hashes the COPY, in staging, before promoting it.** It measured
+  `source`, then later inventoried and copied `source` again — a mutation in
+  that window shipped bytes B under id A, and consumers would reject a
+  "published" package for ever.
+- **A yank is qualified by index.** `withdrawn` holds `(index, version)` pairs:
+  index A withdrawing its `1.0.0` must not veto a warm cache entry that came
+  from index B.
+- **`ProjectStore._atomic_write` stages through a RANDOM name.** It used one
+  fixed `<name>.tmp`, so two concurrent writers interleaved into the *same*
+  staging file and each replaced the mixture into place — a **corrupt
+  `project.json`**, not a lost update. `PackageManager.add/remove` additionally
+  run under `manifest_scope` (in-process), and `LocalIndex.publish/yank` under
+  `_index_scope` (in-process **plus** `fcntl.flock`, because publishing is a
+  CLI action and the two writers are routinely two processes). The lock file
+  lives beside `config.json`, **never inside the index** — an index is often a
+  git repo, and "a refused publish leaves the index byte-identical" is a test.
+- **`GitIndex` takes `subdir`.** A git index was `<checkout>/index.json`, which
+  serves a repo that is *only* an index — and this repository is the
+  counter-example (`catalog/` beside `agentcad/`). The dogfood test now drives
+  the real layout; the old one copied `catalog/*` to a synthetic repo root and
+  proved the fixture.
+- **`use_part` validates overrides before it writes anything**, so a refused
+  materialisation leaves no transient part for an undo to resurrect. A
+  *successful* one with overrides is still **two** undo steps (create +
+  set_params) — documented, not composed: the only suppression seam
+  (`history.in_restore`) is process-global and would drop a concurrent
+  caller's snapshot.
+- **`manifest_merge.package_problems` runs at `merge._integrity`'s call site.**
+  `packages` and `packages_lock` merge as independent maps, so theirs'
+  requirement + ours' lock is a clean merge and a dependency **nobody
+  authored**; nothing downstream notices, because `use_part` reads only the
+  lock and the lock verifies fine.
+- **The gate warns when a swept parameter moves no geometry** — the specs
+  ceiling generalised: specs read the built object, so a `build(p)` that
+  ignores `p` passes every spec at every variant. Reported, never enforced,
+  because `inspect` normalises the PARAMS spec and drops unknown keys, so
+  there is nowhere to declare a deliberately cosmetic parameter. Measured
+  before shipping: **zero** of the catalog's 16 swept parameters trip it.
 
 - **The pack is `core/tools_packages.py` and it registers NO gate provider —
   deliberately, permanently, with a test that says so.** `tools._load_tool_
@@ -1213,10 +1330,17 @@ User-facing reference: `docs/packages.md`.
   configurations**, because `set_params` merges.
 - **`publishable` is blocked by a stage that produced no rows**, not only by
   rows. `validate --stages format` must not answer "publishable" — it did not
-  look. Only `no_presets_declared`, `not_declared` (stage-level) and the five
-  world-facts in `PUBLISH_SKIP_EXEMPT` are exempt, and **every exempt skip is
-  published as `<stage>:<reason>`** in the index entry, one shape, so a
-  consumer reads what was not measured.
+  look. **A stage with ZERO rows and no reason blocks too**: both branches used
+  to key off `stage["reason"]`, so `make_stage(name, [])` was invisible to the
+  verdict, to `exempt_skips` and to the summary, and `presets.json =
+  {"format": 1, "presets": {}}` published green through a stage that had looked
+  at nothing. Only `("presets", "no_presets_declared")`, `("specs",
+  "not_declared")` — **(stage, reason) pairs**, so no other stage is exempted
+  by a string it does not own — and the five world-facts in
+  `PUBLISH_SKIP_EXEMPT` are exempt, and **every exempt skip is published as
+  `<stage>:<reason>`** in the index entry, one shape, so a consumer reads what
+  was not measured. A `presets` row whose configuration applies but does not
+  build is a **fail**, never a `pass` saying "applied and built".
 - **The gate really writes, so nulling the ephemeral service's write guard is
   load-bearing** — `checks._ephemeral_service` predicted exactly this. All
   three seams (`bus.on_publish`, `store.branch_resolver`, `store.write_guard`)
@@ -1226,10 +1350,10 @@ User-facing reference: `docs/packages.md`.
   the package after its stages, and `LocalIndex.publish` re-hashes **again**,
   because a tree can move between a finished report and a publish.
 - **Variant parts are written through `ProjectStore`, never `service.create_
-  part`/`set_params`** — both build eagerly and serially, which would build
-  every variant before the fan-out saw one. The default variant **reuses** the
-  scratch part the earlier stages made; a second part with the same script and
-  no overrides reported every spec twice.
+  part`/`set_params`** — both build eagerly, so the build phase makes no
+  manifest writes at all. The default variant **reuses** the scratch part the
+  earlier stages made; a second part with the same script and no overrides
+  reported every spec twice.
 - **This feature is the kernel `connectors` handler's first server-side
   consumer**, and the moving side of a mate must be **rigid** — a part
   declaring only cylindrical connectors is mated against the bundled probe
@@ -1279,14 +1403,18 @@ User-facing reference: `docs/packages.md`.
   path writes **no `.faces.u32` sidecar**, so `anchors.signature_table` returns
   zero rows for a reference part — and an area-weighted normal over a closed
   cylinder nearly cancels, so an axis is not in it anyway.
-- **The build fan-out earns 1.40× on the real catalog, below the plan's own
-  1.5× keep-bar** (3-worker pool, 107 variants, five interleaved repetitions;
-  per-package spread 1.20×–2.46×, tracking build *evenness* rather than cost).
-  Only **44%** of the build stage is inside kernel calls — Amdahl's ceiling at
-  three workers is 1.42× — so do not advertise a speedup. `jobs=1` is a
-  first-class path, a test pins that `jobs=1` and `jobs=4` agree row for row,
-  and deleting the executor is therefore a one-function change with a
-  byte-identical report.
+- **The build fan-out was DELETED and `--jobs`/`jobs` no longer exists**
+  (changelog 0181). The plan pre-registered "under 1.5× on a 3-worker pool,
+  delete it" and three independent measurements came in at **1.08× / 1.40× /
+  1.17×** against an Amdahl ceiling of **1.42×** (only 44% of the build stage
+  is inside kernel calls). It was never reproducible either — `KernelPool._pick`
+  routes on `hash(affinity) % size` and `hash(str)` is `PYTHONHASHSEED`-
+  randomised, so a speedup was a per-process sample, not a property — and it
+  cost determinism where it mattered: under `--budget`, `jobs=1` and `jobs=4`
+  disagreed on `complete` and therefore on `publishable`. The old safety
+  premise was false too (a preset whose params equal a swept variant collides
+  on one cache key). **Do not re-add it**; the build stage is sequential in
+  `plan` order and its report is byte-identical to the old `jobs=1` output.
 - **Names that already mean something else:** `registry` is the `ToolRegistry`
   (never the package registry — the manager is `service.packages`); `items`
   never `checks` for rows; `preset` is a *place* and `configuration` is the

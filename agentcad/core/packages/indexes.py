@@ -39,14 +39,44 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import shutil
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from ..model import ConflictError, NotFoundError, ValidationError
-from . import content, format
+from . import _json, content, format
 
 INDEX_FILE = "index.json"
+
+def index_lock_path(path) -> Path:
+    """The advisory lock file for the index at ``path`` — **outside it**.
+
+    Machine-local state, so it lives beside `config.json` with the cache and
+    the git checkouts, keyed by a digest of the resolved index path. It is
+    emphatically *not* a dotfile inside the index directory: an index is
+    routinely a git repository the user commits and publishes, and
+    `tests/test_packages_publish.py` asserts that a refused publish leaves the
+    index tree **byte-identical** — a lock file dropped in there is both debris
+    in someone's repo and a silent break of that invariant. (It cannot enter a
+    package content id either way, but "cannot corrupt identity" is a lower bar
+    than "does not litter".)
+    """
+    from ... import config
+
+    digest = hashlib.sha256(str(Path(path).resolve()).encode()).hexdigest()[:16]
+    return config.config_path().parent / "locks" / f"index-{digest}.lock"
+
+#: In-process half of the index lock, for two threads in one server.
+_index_locks: dict[str, threading.RLock] = {}
+_index_registry_lock = threading.Lock()
+
+try:                                    # pragma: no cover - platform probe
+    import fcntl
+except ImportError:                     # pragma: no cover - Windows
+    fcntl = None
 
 
 class LocalIndex:
@@ -99,13 +129,36 @@ class LocalIndex:
         stamp = (stat.st_mtime_ns, stat.st_size)
         if self._cache is not None and self._cache[0] == stamp:
             return self._cache[1]
-        try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, UnicodeDecodeError) as exc:
-            raise ValidationError(
-                f"index {self.name!r}: {INDEX_FILE} is unreadable: {exc}"
-            ) from exc
+        # `_json.read`, with the index ceiling: an `index.json` is the one
+        # document in this feature that arrives over the network, and the two
+        # ways a valid-looking one used to take the process down were a deep
+        # nest (`RecursionError`, which is not a `ValueError`) and sheer size
+        # (a valid 126 MB document cost 1.66 GB RSS). Both now come back as
+        # `ValidationError`, which every caller already treats as "this index
+        # is broken; try the next one".
+        doc = _json.read(path, f"index {self.name!r}: {INDEX_FILE}",
+                         max_bytes=_json.MAX_INDEX_BYTES)
         problems = format.validate_index(doc)
+        count = len(doc.get("packages") or {}) if isinstance(doc, dict) else 0
+        if count > _json.MAX_INDEX_PACKAGES:
+            raise ValidationError(
+                f"index {self.name!r}: {INDEX_FILE} declares {count} packages; "
+                f"the ceiling is {_json.MAX_INDEX_PACKAGES}. Bytes are not the "
+                f"only cost — search walks every package of every index.",
+                {"index": self.name, "packages": count})
+        for pkg, record in (doc.get("packages") or {}).items() \
+                if isinstance(doc, dict) else ():
+            versions = record.get("versions") if isinstance(record, dict) else None
+            found = len(versions) if isinstance(versions, dict) else 0
+            if found > _json.MAX_VERSIONS_PER_PACKAGE:
+                # The third axis: neither the byte ceiling nor the package
+                # count bounds ONE package's version list, and `format.resolve`
+                # parses every version of a package on every search.
+                raise ValidationError(
+                    f"index {self.name!r}: {pkg!r} declares {found} versions; "
+                    f"the ceiling is {_json.MAX_VERSIONS_PER_PACKAGE}. Every "
+                    f"search resolves a requirement against all of them.",
+                    {"index": self.name, "package": pkg, "versions": found})
         if problems:
             raise ValidationError(
                 f"index {self.name!r}: {INDEX_FILE} is invalid: "
@@ -164,9 +217,16 @@ class LocalIndex:
         Fail-closed, in this order, because each refusal must happen before
         the one after it can do damage:
 
-        1. the report is a gate report and it is `publishable` — otherwise a
-           `validation_error` carrying the failing rows in `details.checks`,
-           PRD-004's shape;
+        1. the report is a gate report, it carries **every** gate stage
+           exactly once, its summary and status agree with its own rows, and
+           the verdict **re-derived here** from those rows is publishable —
+           otherwise a `validation_error` carrying the failing rows in
+           `details.checks`, PRD-004's shape. It is re-derived and not read:
+           `report["publishable"]` is a field in a document, and this method's
+           whole job is to be the thing that does not take a document's word
+           for it. A report whose rows said the build failed, whose own
+           `verdict()` agreed, and whose `publishable` said `true` used to
+           publish green; so did one with no stages at all;
         2. the tree still hashes to the id the report measured. The gate
            re-reads the package after its own stages, but *this* is the window
            nobody else closes — the report is finished and then the tree
@@ -185,6 +245,11 @@ class LocalIndex:
         would refuse rolls the tree back, so a failed publish leaves the index
         exactly as it was.
         """
+        with self._index_scope():
+            return self._publish_locked(source, report)
+
+    def _publish_locked(self, source, report: dict) -> dict:
+        """The body of :meth:`publish`, with `index.json` already locked."""
         from . import gate as gate_module
 
         source = Path(source).expanduser().resolve()
@@ -201,13 +266,32 @@ class LocalIndex:
             raise ValidationError(
                 f"the gate report names {name!r}@{version!r}, which is not a "
                 f"publishable package identity")
-        if not report.get("publishable"):
-            blockers = report.get("blockers") or []
+        self._refuse_an_inconsistent_report(report, name, version)
+        ruling = gate_module.verdict(report.get("stages") or [])
+        complete = bool(report.get("complete"))
+        if not (ruling["publishable"] and complete):
+            blockers = list(ruling["blockers"])
+            warnings = [str(w) for w in report.get("warnings") or []]
             failing = [item for stage in report.get("stages") or []
                        for item in stage.get("items") or []
                        if item.get("status") in ("fail", "error")
                        or (item.get("status") == "skip"
                            and item.get("id") in blockers)]
+            if not blockers and not complete:
+                # An INCOMPLETE run: every row that ran passed, and the run did
+                # not finish (a budget ran out, or the tree moved under it).
+                # "0 blocker(s) — fix the package" was the wrong sentence and
+                # the wrong advice, and it hid the only evidence there is.
+                raise ValidationError(
+                    f"{name}@{version} was not fully measured, so there is no "
+                    f"verdict to publish: the gate reported complete=false and "
+                    f"every row it did produce passed. Nothing was published — "
+                    f"re-run the gate to completion (raise --budget, or "
+                    f"re-run if the package directory moved)."
+                    + (" The run said: " + " ".join(warnings[:3])
+                       if warnings else ""),
+                    {"package": name, "version": version, "complete": False,
+                     "blockers": [], "warnings": warnings, "checks": failing})
             raise ValidationError(
                 f"{name}@{version} did not pass the publish gate "
                 f"({len(blockers)} blocker(s): {', '.join(blockers[:5])}"
@@ -215,6 +299,7 @@ class LocalIndex:
                 "published — fix the package and run `agentcad package "
                 "validate` until it is green.",
                 {"package": name, "version": version, "blockers": blockers,
+                 "complete": complete, "warnings": warnings,
                  "checks": failing})
 
         measured = report["package"].get("content_id")
@@ -261,6 +346,26 @@ class LocalIndex:
         staging = self.path / name / f".staging-{secrets.token_hex(8)}"
         try:
             _copy_inventory(source, staging, entries)
+            # **Hash the COPY, before it is promoted.** `actual` was measured
+            # off `source` several statements ago, and the copy reads `source`
+            # again — so a file mutated in that window shipped bytes B under
+            # id A, and every consumer would then reject a package the
+            # publisher was told had succeeded, forever, with no way to tell
+            # which side was wrong. Verifying the staging directory makes the
+            # published tree hash to the advertised id *by construction*: the
+            # bytes that get promoted are the bytes that were just measured.
+            copied = content.content_id(staging)
+            if copied != actual:
+                raise ValidationError(
+                    f"{name}@{version} changed while it was being copied into "
+                    f"index {self.name!r}: the gate and this publish measured "
+                    f"{actual}, and the copy hashes to {copied}. Nothing was "
+                    f"published — the index must never hold a tree that does "
+                    f"not hash to the id it advertises. Re-run the gate on a "
+                    f"tree nothing else is writing to.",
+                    {"index": self.name, "package": name, "version": version,
+                     "measured": actual, "copied": copied,
+                     "path": str(source)})
             staging.replace(target)
         except BaseException:
             shutil.rmtree(staging, ignore_errors=True)
@@ -297,6 +402,10 @@ class LocalIndex:
         explicitly-named yanked version warns and proceeds. Reversible on
         purpose: an over-eager yank must not need a version bump to undo.
         """
+        with self._index_scope():
+            return self._yank_locked(name, version, yanked)
+
+    def _yank_locked(self, name: str, version: str, yanked: bool) -> dict:
         doc = self.entries()
         entry = ((doc.get("packages") or {}).get(name) or {}).get(
             "versions", {}).get(version)
@@ -310,6 +419,66 @@ class LocalIndex:
         self._write_index(written)
         return {"index": self.name, "package": name, "version": version,
                 "yanked": bool(yanked), "already": already}
+
+    def _refuse_an_inconsistent_report(self, report, name, version) -> None:
+        """The report must be **self-consistent** before its rows are trusted.
+
+        `validate_gate_report` checks the *shape* of a report; this checks that
+        the document's own summary is the summary of its own rows, that it
+        carries every gate stage exactly once, and that its `status` is the
+        status those counts imply. A report is evidence, and evidence whose
+        headline disagrees with its rows is not evidence — it is two claims,
+        one of which a publisher would have to pick between.
+
+        This is what makes the seam safe to reuse. Today the only caller that
+        produces a report is `indexes.publish`, one line above
+        `PackageGate.run`, so nothing *here* can forge one; but
+        `LocalIndex.publish` takes a report as an argument precisely so a cloud
+        registry (PRD-005-lite) can hand it one it did not run, and
+        `docs/packages.md` already claims the stronger property.
+        """
+        # The SAME two functions `finalize_report` used to derive them — no
+        # second arithmetic, on `gate.py`'s rule that this feature holds no
+        # vocabulary of its own.
+        from ..specs import report_status, summarize
+        from .gate import GATE_STAGES
+
+        stages = report.get("stages") or []
+        names = [stage.get("name") for stage in stages]
+        missing = [stage for stage in GATE_STAGES if stage not in names]
+        if missing or len(names) != len(set(names)):
+            raise ValidationError(
+                f"the gate report for {name}@{version} does not carry every "
+                f"gate stage exactly once "
+                + (f"(missing: {', '.join(missing)})" if missing
+                   else "(a stage appears twice)")
+                + ". A publish is fail-closed over ALL stages: a report that "
+                  "did not look at a stage cannot say the package passed it.",
+                {"package": name, "version": version, "stages": names,
+                 "missing": missing})
+        items = [item for stage in stages for item in stage.get("items") or []]
+        summary = summarize(items)
+        if report.get("summary") != summary:
+            raise ValidationError(
+                f"the gate report for {name}@{version} carries a summary that "
+                f"is not the summary of its own rows: it says "
+                f"{report.get('summary')} and the rows count {summary}. "
+                f"Nothing was published.",
+                {"package": name, "version": version,
+                 "claimed": report.get("summary"), "actual": summary})
+        expected_status = report_status(summary)
+        # `--strict` may only move the verdict TOWARDS red (it counts skips as
+        # failures and never clears one), so a strict report is allowed to be
+        # red where its rows are amber or green, and nothing else.
+        allowed = {expected_status, "red"} if report.get("strict") \
+            else {expected_status}
+        if report.get("status") not in allowed:
+            raise ValidationError(
+                f"the gate report for {name}@{version} claims status "
+                f"{report.get('status')!r}, and its own rows are "
+                f"{expected_status!r}. Nothing was published.",
+                {"package": name, "version": version,
+                 "claimed": report.get("status"), "actual": expected_status})
 
     def _refuse_non_redistributable(self, doc, name, version) -> None:
         """FR13's confinement, and the reason it is a *mechanism*: a flag the
@@ -329,6 +498,61 @@ class LocalIndex:
                 {"index": self.name, "scope": self.scope, "package": name,
                  "version": version, "vendor": vendor.get("name")})
 
+    @contextmanager
+    def _index_scope(self):
+        """Serialize a read-modify-write of this index's `index.json`.
+
+        **Across processes**, and that is the point: `publish` and
+        `publish --yank` are CLI actions, so the two writers are routinely two
+        `agentcad` invocations — a shell loop publishing three packages, or CI
+        and a human at once. Unserialized, both read the document, both add
+        their entry, and the second write drops the first *after its caller
+        was told it had published*. The package tree is on disk and reachable
+        by nothing, which is precisely the "half-published version" state
+        `publish` already refuses to write over.
+
+        Two layers, because two kinds of concurrency reach here: a
+        `threading.RLock` for two threads in one server process, and
+        `fcntl.flock` on a lock file for two processes. The lock file lives
+        **outside** the index (see :func:`index_lock_path`) — an index is often
+        a git repository, and a publisher's repo is not ours to litter.
+
+        The flock is **advisory and best-effort**: on a filesystem that does
+        not support it (some network mounts) or a platform without `fcntl`,
+        the in-process lock still holds and the cross-process case degrades to
+        what it was before. That is stated rather than hidden, because a lock
+        that silently is not one is worse than a documented gap.
+        """
+        key = str(self.path.resolve())
+        with _index_registry_lock:
+            lock = _index_locks.get(key)
+            if lock is None:
+                lock = _index_locks[key] = threading.RLock()
+        with lock:
+            if fcntl is None:
+                yield
+                return
+            handle = None
+            try:
+                lock_path = index_lock_path(self.path)
+                lock_path.parent.mkdir(parents=True, exist_ok=True)
+                handle = open(lock_path, "a+b")
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                # No flock here. The in-process lock is still held.
+                if handle is not None:
+                    handle.close()
+                    handle = None
+                yield
+                return
+            try:
+                yield
+            finally:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                finally:
+                    handle.close()
+
     def _write_index(self, doc: dict) -> None:
         from ..project import ProjectStore
 
@@ -337,8 +561,7 @@ class LocalIndex:
         self._cache = None      # the stamp changed; do not serve the old doc
 
 
-def publish(index, source, service, *, jobs=None, work_dir=None,
-            budget_s=None) -> dict:
+def publish(index, source, service, *, work_dir=None, budget_s=None) -> dict:
     """Run the gate over ``source`` and publish it to ``index``.
 
     `agentcad package validate` is **report-honest** and this is
@@ -349,7 +572,7 @@ def publish(index, source, service, *, jobs=None, work_dir=None,
     """
     from .gate import GATE_STAGES, PackageGate
 
-    report = PackageGate(service).run(source, stages=GATE_STAGES, jobs=jobs,
+    report = PackageGate(service).run(source, stages=GATE_STAGES,
                                       work_dir=work_dir, budget_s=budget_s)
     result = index.publish(source, report)
     result["report"] = report
@@ -360,13 +583,7 @@ def publish(index, source, service, *, jobs=None, work_dir=None,
 
 
 def _read_json(path: Path, what: str) -> dict:
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError) as exc:
-        raise ValidationError(f"{what} is unreadable: {exc}") from exc
-    if not isinstance(doc, dict):
-        raise ValidationError(f"{what} must be a JSON object")
-    return doc
+    return _json.read_object(path, what)
 
 
 def _copy_inventory(src: Path, dst: Path, entries) -> None:
@@ -502,10 +719,7 @@ def _preset_names(source: Path) -> list:
     path = source / "presets.json"
     if not path.is_file():
         return []
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError):
-        return []
+    doc = _json.read_optional(path, "presets.json")
     presets = doc.get("presets") if isinstance(doc, dict) else None
     out = []
     for part_id, configs in (presets or {}).items():
@@ -541,24 +755,54 @@ class GitIndex(LocalIndex):
     client is long-lived on the service, and a network fetch per keystroke in
     the Library dialog is not a search; `PackageManager.reload_indexes` mints
     new clients, and `refresh(force=True)` is the explicit re-fetch.
+
+    ``subdir`` is where the index lives **inside** the repository, and it
+    exists because this repository is the first counter-example to the class's
+    own assumption. A git index used to be `<checkout>/index.json`, full stop —
+    so a repo that is an index and *nothing else* worked, and every repo that
+    ships an index **alongside its source** did not. AgentCAD is the second
+    kind: `catalog/index.json`, with the application around it. The claim "the
+    bundled catalog is byte-identically what a git index would serve" was true
+    only of a repository laid out the way no real one is, which is the shape of
+    a test that proves the fixture rather than the product. With
+    ``subdir="catalog"`` this repo is directly usable as a git index, and
+    `tests/test_packages_git_index.py` drives that layout.
     """
 
     kind = "git"
 
     def __init__(self, name: str, url: str, ref: str = "main",
-                 scope: str | None = None, root=None):
+                 scope: str | None = None, root=None, subdir=None):
         from . import _git
 
         self.url = _git.validate_url(url)
-        self.ref = ref if isinstance(ref, str) and ref else "main"
+        self.ref = _git.validate_ref(ref if isinstance(ref, str) and ref
+                                     else "main")
+        # Repository-relative, validated as a safe relative path: it comes out
+        # of a config file, and it is joined onto a checkout directory.
+        self.subdir = None
+        if subdir not in (None, "", "."):
+            if not content.is_safe_relpath(subdir):
+                raise ValidationError(
+                    f"index {name!r}: 'subdir' must be a relative path inside "
+                    f"the repository, got {subdir!r}",
+                    {"index": name, "subdir": subdir})
+            self.subdir = str(subdir).strip("/")
         root = Path(root) if root is not None else _git.indexes_root()
-        super().__init__(name, root / name, scope=scope)
+        checkout = root / name
+        super().__init__(name,
+                         checkout / self.subdir if self.subdir else checkout,
+                         scope=scope)
+        #: The clone target. `self.path` is where the INDEX is, which is the
+        #: subdirectory; git still fetches into the repository root.
+        self.checkout = checkout
         self.stale = False
         self.stale_reason: str | None = None
         self._refreshed = False
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return f"<GitIndex {self.name} {self.url}@{self.ref}>"
+        return (f"<GitIndex {self.name} {self.url}@{self.ref}"
+                + (f" [{self.subdir}]" if self.subdir else "") + ">")
 
     def refresh(self, force: bool = False) -> None:
         from . import _git
@@ -570,10 +814,13 @@ class GitIndex(LocalIndex):
             self._go_stale("git is not on PATH")
             return
         try:
-            if (self.path / ".git").exists():
-                _git.fetch(self.path, self.url, self.ref)
+            # The REPOSITORY, never `self.path`: with a `subdir` the index sits
+            # inside the checkout, and cloning into the subdirectory would put
+            # the whole repo one level under where the index is expected.
+            if (self.checkout / ".git").exists():
+                _git.fetch(self.checkout, self.url, self.ref)
             else:
-                _git.clone(self.url, self.path, self.ref)
+                _git.clone(self.url, self.checkout, self.ref)
         except (_git.GitError, ValidationError) as exc:
             self._go_stale(str(exc))
             return
@@ -592,12 +839,45 @@ class GitIndex(LocalIndex):
         try:
             return super().entries()
         except NotFoundError as exc:
-            raise NotFoundError(
+            raise self._no_document(exc) from exc
+
+    def _no_document(self, exc: NotFoundError) -> NotFoundError:
+        """Why there is no `index.json` — the **actual** reason, not the first
+        one that fits.
+
+        "Never cloned from <url>" was the only answer, and with `subdir` it is
+        routinely wrong: the clone is right there and the subdirectory is
+        missing, or is a symlink the inventory refuses, or is a file. Sending a
+        user to debug their remote when their `subdir` is a typo is a worse
+        failure than saying nothing, because it is *confidently* wrong.
+        """
+        detail = {"index": self.name, "url": self.url, "ref": self.ref,
+                  "subdir": self.subdir}
+        if not (self.checkout / ".git").exists():
+            return NotFoundError(
                 f"index {self.name!r} has never been cloned from {self.url} "
                 f"(ref {self.ref}), so there is nothing to read"
                 + (f": {self.stale_reason}" if self.stale_reason else ""),
-                {"index": self.name, "url": self.url, "ref": self.ref}
-            ) from exc
+                detail)
+        if self.subdir and not self.path.exists():
+            return NotFoundError(
+                f"index {self.name!r} is cloned from {self.url} (ref "
+                f"{self.ref}), but it declares subdir {self.subdir!r} and the "
+                f"repository has no such directory. Check the subdir against "
+                f"the repository layout — the clone is fine.", detail)
+        if self.subdir and not self.path.is_dir():
+            return NotFoundError(
+                f"index {self.name!r} declares subdir {self.subdir!r}, and "
+                f"that path in {self.url} is not a directory. An index is a "
+                f"directory holding {INDEX_FILE}.", detail)
+        where = f"{self.subdir}/{INDEX_FILE}" if self.subdir else INDEX_FILE
+        return NotFoundError(
+            f"index {self.name!r} is cloned from {self.url} (ref {self.ref}), "
+            f"but there is no {where} in it"
+            + (f": {self.stale_reason}" if self.stale_reason else "")
+            + (". A repository that ships its index alongside its source needs "
+               "'subdir' in the index configuration." if not self.subdir
+               else ""), detail)
 
     def source_of(self, entry: dict) -> dict:
         """What `packages_lock` records. The url and the ref are
@@ -714,7 +994,8 @@ def load_indexes(config: dict, warnings: list | None = None, *,
                 continue
             try:
                 index = GitIndex(name, entry.get("url"), ref=ref,
-                                 scope=entry.get("scope"))
+                                 scope=entry.get("scope"),
+                                 subdir=entry.get("subdir"))
             except ValidationError as exc:
                 warn.append(f"index {name!r} (git): {exc.message}; skipped")
                 continue

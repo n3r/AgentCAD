@@ -34,9 +34,11 @@ set_mate {"project": "rig", "instance": "screw_1_1", "connector": "head_seat",
 rather than deciding for you, as the `thread` parameter:
 
 * **`cosmetic`** (the default) draws the shank as a plain cylinder at the
-  nominal diameter. About 0.05 s to build and roughly 1 000 triangles. This is
-  what you want for assembly views, fit checks, interference and anything where
-  the screw is a placeholder for a fastener that exists.
+  thread's **root** (minor) diameter — ⌀4.134 on an M5, *not* the nominal ⌀5;
+  the table two sections down is the measurement. About 0.05 s to build and
+  roughly 1 000 triangles. This is what you want for assembly views, fit
+  checks, interference and anything where the screw is a placeholder for a
+  fastener that exists.
 * **`real`** builds true ISO helical thread geometry — roughly **9 000
   triangles per thread**, and the cost grows with the number of turns: a
   measured M8 × 16 takes ~0.13 s where an M3 × 60 takes ~1.9 s. Use it for a
@@ -83,7 +85,10 @@ configurations.
 ## What the specs assert
 
 The checks measure the built solid and compare it with the published ISO 4762
-table (dimensions in mm, the standard's max column):
+table (dimensions in mm). `dk` is the **knurled**-head max, which is the column
+bd_warehouse models and therefore the one a measurement of this solid can
+match — ISO 4762 gives two: 5.50 max for a plain head and 5.68 for a knurled
+one on M3. `k` is the head-height max:
 
 | size | `dk` head diameter | `k` head height |
 |---|---|---|

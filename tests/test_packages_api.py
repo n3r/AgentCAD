@@ -381,3 +381,21 @@ def test_the_catalog_is_searchable_through_the_route(tmp_path, kernel,
                      params={"path": preview})
     assert res.status_code == 200
     assert res.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+@pytest.mark.parametrize("path", ["\x00.png", "previews/\x00x.png",
+                                  "previews/a\x1fb.png"])
+def test_a_control_character_in_a_preview_path_is_a_refusal_not_a_500(rig,
+                                                                      path):
+    """**m9, review changelog 0181.** A NUL escapes nothing, so
+    `resolve_within` accepted it lexically and `Path.resolve()` then raised
+    `ValueError: embedded null character` — an exception no caller catches,
+    because every caller catches `ValidationError`. The result was an
+    **unauthenticated 500** on this route. A path inside a package is a file
+    name, so the whole C0 range is refused."""
+    _service, _registry, client = rig
+    res = client.get(f"/api/packages/{WIDGET}/versions/1.0.0/preview",
+                     params={"path": path})
+    assert res.status_code in (404, 422), res.text
+    assert res.status_code != 500
+    assert "control character" in res.text or "Internal" not in res.text

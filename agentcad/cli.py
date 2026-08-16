@@ -7,8 +7,8 @@ Commands:
     agentcad new <name>              # create a project
     agentcad export <project> <part> --format step|stl|3mf [-o OUT]
     agentcad check [--project P] [--ref REF] [--report R] [--md M]
-    agentcad package validate <dir> [--strict] [--report R] [--jobs N]
-    agentcad publish <dir> --index NAME [--yank name@version] [--jobs N]
+    agentcad package validate <dir> [--strict] [--report R] [--budget S]
+    agentcad publish <dir> --index NAME [--yank name@version] [--budget S]
 """
 
 from __future__ import annotations
@@ -703,7 +703,7 @@ def cmd_package_validate(args) -> int:
             extra_writable=extra_writable or None)
         locks.set_client_id("ci")
         report = PackageGate(service).run(
-            args.path, strict=args.strict, jobs=args.jobs,
+            args.path, strict=args.strict,
             work_dir=work_dir, budget_s=args.budget)
     except AppError as exc:
         print(f"agentcad package validate: {exc.message}", file=sys.stderr)
@@ -818,7 +818,7 @@ def cmd_publish(args) -> int:
             extra_writable=extra_writable or None)
         locks.set_client_id("ci")
         result = index_module.publish(index, args.path, service,
-                                      jobs=args.jobs, work_dir=work_dir,
+                                      work_dir=work_dir,
                                       budget_s=args.budget)
     except AppError as exc:
         # A refusal IS a verdict — the gate was red, the version exists, the
@@ -830,6 +830,12 @@ def cmd_publish(args) -> int:
             for item in report[:20]:
                 print(f"  - {item.get('id')} — {item.get('message')}",
                       file=sys.stderr)
+        # An INCOMPLETE run has no failing rows at all, so the block above
+        # prints nothing and the refusal used to say "0 blocker(s)". The
+        # warnings ARE the evidence in that case — a budget that ran out, a
+        # tree that moved — so they are printed rather than dropped.
+        for warning in (exc.details or {}).get("warnings") or []:
+            print(f"  ! {warning}", file=sys.stderr)
         print(f"agentcad publish: {exc.message}", file=sys.stderr)
         return 1
     except Exception as exc:  # noqa: BLE001 — any harness failure is exit 2
@@ -968,9 +974,6 @@ def main() -> None:
                         "— is never counted")
     v.add_argument("--report", default=None, metavar="PATH",
                    help="write the JSON report here")
-    v.add_argument("--jobs", type=int, default=None, metavar="N",
-                   help="parallel variant builds (default: min(pool size, 4); "
-                        "1 is serial and produces an identical report)")
     v.add_argument("--work-dir", default=None, metavar="DIR",
                    help="where the gate materialises its throwaway cell, in a "
                         "unique subdirectory it creates and cleans up "
@@ -1006,8 +1009,6 @@ def main() -> None:
                         "selects it, and naming it explicitly warns and "
                         "proceeds")
     p.add_argument("--projects-dir", default=None)
-    p.add_argument("--jobs", type=int, default=None, metavar="N",
-                   help="parallel variant builds (default: min(pool size, 4))")
     p.add_argument("--work-dir", default=None, metavar="DIR",
                    help="where the gate materialises its throwaway cell "
                         "(default: a temp dir). It may not be, hold or sit "

@@ -698,3 +698,374 @@ def test_ac1_a_package_part_mates_onto_a_tapped_hole(rig, tmp_path):
     interference = [row for row in report["checks"]
                     if row["name"] == "no_interference"]
     assert interference and interference[0]["status"] == "pass", interference
+
+
+# ============================== the trust chain (review fixes, changelog 0181)
+
+
+def test_the_header_digest_covers_the_block_itself(rig):
+    """**M8.** `script_sha256` covers the body WITHOUT the block, and `strip`
+    eats the whole block — so every edit confined to it used to read `ok`:
+    deleting the security non-claim, inserting a comment, or rewriting `index`
+    to name a registry the part never came from. `header_sha256` covers the
+    canonical payload and the emitted note lines, so all three read
+    `modified`.
+
+    An integrity check, not authentication: there is no secret, so a
+    determined editor can recompute it exactly as they can recompute
+    `script_sha256`. What it buys is that the block can no longer be edited
+    *silently*.
+    """
+    service, _registry = rig
+    _add(rig)
+    _use(rig)
+    original = _script(service)
+    manifest = service.store.manifest("rig")
+    assert provenance.status(provenance.parse(original), manifest,
+                             original) == "ok"
+
+    lines = original.splitlines(keepends=True)
+    marker_at = next(i for i, line in enumerate(lines)
+                     if provenance.MARKER in line)
+
+    # 1. the security non-claim deleted from the consumer's own copy
+    gutted = "".join(lines[:marker_at + 1] + lines[marker_at + 4:])
+    assert "not a security boundary" not in gutted
+    assert provenance.status(provenance.parse(gutted), manifest,
+                             gutted) == "modified"
+
+    # 2. a comment inserted inside the block
+    padded = "".join(lines[:marker_at + 1] + ["# TODO: drop the warning\n"]
+                     + lines[marker_at + 1:])
+    assert provenance.status(provenance.parse(padded), manifest,
+                             padded) == "modified"
+
+    # 3. the payload laundered to name a different index
+    laundered = original.replace('"index": "agentcad-core"',
+                                 '"index": "trusted-core"')
+    assert provenance.parse(laundered)["index"] == "trusted-core"
+    assert provenance.status(provenance.parse(laundered), manifest,
+                             laundered) == "modified"
+
+
+def test_a_header_with_no_block_digest_is_unverified_never_ok(rig):
+    """Deleting the field is not a way out: we could not look, and "we did not
+    look" is `unverified`, which is not `ok`."""
+    service, _registry = rig
+    _add(rig)
+    _use(rig)
+    script = _script(service)
+    head = provenance.parse(script)
+    head.pop("header_sha256")
+    assert provenance.status(head, service.store.manifest("rig"),
+                             script) == "unverified"
+
+
+def test_re_materialisation_is_still_byte_identical(rig):
+    """AC3 is unchanged by the digest: `header` is a pure function of its one
+    argument, so the same package part produces the same bytes forever."""
+    service, _registry = rig
+    _add(rig)
+    _use(rig, part_id="one")
+    _use(rig, part_id="two")
+    assert _script(service, "one") == _script(service, "two")
+
+
+def test_use_part_materialises_only_the_tree_the_LOCK_names(rig, tmp_path,
+                                                            cache_root):
+    """**C1.** Two indexes may publish the same `name@version` with different
+    bytes. `cache.require` verified the tree against its own RECEIPT, so both
+    trees verified; the lock's `content_id` was never compared with anything
+    measured and was copied straight into the header. A project whose lock
+    named index B therefore materialised index A's bytes under a header
+    claiming B's id, status `ok`.
+
+    Materialisation is now bound to `packages_lock[name].content_id` — the
+    git-tracked authority — and the header quotes the id MEASURED from the
+    bytes copied.
+    """
+    from agentcad.core.packages import content
+
+    service, registry = rig
+    _add(rig)
+    lock = service.store.manifest("rig")["packages_lock"][WIDGET]
+    installed_id = lock["content_id"]
+
+    # A different `widget_good@1.0.0`: same name, same version, other bytes.
+    other = tmp_path / "other" / WIDGET / "1.0.0"
+    other.parent.mkdir(parents=True)
+    shutil.copytree(_fixture_root() / WIDGET, other)
+    part = other / "parts" / "mount_block.py"
+    part.write_text(part.read_text().replace('"default": 40.0',
+                                             '"default": 41.0'))
+    other_id = content.content_id(other)
+    assert other_id != installed_id
+
+    # The lock says the OTHER id (a colleague's project, resolved elsewhere);
+    # the cache on this machine holds the first tree, receipt and all.
+    manifest = service.store.manifest("rig")
+    manifest["packages_lock"][WIDGET]["content_id"] = other_id
+    service.store.save_manifest("rig", manifest)
+    assert cache.verify(WIDGET, "1.0.0")["status"] == "ok"   # the premise
+
+    result = _use(rig, part_id="block")
+    error = result["error"]
+    assert error["type"] == "validation_error"
+    assert other_id in error["message"] and installed_id in error["message"]
+    assert "DIFFERENT" in error["message"]
+    # Fail-closed: nothing was materialised.
+    with pytest.raises(NotFoundError):
+        service.store.get_part("rig", "block")
+
+
+def test_the_header_content_id_is_measured_not_copied(rig):
+    """The id in the header comes from hashing the cached tree, and it equals
+    the lock's — because `require_verified` refused otherwise. Stamping the
+    measurement is what makes that equality a fact in the file."""
+    from agentcad.core.packages import content
+
+    service, _registry = rig
+    _add(rig)
+    _use(rig)
+    head = provenance.parse(_script(service))
+    measured = content.content_id(cache.version_dir(WIDGET, "1.0.0"))
+    assert head["content_id"] == measured
+    assert head["content_id"] == \
+        service.store.manifest("rig")["packages_lock"][WIDGET]["content_id"]
+
+
+def test_a_lock_entry_with_no_content_id_is_refused(rig):
+    """Fail-closed, on `_locked`'s rule: with nothing to verify against,
+    materialising means attesting a tree nobody recorded."""
+    service, _registry = rig
+    _add(rig)
+    manifest = service.store.manifest("rig")
+    manifest["packages_lock"][WIDGET].pop("content_id")
+    service.store.save_manifest("rig", manifest)
+    error = _use(rig)["error"]
+    assert error["type"] == "validation_error"
+    assert "carries no content id" in error["message"]
+
+
+def test_a_second_add_does_not_destroy_a_declared_version_pin(rig, tmp_path,
+                                                              index_dir):
+    """**M7.** `None` means "the caller did not say", and it used to be written
+    as `"*"`: a re-add silently widened a deliberate `~1.0.0`, the lock jumped
+    a major version, and every part materialised from it flipped to
+    `version_drift`. The Library dialog's Add button sends exactly
+    `{name, index}`, so this was one click away from any pinned project."""
+    # Publish a 2.0.0 the pin must not select.
+    two = index_dir / WIDGET / "2.0.0"
+    shutil.copytree(_fixture_root() / WIDGET, two)
+    doc = json.loads((two / "package.json").read_text())
+    doc["version"] = "2.0.0"
+    (two / "package.json").write_text(json.dumps(doc, indent=2))
+    index_doc = read_index(index_dir)
+    index_doc["packages"][WIDGET]["versions"]["2.0.0"] = _entry(
+        index_dir, WIDGET, "2.0.0")
+    write_index(index_dir, index_doc)
+
+    service, _registry = rig
+    _add(rig, version_req="~1.0.0")
+    _use(rig, part_id="pinned")
+    assert service.store.manifest("rig")["packages"][WIDGET]["version_req"] \
+        == "~1.0.0"
+
+    # The dialog's exact call: name + index, no version_req.
+    result = _add(rig, index="agentcad-core")
+    manifest = service.store.manifest("rig")
+    assert manifest["packages"][WIDGET]["version_req"] == "~1.0.0"
+    assert manifest["packages_lock"][WIDGET]["version"] == "1.0.0"
+    assert result["requirement_change"] is None
+    assert service.get_part("rig", "pinned")["package_provenance"]["status"] \
+        == "ok"
+
+
+def test_a_deliberate_widening_is_named_in_the_result(rig, index_dir):
+    """The other direction: a caller that DID mean to change the requirement
+    gets told which declaration moved, so a dependency change is never
+    absorbed into an unrelated call."""
+    service, _registry = rig
+    _add(rig, version_req="~1.0.0")
+    result = _add(rig, version_req="*")
+    assert result["requirement_change"] == {
+        "version_req": {"from": "~1.0.0", "to": "*"}}
+    assert service.store.manifest("rig")["packages"][WIDGET]["version_req"] \
+        == "*"
+
+
+def test_the_digest_covers_the_payload_as_parsed_not_the_known_fields(rig):
+    """Round 2, v_prov A2/A3/A6. Digesting `{k: payload[k] for k in
+    DIGESTED_FIELDS}` leaves every OTHER key uncovered, so three edits still
+    read `ok`: an unknown payload field, note lines that were re-indented, and
+    the blank separator line deleted. The digest is taken over the payload as
+    **parsed**, the comment lines **verbatim** and the separator's presence."""
+    service, _registry = rig
+    _add(rig)
+    _use(rig)
+    script = _script(service)
+    manifest = service.store.manifest("rig")
+    status = lambda text: provenance.status(provenance.parse(text), manifest,
+                                            text)
+    assert status(script) == "ok"
+
+    lines = script.splitlines(keepends=True)
+    marker, rest = lines[0], lines[1:]
+
+    # A2 — a key this build does not name, smuggled into the payload.
+    payload = json.loads(marker.split(provenance.MARKER, 1)[1]
+                         .strip().partition(" ")[2])
+    payload["evil"] = "x" * 20
+    smuggled = (f"# {provenance.MARKER} {provenance.HEADER_FORMAT} "
+                + json.dumps(payload, sort_keys=True, separators=(", ", ": "))
+                + "\n" + "".join(rest))
+    assert provenance.parse(smuggled)["payload"]["evil"] == "x" * 20
+    assert status(smuggled) == "modified"
+
+    # A3 — the note lines re-indented. Different bytes in the consumer's file.
+    notes_end = next(i for i, line in enumerate(rest)
+                     if not line.lstrip().startswith("#"))
+    indented = marker + "".join(
+        ["    " + line for line in rest[:notes_end]] + rest[notes_end:])
+    assert status(indented) == "modified"
+
+    # A6 — the blank separator line deleted.
+    assert script.startswith(marker)
+    unspaced = script.replace("\n\n", "\n", 1)
+    assert unspaced != script
+    assert status(unspaced) == "modified"
+
+
+def test_a_recomputed_digest_still_reads_ok_and_that_is_the_documented_claim(
+        rig):
+    """v_prov A1, kept as a test so nobody "fixes" it into a false promise.
+
+    There is no secret in a git-tracked file, so an editor who rewrites the
+    payload AND recomputes the digest reads `ok` — exactly as they can
+    recompute `script_sha256`. The claim in `provenance.py` and
+    `docs/packages.md` is **tamper-evidence, never tamper-proofing**: `ok`
+    means nothing edited this file after it was written. `signatures` (PRD-031
+    FR2(d)) is the slot that would make it authentication.
+    """
+    service, _registry = rig
+    _add(rig)
+    _use(rig)
+    manifest = service.store.manifest("rig")
+    head = provenance.parse(_script(service))
+    body = provenance.split(_script(service))[1]
+    reissued = provenance.header({**{key: head[key]
+                                     for key in provenance.DIGESTED_FIELDS},
+                                  "index": "trusted-core"}) + body
+    assert provenance.parse(reissued)["index"] == "trusted-core"
+    assert provenance.status(provenance.parse(reissued), manifest,
+                             reissued) == "ok"
+    assert "not a security boundary" in reissued
+
+
+def test_a_declared_index_that_is_not_configured_here_is_a_named_refusal(rig):
+    """Round 2, item 3 (the verifier's H5/H6). Honouring the pin has a
+    consequence: a project whose declared index is not configured on this
+    machine cannot `add_package` — even with the package cached, even offline.
+
+    That is the intended reading of "a pin is a statement about provenance",
+    but it is a NEW error a user can meet, so the refusal has to name the pin
+    and the message has to be actionable. Documented in `docs/packages.md`
+    ("An omitted argument does not overwrite a declared one") and in
+    `docs/agent-api.md`.
+    """
+    from agentcad import config as user_config
+
+    service, _registry = rig
+    _add(rig)
+    assert service.store.manifest("rig")["packages"][WIDGET]["index"] \
+        == "agentcad-core"
+
+    # The colleague's index, on a machine that does not have it configured.
+    manifest = service.store.manifest("rig")
+    manifest["packages"][WIDGET]["index"] = "corp"
+    service.store.save_manifest("rig", manifest)
+    service.packages.reload_indexes()
+
+    error = _add(rig)["error"]
+    assert error["type"] == "notfound_error"
+    assert "corp" in error["message"]
+
+    # Remedy 2: pass `index` explicitly to re-pin, and the change is named.
+    result = _add(rig, index="agentcad-core")
+    assert result["requirement_change"] == {
+        "index": {"from": "corp", "to": "agentcad-core"}}
+    assert service.store.manifest("rig")["packages"][WIDGET]["index"] \
+        == "agentcad-core"
+
+
+def test_a_bad_preset_never_creates_a_part_it_has_to_delete(rig):
+    """**Codex #11.** A `use_part` whose overrides the part cannot accept used
+    to `create_part` and then `delete_part`, publishing TWO `project_changed`
+    events — so one undo after a *failed* use_part resurrected a transient part
+    the user never successfully made.
+
+    The overrides are validated against the inspected spec **before** anything
+    is written, so the realistic failure creates nothing. Zero publishes, zero
+    undo entries, nothing to resurrect.
+    """
+    service, registry = rig
+    _add(rig)
+    events = []
+    inner = service.bus.publish
+
+    def spy(event):
+        if event.get("type") == "project_changed":
+            events.append(event)
+        return inner(event)
+
+    service.bus.publish = spy
+    try:
+        result = _use(rig, part_id="bad", params={"length": 999999.0})
+    finally:
+        service.bus.publish = inner
+
+    assert result["error"]["type"] == "validation_error"
+    assert "cannot take these parameters" in result["error"]["message"]
+    assert "above max" in result["error"]["message"]
+    assert events == [], "a refused use_part must write nothing at all"
+    with pytest.raises(NotFoundError):
+        service.store.get_part("rig", "bad")
+
+
+def test_use_part_is_two_undo_steps_on_the_success_path(rig):
+    """The honest half of Codex #11, pinned so the documentation stays true.
+
+    A successful `use_part` with overrides is `create_part` + `set_params`, and
+    each is an ordinary guarded store write that publishes `project_changed` —
+    so it is **two** history snapshots and therefore two undo steps. Composing
+    them into one would mean suppressing the service's snapshot hook across a
+    multi-write operation, and the only existing mechanism for that
+    (`history.in_restore`) is a process-global flag that would silently drop a
+    concurrent caller's snapshot. That is a PRD-012-era change, not a review
+    one; documented in the tool description and `docs/packages.md`.
+    """
+    service, _registry = rig
+    _add(rig)
+    events = []
+    inner = service.bus.publish
+
+    def spy(event):
+        if event.get("type") == "project_changed":
+            events.append(event)
+        return inner(event)
+
+    service.bus.publish = spy
+    try:
+        _use(rig, part_id="ok", params={"length": 50.0})
+    finally:
+        service.bus.publish = inner
+    assert len(events) == 2, [e.get("reason") for e in events]
+
+    # And with NO overrides it is exactly one.
+    events.clear()
+    service.bus.publish = spy
+    try:
+        _use(rig, part_id="plain")
+    finally:
+        service.bus.publish = inner
+    assert len(events) == 1

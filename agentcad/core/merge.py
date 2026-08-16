@@ -65,6 +65,7 @@ from pathlib import Path
 from ..kernel.client import KernelError
 from . import locks
 from .history import HistoryError
+from . import manifest_merge
 from .manifest_merge import apply_choices, merge_manifests
 from .model import AppError, ConflictError, NotFoundError, ValidationError
 from .project import ProjectStore
@@ -610,7 +611,13 @@ class MergeOrchestrator:
             # Shape first: an instance of a missing part is meaningless if
             # the document is not a project at all (FR9 backstop for a
             # manifest that was hand-edited or half-deleted upstream).
-            report["integrity"] = _manifest_shape(merged) + _integrity(merged)
+            # `manifest_merge.package_problems` is here and not inside
+            # `_integrity` because it is about a **pair of maps**, not about the
+            # part/instance graph — but it is the same kind of damage and it
+            # travels the same way: a clean key-wise merge of two halves of one
+            # fact (see its docstring, PRD-011 review changelog 0181).
+            report["integrity"] = (_manifest_shape(merged) + _integrity(merged)
+                                   + manifest_merge.package_problems(merged))
             if not report["integrity"] and not report["failures"]:
                 try:
                     self.service._resolved_instances(proj)

@@ -34,7 +34,11 @@ def source_tree(tmp_path, name="iso4762") -> "object":
     root = tmp_path / "src" / name
     (root / "parts").mkdir(parents=True)
     (root / "parts" / "cap_screw.py").write_text(PART_SCRIPT)
-    (root / "package.json").write_text('{"name": "iso4762"}\n')
+    # name AND version: `cache.install` proves the tree's own manifest agrees
+    # with the identity it is being filed under (Codex #6), so a stub that
+    # omits its version is not a package this cache will accept.
+    (root / "package.json").write_text(
+        '{"name": "%s", "version": "1.0.0"}\n' % name)
     (root / "docs").mkdir()
     (root / "docs" / "README.md").write_text("# iso4762\n")
     return root
@@ -354,9 +358,14 @@ def test_require_raises_on_a_missing_entry(cache_root):
 
 def test_cached_versions_lists_only_real_version_directories(
         cache_root, tmp_path):
-    src = source_tree(tmp_path)
-    install(src, version="1.0.0")
-    install(src, version="1.2.0")
+    # Two REAL versions: the tree's own package.json has to name the version
+    # it is installed as, so a second version is a second source tree rather
+    # than the same bytes filed twice.
+    install(source_tree(tmp_path), version="1.0.0")
+    src12 = source_tree(tmp_path / "v12")
+    (src12 / "package.json").write_text(
+        '{"name": "iso4762", "version": "1.2.0"}\n')
+    install(src12, version="1.2.0")
     (cache_root / "iso4762" / "not-a-version").mkdir()
     assert cache.cached_versions("iso4762") == ["1.0.0", "1.2.0"]
     assert cache.cached_versions("nothing") == []
@@ -498,3 +507,97 @@ def test_a_corrupt_packages_map_reads_as_empty_rather_than_crashing(bad):
     doc["packages_lock"] = bad
     assert lockfile.read(doc) == {}
     assert lockfile.entry_for(doc, "iso4762") is None
+
+
+# ================= the lock is the authority (review fixes, changelog 0181)
+
+
+def test_require_verified_refuses_a_tree_the_lock_did_not_name(tmp_path,
+                                                               cache_root):
+    """**C1, at the cache layer.** A receipt says *these bytes are the bytes
+    that were installed* — it is written by whatever installed the tree. Two
+    indexes publishing the same `name@version` with different bytes therefore
+    both produce receipt-verified caches, and `verify` says `ok` to both.
+
+    `require_verified` takes the LOCK's content id — the git-tracked,
+    reviewable number — so materialisation is bound to what the project
+    recorded rather than to whatever happens to be on this machine. The
+    refusal names both ids and repairs nothing.
+    """
+    src = source_tree(tmp_path)
+    expected = content.content_id(src)
+    install(src)
+    assert cache.verify("iso4762", "1.0.0")["status"] == "ok"
+
+    path, measured = cache.require_verified("iso4762", "1.0.0",
+                                            expected_content_id=expected)
+    assert measured == expected and path.is_dir()
+
+    other = "sha256:" + "cd" * 32
+    with pytest.raises(ValidationError) as info:
+        cache.require_verified("iso4762", "1.0.0", expected_content_id=other)
+    assert other in info.value.message and expected in info.value.message
+    assert "DIFFERENT" in info.value.message
+    # Nothing repaired, nothing removed.
+    assert cache.verify("iso4762", "1.0.0")["status"] == "ok"
+
+
+def test_read_receipt_really_never_raises(tmp_path, cache_root):
+    """The docstring said "never raises" and the caught set left out
+    `RecursionError`, so a deeply nested receipt took an exception out through
+    `verify` (documented "never raises" too) and out through
+    `list_packages`."""
+    install(source_tree(tmp_path))
+    receipt = cache.receipt_path("iso4762", "1.0.0")
+    receipt.write_text("[" * 200_000 + "]" * 200_000)
+    assert cache.read_receipt("iso4762", "1.0.0") is None
+    assert cache.verify("iso4762", "1.0.0")["status"] == "tampered"
+
+
+def test_a_same_version_different_content_install_is_not_called_corruption(
+        cache_root, tmp_path):
+    """Round 2, item 5. When the cached tree VERIFIES and the incoming install
+    is a different `name@version`, the refusal used to render "…and does not
+    verify (ok)" — self-contradictory, and it sent the user hunting for
+    corruption that is not there. This is the C1 scenario seen from the install
+    side, so the message has to name the actual cause and both ids."""
+    first = source_tree(tmp_path)
+    install(first)
+    assert cache.verify("iso4762", "1.0.0")["status"] == "ok"
+
+    second = tmp_path / "other" / "iso4762"
+    shutil.copytree(first, second)
+    (second / "parts" / "cap_screw.py").write_text(PART_SCRIPT + "# other\n")
+
+    with pytest.raises(ValidationError) as info:
+        install(second)
+    message = info.value.message
+    assert "does not verify (ok)" not in message
+    assert "VERIFIES" in message and "different" in message
+    assert content.content_id(first) in message
+    assert content.content_id(second) in message
+    assert info.value.details["reason"] == "same_version_different_content"
+    # Nothing was overwritten.
+    assert cache.verify("iso4762", "1.0.0")["actual"] == content.content_id(first)
+
+
+def test_a_tree_with_no_package_json_gets_a_structured_refusal(tmp_path,
+                                                               cache_root):
+    """The identity check's own not-a-package case. The generic JSON reader
+    answered "package.json is unreadable: FileNotFoundError: [Errno 2] …
+    /abs/path/package.json" — an errno and a filesystem path in a message an
+    agent may hand to a user, for a condition that is simply "this is not a
+    package". The refusal names the RELATIVE expectation instead."""
+    tree = tmp_path / "nopkg"
+    (tree / "parts").mkdir(parents=True)
+    (tree / "parts" / "p.py").write_text("PARAMS = {}\n")
+
+    with pytest.raises(ValidationError) as info:
+        cache.refuse_identity_mismatch(tree, "foo", "1.0.0",
+                                       where="the fetched tree")
+    message = info.value.message
+    assert "has no package.json, so it is not a package" in message
+    assert "Errno" not in message and "FileNotFoundError" not in message
+    assert str(tree) not in message, "no absolute path in the message"
+    assert info.value.details["expected"] == "package.json"
+    assert info.value.details["package"] == "foo"

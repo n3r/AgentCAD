@@ -11,11 +11,19 @@ Origin and orientation: the bearing is centred on the Z axis and occupies
 **z = 0 to z = B**. ``face`` is the z = 0 face (the one that seats against a
 shoulder) and ``bore`` is the shaft axis, pointing +z.
 
-SPECS measure the built solid against the published DIN 625-1 table: the bore
-diameter ``d`` (from the bore's own cylindrical face), the outside diameter
-``D`` and the width ``B``. The designation is read off the parameters through
-the same table the geometry is built from, so a mismatch is a modelling error
-rather than an unmeasurable one.
+SPECS measure the built solid against the row of the published DIN 625-1 table
+that the ``designation`` **parameter** names — the bore diameter ``d`` (from
+the bore's own cylindrical face), the outside diameter ``D`` and the width
+``B``. Naming the row from the parameter is what makes them able to fail: an
+earlier version picked the row by matching the built ``D`` and ``B``, so those
+two checks compared the geometry with the row it had just been used to select
+and the bore check compared the table with itself. Sabotaging ``_row`` to
+build a 608 whatever the parameter said left every row of that gate run green
+(77 rows, 56 of them spec rows). The same sabotage now reddens 43 of 70.
+
+``build`` records ``p.designation`` on the returned solid, the way a
+bd_warehouse fastener carries its own ``screw_size``, so the checks read what
+the caller asked for and measure what the kernel produced.
 """
 
 from build123d import *  # noqa: F401 — standard part-script preamble
@@ -78,7 +86,12 @@ def build(p):
                 Cylinder(inner_ring_r, GROOVE_DEPTH,
                          align=(Align.CENTER, Align.CENTER, mode_align),
                          mode=Mode.ADD)
-    return bearing.part
+    part = bearing.part
+    # The designation the CALLER asked for, taken from the parameter and not
+    # from `row`, so a build that ignores its parameter is measured against
+    # the bearing it was asked for rather than the one it made.
+    part.designation = p.designation
+    return part
 
 
 def _bore_diameter(part) -> float:
@@ -88,46 +101,65 @@ def _bore_diameter(part) -> float:
     return 2.0 * min(radii) if radii else 0.0
 
 
+def _declared_row(part):
+    """The table row the ``designation`` parameter names, or ``None``.
+
+    Read off the solid `build` returned — **never** by matching the built
+    geometry against the table, which is how these checks became tautologies:
+    a row selected by the measurement it is then compared with cannot
+    disagree with it. ``None`` fails every check below.
+    """
+    return DIN625.get(getattr(part, "designation", None))
+
+
 def _bore_is_standard(part, metrics) -> bool:
-    designation = _designation_from(metrics)
-    if designation is None:
+    row = _declared_row(part)
+    if row is None:
         return False
-    return bool(abs(_bore_diameter(part) - DIN625[designation]["d"])
-                <= TOLERANCE_MM)
+    return bool(abs(_bore_diameter(part) - row["d"]) <= TOLERANCE_MM)
 
 
 def _outside_diameter_is_standard(part, metrics) -> bool:
-    designation = _designation_from(metrics)
-    if designation is None:
+    row = _declared_row(part)
+    if row is None:
         return False
     bbox = metrics["bbox"]
     measured = max(bbox["max"][0] - bbox["min"][0],
                    bbox["max"][1] - bbox["min"][1])
-    return bool(abs(measured - DIN625[designation]["D"]) <= TOLERANCE_MM)
+    return bool(abs(measured - row["D"]) <= TOLERANCE_MM)
 
 
 def _width_is_standard(part, metrics) -> bool:
-    designation = _designation_from(metrics)
-    if designation is None:
+    row = _declared_row(part)
+    if row is None:
         return False
     bbox = metrics["bbox"]
-    return bool(abs((bbox["max"][2] - bbox["min"][2])
-                    - DIN625[designation]["B"]) <= TOLERANCE_MM)
+    return bool(abs((bbox["max"][2] - bbox["min"][2]) - row["B"])
+                <= TOLERANCE_MM)
 
 
-def _designation_from(metrics):
-    """Which row the built solid claims to be, from its own outside diameter
-    and width. Derived from the geometry rather than from the parameter, so a
-    build that ignored its parameter fails instead of agreeing with itself."""
-    bbox = metrics["bbox"]
-    outer = max(bbox["max"][0] - bbox["min"][0],
-                bbox["max"][1] - bbox["min"][1])
-    width = bbox["max"][2] - bbox["min"][2]
-    for name, row in DIN625.items():
-        if (abs(outer - row["D"]) <= TOLERANCE_MM
-                and abs(width - row["B"]) <= TOLERANCE_MM):
-            return name
-    return None
+def _ring_faces_are_where_the_row_says(part, metrics) -> bool:
+    """The four cylindrical radii, read off the **faces** rather than the
+    bounding box: the bore, the two ring-split groove walls at 30% and 70% of
+    the radial section, and the outside diameter.
+
+    A second reading of the same row that shares no input with the three
+    bounding-box checks above — it would fail a bearing whose envelope is
+    right and whose rings are not, and it is what pins the 30/70 split this
+    part's docstring claims.
+    """
+    row = _declared_row(part)
+    if row is None:
+        return False
+    bore_r, outer_r = row["d"] / 2.0, row["D"] / 2.0
+    span = outer_r - bore_r
+    expected = [bore_r, bore_r + 0.30 * span, bore_r + 0.70 * span, outer_r]
+    measured = sorted({round(f.radius, 6)
+                       for f in part.faces().filter_by(GeomType.CYLINDER)})
+    if len(measured) != len(expected):
+        return False
+    return all(abs(a - b) <= TOLERANCE_MM / 2.0
+               for a, b in zip(measured, expected))
 
 
 SPECS = [
@@ -137,6 +169,8 @@ SPECS = [
                requirement="DIN625-03"),
     check_that(_width_is_standard, name="width_din625",
                requirement="DIN625-04"),
+    check_that(_ring_faces_are_where_the_row_says, name="ring_faces_din625",
+               requirement="DIN625-05"),
 ]
 
 

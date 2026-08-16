@@ -23,11 +23,52 @@ the cache, verifies and copies. That is the whole of AC4.
 
 from __future__ import annotations
 
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from ... import config as user_config
 from ..model import NotFoundError, ValidationError
 from . import cache, format, indexes as index_module, lockfile
+
+#: One lock per project directory, shared by **every** `PackageManager` in this
+#: process. Keyed by the resolved path rather than by the manager or the
+#: project name: two managers over one service is the ordinary case (the tool
+#: pack builds one, a test or a second caller builds another), and they must
+#: contend on the same lock or the serialization is decorative.
+_manifest_locks: dict[str, threading.RLock] = {}
+_registry_lock = threading.Lock()
+
+
+@contextmanager
+def manifest_scope(store, proj: str):
+    """Serialize a read-modify-write of one project's manifest.
+
+    `add` and `remove` read `project.json`, edit two maps and save it back.
+    Unserialized, two concurrent adds each read the *pre* state and the second
+    save drops the first package — both callers having been told they
+    succeeded. Reentrant, because `add` calls `remove`-shaped helpers and a
+    caller may already hold it.
+
+    **In-process only, and that is the honest boundary.** It makes the server
+    safe (every route, tool and MCP call shares one process) and it does
+    nothing for two `agentcad` CLI processes writing one project. The
+    cross-process case for *projects* is PRD-008's territory — the store's
+    write guard and the branch checkout — and inventing a second file-lock
+    protocol here would be a third opinion about it. What this feature does
+    lock across processes is `index.json`, where publishing genuinely is a
+    multi-process CLI action (`LocalIndex._index_scope`).
+    """
+    try:
+        key = str(Path(store.path_of(proj)).resolve())
+    except Exception:      # noqa: BLE001 — an unknown project fails downstream
+        key = f"{id(store)}:{proj}"
+    with _registry_lock:
+        lock = _manifest_locks.get(key)
+        if lock is None:
+            lock = _manifest_locks[key] = threading.RLock()
+    with lock:
+        yield
 
 
 class PackageManager:
@@ -114,10 +155,17 @@ class PackageManager:
         self._check_requirement(name, requirement)
         candidates = ([self.index_named(index)] if index else list(self.indexes))
         tried: list[dict] = []
-        # Versions a REACHABLE index says are withdrawn. The cache fallback
-        # has to know them or a yank is defeated by any warm cache — see
-        # `_resolve_cached`.
-        withdrawn: set[str] = set()
+        # `(index name, version)` pairs a REACHABLE index says are withdrawn.
+        # The cache fallback has to know them or a yank is defeated by any warm
+        # cache — see `_resolve_cached`.
+        #
+        # **Qualified by index, and that is the fix.** A bare set of version
+        # strings let index A's yank veto index B's identically-versioned
+        # package: a cache entry installed from B, which never withdrew
+        # anything, became unresolvable the moment A yanked its own 1.0.0. A
+        # yank is a statement a publisher makes about *their* package, and it
+        # binds their package only.
+        withdrawn: set[tuple] = set()
         for candidate in candidates:
             resolution = self._resolve_in(candidate, name, requirement, tried,
                                           withdrawn)
@@ -148,7 +196,7 @@ class PackageManager:
             return None
         if withdrawn is not None:
             withdrawn.update(
-                version for version, entry in versions.items()
+                (index.name, version) for version, entry in versions.items()
                 if isinstance(entry, dict) and entry.get("yanked"))
         if not versions:
             tried.append({"index": index.name,
@@ -224,20 +272,13 @@ class PackageManager:
         for version in sorted(versions, key=format.parse_version, reverse=True):
             if not format.satisfies(version, requirement):
                 continue
-            if (withdrawn and version in withdrawn
-                    and not format.VERSION_RE.match(requirement)):
-                tried.append({
-                    "index": "cache",
-                    "reason": f"{name}@{version} is cached but the index has "
-                              f"YANKED it, and {requirement} is a range — name "
-                              f"the version explicitly if you must have it",
-                })
-                continue
             report = cache.verify(name, version)
             if report["status"] != "ok":
                 tried.append({"index": "cache",
                               "reason": f"{name}@{version} is cached but "
-                                        f"{report['status']}"})
+                                        f"{report['status']}"
+                                        + (f" ({report['reason']})"
+                                           if report.get("reason") else "")})
                 continue
             receipt = cache.read_receipt(name, version) or {}
             if pinned_index is not None and receipt.get("index") != pinned_index:
@@ -248,6 +289,35 @@ class PackageManager:
                               f"{pinned_index!r}",
                 })
                 continue
+            # **Whose yank?** The receipt records which index this tree came
+            # from, so a withdrawal only binds the entry it is about. Matching
+            # on the version alone let index A's yank suppress a cache entry
+            # that came from index B — B never withdrew anything, and its
+            # package became unresolvable because a *different* publisher
+            # withdrew a coincidentally equal version number.
+            origin = receipt.get("index")
+            yanked = bool(withdrawn and (origin, version) in withdrawn)
+            if yanked and not format.VERSION_RE.match(requirement):
+                tried.append({
+                    "index": "cache",
+                    "reason": f"{name}@{version} is cached from index "
+                              f"{origin!r}, which has YANKED it, and "
+                              f"{requirement} is a range — name the version "
+                              f"explicitly if you must have it",
+                })
+                continue
+            # Either no reachable index withdrew this entry's own version, or
+            # one did and the caller named it explicitly. In the second case
+            # the answer is `yanked: True` and the same warning the online path
+            # raises: reporting `False` about a version we have just been told
+            # is withdrawn is the cache quietly disagreeing with the index it
+            # consulted, which is the one thing this fallback may not do.
+            if yanked:
+                self.warnings.append(
+                    f"{name}@{version} is YANKED in index {origin!r} and you "
+                    f"named it explicitly, so it was resolved from the cache "
+                    f"anyway. The publisher withdrew it — move off it when you "
+                    f"can.")
             return {
                 "name": name,
                 "version": version,
@@ -260,7 +330,7 @@ class PackageManager:
                 "entry": None,
                 "path": None,
                 "offline": True,
-                "yanked": False,
+                "yanked": yanked,
             }
         return None
 
@@ -269,36 +339,75 @@ class PackageManager:
     def add(self, proj: str, name: str, version_req=None, index=None) -> dict:
         """Resolve, install into the cache, and record both manifest maps.
 
+        **An omitted argument does not overwrite a declared one.** ``None``
+        means *the caller did not say*, and for a package this project already
+        declares, what it already declares is the answer: a re-add that
+        silently rewrote `version_req` to `"*"` turned a deliberate `~1.0.0`
+        pin into "give me anything", jumped the lock a major version and
+        flipped every part materialised from it to `version_drift` — with no
+        message anywhere. The Library dialog's Add button sends exactly `{name,
+        index}`, so this was one click away from any project with a pin.
+        Absent is not `"*"`, and it is not "any index" either.
+
+        The declared requirement is read **before** the resolve, because it is
+        the requirement that has to be resolved; and any change to either
+        declaration travels back in `requirement_change` so a caller that did
+        mean to widen a pin can see that it did.
+
+        The whole read-modify-write runs under :func:`manifest_scope`. Two
+        concurrent adds each used to read the *pre* manifest and the second
+        save dropped the first package, with both callers told they had
+        succeeded — and, because the store staged every write through one
+        fixed `project.json.tmp`, they could interleave into that file and
+        leave the manifest **corrupt** rather than merely short one entry (see
+        `ProjectStore._atomic_write`).
+
         Publishes `project_changed` — an ordinary store write, so the history
         snapshot and the undo entry are free and no new event type exists.
         """
         service = self._service
-        requirement = version_req or "*"
-        # Warnings raised BY THIS ADD (a yanked version named explicitly)
-        # travel in the result. `self.warnings` also carries the index-loading
-        # warnings, so the slice is taken rather than the whole list.
-        watermark = len(self.warnings)
-        resolution = self.resolve(name, requirement, index=index)
-        if not resolution["offline"]:
-            cached = cache.install(
-                resolution["path"], name, resolution["version"],
-                resolution["content_id"],
-                index=resolution["index"], source=resolution["source"],
-            )
-        else:
-            cached = cache.require(name, resolution["version"])
+        with manifest_scope(service.store, proj):
+            declared = lockfile.requirement_for(service.store.manifest(proj),
+                                                name) or {}
+            requirement = version_req or declared.get("version_req") or "*"
+            index = index or declared.get("index")
+            # Warnings raised BY THIS ADD (a yanked version named explicitly)
+            # travel in the result. `self.warnings` also carries the
+            # index-loading warnings, so the slice is taken rather than the
+            # whole list.
+            watermark = len(self.warnings)
+            resolution = self.resolve(name, requirement, index=index)
+            if not resolution["offline"]:
+                cached = cache.install(
+                    resolution["path"], name, resolution["version"],
+                    resolution["content_id"],
+                    index=resolution["index"], source=resolution["source"],
+                )
+            else:
+                cached = cache.require(
+                    name, resolution["version"],
+                    expected_content_id=resolution.get("content_id"))
 
-        manifest = service.store.manifest(proj)
-        lockfile.add(manifest, name, requirement, resolution["index"], resolution)
-        service.store.save_manifest(proj, manifest)
+            manifest = service.store.manifest(proj)
+            lockfile.add(manifest, name, requirement, resolution["index"],
+                         resolution)
+            service.store.save_manifest(proj, manifest)
         service.bus.publish({"type": "project_changed", "project": proj})
+        now = lockfile.requirement_for(manifest, name) or {}
+        change = {key: {"from": declared.get(key), "to": now.get(key)}
+                  for key in ("version_req", "index")
+                  if declared and declared.get(key) != now.get(key)}
         return {
             "project": proj,
-            "package": lockfile.requirement_for(manifest, name),
+            "package": now,
             "lock": lockfile.entry_for(manifest, name),
             "cached": str(cached),
             "offline": resolution["offline"],
             "yanked": bool(resolution.get("yanked")),
+            # `None` when nothing moved, so a caller tests one key rather than
+            # diffing two maps to find out whether its own call changed a
+            # declaration it did not mention.
+            "requirement_change": change or None,
             "tried": resolution["tried"],
             "warnings": self.warnings[watermark:],
         }
@@ -309,11 +418,15 @@ class PackageManager:
         The cache is **not** touched: it is shared by every project, and a
         materialised part keeps building either way — FR6's removal is a
         warning, not breakage.
+
+        Serialized against `add` by the same :func:`manifest_scope`: a remove
+        racing an add is the same lost update in the other direction.
         """
         service = self._service
-        manifest = service.store.manifest(proj)
-        affected = lockfile.remove(manifest, name, scan=scan)
-        service.store.save_manifest(proj, manifest)
+        with manifest_scope(service.store, proj):
+            manifest = service.store.manifest(proj)
+            affected = lockfile.remove(manifest, name, scan=scan)
+            service.store.save_manifest(proj, manifest)
         service.bus.publish({"type": "project_changed", "project": proj})
         return {"project": proj, "removed": name, "materialized_parts": affected}
 

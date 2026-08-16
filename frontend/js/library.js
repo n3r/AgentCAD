@@ -375,8 +375,19 @@ async function insert(hit, part, preset, partId, btn, status) {
   status.className = "lib-status";
   status.textContent = "Installing…";
   const proj = state.projectName;
+  let added = null;
   try {
-    await api.addPackage(proj, { name: hit.name, index: hit.index });
+    // The project's OWN declared requirement, when it has one. Sending only
+    // {name, index} means "the caller did not say", and for a package this
+    // project already pins that used to be read as `*` — one click silently
+    // widened a deliberate `~1.0.0`, jumped the lock a major version and
+    // flipped every part materialised from it to `version_drift`. The server
+    // preserves a declaration now; sending it as well means the dialog is
+    // asking for what the project asked for rather than relying on that.
+    const body = { name: hit.name, index: hit.index };
+    const declared = await declaredRequirement(proj, hit.name);
+    if (declared) body.version_req = declared;
+    added = await api.addPackage(proj, body);
     status.textContent = "Building…";
     await api.usePackagePart(proj, hit.name, {
       part, part_id: id, preset: preset || undefined,
@@ -390,9 +401,29 @@ async function insert(hit, part, preset, partId, btn, status) {
   btn.disabled = false;
   status.textContent = "";
   actions.toast(`Inserted ${id} from ${hit.name}@${hit.version}`);
+  // A declaration this insert moved is named, never absorbed: the user asked
+  // for a part, not for a dependency change.
+  const moved = added && added.requirement_change;
+  if (moved) {
+    const parts = Object.keys(moved).map(
+      (key) => `${key} ${moved[key].from ?? "—"} → ${moved[key].to ?? "—"}`);
+    actions.toast(`${hit.name}: ${parts.join(", ")}`);
+  }
   close();
   await actions.refreshProject();
   if (actions.selectPart) actions.selectPart(id);
+}
+
+async function declaredRequirement(proj, name) {
+  // Best-effort and never fatal: with no answer the server still preserves
+  // the declaration, so a failed listing must not stop an install.
+  try {
+    const listed = await api.listPackages(proj);
+    const entry = (listed && listed.packages && listed.packages[name]) || null;
+    return (entry && entry.version_req) || null;
+  } catch (err) {
+    return null;
+  }
 }
 
 function errorText(err) {

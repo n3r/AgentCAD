@@ -48,6 +48,11 @@ OCP_FREE: dict[str, str] = {
     "agentcad.core.packages.search":
         'mod.NO_SEMANTIC == "no_embedding_provider"',
     "agentcad.core.packages._git": "mod.DEFAULT_TIMEOUT >= 120",
+    # The one safe JSON reader every module in this subpackage uses. Pure
+    # stdlib by construction, and the probe reads the ceiling that makes it
+    # more than a `try/except` — the byte refusal happens before the parse.
+    "agentcad.core.packages._json":
+        "mod.MAX_INDEX_BYTES > mod.MAX_JSON_BYTES",
     # `from_step` imports `gate` lazily *inside* its functions and never
     # imports the kernel: the vendor file is measured through a service, the
     # same way every other stage measures.

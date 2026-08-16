@@ -394,3 +394,83 @@ def _write_slot(container, key, value, present) -> None:
         container[key] = value
     else:
         container.pop(key, None)
+
+
+def package_problems(manifest: dict) -> list[dict]:
+    """Post-merge damage the key-wise merge cannot see: a **hybrid dependency**.
+
+    ``packages`` and ``packages_lock`` merge as two independent maps, each
+    atomic *per package name* — which is right, and not enough. The two maps
+    are one fact in two halves: `packages.foo` is what was asked for and
+    `packages_lock.foo` is what that request resolved to. Resolving the
+    requirement from **theirs** and the lock from **ours** is a clean merge of
+    each map and a dependency **no branch ever authored** — a `^2.0.0`
+    requirement pinned to a `1.0.0` lock, or a declaration pinning `corp` over
+    a lock that came from `agentcad-core`. Nothing downstream catches it:
+    `use_part` reads only the lock, and the lock verifies against its own
+    content id perfectly well.
+
+    So it is checked where PRD-001 already checks a merged manifest for
+    structural damage — `merge._integrity`'s call site — and it returns the
+    same problem shape, so a violation surfaces as an ordinary merge failure
+    rather than a new mechanism. Silent is the one thing it must not be.
+
+    Reported, per package:
+
+    ``package_requirement_violated``
+        the locked version does not satisfy the declared requirement.
+    ``package_index_mismatch``
+        the declaration pins an index the lock entry did not come from.
+    ``package_lock_orphan``
+        a lock entry whose declaration is gone — one side removed the package
+        and the other side's lock survived.
+    """
+    from .packages import format as pkgformat
+
+    declared = manifest.get("packages") if isinstance(manifest, dict) else None
+    locked = manifest.get("packages_lock") if isinstance(manifest, dict) else None
+    declared = declared if isinstance(declared, dict) else {}
+    locked = locked if isinstance(locked, dict) else {}
+
+    problems: list[dict] = []
+    for name in sorted(locked):
+        entry = locked.get(name)
+        if not isinstance(entry, dict):
+            continue
+        request = declared.get(name)
+        if not isinstance(request, dict):
+            problems.append({
+                "kind": "package_lock_orphan", "package": name,
+                "message": f"packages_lock.{name} survived a merge in which "
+                           f"packages.{name} was removed: the project is "
+                           f"locked to a dependency it no longer declares",
+            })
+            continue
+        version = entry.get("version")
+        requirement = request.get("version_req") or "*"
+        try:
+            satisfied = (isinstance(version, str)
+                         and pkgformat.satisfies(version, requirement))
+        except ValidationError:
+            satisfied = False
+        if not satisfied:
+            problems.append({
+                "kind": "package_requirement_violated", "package": name,
+                "version": version, "version_req": requirement,
+                "message": f"packages.{name} asks for {requirement} and "
+                           f"packages_lock.{name} holds {version}: the two "
+                           f"halves came from different branches, so this is a "
+                           f"dependency nobody authored — re-resolve it with "
+                           f"add_package",
+            })
+        pinned, origin = request.get("index"), entry.get("index")
+        if pinned and origin and pinned != origin:
+            problems.append({
+                "kind": "package_index_mismatch", "package": name,
+                "index": origin, "declared_index": pinned,
+                "message": f"packages.{name} pins index {pinned!r} and "
+                           f"packages_lock.{name} was resolved from "
+                           f"{origin!r}: a pin is a statement about "
+                           f"provenance, and this merge silently changed it",
+            })
+    return problems

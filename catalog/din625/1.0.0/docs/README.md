@@ -8,7 +8,7 @@ series, as one parametric part: `ball_bearing`.
 | part id | `ball_bearing` |
 | parameters | `designation` (enum: 623, 624, 625, 626, 608, 628, 6000, 6001, 6002) |
 | connectors | `bore` (cylindrical), `face` (rigid) |
-| specs | validity, bore diameter, outside diameter, width |
+| specs | validity, bore diameter, outside diameter, width, ring faces |
 
 ## What this is, and what it is not
 
@@ -44,9 +44,23 @@ Dimensions in mm, DIN 625-1:
 | 6001 | 12 | 28 | 8 |
 | 6002 | 15 | 32 | 9 |
 
-The specs re-derive which row the built solid *is* from its own outside
-diameter and width, then check the bore against that row — so a build that
-ignored its parameter fails rather than agreeing with itself.
+The specs measure the built solid against the row the `designation`
+**parameter** names. `build` records that parameter on the solid it returns —
+the way a bd_warehouse fastener carries its own `screw_size` — and the checks
+read it back, so a build that ignores its parameter is compared with the
+bearing it was *asked* for.
+
+That is a correction. The first version of these checks selected the row by
+matching the built `D` and `B` against the table, which made the `D` and `B`
+checks compare the geometry with the row it had just been used to pick, and
+made the bore check compare the table with itself. Sabotaging the build to
+produce a 608 whatever the parameter said left **77 of 77 gate spec rows
+green** (77 rows over four stages, 56 of them spec rows); the same sabotage now
+reddens 43 of the 70 spec rows — every designation except 608 itself, plus the
+628, whose bore is also 8 mm and whose bore check therefore still passes. `ring_faces` is a second reading of the same row off the
+cylindrical **faces** — bore, the two ring-split walls at 30% and 70% of the
+radial section, and the outside diameter — sharing no input with the three
+bounding-box checks.
 
 ## Licence and trust
 

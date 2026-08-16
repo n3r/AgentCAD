@@ -75,11 +75,19 @@ def add(manifest: dict, name: str, version_req: str, index: str,
     path) is **dropped here** — this function is the one place that decides
     what a lock entry may contain, so an offline install and an online one
     cannot write different bytes.
+
+    A falsy ``version_req`` **keeps an existing declaration** and only falls
+    back to ``"*"`` when there is none. Absent is not "any version": rewriting
+    a declared `~1.0.0` to `"*"` because the caller passed nothing destroys a
+    deliberate pin, and it does it silently. `PackageManager.add` reads the
+    declaration before it resolves, so it never reaches here empty; this is the
+    same rule stated where the write happens, for the next caller.
     """
     packages = dict(_map(manifest, PACKAGES_KEY))
     lock = dict(_map(manifest, LOCK_KEY))
+    existing = packages.get(name) if isinstance(packages.get(name), dict) else {}
     packages[name] = {
-        "version_req": version_req if version_req else "*",
+        "version_req": (version_req or existing.get("version_req") or "*"),
         "index": index,
     }
     lock[name] = {

@@ -459,3 +459,181 @@ def test_a_tampered_checkout_installs_nothing_and_names_both_ids(
         manager.add("rig", WIDGET, "^1.0.0")
     assert "content id mismatch" in str(exc.value)
     assert cache.cached_versions(WIDGET) == []
+
+
+# ============ the index lives in a SUBDIRECTORY (Codex #8, changelog 0181)
+
+
+@needs_git
+def test_a_git_index_serves_an_index_that_lives_in_a_subdirectory(tmp_path):
+    """`subdir` — and the reason it had to exist: **this repository**.
+
+    `GitIndex` hard-coded `<checkout>/index.json`, so a repo that is an index
+    and nothing else worked and a repo that ships an index *alongside its
+    source* did not. AgentCAD is the second kind (`catalog/index.json`), which
+    means the shipped catalog was not usable as a git index at all — while the
+    acceptance test said it was, by copying `catalog/*` to the root of a
+    synthetic repo. That proved the fixture, not the product.
+    """
+    work = tmp_path / "repo"
+    (work / "catalog").mkdir(parents=True)
+    (work / "agentcad").mkdir()          # the source tree lives here too
+    (work / "agentcad" / "__init__.py").write_text("__version__ = '0.1.0'\n")
+    (work / "README.md").write_text("# a repo that is ALSO an index\n")
+    index_document(work / "catalog")
+    git("init", cwd=work)
+    git("add", "-A", cwd=work)
+    git("commit", "-m", "repo with a catalog", cwd=work)
+    bare = tmp_path / "remote.git"
+    subprocess.run(["git", "clone", "--bare", str(work), str(bare)],
+                   check=True, capture_output=True)
+
+    # Without `subdir` the index is simply not there: index.json is one level in.
+    plain = indexes.GitIndex("plain", bare.as_uri(), root=tmp_path / "co1")
+    plain.refresh()
+    with pytest.raises(NotFoundError):
+        plain.entries()
+
+    served = indexes.GitIndex("acme", bare.as_uri(), root=tmp_path / "co2",
+                              subdir="catalog")
+    served.refresh()
+    assert served.entries()["name"] == "acme"
+    assert served.versions(WIDGET)
+    # The clone went to the repository root; the INDEX is the subdirectory.
+    assert served.checkout != served.path
+    assert served.path == served.checkout / "catalog"
+    assert (served.checkout / "agentcad" / "__init__.py").is_file()
+    assert served.fetch(WIDGET, "1.0.0").is_dir()
+
+
+@needs_git
+def test_load_indexes_passes_subdir_through_and_validates_it(tmp_path):
+    warnings = []
+    built = indexes.load_indexes(
+        {"indexes": [{"name": "ok", "kind": "git", "url": "https://e.com/r.git",
+                      "subdir": "catalog"},
+                     {"name": "escape", "kind": "git",
+                      "url": "https://e.com/r.git", "subdir": "../../etc"}]},
+        warnings, git_available=lambda: True)
+    assert [i.name for i in built] == ["ok"]
+    assert built[0].subdir == "catalog"
+    assert any("escape" in w and "subdir" in w for w in warnings), warnings
+
+
+@needs_git
+def test_THIS_repository_is_usable_as_a_git_index_with_subdir(tmp_path):
+    """The dogfood test, driving **this repo's real layout**.
+
+    A bare clone of a working tree shaped exactly like this repository —
+    `catalog/` beside `agentcad/`, `docs/`, `tests/` — served through
+    `subdir: "catalog"`, must offer the nine bundled packages and hand back
+    trees that hash to the ids `catalog/index.json` advertises. If this fails,
+    the README's "point a git index at this repo" instruction is wrong.
+    """
+    catalog = REPO / "catalog"
+    if not (catalog / "index.json").is_file():
+        pytest.skip("no bundled catalog in this checkout")
+
+    work = tmp_path / "agentcad_repo"
+    shutil.copytree(catalog, work / "catalog")
+    for extra in ("agentcad", "docs", "tests"):
+        (work / extra).mkdir(parents=True)
+        (work / extra / "placeholder.py").write_text("# the source tree\n")
+    (work / "pyproject.toml").write_text("[project]\nname = 'agentcad'\n")
+    git("init", cwd=work)
+    git("add", "-A", cwd=work)
+    git("commit", "-m", "agentcad", cwd=work)
+    bare = tmp_path / "agentcad.git"
+    subprocess.run(["git", "clone", "--bare", str(work), str(bare)],
+                   check=True, capture_output=True)
+
+    index = indexes.GitIndex("agentcad-core", bare.as_uri(),
+                             root=tmp_path / "checkouts", subdir="catalog")
+    index.refresh()
+    doc = index.entries()
+    shipped = json.loads((catalog / "index.json").read_text())
+    assert set(doc["packages"]) == set(shipped["packages"])
+    assert len(doc["packages"]) >= 9, sorted(doc["packages"])
+
+    # Every advertised content id is the id of the tree the git index serves —
+    # which is what "the bundled catalog IS what a git index would serve" means.
+    for name, record in sorted(doc["packages"].items()):
+        for version, entry in sorted(record["versions"].items()):
+            tree = index.fetch(name, version)
+            assert content.content_id(tree) == entry["content_id"], \
+                f"{name}@{version} does not hash to its advertised id"
+
+
+@needs_git
+def test_a_missing_subdir_is_diagnosed_as_a_missing_subdir(tmp_path):
+    """"Never cloned from <url>" was the only answer `entries()` had, and with
+    `subdir` it is routinely wrong: the clone is right there and the
+    subdirectory is a typo. Sending someone to debug their remote in that case
+    is worse than saying nothing, because it is confidently wrong."""
+    work = tmp_path / "repo"
+    (work / "src").mkdir(parents=True)
+    (work / "src" / "a.py").write_text("x = 1\n")
+    git("init", cwd=work)
+    git("add", "-A", cwd=work)
+    git("commit", "-m", "source only", cwd=work)
+    bare = tmp_path / "r.git"
+    subprocess.run(["git", "clone", "--bare", str(work), str(bare)],
+                   check=True, capture_output=True)
+
+    absent = indexes.GitIndex("acme", bare.as_uri(), root=tmp_path / "c1",
+                              subdir="catalog")
+    absent.refresh()
+    with pytest.raises(NotFoundError) as info:
+        absent.entries()
+    assert "no such directory" in info.value.message
+    assert "the clone is fine" in info.value.message
+    assert "never been cloned" not in info.value.message
+    assert info.value.details["subdir"] == "catalog"
+
+    # A file where the subdir should be is its own diagnosis.
+    (work / "catalog").write_text("not a directory\n")
+    git("add", "-A", cwd=work)
+    git("commit", "-m", "catalog is a file", cwd=work)
+    subprocess.run(["git", "push", str(bare), "main"], cwd=work, check=True,
+                   capture_output=True)
+    not_a_dir = indexes.GitIndex("acme", bare.as_uri(), root=tmp_path / "c2",
+                                 subdir="catalog")
+    not_a_dir.refresh()
+    with pytest.raises(NotFoundError) as info:
+        not_a_dir.entries()
+    assert "is not a directory" in info.value.message
+
+
+@needs_git
+def test_a_repo_with_no_index_at_the_root_suggests_subdir(tmp_path):
+    """The cloned-but-empty case names what is missing and points at the option
+    that fixes it, instead of blaming the remote."""
+    work = tmp_path / "repo"
+    (work / "src").mkdir(parents=True)
+    (work / "src" / "a.py").write_text("x = 1\n")
+    git("init", cwd=work)
+    git("add", "-A", cwd=work)
+    git("commit", "-m", "source only", cwd=work)
+    bare = tmp_path / "r.git"
+    subprocess.run(["git", "clone", "--bare", str(work), str(bare)],
+                   check=True, capture_output=True)
+
+    index = indexes.GitIndex("acme", bare.as_uri(), root=tmp_path / "c")
+    index.refresh()
+    with pytest.raises(NotFoundError) as info:
+        index.entries()
+    assert "there is no index.json in it" in info.value.message
+    assert "'subdir'" in info.value.message
+    assert "never been cloned" not in info.value.message
+
+
+@needs_git
+def test_a_remote_that_was_never_cloned_still_says_so(tmp_path):
+    """The negation: the original message is still the right one when it is
+    actually true."""
+    index = indexes.GitIndex("gone", "file:///nowhere/x.git",
+                             root=tmp_path / "c", subdir="catalog")
+    index.refresh()
+    with pytest.raises(NotFoundError) as info:
+        index.entries()
+    assert "has never been cloned" in info.value.message

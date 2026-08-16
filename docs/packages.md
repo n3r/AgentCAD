@@ -203,10 +203,53 @@ re-materialising the same package part from the cache is byte-identical. Its
 | `modified` | you edited the script. Legitimate, reported, **never repaired** |
 | `version_drift` | the lock holds a different version than the header |
 | `removed` | no dependency entry — a **warning**, not breakage: the part is a project file and it still builds |
-| `unverified` | we did not look: no cache entry, a tampered one, or a header written by a newer format |
+| `unverified` | we did not look: no cache entry, a tampered one, a header with no block digest, or a header written by a newer format |
 
 On a fresh clone with a cold cache, provenance reads **`unverified`**, not
 `ok`. That is the honest answer: nothing was compared.
+
+The header carries two digests. `script_sha256` covers the script **without**
+the block, so a local edit to the geometry is detectable; `header_sha256`
+covers the block's own payload and its comment lines, so an edit confined to
+the header — deleting the security notice, rewriting `index` to name a
+registry the part never came from — reads `modified` rather than `ok`. Both
+are **integrity checks, not authentication**: there is no secret, so they
+catch edits and not a determined forger. What binds the *bytes* is the content
+id, and `use_part` verifies the cached tree against the id in
+`packages_lock` — the git-tracked, reviewable number — before it copies
+anything, then records the id it measured.
+
+Two indexes can publish the same `name@version` with different bytes. Both
+would verify against their own cache receipts, so the lock is the authority: a
+cache holding a different tree than the lock names materialises **nothing**,
+and the refusal prints both ids.
+
+**A tree must also agree with its own name.** The index entry is a claim about
+a tree and the tree's `package.json` is a claim about itself; installing and
+materialising both check that the two match, so an index mapping `foo@1.0.0` at
+a (perfectly verified) tree whose manifest says `bar@2.0.0` is refused rather
+than installed under the wrong provenance.
+
+**The cache receipt is versioned, and a partial one is not "fine".** The
+offline path reconstructs a git-tracked lock entry out of the receipt, so a
+receipt that cannot supply `index` and `source` would produce an offline
+"success" writing `null`s into `packages` and `packages_lock` — an install no
+online install would ever have written. Such a receipt reads `tampered`, and
+the remedy is `add_package`, which re-verifies the tree against the index's
+declared id and rewrites a current receipt.
+
+**`use_part` is one or two undo steps, not one transaction.** Materialising is
+`create_part` and — when a preset or `params` is applied — `set_params`, and
+each is an ordinary guarded store write that snapshots history. So undo after a
+`use_part` **with** overrides reverts the parameters and leaves the part at the
+package's defaults; a second undo removes the part. Without overrides it is a
+single step. A *failed* `use_part` writes nothing at all: the overrides are
+checked against the part's own inspected PARAMS spec before anything is
+created, so there is no transient part and nothing an undo could resurrect.
+Composing the two writes into one snapshot needs a per-operation suppression
+seam the history layer does not have (`history.in_restore` is process-global
+and would drop a concurrent caller's snapshot), so it is recorded as a
+follow-up rather than improvised.
 
 `remove_package` **does not touch one script byte**, and it does not touch the
 cache. The header lives inside the script and the script text is the rebuild
@@ -220,7 +263,7 @@ every materialised part.
 | kind | what it is |
 |---|---|
 | `local` | a directory holding `index.json` and the published trees |
-| `git` | a repository cloned to `~/.agentcad/indexes/<name>/` at a pinned ref — **a local index plus a fetch** |
+| `git` | a repository cloned to `~/.agentcad/indexes/<name>/` at a pinned ref — **a local index plus a fetch**. `subdir` says where the index lives *inside* the repo |
 | `cloud` | reserved; lands with PRD-005-lite |
 
 Configured in `~/.agentcad/config.json`, **in precedence order**:
@@ -228,9 +271,21 @@ Configured in `~/.agentcad/config.json`, **in precedence order**:
 ```jsonc
 {"indexes": [
   {"name": "my-org", "kind": "git", "url": "git@github.com:acme/cad.git", "ref": "main"},
+  {"name": "agentcad-src", "kind": "git", "url": "https://github.com/…/agentcad.git",
+   "ref": "main", "subdir": "catalog"},
   {"name": "vendor", "kind": "local", "path": "/Users/me/vendor-parts", "scope": "private"}
 ]}
 ```
+
+**`subdir` — an index inside a bigger repository.** A git index was
+`<checkout>/index.json` and nothing else, which serves a repo that is an index
+*and only that*. Plenty of repositories ship an index **alongside their
+source** — this one does: the catalog lives at `catalog/index.json` with the
+application around it, so before `subdir` existed AgentCAD's own repository was
+not usable as a git index, while the acceptance test said otherwise by copying
+`catalog/*` to the root of a synthetic repo. `subdir` is validated as a
+relative path inside the repository; the clone still goes to the repository
+root, and only the index lookup moves.
 
 The bundled `catalog/` registers itself as `agentcad-core` and is **appended
 after** whatever you configured — a fallback that outranked your own
@@ -256,13 +311,41 @@ Requirements: `X.Y.Z` · `^X.Y.Z` (`>=X.Y.Z <X+1.0.0`) · `~X.Y.Z`
 (`>=X.Y.Z <X.Y+1.0`) · `*`. **`^0.x.y` here is `>=0.x.y, <1.0.0`** — npm treats
 a `0.x` caret as `~`, and a reader will assume npm.
 
+### An omitted argument does not overwrite a declared one
+
+`add_package` with no `version_req` and no `index` means *"you did not say"*,
+not *"anything, from anywhere"*. For a package the project already declares,
+the declaration **is** the answer: the recorded `version_req` is the
+requirement that gets resolved, and the recorded `index` is the index that
+gets asked. (It used to write `"*"` and re-resolve, which silently widened a
+deliberate `~1.0.0` pin, jumped the lock a major version, and flipped every
+part materialised from it to `version_drift`.) Anything the call *did* move
+comes back in `requirement_change`.
+
+**A consequence worth knowing before it surprises you.** Because the pinned
+index is now honoured, `add_package` on a project whose declared index is not
+configured on this machine is a `not_found_error` naming the pin — **even when
+the package is in the cache, and even offline**. That is deliberate: a pin is a
+statement about *provenance*, and answering it from a different index's
+download would quietly break the statement while appearing to succeed. Two
+remedies, and the choice between them is the actual decision:
+
+* **configure the index** (`~/.agentcad/config.json`) — you want that package
+  from that source, which is what the project recorded; or
+* **pass `index` explicitly** to re-pin, which rewrites the declaration and
+  says so in `requirement_change`.
+
+Removing the `index` key from `packages.<name>` by hand also works and means
+"any configured index", but the explicit `index` argument is the reviewable
+way to say it.
+
 ---
 
 ## Publishing
 
 ```bash
-agentcad package validate <dir> [--strict] [--report PATH] [--jobs N] [--work-dir DIR] [--budget S]
-agentcad publish <dir> --index <name> [--jobs N] [--work-dir DIR] [--budget S]
+agentcad package validate <dir> [--strict] [--report PATH] [--work-dir DIR] [--budget S]
+agentcad publish <dir> --index <name> [--work-dir DIR] [--budget S]
 agentcad publish --yank <name>@<version> --index <name>
 ```
 
@@ -274,6 +357,22 @@ produce a verdict.
 entry — the parts digest, the preset list, the preview paths, the
 `gate: {status, exempt_skips, agentcad, build123d, report_id}` record — is
 derived from the gate's own measurements at publish time.
+
+**Publish re-derives the verdict from the report's own rows.** It does not read
+`report["publishable"]`: it requires the report to carry every gate stage
+exactly once, a summary that is the summary of its own rows, a status those
+counts imply, and a `complete` run — then rules on the rows itself. That is
+what makes the seam safe to hand a report a *different* process produced
+(a cloud registry, PRD-005-lite), and it is the property this section used to
+claim before it was true.
+
+**What the gate measures is the package's inventory** — exactly the files the
+content id covers, which is exactly what a consumer receives. A part declared
+at a path the content id ignores (`*.tmp`, `*.pyc`, `__pycache__/`, …) is a red
+`format` row rather than a proof of a script nobody gets, and a `parts/*.py`
+that no part declares is a red row too: it ships, and no stage ever opened it.
+The tree is copied into the gate's throwaway cell before the stages run, so the
+content id in the report is the id of the bytes the stages read.
 
 ### The nine stages
 
@@ -304,10 +403,17 @@ a fact about the *world* rather than about the package:
 `fem_extra_missing` · `no_policy_configured` · `string_param_unbounded` ·
 `no_connectors_declared` · `reference_part`
 
-…plus two stage-level absences that are legitimate: `no_presets_declared` and
-`not_declared` (no SPECS). Everything else a skipped stage can mean — a
-budget that ran out, a stage nobody selected, a renderer that was not there —
-is "we did not look", which may not read as "publishable".
+…plus two stage-level absences that are legitimate, each tied to the stage
+that owns it: `presets:no_presets_declared` and `specs:not_declared` (no
+SPECS). Everything else a skipped stage can mean — a budget that ran out, a
+stage nobody selected, a renderer that was not there — is "we did not look",
+which may not read as "publishable".
+
+**A stage that produced no rows at all blocks too.** A `presets.json`
+declaring an empty `presets` map measures exactly as much as no file, and it
+has to *say* so: it reports the same `presets:no_presets_declared` skip rather
+than an empty block nobody counts. A configuration that applies but does not
+build is a **failure**, not a pass.
 
 **Every exempt skip is published in the index entry** as
 `<stage>:<reason>`, so a consumer reads what was *not* measured. That is what
@@ -343,9 +449,9 @@ packages, every one green through the real gate:
 | package | part | connectors |
 |---|---|---|
 | `iso4762` | socket-head cap screws, M3–M12 | `head_seat` (rigid), `axis` (cylindrical) |
-| `iso4014` | hex bolts, M4–M12 | `head_seat`, `axis` |
+| `iso4014` | hex bolts, M4–M12 — ISO 4014 head heights on a **fully threaded** shank (the pinned bd_warehouse cannot build the partial thread; the package docs say where that matters) | `head_seat`, `axis` |
 | `iso7380` | button-head screws, M3–M12 | `head_seat`, `axis` |
-| `thread_insert` | heat-set inserts, M2–M6 | `seat`, `bore` |
+| `thread_insert` | heat-set inserts — the five ruthex sizes the pinned bd_warehouse ships (M2, M2.5, M3 short, M4 short, M6; no M5) | `seat`, `bore` |
 | `din625` | 6xx/60xx ball bearings | `bore` (cylindrical), `face` (rigid) |
 | `extrusion_2020`, `extrusion_3030` | T-slot bar, cut to length | six rigid: both ends and each face's slot centreline |
 | `nema17`, `nema23` | motor outlines | `face_mount` (rigid), `shaft` (cylindrical) |
@@ -455,13 +561,17 @@ rendered preview.
   `semantic: false` with `semantic_reason: "no_embedding_provider"`, because
   this build registers none. Present-and-false so you can tell that keyword
   search is what you got.
-- **The gate's build fan-out earns 1.40× on the real catalog** (3-worker pool,
-  107 variants, five interleaved repetitions), which is *below* the 1.5× bar
-  the implementation plan set for keeping it. About 44% of the build stage is
-  inside kernel calls and the rest is per-variant work in the server process,
-  so Amdahl's ceiling at three workers is 1.42×. `--jobs 1` is a first-class
-  path and the report is identical either way. Do not expect `--jobs` to make
-  validation three times faster.
+- **The gate builds variants one at a time, and there is no `--jobs`.** The
+  parallel path was measured against the bar its own plan pre-registered
+  ("under 1.5× on a 3-worker pool, delete it") and missed it three times:
+  1.08×, 1.40× and 1.17×, against an Amdahl ceiling of 1.42× (only ~44% of the
+  build stage is inside kernel calls). It was also not reproducible — worker
+  assignment goes through `hash(affinity)`, which Python randomises per
+  process — and under `--budget` it changed the *verdict*: `jobs=1` and
+  `jobs=4` disagreed on `complete` and therefore on `publishable`. It was
+  deleted rather than defaulted off, and the report is byte-identical to what
+  `--jobs 1` produced. Validation time is dominated by real geometry; budget
+  for it.
 - **The repository and the seed catalog are both Apache-2.0** (founder
   decision, Aug 2026): `LICENSE` at the repo root, `license = "Apache-2.0"`
   in `pyproject.toml`, and every catalog package's `package.json` declares

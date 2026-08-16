@@ -40,9 +40,9 @@ below that installs or runs package code says so (design Decision 11, places
 from __future__ import annotations
 
 import functools
-import json
 
 from .model import ConflictError, NotFoundError, ValidationError
+from .packages import _json
 from .packages import cache, content, from_step, gate, lockfile, provenance, search
 from .packages import format as pkgformat
 from .packages.manager import PackageManager
@@ -185,17 +185,21 @@ def _locked(service, proj: str, name: str) -> dict:
         {"project": proj, "package": name})
 
 
-def _package_doc(tree, name: str) -> dict:
+def _package_doc(tree, name: str, version: str) -> dict:
+    """The cached tree's `package.json`, **proven to be this package**.
+
+    `cache.install` makes the same check, so this is the second half of a
+    belt-and-braces pair rather than a duplicate: a cache directory populated
+    by an earlier build (or by hand) has never been through the install-time
+    check, and materialisation is where a mislabelled tree would become a
+    provenance header claiming a package the script does not come from.
+    """
     try:
-        doc = json.loads((tree / "package.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError) as exc:
-        raise ValidationError(
-            f"the cached copy of {name} has an unreadable package.json: {exc}",
-            {"package": name, "path": str(tree)}) from exc
-    if not isinstance(doc, dict):
-        raise ValidationError(f"the cached copy of {name} has a package.json "
-                              f"that is not an object", {"package": name})
-    return doc
+        return cache.refuse_identity_mismatch(tree, name, version)
+    except ValidationError as exc:
+        raise ValidationError(exc.message,
+                              {**(exc.details or {}), "package": name,
+                               "path": str(tree)}) from exc
 
 
 def _preset_params(tree, name: str, part: str, preset: str | None) -> dict:
@@ -205,11 +209,9 @@ def _preset_params(tree, name: str, part: str, preset: str | None) -> dict:
     doc = {}
     if path.is_file():
         try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, UnicodeDecodeError) as exc:
-            raise ValidationError(
-                f"the cached copy of {name} has an unreadable presets.json: "
-                f"{exc}", {"package": name}) from exc
+            doc = _json.read(path, f"the cached copy of {name}: presets.json")
+        except ValidationError as exc:
+            raise ValidationError(exc.message, {"package": name}) from exc
     configs = ((doc.get("presets") or {}).get(part)
                if isinstance(doc, dict) else None)
     entry = configs.get(preset) if isinstance(configs, dict) else None
@@ -227,10 +229,20 @@ def materialize(service, proj: str, name: str, part: str, part_id: str,
     """Copy a package part into the project, header first.
 
     **No index, no network, ever** — the lock says which version, the cache
-    holds it, and :func:`cache.require` re-verifies the **whole tree** before a
-    byte is copied. That unconditional re-verification is AC3's tamper half and
-    AC4's offline half at once, and it is affordable because of the published
-    ceilings (~1 ms on a realistic package).
+    holds it, and :func:`cache.require_verified` re-verifies the **whole tree**
+    before a byte is copied. That unconditional re-verification is AC3's tamper
+    half and AC4's offline half at once, and it is affordable because of the
+    published ceilings (~1 ms on a realistic package).
+
+    **The lock's content id is the authority, and the header quotes what was
+    measured.** The cached tree is verified against
+    ``packages_lock[name].content_id`` — the git-tracked, reviewable number —
+    and not merely against its own receipt, which whatever installed the tree
+    wrote. Without that binding, two indexes publishing `name@version` with
+    different bytes both produce receipt-verified caches, and a project whose
+    lock names index B's id would materialise index A's bytes under a header
+    claiming B's id, status ``ok``. What is stamped into the header is the id
+    measured from the bytes that were copied.
 
     Re-materialising the same package part produces **byte-identical** bytes:
     the header carries no timestamp, no client id and no absolute path.
@@ -240,6 +252,18 @@ def materialize(service, proj: str, name: str, part: str, part_id: str,
     if not isinstance(version, str):
         raise ValidationError(
             f"the lock entry for {name!r} names no version", {"package": name})
+    locked_id = entry.get("content_id")
+    if not content.is_content_id(locked_id):
+        # Fail-closed, for `_locked`'s reason: a lock entry with no content id
+        # is a hand-edited manifest, and materialising against "whatever is in
+        # the cache" is exactly the binding this function exists to make.
+        raise ValidationError(
+            f"the lock entry for {name!r} carries no content id "
+            f"({locked_id!r}), so there is nothing to verify the cached tree "
+            f"against. Run add_package for {name!r} to write a lock entry — "
+            f"materialising against an unbound cache would attest a tree "
+            f"nobody recorded.",
+            {"project": proj, "package": name, "content_id": locked_id})
     try:
         service.store.get_part(proj, part_id)
     except NotFoundError:
@@ -251,8 +275,9 @@ def materialize(service, proj: str, name: str, part: str, part_id: str,
             f"you may have edited.",
             {"project": proj, "part_id": part_id})
 
-    tree = cache.require(name, version)
-    doc = _package_doc(tree, name)
+    tree, measured_id = cache.require_verified(
+        name, version, expected_content_id=locked_id)
+    doc = _package_doc(tree, name, version)
     declared = (doc.get("parts") or {}).get(part) if isinstance(doc, dict) else None
     if not isinstance(declared, dict) or pkgformat.part_payload(declared)[1] is None:
         raise NotFoundError(
@@ -293,14 +318,28 @@ def materialize(service, proj: str, name: str, part: str, part_id: str,
     overrides.update(params or {})
     head = provenance.header({
         "name": name, "version": version, "part": part, "preset": preset,
-        "index": entry.get("index"), "content_id": entry.get("content_id"),
+        "index": entry.get("index"),
+        # MEASURED, never copied from the lock: the two are equal because
+        # `require_verified` refused otherwise, and stamping the measurement is
+        # what makes that equality a fact in the file rather than an assumption.
+        "content_id": measured_id,
         "script_sha256": provenance.script_sha256(body)})
+    # **Refused BEFORE anything is written.** `set_params` is still what
+    # validates the overrides against the script's own PARAMS spec, but it can
+    # only do it once a part exists — and the rollback that followed a refusal
+    # published a create and a delete, i.e. two history snapshots, so one undo
+    # after a FAILED use_part resurrected a part the user never successfully
+    # made. Checking the overrides against the inspected spec first means the
+    # realistic failure (a preset or a `params` the part cannot accept) never
+    # creates the part at all, so there is nothing to resurrect. It is also a
+    # strictly stronger check than `set_params` alone: `set_params` stores a
+    # numeric raw and the *worker clamps it at build*, while
+    # `validate_configuration` catches the range and enum violations — the same
+    # reasoning the gate's `presets` stage records.
+    _refuse_unusable_overrides(service, name, version, part, body, overrides)
     # The public, locked, guarded path — `create_part` then `set_params` —
     # even though it builds twice (once at the package's defaults, once at the
-    # preset's). `set_params` is what VALIDATES the preset's names and types
-    # against the script's own PARAMS spec before a byte reaches the manifest,
-    # and a package from an unvalidated local index is exactly the case that
-    # needs it. One extra build, once per materialised part, is the price.
+    # preset's). One extra build, once per materialised part, is the price.
     service.create_part(proj, part_id,
                         label=declared.get("label") or part_id,
                         script=head + body)
@@ -317,6 +356,34 @@ def materialize(service, proj: str, name: str, part: str, part_id: str,
                 pass
             raise
     return service.get_part(proj, part_id)
+
+
+def _refuse_unusable_overrides(service, name, version, part, script,
+                               overrides) -> None:
+    """Refuse a preset or `params` the part cannot accept — before any write.
+
+    One `inspect` call, which is cheap beside the build `create_part` is about
+    to do anyway. A kernel that cannot answer is **not** a refusal: `inspect`
+    failing means the script does not load, and `create_part` is about to say
+    so with the kernel's own message and traceback — inventing a second, worse
+    error here would bury it.
+    """
+    if not overrides:
+        return
+    try:
+        result = service.kernel.request("inspect", {"script": script})
+    except Exception:      # noqa: BLE001 — create_part reports this properly
+        return
+    spec = result.get("params_spec") or {}
+    problems = pkgformat.validate_configuration({"params": overrides}, spec)
+    if problems:
+        raise ValidationError(
+            f"{name}@{version} part {part!r} cannot take these parameters: "
+            + "; ".join(problem["message"] for problem in problems)
+            + ". Nothing was materialised.",
+            {"package": name, "version": version, "part": part,
+             "params": overrides,
+             "problems": [problem.get("code") for problem in problems]})
 
 
 # --------------------------------------------------------------- reporting
@@ -447,12 +514,12 @@ def register(registry, service) -> None:
             work_dir=work_dir)
 
     def validate_package(path: str, strict: bool = False,
-                         stages: list | None = None, jobs: int | None = None,
+                         stages: list | None = None,
                          work_dir: str | None = None,
                          budget_s: float | None = None) -> dict:
         return gate.PackageGate(service).run(
             path, stages=gate.GATE_STAGES if stages is None else stages,
-            strict=strict, jobs=jobs, work_dir=work_dir, budget_s=budget_s)
+            strict=strict, work_dir=work_dir, budget_s=budget_s)
 
     registry.register(Tool(
         "search_packages",
@@ -500,14 +567,20 @@ def register(registry, service) -> None:
         "path or any other machine fact, so two branches that add the same "
         "package write byte-identical entries and merge clean. version_req is "
         "X.Y.Z, ^X.Y.Z (>=X.Y.Z <X+1.0.0), ~X.Y.Z (>=X.Y.Z <X.Y+1.0) or * "
-        "(the highest non-yanked); 'index' pins one index explicitly. OFFLINE "
+        "(the highest non-yanked); 'index' pins one index explicitly. AN "
+        "OMITTED ARGUMENT DOES NOT OVERWRITE A DECLARED ONE: absent means 'you "
+        "did not say', so a package this project already declares keeps its "
+        "version_req and its pinned index, and any declaration this call did "
+        "move comes back in 'requirement_change' {version_req|index: {from, "
+        "to}} rather than happening silently. OFFLINE "
         "IS NOT A SECOND ANSWER: with no index reachable this resolves from "
         "the cache and reconstructs a lock entry byte-identical to the one an "
         "online install would have written. A content-id mismatch installs "
         "NOTHING and names both ids — it never silently re-fetches. Returns "
         "{project, package, lock, cached, offline, tried, warnings}; an "
         "unresolvable name is a not_found_error naming every index tried and "
-        "why each failed. " + _NON_CLAIM,
+        "why each failed. Returns 'requirement_change' too — null when nothing "
+        "moved. " + _NON_CLAIM,
         schema({"project": _PROJ,
                 "name": {"type": "string", "description": "Package name"},
                 "version_req": {"type": "string",
@@ -560,10 +633,21 @@ def register(registry, service) -> None:
         "proposal diff. THIS CALL NEVER TOUCHES AN INDEX OR THE NETWORK: it "
         "reads packages_lock, re-verifies the WHOLE cached tree (every time — "
         "a receipt is a claim, and the tampered file is the thing we are "
-        "looking for), and copies. Optional 'preset' applies a shipped "
+        "looking for), and copies. THE LOCK'S content_id IS THE AUTHORITY: the "
+        "cached tree is verified against packages_lock[name].content_id (the "
+        "git-tracked number), not merely against its own receipt — two indexes "
+        "can publish the same name@version with different bytes and both would "
+        "verify against their own receipts, so a mismatch materialises NOTHING "
+        "and names both ids. The header then carries the content id MEASURED "
+        "from the bytes that were copied. Optional 'preset' applies a shipped "
         "configuration's parameters and 'params' overrides them one by one. "
         "Re-materialising the same package part is byte-identical: the header "
-        "carries no timestamp, no client id and no absolute path. Returns the "
+        "carries no timestamp, no client id and no absolute path. PRESET AND "
+        "params ARE VALIDATED AGAINST THE PART'S INSPECTED PARAMS SPEC BEFORE "
+        "ANYTHING IS WRITTEN, so a refusal writes nothing and leaves nothing "
+        "to undo; a SUCCESSFUL call with overrides is two store writes "
+        "(create_part then set_params) and therefore TWO undo steps — undo "
+        "once and the part stays at the package's defaults. Returns the "
         "ordinary get_part payload plus 'package_provenance' — " + _STATUSES +
         " A package declared with no packages_lock entry is REFUSED "
         "(fail-closed: guessing a version invents a dependency), a part_id "
@@ -602,15 +686,22 @@ def register(registry, service) -> None:
         "stages[].items[], fix the package, validate again. 'stages' takes a "
         "subset for a fast iteration, and an unselected stage makes "
         "'publishable' false — a subset run did not look, so it cannot say "
-        "the package is publishable. " + _NON_CLAIM,
+        "the package is publishable. A stage that produced NO rows blocks too, "
+        "unless it carries an exempt reason naming the absence (today "
+        "'presets:no_presets_declared' and 'specs:not_declared'): a stage that "
+        "measured nothing did not look, whether it says so or not. The gate "
+        "measures the package's INVENTORY — the exact files the content id "
+        "covers and a consumer receives — so a declared part the id ignores, "
+        "or a parts/*.py no part declares, is a red 'format' row. The tree is "
+        "SNAPSHOTTED into the throwaway cell before the stages run, so the "
+        "content id in 'package' is the id of the bytes the stages read. " +
+        _NON_CLAIM,
         schema({"path": {"type": "string",
                          "description": "The package directory"},
                 "strict": {"type": "boolean",
                            "description": "Count skips as failures"},
                 "stages": {"type": "array",
                            "description": "Subset of the nine stages"},
-                "jobs": {"type": "integer",
-                         "description": "Parallel variant builds"},
                 "work_dir": {"type": "string",
                              "description": "Where the throwaway cell goes"},
                 "budget_s": {"type": "number",

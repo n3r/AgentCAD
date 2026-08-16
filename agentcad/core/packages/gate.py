@@ -53,7 +53,6 @@ the gate's own keys; see its docstring.
 from __future__ import annotations
 
 import ast
-import json
 import os
 import platform
 import shutil
@@ -63,7 +62,6 @@ import tempfile
 import time
 import zlib
 from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import agentcad
@@ -76,7 +74,7 @@ from ..checks import exit_code, finalize_report, make_item, make_stage
 # deadline is never in the past, so it bounds nothing).
 from ..checks import _finite
 from ..model import AppError, NotFoundError, ValidationError
-from . import content, format as pkgformat
+from . import _json, content, format as pkgformat
 
 #: The nine stages, in dependency- and cost-order. A run always reports all
 #: nine — an unselected one is `skip`/`not_selected` — so a consumer never has
@@ -104,15 +102,21 @@ PUBLISH_SKIP_EXEMPT = ("fem_extra_missing", "no_policy_configured",
                        "string_param_unbounded", "no_connectors_declared",
                        "reference_part")
 
-#: Stage-level skip reasons that do not block a publish. A stage skipped for
-#: any other reason — `not_selected`, `budget_exceeded`, `not_implemented` —
-#: **was not measured**, and "we did not look" may not read as "publishable".
-#: The two members are *legitimate absences*: a package may ship no
-#: configurations and no SPECS, exactly as `no_connectors_declared` says a
-#: plain solid may declare no connectors. Both are recorded in
+#: Stage-level skips that do not block a publish, as **(stage, reason)**. A
+#: stage skipped for any other reason — `not_selected`, `budget_exceeded`,
+#: `not_implemented` — **was not measured**, and "we did not look" may not read
+#: as "publishable". The two members are *legitimate absences*: a package may
+#: ship no configurations and no SPECS, exactly as `no_connectors_declared`
+#: says a plain solid may declare no connectors. Both are recorded in
 #: `report["exempt_skips"]` as `<stage>:<reason>`, so a consumer reads what
 #: was not measured rather than inferring it.
-STAGE_SKIP_EXEMPT = ("no_presets_declared", "not_declared")
+#:
+#: **Pairs, not bare reasons.** Membership used to be tested against the reason
+#: alone, so any *other* stage that ever emitted `not_declared` would have been
+#: exempted by a string it does not own — a latent hole that cost nothing to
+#: close and would have been silent when it opened.
+STAGE_SKIP_EXEMPT = (("presets", "no_presets_declared"),
+                     ("specs", "not_declared"))
 
 #: The non-claim, in the words design Decision 11 fixes. It is a top-level
 #: report field, it is in every tool description, the CLI prints it above the
@@ -128,6 +132,11 @@ SECURITY_NOTE = (
 #: told which project it is measuring.
 GATE_PROJECT = "pkg_gate"
 
+#: Where the package snapshot lives inside the cell. Leading dot, so it can
+#: never be mistaken for (or collide with) a project the ephemeral service
+#: makes — a project id is `^[a-z][a-z0-9_]{0,39}$`.
+SNAPSHOT_DIR = ".package-snapshot"
+
 #: A README shorter than this is a stub, not documentation. The floor is 200
 #: characters because the smallest README this repository ships is
 #: `examples/prototyping/README.md` at 3 061 bytes (the others run to 6 864),
@@ -138,11 +147,6 @@ MIN_README_CHARS = 200
 README_PATH = "docs/README.md"
 
 _NUMERIC = ("number", "int")
-
-#: Ceiling on the fan-out: `min(pool_size, 4)` unless `--jobs` says otherwise.
-#: Four because a kernel worker holds ~0.5 GB and the pool is the resource
-#: being shared, not the CPU.
-MAX_JOBS = 4
 
 #: The renders the previews stage produces. Small on purpose: a preview is a
 #: listing thumbnail, and the gate renders one per part per run.
@@ -329,9 +333,19 @@ def verdict(stages: list[dict]) -> dict:
 
     Fail-closed and pure. A `fail` or an `error` blocks. A `skip` blocks
     unless its reason is in :data:`PUBLISH_SKIP_EXEMPT`. A whole stage that
-    was skipped blocks unless its reason is in :data:`STAGE_SKIP_EXEMPT` —
-    which is what makes `validate --stages format` honest: a subset run cannot
-    answer "publishable", because it did not look.
+    was skipped blocks unless its `(name, reason)` is in
+    :data:`STAGE_SKIP_EXEMPT` — which is what makes `validate --stages format`
+    honest: a subset run cannot answer "publishable", because it did not look.
+
+    **A stage that produced NO rows and gave no reason blocks too**, and that
+    is the one rule here that is not obvious. Both branches used to key off
+    `stage["reason"]`, so `make_stage(name, [])` — reason `None`, zero items —
+    was invisible: it contributed nothing to `blockers`, nothing to
+    `exempt_skips`, and nothing to the summary, so the report said green and
+    the stage had measured *nothing*. `presets.json = {"format": 1, "presets":
+    {}}` reached it. A stage that measured nothing is a stage that did not
+    look, whether it says so or not; if the absence is legitimate the stage
+    says which absence, and that reason is what makes it exempt and disclosed.
 
     **Every entry in `exempt_skips` is `<stage>:<reason>`**, row-level and
     stage-level alike. Slice 8 publishes this list into the index entry, where
@@ -341,12 +355,16 @@ def verdict(stages: list[dict]) -> dict:
     blockers: list[str] = []
     exempt: list[str] = []
     for stage in stages:
+        name = str(stage.get("name"))
         reason = stage.get("reason")
-        if reason and reason not in STAGE_SKIP_EXEMPT:
-            blockers.append(str(stage.get("name")))
+        rows = stage.get("items") or []
+        if reason and (name, reason) not in STAGE_SKIP_EXEMPT:
+            blockers.append(name)
         elif reason:
-            exempt.append(f"{stage.get('name')}:{reason}")
-        for item in stage.get("items") or []:
+            exempt.append(f"{name}:{reason}")
+        elif not rows:
+            blockers.append(name)
+        for item in rows:
             status = item.get("status")
             if status in ("fail", "error"):
                 blockers.append(str(item.get("id")))
@@ -381,10 +399,23 @@ def validate_gate_report(report) -> list[str]:
     it raises for names this module does declare, then applies the gate's own
     stage-name rule and checks the three additional keys.
 
-    The subtraction is by exact message, not by pattern: if PRD-004 ever
-    rewords that problem, nothing is silently dropped —
-    `test_the_report_is_a_prd004_report_apart_from_its_stage_names` goes red
-    instead.
+    **The subtraction is by exact message, and that coupling is deliberate
+    but sharp.** The strings this function builds must match
+    `checks.validate_report`'s unknown-stage-name problem **character for
+    character**, including the `', '.join(checks.ALL_STAGES)` tail. If PRD-004
+    rewords that message, nothing is silently dropped — the subtraction simply
+    stops matching and every gate report starts failing validation, which
+    would take `publish` down with it. That is loud by design (a pattern match
+    would have *quietly* let an unknown stage through), and it is contained by
+    `test_the_report_is_a_prd004_report_apart_from_its_stage_names`, which
+    reconstructs the message from `checks.ALL_STAGES` and goes red in the test
+    suite before it can go red in a publisher. **If you are editing
+    `checks.validate_report`'s message: this function and that test are the
+    two places to update, and the test will tell you.**
+
+    Duplicate stage names are a problem in their own right: a report carrying
+    `format` twice satisfies every per-index check and lets `_stage()` — which
+    returns the *first* match — digest one copy while the verdict reads both.
     """
     problems = checks.validate_report(report)
     if not isinstance(report, dict):
@@ -392,6 +423,7 @@ def validate_gate_report(report) -> list[str]:
     stages = report.get("stages")
     subtract: set[str] = set()
     if isinstance(stages, list):
+        seen: set = set()
         for index, stage in enumerate(stages):
             name = stage.get("name") if isinstance(stage, dict) else None
             if name in GATE_STAGES:
@@ -402,6 +434,11 @@ def validate_gate_report(report) -> list[str]:
                 problems.append(
                     f"stages[{index}]: unknown gate stage {name!r}; expected "
                     f"one of {', '.join(GATE_STAGES)}")
+            if name in seen:
+                problems.append(
+                    f"stages[{index}]: stage {name!r} appears more than once; "
+                    f"a report has exactly one block per stage")
+            seen.add(name)
     problems = [problem for problem in problems if problem not in subtract]
 
     package = report.get("package")
@@ -440,7 +477,7 @@ class PackageGate:
         self._service = service
 
     def run(self, path, *, stages=GATE_STAGES, strict: bool = False,
-            jobs: int | None = None, work_dir: str | None = None,
+            work_dir: str | None = None,
             budget_s: float | None = None) -> dict:
         """Measure the package at *path* and answer with one report.
 
@@ -453,7 +490,6 @@ class PackageGate:
         selected = _selected(stages)
         budget = (None if budget_s is None
                   else _finite(budget_s, "budget_s", "--budget"))
-        jobs = _jobs(jobs)
         source = Path(path).expanduser().resolve()
         if not source.is_dir():
             raise NotFoundError(
@@ -467,7 +503,7 @@ class PackageGate:
         cell = Path(tempfile.mkdtemp(
             prefix=f"agentcad-package-{os.getpid()}-", dir=str(root))).resolve()
         try:
-            run = _Run(source, selected, jobs=jobs,
+            run = _Run(source, selected,
                        deadline=None if budget is None else started + budget,
                        # PRD-031 FR2(b)'s seam, read at run time off the
                        # caller's service (never captured at construction).
@@ -548,14 +584,6 @@ def _selected(stages) -> set[str]:
     return set(names)
 
 
-def _jobs(jobs) -> int | None:
-    if jobs is None:
-        return None
-    if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1:
-        raise ValidationError(f"jobs must be a positive integer; got {jobs!r}")
-    return jobs
-
-
 def _host(kernel) -> dict:
     """The machine, so a report read on another one is interpretable.
 
@@ -591,11 +619,14 @@ def _host(kernel) -> dict:
 class _Run:
     """One gate run: the state, the stages, and no other run's policy."""
 
-    def __init__(self, source: Path, selected: set[str], *, jobs: int | None,
+    def __init__(self, source: Path, selected: set[str], *,
                  deadline: float | None, policy=None):
+        #: Where the package really lives. `self.source` becomes the snapshot
+        #: inside the cell once `_read_package` has taken one, and every stage
+        #: reads `self.source`; this is what the moving-target check re-hashes.
+        self.origin = source
         self.source = source
         self.selected = selected
-        self.jobs = jobs
         self.deadline = deadline
         self.policy = policy
         self.truncated = False
@@ -621,28 +652,30 @@ class _Run:
     # ------------------------------------------------------------- driving
 
     def measure(self, cell: Path, kernel) -> list[dict]:
-        self._read_package()
+        self._read_package(cell)
         self.service, self.registry, _proj = _ephemeral_service(cell, kernel)
         blocks = [self._stage(name) for name in GATE_STAGES]
         self._refuse_a_moving_target()
         return blocks
 
     def _refuse_a_moving_target(self) -> None:
-        """The content id is re-computed after the stages, and a tree that
-        changed underneath the run makes the report **incomplete**.
+        """The **origin** is re-hashed after the stages, and an origin that
+        moved makes the report **incomplete**.
 
-        The gate reads the package once, at the start, and slice 8 publishes
-        that id as what was measured. Nothing in the gate can move the tree —
-        it never writes into the package — but an editor, a build script or a
-        concurrent `git checkout` can, and then the evidence would describe a
-        tree nobody has. Exit 2 says exactly that: we could not produce a
-        verdict. The re-hash costs ~1 ms on a realistic package and ~67 ms at
-        the published ceiling (changelog 0168).
+        With the snapshot in place this is no longer what makes the id
+        trustworthy — the stages read the snapshot, and the published id is the
+        snapshot's, so a tree that moves mid-run can no longer make the report
+        describe bytes nobody measured. What it still catches is the thing a
+        *publisher* has to know: the directory it is about to publish is not
+        the directory the gate copied. `publish` re-hashes the source too and
+        refuses on its own, so this is the earlier, more explanatory half of
+        the same refusal. The re-hash costs ~1 ms on a realistic package and
+        ~67 ms at the published ceiling (changelog 0168).
         """
         if self.content_id is None:
             return
         try:
-            after = content.content_id(self.source)
+            after = content.content_id(self.origin)
         except ValidationError as exc:
             after = None
             self.warnings.append(f"the package tree could not be re-read after "
@@ -651,10 +684,11 @@ class _Run:
             return
         self.truncated = True
         self.warnings.append(
-            f"the package directory changed while the gate was running: it "
-            f"hashed to {self.content_id} before the stages and {after} after "
-            f"them. The rows above describe a tree that is no longer on disk, "
-            f"so this report is not a verdict — re-run it.")
+            f"the package directory changed while the gate was running: the "
+            f"gate measured {self.content_id} and {self.origin} now hashes to "
+            f"{after}. The rows above describe the snapshot the gate took, "
+            f"which is no longer what is on disk, so this report is not a "
+            f"verdict for that directory — re-run it.")
 
     def _stage(self, name: str) -> dict:
         started = time.monotonic()
@@ -691,32 +725,69 @@ class _Run:
 
     # -------------------------------------------------------------- reading
 
-    def _read_package(self) -> None:
-        """`package.json` and the inventory, read once for every stage.
+    def _read_package(self, cell: Path) -> None:
+        """**Snapshot the package into the cell**, then read `package.json`
+        and the inventory off the snapshot.
 
-        Both failures are recorded rather than raised: the `format` stage is
-        where they become rows, and `contract` still has to be able to say
+        This is the fix for a TOCTOU the gate used to have wide open: the id
+        was hashed once at the start and every stage then read the tree
+        *live*, so a file swapped in after the hash and swapped back before
+        the closing re-hash was measured by the stages and invisible to both
+        endpoint comparisons (`_refuse_a_moving_target` compares endpoints, not
+        the interval). The published id then belonged to bytes no stage read.
+
+        Copying first and hashing the copy closes it structurally rather than
+        carefully: **the id is the id of the bytes the stages consumed**,
+        because there is only one tree they can consume and nothing outside
+        this process can reach it. The cell is already private, already
+        `mkdtemp`-made, already deleted afterwards, and already proven not to
+        overlap the package directory, so the snapshot costs one copy of a
+        tree the inventory has just read anyway.
+
+        The copy is skipped when the tree breaks the published ceilings: those
+        are already a red `format` row, and copying up to a hostile amount of
+        data to report a size problem would be the wrong trade. In that one
+        case the stages read the origin, exactly as they used to — and the
+        report is red either way.
+
+        Both read failures are recorded rather than raised: the `format` stage
+        is where they become rows, and `contract` still has to be able to say
         that it could not run.
         """
-        path = self.source / "package.json"
+        self._snapshot(cell)
         try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, UnicodeDecodeError) as exc:
-            self.doc_error = f"package.json is unreadable: {exc}"
+            self.doc = _json.read_object(self.source / "package.json",
+                                         "package.json")
+        except ValidationError as exc:
+            self.doc_error = exc.message
         else:
-            if isinstance(doc, dict):
-                self.doc = doc
-                name, version = doc.get("name"), doc.get("version")
-                self.package_name = name if isinstance(name, str) else None
-                self.package_version = version if isinstance(version, str) \
-                    else None
-            else:
-                self.doc_error = "package.json must be a JSON object"
+            name, version = self.doc.get("name"), self.doc.get("version")
+            self.package_name = name if isinstance(name, str) else None
+            self.package_version = version if isinstance(version, str) else None
+
+    def _snapshot(self, cell: Path) -> None:
+        """Copy the inventoried files into the cell and read from there."""
         try:
-            self.inventory = content.inventory(self.source)
-            self.content_id = content.content_id_of(self.inventory)
+            entries = content.inventory(self.origin)
         except ValidationError as exc:
             self.inventory_error = str(exc)
+            return
+        if content.check_ceilings(entries):
+            # Over the ceilings: a red `format` row, and not a tree to copy.
+            self.inventory = entries
+            self.content_id = content.content_id_of(entries)
+            return
+        snapshot = Path(cell) / SNAPSHOT_DIR
+        try:
+            _copy_inventory(self.origin, snapshot, entries)
+            self.inventory = content.inventory(snapshot)
+        except (ValidationError, OSError) as exc:
+            self.inventory_error = (
+                f"the package could not be copied into the gate's work cell: "
+                f"{exc}")
+            return
+        self.source = snapshot
+        self.content_id = content.content_id_of(self.inventory)
 
     def _declared_parts(self) -> dict:
         """Every part the manifest declares **usably** — a `script` part with a
@@ -841,11 +912,35 @@ class _Run:
                            details={"previews": previews})]
 
     def _format_part_files(self) -> list[dict]:
-        """One row per declared part whose file is actually there. A file that
-        is *not* there is already a `parts.<id>.file` problem from the manifest
-        validator, and two rows for one fact would be two ids for one
-        subject."""
+        """One row per declared part, measured against **the inventory** — and
+        one row per inventoried script no part declares.
+
+        The inventory is the tree the content id is computed over, and it is
+        the only thing a consumer receives: `_copy_inventory` copies exactly
+        it into the cache and into the index. So "the file is on disk" is the
+        wrong question, and asking it was a real hole in both directions:
+
+        * a declared part at `parts/x.tmp` passed every stage — the gate
+          inspected it, built it, ran its specs — while `content.IGNORED`
+          excluded it from the id, so publish shipped a **scriptless package
+          advertised green**, with the parts digest of a script that is not in
+          it;
+        * an *undeclared* `parts/y.py` shipped inside the id with no stage
+          ever opening it: code a consumer receives and the gate never claims
+          anything about.
+
+        Both are `fail`, and both name the path. The rule to keep is one
+        sentence: **the gate measures what ships.**
+        """
         items = []
+        # A tree that could not be inventoried at all (a symlink in it, an
+        # unreadable file) is ALREADY one honest `format` row from
+        # `_format_inventory`. Comparing every declared part against an empty
+        # set here would add one spurious "not in the package's content" row
+        # per part, all of them naming the wrong cause.
+        known = self.inventory is not None
+        inventoried = {path for path, _size, _sha in (self.inventory or [])}
+        declared_paths: set[str] = set()
         for part_id, entry in self._declared_parts().items():
             key, relpath = pkgformat.part_payload(entry)
             try:
@@ -853,14 +948,83 @@ class _Run:
                                               what=f"parts.{part_id}.{key}")
             except ValidationError:
                 continue
+            declared_paths.add(relpath)
+            if known and relpath not in inventoried:
+                code, why = self._why_not_inventoried(relpath, path,
+                                                      inventoried)
+                items.append(self._item(
+                    "format", "part", f"parts.{part_id}", "fail",
+                    f"{relpath} is declared by {part_id!r} and is NOT in the "
+                    f"package's content, so it is not hashed, not cached and "
+                    f"not published — the gate would prove a script the "
+                    f"package does not ship. {why}",
+                    details={key: relpath, "kind": pkgformat.part_kind(entry),
+                             "inventoried": False, "cause": code}))
+                continue
             if not path.is_file():
+                # Already a `parts.<id>.<key>` problem from the manifest
+                # validator, and two rows for one fact would be two ids for one
+                # subject.
                 continue
             items.append(self._item(
                 "format", "part", f"parts.{part_id}", "pass",
                 f"{relpath} — {path.stat().st_size} bytes "
                 f"({pkgformat.part_kind(entry)})",
-                details={key: relpath, "kind": pkgformat.part_kind(entry)}))
+                details={key: relpath, "kind": pkgformat.part_kind(entry),
+                         "inventoried": True}))
+        for relpath in sorted(inventoried - declared_paths):
+            if not relpath.startswith(pkgformat.PART_FILE_DIR) \
+                    or not relpath.endswith(".py"):
+                continue
+            items.append(self._item(
+                "format", "check", relpath, "fail",
+                f"{relpath} ships inside this package's content id and no "
+                f"part declares it, so no stage ever opened it: it is not "
+                f"inspected, not built, not spec-checked and not policy-"
+                f"checked, yet a consumer receives it. Declare it in "
+                f"package.json parts, or delete it",
+                details={"path": relpath, "declared": False}))
         return items
+
+    # ------------------------------------------------------ stage: contract
+
+    def _why_not_inventoried(self, relpath: str, path: Path,
+                             inventoried: set) -> tuple[str, str]:
+        """``(code, sentence)`` — why a declared file is not in the inventory.
+
+        There are several ways to be absent from a tree the inventory just
+        walked, and they need different fixes. Naming the ignore patterns
+        unconditionally was right for the case that motivated the row and wrong
+        for the others: a part that is simply missing would have been told to
+        rename itself, which does nothing.
+
+        A **symlink** is deliberately not one of the answers: `content.
+        inventory` refuses any symlink outright, so a symlinked part fails the
+        whole inventory and `_format_inventory` reports it by name before this
+        function is reached. This is only ever called when the inventory *was*
+        read.
+        """
+        if content.is_ignored(relpath):
+            return "ignored_pattern", (
+                f"It matches a pattern the content id excludes "
+                f"({', '.join(content.IGNORED)}). Rename it to a path the "
+                f"content id covers.")
+        folded = {entry.lower() for entry in inventoried}
+        if relpath.lower() in folded:
+            near = sorted(entry for entry in inventoried
+                          if entry.lower() == relpath.lower())
+            return "case_mismatch", (
+                f"The tree holds {', '.join(near)} — the same name in a "
+                f"different case. This filesystem is case-insensitive and the "
+                f"content id is not, so a consumer on a case-sensitive one "
+                f"gets a package with no such file. Make the two agree.")
+        if not path.exists():
+            return "absent", (
+                "There is no such file in the package directory. Add it, or "
+                "point parts at the file you meant.")
+        return "not_inventoried", (
+            "It is on disk but the inventory did not record it. Re-run the "
+            "gate; if it persists, the file is unreadable to this process.")
 
     # ------------------------------------------------------ stage: contract
 
@@ -981,10 +1145,10 @@ class _Run:
             return make_stage("presets", reason="no_presets_declared",
                               duration_s=_elapsed(started))
         try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            doc = _json.read(path, "presets.json")
+        except ValidationError as exc:
             item = self._item("presets", "check", "presets.json", "fail",
-                              f"presets.json is unreadable: {exc}")
+                              exc.message)
             return make_stage("presets", [item], duration_s=_elapsed(started))
 
         declared = self._declared_parts()
@@ -1015,6 +1179,15 @@ class _Run:
                         details={"kind": "reference"}))
                     continue
                 items.append(self._preset_item(part_id, name, entry))
+        if not items:
+            # A `presets.json` that declares no configuration measures exactly
+            # as much as no `presets.json` at all, and it must SAY so: a stage
+            # block with zero rows and no reason is invisible to the verdict,
+            # to `exempt_skips` and to the summary, which is how
+            # `{"format": 1, "presets": {}}` used to publish green through a
+            # stage that had looked at nothing.
+            return make_stage("presets", reason="no_presets_declared",
+                              duration_s=_elapsed(started))
         return make_stage("presets", items, duration_s=_elapsed(started))
 
     def _preset_item(self, part_id: str, name: str, entry) -> dict:
@@ -1050,11 +1223,28 @@ class _Run:
                 "presets", "check", subject, "fail",
                 f"configuration {name!r} of {part_id!r} is not usable: "
                 f"{message}", error=error,
-                details={"params": params,
+                details={"params": params, "built": built,
                          "problems": [p.get("code") for p in problems]})
+        if applied and built is False:
+            # `set_params` accepted the values and the rebuild it triggered did
+            # not produce geometry. The row used to read "applied and built"
+            # with `built: false` sitting in its own details — a `pass` whose
+            # message contradicted its data, and the reason `validate --stages
+            # presets` could answer green about a package that never builds.
+            return self._item(
+                "presets", "check", subject, "fail",
+                f"configuration {name!r} of {part_id!r} applies but does not "
+                f"build: {params} was accepted by set_params and the rebuild "
+                f"produced no geometry. A configuration nobody can build is "
+                f"not a configuration this package ships — run the build stage "
+                f"for the kernel's own message",
+                details={"params": params, "built": False,
+                         "label": entry.get("label") if isinstance(entry, dict)
+                         else None})
         return self._item(
             "presets", "check", subject, "pass",
-            f"{name}: {params} applied and built",
+            f"{name}: {params} applied and built"
+            if applied else f"{name}: {params} validated against the spec",
             details={"params": params, "built": built,
                      "label": entry.get("label") if isinstance(entry, dict)
                      else None})
@@ -1160,12 +1350,25 @@ class _Run:
     # --------------------------------------------------------- stage: build
 
     def _stage_build(self, started: float) -> dict:
-        """Every variant of every part, built through `service._rebuild`.
+        """Every variant of every part, built through `service._rebuild`, in
+        `plan` order, one at a time.
 
-        The parts are created **first, serially** (store writes, no kernel),
-        so the build phase makes no manifest writes at all: concurrent
-        `_rebuild` calls then touch only distinct `.cache/` keys and distinct
-        `_status` slots, which is what makes the fan-out safe.
+        **Serial, and the parallel path was deleted rather than kept behind a
+        flag** (changelog 0181). The plan pre-registered "under 1.5x on a
+        3-worker pool, delete it" and three independent measurements came in at
+        1.08x, 1.40x and 1.17x, against an Amdahl ceiling of 1.42x. Worse, the
+        distribution was never reproducible — `KernelPool._pick` routes on
+        `hash(affinity) % size` and `hash(str)` is `PYTHONHASHSEED`-randomised,
+        so each process drew a different assignment and any measured speedup
+        was a sample rather than a property. And it cost determinism where it
+        mattered most: under `--budget`, `jobs=1` and `jobs=4` disagreed on
+        `complete` and therefore on `publishable` (reproduced 3x). The safety
+        premise in the deleted docstring was false too — a preset whose
+        parameters equal a swept variant's produces the same cache key, so two
+        threads could collide on one key.
+
+        The parts are still created **first** (store writes, no kernel), which
+        keeps the build phase free of manifest writes.
         """
         parts = self._declared_parts()
         if not parts:
@@ -1210,10 +1413,56 @@ class _Run:
                     strict_exempt=True))
             for variant in variants(part_id, spec, self._presets_for(part_id)):
                 plan.append((variant, self._variant_part(part_id, variant)))
-        results = self._fan_out(plan)
+        results = {scratch: self._build_one(scratch) for _v, scratch in plan}
         items += [self._build_item(variant, scratch, results.get(scratch))
                   for variant, scratch in plan]
+        self._report_indifferent_parameters(plan, results)
         return make_stage("build", items, duration_s=_elapsed(started))
+
+    def _report_indifferent_parameters(self, plan, results) -> None:
+        """Warn when a swept parameter moves **no** measurable geometry.
+
+        The specs ceiling, generalised (Codex #9): a spec reads the *built
+        object*, so a `build(p)` that ignores its parameters entirely — always
+        returning the M5x16 — passes every spec at every variant, because every
+        variant is the same solid. Specs cannot see parameters. **The gate
+        can**: it chose the parameter values, so it knows two variants that
+        should differ, and it has both measurements.
+
+        **Reported, never enforced**, and that is a deliberate limit rather
+        than timidity. A hard `fail` needs an escape hatch for a legitimately
+        cosmetic parameter (an enum that only changes a thread's appearance),
+        and there is nowhere to declare one: `handle_inspect` normalises the
+        PARAMS spec and drops unknown keys, so a `"geometric": false` marker
+        would be a kernel change. Reddening correct third-party content with no
+        way to say "this is intended" is the worse failure — the same reasoning
+        that keeps `is_valid=false` reported-not-enforced for imported geometry
+        a few lines below.
+
+        Measured before shipping: across all nine catalog packages and their
+        **16 swept parameters, zero** produced identical geometry at both
+        extremes, so this warns on nothing that is currently correct.
+        """
+        volumes: dict[tuple, set] = {}
+        for variant, scratch in plan:
+            part, _, rest = variant.id.partition("@")
+            name, sep, _tag = rest.partition("=")
+            if not sep or not name:
+                continue          # the default and the presets are not a sweep
+            metrics = (results.get(scratch) or {}).get("metrics") or {}
+            volume = metrics.get("volume_mm3")
+            if isinstance(volume, (int, float)) and not isinstance(volume, bool):
+                volumes.setdefault((part, name), set()).add(round(volume, 6))
+        for (part, name), measured in sorted(volumes.items()):
+            if len(measured) == 1:
+                self.warnings.append(
+                    f"{part}.{name}: every variant of this parameter built to "
+                    f"the same volume ({measured.pop():,.3f} mm³), so the gate "
+                    f"could not observe it doing anything. A spec cannot catch "
+                    f"this — specs read the built object, and every variant is "
+                    f"the same object. Check that build(p) actually reads "
+                    f"p.{name}; if the parameter is deliberately cosmetic, this "
+                    f"warning is expected.")
 
     def _variant_part(self, part_id: str, variant: Variant) -> str:
         """The scratch part for one variant.
@@ -1231,45 +1480,9 @@ class _Run:
         return self._add_scratch(part_id, suffix, variant.id, script,
                                  variant.params)
 
-    def _fan_out(self, plan) -> dict:
-        """`_rebuild` per variant, on a thread pool over the kernel pool.
-
-        Safe because `KernelPool._pick` routes by `hash(affinity) % size` (and
-        `_rebuild` already passes `affinity=part_id`) while
-        `KernelClient.request` holds a per-worker lock — so two variants can
-        be in flight on two workers and never on one. **This is the first
-        in-process fan-out across the pool in this codebase**, so `jobs=1`
-        stays a first-class path and a test asserts the two produce identical
-        reports.
-
-        Results are keyed by scratch part id and the rows are emitted in
-        `plan` order, so the report is byte-identical whatever the completion
-        order was.
-
-        **Measured** (changelog 0171; 3-worker pool, every worker pre-warmed,
-        median of 3, dev machine): a real-thread ISO 4762 cap screw at 9
-        variants goes from **7.85 s to 5.05 s — 1.55x**, and the cheap
-        `widget_good` fixture at 11 variants from 0.22 s to 0.19 s (1.15x,
-        per-call overhead rather than geometry). The plan's rule was "under
-        1.5x on a 3-worker pool, delete it"; it clears that on the workload
-        the seed catalog actually is, and not by much — the ceiling is load
-        imbalance, because `hash(affinity) % size` distributes 9 unequal
-        builds over 3 workers. With a single `KernelClient` (the default and
-        the test suite) `jobs` resolves to 1 and this method is serial.
-        """
-        jobs = self.jobs or min(
-            int(getattr(self.service.kernel, "size", 1) or 1), MAX_JOBS)
-        if jobs <= 1 or len(plan) <= 1:
-            return {scratch: self._build_one(scratch) for _v, scratch in plan}
-        with ThreadPoolExecutor(max_workers=jobs) as pool:
-            futures = {scratch: pool.submit(self._build_one, scratch)
-                       for _v, scratch in plan}
-            return {scratch: future.result()
-                    for scratch, future in futures.items()}
-
     def _build_one(self, scratch: str) -> dict:
-        """One variant. The budget is read **inside** the worker, immediately
-        before the kernel call, because that is where the seconds are."""
+        """One variant. The budget is read immediately before the kernel call,
+        because that is where the seconds are."""
         if self._out_of_budget():
             return {"ok": None, "budget": True}
         try:
@@ -1343,10 +1556,9 @@ class _Run:
         path = self.source / "presets.json"
         if not path.is_file():
             return {}
-        try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, UnicodeDecodeError):
-            return {}      # the `presets` stage is where that becomes a row
+        # `read_optional`: the `presets` stage is where an unreadable document
+        # becomes a row, and this reader must not raise on the way there.
+        doc = _json.read_optional(path, "presets.json")
         presets = doc.get("presets") if isinstance(doc, dict) else None
         configs = (presets or {}).get(part_id) if isinstance(presets, dict) \
             else None
@@ -1729,7 +1941,21 @@ class _Run:
                     f"the package policy raised on {part_id}: "
                     f"{payload['message']}", error=payload))
                 continue
+            if not rows:
+                # A clean policy returns nothing, and "nothing" must still be a
+                # row: a stage that emits no rows blocks the verdict (see
+                # `verdict`), and it should say *the policy read this part and
+                # had no finding* rather than leave a hole a reader has to
+                # interpret.
+                items.append(self._item(
+                    "policy", "check", part_id, "pass",
+                    f"{part_id}: the package policy read {entry.get('file')} "
+                    f"and reported nothing"))
+                continue
             items += [self._policy_item(part_id, row) for row in rows]
+        if not items:
+            return make_stage("policy", reason="no_parts_declared",
+                              duration_s=_elapsed(started))
         return make_stage("policy", items, duration_s=_elapsed(started))
 
     def _policy_item(self, part_id: str, row) -> dict:
@@ -1746,6 +1972,18 @@ class _Run:
             status, str(row.get("message") or ""), reason=reason, hint=hint,
             details=row.get("details") if isinstance(row.get("details"), dict)
             else None)
+
+
+def _copy_inventory(src: Path, dst: Path, entries) -> None:
+    """Exactly the inventoried files — `cache._copy_inventory`'s rule, for the
+    same reason: the snapshot must be the tree the content id describes and
+    nothing else, so an ignored file never lands in it and a symlink
+    structurally cannot (the inventory refused one before we got here)."""
+    dst.mkdir(parents=True, exist_ok=True)
+    for relpath, _size, _sha in entries:
+        target = dst / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src / relpath, target)
 
 
 def _number(value) -> str:

@@ -35,7 +35,8 @@ from __future__ import annotations
 import re
 
 from ..model import ID_RE, ValidationError
-from .content import is_content_id, is_safe_relpath, problem, resolve_within
+from .content import (IGNORED, is_content_id, is_ignored, is_safe_relpath,
+                      problem, resolve_within)
 
 PACKAGE_FORMAT = 1
 INDEX_FORMAT = 1
@@ -269,6 +270,19 @@ def _part_payload(entry, field, root) -> list[dict]:
             "bad_value",
             f"{field}.{key} must be a relative path inside {directory}: "
             f"{value!r}", field=f"{field}.{key}")]
+    if is_ignored(value):
+        # A part file the CONTENT ID does not cover is a part the package does
+        # not ship: `content.IGNORED` excludes it from the inventory, so it is
+        # not hashed, not copied into the cache and not published — while every
+        # gate stage would happily read it off the author's disk and prove it.
+        # The gate catches this against the inventory as well; refusing it here
+        # means the manifest is wrong at the manifest layer, where the author
+        # is looking.
+        return out + [problem(
+            "bad_value",
+            f"{field}.{key} matches a path the content id ignores "
+            f"({', '.join(IGNORED)}), so this file would not be part of the "
+            f"package: {value!r}", field=f"{field}.{key}")]
     if root is None:
         return out
     try:

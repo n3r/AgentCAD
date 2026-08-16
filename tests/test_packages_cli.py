@@ -221,7 +221,7 @@ def _args(**overrides):
     from argparse import Namespace
 
     defaults = dict(path="pkg", projects_dir=None, strict=False, report=None,
-                    jobs=None, work_dir=None, budget=None,
+                    work_dir=None, budget=None,
                     package_command="validate")
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -231,7 +231,7 @@ def test_main_wires_package_validate_and_passes_every_flag(wired, monkeypatch,
                                                            tmp_path):
     argv = ["agentcad", "package", "validate", str(tmp_path / "pkg"),
             "--projects-dir", str(tmp_path / "projects"),
-            "--strict", "--jobs", "3", "--budget", "12.5",
+            "--strict", "--budget", "12.5",
             "--work-dir", str(tmp_path / "wd"),
             "--report", str(tmp_path / "r.json")]
     monkeypatch.setattr(sys, "argv", argv)
@@ -242,7 +242,7 @@ def test_main_wires_package_validate_and_passes_every_flag(wired, monkeypatch,
     seen = wired.gate.seen
     assert exit_info.value.code == 0
     assert seen["path"] == str(tmp_path / "pkg")
-    assert seen["strict"] is True and seen["jobs"] == 3
+    assert seen["strict"] is True and "jobs" not in seen
     assert seen["budget_s"] == 12.5
     # Absolute, and granted to the sandbox before the workers spawn.
     work_dir = str((tmp_path / "wd").resolve())
@@ -312,12 +312,19 @@ def test_a_budget_that_is_not_a_limit_is_refused_at_the_parser(tmp_path, value):
     assert "--budget" in res.stderr
 
 
-def test_jobs_below_one_is_exit_two_and_not_a_traceback(tmp_path):
-    res = _cli("package", "validate", str(FIXTURES / "widget_good"),
-               "--projects-dir", str(tmp_path / "projects"), "--jobs", "0")
-    assert res.returncode == 2
-    assert "jobs" in res.stderr
-    assert "Traceback" not in res.stderr
+def test_the_jobs_flag_is_gone_from_both_commands(tmp_path):
+    """`--jobs` was DELETED, not deprecated (changelog 0181): the fan-out it
+    drove missed its pre-registered 1.5x bar three times and broke
+    determinism under `--budget`. A flag argparse still accepts is a flag a
+    script keeps passing, so both commands must refuse it outright."""
+    for command in (("package", "validate", str(FIXTURES / "widget_good")),
+                    ("publish", str(FIXTURES / "widget_good"),
+                     "--index", "x")):
+        res = _cli(*command, "--projects-dir", str(tmp_path / "projects"),
+                   "--jobs", "2")
+        assert res.returncode == 2
+        assert "unrecognized arguments: --jobs" in res.stderr
+        assert "Traceback" not in res.stderr
 
 
 def test_help_lists_package_beside_the_other_commands():

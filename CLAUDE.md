@@ -88,9 +88,49 @@ This project is built skill-first. Use the Superpowers process skills:
   also covers the **package directory** · `_git.py` is not `history._run`
   (no work tree, 120 s, credential helper, `reset --hard`) · bundled indexes
   are **appended**, so a user index named `agentcad-core` replaces the shipped
-  one outright · the fan-out measures **1.40×** on the real catalog, *under*
-  the 1.5× bar — do not advertise it. Reference parts (FR13) have no script:
+  one outright. Reference parts (FR13) have no script:
   `use_part` refuses them, `import_cad_file` is the path.
+- Packages, the trust chain (review changelog 0181 — **`gate: green` has to be
+  load-bearing evidence**): `use_part` verifies the cache against
+  **`packages_lock[name].content_id`**, not the receipt (two indexes can ship
+  the same `name@version` with different bytes, and both receipts verify), and
+  stamps the id it **measured** · every JSON read goes through
+  **`packages/_json.py`** — `json.loads` raises **`RecursionError`**, which is
+  not a `ValueError`, and it used to escape eleven sites and take the *next*
+  index down with it; it also refuses by size **before** parsing · the gate
+  measures the **inventory**, never the manifest (a part at `parts/x.tmp` is
+  ignored by the id, so it was proved and not shipped; an undeclared
+  `parts/*.py` ships and no stage opens it — both are red `format` rows) · the
+  stages read a **snapshot in the cell**, so the published id is the id of the
+  bytes they consumed · `LocalIndex.publish` **re-derives** `verdict(rows)` and
+  never reads `report["publishable"]` · a stage with **zero rows** blocks
+  unless it names a legitimate absence, and `STAGE_SKIP_EXEMPT` holds
+  **(stage, reason) pairs** · `provenance.header_sha256` covers the block
+  (integrity, **not** authentication — say it that way) · an **omitted**
+  `version_req` never overwrites a declared pin · a **C0 control char** in a
+  relative path is refused (`os.stat` raises `ValueError`, which nothing
+  catches) · `_git.validate_url` checks the **ssh host**, not just the whole
+  string · **the build fan-out and `--jobs` were DELETED** (1.08×/1.40×/1.17×
+  against a pre-registered 1.5× bar; `jobs=1` vs `jobs=4` flipped `publishable`
+  under `--budget`) — do not re-add.
+- Packages, round 2 of the review (Codex xhigh, changelogs 0181+0183): a tree
+  must **agree with its own `package.json`** (checked at install *and* at
+  materialise) · the cache **receipt is versioned** and must carry
+  `content_id`/`index`/`source`, because the offline path rebuilds a git-tracked
+  lock entry from it · **publish hashes the copy in staging** before promoting
+  (it used to hash the source, then copy it again later) · a **yank is
+  `(index, version)`** — A's yank may not veto B's package ·
+  **`ProjectStore._atomic_write` stages through a RANDOM name** (one fixed
+  `.tmp` let two writers interleave into it and **corrupt `project.json`**),
+  plus `manifest_scope` around package RMW and `_index_scope` (RLock +
+  `fcntl.flock`, lock file **outside** the index) around `index.json` ·
+  **`GitIndex(subdir=…)`** — this repo ships `catalog/` beside its source, and
+  the old dogfood test proved a fixture nobody has · `use_part` **validates
+  overrides before writing**, and a successful one with overrides is **two**
+  undo steps (documented, not composed — `history.in_restore` is
+  process-global) · `manifest_merge.package_problems` catches the
+  requirement-from-theirs + lock-from-ours **hybrid nobody authored** · the
+  gate **warns** (never reds) when a swept parameter moves no geometry.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests

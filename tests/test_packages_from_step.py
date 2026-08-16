@@ -271,7 +271,7 @@ def test_an_imported_part_reports_is_valid_false_and_is_not_reddened_by_it():
     imported geometry would redden correct vendor content. Tested on the row
     builder, because a STEP that OCCT calls invalid is not something a test
     can honestly manufacture."""
-    run = gate._Run(Path("."), set(gate.GATE_STAGES), jobs=1, deadline=None)
+    run = gate._Run(Path("."), set(gate.GATE_STAGES), deadline=None)
     run.reference_scratch.add("bracket_ref")
     variant = gate.Variant("bracket@default", {}, "the imported solid")
     result = {"ok": True, "metrics": {"volume_mm3": 12.0, "mass_g": 0.1,

@@ -263,6 +263,108 @@ def test_a_screw_whose_size_cannot_be_established_fails_rather_than_passes(
     assert "specs:cap_screw@default:length_under_head" in failures
 
 
+def test_a_bearing_that_ignores_its_designation_reddens_its_specs(
+        tmp_path, service, registry):
+    """The negation of the `din625` SPECS claim, and the check that stops them
+    being tautologies.
+
+    The first version of these predicates picked the table row by matching the
+    *built* `D` and `B`, so the `D` and `B` checks compared the geometry with
+    the row it had just been used to select and the bore check compared the
+    table with itself: a build wired to produce a 608 whatever its parameter
+    said published **77 of 77 spec rows green**. The row now comes from the
+    `designation` parameter, which is what makes this sabotage red.
+    """
+    source = tmp_path / "din625"
+    shutil.copytree(CATALOG / "din625" / "1.0.0", source)
+    script = source / "parts" / "ball_bearing.py"
+    text = script.read_text(encoding="utf-8")
+    sabotage = "def _row(p):\n    return DIN625[p.designation]\n"
+    assert sabotage in text
+    script.write_text(
+        text.replace(sabotage, 'def _row(p):\n    return DIN625["608"]\n'),
+        encoding="utf-8")
+
+    report = PackageGate(service).run(
+        source, stages=("format", "contract", "build", "specs"))
+    failures = {item["id"] for stage in report["stages"]
+                for item in stage["items"] if item["status"] == "fail"}
+    for check in ("bore_din625", "outside_diameter_din625", "width_din625",
+                  "ring_faces_din625"):
+        assert f"specs:ball_bearing@designation=623:{check}" in failures
+    # ...and the one designation the sabotaged build really does produce stays
+    # green: this reddens a wrong bearing, not every bearing.
+    assert not [f for f in failures if "designation=608" in f], sorted(failures)
+
+
+@pytest.mark.parametrize("package,square", [("extrusion_2020", "section_20x20"),
+                                            ("extrusion_3030", "section_30x30")])
+def test_a_severed_extrusion_profile_reddens_the_connectivity_spec(
+        package, square, tmp_path, service, registry):
+    """The negation of `one_connected_solid`.
+
+    Cutting each T-channel as the plain rectangle the profile's own constants
+    describe severs every diagonal web — `slot_inner / 2` is larger than
+    `size / 2 - slot_depth` — and leaves five loose pieces that still measure
+    20 x 20 (30 x 30), still have their centre bore and still have four slot
+    openings. That shipped green. It must not again.
+    """
+    source = tmp_path / package
+    shutil.copytree(CATALOG / package / "1.0.0", source)
+    script = source / "parts" / "extrusion.py"
+    text = script.read_text(encoding="utf-8")
+    script.write_text(text + '''
+
+def _channel_void():
+    """SABOTAGE: the rectangular T-channel that severs the webs."""
+    half = SIZE / 2.0
+    return [(half, SLOT_OPEN / 2.0), (half - LIP_T, SLOT_OPEN / 2.0),
+            (half - LIP_T, SLOT_INNER / 2.0),
+            (half - SLOT_DEPTH, SLOT_INNER / 2.0),
+            (half - SLOT_DEPTH, -SLOT_INNER / 2.0),
+            (half - LIP_T, -SLOT_INNER / 2.0),
+            (half - LIP_T, -SLOT_OPEN / 2.0), (half, -SLOT_OPEN / 2.0)]
+''', encoding="utf-8")
+
+    report = PackageGate(service).run(
+        source, stages=("format", "contract", "build", "specs"))
+    failures = {item["id"] for stage in report["stages"]
+                for item in stage["items"] if item["status"] == "fail"}
+    assert "specs:extrusion@default:one_connected_solid" in failures
+    # The three checks that were green on the five-piece profile still are:
+    # the envelope, the bore and the length say nothing about connectivity.
+    for blind in (square, "centre_bore", "length_and_origin"):
+        assert f"specs:extrusion@default:{blind}" in {
+            item["id"] for stage in report["stages"]
+            for item in stage["items"] if item["status"] == "pass"}
+
+
+def test_the_hex_bolt_shank_spec_measures_the_shank(tmp_path, service,
+                                                    registry):
+    """`shank_full_length_root` is the spec that pins what `iso4014` really
+    builds: a shank threaded end to end, drawn at the thread's basic minor
+    diameter, because the pinned bd_warehouse can build nothing else.
+
+    Told to expect the *nominal* diameter instead, it has to redden — a check
+    that passed either way would be pinning nothing.
+    """
+    source = tmp_path / "iso4014"
+    shutil.copytree(CATALOG / "iso4014" / "1.0.0", source)
+    script = source / "parts" / "hex_bolt.py"
+    text = script.read_text(encoding="utf-8")
+    sabotage = "        return float(diameter) - 1.0825 * float(pitch)"
+    assert sabotage in text
+    script.write_text(text.replace(sabotage, "        return float(diameter)"),
+                      encoding="utf-8")
+
+    report = PackageGate(service).run(
+        source, stages=("format", "contract", "build", "specs"))
+    failures = {item["id"] for stage in report["stages"]
+                for item in stage["items"] if item["status"] == "fail"}
+    assert "specs:hex_bolt@default:shank_full_length_root" in failures
+    assert "specs:hex_bolt@default:across_flats_iso4014" not in failures
+
+
 # ============================== registration: no config file, no network
 
 

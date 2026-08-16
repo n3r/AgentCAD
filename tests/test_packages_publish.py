@@ -513,3 +513,182 @@ def test_publish_without_a_directory_or_a_yank_is_a_usage_error(cli_env,
     proc = run_cli("--index", "agentcad-core", projects=cli_env / "projects")
     assert proc.returncode == 2
     assert "directory" in proc.stderr
+
+
+# ================== publish re-derives the verdict (review fixes, cl 0181)
+
+
+def _green_report(service, source):
+    report = gate.PackageGate(service).run(source)
+    assert report["publishable"] is True
+    return report
+
+
+def test_publish_re_derives_the_verdict_from_the_rows(service, empty_index,
+                                                      source):
+    """**M9.** `publishable` is a field in a document, and `LocalIndex.publish`
+    used to read it. A report whose ROWS say the build failed — and whose own
+    `gate.verdict()` agrees — published green because the field said `true`.
+
+    The seam exists precisely so a cloud registry (PRD-005-lite) can hand this
+    method a report it did not run, and `docs/packages.md` already claimed the
+    stronger property. So the verdict is re-derived here, never read.
+    """
+    report = _green_report(service, source)
+    build = next(s for s in report["stages"] if s["name"] == "build")
+    build["items"][0] = {**build["items"][0], "status": "fail",
+                         "message": "build failed"}
+    assert gate.verdict(report["stages"])["publishable"] is False
+    assert report["publishable"] is True          # the forged field
+
+    before = tree_hash(empty_index)
+    with pytest.raises(ValidationError) as info:
+        local(empty_index).publish(source, report)
+    assert "did not pass the publish gate" in info.value.message \
+        or "not the summary of its own rows" in info.value.message
+    assert tree_hash(empty_index) == before
+
+
+def test_publish_refuses_a_report_that_carries_no_stages(service, empty_index,
+                                                         source):
+    """`verdict([])` is vacuously publishable — there is nothing to block on —
+    so a report with no stages at all used to publish. A publish is
+    fail-closed over ALL stages: the report must carry every one."""
+    report = _green_report(service, source)
+    report["stages"] = []
+    report["summary"] = {"passed": 0, "failed": 0, "skipped": 0, "errors": 0,
+                         "total": 0}
+    before = tree_hash(empty_index)
+    with pytest.raises(ValidationError) as info:
+        local(empty_index).publish(source, report)
+    assert "does not carry every gate stage" in info.value.message
+    assert tree_hash(empty_index) == before
+
+
+def test_publish_refuses_a_duplicated_stage(service, empty_index, source):
+    """A report carrying `format` twice satisfied every per-index check, while
+    `_stage()` returns the FIRST match — so the digest could describe one copy
+    and the verdict read both."""
+    report = _green_report(service, source)
+    fmt = next(s for s in report["stages"] if s["name"] == "format")
+    report["stages"] = report["stages"] + [dict(fmt)]
+    assert any("appears more than once" in problem
+               for problem in gate.validate_gate_report(report))
+    with pytest.raises(ValidationError):
+        local(empty_index).publish(source, report)
+
+
+def test_publish_refuses_a_summary_that_is_not_its_own_rows(service,
+                                                            empty_index,
+                                                            source):
+    """Evidence whose headline disagrees with its rows is not evidence — it is
+    two claims, one of which a publisher would have to choose between."""
+    report = _green_report(service, source)
+    report["summary"] = {**report["summary"], "passed": 9999}
+    with pytest.raises(ValidationError) as info:
+        local(empty_index).publish(source, report)
+    assert "not the summary of its own rows" in info.value.message
+
+
+def test_an_incomplete_run_is_refused_with_its_warnings_not_zero_blockers(
+        service, empty_index, source):
+    """**m15.** An incomplete run has no failing rows, so the refusal used to
+    read "0 blocker(s) … fix the package and run validate until it is green" —
+    the wrong count, the wrong advice, and it dropped the only evidence there
+    was. The warnings ARE the evidence when the run did not finish."""
+    report = _green_report(service, source)
+    report["complete"] = False
+    report["warnings"] = list(report["warnings"]) + [
+        "the package directory changed while the gate was running"]
+    with pytest.raises(ValidationError) as info:
+        local(empty_index).publish(source, report)
+    assert "0 blocker(s)" not in info.value.message
+    assert "was not fully measured" in info.value.message
+    assert info.value.details["warnings"]
+    assert "changed while the gate was running" in info.value.message
+
+
+# ==================== round 3: the copy race and the index lock (Codex #2/#10)
+
+
+def test_the_published_tree_hashes_to_the_advertised_id_by_construction(
+        service, empty_index, source, tmp_path, monkeypatch):
+    """**Codex #2.** Publish hashed `source` into `actual`, then LATER
+    inventoried and copied it, and nothing compared the copy with the hash.
+    A file mutated in that window shipped bytes B under id A — and every
+    consumer would then reject, for ever, a package the publisher had been told
+    was published.
+
+    The copy is now hashed **in the staging directory, before it is promoted**,
+    so the published tree hashes to its advertised id by construction.
+    """
+    report = _green_report(service, source)
+    real_copy = indexes._copy_inventory
+
+    def mutate_mid_copy(src, dst, entries):
+        real_copy(src, dst, entries)
+        # The window: after publish measured `source`, while the copy is made.
+        target = dst / "parts" / "mount_block.py"
+        target.write_text(target.read_text() + "\n# slipped in\n")
+
+    monkeypatch.setattr(indexes, "_copy_inventory", mutate_mid_copy)
+    before = tree_hash(empty_index)
+    with pytest.raises(ValidationError) as info:
+        local(empty_index).publish(source, report)
+    assert "while it was being copied" in info.value.message
+    assert info.value.details["measured"] != info.value.details["copied"]
+    # Nothing promoted, no staging left behind.
+    assert tree_hash(empty_index) == before
+    assert list(Path(empty_index).glob("*/.staging-*")) == []
+
+
+def test_two_concurrent_publishes_both_survive(service, empty_index, source,
+                                               tmp_path):
+    """**Codex #10b.** `index.json` was read-modify-written unlocked, so a
+    second publish that started before the first finished dropped the first
+    entry *after its caller was told it had published* — leaving a package tree
+    on disk reachable by nothing, which is exactly the "half-published version"
+    state publish already refuses to write over."""
+    import threading
+
+    second = tmp_path / "src2" / WIDGET
+    shutil.copytree(source, second)
+    doc = json.loads((second / "package.json").read_text())
+    doc["version"] = "2.0.0"
+    (second / "package.json").write_text(json.dumps(doc, indent=2) + "\n")
+
+    reports = [_green_report(service, source), _green_report(service, second)]
+    index = local(empty_index)
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def go(path, report):
+        barrier.wait()
+        try:
+            index.publish(path, report)
+        except Exception as exc:      # noqa: BLE001 — recorded, not raised
+            errors.append(exc)
+
+    threads = [threading.Thread(target=go, args=(source, reports[0])),
+               threading.Thread(target=go, args=(second, reports[1]))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == [], [str(e) for e in errors]
+    published = json.loads((Path(empty_index) / "index.json").read_text())
+    assert sorted(published["packages"][WIDGET]["versions"]) == ["1.0.0", "2.0.0"]
+
+
+def test_the_index_lock_never_litters_the_index_directory(service, empty_index,
+                                                          source):
+    """The advisory lock lives beside `config.json`, not in the index: an index
+    is routinely a git repository, and "a refused publish leaves the index
+    byte-identical" is an invariant this feature's own tests assert."""
+    before = tree_hash(empty_index)
+    index = local(empty_index)
+    with index._index_scope():
+        pass
+    assert tree_hash(empty_index) == before
+    assert list(Path(empty_index).rglob("*.lock")) == []
+    assert indexes.index_lock_path(empty_index).parent.name == "locks"

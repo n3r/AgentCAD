@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from agentcad.core import manifest_merge
 from agentcad.core.manifest_merge import (
     CONFLICT_KEYS,
     apply_choices,
@@ -1042,3 +1043,68 @@ def test_a_manifest_with_no_packages_is_untouched_by_the_new_heads():
 
     assert conflicts == []
     assert "packages" not in merged and "packages_lock" not in merged
+
+
+# ================= the packages/lock hybrid a clean merge can build (Codex #13)
+
+
+def _hybrid(version_req="^2.0.0", locked="1.0.0", declared_index="core",
+            lock_index="core"):
+    return {
+        "packages": {"foo": {"version_req": version_req,
+                             "index": declared_index}},
+        "packages_lock": {"foo": {"version": locked,
+                                  "content_id": "sha256:" + "0" * 64,
+                                  "index": lock_index,
+                                  "source": {"kind": "local"}}},
+    }
+
+
+def test_a_requirement_from_one_branch_and_a_lock_from_the_other_is_caught():
+    """**Codex #13.** `packages` and `packages_lock` merge as two independent
+    maps, each atomic per package — correct, and not sufficient. They are two
+    halves of ONE fact: what was asked for, and what that resolved to. Taking
+    theirs' requirement and ours' lock is a clean merge of each map and a
+    dependency **no branch authored**, and nothing downstream notices —
+    `use_part` reads only the lock, and the lock verifies against its own
+    content id perfectly well.
+    """
+    problems = manifest_merge.package_problems(_hybrid())
+    kinds = {problem["kind"] for problem in problems}
+    assert "package_requirement_violated" in kinds
+    detail = next(p for p in problems
+                  if p["kind"] == "package_requirement_violated")
+    assert detail["package"] == "foo"
+    assert detail["version"] == "1.0.0" and detail["version_req"] == "^2.0.0"
+    assert "nobody authored" in detail["message"]
+
+
+def test_a_pin_silently_changed_by_a_merge_is_caught():
+    problems = manifest_merge.package_problems(
+        _hybrid(version_req="*", declared_index="corp", lock_index="core"))
+    detail = next(p for p in problems if p["kind"] == "package_index_mismatch")
+    assert detail["declared_index"] == "corp" and detail["index"] == "core"
+
+
+def test_a_lock_that_outlived_its_declaration_is_caught():
+    manifest = _hybrid()
+    manifest["packages"] = {}
+    problems = manifest_merge.package_problems(manifest)
+    assert [p["kind"] for p in problems] == ["package_lock_orphan"]
+
+
+def test_an_agreeing_pair_is_silent():
+    """The check may not redden a project that merged correctly."""
+    assert manifest_merge.package_problems(
+        _hybrid(version_req="^1.0.0", locked="1.2.0")) == []
+    assert manifest_merge.package_problems(
+        _hybrid(version_req="*", locked="9.9.9")) == []
+    assert manifest_merge.package_problems({}) == []
+    assert manifest_merge.package_problems(
+        {"packages": {"foo": {"version_req": "*"}}}) == []
+
+
+# The orchestrator half of this — that a hybrid actually blocks a REAL merge and
+# surfaces in `validation.integrity` — is
+# `test_packages_index.py::test_a_real_merge_blocks_on_the_package_hybrid`,
+# which drives two branches through `merge_branch` rather than reading source.

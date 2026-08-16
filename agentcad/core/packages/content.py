@@ -241,6 +241,19 @@ def resolve_within(root: str | Path, relpath, *, what: str = "path") -> Path:
 def _lexical_parts(relpath, what: str) -> list[str]:
     if not isinstance(relpath, str) or not relpath.strip():
         raise ValidationError(f"{what} must be a non-empty relative path")
+    # C0 control characters, NUL first. A NUL is not a `..` and it does not
+    # escape anything, but `os.stat` raises `ValueError: embedded null
+    # character` — an exception NOTHING in this subpackage catches, because
+    # every caller catches `ValidationError`. The consequences were an
+    # unauthenticated 500 on the preview route and a hostile index.json that
+    # took `resolve` down before the next, healthy index got its turn. A path
+    # inside a package is a file name, so refusing the whole C0 range (and
+    # DEL) costs nothing legitimate and turns "the validator raised" back into
+    # "the validator reported".
+    if any(ch < " " or ch == "\x7f" for ch in relpath):
+        raise ValidationError(
+            f"{what} contains a control character, which is not a file name: "
+            f"{relpath!r}")
     if relpath.startswith("/") or "\\" in relpath or re.match(r"^[A-Za-z]:", relpath):
         raise ValidationError(
             f"{what} must be relative and POSIX-separated: {relpath!r}"

@@ -2,12 +2,12 @@
   "format": 1,
   "presets": {
     "hex_bolt": {
-      "m4x16": {"params": {"size": "M4-0.7", "length": 16.0}, "label": "M4 x 16", "description": "ISO 4014 M4-0.7 x 16, cosmetic thread."},
-      "m5x20": {"params": {"size": "M5-0.8", "length": 20.0}, "label": "M5 x 20", "description": "ISO 4014 M5-0.8 x 20, cosmetic thread."},
-      "m6x25": {"params": {"size": "M6-1", "length": 25.0}, "label": "M6 x 25", "description": "ISO 4014 M6-1 x 25, cosmetic thread."},
-      "m8x30": {"params": {"size": "M8-1.25", "length": 30.0}, "label": "M8 x 30", "description": "ISO 4014 M8-1.25 x 30, cosmetic thread."},
-      "m10x40": {"params": {"size": "M10-1.5", "length": 40.0}, "label": "M10 x 40", "description": "ISO 4014 M10-1.5 x 40, cosmetic thread."},
-      "m12x50": {"params": {"size": "M12-1.75", "length": 50.0}, "label": "M12 x 50", "description": "ISO 4014 M12-1.75 x 50, cosmetic thread."}
+      "m4x16": {"params": {"size": "M4-0.7", "length": 16.0}, "label": "M4 x 16", "description": "ISO 4014 head, M4-0.7 x 16, cosmetic thread."},
+      "m5x20": {"params": {"size": "M5-0.8", "length": 20.0}, "label": "M5 x 20", "description": "ISO 4014 head, M5-0.8 x 20, cosmetic thread."},
+      "m6x25": {"params": {"size": "M6-1", "length": 25.0}, "label": "M6 x 25", "description": "ISO 4014 head, M6-1 x 25, cosmetic thread."},
+      "m8x30": {"params": {"size": "M8-1.25", "length": 30.0}, "label": "M8 x 30", "description": "ISO 4014 head, M8-1.25 x 30, cosmetic thread."},
+      "m10x40": {"params": {"size": "M10-1.5", "length": 40.0}, "label": "M10 x 40", "description": "ISO 4014 head, M10-1.5 x 40, cosmetic thread."},
+      "m12x50": {"params": {"size": "M12-1.75", "length": 50.0}, "label": "M12 x 50", "description": "ISO 4014 head, M12-1.75 x 50, cosmetic thread."}
     }
   }
 }

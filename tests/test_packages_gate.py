@@ -905,17 +905,49 @@ def test_a_part_with_no_parameters_still_gets_one_build_row(service, tmp_path):
             for item in rows(report, "build")] == [("block@default", "pass")]
 
 
-@pytest.mark.parametrize("jobs", [1, 4])
-def test_jobs_one_and_jobs_four_produce_identical_reports(service, widget,
-                                                          jobs):
-    """The fan-out is the first in-process use of the pool in this codebase,
-    so `--jobs 1` stays a first-class path and the two must agree row for
-    row — only the timings may differ."""
-    serial = gate.PackageGate(service).run(widget, stages=("build",), jobs=1)
-    parallel = gate.PackageGate(service).run(widget, stages=("build",),
-                                             jobs=jobs)
-    assert [(i["id"], i["status"], i["message"]) for i in rows(serial)] == \
-           [(i["id"], i["status"], i["message"]) for i in rows(parallel)]
+def test_the_fan_out_is_gone_from_every_surface():
+    """The parallel variant build was DELETED, not disabled (changelog 0181).
+
+    The plan pre-registered "under 1.5x on a 3-worker pool, delete it"; three
+    independent measurements came in at 1.08x, 1.40x and 1.17x against an
+    Amdahl ceiling of 1.42x, `hash(str)` is `PYTHONHASHSEED`-randomised so any
+    speedup was a per-process sample rather than a property, and under
+    `--budget` `jobs=1` and `jobs=4` disagreed on `complete` and therefore on
+    `publishable`. A flag left behind is a flag someone re-enables, so this
+    pins the whole surface: no `jobs` argument, no thread pool, no constant.
+    """
+    import inspect
+
+    assert "jobs" not in inspect.signature(gate.PackageGate.run).parameters
+    assert "jobs" not in inspect.signature(gate._Run.__init__).parameters
+    assert not hasattr(gate, "_jobs") and not hasattr(gate, "MAX_JOBS")
+    assert not hasattr(gate._Run, "_fan_out")
+    source = inspect.getsource(gate)
+    assert "ThreadPoolExecutor" not in source
+    from agentcad.core.packages import indexes as index_module
+
+    assert "jobs" not in inspect.signature(index_module.publish).parameters
+
+
+def test_the_build_stage_builds_in_plan_order_one_at_a_time(service, widget,
+                                                            monkeypatch):
+    """The report the sequential path produces is the report the `jobs=1` path
+    produced, and it is produced by building each variant in `plan` order —
+    which is what made `jobs=1` and `jobs=4` agree in the first place, and is
+    now the only path there is."""
+    seen = []
+    original = gate._Run._build_one
+
+    def build_one(self, scratch):
+        seen.append(scratch)
+        return original(self, scratch)
+
+    monkeypatch.setattr(gate._Run, "_build_one", build_one)
+    report = gate.PackageGate(service).run(widget, stages=("build",))
+    subjects = [item["subject"] for item in rows(report, "build")
+                if item["kind"] == "part"]
+    assert seen and len(seen) == len(subjects)
+    assert report["status"] == "green"
 
 
 def test_the_build_phase_writes_no_manifest_entries(service, widget,
@@ -977,7 +1009,7 @@ def test_a_fem_skip_would_not_block_publish_and_is_strict_exempt(service):
     row = {"status": "skip", "reason": "fem_extra_missing",
            "hint": "install agentcad[fem]", "name": "stress", "part": "x",
            "message": "FEM is not installed"}
-    run = gate._Run(FIXTURES / "widget_good", set(gate.GATE_STAGES), jobs=1,
+    run = gate._Run(FIXTURES / "widget_good", set(gate.GATE_STAGES),
                     deadline=None)
     item = run._spec_item(row)
     assert item["status"] == "skip" and item["strict_exempt"] is True
@@ -1231,14 +1263,19 @@ def test_a_two_part_package_measures_both_parts_end_to_end(service, tmp_path):
 
 def test_a_package_that_changes_under_the_run_is_incomplete_not_a_verdict(
         service, good, monkeypatch):
-    """The content id is measured once, at the start, and slice 8 publishes it
-    as *what was measured*. Nothing in the gate can move the tree — it never
-    writes into the package — but an editor or a `git checkout` can, and then
-    the rows describe a tree nobody has. Exit 2 says so."""
+    """An editor or a `git checkout` moving the package DIRECTORY mid-run makes
+    the report incomplete and exit 2.
+
+    Written against `self.origin`, not `self.source`: since the snapshot landed
+    the stages read a private copy inside the work cell, so touching
+    `self.source` no longer proves anything — and that is the point of the
+    snapshot. What still has to be caught is the publisher's question: the
+    directory about to be published is not the directory the gate copied.
+    """
     original = gate._Run._stage_docs
 
     def touch(self, started):
-        (self.source / "sneaked_in.py").write_text("# added mid-run\n")
+        (self.origin / "sneaked_in.py").write_text("# added mid-run\n")
         return original(self, started)
 
     monkeypatch.setattr(gate._Run, "_stage_docs", touch)
@@ -1265,3 +1302,294 @@ def test_two_runs_of_the_same_package_agree_row_for_row(service, good,
     assert [(i["id"], i["status"], i["message"]) for i in rows(first)] == \
            [(i["id"], i["status"], i["message"]) for i in rows(second)]
     assert first["package"] == second["package"]
+
+
+# ------------------------------- the gate measures WHAT SHIPS (review 0181)
+
+
+def test_a_declared_part_the_content_id_ignores_is_a_red_format_row(
+        service, tmp_path):
+    """**C4, first direction.** `content.IGNORED` excludes `*.tmp` (and
+    `*.pyc`, `__pycache__/`, …) from the content id, and the manifest used to
+    accept any path under `parts/`. A package declaring `parts/block.tmp`
+    therefore passed every stage — the gate inspected it, built it, ran its
+    specs — while publish shipped a tree that does not contain it: a
+    **scriptless package advertised green**, with a parts digest describing a
+    script nobody receives.
+
+    The gate now measures the INVENTORY, which is exactly the set of files
+    that gets copied into the cache and into the index.
+    """
+    root = package_tree(tmp_path / "ghost")
+    (root / "parts" / "block.py").rename(root / "parts" / "block.tmp")
+    doc = manifest()
+    doc["parts"]["block"]["file"] = "parts/block.tmp"
+    (root / "package.json").write_text(json.dumps(doc, indent=2) + "\n")
+
+    inventoried = [path for path, _s, _h in content.inventory(root)]
+    assert "parts/block.tmp" not in inventoried      # the premise
+
+    report = gate.PackageGate(service).run(root, stages=("format",))
+    bad = failures(report, "format")
+    assert any("is NOT in the package's content" in item["message"]
+               for item in bad), messages(bad)
+    assert report["publishable"] is False
+    # And the manifest validator refuses it at its own layer too, so an author
+    # sees it named against the field they typed.
+    from agentcad.core.packages import format as pkgformat
+
+    problems = pkgformat.validate_package_manifest(doc, root=root)
+    assert any(p["field"] == "parts.block.file"
+               and "content id ignores" in p["message"] for p in problems)
+
+
+def test_an_undeclared_part_script_that_ships_is_a_red_format_row(
+        service, good):
+    """**C4, the mirror.** A `parts/*.py` no part declares is inside the
+    content id — it is hashed, cached, published and delivered — and no stage
+    ever opens it: not inspected, not built, not spec-checked, not
+    policy-checked. The gate may not stay silent about code it ships and does
+    not measure."""
+    stowaway = good / "parts" / "stowaway.py"
+    stowaway.write_text("import os\nos.environ['X'] = '1'\n")
+    try:
+        report = gate.PackageGate(service).run(good, stages=("format",))
+    finally:
+        stowaway.unlink()
+    bad = failures(report, "format")
+    assert any(item["subject"] == "parts/stowaway.py" for item in bad), \
+        messages(bad)
+    assert any("no part declares it" in item["message"] for item in bad)
+    assert report["publishable"] is False
+
+
+# ------------------------------ a stage that measured nothing (review 0181)
+
+
+def test_a_stage_with_zero_rows_and_no_reason_blocks_the_verdict():
+    """**C5.** Both branches of `verdict` used to key off `stage["reason"]`, so
+    `make_stage(name, [])` — reason `None`, zero rows — was invisible: nothing
+    in `blockers`, nothing in `exempt_skips`, nothing in the summary. The
+    report said green about a stage that had looked at nothing."""
+    from agentcad.core.checks import make_stage
+
+    empty = make_stage("presets", [])
+    assert empty["reason"] is None and empty["items"] == []
+    ruling = gate.verdict([empty])
+    assert ruling["publishable"] is False
+    assert ruling["blockers"] == ["presets"]
+    assert ruling["exempt_skips"] == []
+
+
+def test_a_presets_file_declaring_nothing_says_so_and_is_exempt(service,
+                                                                tmp_path):
+    """The reachable route into that hole: a valid `presets.json` with an empty
+    `presets` map. It must produce the DISCLOSED skip a missing file produces —
+    `presets:no_presets_declared`, which travels into the published index
+    entry — and not a silent nothing."""
+    root = package_tree(tmp_path / "empty_presets",
+                        presets={"format": 1, "presets": {}})
+    report = gate.PackageGate(service).run(root)
+    presets = stage_of(report, "presets")
+    assert presets["items"] == []
+    assert presets["reason"] == "no_presets_declared"
+    assert "presets:no_presets_declared" in report["exempt_skips"]
+    assert report["publishable"] is True
+
+
+def test_stage_skip_exemption_is_a_stage_and_reason_pair():
+    """Membership used to be tested against the reason string alone, so any
+    stage that ever emitted `not_declared` would have been exempted by a name
+    it does not own."""
+    assert ("specs", "not_declared") in gate.STAGE_SKIP_EXEMPT
+    borrowed = {"name": "build", "reason": "not_declared", "items": []}
+    assert gate.verdict([borrowed])["blockers"] == ["build"]
+
+
+# ------------------------------------- the stages read a snapshot (M10/0181)
+
+
+def test_the_stages_read_a_private_snapshot_not_the_live_tree(service, good,
+                                                              monkeypatch):
+    """**M10.** The id was hashed once at `_read_package` and every stage then
+    read the tree LIVE, so a file swapped in after the hash and swapped back
+    before the closing re-hash was measured by the stages and invisible to both
+    endpoint comparisons. The published id belonged to bytes no stage read.
+
+    The package is now copied into the work cell first and hashed there, so
+    the id IS the id of the bytes the stages consumed — structurally, not
+    carefully.
+    """
+    seen = {}
+    original = gate._Run._stage_contract
+
+    def swap(self, started):
+        seen["source"] = self.source
+        seen["origin"] = self.origin
+        seen["snapshot_id"] = self.content_id
+        # The swap the old code could not see: break the part on disk during
+        # the run, and put it back before the closing re-hash.
+        (self.origin / "parts" / "block.py").write_text("raise SystemExit(1)\n")
+        try:
+            return original(self, started)
+        finally:
+            (self.origin / "parts" / "block.py").write_text(GOOD_PART)
+
+    monkeypatch.setattr(gate._Run, "_stage_contract", swap)
+    report = gate.PackageGate(service).run(good, stages=("contract",))
+
+    assert seen["source"] != seen["origin"]
+    assert seen["source"].name == gate.SNAPSHOT_DIR
+    # The stage read the snapshot, so it saw the GOOD part and passed.
+    assert failures(report, "contract") == []
+    # And the id the report publishes is the snapshot's — the bytes measured.
+    assert report["package"]["content_id"] == seen["snapshot_id"]
+    assert report["package"]["content_id"] == content.content_id(good)
+
+
+def test_the_snapshot_lives_in_the_cell_and_is_deleted_with_it(service, good,
+                                                               tmp_path):
+    """Containment is unchanged: the snapshot is inside the cell the run
+    creates and deletes, never beside the package and never in the projects
+    root."""
+    work = tmp_path / "work"
+    before = content.content_id(service.store.root)
+    gate.PackageGate(service).run(good, stages=("format",), work_dir=str(work))
+    assert content.content_id(service.store.root) == before
+    assert list(work.iterdir()) == []
+    assert not (good.parent / gate.SNAPSHOT_DIR).exists()
+
+
+# ------------------------------------ a preset that does not build (M11/0181)
+
+
+def test_a_preset_that_applies_but_does_not_build_is_a_failing_row(service,
+                                                                   tmp_path):
+    """**M11.** The row read "applied and built" with `built: false` sitting in
+    its own details — a `pass` whose message contradicted its data, and the
+    reason `validate --stages presets` could answer green about a package that
+    never builds."""
+    root = package_tree(tmp_path / "bad_preset",
+                        presets=presets_doc(wide={"params": {"grade": "wide"},
+                                                  "label": "wide"}))
+    original = service.__class__.set_params
+
+    def set_params(self, proj, part_id, params):
+        result = original(self, proj, part_id, params)
+        return {**result, "ok": False}
+
+    service.__class__.set_params = set_params
+    try:
+        report = gate.PackageGate(service).run(root, stages=("presets",))
+    finally:
+        service.__class__.set_params = original
+    bad = failures(report, "presets")
+    assert bad, messages(rows(report, "presets"))
+    assert any("applies but does not build" in item["message"] for item in bad)
+    assert all(item["details"]["built"] is False for item in bad)
+    assert report["publishable"] is False
+
+
+@pytest.mark.parametrize("cause,make", [
+    ("ignored_pattern", "tmp"),
+    ("absent", "gone"),
+])
+def test_the_not_in_inventory_row_names_the_ACTUAL_cause(service, tmp_path,
+                                                          cause, make):
+    """Round 2, item 5. The row hard-coded the IGNORED explanation, so a
+    symlinked or simply-missing part file was told to "rename it to a path the
+    content id covers" — advice that does nothing for either. There are four
+    ways to be absent from a tree the inventory just walked and they need four
+    different fixes, so the row derives the cause instead of assuming it."""
+    root = package_tree(tmp_path / f"cause_{make}")
+    doc = manifest()
+    if make == "tmp":
+        (root / "parts" / "block.py").rename(root / "parts" / "block.tmp")
+        doc["parts"]["block"]["file"] = "parts/block.tmp"
+    else:
+        (root / "parts" / "block.py").unlink()
+    (root / "package.json").write_text(json.dumps(doc, indent=2) + "\n")
+
+    report = gate.PackageGate(service).run(root, stages=("format",))
+    bad = failures(report, "format")
+    causes = {item["details"].get("cause") for item in bad
+              if item["subject"] == "parts.block"}
+    assert cause in causes, messages(bad)
+    assert report["publishable"] is False
+
+
+def test_a_symlinked_part_is_named_by_the_inventory_not_by_a_guess(service,
+                                                                    tmp_path):
+    """The symlink case never reaches `_why_not_inventoried`: `content.
+    inventory` refuses any symlink outright, so the whole tree fails to
+    inventory and `_format_inventory` names the file. Pinned so nobody adds a
+    speculative `symlink` branch to the cause table for a case that cannot
+    reach it."""
+    root = package_tree(tmp_path / "linked")
+    target = tmp_path / "elsewhere.py"
+    target.write_text(GOOD_PART)
+    (root / "parts" / "block.py").unlink()
+    (root / "parts" / "block.py").symlink_to(target)
+
+    report = gate.PackageGate(service).run(root, stages=("format",))
+    bad = failures(report, "format")
+    assert any("symlink in package: parts/block.py" in item["message"]
+               for item in bad), messages(bad)
+    assert report["publishable"] is False
+
+
+def test_an_unreadable_tree_does_not_produce_a_row_per_declared_part(service,
+                                                                     tmp_path):
+    """A tree that cannot be inventoried is ONE honest row. Comparing every
+    declared part against an empty inventory would add a spurious "not in the
+    package's content" row per part, each naming the wrong cause — which is
+    what the `known` guard in `_format_part_files` prevents."""
+    root = package_tree(tmp_path / "unreadable")
+    (root / "parts" / "extra.py").symlink_to(tmp_path / "nowhere.py")
+
+    report = gate.PackageGate(service).run(root, stages=("format",))
+    bad = failures(report, "format")
+    assert not any(item["details"].get("cause") for item in bad), messages(bad)
+    assert sum("is NOT in the package" in item["message"]
+               or "is not hashed" in item["message"] for item in bad) == 0
+
+
+def test_a_parameter_that_changes_nothing_is_reported(service, tmp_path):
+    """**Codex #9, the gate-side mitigation.** A `build(p)` that ignores its
+    parameters passes every spec at every variant — specs read the built
+    object, and every variant is the same object. The gate chose the values, so
+    it can see the indifference the specs cannot.
+
+    Reported, never enforced: there is nowhere to declare a legitimately
+    cosmetic parameter (`inspect` normalises the PARAMS spec and drops unknown
+    keys), and reddening correct content with no escape is the worse failure.
+    """
+    deaf = '''\
+"""A block that ignores its own parameter."""
+
+import build123d as b3d
+
+PARAMS = {
+    "size": {"default": 20.0, "min": 10.0, "max": 40.0, "unit": "mm",
+             "description": "cube edge (ignored)"},
+}
+
+
+def build(p):
+    return b3d.Box(20.0, 20.0, 20.0)
+'''
+    root = package_tree(tmp_path / "deaf", part=deaf)
+    report = gate.PackageGate(service).run(root, stages=("build",))
+    assert report["status"] == "green", "reported, never enforced"
+    assert any("could not observe it doing anything" in warning
+               and "block.size" in warning
+               for warning in report["warnings"]), report["warnings"]
+
+
+def test_a_parameter_that_does_change_geometry_is_not_reported(service, good):
+    """The negation, and the reason it is safe to ship: measured across all
+    nine catalog packages and their 16 swept parameters, zero built to the same
+    volume at both extremes."""
+    report = gate.PackageGate(service).run(good, stages=("build",))
+    assert not [w for w in report["warnings"]
+                if "could not observe" in w], report["warnings"]

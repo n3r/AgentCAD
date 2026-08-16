@@ -1,13 +1,23 @@
 # thread_insert — heat-set threaded inserts
 
-Knurled brass heat-set inserts to the ruthex catalogue, M2 through M6, as one
-parametric part: `heat_set_insert`. These are the inserts you melt into a
-3D-printed boss so a plastic part can take a real machine screw.
+Knurled brass heat-set inserts to the ruthex catalogue, as one parametric
+part: `heat_set_insert`. These are the inserts you melt into a 3D-printed boss
+so a plastic part can take a real machine screw.
+
+**Five sizes ship — M2, M2.5, M3, M4 and M6 — and not every size in between.**
+They are the ruthex rows the pinned bd_warehouse 0.3.0 actually populates:
+`HeatSetNut.fastener_data` lists M5 designations, but every ruthex field on
+them is empty, so **there is no M5 insert to build**. The M3 and M4 rows are
+ruthex's **short** 4.0 mm inserts (part numbers `GE-M3Sx40-002` and
+`GE-M4Sx04-1`), which is what the `-4.0` in their designations says; ruthex's
+longer M3 is not in the pinned data either. The sixth populated row, a Voron
+variant of the short M3 (⌀5.0), is left out on purpose — one M3 in the enum,
+named the way ruthex names it.
 
 | | |
 |---|---|
 | part id | `heat_set_insert` |
-| parameters | `size` (enum, M2–M6), `thread` (cosmetic \| real) |
+| parameters | `size` (enum: M2, M2.5, M3, M4, M6), `thread` (cosmetic \| real) |
 | connectors | `seat` (rigid), `axis` (cylindrical) |
 | specs | validity, outer diameter, height matches the designation, seats on z = 0 |
 
@@ -32,7 +42,8 @@ insert's own height, which is what one of the specs checks. For the boss:
 | M4-0.7-4.0 | 6.3 | 4.0 | 6.1–6.2 | 2.0 |
 | M6-1-6.8 | 8.7 | 6.8 | 8.5–8.6 | 2.5 |
 
-All in mm. Bore about 0.1–0.2 mm under the knurl so the brass has material to
+All in mm, and all five rows are the ones bd_warehouse's ruthex data
+populates. Bore about 0.1–0.2 mm under the knurl so the brass has material to
 melt into; give the boss at least the wall in the last column or it splits.
 
 ## Cosmetic vs real threads
