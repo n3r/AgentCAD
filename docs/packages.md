@@ -294,6 +294,16 @@ worth knowing: a user index *named* `agentcad-core` **replaces the bundled one
 entirely**, including as a publish target. That is the escape hatch (it is how
 you shadow the shipped catalog); it is not a merge.
 
+**A git index repository must not convert line endings.** The format is
+content-addressed: every version advertises the sha256 tree digest of its
+files, and git's eol conversion rewrites bytes at checkout — with the Windows
+default (`core.autocrlf=true`) the checked-out tree no longer hashes to its
+advertised id and **every install refuses**. The client pins
+`-c core.autocrlf=false` on every git invocation, which protects the clone it
+makes; the repository itself must carry a `.gitattributes` with `* -text` (as
+this repository does) so that *contributors'* commits store the bytes the
+publisher hashed, on every platform.
+
 An index that is unreachable, malformed or misconfigured is **skipped with a
 warning**, never fatal: one broken index must not make the others unsearchable,
 and every failure travels in `tried` on a `not_found_error`. A git index whose

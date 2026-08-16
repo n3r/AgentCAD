@@ -1,0 +1,17 @@
+# No line-ending conversion, anywhere, on any platform.
+#
+# This repository is a CONTENT-ADDRESSED package index (catalog/ is served
+# byte-identically through GitIndex, and every package version advertises the
+# sha256 tree digest of its files). git's eol conversion rewrites bytes at
+# checkout, so with the Windows default (core.autocrlf=true) the checked-out
+# catalog no longer hashes to its published ids and every install refuses with
+# a content-id mismatch — measured on PR #15's windows-latest CI, where the
+# same rewrite also broke the test fixtures under tests/fixtures/packages/.
+#
+# `-text` disables text detection and conversion for every path: what is
+# committed is what is checked out, byte for byte. The runner-side half of the
+# guarantee is agentcad/core/packages/_git.py pinning `-c core.autocrlf=false`
+# on every invocation; this file is the repo-side half, and any repository
+# that wants to serve as a git package index needs the same line (documented
+# in docs/packages.md).
+* -text

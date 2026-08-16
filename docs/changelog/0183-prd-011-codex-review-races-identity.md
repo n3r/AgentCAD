@@ -428,3 +428,16 @@ rewrite. `_git.run` now pins `-c core.autocrlf=false` on every invocation
 (`-c` beats every config scope, so a user's global gitconfig cannot re-break
 it). This was a real product bug, not a test bug: any Windows user's git
 index would have refused every install with a content-id mismatch.
+
+**Third Windows round: the repo-side half of byte-stability.** Pinning the
+client was necessary and not sufficient — `actions/checkout` (and any
+contributor's clone) still applied `autocrlf` to the repository's own working
+tree, so on Windows the **bundled catalog** no longer hashed to its published
+ids, and the test fixtures under `tests/fixtures/packages/` were CRLF on disk
+while git normalized them to LF at commit — the advertised id (hashed over
+CRLF) could never match the served tree (LF). One `.gitattributes` with
+`* -text` closes all of it: what is committed is what is checked out, byte
+for byte, on every platform. `docs/packages.md` now states the rule for any
+repository that wants to serve as a git index. Also: two `shutil.rmtree`
+calls in the acceptance suite got the read-only-objects retry the other
+files already had.

@@ -22,12 +22,26 @@ Two of them deserve a note before you read them:
 """
 
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
 import pytest
+
+
+def _rmtree_repo(path) -> None:
+    """Delete a git directory on any OS (the `test_checks_ref` idiom): git
+    marks `objects/` read-only and Windows refuses to unlink a read-only file
+    (WinError 5). Clear the bit and retry."""
+    def _retry(func, target, _exc):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    shutil.rmtree(path, onexc=_retry)
+
 
 from agentcad.core.model import ConflictError, NotFoundError, ValidationError
 from agentcad.core.packages import (cache, content, format as pkgformat, gate,
@@ -363,7 +377,7 @@ def test_ac4_a_git_index_serves_search_and_install_and_survives_its_own_death(
 
     # The remote is deleted outright. `use_part` reads the lock and the cache
     # and never touches an index, so it does not even notice.
-    shutil.rmtree(bare)
+    _rmtree_repo(bare)
     used = registry.call("use_part", {
         "project": "rig", "package": "iso4762", "part": "cap_screw",
         "part_id": "s1", "preset": "m5x16"})
@@ -382,7 +396,7 @@ def test_ac4_a_git_index_serves_search_and_install_and_survives_its_own_death(
     # thing that knows this package, and the lock entry it reconstructs from
     # the receipt is byte-identical to the online one. That equality is what
     # every field of a lock entry being content-determined buys.
-    shutil.rmtree(tmp_path / "indexes")
+    _rmtree_repo(tmp_path / "indexes")
     service.create_project("rig3")
     service.packages.reload_indexes()
     offline = registry.call("add_package", {"project": "rig3",
