@@ -194,11 +194,26 @@ part, warn = patterns.polar(part, seed, axis=Axis.Z, count=6, span_deg=360)
 part, warn = patterns.mirror(part, plane=Plane.YZ)
 ```
 
-Instance 0 is skipped, because the seed is already there. Re-adding it is safe
-(one valid solid, identical volume) but not byte-free, and `count=1` is a
-genuine no-op with a warning. `span_deg < 360` is inclusive — three instances
-over 180° sit at 0/90/180, which is what a CAD user means and not build123d's
-`PolarLocations` default.
+The instance that leaves the seed where it already is gets skipped — that is
+the seed. Re-adding it is safe (one valid solid, identical volume) but not
+byte-free, and `count=1` is a genuine no-op with a warning. `span_deg < 360` is
+inclusive — three instances over 180° sit at 0/90/180, which is what a CAD user
+means and not build123d's `PolarLocations` default.
+
+**`polar(..., radius=r)` is the exception, and it warns.** A radius translates
+*every* instance onto the circle, so no placement leaves the seed alone: all
+`count` are added and the seed stays where you built it, giving `count + 1`
+copies. Author the seed **at the axis** and pass `radius`, or build it on the
+circle and use `radius=None`. (Skipping index 0 there used to drop the instance
+at angle 0 while leaving the seed off the circle — with the right volume, one
+valid solid and no warning at all.)
+
+Every row of `patterns.instances(part)` carries the instance's `center`, and
+the helpers assert those centres against the pattern that was asked for —
+equidistant from the axis and evenly spaced for `polar`, one step along one
+line for `linear`. A pattern can be one valid solid with exactly the right
+added volume and every instance in the wrong place; the volume checks cannot
+see that and the centres can.
 
 #### Why every one of them returns a warning
 
@@ -294,16 +309,26 @@ them, because everything geometric in AgentCAD is millimetres.
 | family | ISO | ASME |
 |---|---|---|
 | clearance | `⌀5.5` | `⌀0.217` |
+| clearance, blind | `⌀5.5 ↧6` | `⌀0.217 ↧0.25` |
 | tapped | `M5×0.8 - 6H ↧12` | `10-24 UNC - 2B ↧0.5` |
 | counterbore | `⌀5.5 ⌴⌀9.5↧5.4` | `⌀0.217 ⌴⌀0.375↧0.213` |
+| counterbore, blind | `⌀5.5 ↧6 ⌴⌀9.5↧5.4` | `⌀0.217 ↧0.25 ⌴⌀0.375↧0.213` |
 | countersink | `⌀5.5 ⌵⌀10.4×90°` | `⌀0.217 ⌵⌀0.41×82°` |
+| countersink, blind | `⌀5.5 ↧6 ⌵⌀10.4×90°` | `⌀0.217 ↧0.25 ⌵⌀0.41×82°` |
+
+**A blind hole always states its depth, and each `↧` qualifies the `⌀` group
+it follows.** A counterbore has two of them: `⌀5.5 ↧6 ⌴⌀9.5↧5.4` is a 6 mm
+deep ⌀5.5 hole under a 5.4 mm deep ⌀9.5 pocket. `clearance`, `counterbore`
+and `countersink` used to omit the hole depth entirely — a blind ⌀9 printed
+`⌀9`, which a shop makes as a through hole.
 
 ISO 273 names its three fits *fine / medium / coarse*; ASME B18.2.8 names them
 *close / normal / loose*. **Both spellings are accepted** and canonicalized to
 the requested `std`. The tables themselves are queryable without building
 anything — `hole_standards {family?, size?, std?}` (see `docs/agent-api.md`)
-answers out of the same files the geometry read, with the two published
-sources each row was transcribed from.
+answers out of the same files the geometry read, with the sources **that row**
+was transcribed from and `corroborated`, which is true only when two or more
+independent sources back it *and agree*.
 
 **The counterbore diameter is a shop rule, not a standard.** The published
 counterbore charts disagree by up to 0.75 mm on one M8, so
@@ -319,11 +344,51 @@ group with `count: n` and `n` positions, not `n` unrelated records:
 
 ```python
 {"id": "h0", "family": "tapped", "standard": "iso",
- "designation": "M5×0.8 - 6H ↧12", "size": "M5", "d": 4.2,
+ "designation": "M5×0.8 - 6H ↧12", "designation_base": "M5×0.8 - 6H",
+ "size": "M5", "d": 4.2,
  "count": 8, "positions": [...], "centers": [...],   # plane-local, then global
  "axis": [0, 0, -1], "plane": {...}, "depth_mm": 12.0, "thru": False,
- "tap": {"pitch": 0.8, "class": "6H", "drill_mm": 4.2}, "instances": [...]}
+ "tap": {"pitch": 0.8, "class": "6H", "drill_mm": 4.2},
+ "provenance": {"standard": ["ISO 261/262"], "sources": [...],
+                "corroborated": True, "conflicts": []},   # standard is a LIST
+ "instances": [{"i": 0, "status": "engaged", "probe": "axis", ...}],
+ "verify": "bbox", "dropped": []}
 ```
+
+**`count` is what was measured to come off, never what was asked for.** The
+guard proves per instance whether material was removed; anything it proves was
+a no-op is dropped from `count`, `positions` and `centers` and listed under
+`dropped` with its status, with a warning naming the indices —
+`verify="off"` is the one value under which `count` is intent, because the
+caller asked for no measurement.
+
+**`verify` is the mode you REQUESTED; `instances[i].probe` is the tier that
+answered.** The default runs up to three probes and one call routinely uses
+two, so `"verify": "bbox"` beside `"probe": "axis"` is the request beside the
+answer, not a contradiction. Read `probe` when the question is "how do we
+know".
+
+**`provenance` is the published backing for the DIAMETER**, unioned over every
+table row that fed the hole (a counterbore has two: the clearance hole and the
+fastener head). `corroborated` is true only for two or more independent sources
+that **agree**, so a single-sourced seat (every ISO 10642 countersink) or an
+adjudicated one (ASME `#8` normal) says so on the record itself — a disputed
+row additionally warns. `drilled` holes carry `None`: no table supplied the
+number. `standard` is always a **list**, even of one.
+
+It is not merely carried, it is **checkable**: `hole_standards.validate_record`
+re-derives the whole block from the record's own size, fit, standard and
+fastener and compares, exactly as it does the designation — and it ties `size`
+and `fit` to `d`, so the number that gets cut and the label that selects its
+provenance name one published row or neither is checkable. A record cannot
+claim a corroboration, a citation, a standard or a diameter its own fields do
+not earn.
+
+`designation` is **derived from the record** by
+`hole_standards.designation_for_record`, and `designation_base` is the same
+callout with no depth qualifier. Both readers that hold geometry re-derive the
+first to check a carrier and print the second when they have measured that the
+recorded depth no longer holds.
 
 The records **ride on the shape the helper returns** rather than in a registry
 the worker drains, and that is not a stylistic choice: the worker's 16-entry
@@ -746,9 +811,26 @@ treatment)` treats the corner where two flanged edges meet: `close` mitres the
 two leaves on the 45° bisector, `gap` opens one thickness on both, `rip` is the
 untreated corner. Declare the two flanges before the corner.
 
-Every `fold()` and `unfold()` checks `is_valid` **and** the solid count and
-warns if the declared features did not join into one body — OCCT reporting
-success is not evidence that they did.
+**A `close` corner is a whole seam when the two flanges' cross-sections agree
+and each leaf fits its mitre extension**, and it warns with the measurement
+when they do not. One plane cuts both leaves, so each leaf's cut face is its
+own profile: the faces coincide exactly when the profiles do (a different
+*leaf length* is fine — the shorter face is seamed whole — a different angle or
+inner radius is not). The second condition is the leaf's outward reach, which
+holds iff `L ≤ (R + t)·tan(45° − a/2)` — unbounded at and above 90°, where the
+leaf is vertical and adds no reach, and a small number below. Measured shares
+of the promised seam: 1.000000 for matched corners inside that bound, *acute
+ones included* (60°/R3/L0.2, 45°/R3/L0.5, 30°/R5/L1); 0.9586 for a 0.1 mm
+radius mismatch; 0.2674 for 90°/R3 against 45°/R1; and — for a *matched* 45°
+pair at t=2 whose leaf is 12 mm — 0.2810 at R1 (limit 1.2426 mm) and 0.4103 at
+R3 (limit 2.0711 mm), the seam growing with the limit. Nothing else sees it —
+both leaves are cut by the same plane so no material is lost, and they still
+fuse through the plate into one valid solid.
+
+Every `fold()` and `unfold()` checks `is_valid` **and** the solid count **and**
+material conservation, and warns if the declared features did not join into one
+body or if the fuse swallowed declared material — OCCT reporting success is not
+evidence that it did neither.
 
 ## Analysis stand-ins for interference checking
 

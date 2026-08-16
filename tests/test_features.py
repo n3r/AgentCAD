@@ -300,21 +300,45 @@ def test_a_shelled_box_comes_back_at_the_achievable_angle_with_a_warning():
 
 
 def test_draft_never_returns_the_invalid_shape_occt_hands_back():
-    """The dominant failure is not an exception: `draft()` *returns* a shape
-    with `is_valid False` and a plausible volume (a shelled box at 1 deg
-    measured 32421 mm^3, invalid). The raw call is asserted here so the
-    helper's validation cannot be mistaken for belt-and-braces."""
+    """`features.draft` returns a VALID shape or the part unchanged — under the
+    kernel we measured and under a kernel that has been fixed.
+
+    The observation this test was written for (changelog 0156): draft's
+    dominant failure is not an exception. On the pinned build123d/OCCT a
+    shelled box at 5 deg comes back as a *returned* shape with `is_valid False`
+    and a plausible positive volume (measured 32421 mm^3 at 1 deg), and raises
+    nothing. That is why `features.draft` validates every attempt instead of
+    trusting the absence of a raise.
+
+    It is deliberately NOT asserted as a requirement. Pinning `not
+    raw.is_valid` would make this test fail the day OCCT stops producing the
+    defect — i.e. reward the kernel for getting worse — so the raw call is
+    *interrogated* and the helper's contract is asserted against whichever
+    answer comes back. The branch that goes unexercised on a fixed kernel is
+    the point of the test, not a gap in it.
+    """
     from build123d import Plane, draft as b3d_draft
 
     from agentcad.toolkit import features
 
     part = _shelled_box()
-    raw = b3d_draft(_sides(part), neutral_plane=Plane.XY.offset(-10), angle=5.0)
-    assert raw.volume > 0 and not raw.is_valid       # OCCT says nothing
+    neutral = Plane.XY.offset(-10)
+    try:
+        raw = b3d_draft(_sides(part), neutral_plane=neutral, angle=5.0)
+        raw_ok = bool(raw.is_valid) and raw.volume > 0
+    except Exception:                     # noqa: BLE001 — OCCT raises many types
+        raw_ok = False
 
-    out, achieved, _warning = features.draft(
-        part, _sides(part), 5.0, Plane.XY.offset(-10))
-    assert out.is_valid and achieved < 5.0
+    out, achieved, _warning = features.draft(part, _sides(part), 5.0, neutral)
+    # The contract, whichever way the raw op went: never an invalid shape.
+    assert out.is_valid and out.volume > 0
+    if raw_ok:
+        # A kernel that can do 5 deg here: the helper must not have backed off.
+        assert achieved == pytest.approx(5.0)
+    else:
+        # The measured kernel: the helper saw through the silent failure and
+        # fell back, so it is strictly below the angle that was asked for.
+        assert achieved < 5.0
 
 
 def test_a_draft_that_fails_even_at_min_angle_returns_the_part_unchanged():
@@ -386,18 +410,40 @@ def test_draft_degenerate_angle_raises_naming_the_argument(angle, argument):
 # ---------------------------------------------- the Error Doctor pattern
 
 def test_error_doctor_diagnoses_the_empty_message_draft_failure():
-    """Triggered for real, per `error_doctor.py`'s rule: OCCT raises
-    `Standard_Failure` with an EMPTY message out of `BRepOffsetAPI_DraftAngle`,
-    so the traceback is the only thing there is to match on."""
+    """The Error Doctor's `draft_angle_too_large` rule matches on the
+    TRACEBACK, because the exception it has to recognise carries no message.
+
+    Measured (changelog 0156): a 40 deg draft of a shelled box raises
+    `Standard_Failure` out of `BRepOffsetAPI_DraftAngle` with `str(exc) == ""`.
+    The rule is exercised against the live exception when the kernel still
+    produces one — that is what makes the match a fact rather than a guess —
+    but an OCCT that learns to do the draft, or to say why it cannot, must not
+    fail this test. So the raise is *taken if offered* and the rule is asserted
+    against a synthetic traceback either way; `test_error_doctor_diagnoses_the_
+    build123d_draft_angle_error` covers the messaged sibling.
+    """
     from build123d import Plane, draft as b3d_draft
 
-    from agentcad.kernel.error_doctor import diagnose_exception
+    from agentcad.kernel.error_doctor import diagnose_exception, diagnose_text
 
     part = _shelled_box()
-    with pytest.raises(Exception) as caught:  # noqa: PT011 — OCCT type
+    raised = None
+    try:
         b3d_draft(_sides(part), neutral_plane=Plane.XY.offset(-10), angle=40.0)
-    assert str(caught.value) == ""            # the measured empty message
-    entry = diagnose_exception(caught.value)
+    except Exception as exc:              # noqa: BLE001 — OCCT type
+        raised = exc
+
+    if raised is not None and str(raised) == "":
+        # The measured kernel: an empty message and nothing else to match on.
+        entry = diagnose_exception(raised)
+    else:
+        # A kernel that no longer produces it (or now explains itself). The
+        # rule still has to fire on the frame it is written against, so the
+        # documented traceback stands in for the one OCCT stopped raising.
+        entry = diagnose_text(
+            "Standard_Failure", "",
+            "  File \"…/build123d/operations_part.py\", line 1, in draft\n"
+            "    BRepOffsetAPI_DraftAngle\n")
     assert entry is not None and entry["id"] == "draft_angle_too_large"
     assert "features.draft" in entry["fix"]
 

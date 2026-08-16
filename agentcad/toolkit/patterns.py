@@ -20,6 +20,13 @@ that seed where it already sits, so `count` is the total number of instances the
 way every CAD package counts them, `count=1` is a genuine no-op, and the helper
 adds instances 1..count-1.
 
+That holds only while some placement leaves the seed where it is, which is the
+transform this module tests for — never an index. `polar(..., radius=r)`
+translates *every* instance onto the circle, so with `r > 0` none of them is the
+seed: all `count` are added, the seed stays where it was, and the helper says so
+(changelog 0162; skipping index 0 there dropped the instance at angle 0 and left
+the seed off the circle, with the right volume and no warning).
+
 Measured (changelog 0149): the natural hand-written form
 `with PolarLocations(0, n): add(seed)` re-adds the seed on top of itself at
 instance 0. That coincident re-fuse is *safe* — one valid solid, the same
@@ -53,7 +60,11 @@ Reading the per-instance detail
 The helpers return `(part, warning|None)` — the `safe_*` contract. The
 per-instance report rides on the returned shape and is read back with
 `patterns.instances(part)`; the warning names the offending indices, never a
-count alone.
+count alone. Every row carries the instance's `center`, and the layout
+assertions (`_polar_layout_warnings`, `_linear_layout_warnings`) check those
+centres against the pattern that was asked for — because a pattern can be one
+valid solid, with the right added volume, every instance engaged, and every
+instance in the wrong place.
 """
 
 from __future__ import annotations
@@ -98,6 +109,22 @@ _VOLUME_TOL = 1e-9
 # real seat (hundreds of mm^2 on anything a rib or a boss sits on) from an
 # edge tangency (exactly 0 — an edge has no area).
 _AREA_TOL = 1e-6
+
+# Placement tolerances for the location-level assertion. The centres it
+# measures are rigid images of ONE reference point (`_centre`), so the metric's
+# own radius residual on a correct pattern is **exactly 0.0** — the same
+# arithmetic applied to every instance. What the assertion actually reads is
+# those centres after `POSITION_DECIMALS` rounding, which is what puts a floor
+# under it: measured 2.9e-10 to 8.7e-10 of radius spread across counts 3, 5, 7
+# and 8 of an asymmetric seed, and nothing on the partial spans. Three orders
+# inside `_PLACE_TOL`, against a whole missing instance (20 mm, 90 deg) above.
+#
+# These numbers are meaningless applied to the wrong metric: on bounding-box
+# centres of the moved shapes, a *correct* 3-up pattern of an asymmetric seed
+# spreads 3.5196 mm. Widening the tolerance to cover that would have to pass
+# the bug too. The metric is what makes the tolerance honest.
+_PLACE_TOL = 1e-6
+_ANGLE_TOL = 1e-6
 
 
 def _contact_area(part, tool) -> float:
@@ -363,6 +390,148 @@ def _fuse(part, place, pieces, label: str):
             f"result may not be byte-identical to the primary route.{detail}")
 
 
+def _seed_reference(seed) -> Vector:
+    """One point rigidly attached to the seed — its own bounding-box centre,
+    measured ONCE, on the seed where it was authored."""
+    box = seed.bounding_box()
+    return Vector((box.min.X + box.max.X) / 2, (box.min.Y + box.max.Y) / 2,
+                  (box.min.Z + box.max.Z) / 2)
+
+
+def _centre(reference: Vector, placement=None) -> tuple[float, float, float]:
+    """Where this instance carried the seed's reference point: the rigid image
+    of `reference` under `placement` (the seed's own position when there is
+    none). This is what the report's `center` means, and what the layout
+    assertions measure.
+
+    **Never the bounding box of the MOVED shape.** A bounding box is not
+    rotation-invariant unless the seed has 180 degree point symmetry, so
+    re-measuring it after each placement makes a *correct* polar pattern look
+    broken. Measured on a right-triangular gusset boss patterned `count=3`
+    about Z — one valid solid, added volume exact to 6e-11 — the moved-bbox
+    centres sit 32.535898 to 36.055513 mm from the axis, a **3.5196 mm**
+    spread, and at counts 5 and 8 it is 3.8507 and 3.0404. The rigid image of
+    one reference point spreads **exactly 0.0** on the same patterns, and
+    still puts 20 mm between the seed and the circle in the placement bug this
+    exists to catch. A box or a cylinder is immune, which is why a suite built
+    on those cannot see the difference.
+    """
+    point = reference if placement is None else (
+        placement * Location(reference)).position
+    return (_round(point.X), _round(point.Y), _round(point.Z))
+
+
+def _mirror_centre(reference: Vector, plane) -> tuple[float, float, float]:
+    """The reflection of `reference` in `plane` — the mirror's placement, done
+    as arithmetic so `center` means one thing everywhere in the report."""
+    normal = Vector(plane.z_dir).normalized()
+    offset = (reference - Vector(plane.origin)).dot(normal)
+    point = reference - normal * (2.0 * offset)
+    return (_round(point.X), _round(point.Y), _round(point.Z))
+
+
+def _identity_placement(locations) -> int | None:
+    """The index of the placement that moves the seed nowhere, or None.
+
+    That placement — and only that one — is the instance the seed already IS,
+    so it is the only one this module may skip. `PolarLocations(0, n)` puts it
+    at index 0, which is why skipping index 0 unconditionally looked right for
+    as long as `radius` stayed 0; with a radius, index 0 is a translation onto
+    the circle and skipping it drops a real instance while leaving the seed
+    off the pattern entirely.
+
+    The test is the transform, not the resulting position: a rotationally
+    symmetric seed spun about its own axis lands its bounding box back where it
+    started at EVERY placement, and skipping all of them would silently turn a
+    pattern into a no-op.
+    """
+    for index, loc in enumerate(locations):
+        pos, rot = loc.position, loc.orientation
+        if (abs(pos.X) <= _PLACE_TOL and abs(pos.Y) <= _PLACE_TOL
+                and abs(pos.Z) <= _PLACE_TOL and abs(rot.X) <= _ANGLE_TOL
+                and abs(rot.Y) <= _ANGLE_TOL and abs(rot.Z) <= _ANGLE_TOL):
+            return index
+    return None
+
+
+def _polar_layout_warnings(label: str, axis, plane, radius: float, span: float,
+                           count: int, centres: list[tuple[float, float, float]]
+                           ) -> list[str]:
+    """Assert the instances landed where a polar pattern puts them.
+
+    Two properties, both true of a correct polar pattern whatever the seed's
+    own offset is, because every instance is the same rigid seed carried round
+    the same circle: they are **equidistant from the axis** and **evenly spaced
+    in angle**. The bug this exists for produced the right volume, one valid
+    solid and `warning=None` while placing three instances on the circle and
+    counting the seed — sitting 20 mm away at the centre — as the fourth, so it
+    is exactly the equidistance that broke.
+
+    `centres` must be rigid images of one reference point (`_centre`), never
+    bounding-box centres of the moved shapes: on an asymmetric seed the latter
+    make this function fire on geometry that is right.
+    """
+    if len(centres) < 2:
+        return []
+    origin, direction = Vector(axis.position), Vector(axis.direction).normalized()
+    radii, angles = [], []
+    for centre in centres:
+        rel = Vector(*centre) - origin
+        planar = rel - direction * rel.dot(direction)
+        radii.append(planar.length)
+        angles.append(math.degrees(math.atan2(planar.dot(plane.y_dir),
+                                              planar.dot(plane.x_dir))) % 360.0)
+    out = []
+    spread = max(radii) - min(radii)
+    if spread > _PLACE_TOL:
+        out.append(
+            f"{label}: the instances are not all the same distance from the "
+            f"axis ({min(radii):.6g} to {max(radii):.6g} mm) — a polar pattern "
+            f"carries one seed round one circle, so this is a placement bug, "
+            f"not a tolerance")
+    step = span / count if span >= 360.0 - _PLACE_TOL else span / (count - 1)
+    if min(radii) > _PLACE_TOL:
+        gaps = sorted((b - a) % 360.0 for a, b in zip(sorted(angles),
+                                                      sorted(angles)[1:]))
+        if gaps and abs(gaps[0] - step) > _ANGLE_TOL:
+            out.append(
+                f"{label}: the instances are not evenly spaced — the closest "
+                f"pair is {gaps[0]:.6g} deg apart where {step:.6g} deg was "
+                f"requested ({count} instance(s) over {span:g} deg)")
+    if radius > _PLACE_TOL and abs(min(radii) - radius) > _PLACE_TOL:
+        out.append(
+            f"{label}: the instances sit {min(radii):.6g} mm from the axis, "
+            f"not the {radius:g} mm requested — `radius` places a seed that is "
+            f"authored at the axis, so a seed already offset from it is "
+            f"carried round a larger circle")
+    return out
+
+
+def _linear_layout_warnings(label: str, unit: Vector, spacing: float,
+                            centres: list[tuple[float, float, float]]
+                            ) -> list[str]:
+    """The same assertion for `linear`: consecutive instances must be exactly
+    `spacing` apart along `direction`, and must not have drifted across it."""
+    if len(centres) < 2:
+        return []
+    along = [Vector(*c).dot(unit) for c in centres]
+    across = [(Vector(*c) - unit * Vector(*c).dot(unit)) for c in centres]
+    out = []
+    steps = [b - a for a, b in zip(along, along[1:])]
+    worst = max(abs(step - spacing) for step in steps)
+    if worst > _PLACE_TOL:
+        out.append(
+            f"{label}: consecutive instances are not {spacing:g} mm apart "
+            f"along the direction (worst error {worst:.6g} mm) — a placement "
+            f"bug, not a tolerance")
+    drift = max((c - across[0]).length for c in across)
+    if drift > _PLACE_TOL:
+        out.append(
+            f"{label}: the instances drift {drift:.6g} mm off the pattern "
+            f"direction; they are not on one line")
+    return out
+
+
 def _missed(report: list[dict]) -> list[int]:
     return [row["i"] for row in report if row["status"] == "missed"]
 
@@ -445,9 +614,14 @@ def linear(part, seed, direction, count: int, spacing: float, *,
 
     offsets = [Location(unit * (i * float(spacing))) for i in range(1, count)]
     placed = [seed.moved(loc) for loc in offsets]
-    report = [{"i": 0, "status": "seed", "probe": "none", "engaged_mm3": None}]
-    report += engagement(
+    reference = _seed_reference(seed)
+    report = [{"i": 0, "status": "seed", "probe": "none", "engaged_mm3": None,
+               "center": _centre(reference)}]
+    rows = engagement(
         part, [(i + 1, piece) for i, piece in enumerate(placed)], verify=verify)
+    for row, offset in zip(rows, offsets):
+        row["center"] = _centre(reference, offset)
+    report += rows
 
     def place():
         with Locations(*offsets):
@@ -456,6 +630,8 @@ def linear(part, seed, direction, count: int, spacing: float, *,
     out, fallback = _fuse(part, place, placed, "patterns.linear")
 
     warnings = [fallback] if fallback else []
+    warnings += _linear_layout_warnings("patterns.linear", unit, float(spacing),
+                                        [row["center"] for row in report])
     warnings += _spacing_warning("patterns.linear", seed, unit, spacing, count)
     warnings += _fuse_warnings("patterns.linear", part, out, report, count - 1,
                                seed)
@@ -522,20 +698,49 @@ def polar(part, seed, axis=Axis.Z, count: int = 4, radius: float | None = None,
         local = list(ctx.locations)
     placed = [plane.location * loc * plane.location.inverse() for loc in local]
 
-    instances_ = [seed.moved(loc) for loc in placed[1:]]
-    report = [{"i": 0, "status": "seed", "probe": "none", "engaged_mm3": None}]
-    report += engagement(
-        part, [(i + 1, piece) for i, piece in enumerate(instances_)],
-        verify=verify)
+    # Which placement is the seed's own? The one that moves it nowhere — and
+    # with a radius there is none, because every placement translates onto the
+    # circle while the seed sits wherever it was authored. Skipping index 0
+    # regardless dropped the instance at angle 0 and counted the seed in its
+    # place: measured on a centre boss with `count=4, radius=20`, that returned
+    # `warning=None`, one valid solid and the *expected* added volume with the
+    # instances at (-20,0), (0,-20), (0,0), (0,20) — the (+20,0) one missing.
+    seed_at = _identity_placement(placed)
+    kept = [i for i in range(count) if i != seed_at]
+    instances_ = [seed.moved(placed[i]) for i in kept]
+    reference = _seed_reference(seed)
+
+    report = ([] if seed_at is None else
+              [{"i": seed_at, "status": "seed", "probe": "none",
+                "engaged_mm3": None, "center": _centre(reference)}])
+    rows = engagement(part, list(zip(kept, instances_)), verify=verify)
+    for row, index in zip(rows, kept):
+        row["center"] = _centre(reference, placed[index])
+    report = sorted(report + rows, key=lambda row: row["i"])
 
     def place():
-        with Locations(*placed[1:]):
+        with Locations(*[placed[i] for i in kept]):
             add(seed)
 
     out, fallback = _fuse(part, place, instances_, "patterns.polar")
 
     warnings = [fallback] if fallback else []
-    warnings += _fuse_warnings("patterns.polar", part, out, report, count - 1,
+    if seed_at is None:
+        warnings.append(
+            f"patterns.polar: radius={radius_mm:g} translates every instance "
+            f"onto the circle, so none of them is where the seed already sits: "
+            f"all {count} were ADDED and the seed is still where you built it, "
+            f"an extra feature this pattern does not count. For exactly "
+            f"{count} on the circle, build the seed WHERE THE FIRST INSTANCE "
+            f"GOES and call polar(...) with radius=None — that rotates it "
+            f"about the axis and the seed IS instance 0. There is no argument "
+            f"to this helper that removes a seed it was handed, so `radius` "
+            f"always leaves one over; it is for a seed authored at the axis, "
+            f"where that leftover is deliberate (a hub with its bolt circle)")
+    warnings += _polar_layout_warnings("patterns.polar", axis, plane,
+                                       radius_mm, span, count,
+                                       [row["center"] for row in report])
+    warnings += _fuse_warnings("patterns.polar", part, out, report, len(kept),
                                seed)
     return _attach(out, part, report), _join(warnings)
 
@@ -558,6 +763,9 @@ def mirror(part, plane=Plane.YZ, *, seed=None, verify: str = "bbox"):
     image = _b3d_mirror(source, about=plane)
 
     report = engagement(part, [(0, image)], verify=verify)
+    reference = _seed_reference(source)
+    for row in report:
+        row["center"] = _mirror_centre(reference, plane)
 
     def place():
         add(image)

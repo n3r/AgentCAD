@@ -9,12 +9,21 @@
     "The Engineer's Bible, \"Counterbore Hole Size for Socket Head (ISO 4762)\", https://engineersbible.com/counterbore-socket-iso/ (read 2026-08-13; consulted for the counterbore convention, NOT transcribed - see notes)"
   ],
   "revision": "2026-08-13",
+  "row_shape": "group/fastener/size",
   "provenance": {
-    "default": {"sources": [0, 1]},
-    "scopes": {
-      "cbore/iso4762": {"standard": "ISO 4762:2004 (hexagon socket head cap screws)", "sources": [0, 1]},
-      "csk/iso10642": {"standard": "ISO 10642:2004 (hexagon socket countersunk head screws)", "sources": [2]}
-    }
+    "groups": [
+      {"standard": "ISO 4762:2004 (hexagon socket head cap screws)", "sources": [0, 1],
+       "cells": ["cbore/iso4762/M1.6", "cbore/iso4762/M2",
+                 "cbore/iso4762/M2.5", "cbore/iso4762/M3",
+                 "cbore/iso4762/M4", "cbore/iso4762/M5", "cbore/iso4762/M6",
+                 "cbore/iso4762/M8", "cbore/iso4762/M10",
+                 "cbore/iso4762/M12", "cbore/iso4762/M16",
+                 "cbore/iso4762/M20", "cbore/iso4762/M24"]},
+      {"standard": "ISO 10642:2004 (hexagon socket countersunk head screws)", "sources": [2],
+       "cells": ["csk/iso10642/M3", "csk/iso10642/M4", "csk/iso10642/M5",
+                 "csk/iso10642/M6", "csk/iso10642/M8", "csk/iso10642/M10",
+                 "csk/iso10642/M12", "csk/iso10642/M16", "csk/iso10642/M20"]}
+    ]
   },
   "notes": [
     "What ships here is FASTENER HEAD GEOMETRY, which the fastener standards do fix. The counterbore/countersink BORE is derived from it by hole_standards' documented clearance rule.",

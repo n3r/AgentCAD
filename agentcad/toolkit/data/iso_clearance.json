@@ -7,8 +7,26 @@
     "EKINSUN, \"Metric Clearance Hole Chart - ISO 273 Close/Normal/Loose + Tap Drill Sizes\", https://www.ekinsun.com/custom-fasteners/clearance-hole-chart/ (read 2026-08-13)"
   ],
   "revision": "2026-08-13",
+  "row_shape": "size/fit",
   "provenance": {
-    "default": {"sources": [0, 1]}
+    "groups": [
+      {"sources": [0, 1],
+       "cells": ["M1.6/fine", "M1.6/medium", "M1.6/coarse", "M2/fine",
+                 "M2/medium", "M2/coarse", "M2.5/fine", "M2.5/medium",
+                 "M2.5/coarse", "M3/fine", "M3/medium", "M3/coarse",
+                 "M4/fine", "M4/medium", "M4/coarse", "M5/fine",
+                 "M5/medium", "M5/coarse", "M6/fine", "M6/medium",
+                 "M6/coarse", "M8/fine", "M8/medium", "M8/coarse",
+                 "M10/fine", "M10/medium", "M10/coarse", "M12/fine",
+                 "M12/medium", "M12/coarse", "M14/fine", "M14/medium",
+                 "M14/coarse", "M16/fine", "M16/medium", "M16/coarse",
+                 "M18/fine", "M18/medium", "M18/coarse", "M20/fine",
+                 "M20/medium", "M20/coarse", "M22/fine", "M22/medium",
+                 "M22/coarse", "M24/fine", "M24/medium", "M24/coarse",
+                 "M27/fine", "M27/medium", "M27/coarse", "M30/fine",
+                 "M30/medium", "M30/coarse", "M36/fine", "M36/medium",
+                 "M36/coarse"]}
+    ]
   },
   "fits": ["fine", "medium", "coarse"],
   "notes": [

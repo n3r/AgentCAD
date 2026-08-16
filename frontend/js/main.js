@@ -1666,19 +1666,34 @@ const HOLE_DRILL_DEFAULT_MM = "6";
 // **It is ONE part's form, though.** A depth or a set of points typed against
 // part A is a statement about A's face, and it used to be carried silently on
 // to part B — the next Drill applied it there. So it is reset when the
-// selection moves, off the same `selectedPart` change `updateHUD` listens to.
+// selection moves.
+//
+// The scope is `"<project>::<part>"`, not the part id, on PRD-009's precedent
+// (`sketch_plane` and `/api/sketch/blocks` record exactly that string). A part
+// id alone is not an identity across projects: `loadProject` KEEPS the current
+// selection when the incoming project has a part of the same name, and every
+// project made from the template has a `part1`, so switching projects between
+// two `part1`s left the id untouched, this comparison early-returned, and one
+// project's coordinates and blind depth were still loaded against the other's
+// face.
 const HOLE_FORM_DEFAULTS = Object.freeze({
   family: "clearance", std: "iso", size: "", fit: "",
   depth: "", points: "0, 0",
 });
 const holeForm = { ...HOLE_FORM_DEFAULTS };
-let holeFormPart = null; // the part the form's numbers were typed against
+let holeFormScope = null; // the "<project>::<part>" the numbers were typed for
+
+function holeFormScopeOf() {
+  return `${state.projectName || ""}::${state.selectedPart || ""}`;
+}
 
 function syncHoleFormPart() {
-  // Same part: keep what the user typed. `setState` re-announces a key
-  // whether or not its value moved, so this has to compare, not just fire.
-  if (state.selectedPart === holeFormPart) return;
-  holeFormPart = state.selectedPart;
+  // Same part of the same project: keep what the user typed. `setState`
+  // re-announces a key whether or not its value moved, so this has to
+  // compare, not just fire.
+  const scope = holeFormScopeOf();
+  if (scope === holeFormScope) return;
+  holeFormScope = scope;
   Object.assign(holeForm, HOLE_FORM_DEFAULTS);
 }
 
@@ -2127,7 +2142,7 @@ async function boot() {
   setupKeys();
   onKeys(["rebuilding", "connected"], renderIndicators);
   onKeys(["rebuilding", "part", "mode", "selectedPart", "selectedInstance"], updateHUD);
-  onKeys(["selectedPart"], syncHoleFormPart);
+  onKeys(["selectedPart", "projectName"], syncHoleFormPart);
   onKeys(["gizmoMode"], () => viewport.setGizmoMode(state.gizmoMode));
   connectWS();
 

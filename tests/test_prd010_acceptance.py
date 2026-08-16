@@ -184,7 +184,7 @@ PARAMS = {"t": {"default": 12.0, "min": 6.0, "max": 30.0, "unit": "mm",
 
 def build(p):
     part = Box(120, 120, p.t)
-    part, _r, _w = holes.tapped(part, [(0, 0)], "M5", depth=12)
+    part, _r, _w = holes.tapped(part, [(0, 0)], "M5", depth=8)
     return part
 '''
 
@@ -203,11 +203,11 @@ def test_ac2_a_tapped_hole_reaches_the_drawing_as_its_designation(demo):
 
     group = result["detected"]["hole_groups"][0]
     assert group["from_metadata"] is True
-    assert group["designation"] == "M5×0.8 - 6H ↧12"
+    assert group["designation"] == "M5×0.8 - 6H ↧8"
     assert group["family"] == "tapped"
     svg = (demo.store.exports_dir("demo") / "plate_drawing.svg"
            ).read_text(encoding="utf-8")
-    assert "M5×0.8 - 6H ↧12" in svg
+    assert "M5×0.8 - 6H ↧8" in svg
     assert result["detected"]["hole_warnings"] == []
 
 

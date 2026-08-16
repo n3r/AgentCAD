@@ -4,7 +4,7 @@ Before this slice a hole on a drawing was a diameter and a count, derived from
 the projected geometry: a ⌀4.2 tapped hole and a ⌀4.2 drilled hole were the
 same thing, and neither one printed a callout at all unless the part carried a
 PMI diameter dimension. With the records from slice 4/5 the drawing can say
-what the hole *is* — `4× M5×0.8 - 6H ↧12` — and, just as importantly, say
+what the hole *is* — `4× M5×0.8 - 6H ↧8` — and, just as importantly, say
 when it is guessing.
 
 The inherited limitation is asserted here rather than discovered later:
@@ -30,7 +30,7 @@ PARAMS = {"t": {"default": 12.0, "min": 6.0, "max": 30.0, "unit": "mm",
 
 def build(p):
     part = Box(120, 120, p.t)
-    part, _r, _w = holes.tapped(part, [(0, 0)], "M5", depth=12)
+    part, _r, _w = holes.tapped(part, [(0, 0)], "M5", depth=8)
     part, _r, _w = holes.clearance(part, patterns.bolt_circle(45, 8), "M6")
     return part
 '''
@@ -154,10 +154,10 @@ def test_ac2_a_tapped_hole_prints_its_iso_designation(demo):
     knows, and the callout now says so."""
     detected, svg = _draw(demo, "plate", PLATE)
 
-    assert "M5×0.8 - 6H ↧12" in svg
+    assert "M5×0.8 - 6H ↧8" in svg
     tapped = _group(detected, 4.2)
     assert tapped["from_metadata"] is True
-    assert tapped["designation"] == "M5×0.8 - 6H ↧12"
+    assert tapped["designation"] == "M5×0.8 - 6H ↧8"
     assert tapped["family"] == "tapped"
     assert tapped["record_id"] == "h0"
 
@@ -232,7 +232,7 @@ def test_a_record_below_the_detector_threshold_is_still_drawn(demo):
     assert tapped["count"] == 1
     assert tapped["from_metadata"] is True
     assert "1×" not in svg                   # a lone hole is not "1× M5"
-    assert "M5×0.8 - 6H ↧12" in svg
+    assert "M5×0.8 - 6H ↧8" in svg
 
 
 # ------------------------------------------- the record that cannot be drawn
@@ -386,3 +386,387 @@ def test_a_record_that_matches_exactly_still_warns_about_nothing(demo):
 
     assert "8× ⌀6.6" in svg
     assert detected["hole_warnings"] == []
+
+
+# ------------- R4: a callout is not asserted past what the geometry supports
+
+#: A blind tapped hole that a LATER operation opens all the way through. The
+#: record is carried across the cut untouched — `carry()` documents that it
+#: asserts nothing about geometry — so its `↧6` is stale.
+OPENED = '''\
+from build123d import Box, BuildPart, Hole, Location, Locations, Vector, add
+from agentcad.toolkit import holes
+
+PARAMS = {"t": {"default": 12.0, "min": 6.0, "max": 30.0, "unit": "mm",
+                "description": "plate thickness"}}
+
+def build(p):
+    part = Box(120, 120, p.t)
+    part, recs, _w = holes.tapped(part, [(0, 0)], "M8", depth=6)
+    with BuildPart() as builder:
+        add(part)
+        with Locations(Location(Vector(0, 0, 6.0))):
+            Hole(radius=recs[0]["d"] / 2.0)
+    return holes.carry(builder.part, part)
+'''
+
+#: The same hole, left blind. The depth is real and must survive untouched.
+BLIND = '''\
+from build123d import Box
+from agentcad.toolkit import holes
+
+PARAMS = {"t": {"default": 40.0, "min": 20.0, "max": 60.0, "unit": "mm",
+                "description": "plate thickness"}}
+
+def build(p):
+    part = Box(120, 120, p.t)
+    part, _r, _w = holes.tapped(part, [(0, 0)], "M8", depth=6)
+    return part
+'''
+
+
+@pytest.mark.integration
+def test_a_stale_blind_depth_is_degraded_not_asserted(demo):
+    """**Regression.** `carry()` moves a record across later operations without
+    re-measuring, so a cut that opens a blind hole leaves an obsolete depth in
+    the callout. Measured before the fix: an M8 recorded blind at 6 mm, then
+    drilled through, printed `M8×1.25 - 6H ↧6` with **no warning at all** —
+    a manufacturing instruction contradicted by the model it is drawn from.
+
+    The claim is degraded rather than guessed: the callout drops the depth (the
+    record's own `designation_base`, built by the same function so the two
+    spellings cannot drift), and the warning carries the recorded number, where
+    it cannot be read as a dimension. Measuring the hole's *new* depth would be
+    a sampled ray cast, which is a guess dressed as a number.
+    """
+    detected, svg = _draw(demo, "opened", OPENED)
+
+    group = _group(detected, 6.8)
+    assert group["designation"] == "M8×1.25 - 6H"
+    assert group["bottom_present"] is False
+    assert "M8×1.25 - 6H ↧6" not in svg
+    assert "M8×1.25 - 6H" in svg
+    warning = next(w for w in detected["hole_warnings"] if "h0" in w)
+    assert "blind depth of 6 mm" in warning
+    assert "material under that depth is gone" in warning
+
+
+@pytest.mark.integration
+def test_a_blind_depth_the_geometry_still_supports_is_printed(demo):
+    """The other half, or the check would be a way to lose every depth: a hole
+    that really is blind keeps its `↧`, says so, and warns about nothing."""
+    detected, svg = _draw(demo, "blind", BLIND)
+
+    group = _group(detected, 6.8)
+    assert group["designation"] == "M8×1.25 - 6H ↧6"
+    assert group["bottom_present"] is True
+    assert "M8×1.25 - 6H ↧6" in svg
+    assert detected["hole_warnings"] == []
+
+
+# --------- R5: the drawing validates a carrier the way the harvest does
+
+@pytest.mark.integration
+def test_a_record_whose_designation_contradicts_its_own_numbers_is_not_drawn(
+        demo):
+    """**Regression.** The drawing checked five fields (`id`, `designation`,
+    `d`, `count`, `centers`) and printed whatever `designation` said. So a
+    script could `setattr` a plausible dict onto the shape carrying a
+    FABRICATED designation beside one real diameter and centre, and the sheet
+    printed the fabrication.
+
+    It now runs the same `hole_standards.validate_record` the harvest raises on
+    and the sidecar discards on — which re-derives the callout from the
+    record's own diameter, depth and thread. A drilled ⌀6.8 cannot claim to be
+    a tapped M8 to 12 mm.
+
+    **This is not an authentication boundary and is not claimed as one.** A
+    part script runs arbitrary code in the kernel process; one that wants an
+    M8 callout can drill an M8. What is closed is the *inconsistent carrier* —
+    a record whose text and numbers have come apart, which is what a stale or
+    hand-edited one looks like.
+    """
+    service, registry = demo
+    script = '''\
+from build123d import Box
+from agentcad.toolkit import holes
+
+PARAMS = {"t": {"default": 12.0, "min": 6.0, "max": 30.0, "unit": "mm",
+                "description": "plate thickness"}}
+
+def build(p):
+    part = Box(120, 120, p.t)
+    part, recs, _w = holes.drill(part, [(0, 0)], 6.8)
+    forged = dict(recs[0])
+    forged["designation"] = "M8\\u00d71.25 - 6H \\u21a712"
+    setattr(part, holes.ATTR, [forged])
+    return part
+'''
+    detected, svg = _draw(demo, "forged", script)
+
+    assert "M8×1.25 - 6H ↧12" not in svg
+    assert detected["hole_groups"] == []
+    warning = detected["hole_warnings"][0]
+    assert "is not what this record's own numbers spell" in warning
+    assert "⌀6.8" in warning
+
+
+#: A blind hole made SHALLOWER by milling the part's top down. The bottom is
+#: exactly where the record says it is; the hole is half as deep.
+SHALLOWED = '''\
+from build123d import Box, BuildPart, Location, Locations, Mode, Vector, add
+from agentcad.toolkit import holes
+
+PARAMS = {"t": {"default": 12.0, "min": 6.0, "max": 30.0, "unit": "mm",
+                "description": "plate thickness"}}
+
+def build(p):
+    part = Box(120, 120, p.t)
+    part, _r, _w = holes.tapped(part, [(0, 0)], "M8", depth=6)
+    with BuildPart() as builder:
+        add(part)
+        with Locations(Location(Vector(0, 0, 4.5))):
+            Box(300, 300, 3.0, mode=Mode.SUBTRACT)
+    return holes.carry(builder.part, part)
+'''
+
+
+@pytest.mark.integration
+def test_the_group_field_is_named_bottom_present_because_that_is_all_it_knows(
+        demo):
+    """**The claim narrowed to the measurement.**
+
+    The field used to be called `depth_verified`, and the module said the
+    drawing "re-measures everything it asserts". It measures ONE point, just
+    past the recorded bottom. So it catches a hole made deeper and cannot catch
+    one made shallower: milling 3 mm off the top of a 12 mm plate holding a
+    6 mm blind hole leaves the bottom exactly where the record says it is and
+    halves the real depth. Measured — the sheet prints `↧6` over a 3 mm hole,
+    with no warning, byte-identical to the control.
+
+    That gap is not closed here and the test says so: measuring the real depth
+    means finding where the hole's wall begins, a ray cast this handler does
+    not do. What is fixed is the **name**, so nothing downstream reads
+    `true` as "the depth is right".
+    """
+    detected, svg = _draw(demo, "shallowed", SHALLOWED)
+
+    group = _group(detected, 6.8)
+    assert "depth_verified" not in group          # the name that overclaimed
+    assert group["bottom_present"] is True        # and it is true: it is there
+    assert "M8×1.25 - 6H ↧6" in svg               # the documented gap, stated
+    assert detected["hole_warnings"] == []
+
+
+#: Two seats machined entirely off the top of a plate, records carried. The
+#: bores survive; the counterbore's pocket and the countersink's cone do not.
+SEATGONE = '''\
+from build123d import Box, BuildPart, Location, Locations, Mode, Vector, add
+from agentcad.toolkit import holes
+
+PARAMS = {"t": {"default": 30.0, "min": 20.0, "max": 60.0, "unit": "mm",
+                "description": "plate thickness"},
+          "cut": {"default": 10.0, "min": 0.0, "max": 20.0, "unit": "mm",
+                  "description": "how much to mill off the top"}}
+
+def build(p):
+    part = Box(120, 120, p.t)
+    part, _r, _w = holes.counterbore(part, [(-30, 0)], "M8")
+    part, _r, _w = holes.countersink(part, [(30, 0)], "M6")
+    if p.cut <= 0:
+        return part
+    with BuildPart() as builder:
+        add(part)
+        with Locations(Location(Vector(0, 0, p.t / 2 - p.cut / 2))):
+            Box(300, 300, p.cut, mode=Mode.SUBTRACT)
+    return holes.carry(builder.part, part)
+'''
+
+
+@pytest.mark.integration
+def test_a_seat_machined_away_is_dropped_from_the_callout(demo):
+    """**Regression.** A counterbore's pocket and a countersink's cone travel
+    inside `designation` and printed **verbatim, unmeasured** — `grep` for
+    `cbore`/`csk`/`seat` over the drawing handler returned nothing.
+
+    Measured before the fix: a 30 mm plate with an M8 counterbore (8.8 deep)
+    and an M6 countersink, 10 mm milled off the top so both seats are entirely
+    gone (bbox z −15..5 against the control's −15..15), printed
+    `⌀9 ⌴⌀14.5↧8.8` and `⌀6.6 ⌵⌀13.44×90°` — four numbers for features that do
+    not exist — byte-identical to the control, with no warning. It is the same
+    "material removed from the top" trigger the blind-depth check already
+    handles, one feature along.
+    """
+    service, registry = demo
+    detected, svg = _draw(demo, "seatgone", SEATGONE)
+
+    bore = _group(detected, 9.0)
+    seat = _group(detected, 6.6)
+    assert bore["designation"] == "⌀9"              # the seat is gone from it
+    assert seat["designation"] == "⌀6.6"
+    assert (bore["seat_present"], seat["seat_present"]) == (False, False)
+    assert "⌴⌀14.5" not in svg and "⌵⌀13.44" not in svg
+    assert len(detected["hole_warnings"]) == 2
+    assert all("shows no recess there" in w for w in detected["hole_warnings"])
+
+
+@pytest.mark.integration
+def test_a_seat_that_is_still_there_prints_unchanged(demo):
+    """The other half, or the check would be a way to lose every seat. Same
+    script, nothing milled off: both seats print in full and warn about
+    nothing."""
+    detected, svg = _draw(demo, "seatcontrol", SEATGONE.replace(
+        '"default": 10.0, "min": 0.0', '"default": 0.0, "min": 0.0'))
+
+    assert _group(detected, 9.0)["designation"] == "⌀9 ⌴⌀14.5↧8.8"
+    assert _group(detected, 6.6)["designation"] == "⌀6.6 ⌵⌀13.44×90°"
+    assert _group(detected, 9.0)["seat_present"] is True
+    assert detected["hole_warnings"] == []
+
+
+@pytest.mark.integration
+def test_a_seat_near_a_part_edge_is_not_falsely_degraded(demo):
+    """The probe asks `any` of four azimuths rather than `all`, deliberately:
+    a seat close to an edge has material on one side and air on the other, and
+    degrading a CORRECT callout is a worse failure than missing a false one."""
+    script = '''\
+from build123d import Box
+from agentcad.toolkit import holes
+
+PARAMS = {"t": {"default": 30.0, "min": 20.0, "max": 60.0, "unit": "mm",
+                "description": "plate thickness"}}
+
+def build(p):
+    part = Box(40, 40, p.t)
+    # The pocket's outer radius is 7.25, so at x=12.6 it stops 0.15 mm short of
+    # the edge while the probe ring (7.5) reaches 0.1 mm PAST it: exactly one
+    # of the four azimuths is in air, which is the case  would fail.
+    part, _r, _w = holes.counterbore(part, [(12.6, 0)], "M8")
+    return part
+'''
+    detected, svg = _draw(demo, "edgeseat", script)
+
+    group = _group(detected, 9.0)
+    assert group["seat_present"] is True
+    assert group["designation"] == "⌀9 ⌴⌀14.5↧8.8"
+    assert detected["hole_warnings"] == []
+
+
+@pytest.mark.integration
+def test_a_seat_filled_back_in_is_dropped_from_the_callout(demo):
+    """**Regression.** The seat probe asked "is there material around the
+    seat" and never "is the seat a void", so a pocket **filled solid** was
+    invisible at any sampling density: measured, volume 430 091 against the
+    control's 429 198 — *above* it — reading `seat_present: true` and printing
+    `⌀9 ⌴⌀14.5↧8.8` with no warning.
+
+    One point inside the seat closes it, and it cannot degrade a seat near an
+    edge: an interior point is inside the part's footprint wherever the seat
+    is.
+    """
+    script = '''\
+from build123d import Box, BuildPart, Cylinder, Location, Locations, Mode, add
+from build123d import Vector
+from agentcad.toolkit import holes
+
+PARAMS = {"t": {"default": 30.0, "min": 20.0, "max": 60.0, "unit": "mm",
+                "description": "plate thickness"}}
+
+def build(p):
+    part = Box(120, 120, p.t)
+    part, recs, _w = holes.counterbore(part, [(0, 0)], "M8")
+    seat = recs[0]["cbore"]
+    with BuildPart() as builder:            # fill the pocket, keep the bore
+        add(part)
+        with Locations(Location(Vector(0, 0, p.t / 2 - seat["depth"] / 2))):
+            Cylinder(seat["d"] / 2, seat["depth"], mode=Mode.ADD)
+        with Locations(Location(Vector(0, 0, p.t / 2 - seat["depth"] / 2))):
+            Cylinder(recs[0]["d"] / 2, seat["depth"], mode=Mode.SUBTRACT)
+    return holes.carry(builder.part, part)
+'''
+    detected, svg = _draw(demo, "seatfilled", script)
+
+    group = _group(detected, 9.0)
+    assert group["seat_present"] is False
+    assert group["designation"] == "⌀9"
+    assert "⌴⌀14.5" not in svg
+    assert len(detected["hole_warnings"]) == 1
+    assert "no longer empty" in detected["hole_warnings"][0]
+
+
+#: The seat region milled off with a 2x2 mm pin left standing at exactly one
+#: probe azimuth — the first class `any` cannot see.
+SEATPIN = '''\
+from build123d import Box, BuildPart, Location, Locations, Mode, Vector, add
+from agentcad.toolkit import holes
+
+PARAMS = {"t": {"default": 30.0, "min": 20.0, "max": 60.0, "unit": "mm",
+                "description": "plate thickness"}}
+
+def build(p):
+    part = Box(120, 120, p.t)
+    part, recs, _w = holes.counterbore(part, [(0, 0)], "M8")
+    depth = recs[0]["cbore"]["depth"]
+    with BuildPart() as builder:
+        add(part)
+        with Locations(Location(Vector(0, 0, p.t / 2 - depth / 2))):
+            Box(300, 300, depth, mode=Mode.SUBTRACT)
+        with Locations(Location(Vector(7.5, 0, p.t / 2 - depth / 2))):
+            Box(2, 2, depth, mode=Mode.ADD)
+    return holes.carry(builder.part, part)
+'''
+
+#: A 14 mm slot milled across the pocket at its own depth, leaving 0.25 mm
+#: crescents at +/-X — the second class. The +/-X probes land on the crescents,
+#: the +/-Y probes land in the slot.
+SEATSLOT = '''\
+from build123d import Box, BuildPart, Location, Locations, Mode, Vector, add
+from agentcad.toolkit import holes
+
+PARAMS = {"t": {"default": 30.0, "min": 20.0, "max": 60.0, "unit": "mm",
+                "description": "plate thickness"}}
+
+def build(p):
+    part = Box(120, 120, p.t)
+    part, recs, _w = holes.counterbore(part, [(0, 0)], "M8")
+    depth = recs[0]["cbore"]["depth"]
+    with BuildPart() as builder:
+        add(part)
+        with Locations(Location(Vector(0, 0, p.t / 2 - depth / 2))):
+            Box(14, 300, depth, mode=Mode.SUBTRACT)
+    return holes.carry(builder.part, part)
+'''
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("part_id,script,volume", [
+    ("seatpin", SEATPIN, 303967),
+    ("seatslot", SEATSLOT, 415856),
+])
+def test_the_two_seat_classes_the_probe_cannot_see_are_asserted_not_implied(
+        demo, part_id, script, volume):
+    """**The gap, pinned as a test rather than left in prose — both halves.**
+
+    `seat_present` asks `any` of four azimuths, so a seat region milled off
+    that leaves *anything* at one azimuth still reads `true`: a 2×2 mm pin
+    (volume 303 967 against the control's 429 198) and a 14 mm slot leaving
+    0.25 mm crescents (415 856). The slot used to be prose carrying a number;
+    it is constructed here, because a documented miss that is only prose can
+    drift — which is the argument for pinning the pin.
+
+    The bias is measured, not an oversight: a bounding-box-filtered `all`
+    catches both and keeps the edge cases, but reads `false` on a CORRECT
+    counterbore beside an ordinary pocket. Degrading a true drawing is the
+    worse failure. This test exists so the gap cannot quietly change without
+    someone deciding to change it.
+    """
+    service, _registry = demo
+    detected, svg = _draw(demo, part_id, script)
+
+    group = _group(detected, 9.0)
+    assert group["seat_present"] is True          # the documented miss
+    assert group["designation"] == "⌀9 ⌴⌀14.5↧8.8"
+    assert detected["hole_warnings"] == []
+    # the geometry really is destroyed, and not merely echoed from the record
+    measured = service.get_metrics("demo", part_id)["volume_mm3"]
+    assert measured == pytest.approx(volume, rel=5e-4), measured

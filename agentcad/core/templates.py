@@ -153,17 +153,22 @@ holes; SHAPE PATTERNS copy a solid that is already fused into the part.
                                 radius=None, span_deg=360.0)
     part, warn = patterns.mirror(part, plane=Plane.YZ, seed=None)
         # `seed` is a Shape ALREADY in the part, so `count` is the TOTAL
-        # instance count (CAD convention) and instance 0 is skipped;
+        # instance count (CAD convention) and the helper adds 1..count-1;
         # count=1 is a no-op with a warning. span_deg < 360 is inclusive.
+        # THAT HOLDS ONLY WHERE A PLACEMENT LEAVES THE SEED WHERE IT IS, which
+        # is a transform the helper tests for and never an index:
+        # polar(..., radius=r>0) translates EVERY instance onto the circle, so
+        # none of them is the seed -- all `count` are added, the seed stays
+        # where you built it as an extra feature, and the helper says so. For
+        # exactly `count` on a circle, build the seed where the first instance
+        # goes and pass radius=None.
 
 WHY EVERY HELPER RETURNS A WARNING: OCCT does not fail on a badly placed
 feature. A cut placed entirely off the part succeeds in ~1 ms, leaves the
 volume EXACTLY unchanged and reports is_valid True. So the helpers measure
-engagement themselves: a bounding-box screen per instance always (0.014 ms),
-plus verify="exact" for the real (part & tool) probe (2.1 ms each, roughly
-doubles a 50-instance pattern) reporting engaged_mm3. Warnings name the
-INSTANCE INDICES. Read patterns.instances(part) for the per-instance report.
-Impossible arguments (count < 1, spacing <= 0, span outside (0, 360]) RAISE.
+engagement themselves, per instance, and the warnings name INSTANCE INDICES.
+Read patterns.instances(part) for the per-instance report. Impossible
+arguments (count < 1, spacing <= 0, span outside (0, 360]) RAISE.
 
 HOLE WIZARD  (from agentcad.toolkit import holes; tool: hole_standards, add_holes)
 ---------------------------------------------------------------------------------
@@ -181,6 +186,16 @@ that reaches the drawing callouts and get_part.
 Common kwargs: plane=, depth= (omit for through), thru=, std="iso"|"ansi",
 fit="fine|medium|coarse" (or the ASME spellings close|normal|loose),
 verify="bbox"|"exact"|"off".
+
+    verify="bbox" (the DEFAULT) is three rungs, cheapest first, and every
+    status it reports is measured on THAT instance: the bounding-box screen
+    (0.014 ms, and disjoint boxes prove a MISS because a box contains its
+    shape), then a point on the bore axis classified inside the solid
+    (0.041 ms, which PROVES engagement), then the exact (part & tool) probe
+    (~5 ms) for the instance nothing cheap could decide. Its verdicts are
+    therefore identical to verify="exact"; `exact` buys the per-instance
+    engaged_mm3 / contact_mm2 numbers on EVERY instance (372 ms vs 115 ms for
+    50 holes). verify="off" measures nothing at all.
 
     plane= is a build123d Plane, or one of top|bottom|front|back|left|right --
     a PREDICATE re-evaluated every rebuild (the extreme planar face along that
@@ -200,15 +215,24 @@ verify="bbox"|"exact"|"off".
     build123d's default is 82 deg, which is ASME's; ISO is 90.
 
 Designations, per the hole's own standard (ISO | ASME):
-    clearance    (/)5.5              | (/)0.217
-    tapped       M5x0.8 - 6H depth12 | 10-24 UNC - 2B depth0.5
-    counterbore  (/)5.5 cbore(/)9.5  | countersink (/)5.5 csk(/)10.4x90deg
+    clearance          (/)5.5                    | (/)0.217
+    clearance, blind   (/)5.5 depth6             | (/)0.217 depth0.25
+    tapped             M5x0.8 - 6H depth12       | 10-24 UNC - 2B depth0.5
+    counterbore        (/)5.5 cbore(/)9.5depth5.4
+    counterbore, blind (/)5.5 depth6 cbore(/)9.5depth5.4
+    countersink        (/)5.5 csk(/)10.4x90deg
+    countersink, blind (/)5.5 depth6 csk(/)10.4x90deg
+A BLIND HOLE ALWAYS STATES ITS DEPTH, and each depth symbol qualifies the
+diameter group it FOLLOWS -- that is what keeps a counterbore's two depths
+apart. Omitting the hole depth (which clearance/counterbore/countersink used
+to do) is the one spelling a shop reads as a through hole.
 (the real strings use the ISO 129 glyphs; ask the hole_standards tool for one.)
 
 THE RECORDS. Each call makes ONE GROUP record -- {id, family, standard,
-designation, size, fit, d, count, positions, centers, axis, plane, depth_mm,
-thru, tap, cbore, csk, instances} -- so a pattern of a wizard hole is one hole
-group, not N unrelated records. They ride on the shape the helper RETURNS:
+designation, designation_base, size, fit, d, count, positions, centers, axis,
+plane, depth_mm, thru, removed_mm3, tap, cbore, csk, provenance, instances,
+verify, dropped, pattern} -- so a pattern of a wizard hole is one hole group,
+not N unrelated records. They ride on the shape the helper RETURNS:
 
     holes.records(part)        -> the records carried by this shape
     holes.carry(new, old)      -> after a RAW build123d op of your own
@@ -220,10 +244,30 @@ went missing. Rebuild results and get_part gain `holes`: [...] the records,
 null "declares none", [] + a warning "they were dropped", key absent "not
 harvested".
 
-Guards you will actually see: an instance off the part or off the face
-(named by index), a depth deeper than the stock below the plane, a new hole
-within one diameter of another or of an existing record. An unknown size or a
-negative depth RAISES, and comes back as a normal script_error with the line.
+`count`, `positions` and `centers` COVER ONLY THE INSTANCES THAT DEMONSTRABLY
+REMOVED MATERIAL -- anything the guard proved was a no-op is excluded and
+listed under `dropped` [{i, status, position}], with a warning naming the
+indices. `verify` echoes the MODE YOU ASKED FOR; the tier that actually decided
+an instance is instances[i]["probe"] ("bbox"|"axis"|"exact"|"off"), and one
+default-mode call routinely uses two of them. `designation` is DERIVED from the
+record's own numbers (so a reader can re-derive it and refuse a record whose
+text and numbers have drifted apart) and `designation_base` is the same callout
+with no depth qualifier. `provenance` is {standard (a LIST), sources,
+corroborated, conflicts} for the DIAMETER, unioned over every published row
+that fed the hole (a counterbore has two); `corroborated` is true only for two
+or more independent sources that AGREE, so a single-sourced seat (every ISO
+10642 countersink) or an adjudicated one (ASME #8 normal) says so on the
+record. `drilled` carries provenance: None -- no table supplied its number.
+Both `designation` and `provenance` are RE-DERIVED from the record's own fields
+and compared when it is validated, so neither can carry a claim the record's
+size, fit, standard and fastener do not earn.
+
+Guards you will actually see: an instance off the part or off the face (named
+by index, and excluded from the count), a depth that REACHES the far side of
+the stock below the plane (so the hole is not blind), a new hole within one
+diameter of another or of an existing record, and a DISPUTED table cell. An
+unknown size or a negative depth RAISES, and comes back as a normal
+script_error with the line.
 
     from agentcad.toolkit import holes, patterns
     def build(p):

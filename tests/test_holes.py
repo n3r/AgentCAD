@@ -316,8 +316,25 @@ def test_a_depth_deeper_than_the_stock_warns():
 
     _out, _records, warning = holes.clearance(_plate(t=10.0), [(0, 0)], "M5",
                                               depth=25)
-    assert "deeper than the stock" in warning
+    assert "reaches the far side of the stock" in warning
     assert "breaks through" in warning
+
+
+def test_a_depth_that_exactly_equals_the_stock_is_not_blind_and_says_so():
+    """**Regression.** The guard tested `depth > stock`, so `depth=t` on a `t`
+    plate — the spelling an author actually writes — passed silently, and the
+    record then carried `thru: false` with a depth the geometry does not have.
+    The drawing printed `↧12` on a hole open at both ends. `stock` is a
+    bounding-box extent, so reaching it is as certainly through as exceeding
+    it, and the equality case is the common one."""
+    from agentcad.toolkit import holes
+
+    _out, records, warning = holes.clearance(_plate(t=10.0), [(0, 0)], "M5",
+                                             depth=10.0)
+    assert "reaches the far side of the stock" in warning
+    assert "Use thru=True" in warning
+    assert records[0]["thru"] is False      # the record still reports what was
+    assert records[0]["depth_mm"] == 10.0   # asked for; the warning is the fact
 
 
 def test_verify_off_skips_the_guard_entirely():
@@ -680,3 +697,418 @@ def test_the_safe_bool_fallback_cuts_through_an_inward_pointing_normal(
     assert "fell back to a safe_bool cut" in (warning or "")
     assert part.volume - out.volume == pytest.approx(
         _cyl_volume(10.0, 40.0), rel=1e-6)
+
+
+# ------------------------------- the record may only claim what it removed
+
+
+def _frame(outer=100.0, void=60.0, t=10.0):
+    """A square frame: a plate with its middle cut out. Its bounding box is the
+    whole outer square, so a hole drilled into the void is inside the box and
+    outside the material — which is the shape that broke the default guard."""
+    from build123d import Box, BuildPart, Mode
+
+    with BuildPart() as builder:
+        Box(outer, outer, t)
+        Box(void, void, t, mode=Mode.SUBTRACT)
+    return builder.part
+
+
+@pytest.mark.parametrize("verify", ["bbox", "exact"])
+def test_an_instance_that_cuts_air_is_not_in_the_record(verify):
+    """**Regression, and the reason the default tier was rewritten.**
+
+    Measured on this exact frame before the fix, with the public default
+    `verify="bbox"`: one valid solid, `warning=None`, BOTH instances reported
+    `engaged`, the removed volume exactly one cylinder (785.398163397 mm^3 for
+    a ⌀10 x 10) and the record claimed `count: 2`. The bounding-box screen
+    compares each tool against the WHOLE part's box, which the void is inside,
+    and the volume check is aggregate — so one successful cut hid the no-op.
+
+    Both tiers now answer per instance, and the record may claim only what
+    demonstrably removed material.
+    """
+    from agentcad.toolkit import holes
+
+    part = _frame()
+    out, records, warning = holes.drill(part, [(40, 0), (0, 0)], 10.0,
+                                        verify=verify)
+    record = records[0]
+    one_cylinder = _cyl_volume(10.0, 10.0)
+
+    assert part.volume - out.volume == pytest.approx(one_cylinder, rel=1e-9)
+    assert [row["status"] for row in record["instances"]] == ["engaged",
+                                                              "missed"]
+    assert record["count"] == 1
+    assert record["positions"] == [[40.0, 0.0]]
+    assert len(record["centers"]) == 1
+    assert record["dropped"] == [{"i": 1, "status": "missed",
+                                  "position": [0.0, 0.0]}]
+    assert record["verify"] == verify
+    assert "instance(s) [1] do not reach the part" in warning
+    assert "the record claims 1 of 2 instance(s)" in warning
+
+
+def test_the_default_tier_proves_engagement_on_the_axis_not_on_a_box():
+    """The rungs are visible in the report: a hole through material is proved
+    by an interior point on its own axis (`probe: "axis"`, no boolean), and
+    only an instance nothing cheap could decide pays for the exact probe."""
+    from agentcad.toolkit import holes
+
+    _out, records, _warning = holes.drill(_frame(), [(40, 0), (0, 0)], 10.0)
+    report = records[0]["instances"]
+    assert (report[0]["status"], report[0]["probe"]) == ("engaged", "axis")
+    assert (report[1]["status"], report[1]["probe"]) == ("missed", "exact")
+
+
+def test_verify_off_records_intent_and_says_that_is_what_it_is():
+    """`verify="off"` is the one mode whose count is intent rather than
+    measurement — the caller asked for no per-instance question. The record
+    says so in `verify` instead of presenting it as a measurement."""
+    from agentcad.toolkit import holes
+
+    _out, records, _warning = holes.drill(_frame(), [(40, 0), (0, 0)], 10.0,
+                                          verify="off")
+    record = records[0]
+    assert (record["verify"], record["count"]) == ("off", 2)
+    assert record["dropped"] == []
+
+
+# ------------------------------------------------- the blind-depth callouts
+
+
+@pytest.mark.parametrize("family,size,expected", [
+    ("clearance", "M8", "⌀9 ↧6"),
+    ("counterbore", "M8", "⌀9 ↧6 ⌴⌀14.5↧8.8"),
+    ("countersink", "M8", "⌀9 ↧6 ⌵⌀17.92×90°"),
+])
+def test_a_blind_seat_callout_states_the_hole_depth(family, size, expected):
+    """**Regression.** `clearance`, `counterbore` and `countersink` recorded
+    `depth_mm` and `thru: false` and then printed a designation with no depth
+    in it at all — `⌀9` for an M8 blind to 6 mm, which a shop manufactures as a
+    through hole. `drill` and `tapped` always did include it, so this was an
+    inconsistent omission, not a convention.
+
+    The counterbore is the one with two depths, and they are disambiguated by
+    position: each `↧` qualifies the `⌀` group it follows.
+    """
+    from agentcad.toolkit import holes
+
+    helper = getattr(holes, family)
+    _out, records, _warning = helper(_plate(t=20.0), [(0, 0)], size, depth=6.0,
+                                     thru=False)
+    assert records[0]["designation"] == expected
+    assert records[0]["depth_mm"] == 6.0 and records[0]["thru"] is False
+
+
+@pytest.mark.parametrize("family,size,expected", [
+    ("clearance", "M8", "⌀9"),
+    ("counterbore", "M8", "⌀9 ⌴⌀14.5↧8.8"),
+    ("countersink", "M8", "⌀9 ⌵⌀17.92×90°"),
+])
+def test_a_through_seat_callout_is_unchanged(family, size, expected):
+    """A through hole is not "depth 0": the depth glyph stays absent, and these
+    strings are byte-identical to what shipped before the blind fix."""
+    from agentcad.toolkit import holes
+
+    helper = getattr(holes, family)
+    _out, records, _warning = helper(_plate(t=20.0), [(0, 0)], size)
+    assert records[0]["designation"] == expected
+
+
+def test_every_record_carries_a_depth_free_spelling_of_its_own_callout():
+    """`designation_base` is what a reader prints once it has MEASURED that the
+    geometry no longer supports the recorded depth. It is built by the same
+    function from the same record, so the two spellings cannot drift."""
+    from agentcad.toolkit import holes
+
+    _out, records, _warning = holes.tapped(_plate(t=20.0), [(0, 0)], "M8",
+                                           depth=6.0)
+    assert records[0]["designation"] == "M8×1.25 - 6H ↧6"
+    assert records[0]["designation_base"] == "M8×1.25 - 6H"
+
+
+@pytest.mark.parametrize("family,kwargs", [
+    ("drill", {"diameter": 9.0}),
+    ("clearance", {"size": "M8"}),
+    ("tapped", {"size": "M8", "depth": 6.0}),
+    ("counterbore", {"size": "M8"}),
+    ("countersink", {"size": "M8"}),
+])
+def test_every_helper_produces_a_record_the_shared_validator_accepts(
+        family, kwargs):
+    """One contract, three readers (the harvest raises, the drawing skips, the
+    sidecar discards). If a helper could produce a record that contract rejects,
+    the contract would be quietly unenforceable — so every helper is checked
+    against it here, where the failure is cheap."""
+    from agentcad.toolkit import hole_standards, holes
+
+    helper = getattr(holes, family)
+    argument = kwargs.pop("diameter", None) or kwargs.pop("size")
+    _out, records, _warning = helper(_plate(t=20.0), [(0, 0)], argument,
+                                     **kwargs)
+    assert hole_standards.validate_record(records[0]) is None
+
+
+def test_a_hole_in_the_gap_between_two_solids_is_a_miss():
+    """The same defect in a second shape, and the one that proves the probe
+    survives a Compound: two disjoint solids in one part, with a hole placed in
+    the empty space between them. That space is inside the part's bounding box,
+    so the box screen calls it `engaged`; the classifier is built from
+    `part.wrapped` — a Compound here, not a Solid — and answers per point."""
+    from build123d import Box, Pos
+
+    from agentcad.toolkit import holes
+
+    part = Box(40, 40, 10) + Pos(100, 0, 0) * Box(40, 40, 10)
+    assert len(part.solids()) == 2
+    _out, records, warning = holes.drill(part, [(0, 0), (100, 0), (50, 0)], 6.0)
+    record = records[0]
+    assert [row["status"] for row in record["instances"]] == [
+        "engaged", "engaged", "missed"]
+    assert record["count"] == 2
+    assert record["positions"] == [[0.0, 0.0], [100.0, 0.0]]
+    assert "instance(s) [2] do not reach the part" in warning
+
+
+# ------------------ the CHEATSHEET is a guide agents receive, so it is tested
+
+
+def test_the_cheatsheet_names_every_key_a_hole_record_actually_carries():
+    """**Regression, and a standing guard.**
+
+    `core/templates.CHEATSHEET` is what `part_template` hands an agent, and it
+    is the one hole-authoring doc with no reader to notice when it goes stale:
+    `docs/part-authoring.md` and `AGENTS.md` were updated for the measured
+    `count`, `verify`/`dropped`, `designation_base` and the blind-depth
+    callouts and the CHEATSHEET got none of them, so the guide an agent is
+    handed described the behaviour of two rounds earlier.
+
+    Asserting it against a REAL record is what makes it stay true: a key added
+    to the record without a word in the sheet fails here.
+    """
+    import re
+
+    from agentcad.core.templates import CHEATSHEET
+    from agentcad.toolkit import holes
+
+    _out, records, _warning = holes.counterbore(_plate(t=20.0), [(0, 0)], "M8",
+                                                depth=6.0, thru=False)
+    record = records[0]
+    # THE RECORD-KEY BLOCK, not the whole sheet. `key not in CHEATSHEET` was a
+    # substring search over ~400 lines, so 21 of these 24 keys survived being
+    # deleted from the block (`d` alone occurs 821 times elsewhere) and only
+    # `family`, `depth_mm` and `removed_mm3` were genuinely pinned. Plausible
+    # future keys — `status`, `origin`, `depth`, `warnings`, `label`, `seat` —
+    # all passed while entirely absent.
+    block = re.search(r"ONE GROUP record -- \{(.*?)\}", CHEATSHEET, re.S)
+    assert block is not None, "the CHEATSHEET's record-key block is gone"
+    declared = {token.strip()
+                for token in block.group(1).replace("\n", " ").split(",")}
+    assert declared == set(record), (
+        f"CHEATSHEET record keys disagree with a real record: "
+        f"missing {sorted(set(record) - declared)}, "
+        f"stale {sorted(declared - set(record))}")
+
+    # …and the specific claims the last two rounds repealed.
+    assert "instance 0 is skipped" not in CHEATSHEET
+    assert "a bounding-box screen per instance" not in CHEATSHEET
+    assert 'instances[i]["probe"]' in CHEATSHEET      # the tier that answered
+    assert "clearance, blind" in CHEATSHEET           # the blind designations
+
+
+# --------------- provenance reaches the thing that becomes a callout
+
+
+def test_a_single_sourced_diameter_says_so_on_the_record():
+    """**Regression.** `corroborated` reached nothing that manufactures.
+
+    Grepping the tree for it returned exactly two hits — the tool description
+    and the line that computes it — so the honest work of labelling the
+    single-sourced ISO 10642 column was invisible at the one place the number
+    turns into a shop instruction. A countersink's seat diameter comes off that
+    column; the record now carries the label with it.
+    """
+    from agentcad.toolkit import hole_standards, holes
+
+    _out, records, warning = holes.countersink(_plate(t=20.0), [(0, 0)], "M8")
+    provenance = records[0]["provenance"]
+    # The clearance row has two sources and the ISO 10642 seat has one, so the
+    # union is three and the CONJUNCTION is false. That is the point: a hole is
+    # only as corroborated as the least-corroborated row that shaped it.
+    assert provenance["corroborated"] is False
+    assert any("10642" in text for text in provenance["sources"])
+    assert hole_standards.csk("M8")["corroborated"] is False
+    # Single-sourced is carried, not shouted: it is a permanent property of
+    # every metric countersink this repo can ship, and a warning nothing can
+    # ever clear teaches readers to ignore warnings.
+    assert warning is None
+
+
+def test_a_counterbore_claims_what_backs_BOTH_of_its_rows():
+    """A counterbore is two published rows — the clearance hole and the
+    fastener head — so its record's provenance is their union and
+    `corroborated` is their conjunction, never one row's answer for both."""
+    from agentcad.toolkit import hole_standards, holes
+
+    _out, records, _warning = holes.counterbore(_plate(t=30.0), [(0, 0)], "M8")
+    provenance = records[0]["provenance"]
+    clearance = hole_standards.clearance("M8")
+    head = hole_standards.cbore("M8")
+    assert set(provenance["sources"]) == set(clearance["sources"]) | set(
+        head["sources"])
+    assert provenance["corroborated"] is (clearance["corroborated"]
+                                          and head["corroborated"])
+
+
+def test_a_disputed_table_cell_warns_as_well_as_recording_itself():
+    """The ANSI `#8 normal` cell is two sources that DISAGREED and an
+    adjudication shipped in their place. That is a decision someone made, not a
+    permanent property of the literature, so it interrupts — unlike a merely
+    single-sourced row."""
+    from agentcad.toolkit import holes
+
+    _out, records, warning = holes.clearance(
+        _plate(t=20.0), [(0, 0)], "#8", std="ansi", fit="normal")
+    provenance = records[0]["provenance"]
+    assert provenance["corroborated"] is False
+    assert provenance["conflicts"] and "0.190" in provenance["conflicts"][0]
+    assert "DISPUTED" in warning
+
+
+def test_a_drilled_hole_carries_no_provenance_because_no_table_gave_it_one():
+    """`drilled` takes millimetres from the designer. Claiming a source there
+    would put a standard's name on a number the standard did not supply — and
+    `validate_record` refuses a drilled record that carries one."""
+    from agentcad.toolkit import hole_standards, holes
+
+    _out, records, _warning = holes.drill(_plate(), [(0, 0)], 18.0)
+    assert records[0]["provenance"] is None
+    forged = {**records[0], "provenance": {"sources": ["ISO 273"],
+                                           "corroborated": True,
+                                           "conflicts": []}}
+    assert "may not carry provenance" in hole_standards.validate_record(forged)
+
+
+def test_provenance_is_re_derived_and_compared_not_merely_self_consistent():
+    """**Regression.** `validate_record` re-derived the *designation* and
+    compared, so a fabricated callout could not survive — but it checked
+    provenance only for internal consistency. The genuine disputed ANSI
+    `#8 normal` counterbore record, with its conflict note deleted and
+    `corroborated` flipped to `true`, is perfectly self-consistent and
+    **validated clean**, while re-deriving from its own `size`/`fit`/`standard`
+    gives `corroborated: False` over one conflict.
+
+    So provenance is now re-derived from the record's own fields and compared,
+    exactly like the designation. Every laundering the verifier tried is below;
+    each one used to return `None`.
+    """
+    from agentcad.toolkit import hole_standards, holes
+
+    _out, records, _warning = holes.counterbore(
+        _plate(t=30.0), [(0, 0)], "#8", std="ansi", fit="normal")
+    genuine = records[0]
+    assert hole_standards.validate_record(genuine) is None
+    real = genuine["provenance"]
+    assert (real["corroborated"], len(real["conflicts"])) == (False, 1)
+
+    for name, provenance in (
+        ("the conflict deleted and the flag flipped",
+         {**real, "corroborated": True, "conflicts": []}),
+        ("citations naming publications in no table",
+         {**real, "sources": ["Bob's Big Book of Holes", "ibid."],
+          "corroborated": True, "conflicts": []}),
+        ("one citation listed twice",
+         {**real, "sources": ["a chart", "a chart "], "corroborated": True,
+          "conflicts": []}),
+    ):
+        problem = hole_standards.validate_record(
+            {**genuine, "provenance": provenance})
+        assert problem is not None and "entitle it to" in problem, name
+
+    # A wrong, mistyped or absent `standard` is refused on the way in.
+    for standard in ("ISO 9001", 7, None):
+        problem = hole_standards.validate_record(
+            {**genuine, "provenance": {**real, "standard": standard}})
+        assert problem is not None, standard
+
+
+def test_provenance_standard_is_always_a_list():
+    """It was a bare string for a one-row answer and a list for a
+    counterbore's two — an undocumented, untyped polymorphism a reader had to
+    branch on, and one that hands a caller indexing `[0]` a character."""
+    from agentcad.toolkit import holes
+
+    for family, kwargs in (("clearance", {}), ("tapped", {}),
+                           ("counterbore", {}), ("countersink", {})):
+        _out, records, _warning = getattr(holes, family)(
+            _plate(t=30.0), [(0, 0)], "M8", **kwargs)
+        standard = records[0]["provenance"]["standard"]
+        assert isinstance(standard, list) and all(
+            isinstance(text, str) for text in standard), family
+
+
+def test_size_and_fit_are_tied_to_the_diameter_they_select():
+    """**Regression, and the one that reopened the flagship laundering.**
+
+    `size` and `fit` select the published row every other check re-derives
+    from, but they were not in `RECORD_KEYS`, were never typed, and were never
+    compared with `d` — while `designation_for_record` spells the callout from
+    `d`. So the number that gets manufactured and the label that chooses its
+    provenance were never tied together, and mutating **both sides
+    consistently** laundered the disputed ANSI `#8 normal` cell clean:
+    `size: "#10"` with the `#10` provenance left `d` at 4.9784 and the callout
+    at `⌀0.196` while the record claimed `corroborated: True` over 0 conflicts,
+    and validated. Earlier attacks mutated one side only, which is why it
+    passed four of them.
+
+    The fix is one already-cached lookup, and it is why `size`/`fit` are now
+    typed record keys: a key that steers validation and is itself unvalidated
+    is the shape of this whole defect class.
+    """
+    from agentcad.toolkit import hole_standards, holes
+
+    _out, records, _warning = holes.clearance(
+        _plate(t=30.0), [(0, 0)], "#8", std="ansi", fit="normal")
+    genuine = records[0]
+    assert hole_standards.validate_record(genuine) is None
+    assert genuine["designation"] == "⌀0.196"
+    assert genuine["provenance"]["corroborated"] is False
+
+    for label, patch in (("size #8 -> #10", {"size": "#10"}),
+                         ("fit normal -> close", {"fit": "close"}),
+                         ("fit normal -> loose", {"fit": "loose"})):
+        forged = {**genuine, **patch}
+        # both sides mutated consistently: the provenance the new row entitles
+        forged["provenance"] = hole_standards.provenance_for_record(forged)
+        assert forged["provenance"]["corroborated"] is True, label
+        problem = hole_standards.validate_record(forged)
+        assert problem is not None and "name one row" in problem, label
+
+    assert {"size", "fit"} <= set(hole_standards.RECORD_KEYS)
+
+
+@pytest.mark.parametrize("family,kwargs,size,fit", [
+    ("drill", {"diameter": 9.0}, None, None),
+    ("clearance", {"size": "M8"}, "M8", "medium"),
+    ("tapped", {"size": "M8"}, "M8", None),
+    ("counterbore", {"size": "M8"}, "M8", "medium"),
+    ("countersink", {"size": "M8"}, "M8", "medium"),
+])
+def test_each_family_carries_exactly_the_names_its_row_needs(
+        family, kwargs, size, fit):
+    """`drilled` has no row so it may claim no size and no fit; a tapped hole
+    has a size and no fit; the clearance-based families have both. Enforced,
+    because these are the fields that select the row."""
+    from agentcad.toolkit import hole_standards, holes
+
+    helper = getattr(holes, family)
+    argument = kwargs.pop("diameter", None) or kwargs.pop("size")
+    _out, records, _warning = helper(_plate(t=30.0), [(0, 0)], argument,
+                                     **kwargs)
+    record = records[0]
+    assert (record["size"], record["fit"]) == (size, fit)
+    assert hole_standards.validate_record(record) is None
+    for key in ("size", "fit"):
+        flipped = {**record, key: None if record[key] else "M8"}
+        assert hole_standards.validate_record(flipped) is not None, key

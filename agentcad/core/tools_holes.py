@@ -38,6 +38,16 @@ empty list: `holes.records()` returns `[]` both for "no holes" and for "a raw
 build123d operation dropped them", and reporting the second as "declares none"
 is the exact silence this design exists to prevent.
 
+**Those four states are an invariant on read, not just on write.** `[]` is
+inseparable from `dropped > 0` and a warning saying so; `null` is inseparable
+from `dropped: 0`. A stored document in any other combination is a state the
+writer cannot produce — a hand edit, a partial write, a copied `.cache/` — and
+`_read_sidecar` discards it rather than serving it. It also compares the
+**cache key the file itself stores** (never compared before, so a sidecar
+describing a different build of the part was served as if it described this
+one) and runs every record through `hole_standards.validate_record`, the one
+contract the worker raises on and the drawing skips on.
+
 Load order and routing
 ----------------------
 This pack loads at `h`, which is **before** `tools_proposals` (`p`),
@@ -67,8 +77,13 @@ from .project import ProjectStore
 from .script_blocks import apply_generated_block, next_build_alias
 from .tools import Tool, schema, with_hint
 
-#: Sidecar format. Bump it and every stored file is discarded on read.
-HOLES_SIDECAR_VERSION = 1
+#: Sidecar format. Bump it and every stored file is discarded on read. Bumped
+#: to 2 when records gained `verify`/`dropped`/`designation_base` and their
+#: `count` became the number of instances that demonstrably removed material,
+#: and to 3 when they gained `provenance` — in both cases a stored document is
+#: not *wrong*, it is a weaker claim, and there is no way to tell from the file
+#: which it is. A stale sidecar is one keyed kernel round trip to replace.
+HOLES_SIDECAR_VERSION = 3
 
 #: The wrapper marker, on the wrapper itself — the `install_rebuild_specs`
 #: precedent: "is this already wrapped?" is answered by the method, not by a
@@ -100,14 +115,90 @@ def _sidecar_path(service, proj: str, key: str) -> Path:
     return service.store.cache_dir(proj) / f"{key}.holes.json"
 
 
-def _read_sidecar(path: Path) -> dict | None:
+def _sidecar_problem(stored, key: str) -> str | None:
+    """Why a stored harvest may not be used, or None.
+
+    Four checks, and the first three used to be absent:
+
+    1. **the version**, as before;
+    2. **the embedded cache key**, which the writer has always stored and no
+       reader ever compared. A `.holes.json` whose `cache_key` is not the key
+       being asked for describes *different bytes* — a restored history, a
+       hand-copied `.cache/`, a half-finished rename — and answering from it is
+       serving one part's holes for another's. A mismatch is a recompute, not
+       an acceptance;
+    3. **every record**, against `hole_standards.validate_record` — the same
+       contract the worker raises on and the drawing skips on, so residue
+       cannot enter through the file instead of through the shape;
+    4. **the four-state invariant** the module docstring's table declares.
+       `holes: []` means "records were created and did not arrive" and is
+       therefore inseparable from `dropped > 0` and a warning saying so;
+       `holes: null` means "declares none" and is inseparable from `dropped:
+       0`. A hand-written `{"holes": [], "dropped": 0, "warnings": []}` is a
+       fifth state the writer cannot produce, and it used to be accepted and
+       reported as the second — a part with lost records, silently, with no
+       warning anywhere.
+
+    `key` is required, not optional: the only caller resolves it *before* it
+    can name the file, because the key is the filename. An optional key would
+    be a way to read a sidecar without checking the one thing check 2 exists
+    for.
+    """
+    from agentcad.toolkit import hole_standards
+
+    if not isinstance(stored, dict):
+        return "not a JSON object"
+    if stored.get("version") != HOLES_SIDECAR_VERSION:
+        return (f"version {stored.get('version')!r} is not "
+                f"{HOLES_SIDECAR_VERSION}")
+    stored_key = stored.get("cache_key")
+    if stored_key != key:
+        return (f"cache_key {stored_key!r} is not the key being read ({key!r}) "
+                f"— it describes a different build of this part")
+    found = stored.get("holes")
+    if found is not None:
+        if not isinstance(found, list):
+            return f"`holes` is a {type(found).__name__}, not a list or null"
+        for index, record in enumerate(found):
+            problem = hole_standards.validate_record(
+                record, where=f"stored hole record {index}")
+            if problem is not None:
+                return problem
+    dropped = stored.get("dropped")
+    if isinstance(dropped, bool) or not isinstance(dropped, int) or dropped < 0:
+        return f"`dropped` must be an integer >= 0, got {dropped!r}"
+    warnings = stored.get("warnings")
+    if (not isinstance(warnings, list)
+            or not all(isinstance(text, str) for text in warnings)):
+        return f"`warnings` must be a list of strings, got {warnings!r}"
+    if found is None and dropped:
+        return (f"`holes` is null (the part declares none) but `dropped` is "
+                f"{dropped}; those are two different answers")
+    if found == [] and not dropped:
+        return ("`holes` is an empty list with `dropped` 0 — the writer emits "
+                "null for 'declares none' and a list only when records were "
+                "made, so this state cannot have been harvested")
+    if dropped and not warnings:
+        return (f"`dropped` is {dropped} but no warning says so; the harvest "
+                f"emits them together")
+    return None
+
+
+def _read_sidecar(path: Path, key: str) -> dict | None:
     """A stored harvest, or None when there is nothing usable there.
 
-    A corrupt, hand-edited or stale-format sidecar is **discarded and
-    recomputed**, never raised (`core/specs.py:434-485`, and `_rebuild`'s own
-    `metrics.json` handling): a crash mid-write must not make a part
-    unreadable, and a file whose `holes` is not a list-or-null would otherwise
-    put residue into a drawing.
+    A corrupt, hand-edited, stale-format or **inconsistent** sidecar is
+    discarded and recomputed, never raised (`core/specs.py`, and `_rebuild`'s
+    own `metrics.json` handling): a crash mid-write must not make a part
+    unreadable, and a file this reader cannot vouch for must not become a
+    manufacturing callout. Recomputing costs one keyed kernel round trip;
+    accepting costs a wrong drawing.
+
+    This is **not** an authentication check and saying so matters: a part
+    script already runs arbitrary code, and anything that can write into
+    `.cache/` can write a *consistent* document too. What is closed is the
+    stale or self-contradicting file, which is what a restore, a copy or a
+    half-finished write actually produces.
     """
     if not path.is_file():
         return None
@@ -115,11 +206,7 @@ def _read_sidecar(path: Path) -> dict | None:
         stored = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         stored = None
-    usable = (isinstance(stored, dict)
-              and stored.get("version") == HOLES_SIDECAR_VERSION
-              and (stored.get("holes") is None
-                   or isinstance(stored.get("holes"), list)))
-    if not usable:
+    if _sidecar_problem(stored, key) is not None:
         try:
             path.unlink()
         except OSError:
@@ -205,7 +292,10 @@ def _holes_for(service, proj: str, part_id: str, cache_key: str | None, *,
         return none_declared
     key = cache_key or service._cache_key_for(proj, record)
     path = _sidecar_path(service, proj, key)
-    stored = _read_sidecar(path)
+    # The key is compared, not merely stored. The path already contains it, so
+    # a mismatch means the file's own header disagrees with where it sits —
+    # which is exactly what a restored or hand-copied `.cache/` looks like.
+    stored = _read_sidecar(path, key)
     if stored is not None:
         return stored
     if not harvest:
@@ -528,6 +618,20 @@ def _hole_call_args(family: str, size, fit, std, depth) -> tuple[list[str], dict
         else:
             row = tables.lookup(family=family, size=size, std=std_name)
             echo["size"] = row.get("size") or str(size).strip().upper()
+            # The provenance of the number this hole will be cut at, over the
+            # SAME rows the record will merge — `merge_provenance`, not one
+            # lookup. `add_holes` used to echo a single `lookup()`, which for a
+            # seat family is the HEAD row, so the flagship disputed ANSI
+            # `#8 normal` clearance cell reported `corroborated: true` to the
+            # agent while the record it was about to write said `false` with a
+            # conflict. Two surfaces describing one hole must not disagree, and
+            # the comment that used to sit here said "the clearance row only",
+            # which was the opposite of what the code did.
+            rows = [row]
+            if family in ("counterbore", "countersink"):
+                rows = [tables.clearance(size, fit=fit or "medium",
+                                         std=std_name), row]
+            echo["provenance"] = tables.merge_provenance(*rows)
         if "fit" in accepted:
             fit_name = tables.canonical_fit("medium" if fit is None else fit,
                                             std_name)

@@ -429,3 +429,174 @@ def test_a_name_is_taken_even_where_it_only_appears_in_a_comment():
         "_agentcad_prev_build_1"
     assert next_build_alias("def build(p:  # unclosed\n") == \
         "_agentcad_prev_build_0"
+
+
+# ------------------------------------------- R5: the persisted sidecar
+
+def _record(**overrides) -> dict:
+    """A record shaped exactly as `toolkit.holes` produces one, so the sidecar
+    tests below fail on the field they change and on nothing else."""
+    from agentcad.toolkit import hole_standards
+
+    record = {
+        "id": "h0", "family": "clearance", "standard": "iso", "size": "M5",
+        "fit": "medium", "d": 5.5, "tap": None, "cbore": None, "csk": None,
+        "provenance": hole_standards.merge_provenance(
+            hole_standards.clearance("M5")),
+        "count": 1, "positions": [[0.0, 0.0]], "centers": [[0.0, 0.0, 5.0]],
+        "axis": [0.0, 0.0, -1.0],
+        "plane": {"origin": [0.0, 0.0, 5.0], "z_dir": [0.0, 0.0, 1.0],
+                  "x_dir": [1.0, 0.0, 0.0]},
+        "depth_mm": None, "thru": True, "removed_mm3": 237.6,
+        "instances": [], "verify": "bbox", "dropped": [], "pattern": None,
+    }
+    record.update(overrides)
+    record["designation"] = hole_standards.designation_for_record(record)
+    record["designation_base"] = hole_standards.designation_for_record(
+        {**record, "thru": True, "depth_mm": None})
+    assert hole_standards.validate_record(record) is None
+    return record
+
+
+def _sidecar(**overrides) -> dict:
+    from agentcad.core.tools_holes import HOLES_SIDECAR_VERSION
+
+    payload = {"version": HOLES_SIDECAR_VERSION, "cache_key": "abc",
+               "holes": [_record()], "warnings": [], "dropped": 0}
+    payload.update(overrides)
+    return payload
+
+
+def test_a_well_formed_sidecar_is_used():
+    from agentcad.core.tools_holes import _sidecar_problem
+
+    assert _sidecar_problem(_sidecar(), "abc") is None
+    assert _sidecar_problem(
+        _sidecar(holes=None), "abc") is None            # declares none
+    assert _sidecar_problem(
+        _sidecar(holes=[], dropped=2, warnings=["lost them"]), "abc") is None
+
+
+@pytest.mark.parametrize("payload,fragment", [
+    # The embedded key has always been written and was never compared, so a
+    # `.holes.json` describing a DIFFERENT build of this part was served as if
+    # it described this one.
+    (dict(cache_key="other"), "is not the key being read"),
+    # The impossible fifth state: `holes: []` means "records were created and
+    # did not arrive", which cannot coexist with `dropped: 0` and no warning.
+    # It used to be accepted and reported as exactly that, silently.
+    (dict(holes=[], dropped=0), "cannot have been harvested"),
+    (dict(holes=[], dropped=2, warnings=[]), "no warning says so"),
+    (dict(holes=None, dropped=3, warnings=["x"]), "two different answers"),
+    (dict(warnings="boom"), "must be a list of strings"),
+    (dict(dropped=-1), "must be an integer >= 0"),
+    (dict(dropped=True), "must be an integer >= 0"),
+    (dict(holes="nope"), "not a list or null"),
+    (dict(version=0), "is not"),
+])
+def test_an_inconsistent_sidecar_is_discarded_and_recomputed(payload, fragment):
+    """`_read_sidecar` checked the version and that `holes` was list-or-null,
+    and nothing else — not the cache key it stores, not the records, not the
+    four-state invariant its own docstring declares. Recomputing costs one
+    keyed kernel round trip; accepting costs a wrong drawing."""
+    from agentcad.core.tools_holes import _sidecar_problem
+
+    problem = _sidecar_problem(_sidecar(**payload), "abc")
+    assert problem is not None and fragment in problem
+
+
+@pytest.mark.parametrize("record,fragment", [
+    ({"nope": 1}, "missing required key"),
+    ("not a dict", "not a dict"),
+])
+def test_a_stored_record_goes_through_the_shared_validator(record, fragment):
+    """One contract, three readers. A record that the worker's harvest would
+    raise on must not reach a drawing by way of the cache instead."""
+    from agentcad.core.tools_holes import _sidecar_problem
+
+    problem = _sidecar_problem(_sidecar(holes=[record]), "abc")
+    assert problem is not None and fragment in problem
+
+
+def test_a_stored_record_whose_designation_drifted_is_discarded():
+    """The cross-check that makes the contract more than a key list: a stored
+    callout has to be what the stored numbers spell."""
+    from agentcad.core.tools_holes import _sidecar_problem
+
+    drifted = _record()
+    drifted["designation"] = "M8×1.25 - 6H ↧12"
+    problem = _sidecar_problem(_sidecar(holes=[drifted]), "abc")
+    assert "own numbers spell" in problem
+
+
+def test_the_sidecar_file_is_unlinked_when_it_cannot_be_used(tmp_path):
+    """Discarded means gone: leaving it would re-pay the validation on every
+    read and leave a file a later reader might treat differently."""
+    import json
+
+    from agentcad.core.tools_holes import _read_sidecar
+
+    path = tmp_path / "abc.holes.json"
+    path.write_text(json.dumps(_sidecar(cache_key="other")), encoding="utf-8")
+    assert _read_sidecar(path, "abc") is None
+    assert not path.exists()
+
+    path.write_text(json.dumps(_sidecar()), encoding="utf-8")
+    assert _read_sidecar(path, "abc") is not None
+    assert path.exists()
+
+
+# ------------------------------- provenance out through the tool surface
+
+def test_add_holes_echoes_the_provenance_of_the_row_it_drilled(demo):
+    """**Regression.** `add_holes` looked the row up and kept `size`, throwing
+    the provenance away — so an agent drilling the single-sourced ISO 10642
+    seat or the *adjudicated* ANSI `#8 normal` clearance hole was told neither,
+    and the label the tables carry stopped at the table.
+    """
+    res = _call(demo, part_id="plate", points=[[0, 0]],
+                family="countersink", size="M8")
+    assert res.get("ok") is True, res
+    provenance = res["provenance"]
+    assert provenance["corroborated"] is False
+    assert any("10642" in text for text in provenance["sources"])
+
+    res = _call(demo, part_id="plate", points=[[30, 0]], family="clearance",
+                size="#8", std="ansi", fit="normal")
+    provenance = res["provenance"]
+    assert provenance["corroborated"] is False
+    assert provenance["conflicts"] and "0.190" in provenance["conflicts"][0]
+
+
+def test_add_holes_claims_no_provenance_for_a_drilled_hole(demo):
+    """A stated millimetre has no publication behind it, and saying it does
+    would put a standard's name on a number the standard never supplied."""
+    res = _call(demo, part_id="plate", points=[[0, 0]], family="drilled",
+                size="18.0")
+    assert res.get("ok") is True, res
+    assert "provenance" not in res and res["diameter_mm"] == 18.0
+
+
+def test_the_echo_and_the_record_never_disagree_about_provenance(demo):
+    """**Regression.** The echo looked up ONE row and reported it, which for a
+    seat family is the fastener HEAD row — so the flagship disputed ANSI
+    `#8 normal` clearance cell reported `corroborated: True, conflicts: 0` to
+    the agent while the record the same call was about to write said `False`
+    with a conflict. Two surfaces describing one hole must not disagree.
+
+    (The inline comment there claimed the echo covered "the clearance row
+    only", which was the opposite of what the code did — the kind of comment
+    that stops a reader from checking.)
+    """
+    from build123d import Box
+
+    from agentcad.core.tools_holes import _hole_call_args
+    from agentcad.toolkit import holes
+
+    for family in ("counterbore", "countersink", "clearance"):
+        _args, echo = _hole_call_args(family, "#8", "normal", "ansi", None)
+        _out, records, _warning = getattr(holes, family)(
+            Box(80, 80, 30), [(0, 0)], "#8", std="ansi", fit="normal")
+        assert echo["provenance"] == records[0]["provenance"], family
+        assert echo["provenance"]["corroborated"] is False
+        assert echo["provenance"]["conflicts"], family

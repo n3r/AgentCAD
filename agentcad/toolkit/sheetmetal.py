@@ -37,12 +37,20 @@ The solid model puts the neutral fibre at t/2 (a bend sector of volume
 
     fold().volume - unfold().volume = angle_rad * (0.5 - k) * t^2 * span
 
-per bend, and — *for a part with no mitred corner* — nothing else. Measured on
-the AC4 bracket (60x40x2 plate, one 90 deg flange spanning 30 mm of the front
+**per bend**, and — *for a part with no mitred corner* — nothing else. Measured
+on the AC4 bracket (60x40x2 plate, one 90 deg flange spanning 30 mm of the front
 edge, R=3, leaf 30): fold 6916.991118, unfold 6905.681385, difference
-11.309734 mm^3 — the predicted gap to within 1e-9. That difference is the
-model's own tolerance; it is not an error and it does not grow with the number
-of features.
+11.309734 mm^3 — the predicted gap to within 1e-9.
+
+**It is a sum over bends, so it grows linearly with the bend count.** Measured
+(t=2, k=0.44, R=3, leaf 20, 90 deg): one flange on a 60 mm edge gives
+22.619467105842887; a second identical flange on the opposite edge gives
+45.238934211700325 — exactly twice, residual 7.3e-12; a third on a 40 mm edge
+gives 60.318578948928916 against the 60.31857894892403 the closed form predicts
+for 160 mm of bend line. So the honest statement is per-bend and per-mm-of-bend-
+line: the gap is the model's own tolerance rather than an error, but it
+accumulates, and on a part with many bends it is the *sum* you have to judge
+against your process, not the 11 mm^3 of one bend.
 
 A ``close`` corner adds a second, larger term, because a mitre is cut through
 the sheet's *thickness* in the fold (a 45 deg plane, so the outer skin runs
@@ -83,6 +91,69 @@ the sheet and enters it after ``L = R*(1 - cos a)/-sin a`` — measured 2.41*R a
 225 deg with R = t and a 4t leaf the leaf overlaps the sheet by 144.59 mm^3,
 and the fuse *succeeds*: one valid solid, `is_valid` True, with 144.59 mm^3 of
 declared material silently gone. ``kind="teardrop"`` therefore raises.
+
+**A ``close`` corner is a closed seam exactly when the two CROSS-SECTIONS agree
+and each one fits inside its mitre extension.** The mitre is one vertical 45 degree plane
+cutting both leaves, so each leaf's cut face is its own profile read as a
+function of outward distance ``u`` from the plate edge: the two faces coincide
+exactly when the two profiles do. Measured as the face area the two mitred
+flange solids actually share — ``(A.area + B.area - (A+B).area)/2``, against the
+``sqrt(2) * min(profile area)`` the mitre promises:
+
+===========================================  ==============  =====
+corner (60x40 plate)                         seam / promise  note
+===========================================  ==============  =====
+90/20/R3 vs 90/20/R3, t=2                    1.000000000000  the seam is whole
+90/20/R3 vs 90/10/R3, t=2                    1.000000000000  short leaf is fine
+90/20/R3 vs 90/40/R3, t=2                    1.000000000000
+120/8/R4.5 both, t=3                         1.000000000000
+179/6/R2 both, t=2                           1.000000000000
+90/20/R3 vs 90/20/R2.9, t=2                  0.958597256259  radius differs
+90/20/R3 vs 89/20/R3, t=2                    0.933701732113  angle differs
+90/20/R3 vs 45/10/R1, t=2                    0.267448702599  both differ
+45/12/R1 both, t=1                           0.190203814953  acute, LONG leaf
+30/25/R0.8 both, t=0.8                       0.069572222109  acute, LONG leaf
+45/12/R1 both, t=2                           0.281003186702  L_max 1.2426
+45/12/R3 both, t=2                           0.410304292791  L_max 2.0711
+45/0.5/R3 both, t=2                          1.000000000000  acute, short leaf
+30/1/R5 both, t=2                            1.000000000000  acute, short leaf
+===========================================  ==============  =====
+
+The worst matched-and-obtuse case is 1.0 to within 8e-15 relative and the best
+mismatched one is 0.9586, so the two populations are eight orders apart and the
+screen needs no tuned threshold.
+
+The last two rows are a **second, independent defect**, and it is about the
+LEAF LENGTH, not the angle alone. ``_effective_span`` runs a close-corner
+flange past the corner by ``inner_radius + thickness``, which is the outward
+reach of a 90 degree profile and of nothing else. A profile at bend angle ``a``
+reaches ``(R + t)*sin(a) + L*cos(a)``, so the extension holds iff
+
+    L <= L_max = (R + t) * tan(45 deg - a/2)          (``_max_mitre_leaf``)
+
+which is *infinite* at and above 90 degrees — a vertical leaf adds no outward
+reach, and past 90 the leaf comes back — and a small positive number below.
+Matched acute corners inside that bound seam **whole** and are silent; measured
+at t=2, all at ``1.000000000000`` with no warning: 60 deg/R3/L0.2 (reach 4.4301
+against 5.0), 45/R3/L0.5 (3.8891 of 5.0), 30/R5/L1 (4.3660 of 7.0), 10/R5/L1
+(2.2003 of 7.0), 20/R4/L2 (3.9315 of 6.0), 45/R12/L1 (10.6066 of 14.0). It is
+the ordinary long leaf that breaks: 45/R1/L12 wants 10.6066 mm of extension and
+gets 3.0, seaming 0.2810. So the rule is the reach, and the code tests the
+reach; ``L_max`` is closed-form (verified against a bisection on the reach
+predicate to 4e-9 mm over six (t, a, R) combinations) and is what the warning
+quotes, because it is the number an author can act on.
+
+Feeding the required reach back into ``_effective_span`` takes the failing rows
+to ``1.000000000`` exactly, so this is a fixable modelling bug and not a limit
+of the construction; it is reported rather than fixed here because the same
+extension has to be re-derived for the blank (``_mitre_cuts(flat=True)``'s
+chord is derived at 90 degrees too) and fold and unfold may not diverge.
+
+Neither defect moves any volume: both leaves are cut by the same plane, so
+neither can cross it and ``_conserved`` is silent by construction. Nor does
+``_checked`` see anything — the parts still fuse through the base plate into one
+valid solid. The seam is the only thing that is missing, so the seam is what
+has to be measured.
 """
 
 from __future__ import annotations
@@ -313,18 +384,21 @@ class SheetPart:
         width, depth = self._require_base()
         part = self._base_plate()
         declared = width * depth * self.thickness
-        for flange in self._flanges:
+        mitred: dict[int, object] = {}
+        for index, flange in enumerate(self._flanges):
             lo, hi = self._effective_span(flange, flat=False)
             solid = self._flange_solid(flange, lo, hi)
             declared += self._declared_flange_volume(flange, hi - lo)
             for cut in self._mitre_cuts(flange):
                 solid, removed = self._cut_measured(solid, cut)
                 declared -= removed
+            mitred[index] = solid
             part = self._fuse(part, solid)
         for cut in self._relief_cuts():
             part, removed = self._cut_measured(part, cut)
             declared -= removed
         self._conserved(part, declared, "fold")
+        self._corner_seams(mitred)
         return self._checked(part, "fold")
 
     def unfold(self) -> Part:
@@ -353,6 +427,7 @@ class SheetPart:
             part, removed = self._cut_measured(part, cut)
             declared -= removed
         self._conserved(part, declared, "unfold")
+        self._corner_seams(None)
         return self._checked(part, "unfold")
 
     def flat_outline(self, tolerance: float = OUTLINE_TOLERANCE
@@ -585,6 +660,195 @@ class SheetPart:
                 "and the count does not change, so nothing else can tell "
                 "you). Check a hem or flange leaf long enough to reach "
                 "another feature.")
+
+    # --------------------------------------------------------- corner seams
+
+    def _profile_reach(self, flange: _Flange) -> float:
+        """How far the flange's cross-section reaches OUTWARD past the plate
+        edge, in mm — the distance the mitre plane has to be able to see.
+
+        At bend angle ``a`` the outer skin leaves the bend zone at
+        ``(R + t)*sin(a)`` and the leaf then travels ``L*cos(a)`` further out
+        (negative past 90 degrees, where the leaf comes back). At exactly
+        90 degrees this is ``R + t``, which is what `_effective_span` runs the
+        flange past the corner by — and the only angle at which that extension
+        is right.
+
+        **From 90 degrees up the leaf term is dropped, and that is exact
+        arithmetic rather than a tolerance.** ``cos a <= 0`` for every
+        ``a >= 90``, so ``L*cos(a)`` can only pull the reach back and the
+        maximum is the skin — but ``math.cos(math.radians(90.0))`` is
+        ``6.123233995736766e-17``, not 0, so computing the term anyway leaks a
+        positive ``L * 6.12e-17`` into the answer. That grows with the leaf and
+        crosses ``_TOL`` at **L = 1.63312e7 mm (16.33 km)**, where the seam
+        screen would fire on a *correct* 90 degree corner and then quote
+        ``_max_mitre_leaf``'s ``inf`` at the author as "the longest leaf that
+        still mitres is inf mm". Unreachable on any real part, and false all
+        the same: the two functions have to agree at every input, not merely at
+        the ones anybody has tried.
+        """
+        a = math.radians(flange.angle_deg)
+        skin = (flange.inner_radius + self.thickness) * math.sin(a)
+        if flange.angle_deg >= 90.0:
+            return max(0.0, skin)
+        return max(0.0, skin, skin + flange.length * math.cos(a))
+
+    def _mitre_extension(self, flange: _Flange) -> float:
+        """What `_effective_span` actually runs a `close` flange past the
+        corner by (the fold's value)."""
+        return flange.inner_radius + self.thickness
+
+    def _max_mitre_leaf(self, flange: _Flange) -> float:
+        """The longest leaf whose profile still fits inside `_mitre_extension`,
+        i.e. the largest ``L`` with ``(R+t)*sin a + L*cos a <= R + t``:
+
+            L_max = (R + t) * tan(45 deg - a/2)
+
+        **Infinite at and above 90 degrees**, and a real, small number below —
+        verified against a bisection on the reach predicate itself to 4e-9 mm
+        on six (t, angle, R) combinations. This is the number to quote at an
+        author, because it is the one they can act on.
+
+        **90 degrees is a DISCONTINUITY, not a limit — do not read the ``inf``
+        as one.** The one-sided limit runs the other way: ``L_max`` falls to 0
+        as ``a -> 90`` from below (measured 0.0436 mm at 89 degrees,
+        4.36e-05 at 89.999), and then the value AT 90 is unbounded. The
+        constraint the formula came from is
+        ``L*cos a <= (R + t)*(1 - sin a)``, and at exactly 90 degrees **both
+        sides vanish**, so every ``L`` satisfies it — a vertical leaf adds no
+        outward reach at all, and ``R + t`` is the profile's reach whatever the
+        leaf does. Dividing through by ``cos a`` to get ``L_max`` is the step
+        that loses that, because it divides by something that is zero there.
+        The jump is real geometry, not an artifact: the reach predicate agrees
+        with it at every leaf length (asserted out to 1e9 mm, six orders past
+        the 1.63e7 where the old float leak used to break it).
+        """
+        half = math.radians(45.0 - flange.angle_deg / 2.0)
+        if flange.angle_deg >= 90.0:
+            return float("inf")
+        return (flange.inner_radius + self.thickness) * math.tan(half)
+
+    def _seam_promise(self, a: _Flange, b: _Flange) -> float:
+        """The mitre face area a `close` corner promises, in mm^2.
+
+        Each leaf's cut face is its own cross-section read as a function of
+        outward distance, on a plane at 45 degrees to the extrusion axis — so
+        it is ``sqrt(2)`` x the cross-section area, and the seam can be no
+        larger than the smaller of the two. Measured equal to the shared face
+        area to within 8e-15 relative on every matched, >=90 degree corner in
+        the module docstring's table.
+        """
+        return math.sqrt(2) * min(self._declared_flange_volume(a, 1.0),
+                                  self._declared_flange_volume(b, 1.0))
+
+    def _corner_seams(self, mitred: dict | None) -> None:
+        """Warn when a `close` corner cannot form the seam it promises.
+
+        `_conserved` and `_checked` are both structurally blind here: the two
+        leaves are cut by the SAME plane so neither can cross it (no volume
+        moves) and they still fuse through the base plate (one valid solid).
+        The seam is the only casualty, so it is what gets measured.
+
+        The screen is arithmetic and free — two profiles agree iff their bend
+        angle and inner radius do, and a profile fits its mitre iff its
+        outward reach fits the extension it was given. It runs on every
+        `fold()`/`unfold()`. The `sqrt(2)*min(profile)` identity behind it is
+        measured to 8e-15 on matched corners and the worst mismatched corner
+        measured 0.9586 of it, so the two populations are eight orders apart.
+        The **boolean** probe that turns the screen into a number is paid only
+        when the screen has already fired (measured 20 ms per corner), and it
+        can still call the corner clean — the screen states a criterion, the
+        contact area is the evidence, and evidence wins.
+        """
+        for corner in self._corners:
+            if corner.treatment != "close":
+                continue
+            pair = []
+            for edge in corner.edges:
+                flange = self._flange_at_corner(
+                    edge, _CORNER_ENDS[corner.edges][edge])
+                if flange is None:                    # corner() validated this
+                    break
+                pair.append(flange)
+            if len(pair) != 2:
+                continue
+            fa, fb = pair
+            faults, remedies = [], []
+            if abs(fa.angle_deg - fb.angle_deg) > _TOL:
+                faults.append(
+                    f"the bend angles differ ({fa.angle_deg:g} deg on "
+                    f"{fa.edge!r}, {fb.angle_deg:g} on {fb.edge!r})")
+            if abs(fa.inner_radius - fb.inner_radius) > _TOL:
+                faults.append(
+                    f"the inner radii differ ({fa.inner_radius:g} mm on "
+                    f"{fa.edge!r}, {fb.inner_radius:g} on {fb.edge!r})")
+            if faults:
+                remedies.append(
+                    "give the two flanges the same bend angle and inner radius")
+            for flange in pair:
+                reach = self._profile_reach(flange)
+                ext = self._mitre_extension(flange)
+                if reach <= ext + _TOL:
+                    continue
+                longest = self._max_mitre_leaf(flange)
+                faults.append(
+                    f"the {flange.edge!r} leaf reaches {reach:.4f} mm past "
+                    f"the plate edge but is only run {ext:.4f} mm past the "
+                    f"corner, so the mitre plane never reaches its far end "
+                    f"(a leaf leans outward below 90 degrees; at "
+                    f"{flange.angle_deg:g} deg with R={flange.inner_radius:g} "
+                    f"the longest leaf that still mitres is {longest:.4f} mm, "
+                    f"against this one's {flange.length:g})")
+                remedies.append(
+                    f"shorten the {flange.edge!r} leaf to {longest:.4f} mm or "
+                    f"raise its inner_radius (the limit is "
+                    f"(inner_radius + thickness) * tan(45 - angle/2), so it "
+                    f"grows with either)")
+            if not faults:
+                continue
+            promised = self._seam_promise(fa, fb)
+            measured = None
+            if mitred is not None:
+                measured = self._measured_seam(mitred, fa, fb)
+            if measured is not None and measured >= promised * (1 - 1e-9):
+                continue                    # the evidence overrules the screen
+            got = ("" if measured is None else
+                   f" Measured, the two leaves share {measured:.6f} mm^2 of "
+                   f"face — {measured / promised:.4f} of it.")
+            self._warn(
+                f"sheetmetal: corner{corner.edges} is 'close', which promises "
+                f"the two leaves meet along the 45 degree bisector over "
+                f"{promised:.6f} mm^2, but {'; '.join(faults)}.{got} Nothing "
+                "else can tell you: both leaves are cut by the same plane so "
+                "no material is lost, and they still fuse through the plate "
+                f"into one valid solid. To close it, {'; or '.join(remedies)}"
+                "; otherwise say what you mean with 'gap' or 'rip'.")
+
+    def _measured_seam(self, mitred: dict, fa: _Flange, fb: _Flange
+                       ) -> float | None:
+        """The face area the two mitred leaves actually share, in mm^2.
+
+        Arithmetic off three areas rather than a `&` probe, on `patterns`'
+        precedent: an intersection is empty for a face-to-face seam exactly as
+        it is for two shapes that never meet, so it cannot tell them apart. A
+        fusion that welds two solids along a face hides that face from BOTH
+        sides, so the area it loses is twice the contact.
+        """
+        try:
+            a = mitred[self._flange_index(fa)]
+            b = mitred[self._flange_index(fb)]
+            shared = (float(a.area) + float(b.area) - float((a + b).area)) / 2
+        except Exception:                                          # noqa: BLE001
+            # An OCCT fuse that will not run is not evidence either way; the
+            # screen's own statement still goes out, without a number.
+            return None
+        return max(0.0, shared)
+
+    def _flange_index(self, flange: _Flange) -> int:
+        for index, other in enumerate(self._flanges):
+            if other is flange:
+                return index
+        raise KeyError("flange is not declared on this part")
 
     def _checked(self, part, label: str):
         """OCCT's 'success' is not evidence: check the shape, not the absence

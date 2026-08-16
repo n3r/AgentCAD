@@ -262,6 +262,42 @@ read, review (PRD-002), and edit.
 - **Table provenance:** ISO/ANSI values are facts but transcription errors
   are real; spot-check against two independent published sources and
   version the data files so corrections are diffable.
+
+  **Resolved, with the claim narrowed to what is enforced.** "Two published
+  sources must agree or the row does not ship" was never true as built: the
+  loader only checked that the *file* named two sources, so a row transcribed
+  from one publication shipped as corroborated on its neighbours' citations,
+  and `ansi_clearance.json`'s `#8 NORMAL` shipped as agreed while the file's
+  own notes recorded the two sources disagreeing about it. What ships now, and
+  what the loader refuses a file for:
+  - **provenance is per CELL** — one fit of one clearance size, one pitch of
+    one thread size (including its `coarse_pitch`), one size of one head
+    table. Every cell names the publications it was transcribed from
+    (`provenance.groups` lists cells by name, `provenance.scopes` refines a
+    single cell). There is **no file-wide default and no row-level entry**:
+    covering by row was the same mistake one level down, and a row-level scope
+    is now refused outright, because it would be a fallback for cells added
+    later. A cell added without a declaration fails to load naming itself, a
+    citation attached to a cell that is not there fails too, and two cells
+    whose `/`-joined names collide fail as well.
+  - **`corroborated` means two or more independent sources that AGREE.** A
+    one-source cell is `corroborated: false` (all nine ISO 10642 countersink
+    rows are); a cell whose sources are recorded as disagreeing is
+    `corroborated: false` too, with the adjudication in `conflicts`. Citations
+    are compared normalised (whitespace, case, zero-width characters,
+    http/https), so one publication listed twice is not two.
+  - **A single-sourced or disputed cell may ship, labelled.** Dropping the ISO
+    10642 column would remove every metric countersink; shipping it silently is
+    the thing this rule exists to prevent. `#8 NORMAL` ships as drill #9 /
+    0.196 with the rejected 0.190 named in `conflicts`.
+  - **The label travels to the callout.** Every non-`drilled` hole record
+    carries `provenance`, and `validate_record` **re-derives it from the
+    record's own size, fit, standard and fastener and compares** — the same
+    move that makes a fabricated designation impossible. Without that, the
+    genuine disputed record with its conflict deleted and `corroborated`
+    flipped to `true` validated clean.
+  - No wrong numeric value has been found in any table. The defect was the
+    provenance claim, which could not establish transcription accuracy.
 - **Draft angle in OCCT** (`BRepOffsetAPI_DraftAngle`) fails readily on
   real parts — hence phase 3 and the fallback-with-warning contract;
   shipping rib/boss first is deliberate.

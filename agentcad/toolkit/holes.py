@@ -14,6 +14,39 @@ Each call returns `(part, records, warning|None)`: the new part, the records
 contract, extended with the metadata the drawing callouts and PRD-021's DFM
 rules read.
 
+A record counts what came off, not what was asked for
+-----------------------------------------------------
+`count`, `positions` and `centers` cover only the instances the guard proved
+removed material; the rest are listed under `dropped` and named in the warning.
+That is not defensive tidiness — OCCT does not fail on a misplaced cut, it
+succeeds and changes nothing, and the *aggregate* volume delta cannot be
+attributed to an instance, so one successful cut used to hide any number of
+no-ops (see `_guard` for the frame that measured it). `verify="off"` is the one
+setting under which a count is intent rather than measurement.
+
+**`record["verify"]` is the mode that was REQUESTED, not the tier that
+answered.** It echoes the `verify=` argument, and it has to: the default runs
+up to three different probes and a 50-hole call routinely uses two of them, so
+there is no single tier for the record to name. The tier that actually decided
+an instance is `record["instances"][i]["probe"]` — `"bbox"`, `"axis"`,
+`"exact"` or `"off"` — and that is the field to read when the question is "how
+do we know". `"verify": "bbox"` beside `"probe": "axis"` is not a
+contradiction; it is the request beside the answer.
+
+`record["provenance"]` carries the published sources behind the *diameter* —
+`{standard, sources, corroborated, conflicts}`, unioned over every table row
+that fed the hole (a counterbore has two). `corroborated` is true only for two
+or more independent sources that agree, so a single-sourced or adjudicated
+diameter says so at the point where it becomes a manufacturing callout instead
+of only in the `hole_standards` tool. A `drilled` hole has no table row and
+carries `None`.
+
+`designation` is derived from the finished record by
+`hole_standards.designation_for_record` — never assembled beside it — so a
+reader can re-derive it and refuse a carrier whose text and numbers have come
+apart. `designation_base` is the same callout with no depth qualifier, for a
+reader that has *measured* that a recorded blind depth no longer holds.
+
 Diameters are never invented here. They come from
 `agentcad.toolkit.hole_standards`, which is the vendored ISO/ASME tables with
 their provenance — `clearance(size, fit)["d"]` and `thread(size)["tap_drill"]`.
@@ -103,6 +136,22 @@ _CREATED = 0
 
 _VOLUME_TOL = 1e-9
 
+# How many points along one instance's bore axis the default tier classifies
+# against the solid before it falls back to the exact boolean probe. A point
+# strictly INSIDE the part at a parameter the tool covers is a *proof* that the
+# tool removes material (the tool contains a ball around that point), so this
+# is a performance knob and NOT a tolerance: more samples only ever save a
+# boolean, and fewer only ever pay for one. Nine costs 0.041 ms per instance
+# against the exact probe's ~5 ms, and proved every instance on a 12 mm plate,
+# on a 1 mm plate (where the tool's reach is the whole stock) and on the
+# inward-normal slab.
+_AXIS_SAMPLES = 9
+
+# The classifier's own tolerance. Points ON the boundary answer `ON`, which is
+# not `IN`, so a tangent tool is never "proved" here and falls through to the
+# exact probe that can tell a seat from a miss.
+_CLASSIFY_TOL = 1e-7
+
 # A face is "at the extreme" if it is within this of the extreme coordinate.
 # Coplanar faces of one solid agree far more closely than this; a face 1 um
 # lower is a different face.
@@ -135,6 +184,14 @@ def carry(new_part, prior_part, new_records=()):
     the records stop at that operation. It is a bookkeeping copy and asserts
     nothing about the geometry: carrying records across a cut that removed one
     of the holes leaves a record for a hole that is no longer there.
+
+    **That is deliberate and it is why every reader holding the geometry
+    re-measures.** Verifying survival here would cost a boolean per instance on
+    every helper in the chain, and the reader that needs the answer is the one
+    producing a manufacturing claim. So the drawing pack prints the count of
+    circles it actually matched (not the record's), and drops a recorded blind
+    depth whose material is gone. A record is intent; a drawing is a
+    measurement of the part in front of it.
     """
     combined = records(prior_part) + [dict(record) for record in new_records]
     try:
@@ -262,18 +319,19 @@ def drill(part, points, diameter: float, *, plane="top", std: str = "iso",
     what the number is.
     """
     d = _check_diameter(diameter, "holes.drill")
+    # No `designation` here, or in any helper below: `_drill` derives it from
+    # the finished record with `hole_standards.designation_for_record`, so the
+    # text and the numbers cannot drift apart and a reader can re-derive it to
+    # check a carrier. The millimetre -> callout-unit conversion lives there
+    # too — `⌀18` under an ASME label would be an 18-inch hole.
     record = {
         "family": "drilled", "standard": hole_standards.check_std(std),
         "size": None, "fit": None, "d": d, "tap": None, "cbore": None,
         "csk": None,
-        # The diameter is millimetres; the callout prints the standard's own
-        # unit, so it goes through the one named conversion. `⌀18` under an
-        # ASME label would be an 18-inch hole.
-        "designation": hole_standards.designation(
-            "clearance", std=std,
-            d=hole_standards.in_designation_units(d, std),
-            depth=None if depth is None
-            else hole_standards.in_designation_units(depth, std)),
+        # No table supplied this number, so there is no provenance to claim.
+        # `null` here is a fact, not an omission — `validate_record` refuses a
+        # drilled record that carries one.
+        "provenance": None,
     }
     return _drill(part, points, d / 2.0, record, plane=plane, depth=depth,
                   thru=thru, verify=verify, label="holes.drill")
@@ -295,7 +353,8 @@ def clearance(part, points, size: str, *, plane="top", fit: str = "medium",
     record = {
         "family": "clearance", "standard": row["std"], "size": row["size"],
         "fit": row["fit"], "d": row["d"], "tap": None, "cbore": None,
-        "csk": None, "designation": row["designation"],
+        "csk": None,
+        "provenance": hole_standards.merge_provenance(row),
     }
     return _drill(part, points, row["d"] / 2.0, record, plane=plane,
                   depth=depth, thru=thru, verify=verify,
@@ -333,11 +392,11 @@ def tapped(part, points, size: str, *, pitch: float | None = None,
     record = {
         "family": "tapped", "standard": row["std"], "size": row["size"],
         "fit": None, "d": row["tap_drill"], "cbore": None, "csk": None,
-        "designation": row["designation"],
         "tap": {"pitch": row["pitch"], "tpi": row["tpi"],
                 "class": row["thread_class"], "drill_mm": row["tap_drill"],
                 "drill": row["drill"], "thread": row["thread"],
                 "series": row["series"], "geometry": thread},
+        "provenance": hole_standards.merge_provenance(row),
     }
     radius = row["tap_drill"] / 2.0
     thread_solid = None
@@ -387,11 +446,9 @@ def counterbore(part, points, size: str, *, plane="top", fit: str = "medium",
         "fit": row["fit"], "d": row["d"], "tap": None, "csk": None,
         "cbore": {"d": _round(bore_d), "depth": _round(bore_depth),
                   "fastener": head["fastener"]},
-        "designation": hole_standards.designation(
-            "counterbore", std=std,
-            d=hole_standards.in_designation_units(row["d"], std),
-            cbore_d=hole_standards.in_designation_units(bore_d, std),
-            cbore_depth=hole_standards.in_designation_units(bore_depth, std)),
+        # TWO published rows feed this hole - the clearance diameter and the
+        # fastener head - so the record claims what backs both and no more.
+        "provenance": hole_standards.merge_provenance(row, head),
     }
     # Resolved once and passed on as a Plane: the named-plane predicate walks
     # every face, and the tool factory below and the bore itself must agree on
@@ -468,11 +525,7 @@ def countersink(part, points, size: str, *, plane="top", fit: str = "medium",
         "fit": row["fit"], "d": row["d"], "tap": None, "cbore": None,
         "csk": {"d": _round(seat_d), "angle_deg": _round(included),
                 "fastener": head["fastener"]},
-        "designation": hole_standards.designation(
-            "countersink", std=std,
-            d=hole_standards.in_designation_units(row["d"], std),
-            csk_d=hole_standards.in_designation_units(seat_d, std),
-            angle=included),
+        "provenance": hole_standards.merge_provenance(row, head),
     }
     workplane = resolve_plane(part, plane)
     frame = _tool_frame(part, workplane)      # see counterbore, and _tool_frame
@@ -595,6 +648,25 @@ def _drill(part, points, radius: float, record: dict, *, plane, depth,
             f"thread='none' unless the thread has to be manufactured from this "
             f"mesh.")
 
+    # WHICH INSTANCES THE RECORD IS ALLOWED TO CLAIM. `_guard` proves, per
+    # instance, whether material came off; anything it proved did not (`missed`,
+    # `flush`) is dropped from the count, the positions and the centres, because
+    # every downstream reader treats those as holes that exist — the drawing
+    # points a leader at each centre, the DFM rules count them, and the
+    # proximity check measures against them. The aggregate volume delta below
+    # cannot do this job: one successful cut hides any number of no-ops.
+    #
+    # `verify="off"` returns no report and therefore drops nothing: the caller
+    # asked for no measurement, and the record says so in `verify` rather than
+    # quietly presenting intent as fact.
+    status = {row["i"]: row["status"] for row in report}
+    no_op = {i for i in range(len(pts))
+             if status.get(i, "unchecked") in ("missed", "flush")}
+    kept = [i for i in range(len(pts)) if i not in no_op]
+    dropped = [{"i": i, "status": status[i],
+                "position": [_round(pts[i][0]), _round(pts[i][1])]}
+               for i in sorted(no_op)]
+
     # The direction the tool actually travelled, which is `frame`'s, not the
     # caller's. `plane` below still reports the frame the caller gave, because
     # that is the one the recorded (u, v) positions are expressed in.
@@ -602,9 +674,9 @@ def _drill(part, points, radius: float, record: dict, *, plane, depth,
     full = dict(record)
     full.update({
         "id": f"h{len(records(part))}",
-        "count": len(pts),
-        "positions": [[_round(u), _round(v)] for u, v in pts],
-        "centers": centers,
+        "count": len(kept),
+        "positions": [[_round(pts[i][0]), _round(pts[i][1])] for i in kept],
+        "centers": [centers[i] for i in kept],
         "axis": [_round(v) for v in axis],
         "plane": {"origin": _round3(workplane.origin),
                   "z_dir": _round3(workplane.z_dir),
@@ -613,8 +685,38 @@ def _drill(part, points, radius: float, record: dict, *, plane, depth,
         "thru": thru,
         "removed_mm3": _round(removed),
         "instances": report,
+        "verify": verify,
+        "dropped": dropped,
         "pattern": None,
     })
+    # Derived from the finished record, never assembled beside it, so
+    # `hole_standards.validate_record` can re-derive it and catch a carrier
+    # whose text and numbers have drifted apart. `designation_base` is the same
+    # callout with no depth qualifier: it is what a reader prints when it has
+    # measured that the geometry no longer supports the recorded depth.
+    full["designation"] = hole_standards.designation_for_record(full)
+    full["designation_base"] = hole_standards.designation_for_record(
+        {**full, "thru": True, "depth_mm": None})
+    if dropped:
+        warnings.append(
+            f"{label}: the record claims {len(kept)} of {len(pts)} instance(s) "
+            f"— {[row['i'] for row in dropped]} removed no material and are "
+            f"recorded under `dropped` instead of being counted as holes")
+    # A DISPUTED table cell warns; a merely SINGLE-SOURCED one does not.
+    # Both travel in `record["provenance"]` and out through `add_holes`, so
+    # neither is invisible — the difference is that a resolved disagreement is
+    # a decision someone made about two conflicting publications and is worth
+    # interrupting for, while "the ISO 10642 head table has one source" is a
+    # permanent, unfixable property of every metric countersink this repo can
+    # ship. A warning nothing can ever clear teaches readers to ignore
+    # warnings (the `strict_exempt` lesson from PRD-004's DXF row).
+    conflicts = (full.get("provenance") or {}).get("conflicts") or []
+    if conflicts:
+        warnings.append(
+            f"{label}: the {full.get('size') or ''} row this hole's diameter "
+            f"came from is DISPUTED — its two published sources disagreed and "
+            f"the value shipped is an adjudication, not a corroboration. "
+            f"{' '.join(conflicts)}")
     _CREATED += 1
     carry(out, part, [full])
     return out, [full], "; ".join(warnings) if warnings else None
@@ -657,14 +759,71 @@ def _bore(part, place, locations, workplane, reach, label, tool, extra=()):
             f"result may not be byte-identical to the primary route.{detail}")
 
 
+def _axis_proof(classifier, loc, workplane, reach: float) -> bool:
+    """Whether a point strictly INSIDE the part lies on this instance's bore
+    axis, within the length the tool covers.
+
+    This is a **proof of engagement, not a screen**: every tool this module
+    builds contains the bore cylinder of radius > 0 over `[0, reach]`, so an
+    interior point of the solid on that segment has a neighbourhood inside both
+    shapes and the intersection therefore has positive volume. `False` proves
+    nothing at all — a thin wall between two samples, or a tool that only
+    touches — which is why the caller escalates rather than concluding.
+
+    Measured against the alternatives, per instance, on a 200x200x12 plate:
+    bounding-box overlap 0.014 ms, this 0.041 ms, the exact `(part & tool)`
+    probe about 5 ms. On a 50-hole pattern that is 114.7 ms end to end with
+    this against 372.1 ms with `verify="exact"`.
+
+    The classifier is built from `part.wrapped`, which is routinely a Compound
+    of several solids — measured working on a two-solid part, where the gap
+    between the solids is inside the part's bounding box and a hole placed
+    there is exactly the miss the box cannot see.
+    """
+    from OCP.TopAbs import TopAbs_IN
+    from OCP.gp import gp_Pnt
+
+    start = Vector(loc.position)
+    step = -Vector(workplane.z_dir)
+    for k in range(_AXIS_SAMPLES):
+        point = start + step * (reach * (k + 0.5) / _AXIS_SAMPLES)
+        classifier.Perform(gp_Pnt(point.X, point.Y, point.Z), _CLASSIFY_TOL)
+        if classifier.State() == TopAbs_IN:
+            return True
+    return False
+
+
 def _guard(part, workplane, locations, radius, reach, stock, thru, verify,
            label, *, tool, envelope_r):
-    """The two-tier per-instance contract, shared with `patterns`.
+    """The per-instance contract. Every status it reports is **measured on that
+    instance**, under both `verify="bbox"` and `verify="exact"`.
 
-    The free tier builds no geometry at all: a hole's tool is a cylinder, so
-    its axis-aligned envelope is arithmetic. The `exact` tier has to build the
-    tools, and costs about 2.1-2.4 ms per instance through the worker against
-    0.014 ms for the box (changelog 0149).
+    It did not used to be. The default tier compared each tool against the
+    whole part's bounding box, which says nothing about the material actually
+    under the tool — so a hole drilled into a part's own void reported
+    `engaged`, raised nothing, and the aggregate "did anything come off?" check
+    passed because a *different* instance had removed material. Measured on a
+    100x100x10 frame with a 60x60 void, drilling two 10 mm holes at (40, 0) and
+    (0, 0): one valid solid, `warning=None`, both instances `engaged`, removed
+    volume exactly one cylinder (785.398163397 mm^3) and the record claimed 2.
+    An aggregate volume check cannot be attributed to an instance, and a
+    per-instance check that only knows a bounding box is not per-instance.
+
+    So the default tier is now three rungs, cheapest first, and only the last
+    two ever conclude:
+
+    1. the bounding-box screen (0.014 ms) — disjoint boxes is a **proved miss**,
+       because a box contains its shape;
+    2. `_axis_proof` (0.041 ms) — an interior point of the part on the bore
+       axis is a **proved engagement**;
+    3. otherwise the exact `(part & tool)` probe for **that instance alone**,
+       which is the only thing that separates a seat (`flush`) from a miss.
+
+    The statuses this produces are therefore identical to `verify="exact"`'s;
+    what `exact` still buys is the per-instance `engaged_mm3` / `contact_mm2`
+    numbers on every instance, which cost a boolean each. `verify="off"` opts
+    out of the question entirely and is the one mode whose record counts
+    intent rather than measurement.
     """
     if verify == "off":
         return [], []
@@ -674,29 +833,53 @@ def _guard(part, workplane, locations, radius, reach, stock, thru, verify,
             part, [(i, tool(loc, reach)) for i, loc in enumerate(locations)],
             verify="exact")
     else:
+        from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+
         part_box = bbox_of(part)
-        report = [
-            {"i": i,
-             "status": "engaged" if boxes_overlap(
-                 part_box, _tool_box(loc, workplane, envelope_r, reach))
-             else "missed",
-             "probe": "bbox", "engaged_mm3": None}
-            for i, loc in enumerate(locations)]
+        # Built once for the part and reused across instances: constructing it
+        # costs 0.032 ms and classifying a point 0.010 ms, so per-instance
+        # construction would triple the tier's cost for nothing.
+        classifier = BRepClass3d_SolidClassifier(part.wrapped)
+        report = []
+        for i, loc in enumerate(locations):
+            if not boxes_overlap(part_box,
+                                 _tool_box(loc, workplane, envelope_r, reach)):
+                report.append({"i": i, "status": "missed", "probe": "bbox",
+                               "engaged_mm3": None})
+            elif _axis_proof(classifier, loc, workplane, reach):
+                report.append({"i": i, "status": "engaged", "probe": "axis",
+                               "engaged_mm3": None})
+            else:
+                # Nothing cheap could decide this one. Pay for the boolean here
+                # and nowhere else — it is what the whole tier exists to avoid
+                # paying 50 times over.
+                report += engagement(part, [(i, tool(loc, reach))],
+                                     verify="exact")
 
     missed = [row["i"] for row in report if row["status"] == "missed"]
     if missed:
         warnings.append(
             f"{label}: instance(s) {missed} do not reach the part; a cut that "
-            f"misses is a silent no-op in OCCT, not an error")
+            f"misses is a silent no-op in OCCT, not an error. They are NOT in "
+            f"the record's count, positions or centers")
     flush = [row["i"] for row in report if row["status"] == "flush"]
     if flush:
         warnings.append(
             f"{label}: instance(s) {flush} touch the part but remove no "
-            f"material (engaged volume 0)")
-    if not thru and reach > stock + _VOLUME_TOL:
+            f"material (engaged volume 0). They are NOT in the record's count, "
+            f"positions or centers")
+    if not thru and reach >= stock - _VOLUME_TOL:
+        # `>=`, not `>`. `stock` is a bounding-box extent, so it bounds every
+        # bit of material along the axis: a depth that REACHES it opens on the
+        # far side just as surely as one that exceeds it, and the equality case
+        # is the one an author writes on purpose (`depth=t` on a `t` plate).
+        # It used to pass silently and the drawing then printed a blind depth
+        # callout on a through hole.
         warnings.append(
-            f"{label}: depth {reach:g} mm is deeper than the stock "
-            f"below this plane ({stock:g} mm), so the hole breaks through")
+            f"{label}: depth {reach:g} mm reaches the far side of the stock "
+            f"below this plane ({stock:g} mm), so the hole is not blind — it "
+            f"breaks through, and a callout stating a depth would be wrong. "
+            f"Use thru=True, or a depth inside the stock")
     return report, warnings
 
 

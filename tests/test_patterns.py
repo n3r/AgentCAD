@@ -278,6 +278,193 @@ def test_polar_partial_span_is_inclusive():
     assert bbox.max.Z == pytest.approx(13.0)
 
 
+# ------------------------- where the instances actually LANDED
+
+def _centres(part):
+    from agentcad.toolkit import patterns
+
+    return sorted(tuple(row["center"][:2])
+                  for row in patterns.instances(part))
+
+
+def _asymmetric_seeded_plate():
+    """A plate with a RIGHT-TRIANGULAR boss fused in, plus the boss on its own.
+
+    The shape matters: it has no 180 degree point symmetry, so its bounding box
+    is not preserved by rotation. Every other pattern test in this module uses
+    a box or a cylinder, both of which are immune — which is exactly how a
+    layout assertion built on bounding-box centres passed a green suite while
+    firing on correct geometry.
+    """
+    from build123d import (Align, Box, BuildLine, BuildPart, BuildSketch,
+                           Plane, Polyline, extrude, make_face)
+
+    with BuildPart() as bp:
+        with BuildSketch(Plane.XY.offset(5)):
+            with BuildLine():
+                Polyline((30, -6), (42, -6), (30, 10), close=True)
+            make_face()
+        extrude(amount=8)
+    boss = bp.part
+    plate = Box(120, 120, 10,
+                align=(Align.CENTER, Align.CENTER, Align.MIN)).translate((0, 0, -5))
+    return plate + boss, boss
+
+
+@pytest.mark.parametrize("count,span", [
+    (3, 360.0), (5, 360.0), (7, 360.0), (8, 360.0),
+    (4, 150.0), (3, 100.0), (5, 217.0),          # steps that are not 90 deg
+])
+def test_a_correct_polar_of_an_asymmetric_seed_is_silent(count, span):
+    """The layout assertion must not fire on geometry that is right.
+
+    Measured on the metric this used to use — the bounding-box centre of each
+    MOVED instance — a correct 3-up pattern of this boss reported centres
+    32.535898 to 36.055513 mm from the axis: a **3.5196 mm** spread, warned
+    about as "a placement bug, not a tolerance", on a result that is one valid
+    solid whose added volume is exact to 6e-11. Counts 5 and 8 gave 3.8507 and
+    3.0404. A bounding box is only rotation-invariant for a seed with 180
+    degree point symmetry, so the metric was wrong, not the tolerance —
+    widening the tolerance to swallow 3.5 mm would have swallowed the 20 mm
+    placement bug the assertion exists for.
+    """
+    from build123d import Axis
+
+    from agentcad.toolkit import patterns
+
+    part, boss = _asymmetric_seeded_plate()
+    out, warning = patterns.polar(part, boss, Axis.Z, count, span_deg=span)
+    assert warning is None, warning
+    assert len(out.solids()) == 1
+    assert out.volume == pytest.approx(part.volume + (count - 1) * boss.volume,
+                                       rel=1e-9)
+    radii = [math.hypot(row["center"][0], row["center"][1])
+             for row in patterns.instances(out)]
+    # rigid images of one reference point: the spread is the 9-decimal
+    # rounding and nothing else
+    assert max(radii) - min(radii) < 1e-8
+
+
+def test_linear_and_mirror_of_an_asymmetric_seed_are_silent_too():
+    from agentcad.toolkit import patterns
+
+    part, boss = _asymmetric_seeded_plate()
+    out, warning = patterns.linear(part, boss, (0, 1, 0), 3, 25)
+    assert warning is None, warning
+    assert _centres(out) == [(36.0, 2.0), (36.0, 27.0), (36.0, 52.0)]
+    out, warning = patterns.mirror(part, "YZ", seed=boss)
+    assert warning is None, warning
+    # the mirror's centre is the reflection of the seed's reference point,
+    # computed rather than re-measured off the image
+    assert _centres(out) == [(-36.0, 2.0)]
+
+
+def test_polar_records_where_every_instance_went():
+    """Volume, solid count and engagement are all blind to placement. The
+    report carries the centre of each instance so a test can assert the thing
+    that actually went wrong."""
+    from build123d import Axis
+
+    from agentcad.toolkit import patterns
+
+    part, boss = _seeded_plate()
+    out, warning = patterns.polar(part, boss, Axis.Z, 4)
+    assert warning is None
+    assert _centres(out) == [(-40.0, 0.0), (0.0, -40.0), (0.0, 40.0),
+                             (40.0, 0.0)]
+
+
+def test_polar_with_a_radius_places_every_instance_on_the_circle():
+    """`radius=r` translates EVERY instance onto the circle, so none of them is
+    the seed where it already sits and none may be skipped.
+
+    Measured before the fix (an independent review's probe): a centre boss
+    patterned `count=4, radius=20` returned `warning=None`, one valid solid and
+    the *expected* added volume of 3 x 301.592895 mm^3 — with the instances at
+    (-20,0), (0,-20), (0,0) and (0,20). The (+20,0) instance was never placed
+    and the seed was counted in its stead, because the helper skipped index 0
+    on the assumption that index 0 is always the seed. It is the seed only when
+    the placement moves it nowhere, which with a radius no placement does.
+    """
+    from build123d import Align, Axis, Box, BuildPart, Cylinder, Locations, Pos
+
+    from agentcad.toolkit import patterns
+
+    with BuildPart() as builder:
+        Box(120, 120, 10)
+        with Locations((0, 0, 5)):
+            Cylinder(6, 8, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    boss = Pos(0, 0, 5) * Cylinder(
+        6, 8, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    part = builder.part
+
+    out, warning = patterns.polar(part, boss, Axis.Z, 4, radius=20)
+    assert _centres(out) == [(-20.0, 0.0), (0.0, -20.0), (0.0, 20.0),
+                             (20.0, 0.0)]
+    assert len(patterns.instances(out)) == 4
+    # all four are ADDED — the seed at the centre is not one of them.
+    assert out.volume == pytest.approx(part.volume + 4 * boss.volume, rel=1e-9)
+    assert warning is not None and "all 4 were ADDED" in warning
+    # and the advice has to be one the caller can actually follow: building the
+    # seed where instance 0 goes and passing `radius=None` yields exactly
+    # `count` (asserted below), whereas "author the seed at the axis" — which
+    # this warning used to recommend — guarantees the leftover it complains of.
+    assert "radius=None" in warning
+
+
+def test_the_radius_warnings_advice_actually_yields_a_clean_circle():
+    """The follow-through for the warning above. `polar` cannot consume a seed
+    it was handed, so `radius` always leaves one over; the only route to
+    exactly `count` on a circle is a seed built on it and `radius=None`."""
+    from build123d import Align, Axis, Box, BuildPart, Cylinder, Locations, Pos
+
+    from agentcad.toolkit import patterns
+
+    with BuildPart() as builder:
+        Box(120, 120, 10)
+        with Locations((20, 0, 5)):
+            Cylinder(6, 8, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    seed = Pos(20, 0, 5) * Cylinder(
+        6, 8, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    part = builder.part
+
+    out, warning = patterns.polar(part, seed, Axis.Z, 4)
+    assert warning is None, warning
+    assert _centres(out) == [(-20.0, 0.0), (0.0, -20.0), (0.0, 20.0),
+                             (20.0, 0.0)]
+    # four bosses in total, not five: the seed IS instance 0 here
+    assert out.volume == pytest.approx(part.volume + 3 * seed.volume, rel=1e-9)
+
+
+def test_a_polar_pattern_that_lands_off_the_circle_is_not_silent():
+    """The location-level assertion, exercised against a placement list that
+    has been sabotaged the way the bug sabotaged it — one instance left at the
+    axis. Volume, validity and per-instance engagement all still pass."""
+    from build123d import Axis, Plane
+
+    from agentcad.toolkit import patterns
+
+    part, boss = _seeded_plate()
+    warnings = patterns._polar_layout_warnings(
+        "patterns.polar", Axis.Z, Plane.XY, 20.0, 360.0, 4,
+        [(0.0, 0.0, 8.0), (0.0, 20.0, 8.0), (-20.0, 0.0, 8.0),
+         (0.0, -20.0, 8.0)])
+    assert any("same distance from the axis" in w for w in warnings), warnings
+
+
+def test_linear_records_its_centres_and_asserts_the_step():
+    from agentcad.toolkit import patterns
+
+    part, boss = _seeded_plate()
+    out, warning = patterns.linear(part, boss, (0, 1, 0), 3, 30)
+    assert warning is None
+    assert _centres(out) == [(40.0, 0.0), (40.0, 30.0), (40.0, 60.0)]
+    # and the assertion fires on a step that is not the one requested
+    assert patterns._linear_layout_warnings(
+        "patterns.linear", patterns.Vector(0, 1, 0), 30.0,
+        [(40.0, 0.0, 9.0), (40.0, 30.0, 9.0), (40.0, 55.0, 9.0)])
+
+
 def test_mirror_doubles_an_asymmetric_part():
     from build123d import Box, Plane, Pos
 

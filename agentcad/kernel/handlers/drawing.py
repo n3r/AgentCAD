@@ -25,6 +25,49 @@ designation (``8× M5×0.8 - 6H ↧12``) and marks that group
 ⌀4.2 circle on a projection cannot tell a drilled hole from an M5 tap, and only
 the record knows which one the author meant.
 
+**A record is intent; a drawing is a measurement, and where they disagree the
+drawing wins.** ``holes.carry()`` moves records across later operations without
+re-verifying them, by design, so this handler re-measures **four specific
+things** before asserting them — not "everything", and the difference is the
+list:
+
+* the printed **count** is the circles actually matched, never the record's;
+* a record whose **designation is not what its own fields spell** is skipped
+  with a warning (``hole_standards.validate_record``, the same contract the
+  harvest raises on and the sidecar discards on — this used to be a five-field
+  spot-check, so a plausible dict `setattr`-ed onto the shape printed a
+  fabricated callout);
+* a blind record's **bottom**: one point classified just past the recorded
+  depth. Gone ⇒ the callout drops the depth and the recorded number travels in
+  ``hole_warnings``, where it cannot be read as a dimension;
+* a counterbore's or countersink's **seat**: four points around its outer
+  radius at its own mid-depth, plus one inside it. Nothing in material at any
+  azimuth, or the seat's own space no longer empty ⇒ the callout drops the
+  seat. Both degradations are spelled by ``designation_for_record`` from a
+  modified copy of the record, so a degraded callout uses the same grammar as
+  an honest one.
+
+**What is NOT re-measured, and must not be read as if it were.** Each field is
+exactly what it is named and nothing more. ``bottom_present`` catches a hole
+made deeper and not one made SHALLOWER, because milling the part's top down
+leaves the bottom precisely where the record says it is — measured, a 6 mm
+blind M8 on a 12 mm plate with 3 mm taken off the top prints ``↧6`` over a 3 mm
+hole, ``bottom_present: true``, byte-identical to the control.
+``seat_present`` is **"nothing surrounds it at any of four azimuths at its
+mid-depth, or its space is not empty"** — that sentence and no wider one. It
+therefore catches a seat region milled off completely and a pocket filled back
+in, and it does **not** catch a seat milled off that leaves anything at one
+azimuth (a 2×2 mm pin reads ``true``), a slot cut across it leaving 0.25 mm
+crescents (reads ``true``), or a diameter/depth/angle that changed. That is the
+`any` bias, and it is measured rather than assumed: a bounding-box-filtered
+``all`` catches the pin and the slot, keeps both edge cases — and reads
+``false`` on a CORRECT counterbore beside an ordinary pocket, which is
+degrading a true drawing on a routine layout. The recorded **diameter** is not
+re-measured against the circle it matched beyond ``_HOLE_DIA_TOL``, and nothing
+on a face other than the top is measured at all. Measuring a hole's true depth
+means finding where its wall begins, which is a ray cast into a projection this
+handler does not build; guessing it would be worse than the gap.
+
 **Known limitation, inherited and deliberate: this reads the TOP VIEW only.**
 ``_detect_circles`` collects closed CIRCLE edges from the top projection, so a
 hole on a side face has a perfect record and no callout — and a drawing with
@@ -215,25 +258,254 @@ _HOLE_DIA_TOL = 0.05
 # stops two same-diameter groups on one part from swapping designations.
 _HOLE_CENTER_TOL = 0.05
 
-#: What a record must carry before this handler will draw it. `hole_records`
-#: (the harvest handler) is where record shape is *enforced*; a consumer that
-#: raises on residue would take a whole drawing down over one bad dict, so
-#: here a malformed record is reported and skipped.
-_RECORD_KEYS = ("id", "designation", "d", "count", "centers")
+#: How deep past a blind hole's recorded bottom this handler looks for the
+#: material that bottom is made of. Small enough that it is inside any real
+#: stock, large enough to clear the classifier's own boundary tolerance and the
+#: tessellation-free B-rep face it is testing against.
+_BLIND_PROBE_MM = 0.05
+
+#: How far outside a seat's outer radius the seat probe looks for the material
+#: the seat is cut into. Comfortably clear of the seat wall and of the
+#: classifier's boundary tolerance, and small next to any real seat.
+_SEAT_PROBE_MM = 0.25
 
 
 def _record_problem(record) -> str | None:
-    if not isinstance(record, dict):
-        return (f"hole record is a {type(record).__name__}, not a dict; it was "
-                f"not produced by a toolkit.holes helper and cannot be drawn")
-    missing = [key for key in _RECORD_KEYS if key not in record]
-    if missing:
-        return (f"hole record {record.get('id', '?')!r} is missing "
-                f"{missing} and cannot be drawn")
-    if not isinstance(record["centers"], list) or not record["centers"]:
-        return (f"hole record {record.get('id', '?')!r} carries no centers, so "
-                f"there is nowhere to point a leader")
+    """Why this record may not be drawn, or None.
+
+    **The same validator the harvest raises on** — `hole_standards.
+    validate_record`, which checks the record's shape *and* that its
+    designation is what its own numbers spell. This used to be a five-field
+    spot-check (`id`, `designation`, `d`, `count`, `centers`), so a plausible
+    dict `setattr`-ed onto the shape with a fabricated designation beside one
+    real diameter and centre printed that designation on the sheet. A drawing
+    is the one surface where a record becomes a manufacturing instruction, so
+    it is the last place a weaker check belongs.
+
+    It is reported and skipped here rather than raised, because one bad dict
+    must not take a whole sheet down.
+    """
+    from agentcad.toolkit import hole_standards
+
+    problem = hole_standards.validate_record(record)
+    if problem is not None:
+        return f"{problem}; it is not drawn"
+    if not record["centers"]:
+        return (f"hole record {record['id']!r} ({record['designation']}) "
+                f"claims no instance that removed material, so it has no "
+                f"centre to point a leader at and no callout")
     return None
+
+
+def _without(record, *, seat: bool = False, depth: bool = False) -> str:
+    """The record's callout with a feature the geometry no longer supports
+    taken out of it.
+
+    Built by `hole_standards.designation_for_record` from a modified copy of
+    the record — the same function that built the original — so a degraded
+    callout is spelled by the same grammar as an honest one and no string
+    surgery happens here. `designation_base` covers the depth-only case and is
+    kept for readers that have only the record; this covers the seat, and both
+    at once.
+    """
+    from agentcad.toolkit import hole_standards
+
+    patch = dict(record)
+    if depth:
+        patch.update({"thru": True, "depth_mm": None})
+    if seat:
+        patch.update({"family": "clearance", "cbore": None, "csk": None})
+    try:
+        return hole_standards.designation_for_record(patch)
+    except Exception:                                          # noqa: BLE001
+        return record["designation"]
+
+
+def _matched_world_centers(record, circles) -> list:
+    """The record's own world centres that a matched projected circle sits on.
+
+    `_match_record` hands back the *circles*; the depth probe needs the record's
+    3-D centres, and only the ones whose hole is still in the geometry — a
+    centre whose circle is gone is not a hole to check the depth of.
+    """
+    return [c for c in record["centers"]
+            if any(math.dist((circle.X, circle.Y), _top_xy(c))
+                   <= _HOLE_CENTER_TOL for circle in circles)]
+
+
+def _seat_geometry(record) -> tuple[float, float, float] | None:
+    """``(outer_radius, mid_depth, void_radius)`` of a counterbore pocket or
+    countersink cone, in millimetres, or None when the record has no seat.
+
+    A counterbore's pocket is a cylinder of the recorded diameter and depth, so
+    at mid-depth its void runs the whole way out to ``outer_radius``. A
+    countersink's cone runs from the recorded seat diameter at the surface down
+    to the bore radius — the same arithmetic ``holes.countersink`` uses to
+    build it — and **at mid-depth its radius is exactly ``(seat_r + bore_r)/2``
+    whatever the included angle**, because the cone is straight-sided and the
+    angle cancels out of the mid-point. That is worth writing down: it is why
+    the outer probe below is outside the cone for every angle (verified
+    60–140°) and why ``void_radius`` can be stated without one.
+    """
+    bore_r = float(record["d"]) / 2.0
+    if record["family"] == "counterbore":
+        seat = record.get("cbore") or {}
+        seat_r = float(seat["d"]) / 2.0
+        return seat_r, float(seat["depth"]) / 2.0, (bore_r + seat_r) / 2.0
+    if record["family"] == "countersink":
+        seat = record.get("csk") or {}
+        seat_r = float(seat["d"]) / 2.0
+        half = math.radians(float(seat["angle_deg"]) / 2.0)
+        height = (seat_r - bore_r) / math.tan(half)
+        # Strictly between the bore wall and the cone wall at mid-depth, so the
+        # point is in the seat's void for any angle.
+        return seat_r, height / 2.0, (3.0 * bore_r + seat_r) / 4.0
+    return None
+
+
+def _seat_present(shape, record, centers) -> bool | None:
+    """Two questions about a counterbore pocket or countersink cone, both at
+    its own mid-depth: **is there material at any of four azimuths just outside
+    it, and is the seat's own space still empty?**
+
+    `True` both hold, `False` either fails, `None` the record has no seat or
+    the question could not be asked. That sentence is the whole claim — this
+    docstring has been wrong three times by describing the check as "catches a
+    seat machined away", which it does not in general.
+
+    **What it catches**, measured on a 30 mm plate with an M8 counterbore
+    (⌀14.5 × 8.8):
+
+    * the seat region milled off entirely — no material at any azimuth. That
+      was the round-4 finding: two seats machined off the top still printed
+      `⌀9 ⌴⌀14.5↧8.8` and `⌀6.6 ⌵⌀13.44×90°`, byte-identical to the control;
+    * the pocket **filled solid** — the void probe. Measured: volume 430 091
+      against the control's 429 198 (*above* it), and the outer probe alone
+      read `true` with no warning at any sampling density, because "is there
+      material around the seat" is not "is the seat a void".
+
+    **What it does NOT catch, and cannot at this bias:**
+
+    * the seat region milled off with **anything left at one azimuth** — a
+      2×2 mm pin (volume 303 967 against 429 198) reads `true`;
+    * a **slot milled across it** leaving 0.25 mm crescents at ±X (volume
+      415 856) reads `true`;
+    * a seat whose **diameter, depth or angle changed** while remaining a void
+      in material.
+
+    Both misses follow from `any` rather than `all`, and that bias is a
+    measured choice, not an oversight. A bounding-box-filtered `all` catches
+    the pin and the slot and keeps both edge cases — but it reads `false` on a
+    **correct** counterbore with an ordinary pocket touching or overlapping its
+    probe ring, i.e. it degrades a true drawing on a routine layout. Degrading
+    a correct callout is the worse failure, so `any` stays and the misses are
+    written down here instead.
+    """
+    geometry = _seat_geometry(record)
+    if geometry is None or not centers:
+        return None
+    try:
+        from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+        from OCP.TopAbs import TopAbs_IN
+        from OCP.gp import gp_Pnt
+
+        outer_r, mid_depth, void_r = geometry
+        axis = [float(v) for v in record["axis"]]
+        # Two unit vectors spanning the plane the seat's annulus lies in. Any
+        # vector not parallel to the axis seeds them; the seat is round, so
+        # which one does not matter.
+        seed = [0.0, 0.0, 1.0] if abs(axis[2]) < 0.9 else [1.0, 0.0, 0.0]
+        u = _cross(axis, seed)
+        u = _normalized(u)
+        v = _normalized(_cross(axis, u))
+        radius = outer_r + _SEAT_PROBE_MM
+        classifier = BRepClass3d_SolidClassifier(shape.wrapped)
+        for center in centers:
+            base = [float(c) for c in center]
+            found = False
+            for du, dv in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)):
+                point = [base[k] + axis[k] * mid_depth
+                         + (u[k] * du + v[k] * dv) * radius for k in range(3)]
+                classifier.Perform(gp_Pnt(*point), 1e-7)
+                if classifier.State() == TopAbs_IN:
+                    found = True
+                    break
+            if not found:
+                return False
+            # …and the seat's own space is still empty. One point, inside the
+            # seat by construction, so it is inside the part's footprint
+            # wherever the seat is and cannot degrade a seat near an edge —
+            # which is what makes it free to add over the `any` bias above.
+            # It is the only thing that sees a pocket filled back in.
+            #
+            # ONE azimuth against the ring's four, deliberately: the two
+            # probes need opposite quantifiers. The ring asks `any` because a
+            # missing azimuth may be a legitimate edge, so more samples only
+            # add ways to say yes; this one asks `all` in effect (any filled
+            # sample refuses), so more samples would only add ways to say no —
+            # and a partly filled seat is still a seat whose callout is right
+            # about its diameter. One sample is where that stops.
+            inside = [base[k] + axis[k] * mid_depth + u[k] * void_r
+                      for k in range(3)]
+            classifier.Perform(gp_Pnt(*inside), 1e-7)
+            if classifier.State() == TopAbs_IN:
+                return False
+        return True
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
+def _cross(a, b):
+    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]]
+
+
+def _normalized(v):
+    length = math.sqrt(sum(c * c for c in v)) or 1.0
+    return [c / length for c in v]
+
+
+def _bottom_present(shape, record, centers) -> bool | None:
+    """Is the material a blind record's flat bottom is made of still there?
+
+    `True` the material just past the recorded bottom is present, `False` it is
+    gone, `None` the question could not be asked (no classifier, an unusable
+    axis). A record is INTENT and `carry()` moves it across operations without
+    re-measuring, so a later cut that deepens or opens a blind hole leaves an
+    obsolete `↧` in the callout — measured: an M8 tapped hole recorded blind at
+    6 mm, then drilled through, still printed `M8×1.25 - 6H ↧6` with no warning.
+
+    **The name is the whole claim, and it used to be `_blind_depth_holds` /
+    `depth_verified`, which claimed more.** This classifies ONE point, on the
+    axis, just past the recorded bottom. It therefore catches a hole made
+    DEEPER, and it does not catch a hole made SHALLOWER: mill 3 mm off the
+    *top* of a 12 mm plate holding a 6 mm blind hole and the real depth is 3 mm
+    while the bottom is exactly where it was — measured, the sheet printed
+    `↧6` over a 3 mm hole and was byte-identical to the control. Measuring the
+    hole's actual depth means finding where its wall begins, which is a ray
+    cast into a projection this handler does not have; `true` here means
+    "the bottom is present", nothing more, and the field is named for that.
+    """
+    try:
+        from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+        from OCP.TopAbs import TopAbs_IN
+        from OCP.gp import gp_Pnt
+
+        depth = float(record["depth_mm"])
+        axis = [float(v) for v in record["axis"]]
+        if not centers:
+            return None
+        classifier = BRepClass3d_SolidClassifier(shape.wrapped)
+        for center in centers:
+            base = [float(v) for v in center]
+            point = [base[k] + axis[k] * (depth + _BLIND_PROBE_MM)
+                     for k in range(3)]
+            classifier.Perform(gp_Pnt(*point), 1e-7)
+            if classifier.State() != TopAbs_IN:
+                return False
+        return True
+    except Exception:                                          # noqa: BLE001
+        return None
 
 
 def _top_xy(center):
@@ -450,6 +722,61 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=()):
             # part in front of it. Print the circles; report the divergence.
             drawn = len(centers)
             claimed = int(record["count"])
+            # A blind depth is a claim about geometry the record cannot see:
+            # `carry()` moves records across later operations without
+            # re-measuring, so a cut that deepened or opened this hole leaves
+            # an obsolete `↧` in the designation. Degrade rather than guess —
+            # print the callout WITHOUT the depth (`designation_base`, the same
+            # string built by the same function) and say what was recorded, in
+            # the warning, where it cannot be mistaken for a dimension.
+            text = record["designation"]
+            # `bottom_present`, and NOT `depth_verified`: `null` means no blind
+            # bottom was looked for (a through hole has none, and a check that
+            # could not run says so in `hole_warnings`), `false` means the
+            # material under the recorded bottom is gone. `true` means the
+            # bottom is there — it does **not** mean the depth is right, and
+            # the field carried a name that said it did. A hole made shallower
+            # from the top keeps its bottom and its `true`.
+            world = _matched_world_centers(record, centers)
+            # The SEAT is the other half of the same question, and it used to
+            # be asked of nothing at all: a counterbore's pocket and a
+            # countersink's cone travel inside `designation` and printed
+            # verbatim, so two seats machined entirely off a plate still put
+            # four numbers on the sheet. Degraded the same way a lost blind
+            # depth is: the seat comes off the callout and the record's own
+            # numbers spell what is left.
+            seat_present = _seat_present(part, record, world)
+            if seat_present is False:
+                text = _without(record, seat=True)
+                seat = record.get("cbore") or record.get("csk") or {}
+                hole_warnings.append(
+                    f"hole record {record['id']!r} states a "
+                    f"{record['family']} seat of ⌀{float(seat.get('d', 0)):g}, "
+                    f"but the final geometry shows no recess there at its own "
+                    f"depth — either nothing surrounds it at any of four "
+                    f"azimuths, or its space is no longer empty. The callout "
+                    f"is printed WITHOUT the seat ({text!r}); the bore is what "
+                    f"the sheet can be measured against")
+            bottom_present = None
+            if not record["thru"] and record.get("depth_mm") is not None:
+                bottom_present = _bottom_present(part, record, world)
+                if bottom_present is False:
+                    text = _without(record, seat=seat_present is False,
+                                    depth=True)
+                    hole_warnings.append(
+                        f"hole record {record['id']!r} states a blind depth of "
+                        f"{float(record['depth_mm']):g} mm, but the material "
+                        f"under that depth is gone in the final geometry — a "
+                        f"later operation deepened or opened the hole. The "
+                        f"callout is printed WITHOUT the depth "
+                        f"({text!r}); the recorded depth is stale and this "
+                        f"drawing does not assert it")
+                elif bottom_present is None:
+                    hole_warnings.append(
+                        f"hole record {record['id']!r} states a blind depth of "
+                        f"{float(record['depth_mm']):g} mm that could not be "
+                        f"checked against the final geometry; the callout "
+                        f"prints it as recorded")
             group = by_dia.get(dia)
             if group is None:
                 # Below the detector's count >= 3 threshold: the record is the
@@ -479,21 +806,22 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=()):
                     f"{group['count'] - drawn} carry no callout because no "
                     f"record claims them")
             if (group["from_metadata"]
-                    and group.get("designation") != record["designation"]):
+                    and group.get("designation") != text):
                 hole_warnings.append(
                     f"hole records {group.get('record_id')!r} and "
                     f"{record['id']!r} both claim the ⌀{dia:g} circles with "
                     f"different designations "
                     f"({group.get('designation')!r} vs "
-                    f"{record['designation']!r}); the group reports the first")
+                    f"{text!r}); the group reports the first")
             else:
                 group.update({"from_metadata": True,
-                              "designation": record["designation"],
+                              "designation": text,
                               "family": record.get("family"),
-                              "record_id": record["id"]})
+                              "record_id": record["id"],
+                              "bottom_present": bottom_present,
+                              "seat_present": seat_present})
             if dia not in pmi_drawn:
-                _leader(centers,
-                        _callout_text(record["designation"], drawn))
+                _leader(centers, _callout_text(text, drawn))
 
         # Whatever is left is a hole we can only measure: same callout shape,
         # measured text, and `from_metadata: false` says which is which.

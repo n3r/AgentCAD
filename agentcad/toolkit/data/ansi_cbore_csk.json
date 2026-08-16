@@ -9,12 +9,27 @@
     "Purchase Partners Fastener Reference Guide, \"Sockets - Flat Head Socket Cap Screws, Alloy Steel\" (ASME B18.3-1998), https://www.purchasepartners.com/files/Fastener-Reference-Guide/Sockets/Flat%20Head.pdf (read 2026-08-13)"
   ],
   "revision": "2026-08-13",
+  "row_shape": "group/fastener/size",
   "provenance": {
-    "default": {"sources": [0, 1]},
-    "scopes": {
-      "cbore/asme_b18_3": {"standard": "ASME B18.3 (hexagon socket head cap screws)", "sources": [0, 1]},
-      "csk/asme_b18_3_flat": {"standard": "ASME B18.3 (hexagon socket flat countersunk head cap screws, 82 deg)", "sources": [2, 3]}
-    }
+    "groups": [
+      {"standard": "ASME B18.3 (hexagon socket head cap screws)", "sources": [0, 1],
+       "cells": ["cbore/asme_b18_3/#0", "cbore/asme_b18_3/#1",
+                 "cbore/asme_b18_3/#2", "cbore/asme_b18_3/#3",
+                 "cbore/asme_b18_3/#4", "cbore/asme_b18_3/#5",
+                 "cbore/asme_b18_3/#6", "cbore/asme_b18_3/#8",
+                 "cbore/asme_b18_3/#10", "cbore/asme_b18_3/1/4",
+                 "cbore/asme_b18_3/5/16", "cbore/asme_b18_3/3/8",
+                 "cbore/asme_b18_3/7/16", "cbore/asme_b18_3/1/2",
+                 "cbore/asme_b18_3/5/8", "cbore/asme_b18_3/3/4",
+                 "cbore/asme_b18_3/7/8", "cbore/asme_b18_3/1"]},
+      {"standard": "ASME B18.3 (hexagon socket flat countersunk head cap screws, 82 deg)", "sources": [2, 3],
+       "cells": ["csk/asme_b18_3_flat/#4", "csk/asme_b18_3_flat/#5",
+                 "csk/asme_b18_3_flat/#6", "csk/asme_b18_3_flat/#8",
+                 "csk/asme_b18_3_flat/#10", "csk/asme_b18_3_flat/1/4",
+                 "csk/asme_b18_3_flat/5/16", "csk/asme_b18_3_flat/3/8",
+                 "csk/asme_b18_3_flat/7/16", "csk/asme_b18_3_flat/1/2",
+                 "csk/asme_b18_3_flat/5/8", "csk/asme_b18_3_flat/3/4"]}
+    ]
   },
   "notes": [
     "THE TWO COLUMNS ARE NOT BACKED BY THE SAME SOURCES: the file-level `sources` list is their union. Sources 1 and 2 are the socket-head table, sources 3 and 4 the 82 deg flat-head table. Each column is corroborated by its own two, and a countersink answer names those two rather than all four.",

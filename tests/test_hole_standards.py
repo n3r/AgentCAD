@@ -75,35 +75,178 @@ def _nominal(size: str) -> float:
 ])
 def test_every_data_file_carries_the_provenance_header(name, units):
     """Decision 5's header. The `sources` list is the union of everything the
-    FILE was transcribed from; which of them backs which row is the separate
-    per-row claim asserted below."""
+    FILE was transcribed from and is **not** a claim about any row — which is
+    why there is no "at least two" assertion here any more. That assertion,
+    and the loader rule behind it, is what made the shipped guarantee ("two
+    published sources must agree or the row does not ship") untrue: a row
+    transcribed from one publication passed because its neighbours in the same
+    file had two. The real rule is per row and lives below.
+    """
     doc = _doc(name)
     assert doc["schema"] == 1
     assert doc["units"] == units
     assert doc["standard"] and doc["revision"]
-    assert len(doc["sources"]) >= 2, f"{name}: fewer than two published sources"
+    assert doc["row_shape"] in hs._ROW_SHAPES
+    keys = [hs._source_key(text) for text in doc["sources"]]
+    assert len(set(keys)) == len(keys) and doc["sources"]
     assert doc["rows"]
 
 
-@pytest.mark.parametrize("name", TABLES)
-def test_every_data_file_says_which_sources_back_which_rows(name):
-    """The file-level list is a union and cannot speak for a row.
+def _refuses(tmp_path, doc, match: str):
+    """Load `doc` as a throwaway table and return the refusal it raises."""
+    (tmp_path / "probe.json").write_text(json.dumps(doc), encoding="utf-8")
+    original = hs.DATA_DIR
+    try:
+        hs.DATA_DIR = tmp_path
+        with pytest.raises(ValueError, match=match) as excinfo:
+            hs.table("probe")
+    finally:
+        hs.DATA_DIR = original
+        hs.table.cache_clear()
+    return str(excinfo.value)
 
-    `iso_cbore_csk.json` names four sources, and one of them was *consulted and
-    deliberately not transcribed*; stapling all four onto every answer claimed
-    corroboration the ISO 10642 rows do not have. So each file carries a
-    `provenance` block: a `default` source list plus per-scope overrides, every
-    index pointing into that file's own `sources`.
+
+@pytest.mark.parametrize("name", TABLES)
+def test_every_cell_names_its_own_sources_with_no_default_at_any_depth(name):
+    """**The provenance rule, enforced per CELL.**
+
+    Every data cell — one fit of one clearance size, one pitch of one thread
+    size, one size of one head table — is named in a provenance group or scope
+    carrying the publications *it* was transcribed from. There is no `default`
+    and no row-level fallback: both were the same mistake at different depths.
+    `iso_cbore_csk.json` is the file that proves why it matters — four sources,
+    of which two back the ISO 4762 column, one backs the whole ISO 10642 column
+    alone, and one was consulted and deliberately not transcribed, so it backs
+    no cell at all.
     """
-    doc = _doc(name)
+    doc = _doc(name)                    # the raw file, before the loader
     block = doc["provenance"]
-    entries = [("default", block["default"])]
-    entries += list((block.get("scopes") or {}).items())
-    for scope, entry in entries:
+    assert "default" not in block, f"{name}: a file-wide default is not a claim"
+
+    covered: dict[str, dict] = {}
+    for group in block.get("groups") or []:
+        for cell in group["cells"]:
+            assert cell not in covered, f"{name}: {cell} claimed twice"
+            covered[cell] = group
+    # A `scopes` entry refines a cell a group already claims (that is how one
+    # cell carries a conflict its neighbours do not), so it may overwrite.
+    for scope, entry in (block.get("scopes") or {}).items():
+        covered[scope] = entry
+    for scope, entry in covered.items():
         assert entry["sources"], f"{name}/{scope}: backed by nothing"
         for index in entry["sources"]:
             assert 0 <= index < len(doc["sources"]), f"{name}/{scope}: {index}"
         assert entry.get("conflict") is None or entry["conflict"].strip()
+
+    loaded = hs.table(name)             # `_cell_paths` walks by `row_shape`
+    cells = {"/".join(path) for path in hs._cell_paths(loaded)}
+    assert cells == set(covered), (
+        f"{name}: uncovered {cells - set(covered)}; "
+        f"backing nothing {set(covered) - cells}")
+
+
+def test_a_row_added_without_declaring_its_sources_does_not_load(tmp_path):
+    """The rule is only worth what the loader refuses.
+
+    Copying a row out of one publication into a file that already cites two
+    used to ship it as `corroborated: true` with no declaration anywhere. Now
+    the file does not load, and the error names it.
+    """
+    doc = json.loads((DATA / "ansi_clearance.json").read_text(encoding="utf-8"))
+    doc["rows"]["1-1/8"] = {"close": {"d": 1.16, "drill": "1-11/64"},
+                            "normal": {"d": 1.22, "drill": "1-7/32"},
+                            "loose": {"d": 1.28, "drill": "1-9/32"}}
+    message = _refuses(tmp_path, doc, "declare no sources")
+    assert "1-1/8" in message
+
+
+def test_a_CELL_added_to_a_covered_row_does_not_load(tmp_path):
+    """**Regression, and the hole the row-level rule left.**
+
+    Proving coverage over row NAMES meant a new *cell* on an existing row
+    inherited that row's citations. Measured: an `M12×1.5` pitch with a
+    fabricated `tap_drill: 99.9` added to `iso_thread`'s group-covered `M12`
+    row LOADED, and `thread("M12", pitch=1.5)` answered `tap_drill: 99.9`,
+    `corroborated: True` over two named publications — while the control (a
+    whole new row) was correctly refused the whole time, which is exactly what
+    made the gap easy to miss. `size/pitch` tables are where the data
+    legitimately grows a cell, so this was the likely real path.
+    """
+    doc = json.loads((DATA / "iso_thread.json").read_text(encoding="utf-8"))
+    doc["rows"]["M12"]["pitches"]["1.5"] = {"tap_drill": 99.9, "series": "fine"}
+    message = _refuses(tmp_path, doc, "declare no sources")
+    assert "M12/1.5" in message
+
+
+def test_a_provenance_entry_that_backs_no_cell_does_not_load(tmp_path):
+    """The other direction: a citation attached to a cell that is not there is
+    a claim about nothing, and a typo would otherwise leave a real cell
+    silently uncovered. A ROW-level key is refused for the same reason — it
+    would be a fallback for cells added later."""
+    doc = json.loads((DATA / "iso_clearance.json").read_text(encoding="utf-8"))
+    doc["provenance"]["scopes"] = {"M99/fine": {"sources": [0]}}
+    _refuses(tmp_path, doc, "names no data cell")
+
+    doc = json.loads((DATA / "iso_clearance.json").read_text(encoding="utf-8"))
+    doc["provenance"]["scopes"] = {"M5": {"sources": [0]}}   # a row, not a cell
+    _refuses(tmp_path, doc, "names no data cell")
+
+
+def test_one_citation_listed_twice_is_not_two_independent_sources(tmp_path):
+    """**Regression.** Distinctness was exact-string, so the same publication
+    pasted twice with a trailing space loaded as two sources and every cell it
+    backed answered `corroborated: True` — the untrue claim the whole rule
+    exists to stop, arriving through a copy-paste."""
+    doc = json.loads((DATA / "iso_thread.json").read_text(encoding="utf-8"))
+    doc["sources"] = [doc["sources"][0], doc["sources"][0] + " "]
+    _refuses(tmp_path, doc, "same citation once whitespace and case")
+
+    doc = json.loads((DATA / "iso_thread.json").read_text(encoding="utf-8"))
+    doc["sources"] = [doc["sources"][0], doc["sources"][0].upper()]
+    _refuses(tmp_path, doc, "same citation once whitespace and case")
+
+
+def test_importing_the_module_proves_every_shipped_table():
+    """`validate_all` runs at import, so a malformed vendored file is one error
+    naming the file and the cell — not a kernel error found mid-build by
+    whichever process happened to ask first. Six files, 0.58 ms.
+
+    Asserted in a **fresh interpreter**, because the property is about import
+    and this one's cache has been cleared by other tests. The honest limit,
+    recorded rather than implied: this module is itself imported lazily by its
+    callers, so "eager" means eager *within* the module, not at process start.
+    """
+    import subprocess
+    import sys
+
+    assert set(hs.SHIPPED_TABLES) == set(TABLES)
+    proof = subprocess.run(
+        [sys.executable, "-c",
+         "from agentcad.toolkit import hole_standards as hs;"
+         "print(hs.table.cache_info().currsize)"],
+        capture_output=True, text=True, check=True)
+    assert proof.stdout.strip() == str(len(TABLES)), proof.stderr
+
+
+def test_corroborated_means_two_sources_that_agree_not_two_sources():
+    """`ansi_clearance` documents its two sources DISAGREEING on `#8 normal`
+    and shipped that cell as corroborated anyway — the provenance flag said the
+    transcription had been checked when what happened is that a disagreement
+    was adjudicated. Both facts now travel: the row ships, `conflicts` names
+    the rejected value, and `corroborated` is false.
+    """
+    disputed = hs.clearance("#8", fit="normal", std="ansi")
+    assert len(disputed["sources"]) == 2
+    assert disputed["corroborated"] is False
+    assert "0.190" in disputed["conflicts"][0]
+    assert disputed["d_native"] == 0.196 and disputed["drill"] == "#9"
+
+    # Its neighbours in the same row are corroborated: this is a cell, not a
+    # row, and not a file.
+    assert hs.clearance("#8", fit="close", std="ansi")["corroborated"] is True
+    # A single-sourced row is false for the other reason, and says which.
+    single = hs.csk("M5")
+    assert (single["corroborated"], single["conflicts"]) == (False, [])
 
 
 @pytest.mark.parametrize("name,fits", CLEARANCE_TABLES)
@@ -671,3 +814,184 @@ def test_the_seam_survives_a_second_build_registry(tmp_path):
     build_registry(service)
     second = build_registry(service)
     assert second.get("hole_standards") is not None
+
+
+def test_two_cells_that_spell_one_provenance_path_do_not_load(tmp_path):
+    """The `/`-joined path is the provenance key, and the inch tables make a
+    collision reachable: a size `1` with a pitch `4` and a size `1/4` both
+    spell `1/4`, so one entry would answer for two cells and the coverage proof
+    would pass with one of them undeclared.
+
+    This branch carried a `# pragma: no cover` and nothing exercised it, which
+    is not a state a refusal should ship in.
+    """
+    doc = json.loads((DATA / "ansi_clearance.json").read_text(encoding="utf-8"))
+    # row "1/4" cell "close" and row "1" cell "4/close" both spell 1/4/close
+    doc["rows"]["1"]["4/close"] = {"d": 0.281, "drill": "9/32"}
+    message = _refuses(tmp_path, doc, "share one '/'-joined provenance path")
+    assert "1/4/close" in message
+
+
+def test_a_citation_repeated_with_an_invisible_difference_is_refused(tmp_path):
+    """Zero-width characters and an http/https swap are two more ways to paste
+    one publication twice and have the file claim two behind one number."""
+    doc = json.loads((DATA / "iso_thread.json").read_text(encoding="utf-8"))
+    first = doc["sources"][0]
+    doc["sources"] = [first, first[:20] + "​" + first[20:]]
+    _refuses(tmp_path, doc, "same citation once whitespace and case")
+
+    doc = json.loads((DATA / "iso_thread.json").read_text(encoding="utf-8"))
+    doc["sources"] = [first, first.replace("https://", "http://")]
+    _refuses(tmp_path, doc, "same citation once whitespace and case")
+
+
+def test_every_scalar_on_a_thread_row_must_be_declared_not_just_named_ones(
+        tmp_path):
+    """**Regression.** `_cell_paths` listed `(*row["pitches"], "coarse_pitch")`
+    — an allowlist, not a complement — so any *other* scalar added to a thread
+    row was undeclared and loaded clean: measured, `M8/preferred_pitch`. It is
+    now every key that is not the `pitches` container, so a scalar this module
+    has never heard of still has to declare where it came from.
+    """
+    doc = json.loads((DATA / "iso_thread.json").read_text(encoding="utf-8"))
+    doc["rows"]["M8"]["preferred_pitch"] = 1.0
+    message = _refuses(tmp_path, doc, "declare no sources")
+    assert "M8/preferred_pitch" in message
+
+
+def test_a_field_name_no_cell_of_this_shape_may_carry_does_not_load(tmp_path):
+    """A closed schema over the field names each `row_shape` actually uses.
+
+    It refuses a fabricated `fabricated_mm`, and — the reason it is worth
+    having beyond provenance — it turns a typo like `head_dd` into a load error
+    naming the file instead of a `KeyError` raised from inside `cbore()`
+    halfway through an answer.
+    """
+    for field in ("fabricated_mm", "head_dd"):
+        doc = json.loads(
+            (DATA / "iso_cbore_csk.json").read_text(encoding="utf-8"))
+        doc["rows"]["cbore"]["iso4762"]["M3"][field] = 99.9
+        message = _refuses(tmp_path, doc, "which no group/fastener/size cell")
+        assert field in message and "typo" in message
+
+    doc = json.loads((DATA / "iso_cbore_csk.json").read_text(encoding="utf-8"))
+    del doc["rows"]["cbore"]["iso4762"]["M3"]["head_d"]
+    _refuses(tmp_path, doc, "missing required field")
+
+
+def test_an_optional_in_cell_field_is_addable_and_the_justification_says_so(
+        tmp_path):
+    """**The clause this replaces was checkably false.** `_cell_paths` used to
+    justify its stopping point with "a redesign whose only gain is refusing a
+    fabricated field that no lookup reads" — but two lookups read an *optional*
+    in-cell field with a default (`cell.get("drill")`, `entry.get("drill")`),
+    and ISO thread pitch cells carry no `drill`, so one is addable. Measured:
+    `drill: "FAKE-99"` inside the declared `M8/1.25` cell loaded and
+    `thread("M8")` served it with `corroborated: True`.
+
+    The behaviour is kept — `drill` is a legitimate field of a pitch cell, and
+    refusing it would be a different over-claim — and the justification is now
+    the true one: a value added to an optional field is exactly as uncatchable
+    as a value edited in a required one. This test pins both halves, so the
+    sentence cannot drift back.
+    """
+    doc = json.loads((DATA / "iso_thread.json").read_text(encoding="utf-8"))
+    assert "drill" not in doc["rows"]["M8"]["pitches"]["1.25"]
+    doc["rows"]["M8"]["pitches"]["1.25"]["drill"] = "FAKE-99"
+    (tmp_path / "probe.json").write_text(json.dumps(doc), encoding="utf-8")
+    original, original_table = hs.DATA_DIR, hs._TABLES[("iso", "tapped")]
+    try:
+        hs.DATA_DIR = tmp_path
+        hs.table.cache_clear()
+        hs.table("probe")                       # loads: `drill` is legitimate
+        hs._TABLES[("iso", "tapped")] = "probe"
+        assert hs.thread("M8")["drill"] == "FAKE-99"
+    finally:
+        hs._TABLES[("iso", "tapped")] = original_table
+        hs.DATA_DIR = original
+        hs.table.cache_clear()
+
+    # …and the justification in the source says that, not the false clause.
+    source = (Path(hs.__file__)).read_text(encoding="utf-8")
+    assert "only gain is refusing a fabricated" not in source
+    assert "as uncatchable as a value edited in a required one" in source
+
+
+def test_a_cell_is_the_unit_and_its_fields_are_not_declared_separately():
+    """**The stopping point, asserted so it is a decision and not a gap.**
+
+    A cell is the path `row_shape` names — one fit, one pitch or other scalar,
+    one head size — and the fields *inside* it (`{d, drill}`,
+    `{head_d, head_h}`) are covered by that cell's citation. So 248
+    declarations stand against 442 scalar leaves, and a fabricated field added
+    inside a declared cell loads. That is deliberate: a cell is what one line
+    of the published table prints, `_prov_scope` resolves at exactly this
+    depth, and an added field no lookup reads is inert. The refusal message
+    says it in as many words, which is the part that was missing.
+    """
+    declared = sum(len(hs._cell_paths(hs.table(name)))
+                   for name in hs.SHIPPED_TABLES)
+    assert declared == 248
+
+    def leaves(node):
+        if isinstance(node, dict):
+            return sum(leaves(value) for value in node.values())
+        return 1
+
+    scalars = sum(leaves(hs.table(name)["rows"]) for name in hs.SHIPPED_TABLES)
+    assert scalars == 442                       # the gap, named not hidden
+
+    for name in hs.SHIPPED_TABLES:
+        try:
+            hs.table(name)
+        except ValueError as exc:               # pragma: no cover
+            raise AssertionError(name) from exc
+    # and the refusal explains the granularity rather than claiming more
+    doc = json.loads((DATA / "iso_clearance.json").read_text(encoding="utf-8"))
+    doc["rows"]["M5"]["extra"] = 1.0
+    import tempfile
+    import pathlib as _pathlib
+    tmp = _pathlib.Path(tempfile.mkdtemp())
+    message = _refuses(tmp, doc, "declare no sources")
+    assert "the fields INSIDE a cell are covered by its citation" in message
+
+
+def test_coarse_pitch_is_inside_the_coverage_set(tmp_path):
+    """**Promoted from "record it" to "fix it".** `coarse_pitch` names which
+    tabulated pitch the standard calls first choice, and `thread(size)` answers
+    from it — flipping `iso_thread`'s M8 from 1.25 to 1.0 makes `thread("M8")`
+    answer tap drill 7.0 instead of 6.8. It sat outside `_cell_paths`, so the
+    32 values across the two thread tables were the one part of this data that
+    provenance made no statement about at all: the same defect class as the
+    fabricated pitch cell, one field along.
+    """
+    for name in ("iso_thread", "ansi_thread"):
+        loaded = hs.table(name)
+        cells = {"/".join(path) for path in hs._cell_paths(loaded)}
+        for size, row in loaded["rows"].items():
+            if "coarse_pitch" in row:
+                assert f"{size}/coarse_pitch" in cells
+
+    doc = json.loads((DATA / "iso_thread.json").read_text(encoding="utf-8"))
+    doc["provenance"]["groups"][0]["cells"].remove("M8/coarse_pitch")
+    message = _refuses(tmp_path, doc, "declare no sources")
+    assert "M8/coarse_pitch" in message
+
+
+@pytest.mark.parametrize("codepoint,name", [
+    ("​", "ZWSP"), ("‌", "ZWNJ"), ("‍", "ZWJ"),
+    ("‎", "LRM"), ("⁠", "WORD JOINER"), ("﻿", "BOM"),
+    ("­", "SOFT HYPHEN"), ("᠎", "MONGOLIAN VOWEL SEPARATOR"),
+])
+def test_every_invisible_codepoint_the_docstring_names_is_actually_folded(
+        tmp_path, codepoint, name):
+    """The docstring said "zero-width characters dropped" over a set of five,
+    which is a wider claim than a finite set can honour — U+00AD, U+200E and
+    U+180E render as nothing and were outside it. The set is now named
+    codepoint by codepoint and this test walks the same list, so the sentence
+    and the code cannot drift apart again."""
+    assert codepoint in hs._INVISIBLE, name
+    doc = json.loads((DATA / "iso_thread.json").read_text(encoding="utf-8"))
+    first = doc["sources"][0]
+    doc["sources"] = [first, first[:20] + codepoint + first[20:]]
+    _refuses(tmp_path, doc, "same citation once whitespace and case")

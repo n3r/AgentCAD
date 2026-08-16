@@ -7,13 +7,29 @@
     "Die Casting Mould, \"Bolt & Screw Clearance Hole Size Chart (Metric & Imperial)\", https://www.diecasting-mould.com/news/bolt-screw-clearance-hole-size-chart-metric-imperial (read 2026-08-13)",
     "Calc-Tools, \"Clearance Hole Size Calculator\", https://www.calc-tools.com/formulas/clearance-hole-size-calculator (read 2026-08-13; spot-check reproduction of the #4 and #10 rows, not a transcription source)"
   ],
-  "revision": "2026-08-13",
+  "revision": "2026-08-16",
+  "row_shape": "size/fit",
   "provenance": {
-    "default": {"sources": [0, 1]},
+    "groups": [
+      {"sources": [0, 1],
+       "cells": ["#0/close", "#0/normal", "#0/loose", "#1/close",
+                 "#1/normal", "#1/loose", "#2/close", "#2/normal",
+                 "#2/loose", "#3/close", "#3/normal", "#3/loose",
+                 "#5/close", "#5/normal", "#5/loose", "#6/close",
+                 "#6/normal", "#6/loose", "#8/close", "#8/loose",
+                 "1/4/close", "1/4/normal", "1/4/loose", "5/16/close",
+                 "5/16/normal", "5/16/loose", "3/8/close", "3/8/normal",
+                 "3/8/loose", "7/16/close", "7/16/normal", "7/16/loose",
+                 "1/2/close", "1/2/normal", "1/2/loose", "5/8/close",
+                 "5/8/normal", "5/8/loose", "3/4/close", "3/4/normal",
+                 "3/4/loose", "7/8/close", "7/8/normal", "7/8/loose",
+                 "1/close", "1/normal", "1/loose"]},
+      {"sources": [0, 1, 2],
+       "cells": ["#4/close", "#4/normal", "#4/loose", "#10/close",
+                 "#10/normal", "#10/loose"]}
+    ],
     "scopes": {
-      "#4": {"sources": [0, 1, 2]},
-      "#10": {"sources": [0, 1, 2]},
-      "#8/normal": {"sources": [0, 1], "conflict": "The two transcription sources printed this one cell differently. Both print drill #9; one prints 0.196 (drill #9's tabulated diameter) and the other 0.190 (not any drill size - it is the #10 screw's nominal diameter). The agreeing datum is the drill designation and every other row's diameter column in both sources is exactly its drill's diameter, so the cell ships as #9 / 0.196. This is the one place slice 8 resolved a source disagreement instead of dropping the row, and it is recorded on the cell rather than resolved silently."}
+      "#8/normal": {"sources": [0, 1], "conflict": "DISPUTED CELL, shipped adjudicated rather than silently. The two transcription sources print this one cell differently: both print drill #9, one prints d = 0.196 (which is drill #9's own tabulated diameter) and the other 0.190 (which is not any drill size - it is the #10 screw's nominal diameter). The agreeing datum is the drill designation, and in both sources every other row's diameter column is exactly its drill's diameter, so the cell ships as drill #9 / d 0.196 and the rejected value 0.190 is named here. Because its sources disagreed, this cell answers corroborated: false - two sources that do not agree are not corroboration, and reporting it as corroborated said the transcription had been checked when what actually happened is that a disagreement was adjudicated."}
     }
   },
   "fits": ["close", "normal", "loose"],
@@ -21,7 +37,8 @@
     "ASME B18.2.8 names the three series close / normal / loose; ISO 273 names the same idea fine / medium / coarse. hole_standards accepts both spellings and reports the requested standard's.",
     "THERE IS MORE THAN ONE PUBLISHED INCH CLEARANCE CHART, and they are not roundings of each other. The traditional Machinery's-Handbook 'close fit / free fit' table gives a #10 screw 0.196 / 0.201 in; another widely-reprinted chart gives 0.196 / 0.204 / 0.221. B18.2.8 gives 0.206 / 0.221 / 0.238. Those are three conventions, not three transcriptions, so this file names the standard it transcribes in its header and does not blend them. Both sources above print the B18.2.8 numbers.",
     "d is the printed nominal hole diameter, which is the tabulated drill's own diameter; the standard also gives a max for each cell (e.g. #10 close is 0.206-0.211) which is a tolerance, not a second size, and is not stored. drill is the designation the shop reads - part of the callout, not a rounding of a millimetre value.",
-    "One cell the two sources printed differently: #8 NORMAL. Both print drill #9; one prints 0.196 (which is drill #9's tabulated diameter) and the other 0.190 (which is not any drill size, and is the #10 screw's nominal diameter). The agreeing datum is the drill designation, so the row ships with drill #9 / 0.196 and the disagreement is recorded here rather than resolved silently.",
+    "One cell the two sources printed differently: #8 NORMAL. Both print drill #9; one prints 0.196 (which is drill #9's tabulated diameter) and the other 0.190 (which is not any drill size, and is the #10 screw's nominal diameter). The agreeing datum is the drill designation, so the cell ships with drill #9 / 0.196 and the disagreement is recorded on the cell rather than resolved silently. It ships DISPUTED, not agreed: hole_standards answers corroborated: false for that cell and carries the adjudication in conflicts, while its two neighbours in the same row answer corroborated: true. Two sources that disagree are not corroboration.",
+    "PROVENANCE IS PER CELL AND IS ENFORCED PER CELL. Every cell above - each fit of each size - is named in a provenance group or scope with the sources it was transcribed from. There is no file-wide default AND no row-level fallback: both are the same mistake at different depths, and covering by row let a cell added later inherit that row's citations (measured on the thread table, where an undeclared M12x1.5 pitch answered corroborated: true over two publications). A cell added from one publication cannot inherit these citations - hole_standards refuses to load the file and names the cell. The file-level `sources` list is the union over the cells and is a claim about none of them: source 2 backs only the #4 and #10 spot checks.",
     "Sizes above 1 in (1-1/8 through 1-1/2) appear in one source only and do not ship."
   ],
   "rows": {

@@ -44,35 +44,25 @@ held them. The seam's answer is to harvest **before** the build so that it is
 the call that measures.
 
 **A record is a plain dict, so a record can be residue.** Anything can
-``setattr`` the carrier attribute. A record that is not a dict with the keys
-every downstream reader indexes into is rejected here as ``contract_error``
-naming the offending keys — the ``toolkit/specs`` declaration rule — rather
-than becoming a ``KeyError`` in the server or a missing callout in a drawing.
+``setattr`` the carrier attribute. Validation is
+``hole_standards.validate_record`` and **nothing else, anywhere**: this
+handler raises its verdict as ``contract_error`` (the ``toolkit/specs``
+declaration rule), the drawing pack skips a record it rejects rather than
+taking a whole sheet down over one bad dict, and the server's ``.holes.json``
+sidecar reader discards a stored document containing one. Each of those three
+used to carry its own shorter list — the drawing's was five keys — and a
+record that no helper produced walked straight through the short ones onto a
+manufacturing callout.
+
+The validator is structural **and self-consistent**: it re-derives the
+record's own ``designation`` from its own diameter, depth and thread and
+requires them to match. It is not, and must never be described as, an
+authentication boundary — a part script runs arbitrary code in this process
+and can drill whatever it likes. What it closes is the stale or inconsistent
+*carrier*.
 """
 
 from __future__ import annotations
-
-import json
-
-#: The keys every consumer of a record indexes into: the drawing pack matches
-#: on ``d``/``centers``/``count`` and prints ``designation``; the sidecar and
-#: the agent surface key on ``id``. Everything else in the record shape
-#: (``tap``, ``cbore``, ``csk``, ``instances``, ``pattern``, …) is optional and
-#: is validated by whoever reads it.
-_REQUIRED: dict[str, tuple] = {
-    "id": (str,),
-    "family": (str,),
-    "standard": (str,),
-    "designation": (str,),
-    "d": (int, float),
-    "count": (int,),
-    "positions": (list,),
-    "centers": (list,),
-}
-
-
-def _type_names(kinds: tuple) -> str:
-    return " or ".join(kind.__name__ for kind in kinds)
 
 
 def register(toolbox: dict) -> dict:
@@ -81,45 +71,21 @@ def register(toolbox: dict) -> dict:
     ERROR_CONTRACT = toolbox["ERROR_CONTRACT"]
 
     def _validate(found: list) -> None:
-        """Structural validation of the harvested records.
+        """The shared record contract, raised.
 
-        Deliberately about *shape*, never about geometry: whether a record
-        describes a hole that is still there is a question `carry()` already
-        documents as unanswerable without re-measuring (2.1 ms per instance).
+        Deliberately about *shape and internal agreement*, never about
+        geometry: whether a record describes a hole that is still there is a
+        question `carry()` documents as unanswerable without re-measuring, and
+        the readers that hold the built shape (the drawing pack) ask it
+        themselves.
         """
+        from agentcad.toolkit import hole_standards
+
         for index, record in enumerate(found):
-            if not isinstance(record, dict):
-                raise WorkerError(
-                    ERROR_CONTRACT,
-                    f"hole record {index} is a {type(record).__name__}, not a "
-                    f"dict — the records attribute on the returned part holds "
-                    f"something no toolkit.holes helper produced")
-            rid = record.get("id")
-            where = f"hole record {index}" + (
-                f" ({rid!r})" if isinstance(rid, str) else "")
-            missing = [key for key in _REQUIRED if key not in record]
-            if missing:
-                raise WorkerError(
-                    ERROR_CONTRACT,
-                    f"{where} is missing required key(s) {missing} — every "
-                    f"record must be one a toolkit.holes helper produced")
-            for key, kinds in _REQUIRED.items():
-                value = record[key]
-                # bools are ints in Python and a count of True is residue.
-                if isinstance(value, bool) or not isinstance(value, kinds):
-                    raise WorkerError(
-                        ERROR_CONTRACT,
-                        f"{where}: key {key!r} must be "
-                        f"{_type_names(kinds)}, got "
-                        f"{type(value).__name__}")
-            try:
-                json.dumps(record)
-            except (TypeError, ValueError) as exc:
-                raise WorkerError(
-                    ERROR_CONTRACT,
-                    f"{where} is not JSON-safe ({exc}) — a record holding a "
-                    f"build123d object cannot cross the kernel pipe; round "
-                    f"coordinates into plain floats") from exc
+            problem = hole_standards.validate_record(
+                record, where=f"hole record {index}")
+            if problem is not None:
+                raise WorkerError(ERROR_CONTRACT, problem)
 
     def hole_records(params: dict) -> dict:
         from agentcad.toolkit import holes
@@ -151,8 +117,28 @@ def register(toolbox: dict) -> dict:
         # Agrees with `warning` by construction: it is None exactly when this
         # is 0 (a zero delta — the cache-hit case — yields both).
         dropped = max(0, (holes.created() - before) - len(found))
+        warnings = [warning] if warning else []
+        # A DROPPED INSTANCE HAS TO REACH THE USER, and the helper's own
+        # warning does not: every bundled part spells the call
+        # `part, _r, _w = holes.clearance(...)`, so the string naming the
+        # no-op instance goes straight into `_w` and nowhere else. The record
+        # is what survives the script, so the harvest re-reads the drop off it
+        # and puts it in the rebuild's warnings. (`dropped` above is the other
+        # kind — records lost by an operation that did not carry them — and the
+        # two are deliberately not merged.)
+        for record in found:
+            missed = record.get("dropped") or []
+            if missed:
+                warnings.append(
+                    f"holes: record {record['id']!r} "
+                    f"({record['designation']}) drilled "
+                    f"{record['count'] + len(missed)} instance(s) of which "
+                    f"{len(missed)} removed no material "
+                    f"({[row.get('status') for row in missed]} at "
+                    f"{[row.get('position') for row in missed]}); the record "
+                    f"counts only the {record['count']} that did")
         return {"holes": found,
-                "warnings": [warning] if warning else [],
+                "warnings": warnings,
                 "dropped": dropped,
                 "measured": measured}
 

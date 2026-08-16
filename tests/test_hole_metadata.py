@@ -31,7 +31,10 @@ import json
 import pytest
 
 from agentcad.core.tools import build_registry
-from agentcad.core.tools_holes import install_rebuild_holes
+from agentcad.core.tools_holes import (
+    HOLES_SIDECAR_VERSION,
+    install_rebuild_holes,
+)
 
 from .conftest import make_test_service
 
@@ -262,7 +265,7 @@ def test_a_rebuild_carries_the_records_and_writes_the_sidecar(demo):
     sidecar = (service.store.cache_dir("demo")
                / f"{result['cache_key']}.holes.json")
     stored = json.loads(sidecar.read_text(encoding="utf-8"))
-    assert stored["version"] == 1
+    assert stored["version"] == HOLES_SIDECAR_VERSION
     assert stored["cache_key"] == result["cache_key"]
     assert stored["holes"] == result["holes"]
     assert stored["warnings"] == [] and stored["dropped"] == 0
@@ -312,7 +315,8 @@ def test_a_corrupt_sidecar_is_discarded_and_re_harvested(demo):
 
     again = service._rebuild("demo", "holed")
     assert again["holes"] == first["holes"]
-    assert json.loads(sidecar.read_text(encoding="utf-8"))["version"] == 1
+    assert json.loads(sidecar.read_text(encoding="utf-8"))["version"] \
+        == HOLES_SIDECAR_VERSION
 
 
 @pytest.mark.integration
@@ -512,3 +516,76 @@ def test_the_pack_reads_no_cross_pack_seam_at_registration(tmp_path, kernel):
     tools_holes.register(registry, service)
     assert {tool.name for tool in registry.list()} >= {"hole_standards"}
     assert getattr(service._rebuild, "_agentcad_holes_wrapper", False) is True
+
+
+# --------- a no-op instance has to reach the user, not just the record
+
+#: A script that drills into its own void, spelled the way every bundled part
+#: spells a hole call: `part, _r, _w = ...`. The helper's warning about the
+#: no-op instance goes into `_w` and nowhere else, so the *record* is the only
+#: thing that survives the script — which is why the harvest re-reads the drop
+#: off it. `%s` gives each test its own script text (see `DROPS`).
+CUTS_AIR = '''\
+from build123d import Box, BuildPart, Mode
+from agentcad.toolkit import holes
+
+PARAMS = {"t": {"default": 10.0, "min": 4.0, "max": 30.0, "unit": "mm",
+                "description": "frame thickness"}}
+
+def build(p):   # %s
+    with BuildPart() as builder:
+        Box(100, 100, p.t)
+        Box(60, 60, p.t, mode=Mode.SUBTRACT)
+    part, _r, _w = holes.drill(builder.part, [(40, 0), (0, 0)], 10.0)
+    return part
+'''
+
+
+@pytest.mark.integration
+def test_an_instance_that_removed_nothing_is_warned_about_on_the_harvest(
+        kernel):
+    """The record cannot be the only place a drop is reported.
+
+    A part script that discards the helper's warning — which is how every
+    bundled part is written — would otherwise carry a silently reduced count
+    and no message anywhere. The harvest reads the drop back off the record and
+    puts it in the warnings the rebuild result and `get_part` already carry.
+    """
+    result = _records(kernel, CUTS_AIR % "air")
+
+    record = result["holes"][0]
+    assert record["count"] == 1
+    assert [row["i"] for row in record["dropped"]] == [1]
+    warning = next(w for w in result["warnings"] if "h0" in w)
+    assert "1 removed no material" in warning
+    assert "counts only the 1 that did" in warning
+    # `dropped` at the top level is the OTHER kind — records lost by an
+    # operation that did not carry them — and stays 0 here.
+    assert result["dropped"] == 0
+
+
+@pytest.mark.integration
+def test_a_record_whose_designation_drifted_is_a_contract_error(kernel):
+    """The harvest raises the shared validator's verdict, and the validator
+    re-derives the callout from the record's own numbers. A carrier whose text
+    and numbers have come apart is residue, whatever its key list looks like."""
+    forged = '''\
+from build123d import Box
+from agentcad.toolkit import holes
+
+PARAMS = {"s": {"default": 10.0, "min": 5.0, "max": 30.0, "unit": "mm"}}
+
+def build(p):
+    part = Box(40, 40, p.s)
+    part, recs, _w = holes.drill(part, [(0, 0)], 6.8)
+    forged = dict(recs[0])
+    forged["designation"] = "M8\\u00d71.25 - 6H"
+    setattr(part, holes.ATTR, [forged])
+    return part
+'''
+    from agentcad.kernel.client import KernelError
+
+    with pytest.raises(KernelError) as excinfo:
+        _records(kernel, forged)
+    assert excinfo.value.type == "contract_error"
+    assert "own numbers spell" in excinfo.value.message

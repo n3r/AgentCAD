@@ -496,6 +496,223 @@ def test_features_that_do_not_overlap_lose_no_material(make):
     assert not any("swallow" in w for w in sp.warnings), sp.warnings
 
 
+def test_two_hems_that_meet_in_the_middle_report_the_volume_they_swallowed():
+    """Two 30 mm hems folded back onto a 40 mm deep plate overlap by 20 mm of
+    leaf, over the full 60 mm width and the full 1 mm thickness: 1200 mm^3
+    exactly. The fold still reports ONE VALID SOLID and raises nothing --
+    declared 6565.486678, measured 5365.486678 -- so conservation is the only
+    thing that sees it. (An independent review's probe; the numbers here are
+    that probe's, re-measured.)"""
+    sp = (_sp(thickness=1.0).base(60, 40)
+          .hem("front", length=30)
+          .hem("back", length=30))
+    part = sp.fold()
+    assert _valid_single(part), "the failure this warns about is a SILENT one"
+    assert part.volume == pytest.approx(5365.486678, abs=1e-5)
+    swallowed = [w for w in sp.warnings if "swallow" in w]
+    assert swallowed, sp.warnings
+    assert "6565.4867" in swallowed[0] and "5365.4867" in swallowed[0]
+    assert "1200" in swallowed[0], swallowed[0]
+
+
+# ---- close-corner seams ------------------------------------------------------
+
+def _corner_seam_warnings(sp):
+    return [w for w in sp.warnings if "'close'" in w]
+
+
+@pytest.mark.parametrize("front,right,thickness", [
+    ((90.0, 20.0, 3.0), (90.0, 20.0, 3.0), 2.0),      # the canonical corner
+    ((90.0, 20.0, 3.0), (90.0, 10.0, 3.0), 2.0),      # a shorter leaf is fine
+    ((90.0, 20.0, 3.0), (90.0, 40.0, 3.0), 2.0),      # ...and a longer one
+    ((120.0, 8.0, 4.5), (120.0, 8.0, 4.5), 3.0),      # obtuse, matched
+    ((179.0, 6.0, 2.0), (179.0, 6.0, 2.0), 2.0),
+    # ACUTE and matched is fine too, as long as the leaf fits the extension:
+    # L <= (R + t) * tan(45 - a/2). These all measure a whole seam (1.0).
+    ((60.0, 0.2, 3.0), (60.0, 0.2, 3.0), 2.0),        # L_max 1.3397
+    ((45.0, 0.5, 3.0), (45.0, 0.5, 3.0), 2.0),        # L_max 2.0711
+    ((30.0, 1.0, 5.0), (30.0, 1.0, 5.0), 2.0),        # L_max 4.0415
+    ((10.0, 1.0, 5.0), (10.0, 1.0, 5.0), 2.0),        # L_max 5.8737
+    ((20.0, 2.0, 4.0), (20.0, 2.0, 4.0), 3.0),
+])
+def test_a_close_corner_whose_profiles_agree_is_quiet(front, right, thickness):
+    """The screen must not fire on the shapes this feature is for. Measured,
+    every one of these shares its full ``sqrt(2)*min(profile)`` mitre face to
+    within 8e-15 relative, so the check costs them nothing but the arithmetic.
+    """
+    sp = _sp(thickness=thickness).base(60, 40)
+    sp.flange("front", front[0], front[1], inner_radius=front[2])
+    sp.flange("right", right[0], right[1], inner_radius=right[2])
+    sp.corner("front", "right", "close")
+    sp.fold()
+    sp.unfold()
+    assert not _corner_seam_warnings(sp), sp.warnings
+
+
+@pytest.mark.parametrize("front,right,thickness,fraction,cause", [
+    # profiles that disagree: one plane cuts both leaves, so each leaf's cut
+    # face is its own cross-section and the two only coincide where the
+    # profiles do.
+    ((90.0, 20.0, 3.0), (45.0, 10.0, 1.0), 2.0, 0.2674, "bend angles differ"),
+    ((90.0, 20.0, 3.0), (90.0, 20.0, 1.0), 2.0, 0.1296, "inner radii differ"),
+    ((90.0, 20.0, 3.0), (85.0, 20.0, 3.0), 2.0, 0.6700, "bend angles differ"),
+    # matched and acute, but the LEAF IS TOO LONG for the extension:
+    # `_effective_span` runs it `R + t` past the corner, which is the outward
+    # reach of a 90 degree profile and no other. Not the angle on its own —
+    # the quiet cases above are acute too.
+    ((45.0, 12.0, 1.0), (45.0, 12.0, 1.0), 1.0, 0.1902, "never reaches"),
+    ((30.0, 25.0, 0.8), (30.0, 25.0, 0.8), 0.8, 0.0696, "never reaches"),
+    ((45.0, 12.0, 1.0), (45.0, 12.0, 1.0), 2.0, 0.2810, "longest leaf"),
+    # the same overrun with more room: L_max scales with (R + t), so a bigger
+    # radius seams more of the same 12 mm leaf (1.2426 -> 2.0711 mm of limit,
+    # 0.2810 -> 0.4103 of seam). The leaf length is not the whole story either;
+    # what matters is how far past the limit it is.
+    ((45.0, 12.0, 3.0), (45.0, 12.0, 3.0), 2.0, 0.4103, "longest leaf"),
+])
+def test_a_close_corner_that_cannot_seam_says_so_with_the_measurement(
+        front, right, thickness, fraction, cause):
+    """Nothing else in the module can see this: both leaves are cut by the SAME
+    plane so no material moves (``_conserved`` is silent by construction) and
+    they still fuse through the base plate into one valid solid (``_checked``
+    is happy). Only the shared face area is short."""
+    sp = _sp(thickness=thickness).base(60, 40)
+    sp.flange("front", front[0], front[1], inner_radius=front[2])
+    sp.flange("right", right[0], right[1], inner_radius=right[2])
+    sp.corner("front", "right", "close")
+    part = sp.fold()
+    assert _valid_single(part), "the failure this warns about is a SILENT one"
+    assert not any("swallow" in w for w in sp.warnings), sp.warnings
+    found = _corner_seam_warnings(sp)
+    assert found, sp.warnings
+    assert cause in found[0], found[0]
+    # the warning carries what was measured, not just that something is wrong
+    got = float(found[0].split("share ")[1].split(" mm^2")[0])
+    promised = float(found[0].split("bisector over ")[1].split(" mm^2")[0])
+    assert got / promised == pytest.approx(fraction, abs=5e-5)
+    # and the remedy names the fault that actually fired, not a boilerplate
+    # pair of them: telling an author to match angles they already matched is
+    # advice that cannot be followed.
+    remedy = found[0].split("To close it, ")[1]
+    profiles_differ = "differ" in found[0]
+    assert ("same bend angle and inner radius" in remedy) is profiles_differ
+    assert ("shorten the" in remedy) is ("never reaches" in found[0])
+
+
+@pytest.mark.parametrize("thickness,angle,radius", [
+    (2.0, 45.0, 3.0), (2.0, 30.0, 5.0), (2.0, 60.0, 3.0),
+    (2.0, 10.0, 5.0), (1.0, 75.0, 2.0), (3.0, 20.0, 4.0),
+])
+def test_the_quoted_leaf_limit_is_the_reach_predicate_itself(
+        thickness, angle, radius):
+    """The warning quotes `L_max = (R + t) * tan(45 - a/2)` as the longest leaf
+    that still mitres. Bisect the *actual* predicate (`_profile_reach` against
+    `_mitre_extension`) and check the closed form is it — an author acting on
+    that number must land on the right side of the check."""
+    def fits(leaf):
+        sp = _sp(thickness=thickness).base(60, 40)
+        sp.flange("front", angle, leaf, inner_radius=radius)
+        flange = sp._flanges[0]
+        return sp._profile_reach(flange) <= sp._mitre_extension(flange) + 1e-9
+
+    lo, hi = 1e-6, 1000.0
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if fits(mid) else (lo, mid)
+
+    sp = _sp(thickness=thickness).base(60, 40)
+    sp.flange("front", angle, lo, inner_radius=radius)
+    assert sp._max_mitre_leaf(sp._flanges[0]) == pytest.approx(lo, abs=1e-8)
+
+
+@pytest.mark.parametrize("angle", [90.0, 90.0001, 120.0, 179.0])
+@pytest.mark.parametrize("leaf", [
+    0.5, 500.0, 1.0e4,
+    1.63312e7,     # where the float leak used to cross _TOL at 90 degrees
+    1.0e8,         # where it used to print "the longest leaf ... is inf mm"
+    1.0e9,
+])
+def test_from_90_degrees_up_every_leaf_fits_the_mitre(angle, leaf):
+    """A leaf at or past 90 degrees adds no outward reach, so the shipped
+    `R + t` extension is exact there for **any** leaf length — which is why
+    `L_max` is infinite rather than the 0 that `tan(45 - a/2)` gives.
+
+    Pinned across six orders of leaf length because the previous version of
+    this test pinned L=500 while claiming "any leaf whatsoever", and the gap
+    hid a real defect: `cos(radians(90.0))` is 6.123e-17, not 0, so the reach
+    accumulated `L * 6.12e-17` and crossed `_TOL` at L = 1.63312e7 mm. A
+    correct 90 degree corner then warned, and the warning quoted `inf` as the
+    longest leaf that still mitres. `_profile_reach` now drops the leaf term
+    from 90 degrees up, where `cos a <= 0` makes it exactly redundant.
+    """
+    sp = _sp().base(60, 40)
+    sp.flange("front", angle, leaf, inner_radius=3.0)
+    flange = sp._flanges[0]
+    from agentcad.toolkit.sheetmetal import _TOL
+
+    assert sp._max_mitre_leaf(flange) == math.inf
+    assert sp._profile_reach(flange) <= sp._mitre_extension(flange) + _TOL
+
+
+def test_a_90_degree_corner_never_quotes_an_infinite_leaf_limit():
+    """The end-to-end statement: at the leaf lengths that used to trip it, a
+    matched 90 degree `close` corner is silent.
+
+    The samples below are a check on an argument, not the argument itself —
+    "never" is not something three leaf lengths can establish. From 90 degrees
+    up `_profile_reach` returns `max(0, (R + t) * sin a)`, which does not
+    mention the leaf at all and is bounded by `R + t = _mitre_extension` for
+    every angle, since `sin a <= 1`. So the reach fault cannot fire there for
+    ANY leaf, and `_max_mitre_leaf` is `inf` only from 90 degrees up: the two
+    can never meet. What the samples defend is that the code still says what
+    the argument says — the previous version of it was true of the geometry
+    and false of the floating point.
+    """
+    for leaf in (1.63312e7, 1.0e8, 1.0e9):
+        sp = _sp().base(60, 40)
+        sp.flange("front", 90.0, leaf, inner_radius=3.0)
+        sp.flange("right", 90.0, leaf, inner_radius=3.0)
+        sp.corner("front", "right", "close")
+        sp._corner_seams(None)             # the screen, without the boolean
+        assert not [w for w in sp.warnings if "'close'" in w], (leaf, sp.warnings)
+
+
+def test_the_close_corner_seam_check_is_free_when_it_passes():
+    """The boolean probe is paid only where the arithmetic screen has already
+    fired, so a correct corner never buys one."""
+    sp = _cornered("close")
+    calls = []
+    original = type(sp)._measured_seam
+    type(sp)._measured_seam = lambda self, *a: (calls.append(a), None)[1]
+    try:
+        sp.fold()
+    finally:
+        type(sp)._measured_seam = original
+    assert calls == []
+
+
+# ---- the k-factor gap accumulates --------------------------------------------
+
+@pytest.mark.parametrize("edges,bend_line", [
+    (("front",), 60.0),
+    (("front", "back"), 120.0),
+    (("front", "back", "left"), 160.0),
+])
+def test_the_fold_unfold_gap_is_per_bend_and_sums_over_them(edges, bend_line):
+    """``fold() - unfold() = angle_rad*(0.5 - k)*t^2*span`` is a statement about
+    ONE bend, and the model's total is the sum. Measured: 22.619467105842887
+    for one 60 mm bend, 45.238934211700325 for two (exactly twice), and
+    60.318578948928916 for 160 mm of bend line. AGENTS.md and the module
+    docstring used to say the gap does not grow with the number of features;
+    it grows linearly with the length of bend line, which is what this pins."""
+    sp = _sp(thickness=2.0).base(60, 40)
+    for edge in edges:
+        sp.flange(edge, 90.0, 20.0, inner_radius=3.0)
+    gap = sp.fold().volume - sp.unfold().volume
+    predicted = math.radians(90.0) * (0.5 - 0.44) * 2.0 ** 2 * bend_line
+    assert gap == pytest.approx(predicted, abs=1e-9)
+    assert not sp.warnings, sp.warnings
+
+
 # ---- warnings ----------------------------------------------------------------
 
 def test_warnings_is_the_sink_and_the_fold_stays_single():
