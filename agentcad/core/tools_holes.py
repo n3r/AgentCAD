@@ -1,9 +1,15 @@
-"""Tool pack: the ISO/ANSI hole standards, and the hole-metadata rebuild seam.
+"""Tool pack: the ISO/ANSI hole standards, hole-on-face, and the rebuild seam.
 
 `hole_standards {family?, size?, std?}` answers out of the vendored tables in
 `agentcad/toolkit/hole_standards.py` — no kernel call, no geometry, no OCP —
 so a UI size picker and a part script use the same numbers the drilled hole
 used. It is registered **unconditionally**: a pure-data tool can always run.
+
+`add_holes {project, part_id, points, family, size, plane|face_index, …}` is
+the script-editing half (FR14): it appends a marked, counter-suffixed block
+that rebinds `build` and calls the matching `toolkit.holes` helper — the
+`tools_facemod.push_pull` pattern exactly, so the script stays the source of
+truth and the edit is visible, editable and composable.
 
 `install_rebuild_holes` is the other half: it wraps `service._rebuild` and
 `service.get_part` so a part's hole records reach every client, and persists
@@ -54,9 +60,11 @@ import functools
 import json
 from pathlib import Path
 
+from ..kernel.client import KernelError
+from ..kernel.protocol import ERROR_CONTRACT
 from .model import ValidationError
 from .project import ProjectStore
-from .tools import Tool, schema
+from .tools import Tool, schema, with_hint
 
 #: Sidecar format. Bump it and every stored file is discarded on read.
 HOLES_SIDECAR_VERSION = 1
@@ -364,6 +372,178 @@ def install_rebuild_holes(service) -> None:
         service.get_part = _get_part
 
 
+# ------------------------------------------------------- add_holes (FR14)
+
+#: The block marker, counted to suffix the saved previous `build` so chained
+#: edits never shadow each other (the `push_pull` precedent).
+ADD_HOLES_MARKER = (
+    "# --- agentcad hole wizard (auto-generated; edit or remove freely) ---"
+)
+
+#: family -> the `toolkit.holes` helper it calls, and the keyword arguments
+#: that helper actually takes. A family is never interpolated from the caller's
+#: string: it is a key into this table, so nothing but one of these five names
+#: can reach the generated source.
+_FAMILIES: dict[str, tuple[str, ...]] = {
+    "clearance": ("fit", "std", "depth"),
+    "tapped": ("std", "depth"),
+    "counterbore": ("fit", "std", "depth"),
+    "countersink": ("fit", "std", "depth"),
+    "drilled": ("std", "depth"),
+}
+#: `drilled` is spelled `holes.drill` — the record's family name and the
+#: function name differ because a record says what the hole *is*.
+_HELPERS = {name: ("drill" if name == "drilled" else name) for name in _FAMILIES}
+
+#: Mirrors `toolkit.holes._NAMED_PLANES`, which cannot be imported here — this
+#: module is server-side and `toolkit.holes` imports build123d.
+#: `tests/test_tools_holes.py` asserts the two sets agree.
+NAMED_PLANES = ("top", "bottom", "front", "back", "left", "right")
+
+_ADD_HOLES_BLOCK = """
+
+{marker}
+{caveat}from agentcad.toolkit import holes as _agentcad_holes
+{imports}_agentcad_prev_build_{n} = build
+
+
+def build(p):
+    _agentcad_part = _agentcad_prev_build_{n}(p)
+    _agentcad_part, _agentcad_recs, _agentcad_warn = _agentcad_holes.{helper}(
+{args}
+    )
+    return _agentcad_part
+"""
+
+_PLANE_CAVEAT = (
+    "# The plane below is the basis face {index} had when this block was\n"
+    "# written. Face indices are mesh-order ordinals and a parameter change\n"
+    "# that alters the part's topology renumbers them — the plane does not\n"
+    "# follow the face. Re-pick the face if the geometry moves.\n"
+)
+
+
+def _number(value, name: str) -> str:
+    """A caller's number as a Python float literal, or a `ValidationError`.
+
+    Everything that reaches the generated script goes through here or through
+    a table lookup: a coordinate is a float and `repr(float)` cannot be
+    anything but a number, so there is no string for a crafted value to hide
+    in (PRD-009's `import os`-in-a-comment lesson).
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{name} must be a number, got {value!r}") from exc
+    if number != number or number in (float("inf"), float("-inf")):
+        raise ValidationError(f"{name} must be finite, got {value!r}")
+    return repr(number)
+
+
+def _points_literal(points) -> tuple[str, list[list[float]]]:
+    """`[(u, v), …]` as source, plus the parsed points for the echo."""
+    if isinstance(points, (str, bytes)) or not isinstance(points, (list, tuple)):
+        raise ValidationError(
+            "points must be a list of [u, v] pairs in the plane's own "
+            f"coordinates, got {type(points).__name__}")
+    if not points:
+        raise ValidationError("points must name at least one hole position")
+    parsed, literals = [], []
+    for i, point in enumerate(points):
+        if (isinstance(point, (str, bytes))
+                or not isinstance(point, (list, tuple)) or len(point) != 2):
+            raise ValidationError(
+                f"points[{i}] must be a [u, v] pair, got {point!r}")
+        u = _number(point[0], f"points[{i}][0]")
+        v = _number(point[1], f"points[{i}][1]")
+        literals.append(f"({u}, {v})")
+        parsed.append([float(point[0]), float(point[1])])
+    return "[" + ", ".join(literals) + "]", parsed
+
+
+def _plane_literal(plane, face_index, resolve) -> tuple[str, str, bool, int | None]:
+    """`(expression, caveat, needs_Plane_import, face_index)`.
+
+    A named plane stays a **name** in the script — it is a predicate
+    re-evaluated on every rebuild (`holes.resolve_plane`), which is the stable
+    reference. A picked face becomes a *literal basis*, because the ordinal is
+    not stable and the coordinates are: the `sketch_plane` emitted-header
+    precedent, caveat and all.
+    """
+    if face_index is not None:
+        if isinstance(face_index, bool) or not isinstance(face_index, int):
+            raise ValidationError(
+                f"face_index must be an integer face ordinal, got "
+                f"{face_index!r}")
+        if face_index < 0:
+            raise ValidationError(
+                f"face_index must be >= 0, got {face_index}")
+        info = resolve(face_index)
+        basis = ", ".join(
+            f"{key}=({', '.join(_number(c, f'the face plane {key}') for c in info[key])})"
+            for key in ("origin", "x_dir"))
+        z = ", ".join(_number(c, "the face plane normal") for c in info["normal"])
+        expr = f"_agentcad_Plane({basis}, z_dir=({z}))"
+        return expr, _PLANE_CAVEAT.format(index=face_index), True, face_index
+    name = "top" if plane is None else plane
+    if not isinstance(name, str) or name.lower() not in NAMED_PLANES:
+        raise ValidationError(
+            f"plane must be one of {list(NAMED_PLANES)} (or pass a face_index "
+            f"to use a picked face's own basis), got {plane!r}")
+    return repr(name.lower()), "", False, None
+
+
+def _hole_call_args(family: str, size, fit, std, depth) -> tuple[list[str], dict]:
+    """The keyword arguments for one family, validated against the tables.
+
+    Validation is a *lookup*, not a regex: `size` reaches the script only after
+    `hole_standards` has found the row the geometry will use, so a size the
+    tables do not have fails here — naming the known sizes — instead of
+    becoming a `script_error` on the next rebuild.
+    """
+    from agentcad.toolkit import hole_standards as tables
+
+    accepted = _FAMILIES[family]
+    args: list[str] = []
+    echo: dict = {}
+    try:
+        std_name = tables.check_std("iso" if std is None else std)
+        if family == "drilled":
+            # No table row: the caller states millimetres, and the record
+            # carries no `size` because no standard supplied the number.
+            diameter = _number(size, "size")
+            echo["diameter_mm"] = float(size)
+        else:
+            row = tables.lookup(family=family, size=size, std=std_name)
+            echo["size"] = row.get("size") or str(size).strip().upper()
+        if "fit" in accepted:
+            fit_name = tables.canonical_fit("medium" if fit is None else fit,
+                                            std_name)
+            args.append(f"fit={fit_name!r}")
+            echo["fit"] = fit_name
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    args.append(f"std={std_name!r}")
+    echo["std"] = std_name
+    if depth is not None:
+        if "depth" not in accepted:
+            raise ValidationError(f"{family} holes take no depth")
+        literal = _number(depth, "depth")
+        if float(depth) <= 0:
+            raise ValidationError(f"depth must be > 0 mm, got {depth!r}")
+        args.append(f"depth={literal}")
+        echo["depth_mm"] = float(depth)
+    return args, echo
+
+
+def _size_literal(family: str, size) -> str:
+    """The size argument as source. Already validated by `_hole_call_args`;
+    `drilled` takes millimetres, every other family takes the designation."""
+    if family == "drilled":
+        return _number(size, "size")
+    return repr(str(size).strip().upper())
+
+
 def register(registry, service) -> None:
     # The only thing read off `service` here is the two bound methods the seam
     # wraps. No cross-pack seam (`branches`, `specs`, `gate_providers`) is
@@ -382,6 +562,127 @@ def register(registry, service) -> None:
             # AppError subclasses to structured payloads, and ValueError would
             # otherwise escape into the server.
             raise ValidationError(str(exc)) from exc
+
+    def _script_part(project: str, part_id: str):
+        record = service.store.get_part(project, part_id)
+        if record.kind != "script":
+            raise ValidationError(
+                "add_holes works on script parts only (an imported reference "
+                "has no script to append to)")
+        return record, service.store.read_script(project, part_id)
+
+    def add_holes(project: str, part_id: str, points, family: str, size,
+                  plane: str | None = None, face_index: int | None = None,
+                  fit: str | None = None, std: str | None = None,
+                  depth: float | None = None) -> dict:
+        record, script = _script_part(project, part_id)
+        key = str(family).strip().lower()
+        if key not in _FAMILIES:
+            raise ValidationError(
+                f"family must be one of {list(_FAMILIES)}, got {family!r}")
+        if plane is not None and face_index is not None:
+            raise ValidationError(
+                "pass plane OR face_index, not both — they are two different "
+                "answers to 'which face'")
+        points_src, parsed = _points_literal(points)
+
+        def resolve(index: int) -> dict:
+            try:
+                return service.kernel.request(
+                    "sketch_plane",
+                    {"script": script, "params": record.params,
+                     "face_index": index},
+                    timeout_s=300.0,     # may rebuild the shape from scratch
+                )
+            except KernelError as exc:
+                # A face that is out of range or not planar is a *caller*
+                # error, not a kernel fault: `handlers/sketchplane.py` reports
+                # it as `contract_error`, and push_pull's precedent is that
+                # the tool surface answers this as a validation error naming
+                # the face. A crash or a timeout is left exactly as it came.
+                if exc.type == ERROR_CONTRACT:
+                    raise ValidationError(exc.message, exc.details) from exc
+                raise
+
+        plane_src, caveat, needs_plane, resolved_face = _plane_literal(
+            plane, face_index, resolve)
+        args, echo = _hole_call_args(key, size, fit, std, depth)
+        call = [
+            "        _agentcad_part,",
+            f"        {points_src},",
+            f"        {_size_literal(key, size)},",
+            f"        plane={plane_src},",
+        ] + [f"        {arg}," for arg in args]
+        n = script.count(ADD_HOLES_MARKER)
+        block = _ADD_HOLES_BLOCK.format(
+            marker=ADD_HOLES_MARKER,
+            caveat=caveat,
+            imports=("from build123d import Plane as _agentcad_Plane\n"
+                     if needs_plane else ""),
+            n=n,
+            helper=_HELPERS[key],
+            args="\n".join(call),
+        )
+        result = service.update_part(
+            project, part_id, script=script.rstrip("\n") + block)
+        return {
+            **with_hint(result),
+            "family": key,
+            "points": parsed,
+            "count": len(parsed),
+            "plane": plane_src if resolved_face is None else "face",
+            "face_index": resolved_face,
+            **echo,
+        }
+
+    registry.register(Tool(
+        "add_holes",
+        "Drill standard holes into a script part: appends a marked, editable "
+        "block to the script that calls the matching agentcad.toolkit.holes "
+        "helper, then rebuilds through the normal path. `points` are [u, v] "
+        "pairs in the target plane's own coordinates. Name the plane "
+        "('top'|'bottom'|'front'|'back'|'left'|'right' — a predicate "
+        "re-evaluated on every rebuild) or give a picked `face_index`, which "
+        "is resolved NOW into a literal Plane basis with the renumbering "
+        "caveat written beside it. Sizes come from the same tables "
+        "`hole_standards` answers from; family 'drilled' takes a diameter in "
+        "mm instead of a designation. Composable: repeated calls append "
+        "further blocks. The build result carries the hole records.",
+        schema(
+            {
+                "project": {"type": "string", "description": "Project name"},
+                "part_id": {"type": "string", "description": "Part id"},
+                "points": {"type": "array",
+                           "description": "Hole positions as [u, v] pairs in "
+                                          "the plane's own coordinates",
+                           "items": {"type": "array",
+                                     "items": {"type": "number"}}},
+                "family": {"type": "string",
+                           "description": "clearance | tapped | counterbore | "
+                                          "countersink | drilled"},
+                "size": {"type": "string",
+                         "description": "Designation (M5, 1/4, #10); for "
+                                        "family 'drilled', the diameter in mm"},
+                "plane": {"type": "string",
+                          "description": "top (default) | bottom | front | "
+                                         "back | left | right"},
+                "face_index": {"type": "integer",
+                               "description": "Mesh-order B-rep face index of "
+                                              "a picked planar face; mutually "
+                                              "exclusive with plane"},
+                "fit": {"type": "string",
+                        "description": "fine/close | medium/normal | "
+                                       "coarse/loose (clearance-based "
+                                       "families)"},
+                "std": {"type": "string", "description": "iso (default) | ansi"},
+                "depth": {"type": "number",
+                          "description": "Blind depth in mm; omit to drill "
+                                         "through"},
+            },
+            ["project", "part_id", "points", "family", "size"],
+        ),
+        add_holes,
+    ))
 
     registry.register(Tool(
         "hole_standards",

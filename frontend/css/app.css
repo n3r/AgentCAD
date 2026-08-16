@@ -1808,8 +1808,46 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   gap: 6px;
   align-items: center;
 }
-.facecard-row .placement-num { flex: 1; width: 0; }
+/* min-width, because `width: 0` + three sibling buttons shrank the distance
+   field to a 2 px sliver on the 236 px card (seen in the slice-13 screenshot) */
+.facecard-row .placement-num { flex: 1; width: 0; min-width: 46px; }
 .facecard-row .tb-btn { flex: none; }
+
+/* hole-on-face (PRD-010 FR14): the same card, one section lower */
+.facecard-holes {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--hairline-soft);
+}
+.facecard-section {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 7px;
+}
+.facecard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.facecard-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.facecard-field > span {
+  font-size: 10px;
+  color: var(--dim);
+}
+.facecard-field .param-select,
+.facecard-field .param-text,
+.facecard-field .placement-num { width: 100%; flex: none; }
+.facecard-field-wide { margin-top: 6px; }
+.facecard-field-wide .param-text { text-align: left; }
+.facecard-holes .facecard-row { margin-top: 8px; }
+.facecard-holes .facecard-row .tb-btn { flex: 1; }
 
 /* ------------------------------------------------------ sketcher overlay */
 

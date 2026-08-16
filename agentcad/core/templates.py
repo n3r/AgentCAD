@@ -136,6 +136,139 @@ that must stay portable should not import them).
         # leaves two disjoint solids" / invalid-cut failure). Tries the plain
         # operator, then raw OCCT at fuzzy and 10x fuzzy. Raises if all fail.
 
+PATTERNS  (from agentcad.toolkit import patterns)
+-------------------------------------------------
+Two kinds of thing. POINT SETS are pure arithmetic and are what you want for
+holes; SHAPE PATTERNS copy a solid that is already fused into the part.
+
+    patterns.bolt_circle(r, n, start_deg=0.0)   -> [(x, y), ...]
+    patterns.grid(nx, ny, dx, dy, center=True)  -> [(x, y), ...] row-major
+        # rounded to 9 decimals so trig noise never reaches a coordinate.
+        # NOT PolarLocations: these translate, that also ROTATES each copy,
+        # and the two tessellate differently. Build a rotated group in its
+        # own frame and rotate the result, or the rounding bites.
+
+    part, warn = patterns.linear(part, seed, direction, count, spacing)
+    part, warn = patterns.polar(part, seed, axis=Axis.Z, count=4,
+                                radius=None, span_deg=360.0)
+    part, warn = patterns.mirror(part, plane=Plane.YZ, seed=None)
+        # `seed` is a Shape ALREADY in the part, so `count` is the TOTAL
+        # instance count (CAD convention) and instance 0 is skipped;
+        # count=1 is a no-op with a warning. span_deg < 360 is inclusive.
+
+WHY EVERY HELPER RETURNS A WARNING: OCCT does not fail on a badly placed
+feature. A cut placed entirely off the part succeeds in ~1 ms, leaves the
+volume EXACTLY unchanged and reports is_valid True. So the helpers measure
+engagement themselves: a bounding-box screen per instance always (0.014 ms),
+plus verify="exact" for the real (part & tool) probe (2.1 ms each, roughly
+doubles a 50-instance pattern) reporting engaged_mm3. Warnings name the
+INSTANCE INDICES. Read patterns.instances(part) for the per-instance report.
+Impossible arguments (count < 1, spacing <= 0, span outside (0, 360]) RAISE.
+
+HOLE WIZARD  (from agentcad.toolkit import holes; tool: hole_standards, add_holes)
+---------------------------------------------------------------------------------
+One call per intent, diameters from vendored ISO 273 / ISO 261-262 / ASME
+B18.2.8 / Unified tables (never invented here), and a machine-readable RECORD
+that reaches the drawing callouts and get_part.
+
+    part, recs, warn = holes.clearance(part, points, "M5", fit="medium")
+    part, recs, warn = holes.tapped(part, points, "M6", depth=12)
+    part, recs, warn = holes.counterbore(part, points, "M8")
+    part, recs, warn = holes.countersink(part, points, "M6")
+    part, recs, warn = holes.drill(part, points, 18.0)     # no table, mm
+    part, recs, warn = holes.clearance(part, pts, "1/4", std="ansi")
+
+Common kwargs: plane=, depth= (omit for through), thru=, std="iso"|"ansi",
+fit="fine|medium|coarse" (or the ASME spellings close|normal|loose),
+verify="bbox"|"exact"|"off".
+
+    plane= is a build123d Plane, or one of top|bottom|front|back|left|right --
+    a PREDICATE re-evaluated every rebuild (the extreme planar face along that
+    axis, largest area, then lowest centre), never a face index. `points` are
+    (u, v) in that plane: top -> (x, y) drilling -Z; front -> (x, z) drilling
+    +Y; left -> (-y, z) drilling +X. A name that resolves to nothing raises.
+
+    holes.drill is the one with no table behind it: a structural bolt hole has
+    no fastener row (18 mm for an M16 is none of ISO 273's values), so it takes
+    millimetres and its record carries NO size and NO provenance.
+
+    tapped() bores the TAP DRILL and records the thread -- a tapped hole on a
+    drawing is a callout, not a helix. thread="real" additionally fuses real
+    thread geometry, needs a depth, costs ~9k triangles per hole, and bores at
+    root_radius instead (boring at the tap drill buries the ridges: valid,
+    fast, invisible). countersink() always passes its angle explicitly --
+    build123d's default is 82 deg, which is ASME's; ISO is 90.
+
+Designations, per the hole's own standard (ISO | ASME):
+    clearance    (/)5.5              | (/)0.217
+    tapped       M5x0.8 - 6H depth12 | 10-24 UNC - 2B depth0.5
+    counterbore  (/)5.5 cbore(/)9.5  | countersink (/)5.5 csk(/)10.4x90deg
+(the real strings use the ISO 129 glyphs; ask the hole_standards tool for one.)
+
+THE RECORDS. Each call makes ONE GROUP record -- {id, family, standard,
+designation, size, fit, d, count, positions, centers, axis, plane, depth_mm,
+thru, tap, cbore, csk, instances} -- so a pattern of a wizard hole is one hole
+group, not N unrelated records. They ride on the shape the helper RETURNS:
+
+    holes.records(part)        -> the records carried by this shape
+    holes.carry(new, old)      -> after a RAW build123d op of your own
+
+Every operation that returns a new object (safe_fillet, safe_bool, a raw
+part - tool, a re-entered BuildPart) drops the attribute; the safe_* helpers
+carry it for you, a raw op does not, and the build result warns when records
+went missing. Rebuild results and get_part gain `holes`: [...] the records,
+null "declares none", [] + a warning "they were dropped", key absent "not
+harvested".
+
+Guards you will actually see: an instance off the part or off the face
+(named by index), a depth deeper than the stock below the plane, a new hole
+within one diameter of another or of an existing record. An unknown size or a
+negative depth RAISES, and comes back as a normal script_error with the line.
+
+    from agentcad.toolkit import holes, patterns
+    def build(p):
+        part = Box(120, 120, p.t)
+        part, recs, warn = holes.tapped(part, patterns.bolt_circle(45, 8),
+                                        "M5", depth=10)
+        return part                     # drawing prints: 8x M5x0.8 - 6H depth10
+
+RIBS, BOSSES & DRAFT  (from agentcad.toolkit import features)
+-------------------------------------------------------------
+    part, warn = features.rib(part, profile, thickness, to=8.0, plane="top",
+                              draft_deg=None)
+        # `profile` is a polyline of (u, v) points in the plane's coordinates,
+        # traced to `thickness` and extruded away from the seat. to=<mm> is
+        # exact. to="part" intersects the part's BOUNDING SOLID -- an envelope,
+        # not the part: on a convex part it adds 0 mm3, on a shelled one it
+        # runs to the bbox top. It always warns. draft_deg TAPERS the
+        # extrusion; it never calls the draft operation (see below).
+    part, warn = features.boss(part, at, d, h, hole="M3", draft_deg=None)
+        # a cylinder standing h above the seat; hole="M3" bores the tap drill
+        # through holes.tapped so the screw boss carries a RECORD.
+    part, achieved_deg, warn = features.draft(part, faces, angle_deg,
+                                              neutral_plane, min_angle=0.25)
+        # `faces` is a list of Face objects or a selector callable f(part) ->
+        # faces. NEVER indices. On failure it binary-searches DOWN.
+
+`plane` is holes' predicate and the normal points OUT of the material: holes
+drill along -z_dir, ribs and bosses grow along +z_dir. After you add a rib,
+"top" resolves to the RIB's top face -- pass an explicit Plane for anything
+inside a cavity.
+
+DRAFT'S CEILINGS ARE LOW AND ITS FAILURE IS QUIET. Measured through the
+worker: box 35 deg, box+boss 15, box+fillets 10, shelled box 2.5,
+gusset_plate 17.5, prototyping/enclosure_base 0.25, and rocketry/nozzle and
+construction/angle_bracket refuse EVERY angle. Failure is monotone in the
+angle (no islands). Only the extreme angles raise -- most failing angles
+RETURN a shape with is_valid False and a plausible volume, so a hand-written
+draft() must check is_valid itself. Draft before you shell or fillet; when
+nothing works features.draft returns the part unchanged and says so.
+
+Both a rib that misses the part and a boss placed in the air FUSE HAPPILY:
+volume rises by exactly the right amount, is_valid True, nothing raised. The
+only tells are the solid count and an intersection probe, which is what the
+helpers' warnings report.
+
 CONSTRAINT SKETCH SOLVER  (agentcad.toolkit.sketch; tool: solve_sketch)
 ----------------------------------------------------------------------
 A first-party 2D constraint solver (scipy least-squares, ms-scale, machine
@@ -245,9 +378,15 @@ beyond its edge (K=0.44 default suits air-bent steel/aluminum).
     sp.flat_outline() -> [(x, y), ...] CCW outline polygon of the blank; it is
                          a discretization of unfold()'s OWN top face, not a
                          second model, so it cannot disagree with the blank
+                         (it therefore COSTS an unfold(), 11-70 ms, not free)
     sp.flat_outline_edges() -> the same outline as exact lines and arcs
     sp.bend_lines()   -> [{"edge","a","b","angle_deg","inner_radius"}, ...]
-                         midlines BA/2 beyond each edge, in flat coords
+                         midlines spanning each flange's own extent, flat coords
+
+fold() and unfold() differ in volume by EXACTLY radians(angle)*(0.5-K)*t^2*span
+per bend -- the solid puts the neutral fibre at t/2, the flat model at K*t --
+and by nothing else. That is the bend-allowance model's own tolerance, it does
+not accumulate with feature count, and it is not a bug to report.
 
 Bend relief is cut automatically wherever a partial flange stops in the middle
 of an edge, in BOTH fold() and unfold(): relief="auto"|"rect"|"round"|"tear"

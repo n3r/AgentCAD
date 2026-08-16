@@ -1585,6 +1585,8 @@ function renderFaceCard() {
   });
   row.appendChild(comment);
 
+  renderHoleControls(body, planar);
+
   const hint = document.createElement("div");
   hint.className = "placement-hint";
   hint.textContent = planar
@@ -1633,6 +1635,286 @@ async function applyPushPull(input, applyBtn) {
   }
   toast(`Pushed face ${faceIndex} by ${distance} mm`);
   // The rebuild's WS events refresh the mesh; the old face index is stale now.
+  clearFaceSelection();
+}
+
+// ------------------------------------------- hole on face (PRD-010 FR14)
+
+// The families `add_holes` accepts. `fit` is a *clearance* concept: a tapped
+// hole's diameter is the tap drill and a `drilled` one is a millimetre the
+// user typed, so neither of those has a fit to offer.
+const HOLE_FAMILIES = [
+  { id: "clearance", label: "Clearance", fit: true },
+  { id: "tapped", label: "Tapped", fit: false },
+  { id: "counterbore", label: "Counterbore", fit: true },
+  { id: "countersink", label: "Countersink", fit: true },
+  { id: "drilled", label: "Drilled", fit: false },
+];
+
+// standard -> the `hole_standards` answer, or null while one is in flight.
+// **The sizes are never a list in this file.** They are the rows the geometry
+// will look up, so the picker cannot offer an M4.5 the tables do not have.
+const holeTables = new Map();
+
+// Kept outside the card so a re-render (face_info landing, a highlight change)
+// does not throw away half-typed input.
+const holeForm = {
+  family: "clearance", std: "iso", size: "", fit: "",
+  depth: "", points: "0, 0",
+};
+
+function holeStandardsFor(std) {
+  if (holeTables.has(std)) return holeTables.get(std);
+  holeTables.set(std, null); // in flight — one request per standard, ever
+  api
+    .callTool("hole_standards", { std })
+    .then((res) => {
+      if (res && !res.error) {
+        holeTables.set(std, res);
+        renderFaceCard();
+      } else {
+        holeTables.delete(std);
+      }
+    })
+    .catch(() => holeTables.delete(std));
+  return null;
+}
+
+/** `[[u, v], …]` from "20, 10; -20, 10", or null when it is not that. */
+function parseHolePoints(text) {
+  const out = [];
+  for (const chunk of String(text).split(/[;\n]/)) {
+    const trimmed = chunk.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split(",");
+    if (parts.length !== 2) return null;
+    const pair = parts.map((piece) => Number.parseFloat(piece.trim()));
+    if (!pair.every((value) => Number.isFinite(value))) return null;
+    out.push(pair);
+  }
+  return out.length ? out : null;
+}
+
+function holeSelect(label, options, value, onChange) {
+  const wrap = document.createElement("label");
+  wrap.className = "facecard-field";
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  const select = document.createElement("select");
+  select.className = "param-select";
+  select.setAttribute("aria-label", label);
+  for (const option of options) {
+    const el = document.createElement("option");
+    el.value = option.value;
+    el.textContent = option.label;
+    if (option.value === value) el.selected = true;
+    select.appendChild(el);
+  }
+  select.addEventListener("change", () => onChange(select.value));
+  wrap.append(caption, select);
+  return { wrap, select };
+}
+
+function renderHoleControls(body, planar) {
+  const section = document.createElement("div");
+  section.className = "facecard-holes";
+  const heading = document.createElement("div");
+  heading.className = "facecard-section";
+  heading.textContent = "Hole";
+  section.appendChild(heading);
+
+  const family = HOLE_FAMILIES.find((entry) => entry.id === holeForm.family)
+    || HOLE_FAMILIES[0];
+  const tables = holeStandardsFor(holeForm.std);
+  const drilled = family.id === "drilled";
+  // A `drilled` hole has no table row — its "size" is a diameter in mm — so
+  // it is the one family whose size control is a number, not a picker.
+  const sizes = drilled ? [] : ((tables && tables.sizes && tables.sizes[family.id]) || []);
+  if (!drilled && sizes.length && !sizes.includes(holeForm.size)) {
+    holeForm.size = sizes.includes("M5") ? "M5" : sizes[0];
+  }
+  const fitNames = (tables && tables.fits) || {};
+  const fitOptions = ["fine", "medium", "coarse"]
+    .filter((name) => fitNames[name])
+    .map((name) => ({ value: fitNames[name], label: fitNames[name] }));
+  if (fitOptions.length && !fitOptions.some((o) => o.value === holeForm.fit)) {
+    holeForm.fit = fitNames.medium;
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "facecard-grid";
+  const controls = [];
+
+  controls.push(holeSelect(
+    "family",
+    HOLE_FAMILIES.map((entry) => ({ value: entry.id, label: entry.label })),
+    family.id,
+    (value) => { holeForm.family = value; renderFaceCard(); }
+  ));
+  controls.push(holeSelect(
+    "std",
+    [{ value: "iso", label: "ISO" }, { value: "ansi", label: "ASME" }],
+    holeForm.std,
+    (value) => { holeForm.std = value; holeForm.size = ""; renderFaceCard(); }
+  ));
+
+  if (drilled) {
+    const wrap = document.createElement("label");
+    wrap.className = "facecard-field";
+    const caption = document.createElement("span");
+    caption.textContent = "⌀ mm";
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "any";
+    input.min = "0";
+    input.className = "placement-num";
+    input.value = holeForm.size || "6";
+    input.setAttribute("aria-label", "hole diameter in millimetres");
+    input.addEventListener("input", () => { holeForm.size = input.value; });
+    wrap.append(caption, input);
+    controls.push({ wrap, select: input });
+  } else {
+    controls.push(holeSelect(
+      "size",
+      sizes.length
+        ? sizes.map((size) => ({ value: size, label: size }))
+        : [{ value: "", label: "loading…" }],
+      holeForm.size,
+      (value) => { holeForm.size = value; }
+    ));
+  }
+
+  if (family.fit) {
+    controls.push(holeSelect(
+      "fit",
+      fitOptions.length ? fitOptions : [{ value: "", label: "loading…" }],
+      holeForm.fit,
+      (value) => { holeForm.fit = value; }
+    ));
+  }
+
+  const depthWrap = document.createElement("label");
+  depthWrap.className = "facecard-field";
+  const depthCaption = document.createElement("span");
+  depthCaption.textContent = "depth";
+  const depth = document.createElement("input");
+  depth.type = "number";
+  depth.step = "any";
+  depth.min = "0";
+  depth.className = "placement-num";
+  depth.placeholder = "thru";
+  depth.value = holeForm.depth;
+  depth.setAttribute("aria-label", "blind depth in millimetres, blank for through");
+  depth.addEventListener("input", () => { holeForm.depth = depth.value; });
+  depthWrap.append(depthCaption, depth);
+  controls.push({ wrap: depthWrap, select: depth });
+
+  for (const control of controls) {
+    control.select.disabled = !planar;
+    grid.appendChild(control.wrap);
+  }
+  section.appendChild(grid);
+
+  const posWrap = document.createElement("label");
+  posWrap.className = "facecard-field facecard-field-wide";
+  const posCaption = document.createElement("span");
+  posCaption.textContent = "at (u, v)";
+  const points = document.createElement("input");
+  points.type = "text";
+  points.className = "param-text";
+  points.value = holeForm.points;
+  points.placeholder = "20, 10; -20, 10";
+  points.disabled = !planar;
+  points.title =
+    "Positions in the picked face's own plane coordinates, ';'-separated. "
+    + "(0, 0) is the plane origin `sketch_plane` reports for this face.";
+  points.setAttribute("aria-label", "hole positions in face plane coordinates");
+  points.addEventListener("input", () => { holeForm.points = points.value; });
+  posWrap.append(posCaption, points);
+  section.appendChild(posWrap);
+
+  const row = document.createElement("div");
+  row.className = "facecard-row";
+  const apply = document.createElement("button");
+  apply.type = "button";
+  apply.className = "tb-btn";
+  apply.textContent = "Drill";
+  apply.disabled = !planar;
+  apply.title = planar
+    ? "Appends a holes.* call to the script using this face's own plane basis, "
+      + "then rebuilds"
+    : "A hole needs a planar face";
+  apply.addEventListener("click", () => applyAddHoles(apply));
+  points.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && planar) {
+      event.preventDefault();
+      applyAddHoles(apply);
+    }
+  });
+  row.appendChild(apply);
+  section.appendChild(row);
+  body.appendChild(section);
+}
+
+async function applyAddHoles(button) {
+  if (!faceSel) return;
+  const points = parseHolePoints(holeForm.points);
+  if (!points) {
+    toast("Positions are 'u, v' pairs separated by ';' — e.g. 20, 10; -20, 10",
+      "error");
+    return;
+  }
+  const family = HOLE_FAMILIES.find((entry) => entry.id === holeForm.family)
+    || HOLE_FAMILIES[0];
+  if (!holeForm.size) {
+    toast("Pick a size first", "error");
+    return;
+  }
+  const args = {
+    project: state.projectName,
+    part_id: faceSel.partId,
+    // The picked ordinal is resolved to a literal plane basis SERVER-side, at
+    // this instant — the ordinal itself never reaches the script.
+    face_index: faceSel.faceIndex,
+    points,
+    family: family.id,
+    size: String(holeForm.size),
+    std: holeForm.std,
+  };
+  if (family.fit && holeForm.fit) args.fit = holeForm.fit;
+  const depth = Number.parseFloat(holeForm.depth);
+  if (holeForm.depth !== "" && Number.isFinite(depth)) args.depth = depth;
+
+  // The same staleness rule sketch-on-face carries: this is a round trip, and
+  // the answer belongs to the part that asked for it.
+  const project = state.projectName;
+  const faceIndex = faceSel.faceIndex;
+  button.disabled = true;
+  button.textContent = "Drilling…";
+  let res;
+  try {
+    res = await api.callTool("add_holes", args);
+  } catch (err) {
+    button.disabled = false;
+    button.textContent = "Drill";
+    toast(`Drill failed: ${err.message}`, "error");
+    return;
+  }
+  button.disabled = false;
+  button.textContent = "Drill";
+  if (res.error) {
+    toast(`Drill failed: ${res.error.message || "error"}`, "error");
+    return;
+  }
+  if (res.ok === false) {
+    const msg = (res.error && res.error.message) || "rebuild failed";
+    toast(`Drill rebuilt with an error: ${msg}`, "error");
+    return;
+  }
+  if (state.projectName !== project) return; // the user moved on; not their part
+  const label = family.id === "drilled" ? `⌀${args.size}` : args.size;
+  toast(`Drilled ${points.length} × ${label} ${family.id} on face ${faceIndex}`);
+  // New geometry means new face ordinals — the same rule push/pull follows.
   clearFaceSelection();
 }
 

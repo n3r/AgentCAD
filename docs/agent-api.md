@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 72 tools (75 with the
+Agents drive AgentCAD through a single tool surface — 76 tools (79 with the
 `[fem]` extra), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -180,6 +180,41 @@ Two things this surface says out loud rather than hiding:
   ASME `2B`.
 
 Sizes for a UI picker come from here, never from a hard-coded list.
+
+### Drilling holes into a script part (`add_holes`)
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `add_holes` | project, part_id, points, family, size, plane?, face_index?, fit?, std?, depth? | Appends a marked, editable block to the part script that calls the matching `agentcad.toolkit.holes` helper, then rebuilds through the normal path. The rebuild result (with `holes`, `metrics`, `warnings`) plus `family`, `count`, `points`, `size`/`diameter_mm`, `fit`, `std`, `depth_mm` and the resolved `face_index`. |
+
+The `push_pull` pattern exactly: this is a **script-editing** tool, not a
+geometry tool. The script stays the source of truth, the appended block is
+ordinary reviewable code, and repeated calls compose (each block saves the
+previous `build` under a counter-suffixed name, so a second call cannot shadow
+the first). It is what the viewport's face card calls, and an agent may call it
+for the same reason a human clicks: it is the shortest path from "M3 clearance
+holes here" to a rebuilt part.
+
+- **`points` are `[u, v]` pairs in the target plane's own coordinates**, not
+  world XYZ.
+- **Name the plane or pick a face, not both.** `plane` is one of
+  `top|bottom|front|back|left|right` and stays a *name* in the generated
+  script, because a name is a predicate re-evaluated on every rebuild.
+  `face_index` is a mesh-order ordinal that is resolved **now**, via the
+  `sketch_plane` handler, into a literal `Plane(origin=…, x_dir=…, z_dir=…)`
+  with the renumbering caveat written into the block as a comment — the
+  ordinal never reaches the script, because it is the unstable thing.
+- **`family` is `clearance | tapped | counterbore | countersink | drilled`**;
+  `drilled` takes a diameter in millimetres as its `size` and records no table
+  provenance. Every other family's `size` is validated against the same tables
+  `hole_standards` answers from, so an `M4.5` is a `validation_error` naming
+  the tabulated sizes rather than a `script_error` on the next rebuild.
+- **A non-planar or out-of-range face is a `validation_error` and the script is
+  not touched.**
+- Everything that reaches the generated source is either a key into a table
+  this tool owns or a `repr(float(...))`. Nothing a caller types is
+  interpolated (the sketch emitter's lesson: a crafted `part` once put
+  `import os` on line 2 of a generated script).
 
 ### Hole metadata (`holes`)
 

@@ -431,6 +431,23 @@ push/pull distance — applying it records the edit *in the script* as a
 visible, editable `push_face(...)` wrapper, so direct manipulation never
 bypasses the code. Alt+click clears the selection.
 
+**Drilling standard holes from the face card.** The same card carries a *Hole*
+section: pick a family (clearance, tapped, counterbore, countersink, or a plain
+drilled diameter), a standard (ISO or ASME), a size, a fit and an optional
+blind depth, type one or more positions as `u, v` pairs in the face's own
+plane (`20, 10; -20, 10` drills two), and press **Drill**. The size list is the
+standards table itself — the same numbers `hole_standards` answers with and the
+same numbers the geometry uses — so the picker cannot offer a size that does
+not exist. Applying appends a visible `holes.clearance(...)` (or `.tapped`,
+`.counterbore`, …) call to the script and rebuilds; the hole's *intent* travels
+with it, so the drawing callout reads `4× M3×0.5 - 6H ↧8` rather than `⌀2.5`.
+
+One caveat travels in the generated code as a comment, because it cannot be
+engineered away: the picked face is written into the script as its **plane**
+(origin and basis), not as its index. If a parameter change later moves that
+face, the script keeps drilling at the plane you picked — re-pick the face if
+the geometry moves.
+
 **Huge meshes.** Heavy parts (over ~150k triangles) appear almost instantly
 as a coarse preview while the full-resolution mesh streams in behind it;
 small parts load in a single request exactly as before.

@@ -135,7 +135,11 @@ need:
 ```python
 from agentcad.toolkit import safe_fillet, safe_shell, safe_bool  # robustness
 from agentcad.toolkit import sketch                              # constraint solver
+from agentcad.toolkit import patterns                            # point sets + shape patterns
+from agentcad.toolkit import holes                               # ISO/ASME hole wizard
+from agentcad.toolkit import features                            # rib / boss / draft
 from agentcad.toolkit import threads                             # ISO threads / fasteners
+from agentcad.toolkit.sheetmetal import SheetPart                # folded + flat, one spec
 ```
 
 Each robustness helper returns a **warning string** (or `None`) alongside its
@@ -159,6 +163,218 @@ def build(p):
     if warn:
         print(warn)            # redirected to stderr; shows in kernel logs
     return solid
+```
+
+### Patterns
+
+`agentcad.toolkit.patterns` covers two different things, and the difference
+matters.
+
+**Point sets are pure arithmetic** and are what you want for holes. They are
+rounded to 9 decimals so trig noise (`cos(90°) = 6.1e-17`) never reaches a
+stored coordinate:
+
+```python
+patterns.bolt_circle(r=45, n=8, start_deg=0.0)   # -> [(x, y), ...]
+patterns.grid(nx=4, ny=2, dx=50, dy=70)          # -> row-major, centred
+```
+
+These are **not** `PolarLocations`: a point set translates copies, a
+`PolarLocations` block also *rotates* each copy, and the two tessellate to
+different bytes. If your group needs rotating, build it in its own frame and
+rotate the result — asking `grid` for rotated coordinates rounds an irrational
+number (`construction/gusset_plate`'s diagonals do exactly this).
+
+**Shape patterns copy a solid that is already in the part**, which is why
+`count` is the *total* instance count the way every CAD package counts it:
+
+```python
+part, warn = patterns.linear(part, seed, direction=(1, 0, 0), count=5, spacing=20)
+part, warn = patterns.polar(part, seed, axis=Axis.Z, count=6, span_deg=360)
+part, warn = patterns.mirror(part, plane=Plane.YZ)
+```
+
+Instance 0 is skipped, because the seed is already there. Re-adding it is safe
+(one valid solid, identical volume) but not byte-free, and `count=1` is a
+genuine no-op with a warning. `span_deg < 360` is inclusive — three instances
+over 180° sit at 0/90/180, which is what a CAD user means and not build123d's
+`PolarLocations` default.
+
+#### Why every one of them returns a warning
+
+**OCCT does not fail on a badly placed feature.** Measured through the kernel
+worker (changelog 0149): a ⌀4.2 tool placed entirely off the part cuts in
+0.89 ms, leaves the volume **exactly** unchanged, reports `is_valid True` and
+raises nothing. "Overlap and degenerate spacing produce warnings, never silent
+geometry" is therefore not something the kernel gives you — the helper has to
+measure engagement, and measuring costs:
+
+| probe | cost per instance | always on? |
+|---|---:|---|
+| bounding-box overlap | **0.014 ms** | yes |
+| `(part & tool).volume` | **2.1–2.4 ms** | only `verify="exact"` |
+
+So the tier is in the API. The free tier also checks the solid count, the
+whole-operation volume delta and the seed extent against the spacing;
+`verify="exact"` adds the intersection probe and reports `engaged_mm3` per
+instance. **Warnings name instance indices, never a count** — `instance(s) [2]
+do not reach the part` — and `patterns.instances(part)` reads the full
+per-instance report back off the returned shape.
+
+The bbox tier is a *screen*, not a verdict: it can call a near miss "engaged",
+but it never calls a real hit "missed". The direction of that error is the
+load-bearing part.
+
+An **impossible** request raises rather than warning: `count < 1`,
+`spacing <= 0`, a zero-length direction, a span outside `(0, 360]`. Inside a
+part script that surfaces as a normal `script_error` with `details.line`.
+
+### Holes — the wizard
+
+`agentcad.toolkit.holes` places holes **by intent**. The diameter comes from a
+vendored standards table (never from arithmetic in the helper), and every call
+leaves a machine-readable **record** that reaches `get_part`, the rebuild
+result and the drawing callouts.
+
+```python
+part, records, warn = holes.clearance(part, points, "M5", fit="medium")
+part, records, warn = holes.tapped(part, points, "M6", depth=12)
+part, records, warn = holes.counterbore(part, points, "M8")
+part, records, warn = holes.countersink(part, points, "M6")
+part, records, warn = holes.drill(part, points, 18.0)          # no table
+part, records, warn = holes.clearance(part, points, "1/4", std="ansi")
+```
+
+Shared keywords: `plane=`, `depth=` (omit for a through hole), `thru=`,
+`std="iso"|"ansi"`, `fit=` and `verify=` (the pattern tiers above).
+
+**`plane` is a predicate, never an ordinal.** It takes a build123d `Plane`, or
+one of six names resolved *on every rebuild* to the extreme planar face along
+that axis (largest area among coplanar candidates, then lowest centre — a
+documented tie-break). A face **index** would renumber on any topology change;
+a name and a literal basis do not. `points` are `(u, v)` in the resolved
+plane, and the plane's origin is the part origin projected onto it, so they
+stay part coordinates:
+
+| name | drills along | `(u, v)` means |
+|---|---|---|
+| `top` | −Z | `(x, y)` at z = max |
+| `bottom` | +Z | `(x, −y)` at z = min |
+| `front` | +Y | `(x, z)` at y = min |
+| `back` | −Y | `(−x, z)` at y = max |
+| `right` | −X | `(y, z)` at x = max |
+| `left` | +X | `(−y, z)` at x = min |
+
+A name that resolves to nothing (a lathe part with no planar top) raises,
+naming the reason — honouring it approximately would drill into a curve.
+
+**`holes.drill` is the one with no table behind it.** A structural bolt hole
+often has no fastener row: `construction/gusset_plate` drills 18 mm for an M16
+(EN 1090 clearance — none of ISO 273's 17.0/17.5/18.5) and the diameter is a
+swept parameter. `drill` takes millimetres and its record carries **no `size`
+and no provenance**, because printing a standard's name on a number the
+standard did not supply is worse than printing none.
+
+**`tapped` bores the tap drill and records the thread.** A tapped hole on a
+drawing is a callout, not a helix. `thread="real"` additionally fuses real ISO
+thread geometry — it needs a `depth`, costs ~9k triangles per hole, and bores
+at `root_radius` rather than the tap drill (boring at the physical tap drill
+buries the ridges: valid, fast, and invisible). **`countersink` always passes
+its angle explicitly**: build123d's `CounterSinkHole` defaults to 82°, an ASME
+default that would otherwise arrive inside an ISO-labelled call.
+
+#### Designation symbology
+
+Emitted per the hole's **declared standard**; the glyphs are ISO 129 /
+ASME Y14.5 and are shared, the numbers and the thread designation are what
+changes. Every ISO length prints millimetres, every ASME length prints inches
+— one named conversion (`hole_standards.in_designation_units`) sits between
+them, because everything geometric in AgentCAD is millimetres.
+
+| family | ISO | ASME |
+|---|---|---|
+| clearance | `⌀5.5` | `⌀0.217` |
+| tapped | `M5×0.8 - 6H ↧12` | `10-24 UNC - 2B ↧0.5` |
+| counterbore | `⌀5.5 ⌴⌀9.5↧5.4` | `⌀0.217 ⌴⌀0.375↧0.213` |
+| countersink | `⌀5.5 ⌵⌀10.4×90°` | `⌀0.217 ⌵⌀0.41×82°` |
+
+ISO 273 names its three fits *fine / medium / coarse*; ASME B18.2.8 names them
+*close / normal / loose*. **Both spellings are accepted** and canonicalized to
+the requested `std`. The tables themselves are queryable without building
+anything — `hole_standards {family?, size?, std?}` (see `docs/agent-api.md`)
+answers out of the same files the geometry read, with the two published
+sources each row was transcribed from.
+
+**The counterbore diameter is a shop rule, not a standard.** The published
+counterbore charts disagree by up to 0.75 mm on one M8, so
+`hole_standards.cbore` returns corroborated *head* geometry — the standard part
+of the answer — and applies a named clearance rule to it for the bore. Pass
+`cbore_d=` / `cbore_depth=` to use your shop's numbers; the record then carries
+yours.
+
+#### The records, and where they live
+
+One call makes **one group record**, so a pattern of a wizard hole is one hole
+group with `count: n` and `n` positions, not `n` unrelated records:
+
+```python
+{"id": "h0", "family": "tapped", "standard": "iso",
+ "designation": "M5×0.8 - 6H ↧12", "size": "M5", "d": 4.2,
+ "count": 8, "positions": [...], "centers": [...],   # plane-local, then global
+ "axis": [0, 0, -1], "plane": {...}, "depth_mm": 12.0, "thru": False,
+ "tap": {"pitch": 0.8, "class": "6H", "drill_mm": 4.2}, "instances": [...]}
+```
+
+The records **ride on the shape the helper returns** rather than in a registry
+the worker drains, and that is not a stylistic choice: the worker's 16-entry
+`_SHAPE_CACHE` returns a cached shape *without calling `build(p)`*, and the
+service's metrics fast path makes no kernel call at all — so a registry would
+drain empty on the second and every later build of an unchanged part, silently
+(changelog 0150).
+
+What that costs you: **any operation returning a new object drops the
+attribute**. `safe_fillet`, `safe_shell` and `safe_bool` carry it for you; a
+raw build123d operation of your own does not:
+
+```python
+part, records, warn = holes.clearance(part, pts, "M5")
+part = part - Cylinder(3, 40)              # a raw op: records are gone
+part = holes.carry(part, previous_part)    # carry them across yourself
+holes.records(part)                        # what this shape is carrying
+```
+
+You do not have to notice: the rebuild compares `holes.created()` before and
+after the build and warns when records went missing, naming what to do.
+
+The build result and `get_part` carry a `holes` key with four distinct
+answers — the records, `null` ("declares none"), `[]` plus a warning ("they
+were dropped") and **absent** ("not harvested") — described in
+`docs/agent-api.md`.
+
+#### Guards you will actually see
+
+Off-part and off-face instances (named by index), an instance that touches but
+removes nothing (`verify="exact"`), a whole call that removed nothing at all, a
+depth deeper than the stock below the plane (a bounding-box measure — it
+catches a depth that cannot fit in the part, not one that misses a local
+pocket), and a new hole within one diameter of another or of an existing
+record's centre. An unknown size, a negative depth or a counterbore smaller
+than its own clearance hole **raise**.
+
+One honest limit, from the function's own docstring: `carry()` is bookkeeping,
+not a proof. Carrying records across a cut that removed one of the holes leaves
+a record for a hole that is gone — re-verifying every record against the
+geometry on every call is priced at 2.1 ms per instance and is PRD-021's job.
+
+```python
+from build123d import Box
+from agentcad.toolkit import holes, patterns
+
+def build(p):
+    part = Box(120, 120, p.t)
+    part, recs, warn = holes.tapped(part, patterns.bolt_circle(45, 8),
+                                    "M5", depth=10)
+    return part          # the drawing prints: 8× M5×0.8 - 6H ↧10
 ```
 
 ### Constraint-solved sketches

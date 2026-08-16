@@ -799,6 +799,113 @@ Every item is traceable to a measurement in `docs/changelog/0127`–`0141`.
   generated header, and the basis vectors go through `fmt`: a crafted `part`
   put `import os` on line 2 of a generated script.
 
+## Feature-toolkit gotchas (PRD-010 — read before touching `toolkit/patterns`, `holes`, `features` or `sheetmetal`)
+
+Every item is traceable to a measurement in `docs/changelog/0147`–`0160`.
+
+**OCCT succeeding is not evidence. This PRD found four separate silent
+failures, and they all look like success:**
+
+- **A misplaced cut is a SILENT NO-OP.** A ⌀4.2 tool placed entirely off the
+  part cuts in 0.89 ms, leaves the volume **exactly** unchanged, reports
+  `is_valid True` and raises nothing (0149). "Never silent geometry" is not
+  something the kernel gives you — the helper has to *measure* engagement.
+  Two tiers: a bbox screen at **0.014 ms/instance** (always on) and the exact
+  `(part & tool)` probe at **2.1–2.4 ms/instance** (`verify="exact"`, which
+  roughly doubles a 50-instance pattern). Warnings name **indices**, never a
+  count.
+- **A floating rib is a SILENT SUCCESS whose volume delta is exactly right.**
+  A rib fused 25 mm above the part raises the volume by the rib's full amount,
+  `is_valid True`, nothing raised — the *only* tells are `len(solids()) > 1`
+  and `(part & rib).volume == 0` (0155). Same class as the misplaced cut, new
+  place.
+- **Draft's dominant failure returns `is_valid False` rather than raising**
+  (0156). Only the extreme angles raise; most failing angles hand back one
+  solid with a plausible positive volume. A hand-written `draft()` must check
+  `is_valid` itself. Failure **is monotone in the angle** on all eight shapes
+  measured (no islands — that is what makes the binary search sound), and the
+  real ceilings are low: `prototyping/enclosure_base` **0.25°**;
+  `rocketry/nozzle` and `construction/angle_bracket` refuse **every** angle.
+  When it raises it is `Standard_Failure` with an **empty message**, so every
+  word of the warning is ours.
+- **A >180° hem leaf penetrates the sheet and the fuse swallows it silently**
+  (0158): at 225° with a 4t leaf the result is one valid solid with 144.59 mm³
+  of declared material simply gone. Hence `kind="teardrop"` raises. And **a
+  180° hem's air gap is `2R`** — so "closed" is a small-R hem, not a
+  zero-R one: at `R = 0` the fold is still one valid solid of exactly the
+  right volume but with **8 faces instead of 10**, which is 2t of solid stock,
+  not a hem. `inner_radius=0` is refused.
+
+**Where the metadata lives, and why it is not where you would put it:**
+
+- **Hole records ride the built shape (`holes.ATTR`), not a registry.** The
+  worker's 16-entry `_SHAPE_CACHE` returns the cached shape **without calling
+  `build(p)`**, and the service's `.metrics.json` fast path makes **0 kernel
+  calls at all** — so a per-build registry drains empty on the second and every
+  later build of an unchanged part, silently (0150). The persisted copy is a
+  `.cache/<key>.holes.json` sidecar on the `.specs.json` precedent, and it is
+  mandatory, not an optimisation.
+- **Nothing composes the attribute for you.** `safe_fillet`, `safe_bool` (both
+  directions), a raw `part - tool` and even a re-entered `BuildPart()` +
+  `add(part)` all return a new object carrying **none** of the original's
+  attributes; only `.clean()`, `.moved()` and `copy` preserve it. Every helper
+  calls `holes.carry()`, and `fillet.py`/`shell.py`/`boolean.py` carry a
+  `@holes.carries_records` decorator. After a raw build123d op of your own,
+  call `holes.carry(new, old)` — or the harvest's delta will tell you.
+- **The harvest runs BEFORE the build, deliberately.** Run second it is always
+  a shape-cache hit, its delta is always 0, and the drop check is dead code
+  (measured `measured: false` on three parts, every time — 0151). It must also
+  pass `affinity=part_id`: `KernelPool._pick` round-robins an *unkeyed*
+  request, and an unkeyed harvest that lands on a cold worker paid **11 354 ms**
+  on `engine/intake_manifold` against **1 ms** keyed.
+- **The worker runs as `__main__`, so importing worker *state* from a handler
+  pack gets a second, always-empty copy.** `from ..worker import _SHAPE_CACHE`
+  re-executes the module (measured: every call then reports itself a fresh
+  build). Importing a worker *function* is fine and several packs do; reach
+  live state through `build_shape_ns.__globals__` instead (0151).
+- **`hole_standards.py` is the THIRD OCP-free toolkit module** (with `sketch`
+  and `specs`) because the server's `hole_standards` tool imports it;
+  `core/tools_holes.py` is OCP-free for the same reason and is asserted in a
+  fresh interpreter. **`tools_holes` loads at `h`** — before `tools_proposals`
+  (`p`), `tools_specs` (`s`) and `tools_versioning` (`v`) — so it reads
+  `service.branches`/`specs`/`gate_providers` **never** at registration, and it
+  *wraps* `_rebuild`/`get_part`, which no later pack replaces.
+
+**Geometry facts worth not re-deriving:**
+
+- **Geometrically identical is not byte-identical.** Cutting `gusset_plate`'s
+  holes as `part - Compound(cylinders)` gives the same face count and a volume
+  differing by a relative 2e-16 — and a different mesh (0147). That is why the
+  example goldens assert an `.acm` sha and not just numbers, and why the
+  helpers re-enter build123d's own `BuildPart`/`Locations`/`Hole` rather than
+  hand-rolling booleans.
+- **For a through hole, sliding the workplane ALONG the hole axis is
+  byte-free; rotating it ABOUT the axis is not** (0153). `plane="top"` costs
+  nothing in bytes; the named `"left"` face carries its own frame
+  (`x_dir = -Y`) and a cutting cylinder rotated about its own axis
+  re-tessellates. `construction/angle_bracket`'s vertical leg therefore spells
+  its `Plane` out.
+- **The cache key hashes the SCRIPT TEXT**, so any rewrite whatsoever mints a
+  new `.cache/<key>.acm` — half of PRD-010's AC1 was never achievable, and the
+  `.holes.json` sidecar invalidates itself on the same key.
+- **`patterns.*` skip instance 0**, because a shape seed is already fused into
+  the part. Re-adding it is safe (one valid solid, identical volume) but **not
+  byte-free** (0149). `count` is the total, CAD-style; `count=1` is a no-op
+  with a warning.
+- **`flat_outline()` is derived from `unfold()`'s own top face**, not a
+  parallel model — that is what makes FR12's consistency a fact instead of an
+  invariant. It costs an `unfold()` (11–70 ms) where v1's walker was free.
+  `fold()` and `unfold()` differ by **exactly** `angle_rad·(0.5 − k)·t²·span`,
+  the k-factor's own neutral-fibre offset (residual −0.0), and by nothing
+  else — that is the model's tolerance, not an error, and it does not
+  accumulate.
+- **`add_holes` writes source, so nothing but a validated table key or a
+  `repr(float(...))` reaches the output** — the same rule `sketch_emit`
+  learned when a crafted `part` put `import os` on line 2 of a generated
+  script. A picked `face_index` is resolved to a literal `Plane` basis at edit
+  time with the renumbering caveat inline; a *named* plane stays a name,
+  because a name is a predicate re-evaluated every rebuild.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script
