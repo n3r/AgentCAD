@@ -16,11 +16,18 @@ Key space (every leaf merges independently)::
     assembly.instances.<id>          entry add/remove, else field-wise:
       …<id>.part|position|rotation_deg|color|mate               whole value
     materials.<id>                                              atomic
+    packages.<name>                                             atomic
+    packages_lock.<name>                                        atomic
 
 ``pmi`` is atomic because its frames cross-reference each other by id;
 ``materials.<id>`` because merging one side's density with the other's yield
 strength is over-clever; ``position``/``rotation_deg`` because merging X from
-one side and Z from the other yields a placement nobody authored.
+one side and Z from the other yields a placement nobody authored; and the two
+package maps (PRD-011) because merging one side's ``version`` with the other's
+``content_id`` yields a lock entry nobody authored and that verifies against
+nothing. Per *name* they merge key-wise, so two branches adding two different
+packages merge clean — which is the whole reason the maps carry only
+content-determined values.
 
 Values compare by type *and* JSON shape, so ``6`` and ``6.0`` are different
 values — matching how params are stored and how a byte comparison of
@@ -55,6 +62,11 @@ CONFLICT_KEYS = ("kind", "key", "path", "base", "ours", "theirs")
 _MISSING = object()
 
 _PART_SUBDICTS = ("params", "solid_materials")
+
+# Top-level maps whose ENTRIES merge key-wise and are themselves atomic.
+# ``_write_path`` has to know the same set, or a resolution writes a bogus
+# flat key (``"packages.iso4762"``) instead of into the map.
+_ENTRY_DICTS = ("materials", "packages", "packages_lock")
 
 
 def merge_manifests(base: dict, ours: dict, theirs: dict) -> tuple[dict, list[dict]]:
@@ -130,8 +142,8 @@ def _merge_section(key, base, ours, theirs, conflicts):
                                  subdicts=_PART_SUBDICTS)
     if key == "assembly" and _keyed(base, ours, theirs):
         return _merge_assembly(base, ours, theirs, conflicts)
-    if key == "materials" and _keyed(base, ours, theirs):
-        return _merge_entry_dict(("materials",), base, ours, theirs, conflicts)
+    if key in _ENTRY_DICTS and _keyed(base, ours, theirs):
+        return _merge_entry_dict((key,), base, ours, theirs, conflicts)
     return _merge_atomic((key,), base, ours, theirs, conflicts)
 
 
@@ -346,7 +358,7 @@ def _write_path(manifest, segs, value, present, key) -> None:
             value, present, (), key,
         )
         return
-    if head in ("assembly", "materials") and len(segs) == 2:
+    if head in ("assembly", *_ENTRY_DICTS) and len(segs) == 2:
         _write_slot(manifest.setdefault(head, {}), segs[1], value, present)
         return
     _write_slot(manifest, head if len(segs) == 1 else ".".join(segs),

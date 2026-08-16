@@ -925,3 +925,120 @@ def test_x13_a_dotted_instance_id_resolves_to_the_real_instance():
     assert entry_of(resolved["assembly"]["instances"], "a.1")["position"] == [
         2.0, 0.0, 0.0
     ]
+
+
+# ------------------------------------------- PRD-011: the two package maps
+
+
+def pkg(version="1.0.0", index="agentcad-core", content_id="sha256:" + "9f" * 32):
+    return {"version": version, "content_id": content_id, "index": index,
+            "source": {"kind": "local", "path": "catalog"}}
+
+
+def with_packages(**locked):
+    doc = manifest(parts=[part("flange")])
+    doc["packages"] = {
+        name: {"version_req": "^1.0.0", "index": entry["index"]}
+        for name, entry in locked.items()
+    }
+    doc["packages_lock"] = dict(locked)
+    return doc
+
+
+def test_two_branches_adding_different_packages_merge_clean():
+    """The whole point of the key-wise heads: adding `iso4762` on one branch
+    and `din625` on another is not a conflict."""
+    base = manifest(parts=[part("flange")])
+    ours = with_packages(iso4762=pkg())
+    theirs = with_packages(din625=pkg())
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts == []
+    assert sorted(merged["packages_lock"]) == ["din625", "iso4762"]
+    assert sorted(merged["packages"]) == ["din625", "iso4762"]
+
+
+def test_the_same_package_at_two_versions_conflicts_on_the_lock_entry():
+    base = with_packages(iso4762=pkg())
+    ours = with_packages(iso4762=pkg(version="1.1.0", content_id="sha256:" + "aa" * 32))
+    theirs = with_packages(iso4762=pkg(version="1.2.0", content_id="sha256:" + "bb" * 32))
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert "packages_lock.iso4762" in keys_of(conflicts)
+    conflict = next(c for c in conflicts if c["key"] == "packages_lock.iso4762")
+    assert conflict["path"] == ["packages_lock", "iso4762"]
+    # atomic: the recorded sides are whole entries, never half of one
+    assert conflict["ours"]["version"] == "1.1.0"
+    assert conflict["theirs"]["content_id"] == "sha256:" + "bb" * 32
+
+
+def test_a_lock_entry_never_merges_field_wise():
+    """One side's version with the other side's content id is an entry nobody
+    authored and that verifies against nothing."""
+    base = with_packages(iso4762=pkg())
+    ours = with_packages(iso4762=pkg(version="1.1.0"))
+    theirs = with_packages(iso4762=pkg(content_id="sha256:" + "cc" * 32))
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert keys_of(conflicts).count("packages_lock.iso4762") == 1
+    assert merged["packages_lock"]["iso4762"] == ours["packages_lock"]["iso4762"]
+
+
+def test_resolving_a_package_conflict_writes_into_the_map_not_a_flat_key():
+    base = with_packages(iso4762=pkg())
+    ours = with_packages(iso4762=pkg(version="1.1.0", index="agentcad-core"))
+    theirs = with_packages(iso4762=pkg(version="1.2.0", index="acme"))
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+    choices = {c["key"]: {"take": "theirs"} for c in conflicts}
+    resolved, remaining = apply_choices(merged, conflicts, choices)
+
+    assert remaining == []
+    assert resolved["packages_lock"]["iso4762"]["version"] == "1.2.0"
+    assert resolved["packages"]["iso4762"]["index"] == "acme"
+    assert "packages.iso4762" not in resolved
+    assert "packages_lock.iso4762" not in resolved
+
+
+def test_taking_a_side_that_never_had_the_package_removes_it():
+    base = manifest(parts=[part("flange")])
+    ours = with_packages(iso4762=pkg(version="1.1.0"))
+    ours["packages"]["iso4762"]["version_req"] = "^1.1.0"
+    theirs = with_packages(iso4762=pkg(version="1.2.0"))
+    theirs["packages"]["iso4762"]["version_req"] = "^1.2.0"
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+    assert sorted(keys_of(conflicts)) == ["packages.iso4762",
+                                          "packages_lock.iso4762"]
+    choices = {c["key"]: {"take": "base"} for c in conflicts}
+    resolved, remaining = apply_choices(merged, conflicts, choices)
+
+    assert remaining == []
+    assert resolved["packages"] == {}
+    assert resolved["packages_lock"] == {}
+
+
+def test_one_side_removing_a_package_the_other_left_alone_merges_clean():
+    base = with_packages(iso4762=pkg(), din625=pkg())
+    ours = with_packages(iso4762=pkg(), din625=pkg())
+    theirs = with_packages(iso4762=pkg())
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts == []
+    assert list(merged["packages_lock"]) == ["iso4762"]
+
+
+def test_a_manifest_with_no_packages_is_untouched_by_the_new_heads():
+    """FR15 from the merge side: a project that never used packages merges
+    byte-identically to how it did before the keys existed."""
+    base, ours, theirs = triple(manifest(parts=[part("flange")]))
+    entry_of(ours["parts"], "flange")["label"] = "ours"
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts == []
+    assert "packages" not in merged and "packages_lock" not in merged
