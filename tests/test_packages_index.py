@@ -218,7 +218,8 @@ def test_load_indexes_builds_in_precedence_order(tmp_path):
     ({"name": "Bad Name", "kind": "local", "path": "/x"}, "name"),
     ({"name": "acme", "kind": "sftp", "path": "/x"}, "unknown kind"),
     ({"name": "acme", "kind": "local"}, "path"),
-    ({"name": "acme", "kind": "git", "url": "https://x"}, "not available"),
+    # `git` became a real kind in slice 9; `cloud` is the one still planned.
+    ({"name": "acme", "kind": "cloud", "url": "https://x"}, "not available"),
     ("not-an-object", "not an object"),
 ])
 def test_load_indexes_skips_a_broken_entry_with_a_warning(entry, expected):
@@ -531,7 +532,7 @@ def test_the_manager_reads_its_indexes_from_the_user_config(
     root = make_index(tmp_path / "catalog")
     user_config.save_config({"indexes": [
         {"name": "agentcad-core", "kind": "local", "path": str(root)},
-        {"name": "broken", "kind": "git", "url": "https://x"},
+        {"name": "broken", "kind": "cloud", "url": "https://x"},
     ]})
     mgr = PackageManager(service)
     assert [i.name for i in mgr.indexes] == ["agentcad-core"]

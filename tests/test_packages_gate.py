@@ -661,7 +661,7 @@ def test_a_green_run_over_the_real_fixture_is_publishable(service, widget):
     assert report["exit_code"] == 0
     assert report["publishable"] is True
     assert report["blockers"] == []
-    assert report["exempt_skips"] == ["no_policy_configured"]
+    assert report["exempt_skips"] == ["policy:no_policy_configured"]
 
 
 def test_a_failing_row_blocks_publish_and_is_named(service, tmp_path):
@@ -693,10 +693,28 @@ def test_an_exempt_skip_does_not_block_publish_and_a_plain_one_does():
                              hint="raise --budget")
     ok = gate.verdict([checks.make_stage("connectors", [exempt])])
     assert ok["publishable"] is True
-    assert ok["exempt_skips"] == ["no_connectors_declared"]
+    assert ok["exempt_skips"] == ["connectors:no_connectors_declared"]
     blocked = gate.verdict([checks.make_stage("build", [exempt, plain])])
     assert blocked["publishable"] is False
     assert blocked["blockers"] == ["build:block"]
+
+
+def test_every_exempt_skip_is_qualified_by_its_stage():
+    """One shape, row-level and stage-level alike. Slice 8 copies this list
+    verbatim into the published index entry, so it is a **format** — and a
+    list mixing `no_policy_configured` with `specs:not_declared` would make a
+    consumer parse two."""
+    row = checks.make_item("policy", "check", "policy", "skip",
+                           "no policy module is configured",
+                           reason="no_policy_configured",
+                           hint="install service.package_policy",
+                           strict_exempt=True)
+    ruling = gate.verdict([checks.make_stage("policy", [row]),
+                           checks.make_stage("specs", [], reason="not_declared")])
+    assert ruling["exempt_skips"] == ["policy:no_policy_configured",
+                                      "specs:not_declared"]
+    assert all(entry.count(":") == 1 and entry.split(":")[0] in gate.GATE_STAGES
+               for entry in ruling["exempt_skips"])
 
 
 def test_a_stage_skipped_for_a_reason_of_its_own_blocks_publish():
@@ -965,7 +983,7 @@ def test_a_fem_skip_would_not_block_publish_and_is_strict_exempt(service):
     assert item["status"] == "skip" and item["strict_exempt"] is True
     ruling = gate.verdict([checks.make_stage("specs", [item])])
     assert ruling["publishable"] is True
-    assert ruling["exempt_skips"] == ["fem_extra_missing"]
+    assert ruling["exempt_skips"] == ["specs:fem_extra_missing"]
 
 
 # ------------------------------------------------------ stage: connectors

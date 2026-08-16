@@ -51,9 +51,18 @@ class PackageManager:
         return self._indexes
 
     def reload_indexes(self) -> list:
+        """Re-read the configuration and mint new index clients.
+
+        The git probe is borrowed from `service.history`, which already caches
+        `shutil.which("git")` — the design's rule that no new probe is added.
+        A service without one (a bare stub in a test) falls back to
+        `_git.available`.
+        """
         self.warnings = []
+        history = getattr(self._service, "history", None)
         self._indexes = index_module.load_indexes(
-            user_config.load_config(), self.warnings
+            user_config.load_config(), self.warnings,
+            git_available=getattr(history, "available", None),
         )
         return self._indexes
 
@@ -120,16 +129,31 @@ class PackageManager:
                           "reason": f"does not carry {name!r}"})
             return None
         version = format.resolve(versions, requirement)
+        yanked = False
         if version is None:
             yanked_only = format.resolve(versions, requirement, allow_yanked=True)
-            reason = (
-                f"only yanked versions of {name!r} match {requirement}"
-                if yanked_only else
-                f"carries {name!r} at {sorted(versions)}, none matching "
-                f"{requirement}"
-            )
-            tried.append({"index": index.name, "reason": reason})
-            return None
+            # An EXPLICITLY NAMED yanked version warns and proceeds (design
+            # Decision 10): a yank says "do not start here", not "you may
+            # never have this" — a project pinned to it, or restoring one, has
+            # to be able to re-install exactly what its lock records. A RANGE
+            # is the opposite case and still refuses: `^1.0.0` is the caller
+            # asking us to choose, and choosing a yanked version is what the
+            # flag exists to prevent.
+            if yanked_only is not None and format.VERSION_RE.match(requirement):
+                version, yanked = yanked_only, True
+                self.warnings.append(
+                    f"{name}@{version} is YANKED in index {index.name!r} and "
+                    f"you named it explicitly, so it was installed anyway. "
+                    f"The publisher withdrew it — move off it when you can.")
+            else:
+                reason = (
+                    f"only yanked versions of {name!r} match {requirement}"
+                    if yanked_only else
+                    f"carries {name!r} at {sorted(versions)}, none matching "
+                    f"{requirement}"
+                )
+                tried.append({"index": index.name, "reason": reason})
+                return None
         entry = versions[version]
         try:
             path = index.fetch(name, version)
@@ -145,6 +169,7 @@ class PackageManager:
             "entry": entry,
             "path": path,
             "offline": False,
+            "yanked": yanked,
         }
 
     def _resolve_cached(self, name, requirement, tried, *,
@@ -192,6 +217,7 @@ class PackageManager:
                 "entry": None,
                 "path": None,
                 "offline": True,
+                "yanked": False,
             }
         return None
 
@@ -205,6 +231,10 @@ class PackageManager:
         """
         service = self._service
         requirement = version_req or "*"
+        # Warnings raised BY THIS ADD (a yanked version named explicitly)
+        # travel in the result. `self.warnings` also carries the index-loading
+        # warnings, so the slice is taken rather than the whole list.
+        watermark = len(self.warnings)
         resolution = self.resolve(name, requirement, index=index)
         if not resolution["offline"]:
             cached = cache.install(
@@ -225,7 +255,9 @@ class PackageManager:
             "lock": lockfile.entry_for(manifest, name),
             "cached": str(cached),
             "offline": resolution["offline"],
+            "yanked": bool(resolution.get("yanked")),
             "tried": resolution["tried"],
+            "warnings": self.warnings[watermark:],
         }
 
     def remove(self, proj: str, name: str, *, scan=None) -> dict:

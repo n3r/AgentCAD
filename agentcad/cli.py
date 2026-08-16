@@ -8,6 +8,7 @@ Commands:
     agentcad export <project> <part> --format step|stl|3mf [-o OUT]
     agentcad check [--project P] [--ref REF] [--report R] [--md M]
     agentcad package validate <dir> [--strict] [--report R] [--jobs N]
+    agentcad publish <dir> --index NAME [--yank name@version] [--jobs N]
 """
 
 from __future__ import annotations
@@ -700,12 +701,113 @@ def cmd_package_validate(args) -> int:
     return int(report.get("exit_code", 2))
 
 
+def cmd_publish(args) -> int:
+    """`agentcad publish <dir> --index <name>` — gate, then publish.
+
+    ``cmd_package_validate``'s shape, with the same exit-code API: ``0``
+    published (or yanked) · ``1`` **refused** — the gate is red, the version
+    already exists, the vendor flag forbids it, or the tree moved · ``2``
+    harness, we could not produce a verdict. A refusal is a verdict, which is
+    why it is 1 and not 2.
+
+    `agentcad package validate` is report-honest and this is **fail-closed**:
+    it runs **every** stage and takes no stage subset, precisely so a
+    `skip / not_selected` can never reach the verdict.
+
+    ``--yank name@version`` measures nothing, so it **starts no kernel** — it
+    reads the index, flips a flag and rewrites the document.
+    """
+    from .core import locks
+    from .core.model import AppError
+    from .core.packages import indexes as index_module
+    from .core.packages.gate import SECURITY_NOTE
+
+    service = None
+    try:
+        from . import config as user_config
+
+        loader_warnings: list[str] = []
+        configured = index_module.load_indexes(user_config.load_config(),
+                                               loader_warnings)
+        index = next((i for i in configured if i.name == args.index), None)
+        if index is None:
+            for warning in loader_warnings:
+                print(f"agentcad publish: {warning}", file=sys.stderr)
+            print(f"agentcad publish: no index named {args.index!r} is "
+                  f"configured (configured: "
+                  f"{[i.name for i in configured]}). Add one to "
+                  f"{user_config.config_path()}.", file=sys.stderr)
+            return 2
+        if args.yank:
+            name, sep, version = str(args.yank).partition("@")
+            if not sep or not name or not version:
+                print("agentcad publish: --yank takes name@version, e.g. "
+                      "--yank iso4762@1.2.0", file=sys.stderr)
+                return 2
+            result = index.yank(name, version)
+            print(f"publish: yanked {name}@{version} in index "
+                  f"{index.name!r}"
+                  + (" (it was already yanked)" if result["already"] else "")
+                  + " — nothing was deleted; a lockfile naming it keeps "
+                    "resolving")
+            return 0
+        if not args.path:
+            print("agentcad publish: expected a package directory (or "
+                  "--yank name@version)", file=sys.stderr)
+            return 2
+
+        work_dir = None
+        extra_writable: list[str] = []
+        if args.work_dir:
+            # Absolute and known before the workers spawn: the seatbelt
+            # profile is fixed at spawn (see `cmd_package_validate`).
+            work_dir = str(Path(args.work_dir).expanduser().resolve())
+            extra_writable.append(work_dir)
+        service = _build_service(
+            Path(args.projects_dir or DEFAULT_PROJECTS_DIR),
+            extra_writable=extra_writable or None)
+        locks.set_client_id("ci")
+        result = index_module.publish(index, args.path, service,
+                                      jobs=args.jobs, work_dir=work_dir,
+                                      budget_s=args.budget)
+    except AppError as exc:
+        # A refusal IS a verdict — the gate was red, the version exists, the
+        # vendor flag forbids it, or the tree moved — so it is exit 1, and the
+        # evidence is printed rather than summarised away.
+        report = (exc.details or {}).get("checks")
+        if report:
+            print("failures:", file=sys.stderr)
+            for item in report[:20]:
+                print(f"  - {item.get('id')} — {item.get('message')}",
+                      file=sys.stderr)
+        print(f"agentcad publish: {exc.message}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 — any harness failure is exit 2
+        print(f"agentcad publish: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if service is not None:
+            try:
+                service.kernel.stop()
+            except Exception as exc:  # noqa: BLE001
+                print(f"agentcad publish: the kernel did not stop cleanly: "
+                      f"{exc}", file=sys.stderr)
+
+    for line in _package_lines(result["report"], []):
+        print(line, file=sys.stderr)
+    print(SECURITY_NOTE, file=sys.stderr)
+    print(f"publish: {result['published']} → index {result['index']!r} · "
+          f"{result['content_id']} · gate "
+          f"{result['report'].get('status')}")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agentcad", description="Agentic-first CAD")
     parser.add_argument("--version", action="version", version=agentcad.__version__)
     # metavar hides the internal `worker` subcommand from usage/help.
     sub = parser.add_subparsers(
-        dest="command", metavar="{serve,open,mcp,new,export,check,package}")
+        dest="command", metavar="{serve,open,mcp,new,export,check,package,publish}")
 
     for name in ("serve", "open"):
         p = sub.add_parser(name, help=f"{name} the AgentCAD server")
@@ -831,6 +933,43 @@ def main() -> None:
                    help="deadline read before every stage and every kernel "
                         "call; a build already in flight cannot be preempted")
 
+    p = sub.add_parser(
+        "publish", help="publish a validated package to an index (PRD-011)",
+        description="Run the publish gate over a package directory and, only "
+                    "if it is green, copy it into a configured index and "
+                    "record the entry. Fail-closed: every stage runs, a "
+                    "version is IMMUTABLE (republishing is a conflict even "
+                    "when the content id is identical), and a package whose "
+                    "vendor is not redistributable may not enter a public "
+                    "index. The publish gate is a CORRECTNESS gate, not a "
+                    "security boundary. Exit 0 published, 1 refused, "
+                    "2 harness.")
+    p.add_argument("path", nargs="?", default=None,
+                   help="the package directory (holding package.json); omit "
+                        "it only with --yank")
+    p.add_argument("--index", required=True, metavar="NAME",
+                   help="the configured index to publish into")
+    p.add_argument("--yank", default=None, metavar="NAME@VERSION",
+                   help="withdraw a published version instead of publishing: "
+                        "flips 'yanked' and DELETES NOTHING — a lockfile "
+                        "naming it keeps resolving, a fresh requirement never "
+                        "selects it, and naming it explicitly warns and "
+                        "proceeds")
+    p.add_argument("--projects-dir", default=None)
+    p.add_argument("--jobs", type=int, default=None, metavar="N",
+                   help="parallel variant builds (default: min(pool size, 4))")
+    p.add_argument("--work-dir", default=None, metavar="DIR",
+                   help="where the gate materialises its throwaway cell "
+                        "(default: a temp dir). It may not be, hold or sit "
+                        "inside the projects root or the package directory")
+    p.add_argument("--budget", default=None, metavar="SECONDS",
+                   type=_finite_arg("--budget",
+                                    "a NaN deadline is never in the past, so "
+                                    "it bounds nothing"),
+                   help="deadline read before every stage and every kernel "
+                        "call; an exhausted budget is a harness exit, never a "
+                        "publish")
+
     args = parser.parse_args()
     if args.command in ("serve", "open"):
         cmd_serve(args, open_browser=args.command == "open")
@@ -846,5 +985,7 @@ def main() -> None:
         raise SystemExit(cmd_check(args))
     elif args.command == "package":
         raise SystemExit(cmd_package(args))
+    elif args.command == "publish":
+        raise SystemExit(cmd_publish(args))
     else:
         parser.print_help()

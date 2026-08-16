@@ -96,7 +96,10 @@ IMPLEMENTED_STAGES = GATE_STAGES
 #: broken package publish, which is the whole failure mode this set exists to
 #: avoid. Rows carrying one are `strict_exempt`, so `--strict` leaves them
 #: alone too: a warning nothing can ever clear teaches readers to ignore
-#: warnings.
+#: warnings. A row exempted here is recorded in `report["exempt_skips"]` as
+#: `<stage>:<reason>` — the same shape a stage-level exemption gets, because
+#: slice 8 publishes that list into the index entry and a consumer must not
+#: have to parse two shapes.
 PUBLISH_SKIP_EXEMPT = ("fem_extra_missing", "no_policy_configured",
                        "string_param_unbounded", "no_connectors_declared",
                        "reference_part")
@@ -329,6 +332,11 @@ def verdict(stages: list[dict]) -> dict:
     was skipped blocks unless its reason is in :data:`STAGE_SKIP_EXEMPT` —
     which is what makes `validate --stages format` honest: a subset run cannot
     answer "publishable", because it did not look.
+
+    **Every entry in `exempt_skips` is `<stage>:<reason>`**, row-level and
+    stage-level alike. Slice 8 publishes this list into the index entry, where
+    it is what stops "validated" from becoming a badge — so it is one shape,
+    and it names where the measurement was not made.
     """
     blockers: list[str] = []
     exempt: list[str] = []
@@ -344,7 +352,14 @@ def verdict(stages: list[dict]) -> dict:
                 blockers.append(str(item.get("id")))
             elif status == "skip":
                 if item.get("reason") in PUBLISH_SKIP_EXEMPT:
-                    exempt.append(str(item.get("reason")))
+                    # `<stage>:<reason>`, the SAME shape a stage-level exempt
+                    # skip gets. Slice 8 copies this list verbatim into the
+                    # published index entry's `gate.exempt_skips`, so it is a
+                    # format: one shape, parseable, and it says *where* the
+                    # measurement was not made. (Slice 5 emitted a bare reason
+                    # here and `<stage>:<reason>` above — two shapes in one
+                    # list, which is what this qualification fixes.)
+                    exempt.append(f"{stage.get('name')}:{item.get('reason')}")
                 else:
                     blockers.append(str(item.get("id")))
     return {"publishable": not blockers,

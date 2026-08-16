@@ -325,4 +325,4 @@ def test_help_lists_package_beside_the_other_commands():
     missing from it is a command nobody finds."""
     res = _cli("--help")
     assert res.returncode == 0
-    assert "{serve,open,mcp,new,export,check,package}" in res.stdout
+    assert "{serve,open,mcp,new,export,check,package,publish}" in res.stdout

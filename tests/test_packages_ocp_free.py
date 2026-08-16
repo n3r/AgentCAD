@@ -43,7 +43,23 @@ OCP_FREE: dict[str, str] = {
     "agentcad.core.packages.indexes": 'mod.LocalIndex.kind == "local"',
     "agentcad.core.packages.manager":
         "mod.PackageManager(None, indexes=[]).indexes == []",
+    "agentcad.core.packages.provenance":
+        'mod.parse("# " + mod.MARKER + " 1 {}")["name"] is None',
+    "agentcad.core.packages.search":
+        'mod.NO_SEMANTIC == "no_embedding_provider"',
+    "agentcad.core.packages._git": "mod.DEFAULT_TIMEOUT >= 120",
 }
+
+#: Modules OUTSIDE the subpackage that must load without a geometry kernel
+#: too. The tool pack is server-process code by definition (the
+#: `core/tools_holes.py` precedent), so it gets a probe but must **not** join
+#: `OCP_FREE`, whose set is compared with the subpackage directory.
+EXTRA_OCP_FREE: dict[str, str] = {
+    "agentcad.core.tools_packages":
+        '"not a security boundary" in mod._NON_CLAIM',
+}
+
+ALL_PROBES = {**OCP_FREE, **EXTRA_OCP_FREE}
 
 _PROBE = '''
 import importlib
@@ -69,9 +85,9 @@ print("ok")
 
 @pytest.mark.integration
 @pytest.mark.portability
-@pytest.mark.parametrize("module", sorted(OCP_FREE))
+@pytest.mark.parametrize("module", sorted(ALL_PROBES))
 def test_the_module_imports_with_no_geometry_kernel_available(module):
-    expr = OCP_FREE[module]
+    expr = ALL_PROBES[module]
     source = _PROBE.format(module=module, expr=expr, expr_msg=expr)
     proc = subprocess.run(
         [sys.executable, "-c", source],
@@ -101,7 +117,8 @@ def test_no_module_in_the_subpackage_imports_the_geometry_kernel_in_source():
     import hidden inside a function, which a top-level import check would
     miss and which would only fail at call time."""
     offenders = []
-    for path in sorted(PACKAGES.rglob("*.py")):
+    for path in sorted(PACKAGES.rglob("*.py")) + [
+            REPO / "agentcad" / "core" / "tools_packages.py"]:
         text = path.read_text(encoding="utf-8")
         for line in text.splitlines():
             stripped = line.strip()
