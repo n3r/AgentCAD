@@ -57,6 +57,21 @@ DISCLOSURES = ("human", "agent", "hybrid")
 INDEX_SCOPES = ("public", "private")
 GATE_STATUSES = ("green", "red", "skip")
 
+#: A package part is a **script** (`parts/<id>.py`, the default and the only
+#: kind before FR13) or a **reference** — an imported vendor solid under
+#: `imports/`, which has no script at all. The two words are the project
+#: manifest's own (`ProjectStore.add_part(kind=…, source=…)`), not a second
+#: vocabulary: a materialised package part is an ordinary project part, so it
+#: had better be described in the project's language.
+PART_KINDS = ("script", "reference")
+DEFAULT_PART_KIND = "script"
+
+#: Where each kind's payload lives. A `file` outside `parts/` or a `source`
+#: outside `imports/` is refused, so a package cannot declare a part that
+#: reaches sideways into its own tree.
+PART_FILE_DIR = "parts/"
+PART_SOURCE_DIR = "imports/"
+
 PACKAGE_REQUIRED = frozenset({
     "format", "name", "version", "summary", "license", "authors",
     "disclosure", "parts",
@@ -212,36 +227,79 @@ def _parts(doc, root) -> list[dict]:
             out.append(problem("wrong_type", f"{field} must be an object",
                                field=field))
             continue
-        out += _unknown_keys(entry, {"file", "label", "summary"}, field,
-                             prefix=field)
-        out += _missing(entry, {"file"}, prefix=field)
+        out += _unknown_keys(entry, {"file", "label", "summary", "kind",
+                                     "source"}, field, prefix=field)
         out += _non_empty_str(entry, "label", prefix=field)
         out += _non_empty_str(entry, "summary", prefix=field)
-        file = entry.get("file")
-        if file is None:
-            continue
-        if not isinstance(file, str):
-            out.append(problem("wrong_type", f"{field}.file must be a string",
-                               field=f"{field}.file"))
-            continue
-        if not is_safe_relpath(file) or not file.startswith("parts/"):
-            out.append(problem(
-                "bad_value",
-                f"{field}.file must be a relative path inside parts/: {file!r}",
-                field=f"{field}.file"))
-            continue
-        if root is not None:
-            try:
-                path = resolve_within(root, file, what=f"{field}.file")
-            except ValidationError as exc:
-                out.append(problem("bad_value", str(exc), field=f"{field}.file"))
-                continue
-            if not path.is_file():
-                out.append(problem(
-                    "missing_file",
-                    f"{field}.file does not exist in the package: {file}",
-                    field=f"{field}.file"))
+        out += _part_payload(entry, field, root)
     return out
+
+
+def _part_payload(entry, field, root) -> list[dict]:
+    """The one key a part kind is defined by, and nothing from the other kind.
+
+    A script part carries `file`; a reference part (FR13) carries `source` and
+    **must not** carry `file` — a reference part has no script, and an entry
+    holding both would leave every reader to pick one.
+    """
+    kind = entry.get("kind", DEFAULT_PART_KIND)
+    if kind not in PART_KINDS:
+        return [problem(
+            "bad_value",
+            f"{field}.kind must be one of {list(PART_KINDS)}, got {kind!r}",
+            field=f"{field}.kind")]
+    key = "file" if kind == DEFAULT_PART_KIND else "source"
+    other = "source" if key == "file" else "file"
+    directory = PART_FILE_DIR if key == "file" else PART_SOURCE_DIR
+    out = _missing(entry, {key}, prefix=field)
+    if other in entry:
+        out.append(problem(
+            "bad_value",
+            f"{field}.{other} is not a key of a {kind!r} part — a {kind} part "
+            f"is declared by {field}.{key}",
+            field=f"{field}.{other}"))
+    value = entry.get(key)
+    if value is None:
+        return out
+    if not isinstance(value, str):
+        return out + [problem("wrong_type", f"{field}.{key} must be a string",
+                              field=f"{field}.{key}")]
+    if not is_safe_relpath(value) or not value.startswith(directory):
+        return out + [problem(
+            "bad_value",
+            f"{field}.{key} must be a relative path inside {directory}: "
+            f"{value!r}", field=f"{field}.{key}")]
+    if root is None:
+        return out
+    try:
+        path = resolve_within(root, value, what=f"{field}.{key}")
+    except ValidationError as exc:
+        return out + [problem("bad_value", str(exc), field=f"{field}.{key}")]
+    if not path.is_file():
+        out.append(problem(
+            "missing_file",
+            f"{field}.{key} does not exist in the package: {value}",
+            field=f"{field}.{key}"))
+    return out
+
+
+def part_kind(entry) -> str:
+    """``"script"`` | ``"reference"`` for a declared part entry.
+
+    Absent means ``script``: every package published before FR13 declares no
+    ``kind``, and their content ids may not move (a version is immutable).
+    """
+    kind = entry.get("kind") if isinstance(entry, dict) else None
+    return kind if kind in PART_KINDS else DEFAULT_PART_KIND
+
+
+def part_payload(entry) -> tuple[str, str] | tuple[None, None]:
+    """``(key, relpath)`` — ``("file", "parts/x.py")`` or
+    ``("source", "imports/x.step")`` — or ``(None, None)`` when the entry does
+    not declare its own kind's key (which the validator has already reported)."""
+    key = "file" if part_kind(entry) == DEFAULT_PART_KIND else "source"
+    value = entry.get(key) if isinstance(entry, dict) else None
+    return (key, value) if isinstance(value, str) else (None, None)
 
 
 def _remix(doc) -> list[dict]:

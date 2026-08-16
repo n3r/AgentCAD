@@ -48,6 +48,11 @@ OCP_FREE: dict[str, str] = {
     "agentcad.core.packages.search":
         'mod.NO_SEMANTIC == "no_embedding_provider"',
     "agentcad.core.packages._git": "mod.DEFAULT_TIMEOUT >= 120",
+    # `from_step` imports `gate` lazily *inside* its functions and never
+    # imports the kernel: the vendor file is measured through a service, the
+    # same way every other stage measures.
+    "agentcad.core.packages.from_step":
+        'mod.MESH_EXTS == (".stl",) and ".step" in mod.SUPPORTED_EXTS',
 }
 
 #: Modules OUTSIDE the subpackage that must load without a geometry kernel

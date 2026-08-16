@@ -43,7 +43,8 @@ import functools
 import json
 
 from .model import ConflictError, NotFoundError, ValidationError
-from .packages import cache, content, gate, lockfile, provenance, search
+from .packages import cache, content, from_step, gate, lockfile, provenance, search
+from .packages import format as pkgformat
 from .packages.manager import PackageManager
 from .tools import Tool, schema
 
@@ -253,11 +254,32 @@ def materialize(service, proj: str, name: str, part: str, part_id: str,
     tree = cache.require(name, version)
     doc = _package_doc(tree, name)
     declared = (doc.get("parts") or {}).get(part) if isinstance(doc, dict) else None
-    if not isinstance(declared, dict) or not isinstance(declared.get("file"), str):
+    if not isinstance(declared, dict) or pkgformat.part_payload(declared)[1] is None:
         raise NotFoundError(
             f"{name}@{version} declares no part {part!r} "
             f"(declared: {sorted((doc.get('parts') or {}))})",
             {"package": name, "version": version, "part": part})
+    if pkgformat.part_kind(declared) == "reference":
+        # Stated, not worked around. `use_part` materialises a SCRIPT under a
+        # provenance header, and the header lives *inside* the script (design
+        # Decision 5) — a reference part has no script, so a materialised one
+        # could carry no provenance at all and `get_part` would have nothing to
+        # report. `provenance.scan` already skips `kind == "reference"` for the
+        # same reason. So a `package_from_step` package validates, publishes
+        # and installs; materialising it into a project is `import_cad_file`
+        # over the cached file, and that is FR13's one hole in v1.
+        raise ValidationError(
+            f"{name}@{version} part {part!r} is a REFERENCE part (imported "
+            f"geometry, no script), and use_part materialises scripts: the "
+            f"provenance header lives inside the script, so a reference part "
+            f"would arrive with no provenance to compute a status from. The "
+            f"package is installed — import the cached file directly with "
+            f"import_cad_file, which creates the same ordinary reference part "
+            f"without a provenance claim nobody could verify.",
+            {"package": name, "version": version, "part": part,
+             "kind": "reference",
+             "source": str(content.resolve_within(
+                 tree, declared["source"], what=f"parts.{part}.source"))})
     source = content.resolve_within(tree, declared["file"],
                                     what=f"parts.{part}.file")
     try:
@@ -406,6 +428,23 @@ def register(registry, service) -> None:
                  preset: str | None = None, params: dict | None = None) -> dict:
         return materialize(service, project, package, part, part_id,
                            preset=preset, params=params)
+
+    def package_from_step(source: str, dest: str, name: str, part: str,
+                          vendor: str, version: str = "1.0.0",
+                          part_number: str | None = None,
+                          url: str | None = None, terms: str | None = None,
+                          summary: str | None = None,
+                          license: str | None = None,
+                          disclosure: str = "human",
+                          keywords: list | None = None,
+                          standards: list | None = None,
+                          work_dir: str | None = None) -> dict:
+        return from_step.scaffold(
+            service, source=source, dest=dest, name=name, part=part,
+            version=version, vendor=vendor, part_number=part_number, url=url,
+            terms=terms, summary=summary, license=license,
+            disclosure=disclosure, keywords=keywords, standards=standards,
+            work_dir=work_dir)
 
     def validate_package(path: str, strict: bool = False,
                          stages: list | None = None, jobs: int | None = None,
@@ -578,4 +617,60 @@ def register(registry, service) -> None:
                              "description": "Deadline in seconds"}},
                ["path"]),
         validate_package,
+    ))
+    registry.register(Tool(
+        "package_from_step",
+        "Wrap a vendor STEP/BREP file as a REFERENCE-PART package (the "
+        "McMaster path): the file lands under imports/, package.json declares "
+        "one part with kind 'reference' and provenance.vendor {name, "
+        "part_number, url, terms, redistributable: false}, docs/README.md is "
+        "scaffolded naming the vendor and the terms, and a preview is "
+        "rendered. The file is BUILT ONCE in a throwaway cell first, so a STEP "
+        "this kernel cannot load is a refusal rather than a package directory "
+        "you have to clean up — and the measured metrics come back with the "
+        "result. CONNECTOR PLACEMENT IS NOT AUTOMATED: 'candidates' reports "
+        "the imported solid's own B-rep faces largest-first (planar faces with "
+        "a normal and a centre, cylindrical faces with an axis and a radius) "
+        "as SUGGESTIONS, and an author writes the connectors — inferring which "
+        "cylinder is a shaft from an unlabelled vendor solid is a research "
+        "problem, not this tool. A reference part has no PARAMS, no build(p) "
+        "and no connectors, so the gate's contract, connectors and policy "
+        "stages report an exempt 'reference_part' skip for it and the build "
+        "stage builds the shipped file once. LICENSING: "
+        "redistributable=false is mechanical, not decorative — publishing this "
+        "package into an index whose scope is 'public' is refused, so "
+        "vendor-derived geometry stays in personal/organisation indexes and "
+        "legal review precedes any public seeding. STL IS REFUSED (one welded "
+        "mesh face, no surface, and its booleans segfault OCCT); a file above "
+        "the published per-file ceiling is refused with the number. NOTE: "
+        "use_part does not materialise a reference part — the provenance "
+        "header lives inside a script and a reference part has none — so a "
+        "consumer installs the package and imports the cached file with "
+        "import_cad_file. " + _NON_CLAIM,
+        schema({"source": {"type": "string",
+                           "description": "Absolute path to the vendor file"},
+                "dest": {"type": "string",
+                         "description": "New, empty package directory"},
+                "name": {"type": "string", "description": "Package name"},
+                "part": {"type": "string",
+                         "description": "Part id inside the package"},
+                "vendor": {"type": "string",
+                           "description": "Who supplied the geometry"},
+                "version": {"type": "string", "description": "X.Y.Z (1.0.0)"},
+                "part_number": {"type": "string",
+                                "description": "The vendor's part number"},
+                "url": {"type": "string", "description": "Vendor product page"},
+                "terms": {"type": "string",
+                          "description": "The vendor's terms of use"},
+                "summary": {"type": "string", "description": "One line"},
+                "license": {"type": "string",
+                            "description": "Licence id (vendor-terms)"},
+                "disclosure": {"type": "string",
+                               "description": "human | agent | hybrid"},
+                "keywords": {"type": "array", "description": "Search keywords"},
+                "standards": {"type": "array", "description": "Standards"},
+                "work_dir": {"type": "string",
+                             "description": "Where the throwaway cell goes"}},
+               ["source", "dest", "name", "part", "vendor"]),
+        package_from_step,
     ))

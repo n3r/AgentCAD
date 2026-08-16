@@ -72,6 +72,25 @@ This project is built skill-first. Use the Superpowers process skills:
   reach `write_guard` through `locks.write_scope` (its signature is unchanged) ·
   presence is an **HTTP heartbeat**, not client→server WS · `undo {scope}`
   defaults to `"any"` and the stacks are **not** per client.
+- Packages (`core/packages/`, the gate, `catalog/`): the pack is
+  **`tools_packages.py`** and it registers **no gate provider** (`pac` sorts
+  before `pro`, whose `gate_providers = []` is unconditional — the
+  `tools_run_checks` trap) · the publish gate is a **correctness** gate, never
+  a security boundary, and the real boundary is *index declares the content id,
+  cache verifies every fetch and every materialisation* · a package is a
+  **directory** and its id is a canonical tree digest (no archive; tar is not
+  byte-stable) · **no timestamp/client id/absolute path** in the provenance
+  header or `packages_lock`, and `remove_package` touches **no script byte**
+  (the header is inside the script and the script is the cache key) · the
+  gate's claim is each parameter's own range **plus declared presets**, a sum
+  and never the cross product · the ephemeral service's `write_guard` is
+  genuinely live here, so nulling it is load-bearing, and `_refuse_overlap`
+  also covers the **package directory** · `_git.py` is not `history._run`
+  (no work tree, 120 s, credential helper, `reset --hard`) · bundled indexes
+  are **appended**, so a user index named `agentcad-core` replaces the shipped
+  one outright · the fan-out measures **1.40×** on the real catalog, *under*
+  the 1.5× bar — do not advertise it. Reference parts (FR13) have no script:
+  `use_part` refuses them, `import_cad_file` is the path.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests
@@ -95,7 +114,8 @@ commit manifest-reformatting churn or the venv.
 ## Deeper docs
 
 `AGENTS.md` (contributor guide) · `docs/architecture.md` · `docs/agent-api.md`
-· `docs/part-authoring.md` · `docs/user-guide.md` · `docs/geometry-ci.md`
+· `docs/part-authoring.md` · `docs/user-guide.md` · `docs/packages.md`
+(packages, indexes, the publish gate, the bundled catalog) · `docs/geometry-ci.md`
 (`agentcad check` + the GitHub Action) · `docs/roadmap.md` (PRD
 index) · `docs/prd/` (one PRD per feature) · `docs/market_research.md` ·
 `docs/superpowers/specs|plans/` (design specs and implementation plans).

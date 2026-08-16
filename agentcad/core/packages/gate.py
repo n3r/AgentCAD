@@ -616,6 +616,7 @@ class _Run:
         self.scratch: dict[str, str] = {}     # package part id -> scratch part
         self.variant_of: dict[str, str] = {}  # scratch part id -> row subject
         self.probe: str | None = None         # the probe part, made on demand
+        self.reference_scratch: set[str] = set()   # scratch ids of imports
 
     # ------------------------------------------------------------- driving
 
@@ -718,11 +719,23 @@ class _Run:
             self.inventory_error = str(exc)
 
     def _declared_parts(self) -> dict:
+        """Every part the manifest declares **usably** — a `script` part with a
+        `file`, or a `reference` part (FR13) with a `source`. An entry missing
+        its own kind's key is already a `format` row and is not measured twice.
+        """
         parts = (self.doc or {}).get("parts")
         if not isinstance(parts, dict):
             return {}
         return {pid: entry for pid, entry in parts.items()
-                if isinstance(entry, dict) and isinstance(entry.get("file"), str)}
+                if isinstance(entry, dict)
+                and pkgformat.part_payload(entry)[1] is not None}
+
+    def _script_parts(self) -> dict:
+        return {pid: entry for pid, entry in self._declared_parts().items()
+                if pkgformat.part_kind(entry) == "script"}
+
+    def _is_reference(self, entry: dict) -> bool:
+        return pkgformat.part_kind(entry) == "reference"
 
     def _part_source(self, part_id: str, entry: dict) -> str:
         """The part script's text, or a `ValidationError` naming the file."""
@@ -733,6 +746,19 @@ class _Run:
         except (OSError, UnicodeDecodeError) as exc:
             raise ValidationError(
                 f"{entry['file']} cannot be read: {exc}") from exc
+
+    def _reference_item(self, stage: str, part_id: str, what: str,
+                        hint: str) -> dict:
+        """The one row shape a reference part contributes to a stage that only
+        a script can satisfy. `reference_part` is in
+        :data:`PUBLISH_SKIP_EXEMPT` — a package of imported vendor geometry is
+        a legitimate package, and the absence of a script is a fact about the
+        *kind*, never about the package's correctness."""
+        return self._item(
+            stage, "part", part_id, "skip",
+            f"{part_id} is a reference part (imported geometry, no script), "
+            f"so {what}",
+            reason="reference_part", hint=hint, strict_exempt=True)
 
     # -------------------------------------------------------- stage: format
 
@@ -750,7 +776,8 @@ class _Run:
                 items.append(self._item(
                     "format", "check", problem.get("field") or "package.json",
                     "fail", problem["message"],
-                    details={"code": problem.get("code")}))
+                    details={"code": problem.get("code"),
+                             "field": problem.get("field")}))
             if not problems:
                 items.append(self._item(
                     "format", "check", "package.json", "pass",
@@ -820,17 +847,19 @@ class _Run:
         subject."""
         items = []
         for part_id, entry in self._declared_parts().items():
+            key, relpath = pkgformat.part_payload(entry)
             try:
-                path = content.resolve_within(self.source, entry["file"],
-                                              what=f"parts.{part_id}.file")
+                path = content.resolve_within(self.source, relpath,
+                                              what=f"parts.{part_id}.{key}")
             except ValidationError:
                 continue
             if not path.is_file():
                 continue
             items.append(self._item(
                 "format", "part", f"parts.{part_id}", "pass",
-                f"{entry['file']} — {path.stat().st_size} bytes",
-                details={"file": entry["file"]}))
+                f"{relpath} — {path.stat().st_size} bytes "
+                f"({pkgformat.part_kind(entry)})",
+                details={key: relpath, "kind": pkgformat.part_kind(entry)}))
         return items
 
     # ------------------------------------------------------ stage: contract
@@ -851,6 +880,15 @@ class _Run:
         for part_id, entry in parts.items():
             if self._out_of_budget():
                 items.append(self._budget_item("contract", "part", part_id))
+                continue
+            if self._is_reference(entry):
+                items.append(self._reference_item(
+                    "contract", part_id,
+                    "there is no PARAMS dict and no build(p) to inspect: the "
+                    "build stage builds it once, from the imported file",
+                    "a vendor solid has no parameters — to publish a "
+                    "parametric part, author a script instead of importing "
+                    "one"))
                 continue
             items += self._contract_part(part_id, entry)
         return make_stage("contract", items, duration_s=_elapsed(started))
@@ -953,7 +991,8 @@ class _Run:
         items = [self._item("presets", "check",
                             problem.get("field") or "presets.json", "fail",
                             problem["message"],
-                            details={"code": problem.get("code")})
+                            details={"code": problem.get("code"),
+                                     "field": problem.get("field")})
                  for problem in pkgformat.validate_presets(doc, declared)]
         presets = doc.get("presets") if isinstance(doc, dict) else None
         for part_id, configs in (presets or {}).items():
@@ -963,6 +1002,17 @@ class _Run:
                 if self._out_of_budget():
                     items.append(self._budget_item("presets", "check",
                                                    f"{part_id}:{name}"))
+                    continue
+                if self._is_reference(declared[part_id]):
+                    # A FAIL, not a skip: the package declares a configuration
+                    # that can never be applied, which is a mistake in the
+                    # package and not a fact about the world.
+                    items.append(self._item(
+                        "presets", "check", f"{part_id}:{name}", "fail",
+                        f"configuration {name!r} names {part_id!r}, which is a "
+                        f"reference part: imported geometry has no PARAMS, so "
+                        f"there is nothing for a configuration to set",
+                        details={"kind": "reference"}))
                     continue
                 items.append(self._preset_item(part_id, name, entry))
         return make_stage("presets", items, duration_s=_elapsed(started))
@@ -1031,10 +1081,38 @@ class _Run:
         if existing is not None:
             return existing
         entry = self._declared_parts()[part_id]
-        script = self._part_source(part_id, entry)
-        scratch = self._add_scratch(part_id, "src", f"{part_id}@default",
-                                    script)
+        if self._is_reference(entry):
+            scratch = self._add_reference_scratch(part_id, entry)
+        else:
+            script = self._part_source(part_id, entry)
+            scratch = self._add_scratch(part_id, "src", f"{part_id}@default",
+                                        script)
         self.scratch[part_id] = scratch
+        return scratch
+
+    def _add_reference_scratch(self, part_id: str, entry: dict) -> str:
+        """The scratch part for a REFERENCE part: the declared file copied into
+        the cell's own `imports/` directory, then an ordinary reference part
+        over it.
+
+        The copy is what makes the build real. `_rebuild` hands the worker
+        `store.imports_dir(proj) / source`, so the imported file has to be
+        inside the gate's own project — which is also the containment rule
+        doing its job: the gate reads the package directory and writes only
+        inside the cell.
+        """
+        source = content.resolve_within(self.source, entry["source"],
+                                        what=f"parts.{part_id}.source")
+        name = Path(entry["source"]).name
+        dest = self.service.store.imports_dir(self.service_project,
+                                              write=True) / name
+        shutil.copyfile(source, dest)
+        scratch = _scratch_id(part_id, "ref", self.variant_of)
+        self.service.store.add_part(self.service_project, scratch,
+                                    f"{part_id}@default", "al6061", "",
+                                    kind="reference", source=name)
+        self.variant_of[scratch] = f"{part_id}@default"
+        self.reference_scratch.add(scratch)
         return scratch
 
     def _add_scratch(self, part_id: str, suffix: str, subject: str,
@@ -1096,6 +1174,23 @@ class _Run:
         items: list[dict] = []
         plan: list[tuple[Variant, str]] = []
         for part_id, entry in parts.items():
+            if self._is_reference(entry):
+                # A vendor solid has exactly one variant: itself. There is no
+                # sweep because there are no parameters, and the row still
+                # proves the thing that matters — that the shipped file loads
+                # in this kernel and measures.
+                try:
+                    scratch = self._scratch_part(part_id)
+                except (AppError, OSError) as exc:
+                    items.append(self._item(
+                        "build", "part", part_id, "fail",
+                        f"the imported file {entry['source']!r} could not be "
+                        f"staged for a build: {exc}", error=_payload(exc)
+                        if isinstance(exc, AppError) else None))
+                    continue
+                plan.append((Variant(f"{part_id}@default", {}, "the imported "
+                                     "solid"), scratch))
+                continue
             spec, error = self._spec_for(part_id, entry)
             if error is not None:
                 items.append(self._item(
@@ -1210,17 +1305,32 @@ class _Run:
                 f"built to {volume!r} mm³ at {variant.label}: an empty solid "
                 f"is not a part", details=details)
         if metrics.get("is_valid") is False:
-            return self._item(
-                "build", "part", variant.id, "fail",
-                f"built at {variant.label}, but the kernel reports the shape "
-                f"is not valid B-rep geometry", details=details)
+            if scratch in self.reference_scratch:
+                # **Reported, never enforced** for imported geometry, exactly as
+                # PRD-004's build stage does it: OCCT calls the shipped
+                # `examples/rocketry` STEP invalid over its 180 solids, which is
+                # also why `tests/test_examples.py` exempts reference parts. A
+                # red here would redden correct vendor content and there is
+                # nothing the packager could do about it.
+                self.warnings.append(
+                    f"{variant.id}: the imported geometry reports "
+                    f"is_valid=false on the whole shape "
+                    f"({metrics.get('n_solids')} solids); validity is reported "
+                    f"for imported parts, never enforced")
+            else:
+                return self._item(
+                    "build", "part", variant.id, "fail",
+                    f"built at {variant.label}, but the kernel reports the "
+                    f"shape is not valid B-rep geometry", details=details)
         self.warnings.extend(f"{variant.id}: {warning}"
                              for warning in result.get("warnings") or [])
+        valid = "valid" if metrics.get("is_valid") is not False \
+            else "is_valid=false (reported, not enforced: imported geometry)"
         return self._item(
             "build", "part", variant.id, "pass",
             f"{variant.label}: {_number(metrics.get('volume_mm3'))} mm³, "
             f"{_number(metrics.get('mass_g'))} g, "
-            f"{metrics.get('n_solids', 0)} solid(s), valid",
+            f"{metrics.get('n_solids', 0)} solid(s), {valid}",
             details=details)
 
     def _presets_for(self, part_id: str) -> dict:
@@ -1314,6 +1424,15 @@ class _Run:
         for part_id, entry in parts.items():
             if self._out_of_budget():
                 items.append(self._budget_item("connectors", "part", part_id))
+                continue
+            if self._is_reference(entry):
+                items.append(self._reference_item(
+                    "connectors", part_id,
+                    "it declares no connectors: a connectors(p, part) function "
+                    "lives in a script, and imported geometry has none",
+                    "package_from_step reports the imported solid's planar and "
+                    "cylindrical faces as candidates; an author turns them "
+                    "into a connectors() function in a script part"))
                 continue
             _spec, error = self._spec_for(part_id, entry)
             if error is not None:
@@ -1521,7 +1640,12 @@ class _Run:
             return self._item(
                 "docs", "check", README_PATH, "fail",
                 f"{README_PATH} never mentions {', '.join(sorted(missing))}: a "
-                f"package documents the parts it ships")
+                f"package documents the parts it ships",
+                # The ids travel as DATA as well as in the sentence: a row a
+                # reader can only act on by parsing English is a row an agent
+                # cannot act on at all, and this loop is the one PRD-011 exists
+                # to shorten.
+                details={"missing": sorted(missing), "path": README_PATH})
         return self._item("docs", "check", README_PATH, "pass",
                           f"{README_PATH} documents {len(parts)} part(s)")
 
@@ -1529,6 +1653,20 @@ class _Run:
         missing = []
         if not str(entry.get("summary") or "").strip():
             missing.append("a summary in package.json")
+        if self._is_reference(entry):
+            # There is no module, so there can be no module docstring. The
+            # summary and the README are what a reader of a vendor solid gets,
+            # and both are still required.
+            if missing:
+                return self._item(
+                    "docs", "part", part_id, "fail",
+                    f"{part_id} has no summary in package.json — a reference "
+                    f"part ships no script, so the summary and the README are "
+                    f"the only documentation it can have")
+            return self._item(
+                "docs", "part", part_id, "pass",
+                f"{part_id}: summary present (a reference part has no module "
+                f"to carry a docstring)")
         try:
             source = self._part_source(part_id, entry)
             docstring = ast.get_docstring(ast.parse(source))
@@ -1571,6 +1709,15 @@ class _Run:
             return make_stage("policy", [item], duration_s=_elapsed(started))
         items: list[dict] = []
         for part_id, entry in self._declared_parts().items():
+            if self._is_reference(entry):
+                items.append(self._reference_item(
+                    "policy", part_id,
+                    "there is no source for a source policy to read — an "
+                    "imported solid is data, not code",
+                    "a policy for imported geometry (size, solid count, "
+                    "vendor terms) would be a different check; this seam "
+                    "reads scripts"))
+                continue
             try:
                 source = self._part_source(part_id, entry)
                 rows = policy.check(source, entry.get("file")) or []

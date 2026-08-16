@@ -98,8 +98,8 @@ format's proving ground.
 
 | # | Step | Why it is here |
 |---|---|---|
-| 1 | **011, registry-first** | The git-hosted index and the agent-built COTS catalog become primary deliverables, not phase-2. Freeze the preset ↔ PRD-012 configuration schema in its design (011 warns of two variant systems otherwise). |
-| 2 | **005-lite** | Deploy + identity + public read only. Orgs, roles, audit principals and local-first sync stay deferred as genuine deployment work. |
+| 1 | **011, registry-first** — **implemented; in review** | Shipped on the branch: the content-addressed package format, the content-verified cache and lockfile, local **and git-hosted** indexes, the nine-stage publish gate, `agentcad package validate` / `agentcad publish`, seven tools, the Library dialog, and a **nine-package COTS catalog** in `catalog/` that is simultaneously the bundled index and the git-index dogfood. The preset ↔ configuration schema is frozen and **PRD-012 FR1 is amended to it**. Licensing is settled (Apache-2.0, repo + catalog). Step 2 inherits: the publish gate is explicitly **not** a security boundary — 006 is still the backstop. |
+| 2 | **005-lite** ← next | Deploy + identity + public read only. Orgs, roles, audit principals and local-first sync stay deferred as genuine deployment work. |
 | 3 | **007** | Share links & customizer — the growth loop, and 031's own hard dependency. Needs hosting, not full multi-tenancy. |
 | 4 | **031a** | Public read-only catalog we seed, with add-to-library. Needs 011 + 005-lite + 007. |
 | 5 | **006** | Sandboxing becomes blocking only when third-party code runs on our servers — which is 031b, not 031a. |
@@ -114,10 +114,11 @@ not out-community GrabCAD's 7M engineers; we can plausibly out-*availability*
 McMaster and TraceParts on mate-ready parametric parts, because agents author
 and the kernel referees — and that bet is winnable without a contributor base.
 
-**Open blocker:** this repo still has **no LICENSE file and no license
-field** (surfaced when a GPL-3.0 solver was declined in PRD-009). It is a
-footnote for a private tool and blocking for a published package format with
-a `license` field. Resolve before 031a.
+**Blocker resolved (16 Aug 2026):** the repo had no LICENSE file and no
+license field (surfaced when a GPL-3.0 solver was declined in PRD-009).
+Founder decision: **Apache-2.0** for both the repository and the seed catalog
+packages — `LICENSE` + `pyproject.toml` fields landed with the PRD-011 design
+commit. The 031a licensing precondition is closed.
 
 ## PRD index
 
@@ -140,7 +141,7 @@ a `license` field. Resolve before 031a.
 |---|---|---|---|---|
 | [009](prd/completed/PRD-009-sketcher-v2.md) | Sketcher v2 — arcs/splines/ellipses/slots/conics, full constraints, drag-to-solve, DOF diagnostics | completed (PR #13, AC1–AC7 verified) | analysis + residual | — |
 | [010](prd/completed/PRD-010-feature-toolkit-ii.md) | Feature toolkit II — patterns, ISO/ANSI hole wizard with flowing metadata, ribs/draft, sheet-metal v2 (relief, partial flanges) | completed (PR #14, AC1–AC8 + AC7b verified) | analysis + residual | — |
-| [011](prd/pending/PRD-011-parts-library-registry.md) | Parts library & package registry — "pip for parts": versioned, kernel-validated packages; org/personal libraries; McMaster ingestion | **in progress — step 1, registry-first** | analysis + idea 1d | 003 |
+| [011](prd/in-progress/PRD-011-parts-library-registry.md) | Parts library & package registry — "pip for parts": versioned, kernel-validated packages; git-hosted indexes; a seeded COTS catalog; McMaster ingestion | implemented; in review on `prd-011-parts-library-registry` | analysis + idea 1d | 003 |
 | [012](prd/pending/PRD-012-configurations.md) | Configurations — named variants with per-config metrics/BOM/drawings; matrix builds | pending | analysis | — |
 | [013](prd/pending/PRD-013-assembly-v2.md) | Assembly v2 — sub-assemblies, instance patterns, simplified reps for 1k+ instances, richer joints, exploded views, URDF export | pending | analysis + idea 6 | — |
 | [014](prd/pending/PRD-014-drawings-v2.md) | Drawings v2 — ASME/ISO sheets, title/revision blocks, assembly drawings with BOM+balloons, sections, PDF, deterministic regen | pending | analysis | 010 · 012 · 015 (soft) |

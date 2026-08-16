@@ -35,6 +35,19 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   B-reps (measure, place in assemblies, boolean against script parts); STL
   loads mesh-only (display/measure — booleans on a mesh segfault OCCT and
   are blocked at the loader). Uploads are capped at 100 MB.
+- **A parts library and package registry** — "pip for parts". A package is a
+  directory of parametric parts identified by a canonical **content-tree
+  digest**; a directory or a **git repository** is an index; a project records
+  what it depends on in two additive, machine-fact-free manifest maps that
+  merge clean. `agentcad publish` runs a nine-stage gate that builds every
+  part at **each parameter's declared range and every shipped configuration**,
+  runs its specs there, and mates every connector — the gate *is* the
+  curation. Nine COTS packages ship in `catalog/` (ISO 4762/4014/7380 screws,
+  heat-set inserts, DIN 625 bearings, 2020/3030 extrusion, NEMA 17/23) and
+  answer with no network and no configuration. `use_part` copies a part in
+  under an immutable provenance header, so a project builds with no cache, no
+  index and no network. **The publish gate is a correctness gate, not a
+  security boundary** — see [docs/packages.md](docs/packages.md).
 - **Materials with engineering properties.** 30 curated materials carry
   density plus optional modulus, yield/ultimate strength, CTE, conductivity,
   service temperature, and cost. A three-layer resolver (builtin <
@@ -247,6 +260,7 @@ def build(p):
 - [docs/architecture.md](docs/architecture.md) — processes, components, data flow
 - [docs/agent-api.md](docs/agent-api.md) — the 73-tool agent surface, MCP setup
 - [docs/geometry-ci.md](docs/geometry-ci.md) — `agentcad check`, the report schema, the GitHub Action
+- [docs/packages.md](docs/packages.md) — packages, indexes, the publish gate, the bundled catalog
 - [docs/part-authoring.md](docs/part-authoring.md) — the script contract and toolkit
 - [docs/user-guide.md](docs/user-guide.md) — the UI, surface by surface
 - [docs/roadmap.md](docs/roadmap.md) — the forward roadmap: a PRD index with statuses
@@ -262,8 +276,13 @@ profile: scripts can write only inside your project folders (+tmp) and have
 no network access — `GET /api/health` shows `"sandbox": "active"`; opt out
 with `AGENTCAD_NO_SANDBOX=1`. The server binds `127.0.0.1` only; kernel
 requests time out and the worker auto-respawns; the API key is read from the
-environment and never stored. Details in
-[docs/architecture.md](docs/architecture.md#trust-model).
+environment and never stored. **Installed packages run under exactly the same
+rules, and the publish gate is a correctness gate, not a security boundary** —
+it proves that geometry builds, specs pass and connectors mate, never intent.
+What is enforced is integrity: every fetched and every materialised package
+tree is verified against the content id its index declares. Details in
+[docs/architecture.md](docs/architecture.md#trust-model) and
+[docs/packages.md](docs/packages.md).
 
 ## Project layout
 
@@ -272,6 +291,7 @@ agentcad/          Python package: kernel worker/client, core service,
                    FastAPI server, MCP + chat agents, CLI
 frontend/          Static browser UI (ES modules + vendored Three.js)
 examples/          Three real parametric example projects
+catalog/           The bundled `agentcad-core` package index (nine COTS packages)
 docs/              Documentation (+ design spec and implementation plan)
 tests/             pytest suite (kernel, store, service, API, MCP, examples)
 ```

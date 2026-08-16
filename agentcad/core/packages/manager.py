@@ -114,13 +114,18 @@ class PackageManager:
         self._check_requirement(name, requirement)
         candidates = ([self.index_named(index)] if index else list(self.indexes))
         tried: list[dict] = []
+        # Versions a REACHABLE index says are withdrawn. The cache fallback
+        # has to know them or a yank is defeated by any warm cache — see
+        # `_resolve_cached`.
+        withdrawn: set[str] = set()
         for candidate in candidates:
-            resolution = self._resolve_in(candidate, name, requirement, tried)
+            resolution = self._resolve_in(candidate, name, requirement, tried,
+                                          withdrawn)
             if resolution is not None:
                 resolution["tried"] = tried
                 return resolution
         offline = self._resolve_cached(name, requirement, tried,
-                                       pinned_index=index)
+                                       pinned_index=index, withdrawn=withdrawn)
         if offline is not None:
             offline["tried"] = tried
             return offline
@@ -131,7 +136,8 @@ class PackageManager:
             {"package": name, "version_req": requirement, "tried": tried},
         )
 
-    def _resolve_in(self, index, name, requirement, tried) -> dict | None:
+    def _resolve_in(self, index, name, requirement, tried,
+                    withdrawn: set | None = None) -> dict | None:
         try:
             index.refresh()
             versions = index.versions(name)
@@ -140,6 +146,10 @@ class PackageManager:
             # its turn, and the reason travels to the caller.
             tried.append({"index": index.name, "reason": str(exc)})
             return None
+        if withdrawn is not None:
+            withdrawn.update(
+                version for version, entry in versions.items()
+                if isinstance(entry, dict) and entry.get("yanked"))
         if not versions:
             tried.append({"index": index.name,
                           "reason": f"does not carry {name!r}"})
@@ -189,7 +199,7 @@ class PackageManager:
         }
 
     def _resolve_cached(self, name, requirement, tried, *,
-                        pinned_index=None) -> dict | None:
+                        pinned_index=None, withdrawn=None) -> dict | None:
         """The offline path: the highest cached version that satisfies the
         requirement **and whose tree still verifies**.
 
@@ -199,12 +209,29 @@ class PackageManager:
         an index gets only cache entries that index installed: a pin is a
         statement about provenance, and answering it from another index's
         download would quietly break it.
+
+        **A version a reachable index has YANKED is skipped here too, for a
+        range.** The cache exists for "no index answered", not for "the index
+        answered no": without this, any machine that had installed the version
+        once would keep resolving it after the publisher withdrew it, and the
+        yank would only bind the machines that never had it. An
+        explicitly-named version still resolves, exactly as it does online — a
+        lock entry naming a yanked version has to keep re-installing.
         """
         versions = cache.cached_versions(name)
         if not versions:
             return None
         for version in sorted(versions, key=format.parse_version, reverse=True):
             if not format.satisfies(version, requirement):
+                continue
+            if (withdrawn and version in withdrawn
+                    and not format.VERSION_RE.match(requirement)):
+                tried.append({
+                    "index": "cache",
+                    "reason": f"{name}@{version} is cached but the index has "
+                              f"YANKED it, and {requirement} is a range — name "
+                              f"the version explicitly if you must have it",
+                })
                 continue
             report = cache.verify(name, version)
             if report["status"] != "ok":
