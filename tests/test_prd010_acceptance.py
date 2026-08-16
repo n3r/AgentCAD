@@ -969,7 +969,15 @@ def test_the_prd_records_every_divergence_the_design_measured():
     document a reader reaches first — not only in a changelog nobody opens.
     """
     text = PRD.read_text(encoding="utf-8")
-    assert "**Status:** implemented" in text
+    # The divergence record only means something once the work exists to
+    # diverge from, so the status has to be past "pending"/"in progress" — but
+    # it must not pin ONE post-implementation word: this asserted
+    # "implemented" and went red the moment the PRD moved to `completed` on
+    # merge, which is the lifecycle working, not a regression. Same trap as the
+    # hard-coded `docs/prd/completed/` path `_find_prd()` replaced.
+    assert any(f"**Status:** {state}" in text
+               for state in ("implemented", "completed")), \
+        "the PRD's status is not a post-implementation one"
     for needle in (
             "cache key",          # AC1's impossible half
             "registry",           # FR6's drain, replaced by the carrier

@@ -1,6 +1,6 @@
 # PRD-010 — Feature toolkit II: patterns, hole wizard, sheet-metal v2
 
-- **Status:** implemented — in review on `prd-010-feature-toolkit-ii` (AC1–AC8 + AC7b verified)
+- **Status:** completed — merged to main in PR #14 (AC1–AC8 + AC7b verified)
   see [As built](#as-built) for the verification table and the divergences
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
