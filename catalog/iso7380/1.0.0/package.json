@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "name": "iso7380",
+  "version": "1.0.0",
+  "summary": "ISO 7380-1 button-head socket screws, M3-M12, with axis and head-seat connectors",
+  "keywords": ["fastener", "screw", "button head", "socket", "metric", "bolt"],
+  "standards": ["ISO 7380-1"],
+  "license": "Apache-2.0",
+  "authors": [{"name": "AgentCAD", "url": "https://github.com/n3r/cad_claude"}],
+  "disclosure": "agent",
+  "min_agentcad": "0.1.0",
+  "provenance": {
+    "generator": {"name": "agentcad", "version": "0.1.0"},
+    "vendor": null
+  },
+  "parts": {
+    "button_screw": {
+      "file": "parts/button_screw.py",
+      "label": "Button-head screw",
+      "summary": "ISO 7380-1 button-head socket screw, M3-M12, cosmetic or real thread, with a rigid head-seat and a cylindrical shank axis"
+    }
+  },
+  "remix": null,
+  "requires": {"extras": []}
+}

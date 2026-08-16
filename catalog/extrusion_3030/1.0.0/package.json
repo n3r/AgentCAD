@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "name": "extrusion_3030",
+  "version": "1.0.0",
+  "summary": "30 x 30 T-slot aluminium extrusion with 8 mm slots, cut to length",
+  "keywords": ["extrusion", "t-slot", "aluminium", "framing", "3030", "profile", "cots"],
+  "standards": [],
+  "license": "Apache-2.0",
+  "authors": [{"name": "AgentCAD", "url": "https://github.com/n3r/cad_claude"}],
+  "disclosure": "agent",
+  "min_agentcad": "0.1.0",
+  "provenance": {
+    "generator": {"name": "agentcad", "version": "0.1.0"},
+    "vendor": null
+  },
+  "parts": {
+    "extrusion": {
+      "file": "parts/extrusion.py",
+      "label": "30x30 T-slot extrusion",
+      "summary": "30 x 30 T-slot bar cut to length, with rigid connectors on each face's slot centreline and on both cut ends"
+    }
+  },
+  "remix": null,
+  "requires": {"extras": []}
+}

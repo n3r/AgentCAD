@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "presets": {
+    "motor": {
+      "l51": {"params": {"body_length": 51.0}, "label": "23HS-51 (51 mm)", "description": "The short NEMA 23."},
+      "l56": {"params": {"body_length": 56.0}, "label": "23HS-56 (56 mm)", "description": "The common NEMA 23."},
+      "l76": {"params": {"body_length": 76.0}, "label": "23HS-76 (76 mm)", "description": "The long NEMA 23."}
+    }
+  }
+}

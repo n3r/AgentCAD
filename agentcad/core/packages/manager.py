@@ -57,14 +57,30 @@ class PackageManager:
         `shutil.which("git")` — the design's rule that no new probe is added.
         A service without one (a bare stub in a test) falls back to
         `_git.available`.
+
+        **`service.bundled_indexes` is appended after the configured ones**, so
+        the catalog that ships with the app answers on a fresh install with no
+        network and no config file (`cli._register_catalog` is what sets it,
+        on `_register_examples`' precedent). Appended, never prepended: an
+        index the *user* configured under the same name wins, which is the
+        only precedence rule a bundled fallback can honestly have. A service
+        that has no such attribute — every test service, and `checks.py`'s
+        ephemeral one — loads exactly what it loaded before.
         """
         self.warnings = []
         history = getattr(self._service, "history", None)
         self._indexes = index_module.load_indexes(
-            user_config.load_config(), self.warnings,
+            self._configuration(), self.warnings,
             git_available=getattr(history, "available", None),
         )
         return self._indexes
+
+    def _configuration(self) -> dict:
+        """The index configuration: the user's file, then the bundled ones."""
+        return index_module.merge_bundled(
+            user_config.load_config(),
+            getattr(self._service, "bundled_indexes", None),
+        )
 
     def index_named(self, name: str):
         for index in self.indexes:

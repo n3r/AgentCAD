@@ -2438,3 +2438,180 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   border-radius: 8px;
   padding: 0 6px;
 }
+
+/* -------------------------------------------------------- parts library */
+/* The Library dialog (PRD-011). Reuses the proposals modal's two-pane shape
+   and the inspector's .param-* type scale, so a package's parameter table
+   reads like the one the inspector shows for the part it becomes. The table
+   here is READ-ONLY — it is the declared range from the index digest, not a
+   control that writes — which is why it is markup of its own and not a call
+   into inspector.js's buildParamControls. */
+
+.lib-search {
+  width: 260px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.lib-search:focus {
+  outline: none;
+  border-color: var(--accent-ring);
+}
+
+.lib-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 300px 1fr;
+}
+.lib-list {
+  overflow: auto;
+  border-right: 1px solid var(--hairline);
+  padding: 6px 0;
+}
+.lib-detail {
+  overflow: auto;
+  min-width: 0;
+  padding: 12px 14px;
+}
+.lib-empty {
+  padding: 14px 12px;
+  color: var(--dim);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.lib-hit {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  border-left: 2px solid transparent;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+.lib-hit:hover { background: var(--raised); }
+.lib-hit.active {
+  background: var(--raised);
+  border-left-color: var(--accent);
+}
+.lib-hit-thumb {
+  flex: none;
+  width: 44px;
+  height: 34px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: var(--ink);
+}
+.lib-hit-main { min-width: 0; }
+.lib-hit-name { font-size: 12px; }
+.lib-hit-ver { color: var(--dim); font-family: var(--mono); font-size: 10px; }
+.lib-hit-summary {
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.4;
+  margin-top: 2px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.lib-hit-why {
+  margin-top: 3px;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.lib-head { display: flex; gap: 14px; align-items: flex-start; }
+.lib-preview {
+  flex: none;
+  width: 200px;
+  max-width: 40%;
+  border-radius: 6px;
+  background: var(--ink);
+}
+.lib-head-main { min-width: 0; flex: 1; }
+.lib-name { font-size: 14px; }
+.lib-summary { color: var(--dim); font-size: 12px; line-height: 1.5; margin-top: 4px; }
+
+.lib-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.lib-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.6;
+  padding: 0 6px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  color: var(--dim);
+}
+.lib-badge.disclosure {
+  border-color: var(--accent-ring);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+
+.lib-section {
+  margin-top: 14px;
+  font-size: 11px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.lib-params { margin-top: 6px; }
+.lib-param {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--hairline-soft);
+  font-size: 12px;
+}
+.lib-param-name { min-width: 96px; }
+.lib-param-range { color: var(--dim); font-family: var(--mono); font-size: 11px; }
+.lib-param-desc {
+  color: var(--faint);
+  font-size: 11px;
+  flex: 1;
+  min-width: 0;
+}
+
+.lib-insert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+}
+.lib-insert select,
+.lib-insert input {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+.lib-status { color: var(--dim); font-size: 11px; }
+.lib-status.error { color: var(--err-text); }
+
+.lib-foot { justify-content: flex-start; }
+.lib-nonclaim {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+.lib-nonclaim b { color: var(--text); }
+.lib-nonclaim .meta { color: var(--faint); }

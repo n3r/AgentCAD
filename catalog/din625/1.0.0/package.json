@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "name": "din625",
+  "version": "1.0.0",
+  "summary": "DIN 625-1 deep-groove ball bearings, 6xx and 60xx series, as interface outlines",
+  "keywords": ["bearing", "ball bearing", "deep groove", "608", "skate", "cots"],
+  "standards": ["DIN 625-1"],
+  "license": "Apache-2.0",
+  "authors": [{"name": "AgentCAD", "url": "https://github.com/n3r/cad_claude"}],
+  "disclosure": "agent",
+  "min_agentcad": "0.1.0",
+  "provenance": {
+    "generator": {"name": "agentcad", "version": "0.1.0"},
+    "vendor": null
+  },
+  "parts": {
+    "ball_bearing": {
+      "file": "parts/ball_bearing.py",
+      "label": "Deep-groove ball bearing",
+      "summary": "DIN 625-1 deep-groove ball bearing outline with a cylindrical bore axis and a rigid seating face"
+    }
+  },
+  "remix": null,
+  "requires": {"extras": []}
+}

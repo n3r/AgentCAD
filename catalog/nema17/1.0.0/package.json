@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "name": "nema17",
+  "version": "1.0.0",
+  "summary": "NEMA 17 stepper motor outline (42.3 mm frame) with a face-mount and shaft connector",
+  "keywords": ["motor", "stepper", "nema", "nema17", "outline", "cots"],
+  "standards": ["NEMA ICS 16"],
+  "license": "Apache-2.0",
+  "authors": [{"name": "AgentCAD", "url": "https://github.com/n3r/cad_claude"}],
+  "disclosure": "agent",
+  "min_agentcad": "0.1.0",
+  "provenance": {
+    "generator": {"name": "agentcad", "version": "0.1.0"},
+    "vendor": null
+  },
+  "parts": {
+    "motor": {
+      "file": "parts/motor.py",
+      "label": "NEMA 17 stepper motor",
+      "summary": "NEMA 17 motor envelope with the published bolt pattern, pilot boss and shaft, a rigid face-mount connector and a cylindrical shaft connector"
+    }
+  },
+  "remix": null,
+  "requires": {"extras": []}
+}

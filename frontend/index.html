@@ -68,6 +68,8 @@
 
     <button id="sketch-btn" class="tb-btn" title="2D sketch editor (part mode)">✏️ Sketch</button>
 
+    <button id="library-btn" class="tb-btn" title="Parts library — search and insert a package part">Library</button>
+
     <button id="import-btn" class="tb-btn" title="Import a CAD file (.step / .stp / .brep / .stl)">Import</button>
     <input id="import-input" type="file" accept=".step,.stp,.brep,.stl" hidden>
 
@@ -246,6 +248,37 @@
         <div id="proposals-list" class="prop-list"></div>
         <div id="proposals-detail" class="prop-detail"></div>
       </div>
+    </div>
+  </div>
+
+  <!-- Parts library. A plain modal on the proposals/versions pattern, not a
+       native <dialog>: PRD-026's dialog system has not landed, and one modal
+       shape in this app is worth more than one modern element. PRD-026 adopts
+       this along with the other five. -->
+  <div id="library-modal" class="modal-overlay hidden">
+    <div class="modal wide">
+      <header class="modal-head">
+        <span id="library-title" class="modal-title">Parts library</span>
+        <div class="modal-actions">
+          <input id="library-search" type="search" class="lib-search"
+                 placeholder="Search packages…  e.g. cap screw, ISO 4762"
+                 aria-label="Search packages">
+          <button id="library-close" class="tb-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div class="lib-body">
+        <div id="library-list" class="lib-list"></div>
+        <div id="library-detail" class="lib-detail"></div>
+      </div>
+      <!-- Decision 11, place 8: visible text on the install affordance, never
+           a tooltip. -->
+      <footer class="modal-foot lib-foot">
+        <span class="lib-nonclaim">
+          The publish gate is a <b>correctness</b> gate, not a security
+          boundary — package scripts run in your kernel with your privileges.
+          <span class="meta">See docs/packages.md.</span>
+        </span>
+      </footer>
     </div>
   </div>
 

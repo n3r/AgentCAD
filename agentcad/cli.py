@@ -53,6 +53,7 @@ def _build_service(projects_dir: Path, extra_writable: list[str] | None = None):
     try:
         service = AgentCADService(projects_dir, kernel, EventBus())
         _register_examples(service)
+        _register_catalog(service)
     except BaseException:
         # The workers are already running: anything that raises between here
         # and the return would leave one process per worker (~0.5 GB each)
@@ -95,6 +96,50 @@ def _register_examples(service) -> None:
                 service.store.open(child)
             except Exception as exc:  # noqa: BLE001 — a broken example must not block startup
                 print(f"warning: could not open example {child.name}: {exc}", file=sys.stderr)
+
+
+#: The bundled catalog's index name. It is the name `agentcad publish --index`
+#: takes for the seed catalog, and the name a user's own configuration would
+#: have to reuse to shadow it.
+CATALOG_INDEX = "agentcad-core"
+
+
+def bundled_index_entries() -> list[dict]:
+    """Index configuration entries for the catalog the app ships with.
+
+    One entry today: `catalog/` at the resource root, resolved exactly as
+    `examples/` is, so a frozen bundle and a source checkout agree. Empty when
+    the catalog is absent — it is **data**, and deleting it degrades the
+    product to "no packages configured" rather than breaking a code path.
+    """
+    catalog = resource_root() / "catalog"
+    if not (catalog / "index.json").is_file():
+        return []
+    return [{"name": CATALOG_INDEX, "kind": "local", "path": str(catalog),
+             "scope": "public"}]
+
+
+def _register_catalog(service) -> None:
+    """Register the bundled `catalog/` as a local package index.
+
+    `_register_examples`' precedent, one layer up: the examples are projects
+    the store opens, this is an index `service.packages` reads. It is a
+    *declaration*, not a client — `PackageManager.reload_indexes` appends it
+    after whatever the user configured, so the bundled catalog answers on a
+    fresh install with **no network and no config file** while a user index of
+    the same name still wins.
+
+    A catalog directory with no `index.json` is a warning, never a startup
+    failure.
+    """
+    entries = bundled_index_entries()
+    if not entries:
+        catalog = resource_root() / "catalog"
+        if catalog.exists():
+            print(f"warning: bundled catalog at {catalog} has no index.json; "
+                  "no packages will be offered", file=sys.stderr)
+        return
+    service.bundled_indexes = entries
 
 
 def _make_chat_engine(service, registry):
@@ -727,8 +772,13 @@ def cmd_publish(args) -> int:
         from . import config as user_config
 
         loader_warnings: list[str] = []
-        configured = index_module.load_indexes(user_config.load_config(),
-                                               loader_warnings)
+        # The bundled catalog is an index like any other here: `publish
+        # --index agentcad-core` is how the seed catalog's entries are
+        # written, and `index.json` is a build product of the gate.
+        configured = index_module.load_indexes(
+            index_module.merge_bundled(user_config.load_config(),
+                                       bundled_index_entries()),
+            loader_warnings)
         index = next((i for i in configured if i.name == args.index), None)
         if index is None:
             for warning in loader_warnings:

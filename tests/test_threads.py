@@ -57,3 +57,28 @@ def test_cap_screw_simple_vs_real():
     assert simple.is_valid and real.is_valid
     # real thread has far more faces than the cosmetic version
     assert len(real.faces()) > len(simple.faces())
+
+
+def test_hex_bolt_constructs():
+    """PRD-011: `hex_bolt` imported `HexBolt`, which the pinned bd_warehouse
+    does not export — every call raised `ImportError`, and nothing in the tree
+    called it, so nothing caught it. This is the call that would have."""
+    from agentcad.toolkit.threads import hex_bolt
+
+    bolt = hex_bolt("M8-1.25", 20, simple=True)
+    assert bolt.is_valid
+    box = bolt.bounding_box()
+    # ISO 4014 M8: across flats s = 13.0, head height k = 5.3, and the shank
+    # runs to -length from the under-head bearing face at z = 0.
+    assert box.size.Y == pytest.approx(13.0, abs=0.05)
+    assert box.max.Z == pytest.approx(5.3, abs=0.05)
+    assert box.min.Z == pytest.approx(-20.0, abs=1e-6)
+
+
+def test_hex_bolt_real_thread_has_more_faces():
+    from agentcad.toolkit.threads import hex_bolt
+
+    simple = hex_bolt("M8-1.25", 20, simple=True)
+    real = hex_bolt("M8-1.25", 20, simple=False)
+    assert real.is_valid
+    assert len(real.faces()) > len(simple.faces())

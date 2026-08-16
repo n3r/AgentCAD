@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "presets": {
+    "extrusion": {
+      "l100": {"params": {"length": 100.0}, "label": "100 mm", "description": "A short strut."},
+      "l250": {"params": {"length": 250.0}, "label": "250 mm", "description": "A typical printer-frame member."},
+      "l500": {"params": {"length": 500.0}, "label": "500 mm", "description": "A half-metre bar."},
+      "l1000": {"params": {"length": 1000.0}, "label": "1000 mm", "description": "A full-length bar - the longest this part builds."}
+    }
+  }
+}

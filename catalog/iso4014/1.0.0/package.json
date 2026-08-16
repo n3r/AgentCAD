@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "name": "iso4014",
+  "version": "1.0.0",
+  "summary": "ISO 4014 hex-head bolts, M4-M12, with axis and head-seat connectors",
+  "keywords": ["fastener", "bolt", "hex head", "hex bolt", "metric", "screw"],
+  "standards": ["ISO 4014"],
+  "license": "Apache-2.0",
+  "authors": [{"name": "AgentCAD", "url": "https://github.com/n3r/cad_claude"}],
+  "disclosure": "agent",
+  "min_agentcad": "0.1.0",
+  "provenance": {
+    "generator": {"name": "agentcad", "version": "0.1.0"},
+    "vendor": null
+  },
+  "parts": {
+    "hex_bolt": {
+      "file": "parts/hex_bolt.py",
+      "label": "Hex-head bolt",
+      "summary": "ISO 4014 partially threaded hex bolt, M4-M12, cosmetic or real thread, with a rigid head-seat and a cylindrical shank axis"
+    }
+  },
+  "remix": null,
+  "requires": {"extras": []}
+}

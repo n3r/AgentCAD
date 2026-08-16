@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "presets": {
+    "ball_bearing": {
+      "b608": {"params": {"designation": "608"}, "label": "608 (8 x 22 x 7)", "description": "The skate/3D-printer bearing: 8 mm bore, 22 mm OD, 7 mm wide."},
+      "b625": {"params": {"designation": "625"}, "label": "625 (5 x 16 x 5)", "description": "5 mm bore miniature bearing."},
+      "b6000": {"params": {"designation": "6000"}, "label": "6000 (10 x 26 x 8)", "description": "10 mm bore, 60xx light series."},
+      "b6002": {"params": {"designation": "6002"}, "label": "6002 (15 x 32 x 9)", "description": "15 mm bore, the largest in this package."}
+    }
+  }
+}

@@ -633,6 +633,30 @@ class GitIndex(LocalIndex):
 _PLANNED = {"cloud": "cloud indexes are not available in this build"}
 
 
+def merge_bundled(config: dict | None, bundled) -> dict:
+    """``config`` with ``bundled`` index entries **appended**.
+
+    The app ships a catalog (`cli._register_catalog`) and it has to answer on
+    a fresh install with no config file at all. Appended and never prepended:
+    an index the user configured under the same name wins, which is the only
+    precedence rule a bundled fallback can honestly have. With nothing bundled
+    the document is returned unchanged, so every caller that has no bundled
+    entries loads exactly what it loaded before.
+    """
+    doc = dict(config or {})
+    entries = [dict(entry) for entry in (bundled or [])
+               if isinstance(entry, dict)]
+    if not entries:
+        return doc
+    declared = list(doc.get("indexes") or [])
+    named = {entry.get("name") for entry in declared if isinstance(entry, dict)}
+    extra = [entry for entry in entries if entry.get("name") not in named]
+    if not extra:
+        return doc
+    doc["indexes"] = declared + extra
+    return doc
+
+
 def load_indexes(config: dict, warnings: list | None = None, *,
                  git_available=None) -> list:
     """Build the configured indexes, in precedence order.
