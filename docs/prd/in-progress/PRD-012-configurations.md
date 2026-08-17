@@ -1,6 +1,6 @@
 # PRD-012 — Configurations
 
-- **Status:** pending
+- **Status:** in progress — design spec `docs/superpowers/specs/2026-08-17-configurations-design.md`, plan `docs/superpowers/plans/2026-08-17-configurations.md`
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
@@ -87,8 +87,8 @@ spec status table) summarizes the family.
 through PRD-011's `validate_configuration`; see FR1 for the entry shape and
 why the parameters are wrapped).
 `build_configs {project, part_id}` returns per-config
-`{name, ok, metrics, warnings}` in one call, built in parallel on the
-kernel pool. `export_part {…, config: "L"}` writes `flange_L.step`.
+`{name, ok, metrics, warnings}` in one call (built serially and
+de-duplicated by cache key — see FR5). `export_part {…, config: "l"}` writes `flange_l.step` (names are lowercase by the frozen grammar; `label` carries the display name).
 `set_assembly` instances accept `config`; `get_assembly` resolves each
 instance with its config's geometry and mass. Removing a config that an
 instance references returns `conflict_error` naming the referrers.
@@ -149,6 +149,14 @@ metrics); the human flips the switcher to XL and looks.
   part records — `use_part` applies the chosen preset's params as ordinary
   overrides and records the preset *name* in its provenance header — so this
   PRD can adopt the whole map with a one-line copy and no migration.
+
+  *Amended at design:* a **declared** configuration is range- and
+  enum-strict (an out-of-range value is refused at `set_part_configs`, the
+  rule the publish gate already applies to presets), while an explicit
+  `set_params` override on top keeps today's clamp-with-a-warning
+  semantics. Values are normalized on write exactly as `set_params`
+  normalizes (int/float coercion, enum canonicalization) so a configuration
+  spelled `3` and one spelled `3.0` are one configuration and one cache key.
 - FR2. `set_part_configs {project, part_id, configs}` replaces the map
   (the `set_project_materials` full-replace pattern); `get_part` and
   `get_project` expose `configs` and `active_config`; parts without
@@ -167,10 +175,14 @@ metrics); the human flips the switcher to XL and looks.
 **Family builds**
 - FR5. `build_configs {project, part_id?, configs?}` builds each named
   config (default: all configs of the part; omitting `part_id` covers
-  every configured part in the project) through the kernel pool in
-  parallel (per-config `affinity`), returning `{configs: [{name, ok,
+  every configured part in the project), returning `{configs: [{name, ok,
   metrics, warnings, spec_results?}]}`. Per-config failures are reported
-  in place; the matrix never aborts on the first failure.
+  in place; the matrix never aborts on the first failure. *(Amended at
+  design: the matrix builds serially and de-duplicates by cache key —
+  PRD-011 measured the same fan-out at 1.08×/1.40×/1.17× against a
+  pre-registered 1.5× bar and deleted it, and two configs that share a key
+  must never race one cache entry. A fan-out may return only behind a
+  fresh pre-registered bar.)*
 - FR6. With PRD-003, specs evaluate per config and `spec_results` appears
   in the matrix; with PRD-004, CI builds all configs of changed parts
   (that PRD's requirement — restated here as the forward contract).
@@ -180,9 +192,11 @@ metrics); the human flips the switcher to XL and looks.
   gain the config suffix (`<part_id>_<config>.<fmt>`); base-state naming
   is unchanged.
 - FR8. `generate_drawing` gains `config?` and, for configured parts, an
-  optional tabulated dimension table (per-config values of the overall and
-  PMI-toleranced dims); full drawing-table depth (formats, placement)
-  belongs to PRD-014.
+  optional tabulated dimension table (per-config values of the configured
+  parameters and the overall extents, measured from each config's built
+  geometry); PMI-toleranced dims per config and full drawing-table depth
+  (formats, placement) belong to PRD-014. *(Amended at design: v1 columns
+  are the configured parameters plus overall X/Y/Z.)*
 - FR9. Forward BOM contract (PRD-015): a `(part, config)` pair is a
   distinct BOM line identity; `get_assembly` mass roll-ups use each
   instance's bound config.
@@ -277,8 +291,9 @@ Events: `project_changed` on config edits; rebuild events gain `config`.
 - AC3. `set_part_configs` removing a config bound to an assembly instance
   returns `conflict_error` naming the instance; after clearing the binding
   the removal succeeds (test) — the roadmap's conflict done-when.
-- AC4. `export_part {config: "L"}` writes `flange_L.step`; base export
-  naming is unchanged (test).
+- AC4. `export_part {config: "l"}` writes `flange_l.step`; base export
+  naming is unchanged (test). *(Amended at design: config names match the
+  frozen lowercase grammar, so the suffix is the name as declared.)*
 - AC5. Two configs with identical resolved params share one cache entry;
   distinct configs get distinct entries; toggling `active_config` twice
   rebuilds from cache (test).
