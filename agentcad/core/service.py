@@ -217,7 +217,7 @@ class AgentCADService:
                     "params": entry.get("params", {}),
                     "kind": entry.get("kind", "script"),
                     "source": entry.get("source"),
-                    "configs": entry.get("configs", {}),
+                    "configs": entry.get("configs") or {},
                     "active_config": entry.get("active_config"),
                     "state": status["state"] if status else "unbuilt",
                 }
@@ -665,6 +665,14 @@ class AgentCADService:
             raise ValidationError(
                 f"part {part_id!r} is a reference part and has no configurations"
             )
+        if not isinstance(config, str):
+            # `app.py` forwards `body.get("config")` unvalidated, so an
+            # unhashable value would raise TypeError (a 500) out of the
+            # membership test below rather than a validation_error.
+            raise ValidationError(
+                "config must be a configuration name (a string)",
+                {"got": type(config).__name__},
+            )
         if not record.configs or config not in record.configs:
             raise ValidationError(
                 f"part {part_id!r} declares no configuration {config!r}",
@@ -750,7 +758,10 @@ class AgentCADService:
                                   status_key=None, config=config)
         self._config_status[self._config_status_key(proj, part_id, config)] = {
             "state": "ok" if result["ok"] else "error",
-            "cache_key": key,
+            # The key the build RETURNED: `_build_with` recomputes it from the
+            # record, and a memo holding a key the cache never saw would miss
+            # (or, worse, hit) for the rest of the process.
+            "cache_key": result.get("cache_key", key),
             "metrics": result.get("metrics"),
             "warnings": result.get("warnings", []),
             "lods": result.get("lods", []),
@@ -790,7 +801,7 @@ class AgentCADService:
         cache = self.store.cache_dir(proj)
         mesh_path = cache / f"{key}.acm"
         metrics_path = cache / f"{key}.metrics.json"
-        tag = {"config": config} if config else {}
+        tag = {"config": config} if config is not None else {}
 
         self.bus.publish(
             {"type": "rebuild_started", "project": proj, "part": part_id, **tag}

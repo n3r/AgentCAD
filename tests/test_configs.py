@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 
 from agentcad.core.materials import DEFAULT_MATERIAL
 from agentcad.core.model import InstanceSpec, PartRecord, ValidationError
-from agentcad.core.service import MESH_TOLERANCE
+from agentcad.core.service import MESH_TOLERANCE, _divergence
 from agentcad.core.tools import build_registry
 from agentcad.server.app import create_app
 
@@ -144,6 +144,23 @@ def test_an_instance_writes_its_config_only_when_bound():
     assert bound["config"] == "l"
 
 
+def test_divergence_is_semantic_and_ignores_a_dangling_active_config():
+    """`get_part.status.diverged` must never fire on state the geometry does not
+    have: a dangling `active_config` resolves as base (so nothing diverges),
+    while an override of a parameter the configuration DOES set diverges under
+    that parameter's name."""
+    dangling = record(params={"thick": 20.0}, configs=THREE_SIZE_CONFIGS,
+                      active_config="xl")
+    assert _divergence(dangling) == (False, [])
+    assert _divergence(record(params={"thick": 20.0})) == (False, [])
+    overridden = record(params={"outer_d": 210.0}, configs=THREE_SIZE_CONFIGS,
+                        active_config="l")   # the config sets outer_d = 200
+    assert _divergence(overridden) == (True, ["outer_d"])
+    equal = record(params={"outer_d": 200.0}, configs=THREE_SIZE_CONFIGS,
+                   active_config="l")
+    assert _divergence(equal) == (False, [])
+
+
 # ----------------------------------------------------------------- the store
 
 
@@ -256,6 +273,23 @@ def test_an_unbound_instance_is_still_written_without_the_key(service):
     store.set_instances("demo", [InstanceSpec(id="f1", part="flange")])
     assert "config" not in store.manifest("demo")["assembly"]["instances"][0]
     assert store.instances("demo")[0].config is None
+
+
+def test_a_hand_edited_null_configs_reads_as_an_empty_map(service):
+    """`get_part` and `get_project` must agree: a hand edit (or a merge) that
+    leaves `"configs": null` in project.json is a part with no family, not a
+    `None` the UI has to special-case."""
+    path = service.store.path_of("demo") / "project.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    entry = next(p for p in manifest["parts"] if p["id"] == "flange")
+    entry["configs"] = None
+    entry["active_config"] = None
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    row = next(p for p in service.get_project("demo")["parts"]
+               if p["id"] == "flange")
+    assert row["configs"] == {} and row["active_config"] is None
+    assert service.store.get_part("demo", "flange").configs is None
 
 
 # ------------------------------------------------------------- normalization
@@ -397,6 +431,30 @@ def _counting(service, monkeypatch) -> dict:
     return calls
 
 
+#: A script that refuses to build above 20 mm — the deterministic failure a
+#: configuration can carry (an out-of-range value would be clamped by the
+#: worker with a warning and build fine).
+FRAGILE_SCRIPT = '''\
+from build123d import *
+
+PARAMS = {
+    "size": {"default": 10.0, "min": 1.0, "max": 50.0, "unit": "mm",
+             "description": "cube edge"},
+}
+
+def build(p):
+    if p.size > 20:
+        raise ValueError("size above 20 mm is not buildable")
+    return Box(p.size, p.size, p.size)
+'''
+
+#: One buildable member, one that raises — same script, same part.
+FRAGILE_CONFIGS = {
+    "ok": {"params": {"size": 10.0}, "label": "Buildable"},
+    "bad": {"params": {"size": 30.0}, "label": "Refuses"},
+}
+
+
 def _drain(q: queue.Queue) -> list[dict]:
     out = []
     while True:
@@ -431,6 +489,10 @@ class TestFlangeFamily:
         # cache key is the script's content, so it shares flange's base entry).
         svc.store.add_part("demo", "plate", "Plate", DEFAULT_MATERIAL,
                            FLANGE_SCRIPT)
+        # A configured part with one member that cannot build: the failure path.
+        svc.store.add_part("demo", "fragile", "Fragile", DEFAULT_MATERIAL,
+                           FRAGILE_SCRIPT)
+        svc.store.update_part_entry("demo", "fragile", configs=FRAGILE_CONFIGS)
         return projects
 
     @pytest.fixture
@@ -524,6 +586,31 @@ class TestFlangeFamily:
         assert second["cache_key"] == first["cache_key"]
         assert second["metrics"] == first["metrics"]
         assert "build" not in calls
+        assert demo._status == {}      # the sidecar hit writes no badge either
+
+    def test_a_failing_configuration_build_is_memoized_and_stays_quiet(
+            self, demo, monkeypatch):
+        """A red configuration is a result, not an exception — and it is still
+        not the part's badge (`_status` stays empty), it tags its
+        `rebuild_failed`, and the second ask costs no kernel call and publishes
+        nothing."""
+        events = demo.bus.subscribe()
+        first = demo._ensure_config_built("demo", "fragile", "bad")
+        assert first["ok"] is False
+        assert "not buildable" in json.dumps(first["error"])
+        failed = [e for e in _drain(events) if e["type"] == "rebuild_failed"]
+        assert len(failed) == 1 and failed[0]["config"] == "bad"
+        assert demo._status == {}
+        memo = demo._config_status[(demo.store.lock_key("demo"), "fragile",
+                                    "bad")]
+        assert memo["state"] == "error" and memo["metrics"] is None
+
+        calls = _counting(demo, monkeypatch)
+        second = demo._ensure_config_built("demo", "fragile", "bad")
+        assert second == {"ok": False, "error": first["error"]}
+        assert calls == {} and _drain(events) == []
+        # ...and the sibling that builds is unaffected.
+        assert demo._ensure_config_built("demo", "fragile", "ok")["ok"] is True
 
     # ------------------------------------------------------------- meshes
 
@@ -592,6 +679,22 @@ class TestFlangeFamily:
         assert response.status_code == 200, response.text
         assert Path(response.json()["path"]).name == "flange_m.stl"
         assert response.json()["config"] == "m"
+
+    def test_a_non_string_config_from_the_route_is_a_refusal(self, demo):
+        """`app.py` forwards `body.get("config")` unvalidated, so an unhashable
+        value must be refused by `_record_for` (422) rather than raising a
+        TypeError out of the membership test (500)."""
+        registry = build_registry(demo)
+        app = create_app(demo, registry, extra_allowed_hosts={"testserver"})
+        client = TestClient(app, base_url="http://127.0.0.1")
+        for bad in ({}, [], 7):
+            response = client.post(
+                "/api/projects/demo/parts/flange/export",
+                json={"format": "stl", "config": bad})
+            assert response.status_code == 422, (bad, response.text)
+            assert response.json()["error"]["type"] == "ValidationError"
+        with pytest.raises(ValidationError):
+            demo.mesh_info("demo", "flange", config=["l"])
 
     # ------------------------------------------------------- exposed state
 

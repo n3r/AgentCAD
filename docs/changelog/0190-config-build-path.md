@@ -84,6 +84,21 @@ payloads.
   `flange_l.step` naming plus the echoed config, the tool schema and the HTTP
   route forwarding it, and the four divergence cases.
 
+- **Fix round 1** (review minors, same slice): `_ensure_config_built` memoizes
+  the key the build **returned** (`result.get("cache_key", key)`); `_record_for`
+  refuses a non-string `config` with a `ValidationError` **before** the
+  membership test, because `app.py` forwards `body.get("config")` unvalidated
+  and an unhashable value used to raise `TypeError` — a 500 where a
+  `validation_error` (422) belongs; `get_project` reads
+  `entry.get("configs") or {}` so a hand-edited `"configs": null` answers `{}`
+  exactly as `get_part` does; and `_build_with`'s event tag tests
+  `config is not None` like every other site. Four covering tests: the 422
+  through the export route, the null-`configs` row, a failing configuration
+  build (no `_status` badge, tagged `rebuild_failed`, memoized error, silent and
+  kernel-free second ask), and `_divergence`'s dangling-`active_config` and
+  overridden-parameter branches on a bare `PartRecord`; plus
+  `assert demo._status == {}` on the shared-cache-key test.
+
 ## Files
 - `agentcad/core/service.py` — `_UNSET`, `_config_status`, `_record_for`,
   `_config_status_key`, `_ensure_config_built`, `_build_with` (extracted),
