@@ -41,6 +41,9 @@ datas = [
     # App resources, resolved at runtime through agentcad._resources.resource_root().
     (str(REPO_ROOT / "frontend"), "frontend"),
     (str(REPO_ROOT / "examples"), "examples"),
+    # The seed package catalog: the local index cli._register_catalog declares,
+    # so a frozen app searches and installs with no network and no config.
+    (str(REPO_ROOT / "catalog"), "catalog"),
 ]
 # build123d ships non-Python data: bundled fonts (data/fonts/...) used by
 # text rendering, and template_render.js.

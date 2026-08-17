@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "name": "thread_insert",
+  "version": "1.0.0",
+  "summary": "Heat-set threaded inserts (ruthex catalogue) in five sizes - M2, M2.5, M3, M4, M6 - for 3D-printed bosses",
+  "keywords": ["fastener", "insert", "heat set", "threaded insert", "brass", "3d printing", "metric"],
+  "standards": [],
+  "license": "Apache-2.0",
+  "authors": [{"name": "AgentCAD", "url": "https://github.com/n3r/cad_claude"}],
+  "disclosure": "agent",
+  "min_agentcad": "0.1.0",
+  "provenance": {
+    "generator": {"name": "agentcad", "version": "0.1.0"},
+    "vendor": null
+  },
+  "parts": {
+    "heat_set_insert": {
+      "file": "parts/heat_set_insert.py",
+      "label": "Heat-set threaded insert",
+      "summary": "Knurled brass heat-set insert in the five populated ruthex sizes (M2, M2.5, M3, M4, M6; the M3 and M4 are the short 4.0 mm rows), with a rigid flange seat and a cylindrical bore axis"
+    }
+  },
+  "remix": null,
+  "requires": {"extras": []}
+}

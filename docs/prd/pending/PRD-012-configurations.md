@@ -81,9 +81,11 @@ nobody ships an unnamed variant unknowingly. Exports and drawings made
 while a config is active carry its name. A matrix view (config × metrics /
 spec status table) summarizes the family.
 
-**Agent path.** `set_part_configs {project, part_id, configs: {"S": {...},
-"M": {...}, "L": {...}}}` declares the family (validated like `set_params`
-— typed, clamped numerics with warnings, enum membership).
+**Agent path.** `set_part_configs {project, part_id, configs: {"s": {"params":
+{...}, "label": "Small"}, "m": {...}, "l": {...}}}` declares the family
+(validated like `set_params` — typed values, ranges and enum membership —
+through PRD-011's `validate_configuration`; see FR1 for the entry shape and
+why the parameters are wrapped).
 `build_configs {project, part_id}` returns per-config
 `{name, ok, metrics, warnings}` in one call, built in parallel on the
 kernel pool. `export_part {…, config: "L"}` writes `flange_L.step`.
@@ -98,11 +100,55 @@ metrics); the human flips the switcher to XL and looks.
 ## Functional requirements
 
 **Declaration & resolution**
-- FR1. Part records in `project.json` gain `configs: {name → {param:
-  value}}`; names match `[a-z0-9][a-z0-9_-]{0,31}`. Override sets validate
-  against the part's PARAMS exactly as `set_params` does: typed values,
-  numeric clamping to min/max with warnings, enum membership enforced,
-  unknown names rejected before anything is written.
+- FR1. Part records in `project.json` gain `configs: {name → configuration}`,
+  where a **configuration** is the schema PRD-011 froze and already ships:
+
+  ```jsonc
+  "configs": {
+    "m": {
+      "params": {"width": 10.0, "height": 4.0},   // required
+      "label": "Medium",                          // optional
+      "description": "…"                          // optional
+    }
+  }
+  ```
+
+  Names match `[a-z0-9][a-z0-9_-]{0,31}`; unknown keys in an entry are
+  rejected. `params` validates against the part's PARAMS exactly as
+  `set_params` does: typed values, numeric range enforced, enum membership
+  enforced, unknown names rejected before anything is written — by calling
+  `agentcad.core.packages.format.validate_configuration(entry, params_spec)`,
+  which is **the one validator both features use**, not a second copy of the
+  rules.
+
+  > **Amended by PRD-011** (design spec `2026-08-16-parts-library-registry-design.md`,
+  > Decision 4, and its "PRD divergences to fold back" item 1). This FR
+  > originally specified the *flat* map `configs: {name → {param: value}}` —
+  > the parameter map **was** the entry. That shape is not extensible, and its
+  > failure mode is ambiguity rather than inconvenience: `{"s": {"width": 10,
+  > "label": "Small"}}` is unreadable the day a part declares a parameter
+  > called `label` — and part scripts declare arbitrary parameter names,
+  > including `label`, `params` and `description`. No reserved-prefix trick
+  > fixes that without being uglier than the wrapper. Two further reasons: the
+  > metadata is not speculative (PRD-012's own inspector switcher needs a
+  > display name, PRD-014's dimension tables a caption, PRD-007's customizer a
+  > description, PRD-031's listing both), and the wrapper merges better —
+  > `manifest_merge` reaches `parts.<id>.configs.<name>.params.<param>`
+  > key-wise, which is FR12 at finer granularity than a flat map could give.
+  > The cost is one nesting level; that is the whole cost. The schema is
+  > **frozen** — PRD-011's `presets.json` publishes these objects today
+  > (`catalog/*/presets.json`), so changing it now would break published
+  > packages. `tests/test_packages_format.py` pins both halves: a
+  > PRD-012-shaped `configs` map validates through `validate_configuration`
+  > unchanged, and the flat shape is refused with the ambiguity named in the
+  > message.
+
+  One word for the object, one for the place: the object is a
+  **configuration**; `preset` names only where one lives (a configuration a
+  package publishes). PRD-011 deliberately does **not** write `configs` into
+  part records — `use_part` applies the chosen preset's params as ordinary
+  overrides and records the preset *name* in its provenance header — so this
+  PRD can adopt the whole map with a one-line copy and no migration.
 - FR2. `set_part_configs {project, part_id, configs}` replaces the map
   (the `set_project_materials` full-replace pattern); `get_part` and
   `get_project` expose `configs` and `active_config`; parts without
@@ -153,7 +199,13 @@ metrics); the human flips the switcher to XL and looks.
   `delete_part`'s existing instance-reference conflict is unchanged.
 - FR12. The PRD-001 manifest merge driver merges `configs` key-wise per
   config name: concurrent additions of different configs merge clean;
-  divergent edits of the same config conflict explicitly.
+  divergent edits of the same config conflict explicitly. With FR1's wrapped
+  entry the driver can reach `parts.<id>.configs.<name>.params.<param>`, so
+  two branches editing *different parameters of the same config* also merge
+  clean — a granularity the flat map could not have offered. (PRD-011's
+  `packages`/`packages_lock` heads are the precedent, and the counter-example:
+  a **lock entry** is merged atomically on purpose, because one side's version
+  with the other's content id is an entry nobody authored.)
 - FR13. Rebuild events carry the config being built (`rebuild_started`/
   `rebuild_finished` gain optional `config`) so the UI can show matrix
   progress.

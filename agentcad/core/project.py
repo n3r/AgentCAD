@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Callable
 
@@ -416,7 +417,28 @@ class ProjectStore:
 
     @staticmethod
     def _atomic_write(path: Path, data: bytes) -> None:
+        """Write ``data`` to ``path``, atomically, **per writer**.
+
+        The staging name carries a random suffix, and that is the whole of the
+        fix recorded in changelog 0181: it used to be the fixed
+        ``<name>.tmp``, so two concurrent writers opened the **same** staging
+        file, interleaved their bytes into it, and then each `os.replace`d the
+        mixture into place. `os.replace` was atomic the whole time — the file
+        being replaced *from* was the shared one. The failure was not a lost
+        update but a **corrupt `project.json`** ("Extra data" out of
+        `json.loads`), which is the difference between losing one write and
+        losing the project.
+
+        The `.staging-<rand>` idiom is `cache.install`'s and
+        `LocalIndex.publish`'s, for the same reason and now spelled the same
+        way. Callers that need mutual exclusion still need it — this makes a
+        concurrent write lose, never corrupt.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_bytes(data)
-        os.replace(tmp, path)
+        tmp = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
+        try:
+            tmp.write_bytes(data)
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise

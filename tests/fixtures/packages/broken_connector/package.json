@@ -1,0 +1,19 @@
+{
+  "format": 1,
+  "name": "broken_connector",
+  "version": "1.0.0",
+  "summary": "A bracket whose connectors() returns a malformed axis (AC2b)",
+  "keywords": ["fixture"],
+  "standards": [],
+  "license": "Apache-2.0",
+  "authors": [{"name": "AgentCAD"}],
+  "disclosure": "agent",
+  "min_agentcad": "0.1.0",
+  "parts": {
+    "bracket": {
+      "file": "parts/bracket.py",
+      "label": "Bracket",
+      "summary": "Builds at every extreme; its connector will not resolve"
+    }
+  }
+}

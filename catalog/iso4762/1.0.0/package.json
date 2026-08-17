@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "name": "iso4762",
+  "version": "1.0.0",
+  "summary": "ISO 4762 socket-head cap screws, M3-M12, with axis and head-seat connectors",
+  "keywords": ["fastener", "screw", "socket head", "cap screw", "metric", "bolt"],
+  "standards": ["ISO 4762"],
+  "license": "Apache-2.0",
+  "authors": [{"name": "AgentCAD", "url": "https://github.com/n3r/cad_claude"}],
+  "disclosure": "agent",
+  "min_agentcad": "0.1.0",
+  "provenance": {
+    "generator": {"name": "agentcad", "version": "0.1.0"},
+    "vendor": null
+  },
+  "parts": {
+    "cap_screw": {
+      "file": "parts/cap_screw.py",
+      "label": "Socket-head cap screw",
+      "summary": "ISO 4762 cap screw, M3-M12, cosmetic or real thread, with a rigid head-seat and a cylindrical shank axis"
+    }
+  },
+  "remix": null,
+  "requires": {"extras": []}
+}

@@ -631,6 +631,60 @@ whole-manifest writes are turn-locked only.
 `presence_changed`, `claim_changed`. None of them is `project_changed` — a
 comment is not a model change, so it triggers no snapshot and no rebuild.
 
+## Packages, indexes and the publish gate
+
+`agentcad/core/packages/` is an eleven-module subpackage that touches no
+geometry — every module is asserted OCP-free in a fresh interpreter — plus one
+worker handler pack:
+
+| module | contents |
+|---|---|
+| `content.py` | the content id (a canonical tree digest), the inventory, the ceilings, path containment |
+| `format.py` | `package.json` / `index.json` / configuration schemas, the hand-rolled version grammar |
+| `cache.py` | `~/.agentcad/packages/<name>/<version>/`, sibling receipts, atomic install, verification |
+| `lockfile.py` | the two additive manifest maps, and the rule that neither holds a machine fact |
+| `indexes.py` | the client protocol, `LocalIndex`, `GitIndex`, and the publisher |
+| `_git.py` | a second, small git runner — *not* `history._run` |
+| `search.py` | structured filters, the deterministic ranking, the semantic seam |
+| `provenance.py` | header emit/parse and status-on-read |
+| `gate.py` | the nine-stage pipeline over an ephemeral service |
+| `from_step.py` | the vendor-STEP scaffold (FR13) |
+| `manager.py` | `PackageManager` — the façade at `service.packages` |
+
+Reached through the ordinary extension points: the tool pack
+`core/tools_packages.py` (seven tools, and **no gate provider** — `pac` sorts
+before `tools_proposals`' unconditional `gate_providers = []`), the route pack
+`server/routes_packages.py`, `frontend/js/library.js`, the CLI's `package` and
+`publish` subcommands, and the worker handler `kernel/handlers/reffaces.py`
+(the faces of an imported solid, which `face_info` cannot read because it
+takes a script).
+
+```
+~/.agentcad/packages/<name>/<version>/     the content-verified cache
+~/.agentcad/packages/<name>/.receipts/     machine facts, never committed
+~/.agentcad/indexes/<name>/                a git index's checkout, at a pinned ref
+catalog/                                   the bundled `agentcad-core` index
+<project>/project.json  packages / packages_lock   what you asked for / what you got
+```
+
+**The gate is orchestration, not measurement.** It materialises the package
+into a scratch project inside a throwaway cell, drives a *second, ephemeral*
+`AgentCADService` over the **same warm kernel** with `bus.on_publish`,
+`store.branch_resolver` and `store.write_guard` all nulled, and sequences
+`inspect` → `set_params` → `_rebuild` (optionally fanned out across the pool)
+→ `SpecRunner.run` → `connectors` + `resolve_mates` → `render_view`, shaping
+PRD-004's report. Unlike PRD-004's runner this one really writes, so nulling
+the write guard is load-bearing rather than prophylactic. The report is a
+PRD-004 document plus `package`, `note` and the verdict.
+
+**`use_part` copies in.** A materialised package part is an *ordinary part* at
+every seam — rebuild, cache key, git history, proposals packet, `checks --ref`,
+anchors, comments — which reference resolution would have touched all of. The
+price is that consumers do not get fixes automatically; `list_packages`
+reports `latest` and `stale`.
+
+Full reference: [`docs/packages.md`](packages.md).
+
 ## Anatomy of one rebuild
 
 1. A client changes a parameter (`PATCH .../params`, `set_params` tool, or a
@@ -693,3 +747,15 @@ binds `127.0.0.1` only; kernel requests time out; the worker is isolated so
 kernel crashes never take down the app; scripts live in the project directory
 where humans review them; the Anthropic API key is read from the environment
 and never persisted. Windows/Linux confinement is on the roadmap.
+
+**Installed packages change nothing about that, and the publish gate is not a
+security boundary.** A package is Python; `use_part` copies it into the
+project and the next rebuild executes it in the same confined worker with the
+same privileges. The gate proves that geometry builds, that specs pass and
+that connectors mate — never intent. What *is* enforced is content integrity:
+an index declares a content id, the cache verifies every fetched tree against
+that declaration before installing, and `use_part` re-verifies the whole tree
+on every materialisation, so a tampered download, checkout or cache is
+refused. An index that lies about both the tree and the id is a compromised
+index; the `signatures` slot is reserved and empty for that, and PRD-006 is
+the confinement backstop.

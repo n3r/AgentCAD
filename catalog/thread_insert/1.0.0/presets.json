@@ -1,0 +1,12 @@
+{
+  "format": 1,
+  "presets": {
+    "heat_set_insert": {
+      "m2": {"params": {"size": "M2-0.4-4"}, "label": "M2 x 4.0", "description": "ruthex M2 heat-set insert, 4.0 mm tall."},
+      "m2_5": {"params": {"size": "M2.5-0.45-5.7"}, "label": "M2.5 x 5.7", "description": "ruthex M2.5 heat-set insert, 5.7 mm tall."},
+      "m3": {"params": {"size": "M3-0.5-4.0"}, "label": "M3 x 4.0", "description": "ruthex short M3 heat-set insert (GE-M3Sx40-002), 4.0 mm tall."},
+      "m4": {"params": {"size": "M4-0.7-4.0"}, "label": "M4 x 4.0", "description": "ruthex short M4 heat-set insert (GE-M4Sx04-1), 4.0 mm tall."},
+      "m6": {"params": {"size": "M6-1-6.8"}, "label": "M6 x 6.8", "description": "ruthex M6 heat-set insert, 6.8 mm tall."}
+    }
+  }
+}

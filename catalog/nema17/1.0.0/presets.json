@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "presets": {
+    "motor": {
+      "l34": {"params": {"body_length": 34.0}, "label": "17HS-34 (34 mm)", "description": "The short NEMA 17 - printer extruders and light axes."},
+      "l40": {"params": {"body_length": 40.0}, "label": "17HS-40 (40 mm)", "description": "The common NEMA 17."},
+      "l48": {"params": {"body_length": 48.0}, "label": "17HS-48 (48 mm)", "description": "The long NEMA 17 - more holding torque, more mass."}
+    }
+  }
+}

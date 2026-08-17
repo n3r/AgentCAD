@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from agentcad.core import manifest_merge
 from agentcad.core.manifest_merge import (
     CONFLICT_KEYS,
     apply_choices,
@@ -925,3 +926,185 @@ def test_x13_a_dotted_instance_id_resolves_to_the_real_instance():
     assert entry_of(resolved["assembly"]["instances"], "a.1")["position"] == [
         2.0, 0.0, 0.0
     ]
+
+
+# ------------------------------------------- PRD-011: the two package maps
+
+
+def pkg(version="1.0.0", index="agentcad-core", content_id="sha256:" + "9f" * 32):
+    return {"version": version, "content_id": content_id, "index": index,
+            "source": {"kind": "local", "path": "catalog"}}
+
+
+def with_packages(**locked):
+    doc = manifest(parts=[part("flange")])
+    doc["packages"] = {
+        name: {"version_req": "^1.0.0", "index": entry["index"]}
+        for name, entry in locked.items()
+    }
+    doc["packages_lock"] = dict(locked)
+    return doc
+
+
+def test_two_branches_adding_different_packages_merge_clean():
+    """The whole point of the key-wise heads: adding `iso4762` on one branch
+    and `din625` on another is not a conflict."""
+    base = manifest(parts=[part("flange")])
+    ours = with_packages(iso4762=pkg())
+    theirs = with_packages(din625=pkg())
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts == []
+    assert sorted(merged["packages_lock"]) == ["din625", "iso4762"]
+    assert sorted(merged["packages"]) == ["din625", "iso4762"]
+
+
+def test_the_same_package_at_two_versions_conflicts_on_the_lock_entry():
+    base = with_packages(iso4762=pkg())
+    ours = with_packages(iso4762=pkg(version="1.1.0", content_id="sha256:" + "aa" * 32))
+    theirs = with_packages(iso4762=pkg(version="1.2.0", content_id="sha256:" + "bb" * 32))
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert "packages_lock.iso4762" in keys_of(conflicts)
+    conflict = next(c for c in conflicts if c["key"] == "packages_lock.iso4762")
+    assert conflict["path"] == ["packages_lock", "iso4762"]
+    # atomic: the recorded sides are whole entries, never half of one
+    assert conflict["ours"]["version"] == "1.1.0"
+    assert conflict["theirs"]["content_id"] == "sha256:" + "bb" * 32
+
+
+def test_a_lock_entry_never_merges_field_wise():
+    """One side's version with the other side's content id is an entry nobody
+    authored and that verifies against nothing."""
+    base = with_packages(iso4762=pkg())
+    ours = with_packages(iso4762=pkg(version="1.1.0"))
+    theirs = with_packages(iso4762=pkg(content_id="sha256:" + "cc" * 32))
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert keys_of(conflicts).count("packages_lock.iso4762") == 1
+    assert merged["packages_lock"]["iso4762"] == ours["packages_lock"]["iso4762"]
+
+
+def test_resolving_a_package_conflict_writes_into_the_map_not_a_flat_key():
+    base = with_packages(iso4762=pkg())
+    ours = with_packages(iso4762=pkg(version="1.1.0", index="agentcad-core"))
+    theirs = with_packages(iso4762=pkg(version="1.2.0", index="acme"))
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+    choices = {c["key"]: {"take": "theirs"} for c in conflicts}
+    resolved, remaining = apply_choices(merged, conflicts, choices)
+
+    assert remaining == []
+    assert resolved["packages_lock"]["iso4762"]["version"] == "1.2.0"
+    assert resolved["packages"]["iso4762"]["index"] == "acme"
+    assert "packages.iso4762" not in resolved
+    assert "packages_lock.iso4762" not in resolved
+
+
+def test_taking_a_side_that_never_had_the_package_removes_it():
+    base = manifest(parts=[part("flange")])
+    ours = with_packages(iso4762=pkg(version="1.1.0"))
+    ours["packages"]["iso4762"]["version_req"] = "^1.1.0"
+    theirs = with_packages(iso4762=pkg(version="1.2.0"))
+    theirs["packages"]["iso4762"]["version_req"] = "^1.2.0"
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+    assert sorted(keys_of(conflicts)) == ["packages.iso4762",
+                                          "packages_lock.iso4762"]
+    choices = {c["key"]: {"take": "base"} for c in conflicts}
+    resolved, remaining = apply_choices(merged, conflicts, choices)
+
+    assert remaining == []
+    assert resolved["packages"] == {}
+    assert resolved["packages_lock"] == {}
+
+
+def test_one_side_removing_a_package_the_other_left_alone_merges_clean():
+    base = with_packages(iso4762=pkg(), din625=pkg())
+    ours = with_packages(iso4762=pkg(), din625=pkg())
+    theirs = with_packages(iso4762=pkg())
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts == []
+    assert list(merged["packages_lock"]) == ["iso4762"]
+
+
+def test_a_manifest_with_no_packages_is_untouched_by_the_new_heads():
+    """FR15 from the merge side: a project that never used packages merges
+    byte-identically to how it did before the keys existed."""
+    base, ours, theirs = triple(manifest(parts=[part("flange")]))
+    entry_of(ours["parts"], "flange")["label"] = "ours"
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts == []
+    assert "packages" not in merged and "packages_lock" not in merged
+
+
+# ================= the packages/lock hybrid a clean merge can build (Codex #13)
+
+
+def _hybrid(version_req="^2.0.0", locked="1.0.0", declared_index="core",
+            lock_index="core"):
+    return {
+        "packages": {"foo": {"version_req": version_req,
+                             "index": declared_index}},
+        "packages_lock": {"foo": {"version": locked,
+                                  "content_id": "sha256:" + "0" * 64,
+                                  "index": lock_index,
+                                  "source": {"kind": "local"}}},
+    }
+
+
+def test_a_requirement_from_one_branch_and_a_lock_from_the_other_is_caught():
+    """**Codex #13.** `packages` and `packages_lock` merge as two independent
+    maps, each atomic per package — correct, and not sufficient. They are two
+    halves of ONE fact: what was asked for, and what that resolved to. Taking
+    theirs' requirement and ours' lock is a clean merge of each map and a
+    dependency **no branch authored**, and nothing downstream notices —
+    `use_part` reads only the lock, and the lock verifies against its own
+    content id perfectly well.
+    """
+    problems = manifest_merge.package_problems(_hybrid())
+    kinds = {problem["kind"] for problem in problems}
+    assert "package_requirement_violated" in kinds
+    detail = next(p for p in problems
+                  if p["kind"] == "package_requirement_violated")
+    assert detail["package"] == "foo"
+    assert detail["version"] == "1.0.0" and detail["version_req"] == "^2.0.0"
+    assert "nobody authored" in detail["message"]
+
+
+def test_a_pin_silently_changed_by_a_merge_is_caught():
+    problems = manifest_merge.package_problems(
+        _hybrid(version_req="*", declared_index="corp", lock_index="core"))
+    detail = next(p for p in problems if p["kind"] == "package_index_mismatch")
+    assert detail["declared_index"] == "corp" and detail["index"] == "core"
+
+
+def test_a_lock_that_outlived_its_declaration_is_caught():
+    manifest = _hybrid()
+    manifest["packages"] = {}
+    problems = manifest_merge.package_problems(manifest)
+    assert [p["kind"] for p in problems] == ["package_lock_orphan"]
+
+
+def test_an_agreeing_pair_is_silent():
+    """The check may not redden a project that merged correctly."""
+    assert manifest_merge.package_problems(
+        _hybrid(version_req="^1.0.0", locked="1.2.0")) == []
+    assert manifest_merge.package_problems(
+        _hybrid(version_req="*", locked="9.9.9")) == []
+    assert manifest_merge.package_problems({}) == []
+    assert manifest_merge.package_problems(
+        {"packages": {"foo": {"version_req": "*"}}}) == []
+
+
+# The orchestrator half of this — that a hybrid actually blocks a REAL merge and
+# surfaces in `validation.integrity` — is
+# `test_packages_index.py::test_a_real_merge_blocks_on_the_package_hybrid`,
+# which drives two branches through `merge_branch` rather than reading source.

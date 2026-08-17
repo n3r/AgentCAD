@@ -17,6 +17,7 @@ import * as merge from "./merge.js";
 import * as proposals from "./proposals.js";
 import * as presence from "./presence.js";
 import * as comments from "./comments.js";
+import * as library from "./library.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 const BRANCH_RE = /^[a-z0-9][a-z0-9_/-]{0,63}$/;
@@ -595,6 +596,12 @@ async function handleImportFile(file) {
     bits.push(`${imp.n_solids} solid${imp.n_solids === 1 ? "" : "s"}`);
   }
   toast(`Imported ${id}${bits.length ? ` (${bits.join(", ")})` : ""}`);
+}
+
+function setupLibrary() {
+  const btn = document.getElementById("library-btn");
+  if (!btn) return;
+  btn.addEventListener("click", () => library.open());
 }
 
 function setupImport() {
@@ -2126,6 +2133,7 @@ async function boot() {
   versions.init(actions);
   merge.init(actions);
   proposals.init(actions);
+  library.init(actions);
   presence.init();
   // After inspector.init: comments.js registers inspector's param decorator
   // and subscribes to `part` behind it, so a badge is applied to rows the
@@ -2138,6 +2146,7 @@ async function boot() {
   setupClaimDialog();
   setupExportMenu();
   setupImport();
+  setupLibrary();
   setupUndo();
   setupKeys();
   onKeys(["rebuilding", "connected"], renderIndicators);

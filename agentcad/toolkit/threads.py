@@ -73,8 +73,20 @@ def cap_screw(size: str = "M8-1.25", length: float = 20.0, simple: bool = False)
     return SocketHeadCapScrew(size=size, length=length, simple=simple)
 
 
-def hex_bolt(size: str = "M8-1.25", length: float = 20.0, simple: bool = False):
-    """A hex-head bolt. simple as for cap_screw."""
-    from bd_warehouse.fastener import HexBolt
+def hex_bolt(size: str = "M8-1.25", length: float = 20.0, simple: bool = False,
+             standard: str = "iso4014"):
+    """A hex-head bolt (ISO 4014 by default). simple as for cap_screw.
 
-    return HexBolt(size=size, length=length, simple=simple)
+    ``standard`` is a `bd_warehouse` fastener type: ``iso4014`` (partially
+    threaded hex bolt), ``iso4017`` (fully threaded hex screw) or ``din931``.
+
+    The class is **`HexHeadScrew`**, not `HexBolt`: the pinned bd_warehouse
+    exports no `HexBolt` at all, so every call to this helper raised
+    `ImportError` from the day it was written until the seed catalog's
+    `iso4014` package became its first caller. `tests/test_threads.py` now
+    constructs one, which is the check that was missing.
+    """
+    from bd_warehouse.fastener import HexHeadScrew
+
+    return HexHeadScrew(size=size, length=length, simple=simple,
+                        fastener_type=standard)

@@ -252,6 +252,35 @@ export const api = {
     return { buffer: await res.arrayBuffer() };
   },
 
+  // ---- package registry (the Library dialog) ----
+  // Every failure a package operation can produce is a REFUSAL — an
+  // unresolvable name, a tampered cache, a part_id already in the project —
+  // so unlike the merge and proposal routes there is no {error} body at
+  // HTTP 200 to check for here. 404/422/409 throw ApiError and that is all.
+  /** `filters`: {query?, index?, keywords?, standards?, limit?}. `keywords`
+   *  and `standards` go out as comma-separated lists. */
+  searchPackages: (filters) =>
+    request("GET", `/api/packages/search${query({
+      ...filters,
+      keywords: filters && filters.keywords ? filters.keywords.join(",") : null,
+      standards: filters && filters.standards
+        ? filters.standards.join(",") : null,
+    })}`),
+  listPackages: (proj) => request("GET", `/api/projects/${enc(proj)}/packages`),
+  /** body: {name, version_req?, index?} */
+  addPackage: (proj, body) =>
+    request("POST", `/api/projects/${enc(proj)}/packages`, body),
+  removePackage: (proj, name) =>
+    request("DELETE", `/api/projects/${enc(proj)}/packages/${enc(name)}`),
+  /** body: {part, part_id, preset?, params?} */
+  usePackagePart: (proj, name, body) =>
+    request("POST", `/api/projects/${enc(proj)}/packages/${enc(name)}/use`, body),
+  /** A preview image URL, served straight out of the index (there is no copy
+   *  in the project before the package is installed). */
+  packagePreviewUrl: (name, version, path, index) =>
+    `/api/packages/${enc(name)}/versions/${enc(version)}/preview${query({
+      path, index })}`,
+
   // ---- generic tool passthrough (used by import) ----
   callTool: (name, body) => request("POST", `/api/tools/${enc(name)}`, body),
 

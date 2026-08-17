@@ -830,6 +830,55 @@ Threads are workflow metadata, not model state: they live in
 `<project>/.history/agentcad/comments/`, outside every working tree, so every
 branch sees the same list and **Undo / Restore never rewinds them**.
 
+## The Parts library
+
+The **Library** button on the toolbar opens the parts library: search a
+catalog of versioned, kernel-validated packages and drop a real part into
+your project.
+
+**What you see.** Type into the search field (`cap screw`, `bearing`, `2020`,
+`nema`) and the hit list fills from every configured index, each hit with its
+rendered preview thumbnail, its version, its index and a `why` saying which
+part of it matched. Pick one and the detail pane shows the preview, the
+**disclosure badge** (`human`, `agent` or `hybrid` — who authored the
+geometry), the licence, the standards it claims, the declared parameter table
+with each parameter's range and unit, and the connectors it ships. A preset
+picker lists the configurations the package publishes — `m5x16`, `b608`,
+`l40` — and **Add to project** installs the dependency and materialises the
+part in one gesture.
+
+**What you get.** An *ordinary part*. The script is copied into your project
+under a short provenance header, so the project builds with no cache, no index
+and no network — in CI, in a bare clone and in a proposal diff. Edit it,
+branch it, review it, undo it: nothing about it is special. The Inspector
+shows its parameters and its spec chips like any other part.
+
+**The nine packages that ship with the app** — ISO 4762 cap screws, ISO 4014
+hex bolts, ISO 7380 button heads, heat-set inserts, DIN 625 bearings, 2020 and
+3030 T-slot extrusion, NEMA 17 and NEMA 23 motor outlines — answer with **no
+network and no configuration**. The bearings, extrusions and motors are
+*interface models*: the geometry a bracket has to fit and clear, at the
+published dimensions, and each package's README names what is not modelled
+(a bearing has no balls; do not read a mass off a motor).
+
+**Fasteners have a `thread` parameter.** `cosmetic` (the default) draws the
+shank at the thread root, so the screw drops into a tapped hole and
+`check_interference` reports nothing. `real` cuts the actual helix and reaches
+the nominal diameter, so it *overlaps* the tapped hole — which is what thread
+engagement is, not a modelling error. Real threads cost time in proportion to
+the number of turns.
+
+> **Packages are code.** A package script runs in your kernel worker with your
+> privileges, exactly like any part script you write. The publish gate proves
+> that the geometry builds, that the specs pass and that the connectors mate;
+> it proves nothing about intent. Install from indexes you trust. The dialog
+> says so in its footer, and `docs/packages.md` has the whole trust model.
+
+Adding your own index (a directory or a git repository) and publishing your
+own packages is `docs/packages.md`; the short version is
+`agentcad package validate ./pkg` until it is green, then
+`agentcad publish ./pkg --index <name>`.
+
 ## Working with the bundled examples
 
 Pick them from the project switcher:

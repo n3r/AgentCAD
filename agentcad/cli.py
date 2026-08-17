@@ -7,6 +7,8 @@ Commands:
     agentcad new <name>              # create a project
     agentcad export <project> <part> --format step|stl|3mf [-o OUT]
     agentcad check [--project P] [--ref REF] [--report R] [--md M]
+    agentcad package validate <dir> [--strict] [--report R] [--budget S]
+    agentcad publish <dir> --index NAME [--yank name@version] [--budget S]
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ def _build_service(projects_dir: Path, extra_writable: list[str] | None = None):
     try:
         service = AgentCADService(projects_dir, kernel, EventBus())
         _register_examples(service)
+        _register_catalog(service)
     except BaseException:
         # The workers are already running: anything that raises between here
         # and the return would leave one process per worker (~0.5 GB each)
@@ -93,6 +96,50 @@ def _register_examples(service) -> None:
                 service.store.open(child)
             except Exception as exc:  # noqa: BLE001 — a broken example must not block startup
                 print(f"warning: could not open example {child.name}: {exc}", file=sys.stderr)
+
+
+#: The bundled catalog's index name. It is the name `agentcad publish --index`
+#: takes for the seed catalog, and the name a user's own configuration would
+#: have to reuse to shadow it.
+CATALOG_INDEX = "agentcad-core"
+
+
+def bundled_index_entries() -> list[dict]:
+    """Index configuration entries for the catalog the app ships with.
+
+    One entry today: `catalog/` at the resource root, resolved exactly as
+    `examples/` is, so a frozen bundle and a source checkout agree. Empty when
+    the catalog is absent — it is **data**, and deleting it degrades the
+    product to "no packages configured" rather than breaking a code path.
+    """
+    catalog = resource_root() / "catalog"
+    if not (catalog / "index.json").is_file():
+        return []
+    return [{"name": CATALOG_INDEX, "kind": "local", "path": str(catalog),
+             "scope": "public"}]
+
+
+def _register_catalog(service) -> None:
+    """Register the bundled `catalog/` as a local package index.
+
+    `_register_examples`' precedent, one layer up: the examples are projects
+    the store opens, this is an index `service.packages` reads. It is a
+    *declaration*, not a client — `PackageManager.reload_indexes` appends it
+    after whatever the user configured, so the bundled catalog answers on a
+    fresh install with **no network and no config file** while a user index of
+    the same name still wins.
+
+    A catalog directory with no `index.json` is a warning, never a startup
+    failure.
+    """
+    entries = bundled_index_entries()
+    if not entries:
+        catalog = resource_root() / "catalog"
+        if catalog.exists():
+            print(f"warning: bundled catalog at {catalog} has no index.json; "
+                  "no packages will be offered", file=sys.stderr)
+        return
+    service.bundled_indexes = entries
 
 
 def _make_chat_engine(service, registry):
@@ -536,12 +583,287 @@ def cmd_check(args) -> int:
     return override if override is not None else int(report.get("exit_code", 2))
 
 
+_PACKAGE_ROW = "  {:<11} {:<6} {:>5} {:>5} {:>5} {:>6} {:>6}  {:>7}"
+
+
+def _package_lines(report: dict, written: list[str]) -> list[str]:
+    """The stage table and what went wrong, for a human reading stderr."""
+    package = report.get("package") or {}
+    facts = [f"{package.get('name')}@{package.get('version')}"]
+    if package.get("content_id"):
+        facts.append(str(package["content_id"]))
+    if report.get("strict"):
+        facts.append("strict")
+    lines = [" · ".join(facts),
+             _PACKAGE_ROW.format("stage", "status", "pass", "fail", "skip",
+                                 "error", "total", "time")]
+    for stage in report.get("stages") or []:
+        summary = stage.get("summary") or {}
+        row = _PACKAGE_ROW.format(
+            str(stage.get("name")), str(stage.get("status")),
+            summary.get("passed", 0), summary.get("failed", 0),
+            summary.get("skipped", 0), summary.get("errors", 0),
+            summary.get("total", 0),
+            f"{float(stage.get('duration_s') or 0.0):.1f} s")
+        if stage.get("reason"):
+            row += f"  ({stage['reason']})"
+        lines.append(row)
+
+    broken = [item for stage in report.get("stages") or []
+              for item in stage.get("items") or []
+              if item.get("status") in ("fail", "error")]
+    if broken:
+        lines.append("failures:")
+        lines += _check_named(f"{item.get('id')} — {item.get('message')}"
+                              for item in broken)
+    if report.get("exempt_skips"):
+        # What was NOT measured, named — that is what stops "validated" from
+        # becoming a badge.
+        lines.append("not measured (exempt from the publish verdict):")
+        lines += _check_named(report["exempt_skips"])
+    if report.get("blockers") and not broken:
+        lines.append("blocking publication:")
+        lines += _check_named(report["blockers"])
+    if report.get("strict_failures"):
+        lines.append(f"strict: {len(report['strict_failures'])} skipped row(s) "
+                     f"count as failures")
+    if report.get("warnings"):
+        lines.append("warnings:")
+        lines += _check_named(report["warnings"])
+    if report.get("errors"):
+        lines.append("harness errors:")
+        lines += _check_named(f"{entry.get('type')}: {entry.get('message')}"
+                              for entry in report["errors"])
+    lines += [f"wrote {path}" for path in written]
+    return lines
+
+
+def _package_verdict(report: dict) -> str:
+    package = report.get("package") or {}
+    summary = report.get("summary") or {}
+    counts = (f"{summary.get('passed', 0)} passed, "
+              f"{summary.get('failed', 0)} failed, "
+              f"{summary.get('skipped', 0)} skipped, "
+              f"{summary.get('errors', 0)} errors "
+              f"of {summary.get('total', 0)}")
+    tail = "" if report.get("complete", True) else " — INCOMPLETE (budget)"
+    return (f"package validate: {report.get('status')} — "
+            f"{package.get('name')}@{package.get('version')} · {counts} in "
+            f"{float(report.get('duration_s') or 0.0):.1f} s · publishable: "
+            f"{'yes' if report.get('publishable') else 'no'} "
+            f"(exit {report.get('exit_code')}){tail}")
+
+
+def cmd_package(args) -> int:
+    if args.package_command == "validate":
+        return cmd_package_validate(args)
+    print("agentcad package: expected a subcommand (validate)",
+          file=sys.stderr)
+    return 2
+
+
+def cmd_package_validate(args) -> int:
+    """`agentcad package validate <dir>` — run the publish gate over a package.
+
+    ``cmd_check``'s shape exactly, for the same reasons: setup is **inside**
+    the exit-code mapping (an unwritable ``--work-dir`` or a projects dir that
+    is a file is exit 2, not a traceback), the kernel is stopped in a
+    ``finally`` so a crashed run leaves no workers, and the identity is ``ci``
+    so a run never collides with a human's per-client checkout.
+
+    The exit code is the API: ``0`` green · ``1`` red — **the package is
+    wrong** · ``2`` harness — we could not produce a verdict. A blown
+    ``--budget`` is 2 with the partial report written, because evidence beats
+    silence.
+
+    ``--report`` writes the JSON document `gate.validate_gate_report` accepts,
+    which is PRD-004's report shape with the gate's `package`, `note` and
+    verdict beside it.
+    """
+    import json
+
+    from .core import locks
+    from .core.model import AppError
+    from .core.packages.gate import SECURITY_NOTE, PackageGate
+
+    service = None
+    try:
+        work_dir = None
+        extra_writable: list[str] = []
+        if args.work_dir:
+            # Absolute and known before the workers spawn: the seatbelt profile
+            # is fixed at spawn, so a work dir outside the system temp dir can
+            # never be granted afterwards. Resolved here, but NOT created here —
+            # `PackageGate._work_root` creates it only after `_refuse_overlap`
+            # has accepted it.
+            work_dir = str(Path(args.work_dir).expanduser().resolve())
+            extra_writable.append(work_dir)
+        service = _build_service(
+            Path(args.projects_dir or DEFAULT_PROJECTS_DIR),
+            extra_writable=extra_writable or None)
+        locks.set_client_id("ci")
+        report = PackageGate(service).run(
+            args.path, strict=args.strict,
+            work_dir=work_dir, budget_s=args.budget)
+    except AppError as exc:
+        print(f"agentcad package validate: {exc.message}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001 — any harness failure is exit 2
+        print(f"agentcad package validate: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return 2
+    finally:
+        if service is not None:
+            try:
+                service.kernel.stop()
+            except Exception as exc:  # noqa: BLE001
+                print(f"agentcad package validate: the kernel did not stop "
+                      f"cleanly: {exc}", file=sys.stderr)
+
+    try:
+        written: list[str] = []
+        if args.report:
+            path = Path(args.report).expanduser()
+            try:
+                from .core.project import ProjectStore
+
+                ProjectStore._atomic_write(
+                    path, (json.dumps(report, indent=2) + "\n").encode())
+            except OSError as exc:
+                print(f"agentcad package validate: could not write {path}: "
+                      f"{exc}", file=sys.stderr)
+                return 2
+            written.append(str(path))
+        for line in _package_lines(report, written):
+            print(line, file=sys.stderr)
+        # Once, at the end, above the verdict — never a footnote nobody reads.
+        print(SECURITY_NOTE, file=sys.stderr)
+        print(_package_verdict(report))
+    except Exception as exc:  # noqa: BLE001 — any harness failure is exit 2
+        print(f"agentcad package validate: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return 2
+    return int(report.get("exit_code", 2))
+
+
+def cmd_publish(args) -> int:
+    """`agentcad publish <dir> --index <name>` — gate, then publish.
+
+    ``cmd_package_validate``'s shape, with the same exit-code API: ``0``
+    published (or yanked) · ``1`` **refused** — the gate is red, the version
+    already exists, the vendor flag forbids it, or the tree moved · ``2``
+    harness, we could not produce a verdict. A refusal is a verdict, which is
+    why it is 1 and not 2.
+
+    `agentcad package validate` is report-honest and this is **fail-closed**:
+    it runs **every** stage and takes no stage subset, precisely so a
+    `skip / not_selected` can never reach the verdict.
+
+    ``--yank name@version`` measures nothing, so it **starts no kernel** — it
+    reads the index, flips a flag and rewrites the document.
+    """
+    from .core import locks
+    from .core.model import AppError
+    from .core.packages import indexes as index_module
+    from .core.packages.gate import SECURITY_NOTE
+
+    service = None
+    try:
+        from . import config as user_config
+
+        loader_warnings: list[str] = []
+        # The bundled catalog is an index like any other here: `publish
+        # --index agentcad-core` is how the seed catalog's entries are
+        # written, and `index.json` is a build product of the gate.
+        configured = index_module.load_indexes(
+            index_module.merge_bundled(user_config.load_config(),
+                                       bundled_index_entries()),
+            loader_warnings)
+        index = next((i for i in configured if i.name == args.index), None)
+        if index is None:
+            for warning in loader_warnings:
+                print(f"agentcad publish: {warning}", file=sys.stderr)
+            print(f"agentcad publish: no index named {args.index!r} is "
+                  f"configured (configured: "
+                  f"{[i.name for i in configured]}). Add one to "
+                  f"{user_config.config_path()}.", file=sys.stderr)
+            return 2
+        if args.yank:
+            name, sep, version = str(args.yank).partition("@")
+            if not sep or not name or not version:
+                print("agentcad publish: --yank takes name@version, e.g. "
+                      "--yank iso4762@1.2.0", file=sys.stderr)
+                return 2
+            result = index.yank(name, version)
+            print(f"publish: yanked {name}@{version} in index "
+                  f"{index.name!r}"
+                  + (" (it was already yanked)" if result["already"] else "")
+                  + " — nothing was deleted; a lockfile naming it keeps "
+                    "resolving")
+            return 0
+        if not args.path:
+            print("agentcad publish: expected a package directory (or "
+                  "--yank name@version)", file=sys.stderr)
+            return 2
+
+        work_dir = None
+        extra_writable: list[str] = []
+        if args.work_dir:
+            # Absolute and known before the workers spawn: the seatbelt
+            # profile is fixed at spawn (see `cmd_package_validate`).
+            work_dir = str(Path(args.work_dir).expanduser().resolve())
+            extra_writable.append(work_dir)
+        service = _build_service(
+            Path(args.projects_dir or DEFAULT_PROJECTS_DIR),
+            extra_writable=extra_writable or None)
+        locks.set_client_id("ci")
+        result = index_module.publish(index, args.path, service,
+                                      work_dir=work_dir,
+                                      budget_s=args.budget)
+    except AppError as exc:
+        # A refusal IS a verdict — the gate was red, the version exists, the
+        # vendor flag forbids it, or the tree moved — so it is exit 1, and the
+        # evidence is printed rather than summarised away.
+        report = (exc.details or {}).get("checks")
+        if report:
+            print("failures:", file=sys.stderr)
+            for item in report[:20]:
+                print(f"  - {item.get('id')} — {item.get('message')}",
+                      file=sys.stderr)
+        # An INCOMPLETE run has no failing rows at all, so the block above
+        # prints nothing and the refusal used to say "0 blocker(s)". The
+        # warnings ARE the evidence in that case — a budget that ran out, a
+        # tree that moved — so they are printed rather than dropped.
+        for warning in (exc.details or {}).get("warnings") or []:
+            print(f"  ! {warning}", file=sys.stderr)
+        print(f"agentcad publish: {exc.message}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 — any harness failure is exit 2
+        print(f"agentcad publish: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if service is not None:
+            try:
+                service.kernel.stop()
+            except Exception as exc:  # noqa: BLE001
+                print(f"agentcad publish: the kernel did not stop cleanly: "
+                      f"{exc}", file=sys.stderr)
+
+    for line in _package_lines(result["report"], []):
+        print(line, file=sys.stderr)
+    print(SECURITY_NOTE, file=sys.stderr)
+    print(f"publish: {result['published']} → index {result['index']!r} · "
+          f"{result['content_id']} · gate "
+          f"{result['report'].get('status')}")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agentcad", description="Agentic-first CAD")
     parser.add_argument("--version", action="version", version=agentcad.__version__)
     # metavar hides the internal `worker` subcommand from usage/help.
     sub = parser.add_subparsers(
-        dest="command", metavar="{serve,open,mcp,new,export,check}")
+        dest="command", metavar="{serve,open,mcp,new,export,check,package,publish}")
 
     for name in ("serve", "open"):
         p = sub.add_parser(name, help=f"{name} the AgentCAD server")
@@ -628,6 +950,77 @@ def main() -> None:
     out.add_argument("--json", action="store_true",
                      help="print the report to stdout instead of the summary")
 
+    p = sub.add_parser(
+        "package", help="work with parts packages (PRD-011)",
+        description="Package authoring commands. The publish gate is a "
+                    "CORRECTNESS gate, not a security boundary.")
+    package_sub = p.add_subparsers(dest="package_command",
+                                   metavar="{validate}")
+    v = package_sub.add_parser(
+        "validate", help="run the publish gate over a package directory",
+        description="Validate a package directory: its manifest and ceilings, "
+                    "its part contracts, every declared configuration, every "
+                    "parameter extreme, its specs, its connectors, its "
+                    "previews and its docs — headless, with no server, in a "
+                    "throwaway cell that never touches a project of yours. "
+                    "Exit 0 green, 1 the package is wrong, 2 harness.")
+    v.add_argument("path", help="the package directory (holding package.json)")
+    v.add_argument("--projects-dir", default=None)
+    v.add_argument("--strict", action="store_true",
+                   help="count skipped rows as failures (rows keep their "
+                        "status; only the verdict moves). A row marked "
+                        "strict_exempt — a skip that is a fact about this "
+                        "machine or about the world, never about the package "
+                        "— is never counted")
+    v.add_argument("--report", default=None, metavar="PATH",
+                   help="write the JSON report here")
+    v.add_argument("--work-dir", default=None, metavar="DIR",
+                   help="where the gate materialises its throwaway cell, in a "
+                        "unique subdirectory it creates and cleans up "
+                        "(default: a temp dir). It may not be, hold or sit "
+                        "inside the projects root or the package directory")
+    v.add_argument("--budget", default=None, metavar="SECONDS",
+                   type=_finite_arg("--budget",
+                                    "a NaN deadline is never in the past, so "
+                                    "it bounds nothing"),
+                   help="deadline read before every stage and every kernel "
+                        "call; a build already in flight cannot be preempted")
+
+    p = sub.add_parser(
+        "publish", help="publish a validated package to an index (PRD-011)",
+        description="Run the publish gate over a package directory and, only "
+                    "if it is green, copy it into a configured index and "
+                    "record the entry. Fail-closed: every stage runs, a "
+                    "version is IMMUTABLE (republishing is a conflict even "
+                    "when the content id is identical), and a package whose "
+                    "vendor is not redistributable may not enter a public "
+                    "index. The publish gate is a CORRECTNESS gate, not a "
+                    "security boundary. Exit 0 published, 1 refused, "
+                    "2 harness.")
+    p.add_argument("path", nargs="?", default=None,
+                   help="the package directory (holding package.json); omit "
+                        "it only with --yank")
+    p.add_argument("--index", required=True, metavar="NAME",
+                   help="the configured index to publish into")
+    p.add_argument("--yank", default=None, metavar="NAME@VERSION",
+                   help="withdraw a published version instead of publishing: "
+                        "flips 'yanked' and DELETES NOTHING — a lockfile "
+                        "naming it keeps resolving, a fresh requirement never "
+                        "selects it, and naming it explicitly warns and "
+                        "proceeds")
+    p.add_argument("--projects-dir", default=None)
+    p.add_argument("--work-dir", default=None, metavar="DIR",
+                   help="where the gate materialises its throwaway cell "
+                        "(default: a temp dir). It may not be, hold or sit "
+                        "inside the projects root or the package directory")
+    p.add_argument("--budget", default=None, metavar="SECONDS",
+                   type=_finite_arg("--budget",
+                                    "a NaN deadline is never in the past, so "
+                                    "it bounds nothing"),
+                   help="deadline read before every stage and every kernel "
+                        "call; an exhausted budget is a harness exit, never a "
+                        "publish")
+
     args = parser.parse_args()
     if args.command in ("serve", "open"):
         cmd_serve(args, open_browser=args.command == "open")
@@ -641,5 +1034,9 @@ def main() -> None:
         cmd_export(args)
     elif args.command == "check":
         raise SystemExit(cmd_check(args))
+    elif args.command == "package":
+        raise SystemExit(cmd_package(args))
+    elif args.command == "publish":
+        raise SystemExit(cmd_publish(args))
     else:
         parser.print_help()

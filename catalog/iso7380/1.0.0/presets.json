@@ -1,0 +1,12 @@
+{
+  "format": 1,
+  "presets": {
+    "button_screw": {
+      "m3x8": {"params": {"size": "M3-0.5", "length": 8.0}, "label": "M3 x 8", "description": "ISO 7380-1 M3-0.5 x 8, cosmetic thread."},
+      "m4x10": {"params": {"size": "M4-0.7", "length": 10.0}, "label": "M4 x 10", "description": "ISO 7380-1 M4-0.7 x 10, cosmetic thread."},
+      "m5x12": {"params": {"size": "M5-0.8", "length": 12.0}, "label": "M5 x 12", "description": "ISO 7380-1 M5-0.8 x 12, cosmetic thread."},
+      "m6x16": {"params": {"size": "M6-1", "length": 16.0}, "label": "M6 x 16", "description": "ISO 7380-1 M6-1 x 16, cosmetic thread."},
+      "m8x20": {"params": {"size": "M8-1.25", "length": 20.0}, "label": "M8 x 20", "description": "ISO 7380-1 M8-1.25 x 20, cosmetic thread."}
+    }
+  }
+}

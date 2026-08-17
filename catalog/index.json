@@ -1,0 +1,703 @@
+{
+  "format": 1,
+  "name": "agentcad-core",
+  "scope": "public",
+  "packages": {
+    "din625": {
+      "versions": {
+        "1.0.0": {
+          "content_id": "sha256:f0fd451be14b49cdec9ccaf5605737968992dc98954f0b2063f70086e0a4d3e3",
+          "path": "din625/1.0.0",
+          "summary": "DIN 625-1 deep-groove ball bearings, 6xx and 60xx series, as interface outlines",
+          "license": "Apache-2.0",
+          "disclosure": "agent",
+          "parts": {
+            "ball_bearing": {
+              "params": [
+                {
+                  "name": "designation",
+                  "type": "enum",
+                  "choices": [
+                    "623",
+                    "624",
+                    "625",
+                    "626",
+                    "608",
+                    "628",
+                    "6000",
+                    "6001",
+                    "6002"
+                  ]
+                }
+              ],
+              "connectors": {
+                "bore": "cylindrical",
+                "face": "rigid"
+              },
+              "specs": [
+                "bore_din625",
+                "outside_diameter_din625",
+                "ring_faces_din625",
+                "valid",
+                "width_din625"
+              ]
+            }
+          },
+          "presets": [
+            "ball_bearing.b6000",
+            "ball_bearing.b6002",
+            "ball_bearing.b608",
+            "ball_bearing.b625"
+          ],
+          "previews": [
+            "previews/ball_bearing_iso.png"
+          ],
+          "gate": {
+            "status": "green",
+            "exempt_skips": [
+              "policy:no_policy_configured"
+            ],
+            "agentcad": "0.1.0",
+            "build123d": "0.11.1",
+            "report_id": "sha256:c535c8e53aa53fa2016743bb8ffae53c65eddd8c4684d5674d952e0448b12056"
+          },
+          "yanked": false,
+          "signatures": [],
+          "keywords": [
+            "bearing",
+            "ball bearing",
+            "deep groove",
+            "608",
+            "skate",
+            "cots"
+          ],
+          "standards": [
+            "DIN 625-1"
+          ],
+          "min_agentcad": "0.1.0"
+        }
+      }
+    },
+    "extrusion_2020": {
+      "versions": {
+        "1.0.0": {
+          "content_id": "sha256:d64f92f2d5dc7ac3550ea3f1645c8acad6892543c672f64a8379c7b79b0f7d84",
+          "path": "extrusion_2020/1.0.0",
+          "summary": "20 x 20 T-slot aluminium extrusion with 6 mm slots, cut to length",
+          "license": "Apache-2.0",
+          "disclosure": "agent",
+          "parts": {
+            "extrusion": {
+              "params": [
+                {
+                  "name": "length",
+                  "type": "number",
+                  "min": 10.0,
+                  "max": 1000.0,
+                  "unit": "mm"
+                }
+              ],
+              "connectors": {
+                "end_a": "rigid",
+                "end_b": "rigid",
+                "slot_x_pos": "rigid",
+                "slot_x_neg": "rigid",
+                "slot_y_pos": "rigid",
+                "slot_y_neg": "rigid"
+              },
+              "specs": [
+                "centre_bore",
+                "length_and_origin",
+                "one_connected_solid",
+                "section_20x20",
+                "section_area",
+                "valid"
+              ]
+            }
+          },
+          "presets": [
+            "extrusion.l100",
+            "extrusion.l1000",
+            "extrusion.l250",
+            "extrusion.l500"
+          ],
+          "previews": [
+            "previews/extrusion_iso.png"
+          ],
+          "gate": {
+            "status": "green",
+            "exempt_skips": [
+              "policy:no_policy_configured"
+            ],
+            "agentcad": "0.1.0",
+            "build123d": "0.11.1",
+            "report_id": "sha256:f26e06a3909ad2be058ecacbc2260ca688ce022adb981dd71dd3b19f50bd592f"
+          },
+          "yanked": false,
+          "signatures": [],
+          "keywords": [
+            "extrusion",
+            "t-slot",
+            "aluminium",
+            "framing",
+            "2020",
+            "profile",
+            "cots"
+          ],
+          "standards": [],
+          "min_agentcad": "0.1.0"
+        }
+      }
+    },
+    "extrusion_3030": {
+      "versions": {
+        "1.0.0": {
+          "content_id": "sha256:433284cd762e810e446c7a328e30a47c666046110b00bd3bf1619b45b7e9d366",
+          "path": "extrusion_3030/1.0.0",
+          "summary": "30 x 30 T-slot aluminium extrusion with 8 mm slots, cut to length",
+          "license": "Apache-2.0",
+          "disclosure": "agent",
+          "parts": {
+            "extrusion": {
+              "params": [
+                {
+                  "name": "length",
+                  "type": "number",
+                  "min": 10.0,
+                  "max": 1000.0,
+                  "unit": "mm"
+                }
+              ],
+              "connectors": {
+                "end_a": "rigid",
+                "end_b": "rigid",
+                "slot_x_pos": "rigid",
+                "slot_x_neg": "rigid",
+                "slot_y_pos": "rigid",
+                "slot_y_neg": "rigid"
+              },
+              "specs": [
+                "centre_bore",
+                "length_and_origin",
+                "one_connected_solid",
+                "section_30x30",
+                "section_area",
+                "valid"
+              ]
+            }
+          },
+          "presets": [
+            "extrusion.l100",
+            "extrusion.l1000",
+            "extrusion.l250",
+            "extrusion.l500"
+          ],
+          "previews": [
+            "previews/extrusion_iso.png"
+          ],
+          "gate": {
+            "status": "green",
+            "exempt_skips": [
+              "policy:no_policy_configured"
+            ],
+            "agentcad": "0.1.0",
+            "build123d": "0.11.1",
+            "report_id": "sha256:02df88c3d013bf1600d0185faf53c7a0e3b9bf727d99e51d94a7788bba9567d1"
+          },
+          "yanked": false,
+          "signatures": [],
+          "keywords": [
+            "extrusion",
+            "t-slot",
+            "aluminium",
+            "framing",
+            "3030",
+            "profile",
+            "cots"
+          ],
+          "standards": [],
+          "min_agentcad": "0.1.0"
+        }
+      }
+    },
+    "iso4014": {
+      "versions": {
+        "1.0.0": {
+          "content_id": "sha256:ece0f695777f4f4183c4697a75ceaef1b08db75c1a8ffc2392faf6151c5f938a",
+          "path": "iso4014/1.0.0",
+          "summary": "Hex-head bolts with the ISO 4014 head, M4-M12, threaded full length (see the README), with axis and head-seat connectors",
+          "license": "Apache-2.0",
+          "disclosure": "agent",
+          "parts": {
+            "hex_bolt": {
+              "params": [
+                {
+                  "name": "size",
+                  "type": "enum",
+                  "choices": [
+                    "M4-0.7",
+                    "M5-0.8",
+                    "M6-1",
+                    "M8-1.25",
+                    "M10-1.5",
+                    "M12-1.75"
+                  ]
+                },
+                {
+                  "name": "length",
+                  "type": "number",
+                  "min": 10.0,
+                  "max": 100.0,
+                  "unit": "mm"
+                },
+                {
+                  "name": "thread",
+                  "type": "enum",
+                  "choices": [
+                    "cosmetic",
+                    "real"
+                  ]
+                }
+              ],
+              "connectors": {
+                "head_seat": "rigid",
+                "axis": "cylindrical"
+              },
+              "specs": [
+                "across_flats_iso4014",
+                "head_height_iso4014",
+                "length_under_head",
+                "shank_full_length_root",
+                "valid"
+              ]
+            }
+          },
+          "presets": [
+            "hex_bolt.m10x40",
+            "hex_bolt.m12x50",
+            "hex_bolt.m4x16",
+            "hex_bolt.m5x20",
+            "hex_bolt.m6x25",
+            "hex_bolt.m8x30"
+          ],
+          "previews": [
+            "previews/hex_bolt_iso.png"
+          ],
+          "gate": {
+            "status": "green",
+            "exempt_skips": [
+              "policy:no_policy_configured"
+            ],
+            "agentcad": "0.1.0",
+            "build123d": "0.11.1",
+            "report_id": "sha256:0ed39492e6b8a68ea655eeb833939828d904ec3d89791b705f61d409c29f5449"
+          },
+          "yanked": false,
+          "signatures": [],
+          "keywords": [
+            "fastener",
+            "bolt",
+            "hex head",
+            "hex bolt",
+            "metric",
+            "screw"
+          ],
+          "standards": [
+            "ISO 4014"
+          ],
+          "min_agentcad": "0.1.0"
+        }
+      }
+    },
+    "iso4762": {
+      "versions": {
+        "1.0.0": {
+          "content_id": "sha256:a6bf9ae012ef512cced2014e72be3764cdc7bf008df8c887cb208b9486bb5623",
+          "path": "iso4762/1.0.0",
+          "summary": "ISO 4762 socket-head cap screws, M3-M12, with axis and head-seat connectors",
+          "license": "Apache-2.0",
+          "disclosure": "agent",
+          "parts": {
+            "cap_screw": {
+              "params": [
+                {
+                  "name": "size",
+                  "type": "enum",
+                  "choices": [
+                    "M3-0.5",
+                    "M4-0.7",
+                    "M5-0.8",
+                    "M6-1",
+                    "M8-1.25",
+                    "M10-1.5",
+                    "M12-1.75"
+                  ]
+                },
+                {
+                  "name": "length",
+                  "type": "number",
+                  "min": 5.0,
+                  "max": 60.0,
+                  "unit": "mm"
+                },
+                {
+                  "name": "thread",
+                  "type": "enum",
+                  "choices": [
+                    "cosmetic",
+                    "real"
+                  ]
+                }
+              ],
+              "connectors": {
+                "head_seat": "rigid",
+                "axis": "cylindrical"
+              },
+              "specs": [
+                "head_diameter_iso4762",
+                "head_height_iso4762",
+                "length_under_head",
+                "valid"
+              ]
+            }
+          },
+          "presets": [
+            "cap_screw.m10x30",
+            "cap_screw.m12x40",
+            "cap_screw.m3x10",
+            "cap_screw.m4x12",
+            "cap_screw.m5x16",
+            "cap_screw.m5x16_real",
+            "cap_screw.m6x20",
+            "cap_screw.m8x25"
+          ],
+          "previews": [
+            "previews/cap_screw_iso.png"
+          ],
+          "gate": {
+            "status": "green",
+            "exempt_skips": [
+              "policy:no_policy_configured"
+            ],
+            "agentcad": "0.1.0",
+            "build123d": "0.11.1",
+            "report_id": "sha256:d2148dae364e21f3da0dbb04ba4d82854b64b714a9b286d88a03ee52d989f7a5"
+          },
+          "yanked": false,
+          "signatures": [],
+          "keywords": [
+            "fastener",
+            "screw",
+            "socket head",
+            "cap screw",
+            "metric",
+            "bolt"
+          ],
+          "standards": [
+            "ISO 4762"
+          ],
+          "min_agentcad": "0.1.0"
+        }
+      }
+    },
+    "iso7380": {
+      "versions": {
+        "1.0.0": {
+          "content_id": "sha256:746cd83b12c3a71327ea01f5664f9e08aef19b73cb2e9d47c527ceb011f02bbd",
+          "path": "iso7380/1.0.0",
+          "summary": "ISO 7380-1 button-head socket screws, M3-M12, with axis and head-seat connectors",
+          "license": "Apache-2.0",
+          "disclosure": "agent",
+          "parts": {
+            "button_screw": {
+              "params": [
+                {
+                  "name": "size",
+                  "type": "enum",
+                  "choices": [
+                    "M3-0.5",
+                    "M4-0.7",
+                    "M5-0.8",
+                    "M6-1",
+                    "M8-1.25",
+                    "M10-1.5",
+                    "M12-1.75"
+                  ]
+                },
+                {
+                  "name": "length",
+                  "type": "number",
+                  "min": 5.0,
+                  "max": 50.0,
+                  "unit": "mm"
+                },
+                {
+                  "name": "thread",
+                  "type": "enum",
+                  "choices": [
+                    "cosmetic",
+                    "real"
+                  ]
+                }
+              ],
+              "connectors": {
+                "head_seat": "rigid",
+                "axis": "cylindrical"
+              },
+              "specs": [
+                "head_diameter_iso7380",
+                "head_height_iso7380",
+                "length_under_head",
+                "valid"
+              ]
+            }
+          },
+          "presets": [
+            "button_screw.m3x8",
+            "button_screw.m4x10",
+            "button_screw.m5x12",
+            "button_screw.m6x16",
+            "button_screw.m8x20"
+          ],
+          "previews": [
+            "previews/button_screw_iso.png"
+          ],
+          "gate": {
+            "status": "green",
+            "exempt_skips": [
+              "policy:no_policy_configured"
+            ],
+            "agentcad": "0.1.0",
+            "build123d": "0.11.1",
+            "report_id": "sha256:545d1ed5839b6266b2c370046bda60401c93069a18050428f8cde37cb6810252"
+          },
+          "yanked": false,
+          "signatures": [],
+          "keywords": [
+            "fastener",
+            "screw",
+            "button head",
+            "socket",
+            "metric",
+            "bolt"
+          ],
+          "standards": [
+            "ISO 7380-1"
+          ],
+          "min_agentcad": "0.1.0"
+        }
+      }
+    },
+    "nema17": {
+      "versions": {
+        "1.0.0": {
+          "content_id": "sha256:50fc12ae96e21b0ed0b14660f8aa6ddd41c01a56fa111acf2e02386e7dcc85fe",
+          "path": "nema17/1.0.0",
+          "summary": "NEMA 17 stepper motor outline (42.3 mm frame) with a face-mount and shaft connector",
+          "license": "Apache-2.0",
+          "disclosure": "agent",
+          "parts": {
+            "motor": {
+              "params": [
+                {
+                  "name": "body_length",
+                  "type": "number",
+                  "min": 20.0,
+                  "max": 60.0,
+                  "unit": "mm"
+                }
+              ],
+              "connectors": {
+                "face_mount": "rigid",
+                "shaft": "cylindrical"
+              },
+              "specs": [
+                "bolt_pattern_31",
+                "frame_42_3",
+                "pilot_boss_22",
+                "shaft_5mm",
+                "valid"
+              ]
+            }
+          },
+          "presets": [
+            "motor.l34",
+            "motor.l40",
+            "motor.l48"
+          ],
+          "previews": [
+            "previews/motor_iso.png"
+          ],
+          "gate": {
+            "status": "green",
+            "exempt_skips": [
+              "policy:no_policy_configured"
+            ],
+            "agentcad": "0.1.0",
+            "build123d": "0.11.1",
+            "report_id": "sha256:e3886a3d34a33b390f331d844463a8f2a0213338837432d7538fad7aa8caa3e5"
+          },
+          "yanked": false,
+          "signatures": [],
+          "keywords": [
+            "motor",
+            "stepper",
+            "nema",
+            "nema17",
+            "outline",
+            "cots"
+          ],
+          "standards": [
+            "NEMA ICS 16"
+          ],
+          "min_agentcad": "0.1.0"
+        }
+      }
+    },
+    "nema23": {
+      "versions": {
+        "1.0.0": {
+          "content_id": "sha256:6e5e2937220972f4c85273d9f5bdb5b3fcb7f9f414809ac398d75aca3945f868",
+          "path": "nema23/1.0.0",
+          "summary": "NEMA 23 stepper motor outline (56.4 mm frame) with a face-mount and shaft connector",
+          "license": "Apache-2.0",
+          "disclosure": "agent",
+          "parts": {
+            "motor": {
+              "params": [
+                {
+                  "name": "body_length",
+                  "type": "number",
+                  "min": 40.0,
+                  "max": 120.0,
+                  "unit": "mm"
+                }
+              ],
+              "connectors": {
+                "face_mount": "rigid",
+                "shaft": "cylindrical"
+              },
+              "specs": [
+                "bolt_pattern_47_14",
+                "frame_56_4",
+                "pilot_boss_38_1",
+                "shaft_6_35mm",
+                "valid"
+              ]
+            }
+          },
+          "presets": [
+            "motor.l51",
+            "motor.l56",
+            "motor.l76"
+          ],
+          "previews": [
+            "previews/motor_iso.png"
+          ],
+          "gate": {
+            "status": "green",
+            "exempt_skips": [
+              "policy:no_policy_configured"
+            ],
+            "agentcad": "0.1.0",
+            "build123d": "0.11.1",
+            "report_id": "sha256:02cc7120e1ec77ec2d10d355f67638e5722c9e7cd6c86860e5f3aa0a8d80b055"
+          },
+          "yanked": false,
+          "signatures": [],
+          "keywords": [
+            "motor",
+            "stepper",
+            "nema",
+            "nema23",
+            "outline",
+            "cots"
+          ],
+          "standards": [
+            "NEMA ICS 16"
+          ],
+          "min_agentcad": "0.1.0"
+        }
+      }
+    },
+    "thread_insert": {
+      "versions": {
+        "1.0.0": {
+          "content_id": "sha256:3b68c8b5f89dd07dfadbd67a389d0b19cd7b8cc5fb8d26adb36a138796b0dac4",
+          "path": "thread_insert/1.0.0",
+          "summary": "Heat-set threaded inserts (ruthex catalogue) in five sizes - M2, M2.5, M3, M4, M6 - for 3D-printed bosses",
+          "license": "Apache-2.0",
+          "disclosure": "agent",
+          "parts": {
+            "heat_set_insert": {
+              "params": [
+                {
+                  "name": "size",
+                  "type": "enum",
+                  "choices": [
+                    "M2-0.4-4",
+                    "M2.5-0.45-5.7",
+                    "M3-0.5-4.0",
+                    "M4-0.7-4.0",
+                    "M6-1-6.8"
+                  ]
+                },
+                {
+                  "name": "thread",
+                  "type": "enum",
+                  "choices": [
+                    "cosmetic",
+                    "real"
+                  ]
+                }
+              ],
+              "connectors": {
+                "seat": "rigid",
+                "axis": "cylindrical"
+              },
+              "specs": [
+                "height_matches_size",
+                "outer_diameter_ruthex",
+                "seats_on_z0",
+                "valid"
+              ]
+            }
+          },
+          "presets": [
+            "heat_set_insert.m2",
+            "heat_set_insert.m2_5",
+            "heat_set_insert.m3",
+            "heat_set_insert.m4",
+            "heat_set_insert.m6"
+          ],
+          "previews": [
+            "previews/heat_set_insert_iso.png"
+          ],
+          "gate": {
+            "status": "green",
+            "exempt_skips": [
+              "policy:no_policy_configured"
+            ],
+            "agentcad": "0.1.0",
+            "build123d": "0.11.1",
+            "report_id": "sha256:0305bd4bc82b767407eb1565edcc17fe462d8dcd0a983db7e79ccbdf3eabe1b3"
+          },
+          "yanked": false,
+          "signatures": [],
+          "keywords": [
+            "fastener",
+            "insert",
+            "heat set",
+            "threaded insert",
+            "brass",
+            "3d printing",
+            "metric"
+          ],
+          "standards": [],
+          "min_agentcad": "0.1.0"
+        }
+      }
+    }
+  },
+  "embeddings": null
+}
