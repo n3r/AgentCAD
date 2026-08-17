@@ -61,9 +61,15 @@ jobs:
 
       # Two workers cap OCCT memory while parallelizing module scopes. PRs keep
       # broad boundary coverage but defer the bundled engine stress test.
+      # test_sketch_bench runs as a serial tail: its FR6 assertions measure
+      # wall-clock p50s that a co-scheduled OCCT build on a shared 3-core
+      # runner inflates past the budget (measured 16.36/20.18 ms vs 16 ms on
+      # this suite; main's nightly missed the same gate at 18.65/22.20 ms).
       - name: Run PR test suite
         if: matrix.suite == 'pr'
-        run: uv run pytest -q -n 2 --dist loadscope -m "not exhaustive"
+        run: |
+          uv run pytest -q -n 2 --dist loadscope -m "not exhaustive" --ignore=tests/test_sketch_bench.py
+          uv run pytest -q tests/test_sketch_bench.py
         env:
           AGENTCAD_KERNEL_POOL_SIZE: "1"
 
@@ -90,7 +96,11 @@ jobs:
       - name: Sync dependencies (locked)
         run: uv sync --locked
 
+      # Same serial bench tail as the PR job — the nightly missed the FR6
+      # drag budget under parallel co-load twice in the week before this.
       - name: Run complete test suite
-        run: uv run pytest -q -n 2 --dist loadscope
+        run: |
+          uv run pytest -q -n 2 --dist loadscope --ignore=tests/test_sketch_bench.py
+          uv run pytest -q tests/test_sketch_bench.py
         env:
           AGENTCAD_KERNEL_POOL_SIZE: "1"

@@ -116,12 +116,21 @@ engine example itself must be split before workers help.
    exactly at the wall; collection order starts `test_examples.py` early
    instead, and `ENGINE_SWEEP_CHUNKS` went 4 → 6 to cap the worst chunk near
    its heaviest single part (~180 s).
-   CI (`.github/workflows/ci.yml`) is **not** touched in this change: its
-   runners were not measured here. Honest accounting: the nightly exhaustive
-   job at `-n 2` pays the split's duplicated cold builds (~137 s CPU, ~1–2
-   min) without gaining balance; the PR job (`-m "not exhaustive"`) is
-   unaffected. A CI worker bump that would more than win it back is recorded
-   as follow-up to be validated by CI itself.
+   CI (`.github/workflows/ci.yml`) keeps `-n 2` — its runners were not
+   measured here, and a worker bump stays follow-up. **Superseded in one
+   respect by PR evidence**: the macOS PR job missed the FR6 drag budget
+   twice in a row (16.36 / 20.18 ms vs 16 ms) after the split changed which
+   scopes co-schedule with `test_sketch_bench` at `-n 2` under CI's default
+   count-descending reorder — while main's nightly had already missed the
+   same gate at 18.65 / 22.20 ms that week. Fix (the ladder's rung (b),
+   applied to CI only): both CI pytest invocations `--ignore` the bench
+   module and run it as a serial tail (3 s solo), so the FR gate measures
+   product latency, not co-scheduled OCCT builds. Local `make test` keeps
+   the bench in the parallel bulk — it passed 4/4 at 8 workers on this
+   machine. Honest accounting stands: the nightly exhaustive job at `-n 2`
+   pays the split's duplicated cold builds (~137 s CPU, ~1–2 min) without
+   gaining balance — and in exchange its chronic engine-sweep 900 s timeout
+   (two hits the same week) disappears, since no chunk approaches 900 s.
 3. **Contention headroom**: `tests/test_packages_gate.py` (55 s test under
    the global 120 s pytest-timeout) gets a conventional module-level
    `timeout(600)` override — margin against 8-worker contention, same
