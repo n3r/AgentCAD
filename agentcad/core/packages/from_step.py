@@ -208,8 +208,11 @@ def scaffold(service, *, source, dest, name, part, version="1.0.0",
             "summary": summary or f"{vendor} {part_number or part}",
         }},
     }
+    # newline pinned: this tree is CONTENT-HASHED, and Windows text mode would
+    # translate \n -> \r\n, giving a scaffold whose content id can never
+    # survive a git round trip (PR #15's windows-latest lesson).
     (root / "package.json").write_text(
-        json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
     (root / "docs" / "README.md").write_text(_README_TEMPLATE.format(
         name=name,
         summary=doc["summary"],
@@ -223,7 +226,7 @@ def scaffold(service, *, source, dest, name, part, version="1.0.0",
         n_solids=measured.get("n_solids"),
         volume=f"{float(measured.get('volume_mm3') or 0):,.2f}",
         bbox=_round((measured.get("bbox") or {}).get("max")),
-    ), encoding="utf-8")
+    ), encoding="utf-8", newline="\n")
 
     problems = pkgformat.validate_package_manifest(doc, root=root)
     if problems:            # pragma: no cover — the scaffold builds this doc

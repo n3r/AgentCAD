@@ -1162,6 +1162,15 @@ failures, and they all look like success:**
 Every item is traceable to a measurement in `docs/changelog/0166`–`0182`.
 User-facing reference: `docs/packages.md`.
 
+- **Any file that participates in a content id must be written with
+  `newline="\n"`** (or as bytes). Windows text mode translates `\n` →
+  `\r\n`, and git then normalises it back at commit — so the advertised id
+  (hashed over CRLF on disk) can never match the served tree (LF in the
+  repo). Three CI rounds on PR #15 were this one lesson in three coats:
+  the clone side (`_git.run` pins `-c core.autocrlf=false`), the repo side
+  (`.gitattributes` `* -text`), and the write side (`from_step`, receipts,
+  and every test fixture that hashes what it writes).
+
 - **A subtraction inside `BuildSketch(Plane.XY.rotated(...))` can silently
   subtract nothing.** In the catalog extrusion rewrite (0182), one of four
   quarter-turn rotations of a channel polygon removed no area — 400 →

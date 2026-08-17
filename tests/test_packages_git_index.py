@@ -87,7 +87,8 @@ def index_document(root, versions=("1.0.0",)):
             doc_path = target / "package.json"
             package = json.loads(doc_path.read_text())
             package["version"] = version
-            doc_path.write_text(json.dumps(package, indent=2) + "\n")
+            doc_path.write_text(json.dumps(package, indent=2) + "\n",
+                                newline="\n")
         doc["packages"].setdefault(WIDGET, {"versions": {}})
         doc["packages"][WIDGET]["versions"][version] = {
             "content_id": content.content_id(target),
@@ -103,7 +104,10 @@ def index_document(root, versions=("1.0.0",)):
                      "report_id": "sha256:" + "ab" * 32},
             "yanked": False, "signatures": [],
         }
-    (root / "index.json").write_text(json.dumps(doc, indent=2) + "\n")
+    # newline pinned: content_id is computed over these exact bytes, and
+    # Windows text mode would rewrite them (PR #15).
+    (root / "index.json").write_text(json.dumps(doc, indent=2) + "\n",
+                                     newline="\n")
     return doc
 
 

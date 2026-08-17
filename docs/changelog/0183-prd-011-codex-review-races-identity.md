@@ -441,3 +441,16 @@ for byte, on every platform. `docs/packages.md` now states the rule for any
 repository that wants to serve as a git index. Also: two `shutil.rmtree`
 calls in the acceptance suite got the read-only-objects retry the other
 files already had.
+
+**Fourth Windows round: the write side.** The surfaced error envelope named
+it: `content id mismatch … the index declares sha256:…d740b37e2d, actual
+sha256:…0154f5fd`. The test fixture rewrote `package.json` with
+`Path.write_text` — Windows text mode translated `\n` → `\r\n`, the content
+id was hashed over CRLF, git normalised back to LF at commit, and the served
+tree could never match. The same latent bug sat in production:
+`from_step.scaffold` writes `package.json` and the README into a tree that
+is content-hashed, so a Windows author's scaffolded package would have
+broken identically. All four sites now pin `newline="\n"` (the receipt too,
+for consistency), and AGENTS.md carries the rule: any file that participates
+in a content id is written with a pinned newline or as bytes. Three coats of
+one lesson: the clone side, the repo side, the write side.

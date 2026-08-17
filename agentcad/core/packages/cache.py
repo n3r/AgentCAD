@@ -472,7 +472,8 @@ def _write_receipt(name, version, entries, content_id, index, source) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
     try:
-        tmp.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(receipt, indent=2), encoding="utf-8",
+                       newline="\n")
         tmp.replace(path)
     except BaseException:
         tmp.unlink(missing_ok=True)
