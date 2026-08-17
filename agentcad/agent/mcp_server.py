@@ -45,6 +45,52 @@ def _base_url() -> str:
     return f"http://127.0.0.1:{get_port()}"
 
 
+def _client_headers() -> dict[str, str]:
+    """Headers every proxied call carries.
+
+    ``X-Agent-Id`` is the local turn-locking identity and is unchanged: in
+    local mode it *is* who you are, and in hosted mode the guard demotes it to
+    a ``<device>`` under the bearer's principal (PRD-005a, Decision 6).
+
+    ``AGENTCAD_TOKEN`` adds the bearer that makes a hosted instance answer at
+    all. A blank value is treated as absent rather than sent as ``Bearer `` —
+    an empty credential is a 401 on a hosted box and pure noise on a local
+    one.
+    """
+    headers = {"X-Agent-Id": os.environ.get("AGENTCAD_AGENT_ID", "mcp")}
+    token = (os.environ.get("AGENTCAD_TOKEN") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _may_autostart(base: str | None = None) -> bool:
+    """May an unreachable *base* be answered by spawning a local server?
+
+    Only when it is loopback. Auto-starting a local instance because a
+    **remote** one is unreachable is a footgun rather than a convenience: the
+    agent would then quietly drive an empty machine that is not the one the
+    operator configured, and every result would look real.
+
+    The decision is on the parsed **host**, never a substring — a
+    ``http://127.0.0.1.evil.example`` that passed a ``startswith`` check would
+    be exactly the confusion this exists to stop.
+    """
+    from urllib.parse import urlsplit
+
+    # The same set `check_bind` refuses a non-loopback bind against, imported
+    # rather than re-spelled: two copies that drifted would let one say yes
+    # while the other said no. `urlsplit` strips the IPv6 brackets, so `[::1]`
+    # arrives here as `::1` — both spellings are in the set.
+    from ..core.appmode import LOOPBACK_HOSTS
+
+    try:
+        host = urlsplit(base if base is not None else _base_url()).hostname
+    except ValueError:                      # a malformed authority
+        return False
+    return bool(host) and host in LOOPBACK_HOSTS
+
+
 def _health_ok(base: str) -> bool:
     try:
         return httpx.get(f"{base}/api/health", timeout=2.0).status_code == 200
@@ -67,6 +113,15 @@ def _ensure_server(base: str) -> bool:
     """Return True once /api/health answers, auto-starting the server if needed."""
     if _health_ok(base):
         return True
+    if not _may_autostart(base):
+        print(
+            f"agentcad-mcp: no server at {base}, and it is not a loopback "
+            f"address — refusing to start a LOCAL server in its place. Start "
+            f"or fix the instance at {base} (and set AGENTCAD_TOKEN if it runs "
+            f"in hosted mode), or unset AGENTCAD_URL to use a local one.",
+            file=sys.stderr,
+        )
+        return False
     argv = _server_spawn_argv()
     print(
         f"agentcad-mcp: no server at {base}; "
@@ -123,11 +178,12 @@ def _tool_result(payload) -> types.CallToolResult:
 async def _serve(base: str) -> None:
     # Identity for the server's turn locking (acquire_turn/release_turn):
     # every proxied call carries X-Agent-Id so concurrent MCP agents can be
-    # told apart. Set AGENTCAD_AGENT_ID to give each agent a stable name.
+    # told apart. Set AGENTCAD_AGENT_ID to give each agent a stable name, and
+    # AGENTCAD_TOKEN to authenticate against a hosted instance.
     http = httpx.AsyncClient(
         base_url=base,
         timeout=REQUEST_TIMEOUT,
-        headers={"X-Agent-Id": os.environ.get("AGENTCAD_AGENT_ID", "mcp")},
+        headers=_client_headers(),
     )
 
     async def on_list_tools(ctx, params) -> types.ListToolsResult:

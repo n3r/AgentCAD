@@ -1,0 +1,64 @@
+# AgentCAD — one hosted instance, one volume (PRD-005a).
+#
+# TRUST: an account on this instance can execute arbitrary Python on the host;
+# give one only to someone you would give a shell to. A part script is
+# arbitrary Python and Linux has no worker confinement until PRD-006, so
+# registration is closed, `member` and `admin` are not a security boundary
+# between each other, and this belongs on a single-purpose VM.
+#
+# Quick start:
+#   cp .env.example .env      # then set AGENTCAD_PUBLIC_ORIGIN
+#   docker compose up -d
+#   docker compose exec agentcad agentcad admin user add you --admin
+# Open the enrolment link it prints. Full guide: docs/deployment.md.
+#
+# TLS is bring-your-own: this publishes plain HTTP on 8630 and expects your
+# existing proxy in front. `docker compose --profile proxy up -d` instead adds
+# Caddy with automatic ACME. The default is unencrypted on purpose — automatic
+# ACME as the default needs a real public DNS name at first `up`, which breaks
+# an air-gapped install, a staging box and the CI smoke job.
+
+services:
+  agentcad:
+    build: .
+    image: agentcad:local
+    restart: unless-stopped
+    ports:
+      - "8630:8630"
+    environment:
+      AGENTCAD_MODE: hosted
+      AGENTCAD_PUBLIC_ORIGIN: ${AGENTCAD_PUBLIC_ORIGIN:-http://localhost:8630}
+      AGENTCAD_SECRET_KEY: ${AGENTCAD_SECRET_KEY:-}
+      AGENTCAD_HOST: 0.0.0.0
+      AGENTCAD_PORT: "8630"
+      AGENTCAD_PROJECTS_DIR: /data/projects
+      AGENTCAD_STATE_DIR: /data/state
+      AGENTCAD_EXAMPLES: "0"
+      AGENTCAD_KERNEL_POOL_SIZE: "1"
+    volumes:
+      - agentcad-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request as u;from urllib.parse import urlsplit;p=os.environ.get('AGENTCAD_PORT','8630');h=urlsplit(os.environ['AGENTCAD_PUBLIC_ORIGIN']).netloc;u.urlopen(u.Request('http://127.0.0.1:'+p+'/api/health',headers={'Host':h}),timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  caddy:
+    image: caddy:2
+    profiles: ["proxy"]
+    restart: unless-stopped
+    depends_on:
+      - agentcad
+    ports:
+      - "80:80"
+      - "443:443"
+    command: caddy reverse-proxy --from ${AGENTCAD_DOMAIN:-cad.example.com} --to agentcad:8630
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  agentcad-data:
+  caddy-data:
+  caddy-config:

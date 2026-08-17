@@ -1,13 +1,13 @@
 """AgentCAD command-line interface.
 
 Commands:
-    agentcad serve [--port N] [--projects-dir P] [--no-open]
+    agentcad serve [--host H] [--port N] [--projects-dir P] [--no-open]
     agentcad open                    # serve + open the browser
     agentcad mcp                     # MCP stdio server (proxies the HTTP API)
     agentcad new <name>              # create a project
     agentcad export <project> <part> --format step|stl|3mf [-o OUT]
     agentcad check [--project P] [--ref REF] [--report R] [--md M]
-    agentcad admin user add|list|disable / admin enrol   # hosted accounts
+    agentcad admin user|token add|list|... / admin enrol  # hosted identity
     agentcad package validate <dir> [--strict] [--report R] [--budget S]
     agentcad publish <dir> --index NAME [--yank name@version] [--budget S]
 """
@@ -15,8 +15,10 @@ Commands:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -26,6 +28,20 @@ from ._spawn import worker_argv  # noqa: F401 — re-exported; kernel spawn help
 from .config import get_port
 
 DEFAULT_PROJECTS_DIR = Path.home() / "AgentCAD" / "projects"
+
+
+def _projects_dir(args) -> Path:
+    """`--projects-dir`, else `$AGENTCAD_PROJECTS_DIR`, else the default.
+
+    The environment layer is FR24's: the container mounts one volume and points
+    every command at `/data/projects` without overriding the image's command.
+    It is applied in **one** helper rather than at each call site so `agentcad
+    new` inside `docker compose exec` cannot land in a different tree from the
+    one the server serves — which is the whole failure this replaces.
+    """
+    override = getattr(args, "projects_dir", None) or os.environ.get(
+        "AGENTCAD_PROJECTS_DIR")
+    return Path(override) if override else DEFAULT_PROJECTS_DIR
 
 
 def _build_service(projects_dir: Path, extra_writable: list[str] | None = None):
@@ -88,6 +104,13 @@ def _writable_roots(projects_dir: Path) -> list[str]:
 
 
 def _register_examples(service) -> None:
+    # FR22. In a container the bundled examples live in a read-only image
+    # layer that `_writable_roots` nevertheless grants writes into, so edits
+    # vanish on redeploy and `.cache` builds land in an ephemeral layer.
+    # `AGENTCAD_EXAMPLES=0` (the compose default) skips them. Default "1", so
+    # every local install is unchanged.
+    if os.environ.get("AGENTCAD_EXAMPLES", "1") == "0":
+        return
     examples = resource_root() / "examples"
     if not examples.is_dir():
         return
@@ -151,26 +174,33 @@ def _make_chat_engine(service, registry):
     return ChatEngine(registry, service.bus)
 
 
-def _security_config():
+def _resolve_mode_or_exit():
+    """``AppMode`` from the environment, or exit 2 naming the setting.
+
+    A misconfigured hosted instance must **not** fall back to local: a server
+    that quietly served an unauthenticated API because a variable was
+    misspelled is the one failure this design will not have.
+    """
+    from .core.appmode import ModeError, resolve_mode
+
+    try:
+        return resolve_mode()
+    except ModeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def _security_config(mode=None):
     """A ``SecurityConfig`` in hosted mode, ``None`` in local mode.
 
     ``None`` is not "auth disabled": ``create_app`` runs the same middleware
     body it always has, so a local `agentcad serve` is byte-identically what
     it was. The imports are **lazy** on purpose — ``authstore`` reaches for
     ``fcntl``, and a local run on Windows must never touch it.
-
-    A misconfigured hosted instance refuses to start, naming the setting. It
-    must not fall back to local: a server that quietly served an
-    unauthenticated API because a variable was misspelled is the one failure
-    this design will not have.
     """
-    from .core.appmode import HOSTED, ModeError, resolve_mode, state_dir
+    from .core.appmode import HOSTED, state_dir
 
-    try:
-        mode = resolve_mode()
-    except ModeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(2) from exc
+    mode = mode if mode is not None else _resolve_mode_or_exit()
     if mode.name != HOSTED:
         return None
 
@@ -180,25 +210,68 @@ def _security_config():
     return SecurityConfig(mode=mode, store=AuthStore(state_dir() / "auth"))
 
 
+def _serve_bind(args, mode) -> tuple[str, int]:
+    """Where to listen, subject to Decision 3's interlock.
+
+    `--host` wins over `AGENTCAD_HOST` wins over loopback; likewise `--port`,
+    `AGENTCAD_PORT`, the stored config. The environment layer is what lets the
+    container configure the bind without overriding the image's command.
+
+    The interlock is checked **here**, before `_build_service`, so a refusal
+    costs nothing: building the service first would spawn ~0.5 GB of kernel
+    worker per pool slot and then exit.
+    """
+    from .core.appmode import ModeError, check_bind
+
+    host = args.host or os.environ.get("AGENTCAD_HOST") or "127.0.0.1"
+    # The interlock first, before anything with a side effect: `get_port()`
+    # WRITES the config file when no port is stored yet, and a refused start
+    # should leave nothing behind.
+    try:
+        check_bind(mode, host)
+    except ModeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    given = args.port or os.environ.get("AGENTCAD_PORT")
+    try:
+        port = int(given) if given else get_port()
+    except (TypeError, ValueError):
+        print(f"error: AGENTCAD_PORT must be a port number, not {given!r}",
+              file=sys.stderr)
+        raise SystemExit(2) from None
+    return host, port
+
+
 def cmd_serve(args, open_browser: bool) -> None:
     import uvicorn
 
     from .core.tools import build_registry
+    from .server import security as security_module
     from .server.app import create_app
 
-    port = args.port or get_port()
-    projects_dir = Path(args.projects_dir or DEFAULT_PROJECTS_DIR)
-    security = _security_config()
+    mode = _resolve_mode_or_exit()
+    host, port = _serve_bind(args, mode)
+    projects_dir = _projects_dir(args)
+    security = _security_config(mode)
+    # Installed here rather than only inside `create_app`, because a tool pack
+    # decides at REGISTRATION time whether its tool can run (the FEM
+    # precedent) and `build_registry` runs before `create_app`. Without this
+    # line `whoami` would exist in every test and in no real hosted server.
+    security_module.install(security)
     service = _build_service(projects_dir)
     registry = build_registry(service)
     chat_engine = _make_chat_engine(service, registry)
     app = create_app(service, registry, chat_engine, security=security)
 
-    url = f"http://127.0.0.1:{port}"
+    # What to *open* and what to *print* are the loopback URL; what to bind is
+    # `host`. On a hosted instance the address a person types is the configured
+    # public origin, not the interface.
+    local_url = f"http://127.0.0.1:{port}"
+    url = mode.public_origin or local_url
     if open_browser and not args.no_open:
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    print(f"AgentCAD {agentcad.__version__} — {url}")
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+        threading.Timer(1.0, lambda: webbrowser.open(local_url)).start()
+    print(f"AgentCAD {agentcad.__version__} — {url} (listening on {host}:{port})")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
 def cmd_mcp(args) -> None:
@@ -221,13 +294,13 @@ def cmd_worker(args) -> None:
 def cmd_new(args) -> None:
     from .core.project import ProjectStore
 
-    store = ProjectStore(Path(args.projects_dir or DEFAULT_PROJECTS_DIR))
+    store = ProjectStore(_projects_dir(args))
     path = store.create(args.name)
     print(f"created {path}")
 
 
 def cmd_export(args) -> None:
-    service = _build_service(Path(args.projects_dir or DEFAULT_PROJECTS_DIR))
+    service = _build_service(_projects_dir(args))
     try:
         project = args.project
         if "/" in project or project.startswith("."):
@@ -565,6 +638,40 @@ def _dispatch_admin(args) -> None:
         print(f"disabled {args.handle!r}; {dropped} session(s) revoked")
         return
 
+    if action == "token:add":
+        role = "admin" if args.admin else "member"
+        token = store.add_token(args.name, role=role, ttl_days=args.ttl_days)
+        print(f"created token {args.name!r} as {role}"
+              + (f", expiring in {args.ttl_days} day(s)" if args.ttl_days else ""))
+        print(token)
+        print()
+        # Only the SHA-256 digest is stored, so this is not a policy — it is
+        # the only moment the secret exists anywhere outside this terminal.
+        print("This is the only time the token is shown. Give it to the agent "
+              "as AGENTCAD_TOKEN; if it is lost, revoke it and mint another.")
+        return
+
+    if action == "token:list":
+        tokens = store.list_tokens()
+        if not tokens:
+            print("no tokens yet — create one with: "
+                  "agentcad admin token add <name>")
+            return
+        print(f"{'ID':<12}{'NAME':<34}{'ROLE':<8}{'STATE':<10}")
+        for row in tokens:
+            expires = row.get("expires")
+            state = ("revoked" if row["revoked"]
+                     else "expired" if expires and expires <= time.time()
+                     else "active")
+            print(f"{row['id']:<12}{row['name']:<34}{row['role']:<8}{state:<10}")
+        return
+
+    if action == "token:revoke":
+        store.revoke_token(args.token_id)
+        print(f"revoked token {args.token_id!r}; it stops authenticating on "
+              f"its next use")
+        return
+
     if getattr(args, "admin_command", "") == "enrol":
         token = store.mint_enrolment(args.handle)
         print(f"new enrolment link for {args.handle!r} "
@@ -643,7 +750,7 @@ def cmd_check(args) -> int:
             extra_writable.append(str(Path(args.project).expanduser().resolve()))
 
         service = _build_service(
-            Path(args.projects_dir or DEFAULT_PROJECTS_DIR),
+            _projects_dir(args),
             extra_writable=extra_writable or None)
         locks.set_client_id("ci")
         registry = build_registry(service)
@@ -828,7 +935,7 @@ def cmd_package_validate(args) -> int:
             work_dir = str(Path(args.work_dir).expanduser().resolve())
             extra_writable.append(work_dir)
         service = _build_service(
-            Path(args.projects_dir or DEFAULT_PROJECTS_DIR),
+            _projects_dir(args),
             extra_writable=extra_writable or None)
         locks.set_client_id("ci")
         report = PackageGate(service).run(
@@ -943,7 +1050,7 @@ def cmd_publish(args) -> int:
             work_dir = str(Path(args.work_dir).expanduser().resolve())
             extra_writable.append(work_dir)
         service = _build_service(
-            Path(args.projects_dir or DEFAULT_PROJECTS_DIR),
+            _projects_dir(args),
             extra_writable=extra_writable or None)
         locks.set_client_id("ci")
         result = index_module.publish(index, args.path, service,
@@ -997,8 +1104,17 @@ def main() -> None:
 
     for name in ("serve", "open"):
         p = sub.add_parser(name, help=f"{name} the AgentCAD server")
-        p.add_argument("--port", type=int, default=None)
-        p.add_argument("--projects-dir", default=None)
+        p.add_argument("--port", type=int, default=None,
+                       help="listen port (default: $AGENTCAD_PORT, else the "
+                            "stored config, else 8630)")
+        p.add_argument("--host", default=None,
+                       help="listen address (default: $AGENTCAD_HOST, else "
+                            "127.0.0.1). Binding a non-loopback interface "
+                            "requires AGENTCAD_MODE=hosted: in local mode the "
+                            "server has no authentication at all")
+        p.add_argument("--projects-dir", default=None,
+                       help="projects root (default: $AGENTCAD_PROJECTS_DIR, "
+                            "else ~/AgentCAD/projects)")
         p.add_argument("--no-open", action="store_true")
 
     sub.add_parser("mcp", help="run the MCP stdio server")
@@ -1157,7 +1273,8 @@ def main() -> None:
                     "Operates directly on the identity state files, so it "
                     "works over `docker compose exec` with no running server "
                     "and starts no kernel. " + TRUST_SENTENCE.capitalize() + ".")
-    admin_sub = p.add_subparsers(dest="admin_command", metavar="{user,enrol}")
+    admin_sub = p.add_subparsers(dest="admin_command",
+                                 metavar="{user,token,enrol}")
 
     user_p = admin_sub.add_parser(
         "user", help="create, list and disable accounts",
@@ -1182,6 +1299,36 @@ def main() -> None:
     a = user_sub.add_parser("disable",
                             help="disable an account and revoke its sessions")
     a.add_argument("handle")
+
+    token_p = admin_sub.add_parser(
+        "token", help="mint, list and revoke agent bearer tokens",
+        description="Bearer tokens are how an agent, a CI job or a remote MCP "
+                    "client authenticates (AGENTCAD_TOKEN). A token is shown "
+                    "once and stored only as a SHA-256 digest. "
+                    + TRUST_SENTENCE.capitalize() + ".")
+    token_sub = token_p.add_subparsers(dest="admin_action",
+                                       metavar="{add,list,revoke}")
+
+    a = token_sub.add_parser(
+        "add", help="mint a bearer token and print it once",
+        description="Prints `acad_<id>_<secret>` ONCE — only its digest is "
+                    "stored, so a lost token is revoked and replaced, never "
+                    "recovered.\n\n"
+                    "WARNING: " + TRUST_SENTENCE + ".",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    a.add_argument("name", help="[a-z0-9][a-z0-9._-]{0,31}; composes as "
+                                "agent:<name> in claims, presence and history")
+    a.add_argument("--admin", action="store_true",
+                   help="mint with the admin role (note: admin ROUTES still "
+                        "require a signed-in person, never a token)")
+    a.add_argument("--ttl-days", type=int, default=None, metavar="N",
+                   help="expire the token after N days (default: never)")
+
+    token_sub.add_parser("list", help="list tokens (never a secret or a digest)")
+
+    a = token_sub.add_parser("revoke",
+                             help="revoke a token by id (see `token list`)")
+    a.add_argument("token_id", metavar="ID")
 
     a = admin_sub.add_parser(
         "enrol", help="re-mint an enrolment link for an existing account",

@@ -1,0 +1,26 @@
+# Everything here is either rebuilt in the image, host-specific, or large.
+# `.venv` in particular MUST be excluded: it holds absolute host paths and
+# macOS/Linux binaries, and copying it in would shadow the venv `uv sync`
+# builds.
+.venv/
+.buildvenv/
+.git/
+.github/
+build/
+dist/
+packaging/
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+.cache/
+.DS_Store
+.env
+.tiden/
+.history/
+exports/
+
+# Not needed at runtime; the smoke job runs the product, not the suite.
+tests/
+docs/
+scripts/

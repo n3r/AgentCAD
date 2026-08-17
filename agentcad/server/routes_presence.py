@@ -82,6 +82,34 @@ def _beacon_identity(body: dict) -> str | None:
     return found[:64] if found and found.isprintable() else None
 
 
+def _check_beacon_scope(leaving: str, who: str, hosted: bool) -> None:
+    """In hosted mode a beacon may only name the caller's own namespace.
+
+    Local mode is untouched — the header the body stands in for is itself
+    self-asserted there, so refusing the body would buy nothing and would break
+    the ``pagehide`` beacon the browser actually sends (PRD-005a Decision 9,
+    row 8).
+
+    In hosted mode ``who`` is the *server-derived* principal, so the namespace
+    is real: ``user:nikita`` may leave as ``user:nikita`` or as any
+    ``user:nikita/<device>`` of theirs, and nothing else. The boundary is the
+    ``/`` rather than a string prefix — ``user:nikita2`` starts with
+    ``user:nikita`` and is a different person.
+
+    A 422 rather than a silent drop: a beacon that named somebody else is a
+    bug or an attempt, and both deserve to be visible.
+    """
+    if not hosted:
+        return
+    root = who.split("/", 1)[0]
+    if leaving == root or leaving.startswith(root + "/"):
+        return
+    raise ValidationError(
+        "a presence beacon may only name your own client identity",
+        {"client_id": leaving, "principal": root},
+    )
+
+
 async def _json(request: Request) -> dict:
     """The body, or ``{}``. Read the BYTES, not the header: ``sendBeacon``
     posts without a ``content-length`` a proxy is obliged to preserve, and a
@@ -103,6 +131,16 @@ def build_router(service, registry) -> APIRouter:
     ensure_claims(service)
     ensure_claim_guard(service)
     throttle = TokenBucket()
+
+    # Captured at MOUNT time, not read per request. `security.current_config()`
+    # falls back to a process-global slot, so a *local* app built while a
+    # hosted one was installed would otherwise start enforcing the hosted
+    # beacon rule against identities that are self-asserted by design. This is
+    # the same trap `routes_auth.py` records; `create_app` installs before it
+    # mounts packs, so this is exactly this app's mode.
+    from . import security as sec
+
+    hosted_mode = bool(sec.current_config() and sec.current_config().mode.hosted)
 
     def _where(proj: str) -> str:
         """The branch-aware key everything else in the process locks on. Also
@@ -139,6 +177,8 @@ def build_router(service, registry) -> APIRouter:
             # designed behaviour, and it is the only one a self-asserted
             # identity can be trusted with.
             leaving = _beacon_identity(body) or who
+            # PRD-005a FR20: hosted-only, and a no-op in local mode.
+            _check_beacon_scope(leaving, who, hosted_mode)
             if presence.leave(key, leaving):
                 presence.publish(key, proj)
             return presence.payload(key, proj, who)

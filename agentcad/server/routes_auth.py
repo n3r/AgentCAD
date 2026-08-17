@@ -207,6 +207,45 @@ def build_router(service, registry) -> APIRouter:
         cfg.store.revoke_sessions_for(handle)
         return {"handle": handle, "disabled": True}
 
+    # ------------------------------------------------------------ tokens
+
+    @router.get("/auth/tokens")
+    def list_tokens():
+        cfg = _config()
+        _require_admin()
+        return {"tokens": cfg.store.list_tokens()}
+
+    @router.post("/auth/tokens", status_code=201)
+    async def add_token(request: Request):
+        """Mint a bearer. The secret is in **this** response and nowhere else.
+
+        `AuthStore.list_tokens` cannot return it — only a SHA-256 digest is
+        stored — so "shown once" is a property of the storage rather than a
+        promise this handler keeps.
+        """
+        cfg = _config()
+        _require_admin()
+        body = await _body(request)
+        ttl_days = body.get("ttl_days")
+        token = cfg.store.add_token(
+            body.get("name"),
+            role=body.get("role") or "member",
+            ttl_days=int(ttl_days) if isinstance(ttl_days, (int, float)) else None,
+        )
+        # `acad_<id8>_<secret43>`; the secret's own alphabet includes "_",
+        # which is why this is `split("_", 2)` and never `split("_")`.
+        token_id = token.split("_", 2)[1]
+        row = next(r for r in cfg.store.list_tokens() if r["id"] == token_id)
+        return {**row, "token": token,
+                "note": "this is the only time the token is shown"}
+
+    @router.delete("/auth/tokens/{token_id}")
+    def revoke_token(token_id: str):
+        cfg = _config()
+        _require_admin()
+        cfg.store.revoke_token(token_id)
+        return {"id": token_id, "revoked": True}
+
     return router
 
 

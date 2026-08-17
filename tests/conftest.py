@@ -157,6 +157,12 @@ def hosted(kernel, tmp_path):
     store.enrol(store.add_user(ADMIN_HANDLE, role="admin"), ADMIN_PASSWORD)
     cfg = SecurityConfig(mode=AppMode("hosted", HOSTED_ORIGIN, b"k" * 32),
                          store=store)
+    # Installed BEFORE the registry is built, exactly as `cli.cmd_serve` does
+    # it: a tool pack decides at registration time whether its tool can run
+    # (the FEM precedent), and `whoami` can only run in hosted mode. Building
+    # the registry first would leave a real hosted server without the tool
+    # while every route test still passed.
+    security_module.install(cfg)
     app = create_app(service, build_registry(service),
                      extra_allowed_hosts={"testserver"}, security=cfg)
     client = TestClient(app, base_url=HOSTED_ORIGIN)

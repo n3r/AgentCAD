@@ -215,6 +215,19 @@ def create_app(
 
     @app.post("/api/projects/open")
     async def open_project(request: Request):
+        if security is not None and security.mode.hosted:
+            # FR19. This route registers ANY absolute path on the server as a
+            # project. On a loopback bind it could only ever reach the
+            # operator's own disk, which is what made it safe; on a hosted
+            # instance it is "/etc as a project tree" for every member. The
+            # refusal is here rather than in the guard because the guard is a
+            # path allowlist, not a policy engine.
+            raise AuthzError(
+                "POST /api/projects/open is disabled in hosted mode: it "
+                "registers an arbitrary filesystem path on the server as a "
+                "project. Create one with POST /api/projects instead.",
+                {"mode": security.mode.name},
+            )
         body = await request.json()
         return service.open_project(body.get("path", ""))
 
@@ -455,4 +468,10 @@ def _mount_route_packs(app: FastAPI, service: AgentCADService, registry: ToolReg
         builder = getattr(module, "build_router", None)
         router = builder(service, registry) if callable(builder) else getattr(module, "router", None)
         if router is not None:
-            app.include_router(router, prefix="/api")
+            # A pack may declare `PREFIX` to mount somewhere other than /api;
+            # PRD-007's share links need `/s/<token>` at the root and the
+            # extension point could not express it. The default is unchanged,
+            # so the sixteen existing packs do not move. It is NOT a way past
+            # the allowlist: `security.is_public` is consulted with the full
+            # request path, so a pack mounted at the root is still private.
+            app.include_router(router, prefix=getattr(module, "PREFIX", "/api"))

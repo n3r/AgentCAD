@@ -184,3 +184,88 @@ def test_the_help_carries_the_trust_sentence(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit):
         _run(monkeypatch, "admin", "user", "add", "--help")
     assert "execute arbitrary Python on the host" in capsys.readouterr().out
+
+
+# ------------------------------------------------------ tokens (slice 4)
+
+
+def _mint(monkeypatch, capsys, *extra):
+    _run(monkeypatch, "admin", "token", "add", "ci", *extra)
+    out = capsys.readouterr().out
+    return out, out.split("acad_", 1)[1].split()[0]
+
+
+def test_admin_token_add_prints_the_secret_once_with_a_warning(
+        tmp_path, monkeypatch, capsys):
+    out, secret = _mint(monkeypatch, capsys)
+    assert out.count("acad_") == 1
+    assert "only time" in out.lower()
+    assert _store().resolve_token("acad_" + secret) == {
+        "name": "ci", "role": "member"}
+
+
+def test_admin_token_add_can_mint_an_admin_scoped_token(
+        tmp_path, monkeypatch, capsys):
+    _, secret = _mint(monkeypatch, capsys, "--admin")
+    assert _store().resolve_token("acad_" + secret)["role"] == "admin"
+
+
+def test_admin_token_add_honours_a_ttl(tmp_path, monkeypatch, capsys):
+    import time
+
+    _, secret = _mint(monkeypatch, capsys, "--ttl-days", "1")
+    store = _store()
+    assert store.resolve_token("acad_" + secret) is not None
+    monkeypatch.setattr("agentcad.core.authstore._now",
+                        lambda: time.time() + 2 * 86400)
+    assert store.resolve_token("acad_" + secret) is None
+
+
+def test_admin_token_add_refuses_a_bad_name(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, "admin", "token", "add", "Not A Name")
+    assert exc.value.code != 0
+
+
+def test_admin_token_list_never_shows_a_secret_or_a_digest(
+        tmp_path, monkeypatch, capsys):
+    _, secret = _mint(monkeypatch, capsys)
+    _run(monkeypatch, "admin", "token", "list")
+    out = capsys.readouterr().out
+    assert "ci" in out
+    for leak in (secret, "digest", "acad_"):
+        assert leak not in out, leak
+
+
+def test_admin_token_revoke_kills_the_credential(tmp_path, monkeypatch, capsys):
+    _, secret = _mint(monkeypatch, capsys)
+    token_id = _store().list_tokens()[0]["id"]
+    _run(monkeypatch, "admin", "token", "revoke", token_id)
+    assert "revoked" in capsys.readouterr().out
+    assert _store().resolve_token("acad_" + secret) is None
+    # Revoked rather than deleted, so `token list` still says what went and
+    # when — a credential that vanishes silently is one nobody can audit.
+    assert _store().list_tokens()[0]["revoked"] is True
+
+
+def test_revoking_an_unknown_token_exits_nonzero(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit) as exc:
+        _run(monkeypatch, "admin", "token", "revoke", "deadbeef")
+    assert exc.value.code != 0
+
+
+def test_admin_token_list_is_empty_and_friendly_on_a_fresh_instance(
+        tmp_path, monkeypatch, capsys):
+    _run(monkeypatch, "admin", "token", "list")
+    assert "agentcad admin token add" in capsys.readouterr().out
+
+
+def test_the_token_cli_starts_no_service_either(tmp_path, monkeypatch, capsys):
+    from agentcad import cli
+
+    def explode(*args, **kwargs):
+        raise AssertionError("the admin CLI must not build a service")
+
+    monkeypatch.setattr(cli, "_build_service", explode)
+    _run(monkeypatch, "admin", "token", "add", "ci")
+    assert "acad_" in capsys.readouterr().out
