@@ -1,6 +1,6 @@
 # PRD-012 — Configurations
 
-- **Status:** in progress — design spec `docs/superpowers/specs/2026-08-17-configurations-design.md`, plan `docs/superpowers/plans/2026-08-17-configurations.md`
+- **Status:** completed — merged to main in PR #18 (AC1–AC9 verified; AC9 graded as evidence — a real headless Chrome session, `ERROR COUNT: 0` / `FAILED REQUESTS: 0`, changelog 0207). Design spec `docs/superpowers/specs/2026-08-17-configurations-design.md`, plan `docs/superpowers/plans/2026-08-17-configurations.md`, changelogs 0200–0211.
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
