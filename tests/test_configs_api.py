@@ -17,14 +17,18 @@ from __future__ import annotations
 
 import json
 import queue
+import threading
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from agentcad.core import tools_configs
 from agentcad.core.materials import DEFAULT_MATERIAL
+from agentcad.core.packages import manager as pkgmanager
 from agentcad.core.tools import ToolRegistry, build_registry
 from agentcad.server.app import create_app
+from agentcad.server.routes_configs import _KEY_RE
 
 from .conftest import (
     FLANGE_SCRIPT,
@@ -98,6 +102,32 @@ def _counting(service, monkeypatch) -> dict:
 
     monkeypatch.setattr(service.kernel, "request", counting)
     return calls
+
+
+def _manifest_lock(store, project: str):
+    """The RLock `packages.manager.manifest_scope` serializes this project on
+    (taking it once is what creates the registry entry)."""
+    with pkgmanager.manifest_scope(store, project):
+        pass
+    return pkgmanager._manifest_locks[str(Path(store.path_of(project)).resolve())]
+
+
+def _held(lock) -> bool:
+    """Is ``lock`` held right now? Probed from ANOTHER thread on purpose: an
+    RLock is reentrant for its owner, so acquiring it here would always
+    succeed and prove nothing."""
+    got: list[bool] = []
+
+    def probe():
+        acquired = lock.acquire(blocking=False)
+        got.append(acquired)
+        if acquired:
+            lock.release()
+
+    thread = threading.Thread(target=probe)
+    thread.start()
+    thread.join()
+    return not got[0]
 
 
 def _entry(service, project: str, part_id: str) -> dict:
@@ -370,6 +400,58 @@ class TestConfigTools:
         assert list(out["configs"]) == ["s", "m"]
         assert "l" not in service.get_part("demo", "flange")["configs"]
 
+    def test_the_locks_span_the_whole_read_modify_write(self, stack,
+                                                       monkeypatch):
+        """Fix round 1 (I1/I2). FR11 reads the part entry AND the instance
+        list, and `cleared_overrides` reports a map read before the write — a
+        lock that covers only the write leaves both TOCTOU.
+        `set_instance_config` additionally takes `service._lock`, the lock
+        `service.set_assembly` serializes the identical read-all/write-all on.
+        """
+        service, registry = stack
+        self._family(registry)
+        assert "error" not in registry.call("set_assembly", {
+            "project": "demo",
+            "instances": [{"id": "f1", "part": "flange", "config": "l"}]})
+
+        manifest_lock = _manifest_lock(service.store, "demo")
+        # The probe discriminates: neither lock is held between calls, so a
+        # True below is the tool holding it and not a broken helper.
+        assert _held(manifest_lock) is False
+        assert _held(service._lock) is False
+        seen: dict[str, bool] = {}
+        store_instances = service.store.instances
+        store_get_part = service.store.get_part
+
+        def watched_instances(project):
+            seen.setdefault("instances", _held(manifest_lock))
+            seen.setdefault("instances_service_lock", _held(service._lock))
+            return store_instances(project)
+
+        def watched_get_part(project, part_id):
+            seen.setdefault("get_part", _held(manifest_lock))
+            return store_get_part(project, part_id)
+
+        monkeypatch.setattr(service.store, "instances", watched_instances)
+        monkeypatch.setattr(service.store, "get_part", watched_get_part)
+
+        refused = registry.call("set_part_configs", {
+            "project": "demo", "part_id": "flange", "configs": WITHOUT_L})
+        assert refused["error"]["type"] == "conflict_error"
+        assert seen["get_part"] is True        # the entry read is inside
+        assert seen["instances"] is True       # ...and so is the referrer read
+
+        seen.clear()
+        assert "error" not in registry.call("set_active_config", {
+            "project": "demo", "part_id": "flange", "config": "m"})
+        assert seen["get_part"] is True
+
+        seen.clear()
+        assert "error" not in registry.call("set_instance_config", {
+            "project": "demo", "instance": "f1", "config": "s"})
+        assert seen["instances"] is True
+        assert seen["instances_service_lock"] is True
+
     # ------------------------------------------- set_active_config (Task 3)
 
     def test_switching_clears_the_overrides_and_returns_the_rebuild(self, stack):
@@ -421,6 +503,34 @@ class TestConfigTools:
         assert out["diverged"] is False
         assert "active_config" not in _entry(service, "demo", "flange")
         assert out["cache_key"] == service.mesh_info("demo", "flange")["key"]
+
+    def test_re_selecting_the_active_configuration_keeps_the_overrides(
+            self, stack):
+        """Fix round 1 (MINOR 5): only a real CHANGE of the active
+        configuration clears the overrides, so neither a re-selection nor a
+        return-to-base on a part already at base drops `set_params` values."""
+        service, registry = stack
+        self._family(registry)
+        assert "error" not in registry.call("set_active_config", {
+            "project": "demo", "part_id": "flange", "config": "m"})
+        assert "error" not in registry.call("set_params", {
+            "project": "demo", "part_id": "flange", "values": {"thick": 20.0}})
+
+        again = registry.call("set_active_config", {
+            "project": "demo", "part_id": "flange", "config": "m"})
+        assert again["cleared_overrides"] == {}
+        assert again["diverged"] is True and again["diverged_params"] == ["thick"]
+        assert service.store.get_part("demo", "flange").params == {"thick": 20.0}
+
+        # ...and a part already at base keeps them too.
+        assert "error" not in registry.call("set_active_config", {
+            "project": "demo", "part_id": "flange"})       # m -> base: clears
+        assert "error" not in registry.call("set_params", {
+            "project": "demo", "part_id": "flange", "values": {"thick": 20.0}})
+        base = registry.call("set_active_config", {"project": "demo",
+                                                  "part_id": "flange"})
+        assert base["cleared_overrides"] == {}
+        assert service.store.get_part("demo", "flange").params == {"thick": 20.0}
 
     def test_an_unknown_configuration_names_the_declared_ones(self, stack):
         service, registry = stack
@@ -542,10 +652,45 @@ class TestConfigTools:
                    for row in part["configs"])
 
     def test_a_project_with_no_configured_part_says_so(self, stack):
-        """Never an empty list with no reason."""
+        """Never an empty list with no reason — for either reader."""
         _service, registry = stack
         out = registry.call("build_configs", {"project": "demo"})
         assert out == {"parts": [], "warnings": ["no configured parts"]}
+        assert registry.call("list_configs", {"project": "demo"}) == \
+            {"parts": [], "warnings": ["no configured parts"]}
+        # A named part still gets its honest empty row.
+        row = registry.call("list_configs", {"project": "demo",
+                                             "part_id": "flange"})["parts"][0]
+        assert row["configs"] == {} and row["referrers"] == {}
+
+    def test_an_empty_matrix_carries_its_reason(self, stack):
+        """Fix round 1 (MINOR 4): `configs: []` never arrives bare — a caller
+        must be able to tell "nothing declared" from "the filter matched
+        nothing" without guessing at the build."""
+        _service, registry = stack
+        nothing = registry.call("build_configs", {"project": "demo",
+                                                 "part_id": "flange"})
+        assert nothing["configs"] == []
+        assert nothing["warnings"] == ["part 'flange' declares no configurations"]
+
+        self._family(registry)
+        unrequested = registry.call("build_configs", {
+            "project": "demo", "part_id": "flange", "configs": []})
+        assert unrequested["configs"] == []
+        assert unrequested["warnings"] == ["no configurations requested"]
+
+        # Project-wide, a part that declares none of the requested names says
+        # so in its own row rather than reading as a part that built nothing.
+        assert "error" not in registry.call("set_part_configs", {
+            "project": "demo", "part_id": "fragile",
+            "configs": {"thin": FRAGILE_CONFIGS["thin"]}})
+        wide = registry.call("build_configs", {"project": "demo",
+                                               "configs": ["s"]})
+        rows = {part["part_id"]: part for part in wide["parts"]}
+        assert [row["name"] for row in rows["flange"]["configs"]] == ["s"]
+        assert rows["fragile"]["configs"] == []
+        assert "declares none of the requested" in \
+            rows["fragile"]["warnings"][0]
 
     # ------------------------------------------ set_instance_config (Task 5)
 
@@ -672,6 +817,31 @@ class TestConfigRoutes:
         assert deleted.json()["active_config"] is None
         assert service.store.get_part("demo", "flange").active_config is None
 
+    def test_deleting_the_active_config_at_base_keeps_the_overrides(self, client):
+        """Fix round 1 (MINOR 5): the DELETE is idempotent, and an idempotent
+        call must not have a side effect — a part already at base keeps its
+        `set_params` values."""
+        service, http = client
+        self._put_family(http)
+        service.set_params("demo", "flange", {"thick": 20.0})
+        response = http.delete("/api/projects/demo/parts/flange/active-config")
+        assert response.status_code == 200, response.text
+        assert response.json()["active_config"] is None
+        assert response.json()["cleared_overrides"] == {}
+        assert service.store.get_part("demo", "flange").params == {"thick": 20.0}
+
+    def test_putting_configs_without_the_key_is_a_422(self, client):
+        _service, http = client
+        response = http.put("/api/projects/demo/parts/flange/configs", json={})
+        assert response.status_code == 422, response.text
+
+    def test_the_project_configs_route_says_when_there_is_no_family(self, client):
+        _service, http = client
+        response = http.get("/api/projects/demo/configs")
+        assert response.status_code == 200, response.text
+        assert response.json() == {"parts": [],
+                                   "warnings": ["no configured parts"]}
+
     def test_putting_a_null_config_is_a_422_that_names_delete(self, client):
         """`_body_keys` strips `null`, so the PUT cannot express "base" — it
         says so instead of silently doing something else (that is what the
@@ -767,7 +937,12 @@ class TestConfigRoutes:
         # It never builds: the key is still absent after the 404.
         assert not (service.store.cache_dir("demo") / f"{pure}.acm").is_file()
 
-        for bad in ("nope", "../project", pure.upper(), pure[:31]):
+        for bad in ("nope", "../project", pure.upper(), pure[:31],
+                    f"{pure}%0A"):
             malformed = http.get(f"/api/projects/demo/meshes/{bad}")
             assert malformed.status_code == 404, (bad, malformed.text)
+        # The gate is applied with `fullmatch` because `$` also matches BEFORE a
+        # trailing newline — an anchored `.match` would look for `<key>\n.acm`.
+        assert not _KEY_RE.fullmatch(f"{pure}\n")
+        assert _KEY_RE.fullmatch(pure)
         assert http.get(f"/api/projects/nosuch/meshes/{pure}").status_code == 404

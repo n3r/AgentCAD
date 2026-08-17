@@ -72,6 +72,26 @@ returns post-state.
 - **`agentcad/core/service.py`** — `set_assembly` now reads
   `config=item.get("config")` into each `InstanceSpec`, so the manifest's
   instance binding survives the full-list write path (the store validates it).
+- **Fix round 1 (review findings):** `set_part_configs` and
+  `set_active_config` now hold `manifest_scope` across the whole
+  read-modify-write — the FR11 referential check (part entry **and** instance
+  list) and `cleared_overrides` were read outside the lock and were therefore
+  TOCTOU; `set_instance_config` additionally takes `service._lock`, the lock
+  `service.set_assembly` serializes the identical read-all/write-all on (order:
+  `manifest_scope` outer, `_lock` inner; both reentrant).
+  `set_active_config` now clears the explicit overrides **only when the active
+  configuration actually changes**, so a `DELETE …/active-config` on a part
+  already at base (or a re-selection of the active name) no longer drops
+  `set_params` values — the tool description says so. `build_configs` and
+  `list_configs` share one `_configured()` definition (configured **script**
+  parts), an empty matrix always carries a `warnings` reason (nothing declared /
+  nothing requested / none of the requested names declared by that part), and
+  project-wide `list_configs` returns the `"no configured parts"` warning. The
+  mesh route's key gate uses `fullmatch` (`$` also matches before a trailing
+  newline, so an anchored `.match` accepted `"<key>\n"`), as does the lod
+  grammar; the rebuild decision guards a non-dict `configs` entry the way
+  `_rows` does; and the redundant `locks.write_scope` calls say why they are
+  belt and braces.
 
 ## Files
 - `agentcad/core/tools_configs.py` — new tool pack (five tools).
@@ -89,9 +109,21 @@ returns post-state.
 - `set_active_config` writes `params={}` rather than popping the key: a part
   entry always carries `params` (`PartRecord.to_manifest`), so this matches a
   freshly created part byte for byte.
-- `set_instance_config` takes `manifest_scope` (it is a read-all/write-all of
-  the manifest) but **no** `locks.write_scope`: a claim is a *part* claim, and
-  the store's whole-manifest writes deliberately have no scope.
+- `set_instance_config` takes `manifest_scope` **and** `service._lock` (it is a
+  read-all/write-all of the instance list, and `service.set_assembly`
+  serializes the identical one on `_lock`) but **no** `locks.write_scope`: a
+  claim is a *part* claim, and the store's whole-manifest writes deliberately
+  have no scope. **Deferred follow-up, deliberately not fixed here:**
+  `tools_mates._set_instance_mate` and `routes_assembly2.patch_instance` do the
+  same read-all/write-all with **no** lock at all. That is pre-existing and
+  outside PRD-012's scope, so those two files are untouched; the third writer
+  being serialized does not make the other two safe against each other.
+- **Behaviour change from the fix round, with a consequence for the browser:**
+  because `set_active_config` now clears overrides only on a real change of the
+  active configuration, the design's "Reset to M" chip action (Decision 10)
+  cannot be `set_active_config m` while `m` is already active — it must remove
+  the overrides the pinned way, `set_params` with `null` per diverged
+  parameter. Slice 7 should wire the chip that way.
 - `list_configs` project-wide filters to configured parts; a part with no
   family is `configs: {}` on `get_part`, not a row here.
 - The `set_assembly` tool *description* in `agentcad/core/tools.py` still does
@@ -107,4 +139,10 @@ returns post-state.
   tests/test_reference.py tests/test_specs_api.py tests/test_history.py` —
   **98 passed**, `tests/test_tools.py tests/test_prd011_acceptance.py` — **19
   passed**.
-- Full suite (run by the controller after this slice landed): `make test` — 3428 passed, 7 skipped in 9:10 on 8 workers.
+- Fix-round runs: `uv run pytest tests/test_configs_api.py
+  tests/test_configs.py tests/test_server.py -q` — **104 passed**
+  (`tests/test_configs_api.py` alone is now **45 passed**, six new tests);
+  regression `tests/test_mcp.py tests/test_locks.py tests/test_mates.py
+  tests/test_service.py tests/test_packages_tools.py -q` — **97 passed**.
+- Full suite (run by the controller after this slice landed): `make test` — 3428 passed, 7 skipped in 9:10 on 8 workers. The fix round adds six tests and
+  changes no other module's behaviour; the controller re-runs it.

@@ -85,62 +85,78 @@ def register(registry, service) -> None:
         if not isinstance(configs, dict):
             raise ValidationError(
                 "configs must be an object of name -> configuration")
-        record, spec = _spec_for(project, part_id)
-        problems = pkgformat.validate_configurations(configs, spec)
-        if problems:
-            raise ValidationError(
-                "invalid configurations: "
-                + "; ".join(p["message"] for p in problems),
-                {"problems": problems, "part_id": part_id},
-            )
-        # Normalized on write (int/float coercion, enum canonicalization), so
-        # {"n": 3} and {"n": 3.0} are one configuration and one cache key.
-        # A comprehension over `configs.items()` preserves the caller's order —
-        # a family is not a lockfile, and this order is what the switcher and
-        # the dimension table display.
-        normalized = {
-            name: {**entry,
-                   "params": service.normalize_params(spec, entry["params"])}
-            for name, entry in configs.items()
-        }
+        # The lock spans the whole read-modify-write, not just the write: the
+        # FR11 referential check reads the part entry AND the instance list, and
+        # a `set_assembly` landing between that read and this write would bind
+        # an instance to a configuration this call is removing. Reentrant, so
+        # `update_part_entry`'s own scope nests for free.
+        with manifest_scope(service.store, project):
+            record, spec = _spec_for(project, part_id)
+            problems = pkgformat.validate_configurations(configs, spec)
+            if problems:
+                raise ValidationError(
+                    "invalid configurations: "
+                    + "; ".join(p["message"] for p in problems),
+                    {"problems": problems, "part_id": part_id},
+                )
+            # Normalized on write (int/float coercion, enum canonicalization),
+            # so {"n": 3} and {"n": 3.0} are one configuration and one cache
+            # key. A comprehension over `configs.items()` preserves the
+            # caller's order — a family is not a lockfile, and this order is
+            # what the switcher and the dimension table display.
+            normalized = {
+                name: {**entry,
+                       "params": service.normalize_params(spec, entry["params"])}
+                for name, entry in configs.items()
+            }
 
-        # FR11: a full replace may not orphan a binding. Both referrer kinds
-        # are reported at once (the `remove_part` payload shape) — a caller
-        # fixing one at a time would otherwise pay two round trips.
-        removed = set(record.configs or {}) - set(normalized)
-        bound = _referrers(project, part_id, removed)
-        active_hit = bool(record.active_config) and record.active_config in removed
-        if bound or active_hit:
-            names = sorted(
-                set(bound) | ({record.active_config} if active_hit else set())
-            )
-            reasons = [f"{name} by instance(s) {', '.join(ids)}"
-                       for name, ids in sorted(bound.items())]
-            if active_hit:
-                reasons.append("active_config")
-            raise ConflictError(
-                f"configuration(s) {', '.join(names)} of part {part_id!r} are "
-                "referenced: " + "; ".join(reasons),
-                {"part": part_id,
-                 "configs": names,
-                 "instances": sorted({i for ids in bound.values() for i in ids}),
-                 "active_config": active_hit},
-            )
+            # FR11: a full replace may not orphan a binding. Both referrer
+            # kinds are reported at once (the `remove_part` payload shape) — a
+            # caller fixing one at a time would otherwise pay two round trips.
+            removed = set(record.configs or {}) - set(normalized)
+            bound = _referrers(project, part_id, removed)
+            active_hit = bool(record.active_config) and \
+                record.active_config in removed
+            if bound or active_hit:
+                names = sorted(
+                    set(bound) | ({record.active_config} if active_hit else set())
+                )
+                reasons = [f"{name} by instance(s) {', '.join(ids)}"
+                           for name, ids in sorted(bound.items())]
+                if active_hit:
+                    reasons.append("active_config")
+                raise ConflictError(
+                    f"configuration(s) {', '.join(names)} of part {part_id!r} "
+                    "are referenced: " + "; ".join(reasons),
+                    {"part": part_id,
+                     "configs": names,
+                     "instances": sorted({i for ids in bound.values()
+                                          for i in ids}),
+                     "active_config": active_hit},
+                )
 
-        with manifest_scope(service.store, project), locks.write_scope(part_id):
-            # An emptied map POPS the key (G5: a part that no longer has a
-            # family is byte-identical to one that never had one).
-            service.store.update_part_entry(project, part_id,
-                                            configs=normalized)
+            # `write_scope` is belt and braces: `update_part_entry` opens the
+            # same scope itself (and it nests safely), but naming the part here
+            # keeps the claim guard right even if a future write on this path
+            # goes through a store method that has no scope of its own.
+            with locks.write_scope(part_id):
+                # An emptied map POPS the key (G5: a part that no longer has a
+                # family is byte-identical to one that never had one).
+                service.store.update_part_entry(project, part_id,
+                                                configs=normalized)
         service.bus.publish({"type": "project_changed", "project": project,
                              "part": part_id, "reason": "configs"})
 
         out = {"part_id": part_id, "configs": normalized,
                "active_config": record.active_config}
         active = record.active_config
+        # A hand-edited or merged entry need not be an object; `_rows` guards
+        # the same way, and a non-dict entry must not raise out of a rebuild
+        # decision.
+        was = (record.configs or {}).get(active)
+        before = was.get("params") if isinstance(was, dict) else None
         if active and active in normalized and \
-                normalized[active]["params"] != \
-                (record.configs or {}).get(active, {}).get("params"):
+                normalized[active]["params"] != before:
             # The visible geometry moved, so the post-state a caller needs next
             # is the build. Editing a member nobody activated costs nothing.
             out["rebuild"] = with_hint(service._rebuild(project, part_id))
@@ -148,17 +164,26 @@ def register(registry, service) -> None:
 
     # ---------------------------------------------------------- list_configs
 
+    def _configured(project: str) -> list:
+        """The project's configured SCRIPT parts, in manifest order. One
+        definition for both readers, so `list_configs` and `build_configs`
+        cannot disagree about what "configured" means (a reference part cannot
+        hold a family — the store refuses to bind one — so a hand-edited
+        `configs` on one is not a family either)."""
+        return [
+            service.store.get_part(project, entry["id"])
+            for entry in service.store.manifest(project)["parts"]
+            if entry.get("configs") and entry.get("kind", "script") == "script"
+        ]
+
     def list_configs(project: str, part_id: str | None = None) -> dict:
+        whole_project = part_id is None
         if part_id is not None:
             records = [service.store.get_part(project, part_id)]
         else:
             # Project-wide: the configured parts, and only those — an
             # unconfigured part is `configs: {}` on `get_part`, not a row here.
-            records = [
-                service.store.get_part(project, entry["id"])
-                for entry in service.store.manifest(project)["parts"]
-                if entry.get("configs")
-            ]
+            records = _configured(project)
         instances = service.store.instances(project)
         parts = []
         for record in records:
@@ -175,6 +200,9 @@ def register(registry, service) -> None:
                 "diverged_params": diverged_params,
                 "referrers": referrers,
             })
+        if whole_project and not parts:
+            # Never an empty list with no reason (the `build_configs` rule).
+            return {"parts": [], "warnings": ["no configured parts"]}
         return {"parts": parts}
 
     # --------------------------------------------------------- build_configs
@@ -255,13 +283,9 @@ def register(registry, service) -> None:
         if part_id is not None:
             record = service.store.get_part(project, part_id)
             _refuse_unknown(f"part {part_id!r}", record.configs or {}, wanted)
-            return {"part_id": part_id, "configs": _rows(project, record, wanted)}
+            return {"part_id": part_id, **_part_rows(project, record, wanted)}
 
-        records = [
-            service.store.get_part(project, entry["id"])
-            for entry in service.store.manifest(project)["parts"]
-            if entry.get("configs") and entry.get("kind", "script") == "script"
-        ]
+        records = _configured(project)
         if not records:
             return {"parts": [], "warnings": ["no configured parts"]}
         declared: dict = {}
@@ -269,25 +293,60 @@ def register(registry, service) -> None:
             declared.update(record.configs or {})
         _refuse_unknown(f"project {project!r}", declared, wanted)
         return {"parts": [{"part_id": record.id,
-                           "configs": _rows(project, record, wanted)}
+                           **_part_rows(project, record, wanted)}
                           for record in records]}
+
+    def _part_rows(project: str, record, wanted) -> dict:
+        """``{configs: [rows], warnings?}`` — an empty matrix always says why.
+
+        Project-wide, a part that declares none of the requested names is the
+        only way rows can be empty while the family is not (a single-part call
+        refuses an undeclared name outright), and reading `configs: []` with no
+        reason is what makes a caller suspect the build rather than the filter.
+        """
+        rows = _rows(project, record, wanted)
+        if rows:
+            return {"configs": rows}
+        if not (record.configs or {}):
+            reason = f"part {record.id!r} declares no configurations"
+        elif wanted:
+            reason = (f"part {record.id!r} declares none of the requested "
+                      f"configurations: {', '.join(wanted)}")
+        else:
+            reason = "no configurations requested"
+        return {"configs": rows, "warnings": [reason]}
 
     # ----------------------------------------------------- set_active_config
 
     def set_active_config(project: str, part_id: str, config: str | None = None,
                           keep_overrides: bool = False) -> dict:
-        record = _named(project, part_id, config)
-        # Switching to a configuration is *loading that variant*: the explicit
-        # overrides go, so the inspector shows pure M and nobody has to ask why
-        # width is 12. `keep_overrides` is the deliberate other choice, and it
-        # leaves the part immediately "M — modified".
-        cleared = {} if keep_overrides else dict(record.params)
-        with manifest_scope(service.store, project), locks.write_scope(part_id):
-            service.store.update_part_entry(
-                project, part_id,
-                active_config=config or None,
-                params=None if keep_overrides else {},
-            )
+        # The lock spans the read too: `cleared_overrides` reports the map that
+        # was there, and a `set_params` landing between the read and the write
+        # would be reported as cleared while its value survived (or the other
+        # way round). Reentrant, so the store's own scope nests for free.
+        with manifest_scope(service.store, project):
+            record = _named(project, part_id, config)
+            # Switching to a configuration is *loading that variant*: the
+            # explicit overrides go, so the inspector shows pure M and nobody
+            # has to ask why width is 12. Only a real CHANGE of the active
+            # configuration clears them, though — re-selecting what is already
+            # active (or DELETEing the active configuration of a part already at
+            # base) must not silently drop a caller's `set_params` values.
+            # `keep_overrides` is the deliberate other choice, and it leaves the
+            # part immediately "M — modified".
+            changing = (config or None) != record.active_config
+            clearing = changing and not keep_overrides
+            cleared = dict(record.params) if clearing else {}
+            # `write_scope` is belt and braces: `update_part_entry` opens the
+            # same scope itself (and it nests safely), but naming the part here
+            # keeps the claim guard right even if a future write on this path
+            # goes through a store method that has no scope of its own.
+            with locks.write_scope(part_id):
+                service.store.update_part_entry(
+                    project, part_id,
+                    active_config=config or None,
+                    params={} if clearing else None,
+                )
         service.bus.publish({"type": "project_changed", "project": project,
                              "part": part_id, "reason": "active_config"})
         result = with_hint(service._rebuild(project, part_id))
@@ -312,10 +371,18 @@ def register(registry, service) -> None:
                 "config must be a configuration name (a string)",
                 {"got": type(config).__name__},
             )
-        # Read-modify-write of the whole instance list, so it takes the
-        # manifest lock; it takes no `write_scope` — a claim is a *part* claim,
-        # and the store's whole-manifest writes deliberately have none.
-        with manifest_scope(service.store, project):
+        # Read-modify-write of the whole instance list, so it takes BOTH locks
+        # that serialize one: `manifest_scope` (against the configuration tools
+        # and the package manager) and `service._lock` (against
+        # `service.set_assembly`, which serializes the identical read-all /
+        # write-all on it). Outer-to-inner is manifest_scope then `_lock`, the
+        # order the packages path already implies; both are reentrant.
+        # It takes no `write_scope` — a claim is a *part* claim, and the store's
+        # whole-manifest writes deliberately have none.
+        # NOT covered, and out of PRD-012's scope: `tools_mates.
+        # _set_instance_mate` and `routes_assembly2.patch_instance` do the same
+        # read-all/write-all with no lock at all (a deferred follow-up).
+        with manifest_scope(service.store, project), service._lock:
             instances = service.store.instances(project)
             target = next((i for i in instances if i.id == instance), None)
             if target is None:
@@ -399,9 +466,12 @@ def register(registry, service) -> None:
         "set_active_config",
         "Load one of a part's configurations into its working state (omit "
         "config to return to base). Clears the part's explicit parameter "
-        "overrides — pass keep_overrides: true to layer them on top instead, "
-        "which leaves the part diverged. Returns the rebuild plus {part_id, "
-        "active_config, diverged, diverged_params, cleared_overrides}.",
+        "overrides when the active configuration changes, unless "
+        "keep_overrides: true — which layers them on top instead and leaves the "
+        "part diverged. Re-selecting the configuration that is already active "
+        "changes nothing and keeps the overrides. Returns the rebuild plus "
+        "{part_id, active_config, diverged, diverged_params, "
+        "cleared_overrides}.",
         schema(
             {
                 "project": {"type": "string", "description": "Project name"},

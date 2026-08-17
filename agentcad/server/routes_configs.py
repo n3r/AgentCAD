@@ -49,8 +49,11 @@ _RAISE = {
 _BODY_ERRORS: set[str] = set()
 
 #: A cache key is 32 lowercase hex characters (`service._cache_key`). The gate
-#: is what keeps this route from becoming a path-traversal read of the project.
-_KEY_RE = re.compile(r"^[0-9a-f]{32}$")
+#: is what keeps this route from becoming a path-traversal read of the project,
+#: and it is applied with ``fullmatch``: ``$`` also matches *before* a trailing
+#: newline, so an anchored ``.match`` would accept `"<key>\n"` and look for a
+#: file whose name carries it.
+_KEY_RE = re.compile(r"[0-9a-f]{32}")
 
 
 def _result(payload: dict) -> dict:
@@ -144,12 +147,13 @@ def build_router(service, registry) -> APIRouter:
         fetches that. This route **never builds** (the browser cannot storm the
         kernel through it): a key with nothing on disk is a 404.
         """
-        if not _KEY_RE.match(key):
+        if not _KEY_RE.fullmatch(key):
             raise NotFoundError(f"{key!r} is not a mesh cache key")
         cache = service.store.cache_dir(proj)   # 404s an unknown project
         path = cache / f"{key}.acm"
         served = None
-        if lod and _LOD_RE.match(lod):
+        # `fullmatch` for the same trailing-newline reason as the key gate.
+        if lod and _LOD_RE.fullmatch(lod):
             tier = cache / f"{key}.{lod}.acm"
             if tier.is_file():
                 path, served = tier, lod
