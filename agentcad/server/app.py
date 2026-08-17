@@ -20,12 +20,16 @@ from .._resources import resource_root
 from ..core.locks import set_client_id
 from ..core.model import (
     AppError,
+    AuthError,
+    AuthzError,
     ConflictError,
     NotFoundError,
+    RateLimitedError,
     ValidationError,
 )
 from ..core.service import AgentCADService
 from ..core.tools import ToolRegistry
+from . import security as security_module
 from ..kernel import sandbox
 from ..kernel.client import KernelError
 
@@ -35,6 +39,9 @@ _ERROR_STATUS = {
     NotFoundError: 404,
     ValidationError: 422,
     ConflictError: 409,
+    AuthError: 401,
+    AuthzError: 403,
+    RateLimitedError: 429,
 }
 
 
@@ -110,12 +117,36 @@ def create_app(
     registry: ToolRegistry,
     chat_engine=None,
     extra_allowed_hosts: frozenset | set = frozenset(),
+    security=None,
 ) -> FastAPI:
+    """The app. *security* is a ``server.security.SecurityConfig`` or ``None``.
+
+    **``None`` is not "auth disabled" — it is the same code path as before.**
+    The middleware body below branches once, at the top, and everything after
+    that branch is byte-identical to what shipped before PRD-005a, which is
+    what makes "local mode is unchanged" a property of the diff instead of a
+    test we have to keep passing (AC9).
+
+    ``security`` is an explicit parameter rather than a discovered
+    ``middleware_*`` pack for one reason: pack discovery fails **open**
+    (``_mount_route_packs`` silently skips a module with no ``router``), and a
+    security middleware that silently failed to load would leave the instance
+    wide open with no signal. This is the one sanctioned core touch, which
+    PRD-005's own technical approach pre-authorises; all of its logic lives in
+    ``server/security.py`` so this diff stays reviewable at a glance.
+    """
     app = FastAPI(title="AgentCAD", version=agentcad.__version__)
     allowed_hosts = frozenset(LOCAL_HOSTNAMES) | frozenset(extra_allowed_hosts)
+    security_module.install(security)
 
     @app.middleware("http")
     async def local_origin_guard(request: Request, call_next):
+        if security is not None:
+            denied = security_module.guard(security, request)
+            if denied is not None:
+                return denied
+            return await call_next(request)
+        # --- unchanged local-mode path below this line ---
         allowed, reason = _browser_request_allowed(request.headers, allowed_hosts)
         if not allowed:
             return JSONResponse(
@@ -151,7 +182,15 @@ def create_app(
 
     @app.get("/api/health")
     def health():
+        if security is not None and security_module.current_principal() is None:
+            # FR21. Health is public so a load balancer and a browser opening
+            # the sign-in page can reach it, but the full body names the
+            # version, whether the kernel is up, whether chat is configured
+            # and whether the worker is confined — a reconnaissance packet for
+            # a stranger. The trimmed body is what "ok" needs to mean.
+            return {"status": "ok", "mode": security.mode.name}
         return {
+            **({"mode": security.mode.name} if security is not None else {}),
             "status": "ok",
             "version": agentcad.__version__,
             "kernel": "ready" if service.kernel.alive else "starting",
@@ -343,10 +382,15 @@ def create_app(
     async def websocket_endpoint(ws: WebSocket):
         # Browsers do not apply same-origin policy to WebSockets: enforce the
         # same host/origin rules as HTTP before accepting the stream.
-        allowed, _reason = _browser_request_allowed(ws.headers, allowed_hosts)
-        if not allowed:
-            await ws.close(code=1008)
-            return
+        if security is not None:
+            if not security_module.guard_websocket(security, ws):
+                await ws.close(code=1008)
+                return
+        else:
+            allowed, _reason = _browser_request_allowed(ws.headers, allowed_hosts)
+            if not allowed:
+                await ws.close(code=1008)
+                return
         await ws.accept()
         q = service.bus.subscribe()
         disconnect = asyncio.create_task(_wait_for_websocket_disconnect(ws))

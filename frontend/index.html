@@ -96,8 +96,17 @@
     <button id="theme-btn" class="tb-btn" title="Switch to light theme"
             aria-label="Switch to light theme">☀</button>
 
+    <!-- Hosted mode only: auth.js fills this with the handle and a Sign out
+         button. Stays empty and hidden in local mode, where there is no
+         identity to show. -->
+    <div id="auth-chip" class="hidden"></div>
+
     <div id="conn-dot" title="Server connection"></div>
   </header>
+
+  <!-- Hosted mode only: the sign-in / enrolment view. main.js renders into it
+       when nobody is signed in and hides the toolbar and workspace behind it. -->
+  <div id="auth-view" class="hidden"></div>
 
   <div id="workspace">
     <aside id="sidebar">

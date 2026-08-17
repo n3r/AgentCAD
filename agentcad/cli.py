@@ -7,6 +7,7 @@ Commands:
     agentcad new <name>              # create a project
     agentcad export <project> <part> --format step|stl|3mf [-o OUT]
     agentcad check [--project P] [--ref REF] [--report R] [--md M]
+    agentcad admin user add|list|disable / admin enrol   # hosted accounts
     agentcad package validate <dir> [--strict] [--report R] [--budget S]
     agentcad publish <dir> --index NAME [--yank name@version] [--budget S]
 """
@@ -150,6 +151,35 @@ def _make_chat_engine(service, registry):
     return ChatEngine(registry, service.bus)
 
 
+def _security_config():
+    """A ``SecurityConfig`` in hosted mode, ``None`` in local mode.
+
+    ``None`` is not "auth disabled": ``create_app`` runs the same middleware
+    body it always has, so a local `agentcad serve` is byte-identically what
+    it was. The imports are **lazy** on purpose — ``authstore`` reaches for
+    ``fcntl``, and a local run on Windows must never touch it.
+
+    A misconfigured hosted instance refuses to start, naming the setting. It
+    must not fall back to local: a server that quietly served an
+    unauthenticated API because a variable was misspelled is the one failure
+    this design will not have.
+    """
+    from .core.appmode import HOSTED, ModeError, resolve_mode, state_dir
+
+    try:
+        mode = resolve_mode()
+    except ModeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    if mode.name != HOSTED:
+        return None
+
+    from .core.authstore import AuthStore
+    from .server.security import SecurityConfig
+
+    return SecurityConfig(mode=mode, store=AuthStore(state_dir() / "auth"))
+
+
 def cmd_serve(args, open_browser: bool) -> None:
     import uvicorn
 
@@ -158,10 +188,11 @@ def cmd_serve(args, open_browser: bool) -> None:
 
     port = args.port or get_port()
     projects_dir = Path(args.projects_dir or DEFAULT_PROJECTS_DIR)
+    security = _security_config()
     service = _build_service(projects_dir)
     registry = build_registry(service)
     chat_engine = _make_chat_engine(service, registry)
-    app = create_app(service, registry, chat_engine)
+    app = create_app(service, registry, chat_engine, security=security)
 
     url = f"http://127.0.0.1:{port}"
     if open_browser and not args.no_open:
@@ -446,6 +477,104 @@ def _print_check(args, report: dict, written: list[str]) -> None:
         print(json.dumps(report, indent=2))
     else:
         print(_check_verdict(report))
+
+
+#: FR17's trust statement, verbatim in four places: `docs/deployment.md`, the
+#: `compose.yaml` header, `agentcad admin user add --help`, and the success
+#: output of `agentcad admin user add`. Four, on the PRD-011 precedent that put
+#: "the gate is not a security boundary" in eight — because a sentence in one
+#: place is a sentence nobody reads.
+TRUST_SENTENCE = (
+    "an account on this instance can execute arbitrary Python on the host; "
+    "give one only to someone you would give a shell to"
+)
+
+_TRUST_NOTE = (
+    f"WARNING: {TRUST_SENTENCE}.\n"
+    "A part script is arbitrary Python (agentcad/kernel/worker.py) and Linux "
+    "has no confinement until PRD-006 lands, so every member can read, write "
+    "and execute as the server user. Registration is therefore closed, and "
+    "roles are not a security boundary between members."
+)
+
+
+def _auth_store():
+    """The identity store, with **no service and no kernel**.
+
+    That is what makes `docker compose exec agentcad agentcad admin ...` cheap
+    and what lets it work while the server is down or wedged: the state files
+    are the authority, the writes are atomic, and `fcntl.flock` is what keeps
+    this process and a running server from clobbering each other.
+    """
+    from .core.appmode import state_dir
+    from .core.authstore import AuthStore
+
+    return AuthStore(state_dir() / "auth")
+
+
+def _enrol_url(token: str) -> str:
+    import os
+
+    origin = (os.environ.get("AGENTCAD_PUBLIC_ORIGIN") or "").rstrip("/")
+    return f"{origin}/api/auth/enrol/{token}"
+
+
+def cmd_admin(args) -> None:
+    """`agentcad admin user add|list|disable` and `agentcad admin enrol`.
+
+    Errors become `SystemExit(2)` with the message on stderr; success prints
+    and returns, so `main()` does not exit non-zero on a good run.
+    """
+    from .core.model import AppError
+
+    try:
+        _dispatch_admin(args)
+    except AppError as exc:
+        print(f"error: {exc.message}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def _dispatch_admin(args) -> None:
+    store = _auth_store()
+    action = f"{getattr(args, 'admin_command', '')}:{getattr(args, 'admin_action', '')}"
+
+    if action == "user:add":
+        role = "admin" if args.admin else "member"
+        token = store.add_user(args.handle, role=role)
+        print(f"created {args.handle!r} as {role} (disabled until enrolled)")
+        print(f"enrolment link (single-use, 7 days): {_enrol_url(token)}")
+        print()
+        print(_TRUST_NOTE)
+        return
+
+    if action == "user:list":
+        users = store.list_users()
+        if not users:
+            print("no accounts yet — create one with: agentcad admin user add <handle>")
+            return
+        print(f"{'HANDLE':<34}{'ROLE':<8}{'STATE':<12}")
+        for row in users:
+            state = ("disabled" if row["disabled"]
+                     else "active" if row["enrolled"] else "pending")
+            print(f"{row['handle']:<34}{row['role']:<8}{state:<12}")
+        return
+
+    if action == "user:disable":
+        store.disable_user(args.handle)
+        dropped = store.revoke_sessions_for(args.handle)
+        print(f"disabled {args.handle!r}; {dropped} session(s) revoked")
+        return
+
+    if getattr(args, "admin_command", "") == "enrol":
+        token = store.mint_enrolment(args.handle)
+        print(f"new enrolment link for {args.handle!r} "
+              f"(single-use, 7 days; any earlier link is now dead):")
+        print(_enrol_url(token))
+        print()
+        print(_TRUST_NOTE)
+        return
+
+    raise SystemExit(2)
 
 
 def cmd_check(args) -> int:
@@ -863,7 +992,8 @@ def main() -> None:
     parser.add_argument("--version", action="version", version=agentcad.__version__)
     # metavar hides the internal `worker` subcommand from usage/help.
     sub = parser.add_subparsers(
-        dest="command", metavar="{serve,open,mcp,new,export,check,package,publish}")
+        dest="command",
+        metavar="{serve,open,mcp,new,export,check,package,publish,admin}")
 
     for name in ("serve", "open"):
         p = sub.add_parser(name, help=f"{name} the AgentCAD server")
@@ -1021,8 +1151,49 @@ def main() -> None:
                         "call; an exhausted budget is a harness exit, never a "
                         "publish")
 
+    p = sub.add_parser(
+        "admin", help="manage hosted-mode accounts (PRD-005a)",
+        description="Create, list and disable accounts on a hosted instance. "
+                    "Operates directly on the identity state files, so it "
+                    "works over `docker compose exec` with no running server "
+                    "and starts no kernel. " + TRUST_SENTENCE.capitalize() + ".")
+    admin_sub = p.add_subparsers(dest="admin_command", metavar="{user,enrol}")
+
+    user_p = admin_sub.add_parser(
+        "user", help="create, list and disable accounts",
+        description=TRUST_SENTENCE.capitalize() + ".")
+    user_sub = user_p.add_subparsers(dest="admin_action",
+                                     metavar="{add,list,disable}")
+
+    a = user_sub.add_parser(
+        "add", help="create an account and print a single-use enrolment link",
+        description="Creates a DISABLED account and prints a single-use, "
+                    "7-day enrolment URL; the invitee sets their password "
+                    "there and lands signed in. Nothing sends email, so this "
+                    "works air-gapped.\n\n"
+                    "WARNING: " + TRUST_SENTENCE + ".",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    a.add_argument("handle", help="[a-z0-9][a-z0-9._-]{0,31}")
+    a.add_argument("--admin", action="store_true",
+                   help="also manage users and tokens")
+
+    user_sub.add_parser("list", help="list accounts (never a digest)")
+
+    a = user_sub.add_parser("disable",
+                            help="disable an account and revoke its sessions")
+    a.add_argument("handle")
+
+    a = admin_sub.add_parser(
+        "enrol", help="re-mint an enrolment link for an existing account",
+        description="The recovery path: a lost invitation or a forgotten "
+                    "password. Any earlier outstanding link for the handle "
+                    "stops working.")
+    a.add_argument("handle")
+
     args = parser.parse_args()
-    if args.command in ("serve", "open"):
+    if args.command == "admin":
+        cmd_admin(args)
+    elif args.command in ("serve", "open"):
         cmd_serve(args, open_browser=args.command == "open")
     elif args.command == "mcp":
         cmd_mcp(args)

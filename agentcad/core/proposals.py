@@ -110,16 +110,36 @@ def _now() -> str:
 
 
 def actor_kind(identity: str) -> str:
-    """``"human"`` iff the action came from the browser UI; everything else is
-    an agent.
+    """``"human"`` iff the action came from a person; everything else is an
+    agent.
 
     The chat dock is a human ASKING an agent — the action is the agent's, and
     the audit trail must say so. This is a deliberate judgement call, not a
-    heuristic to extend: the browser is the only surface a human drives
-    directly. PRD-005 replaces it with the authenticated principal's class,
-    with no schema change.
+    heuristic to extend: the browser is the only *unauthenticated* surface a
+    human drives directly.
+
+    PRD-005a is the change this docstring used to promise ("PRD-005 replaces it
+    with the authenticated principal's class, with no schema change"). In
+    hosted mode the identity is a composed principal — ``user:nikita`` or
+    ``user:nikita/browser:7f3a1b2c`` for a person, ``agent:ci`` for a bearer
+    token — and neither starts with ``browser:``. Without the two prefix tests
+    below, **every signed-in human would classify as an agent**, and that is
+    not cosmetic: :meth:`ClaimRegistry.acquire` returns ``None`` for a
+    non-human holder, so no hosted person could hold a per-part claim, and
+    ``_blocking`` never blocks an agent, so nobody would be protected from
+    anybody. PRD-008's whole concurrency protection would have switched off
+    silently on the day hosting turned on, with no error anywhere.
+
+    The ``browser``/else behaviour below is byte-identical, which is what
+    keeps local mode unchanged; the four consumers (``comments``,
+    ``presence``, ``locks._kind`` and ``proposals`` itself) import this
+    function rather than re-implement it, so this is the only place to edit.
     """
     identity = identity or ""
+    if identity.startswith("user:"):
+        return "human"
+    if identity.startswith("agent:"):
+        return "agent"
     return "human" if identity == "browser" or identity.startswith("browser:") \
         else "agent"
 

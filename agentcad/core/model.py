@@ -29,6 +29,28 @@ class ConflictError(AppError):
     pass
 
 
+class AuthError(AppError):
+    """No usable credential (401). PRD-005a hosted mode only.
+
+    Deliberately says nothing about *why*: "no such handle", "wrong password"
+    and "expired session" are one answer, because the differences are a user
+    enumeration oracle.
+    """
+
+
+class AuthzError(AppError):
+    """A valid principal that may not do this (403).
+
+    Named ``AuthzError`` rather than ``PermissionError`` on purpose — the
+    builtin of that name is a real exception this codebase catches around
+    filesystem work, and shadowing it in ``core.model`` would be a trap.
+    """
+
+
+class RateLimitedError(AppError):
+    """Too many attempts (429). Carries ``details.retry_after_s``."""
+
+
 @dataclass
 class ParamSpec:
     name: str

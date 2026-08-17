@@ -1,0 +1,232 @@
+"""PRD-005a: the anonymous surface, enumerated and proved kernel-free.
+
+The three tests the design leans on (Decision 12):
+
+1. **The enumeration.** Walk the fully-mounted hosted app and assert the set
+   of anonymous-reachable routes equals a literal list. It fails when a route
+   pack goes public by accident — PRD-007 AC9's test, delivered early because
+   it is what makes PRD-007 safe to write.
+2. **Kernel silence.** Exercise every public route with the kernel
+   instrumented and assert zero requests (FR16 / AC7).
+3. **Local mode unchanged.** In `test_security_guard.py`, where the guard
+   lives.
+
+`EXPECTED_PUBLIC` is written **once, in full**, with a `NOT_YET_BUILT`
+subtrahend that later slices shrink. Set *equality* rather than a subset check
+is what stops a forgotten removal from passing silently, and writing the final
+list once is what stops the enumeration drifting slice by slice.
+"""
+
+from __future__ import annotations
+
+import re
+
+import pytest
+
+from agentcad.server import security
+
+from .conftest import flatten_routes
+
+#: `{proj}`, `{part_id}`, `{name}`, ... — filled so a templated route can be
+#: swept too.
+_TEMPLATE = re.compile(r"\{[^}]*\}")
+#: `{name:path}` -> `{name}`
+_CONVERTER = re.compile(r":[a-z]+\}")
+
+EXPECTED_PUBLIC = {
+    ("GET", "/"),
+    ("GET", "/api/health"),
+    ("POST", "/api/auth/login"),
+    ("GET", "/api/auth/enrol/{token}"),
+    ("POST", "/api/auth/enrol/{token}"),
+    ("GET", "/api/public/packages"),
+    ("GET", "/api/public/packages/{name}"),
+    ("GET", "/api/public/packages/{name}/versions/{version}"),
+    ("GET", "/api/public/packages/{name}/versions/{version}/preview"),
+}
+
+# Routes named in EXPECTED_PUBLIC that this slice has not created yet.
+# Slice 3 removes the three /api/auth ones; slice 7 removes the four
+# /api/public ones. The final list is written ONCE, above, so the enumeration
+# cannot drift slice by slice — and the set equality below is what stops a
+# forgotten removal from passing silently.
+NOT_YET_BUILT = {
+    ("GET", "/api/public/packages"),
+    ("GET", "/api/public/packages/{name}"),
+    ("GET", "/api/public/packages/{name}/versions/{version}"),
+    ("GET", "/api/public/packages/{name}/versions/{version}/preview"),
+}
+
+BUILT_PUBLIC = EXPECTED_PUBLIC - NOT_YET_BUILT
+
+
+def _routes(app) -> set[tuple[str, str]]:
+    return {(method, path) for method, path in flatten_routes(app)
+            if method not in {"HEAD", "OPTIONS", "WS"}}
+
+
+def _reachable(app) -> set[tuple[str, str]]:
+    return {(method, path) for method, path in _routes(app)
+            if security.is_public(path)}
+
+
+def test_the_route_walk_actually_sees_the_route_packs(hosted_app):
+    """The enumeration is only worth anything if the walk is complete, and a
+    naive `app.routes` walk is **not**: FastAPI 0.141 leaves each
+    `include_router` as one opaque `_IncludedRouter` with `path = None`, so
+    the obvious loop sees the 23 routes declared in `app.py` and none of the
+    ~60 in the packs — silently passing while a pack goes public.
+
+    Cross-checked against `app.openapi()`, which FastAPI builds by its own
+    independent traversal: if its internals move, this fails loudly instead of
+    quietly under-reporting.
+    """
+    walked = _routes(hosted_app)
+    assert len(walked) > 60, f"the walk found only {len(walked)} routes"
+
+    documented = {
+        (method.upper(), path)
+        for path, operations in hosted_app.openapi()["paths"].items()
+        for method in operations
+        if method.upper() not in {"HEAD", "OPTIONS"}
+    }
+    # Starlette keeps the converter in the template (`{name:path}`, which
+    # `routes_versioning` needs because a branch name may contain "/"); the
+    # OpenAPI schema normalises it away.
+    normalise = {(m, _CONVERTER.sub("}", p)) for m, p in walked}
+    assert documented <= normalise, documented - normalise
+    # Some packs will always be present; name a few so an empty-ish walk that
+    # still cleared the count above cannot pass.
+    for expected in (("GET", "/api/materials"),
+                     ("POST", "/api/projects/{proj}/render"),
+                     ("GET", "/api/packages/search")):
+        assert expected in walked, expected
+
+
+def test_the_public_surface_is_exactly_this(hosted_app):
+    """Fails when a new route pack goes public by accident (PRD-007 AC9, early)."""
+    assert _reachable(hosted_app) == BUILT_PUBLIC
+
+
+def test_every_other_route_answers_401_anonymously(hosted_client, hosted_app):
+    """AC2's other half: the enumeration says what `is_public` *believes*;
+    this says what the running app actually does. A route that `is_public`
+    calls private but that answers anyway is the failure the first test alone
+    would miss."""
+    checked = 0
+    for method, path in sorted(_routes(hosted_app) - _reachable(hosted_app)):
+        # Templated paths are filled rather than skipped: the guard runs in
+        # the middleware, BEFORE routing, so the refusal does not depend on
+        # the project or part existing.
+        response = hosted_client.request(method, _TEMPLATE.sub("demo", path))
+        assert response.status_code == 401, f"{method} {path}"
+        assert response.json()["error"]["type"] == "AuthError"
+        checked += 1
+    # The real inventory is ~70 mounted routes; a sweep that suddenly found a
+    # handful would mean the walk broke, not that the surface shrank.
+    assert checked >= 60, f"the sweep only reached {checked} routes"
+
+
+def test_even_a_route_that_does_not_exist_is_401_rather_than_404(hosted_client):
+    """The guard is middleware, so it answers before routing. A 404 here
+    would be a free map of which paths exist."""
+    assert hosted_client.get("/api/no/such/route").status_code == 401
+    assert hosted_client.post("/api/projects/../../etc/passwd").status_code == 401
+
+
+def test_the_openapi_schema_is_not_anonymously_readable(hosted_client):
+    """FastAPI mounts /openapi.json, /docs and /redoc by default; the route
+    inventory of a private instance is reconnaissance, and default-deny is
+    what covers them with no action by anybody."""
+    for path in ("/openapi.json", "/docs", "/redoc"):
+        assert hosted_client.get(path).status_code == 401, path
+
+
+def test_static_mounts_are_public(hosted_client):
+    """/js, /css and /vendor are Mounts, not Routes, so they cannot appear in
+    EXPECTED_PUBLIC — assert them directly or they go untested."""
+    assert hosted_client.get("/js/api.js").status_code == 200
+    assert hosted_client.get("/").status_code == 200
+
+
+@pytest.mark.parametrize("path", [
+    "/api/publicity",            # a prefix is not a substring
+    "/api/public",               # ...nor is the bare stem
+    "/api/auth/enrolment",
+    "/api/auth/session",
+    "/api/auth/logout",
+    "/api/auth/users",
+    "/api/auth/tokens",
+    "/jsx/evil.js",
+    "/api/projects",
+    "/api/packages/search",      # walks EVERY index, including private ones
+])
+def test_paths_that_must_not_be_public(path):
+    """`routes_packages.py`'s search and preview iterate every configured
+    index, including `scope: "private"` ones, so exposing them would leak a
+    private index. The public catalog read is a separate, scope-filtered pack
+    — the single most important detail of design Decision 8."""
+    assert security.is_public(path) is False
+
+
+def test_there_is_no_per_route_public_decorator():
+    """Default deny means the allowlist is a literal in ONE file. A pack
+    author must not be able to open the anonymous surface from their own
+    module, so there is deliberately no opt-in seam to find."""
+    assert not any(name.lower().startswith(("public_route", "mark_public",
+                                            "allow_anonymous"))
+                   for name in dir(security))
+    assert isinstance(security.PUBLIC_PATHS, frozenset)
+
+
+# ----------------------------------------------------------- kernel silence
+
+def _fill(path: str) -> str:
+    return (path
+            .replace("{name}", "din625")
+            .replace("{version}", "1.0.0")
+            .replace("{token}", "not-a-real-enrolment-token"))
+
+
+def test_public_surface_makes_no_kernel_calls(hosted_client, kernel_counter):
+    """AC7: nothing anonymous may reach exec() in the worker."""
+    before = kernel_counter.calls
+    for method, path in sorted(BUILT_PUBLIC):
+        hosted_client.request(method, _fill(path))
+    for asset in ("/js/api.js", "/css/app.css", "/"):
+        hosted_client.get(asset)
+    assert kernel_counter.calls == before, kernel_counter.seen
+
+
+def test_the_kernel_counter_actually_counts(hosted_client, kernel_counter):
+    """The positive control, without which `calls == 0` would pass just as
+    happily with a broken counter — which is exactly the shape of green the
+    PRD-011 review kept finding."""
+    from .conftest import BOX_SCRIPT, login
+
+    login(hosted_client)
+    hosted_client.post("/api/projects", json={"name": "demo"})
+    before = kernel_counter.calls
+    r = hosted_client.post("/api/projects/demo/parts",
+                           json={"id": "box", "script": BOX_SCRIPT})
+    assert r.status_code == 201, r.text
+    assert kernel_counter.calls > before
+
+
+def test_an_anonymous_request_to_a_kernel_route_is_refused_before_the_handler(
+        hosted_client, kernel_counter):
+    """The routes that would reach `exec()` are refused by the guard, so the
+    kernel never sees the request at all — not "refused inside the handler"."""
+    from .conftest import BOX_SCRIPT
+
+    before = kernel_counter.calls
+    for method, path, body in (
+        ("POST", "/api/projects/demo/parts", {"id": "x", "script": BOX_SCRIPT}),
+        ("PUT", "/api/projects/demo/parts/box", {"script": BOX_SCRIPT}),
+        ("POST", "/api/tools/inspect_script", {"script": BOX_SCRIPT}),
+        ("GET", "/api/projects/demo/parts/box/mesh", None),
+        ("GET", "/api/projects/demo/assembly", None),
+    ):
+        response = hosted_client.request(method, path, json=body)
+        assert response.status_code == 401, f"{method} {path}"
+    assert kernel_counter.calls == before, kernel_counter.seen

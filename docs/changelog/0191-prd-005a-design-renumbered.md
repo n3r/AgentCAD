@@ -1,4 +1,4 @@
-# 0185 — 2026-08-17 — PRD-005a (hosted core) design: an account is a remote shell
+# 0191 — 2026-08-17 — PRD-005a (hosted core) design (renumbered from a 0185 collision): an account is a remote shell
 
 ## Summary
 
@@ -50,7 +50,10 @@ consumers import it; AC10 pins it.
 - `docs/prd/pending/PRD-005-multi-tenant-cloud.md` — carve-out header
 - `docs/roadmap.md` — 005a row + chain steps updated
 - `docs/prd/README.md` — stale `shipped/` → `completed/`
-- `docs/changelog/0185-prd-005a-design.md` — this entry
+- `docs/changelog/0191-prd-005a-design-renumbered.md` — this entry. Originally
+  committed as 0185 in the same hour PR #16 landed its own 0185 on main; the
+  design commit predates the slice entries 0188–0190, so the sequence reads
+  out of order — the collision was mechanical, not a backdate.
 
 ## Notes
 
@@ -60,5 +63,8 @@ deferred to PRD-027, which is the first feature that forces them. The
 design's note that 007 is the one chain step whose risk is not fully retired
 by the step before it is recorded for the 007 design round — its own
 mitigation (a per-deployment require-login-above-N-rebuilds switch) rides
-there. Docs only; no code. Last full-suite measurement: 3235 passed, 1
-skipped (0184; `make test` is now 8-way parallel after PR #16).
+there. Docs only; no code. Because the renumbering makes this the
+numerically newest entry while slices 1–3 (0188–0190) carry the real work,
+the suite measurement current at renumbering time is cited here too:
+`make test` — **3532 passed, 1 skipped in 550.95 s** on the slices-1–3 tree
+(0190's measurement; +216 over the design-commit baseline of 3316).
