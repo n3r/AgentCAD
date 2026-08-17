@@ -1,23 +1,37 @@
-"""PRD-012 slice 1 — the configuration model, the store, resolution.
+"""PRD-012 slices 1–2 — the configuration model, resolution, the build path.
 
-Everything here is manifest and dataclass work: a configuration never reaches
+The model half is manifest and dataclass work: a configuration never reaches
 the kernel (the service resolves it into an override map on the way *into* a
-request), so these tests run without a geometry worker — the service is built
+request), so those tests run without a geometry worker — the service is built
 with ``kernel=None`` on purpose, and any call that would need one would fail
 loudly rather than pass on a mock.
+
+``TestFlangeFamily`` is the build half (slice 2) and needs the real kernel: it
+builds one three-member size family and asserts the per-configuration cache
+identity, the quiet memo, the event tagging and the exported artifacts.
 """
 
 import dataclasses
 import hashlib
 import json
+import queue
+from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from agentcad.core.materials import DEFAULT_MATERIAL
 from agentcad.core.model import InstanceSpec, PartRecord, ValidationError
 from agentcad.core.service import MESH_TOLERANCE
+from agentcad.core.tools import build_registry
+from agentcad.server.app import create_app
 
-from .conftest import FLANGE_SCRIPT, THREE_SIZE_CONFIGS, make_test_service
+from .conftest import (
+    FLANGE_SCRIPT,
+    THREE_SIZE_CONFIGS,
+    clone_test_service,
+    make_test_service,
+)
 
 # A normalized PARAMS spec exactly as the kernel's `inspect` returns one
 # (`worker._normalized_spec_entry`): one int, one string-valued enum, one
@@ -329,3 +343,305 @@ def test_a_part_without_configurations_keeps_the_pinned_cache_key(service):
                                     configs=THREE_SIZE_CONFIGS)
     assert service._cache_key_for(
         "demo", service.store.get_part("demo", "flange")) == expected
+
+
+# ------------------------------------------------------------ derived records
+
+
+def test_record_for_returns_the_stored_record_or_a_pure_derived_one(service):
+    store = service.store
+    store.update_part_entry("demo", "flange", params={"thick": 20.0},
+                            configs=THREE_SIZE_CONFIGS, active_config="m")
+
+    stored = service._record_for("demo", "flange")
+    assert stored.params == {"thick": 20.0} and stored.active_config == "m"
+
+    derived = service._record_for("demo", "flange", "l")
+    assert derived.params == THREE_SIZE_CONFIGS["l"]["params"]
+    assert derived.active_config is None       # pure: no working-state layer
+    assert derived.effective_params == THREE_SIZE_CONFIGS["l"]["params"]
+    assert derived.configs == THREE_SIZE_CONFIGS   # the family travels along
+    assert derived.id == "flange" and derived.material == stored.material
+    # ...and the stored record is untouched by the derivation.
+    assert store.get_part("demo", "flange").params == {"thick": 20.0}
+
+
+def test_record_for_refuses_an_undeclared_name_and_a_reference_part(service):
+    store = service.store
+    store.update_part_entry("demo", "flange", configs=THREE_SIZE_CONFIGS)
+    with pytest.raises(ValidationError) as exc:
+        service._record_for("demo", "flange", "xl")
+    assert "xl" in exc.value.message
+    assert exc.value.details["declared"] == ["l", "m", "s"]
+
+    store.add_part("demo", "vendor", "Vendor", DEFAULT_MATERIAL, "",
+                   kind="reference", source="imports/bracket.step")
+    with pytest.raises(ValidationError) as exc:
+        service._record_for("demo", "vendor", "m")
+    assert "reference part" in exc.value.message
+
+
+# ------------------------------------------------------- the build path (S2)
+
+
+def _counting(service, monkeypatch) -> dict:
+    """Count kernel requests by method (the `tests/test_specs_api.py` pattern)."""
+    calls: dict = {}
+    original = service.kernel.request
+
+    def counting(method, params, timeout_s=None, affinity=None):
+        calls[method] = calls.get(method, 0) + 1
+        return original(method, params, timeout_s=timeout_s, affinity=affinity)
+
+    monkeypatch.setattr(service.kernel, "request", counting)
+    return calls
+
+
+def _drain(q: queue.Queue) -> list[dict]:
+    out = []
+    while True:
+        try:
+            out.append(q.get_nowait())
+        except queue.Empty:
+            return out
+
+
+@pytest.mark.timeout(600)
+class TestFlangeFamily:
+    """One three-member flange family, built for real.
+
+    The template project (script + the family, no builds) is made once per
+    class and cloned per test, so every test mutates its own manifest and its
+    own cache directory while the cache entries the kernel produces are still
+    only paid for once per test.
+    """
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def family_projects(cls, kernel, tmp_path_factory):
+        projects = tmp_path_factory.mktemp("configs_projects")
+        svc = make_test_service(projects, kernel)
+        svc.create_project("demo")
+        svc.store.add_part("demo", "flange", "Flange", DEFAULT_MATERIAL,
+                           FLANGE_SCRIPT)
+        svc.store.update_part_entry("demo", "flange",
+                                    configs=THREE_SIZE_CONFIGS)
+        # The same script with no family: the "unchanged without
+        # configurations" half of the state assertions (and a free build — the
+        # cache key is the script's content, so it shares flange's base entry).
+        svc.store.add_part("demo", "plate", "Plate", DEFAULT_MATERIAL,
+                           FLANGE_SCRIPT)
+        return projects
+
+    @pytest.fixture
+    def demo(self, kernel, tmp_path, family_projects):
+        return clone_test_service(family_projects, tmp_path / "projects",
+                                  kernel)
+
+    # ------------------------------------------------ _ensure_config_built
+
+    def test_every_configuration_builds_its_own_geometry(self, demo):
+        """AC1/FR4: three declared sizes, three distinct built shapes — each
+        resolved purely, none of them touching the working state."""
+        masses = {}
+        keys = {}
+        for name in ("s", "m", "l"):
+            result = demo._ensure_config_built("demo", "flange", name)
+            assert result["ok"], result.get("error")
+            masses[name] = result["metrics"]["mass_g"]
+            keys[name] = result["cache_key"]
+            assert (demo.store.cache_dir("demo") / f"{keys[name]}.acm").is_file()
+        assert masses["s"] < masses["m"] < masses["l"]
+        assert len(set(keys.values())) == 3
+        # The working state was never activated by a config build.
+        assert demo.store.get_part("demo", "flange").active_config is None
+        assert demo.store.get_part("demo", "flange").params == {}
+
+    def test_a_repeated_config_build_is_a_silent_memo_hit(self, demo):
+        """Decision 4: a hit publishes nothing. Two instances of one part
+        bound to different configurations would otherwise republish
+        `rebuild_finished` on alternate `get_assembly` calls and drive the
+        browser's refresh loop forever."""
+        first = demo._ensure_config_built("demo", "flange", "m")
+        assert first["ok"]
+        events = demo.bus.subscribe()
+        second = demo._ensure_config_built("demo", "flange", "m")
+        assert second == first
+        assert _drain(events) == []
+
+    def test_a_config_build_never_writes_the_two_tuple_status(self, demo):
+        """`get_project.parts[].state`, `get_part.status` and the tree badge
+        keep meaning *the working state*, so `_status` stays 2-tuple keyed."""
+        demo._ensure_config_built("demo", "flange", "l")
+        assert demo._status == {}
+        lock_key = demo.store.lock_key("demo")
+        assert (lock_key, "flange", "l") in demo._config_status
+        # ...and the working-state rebuild still writes exactly the 2-tuple.
+        demo._rebuild("demo", "flange")
+        assert set(demo._status) == {(lock_key, "flange")}
+        assert set(demo._config_status) == {(lock_key, "flange", "l")}
+        # Both dicts are swept together.
+        demo._forget_status(lock_key)
+        assert demo._status == {} and demo._config_status == {}
+
+    def test_deleting_a_part_forgets_its_configuration_builds(self, demo):
+        demo._ensure_config_built("demo", "flange", "s")
+        demo._ensure_config_built("demo", "flange", "m")
+        assert len(demo._config_status) == 2
+        demo.delete_part("demo", "flange")
+        assert demo._config_status == {}
+
+    def test_rebuild_events_name_the_config_only_for_a_config_build(self, demo):
+        """G5: a base rebuild's payload stays byte-identical (the frontend
+        keys on `ev.part`); a pure-config build tags every event."""
+        events = demo.bus.subscribe()
+        demo._ensure_config_built("demo", "flange", "m")
+        built = ["rebuild_started", "rebuild_finished"]
+        tagged = [e for e in _drain(events) if e["type"].startswith("rebuild_")]
+        assert [e["type"] for e in tagged] == built
+        assert all(e["config"] == "m" for e in tagged)
+
+        demo._rebuild("demo", "flange")
+        base = [e for e in _drain(events) if e["type"].startswith("rebuild_")]
+        assert [e["type"] for e in base] == built
+        assert all("config" not in e for e in base)
+        assert base[0] == {"type": "rebuild_started", "project": "demo",
+                           "part": "flange"}
+
+    def test_two_configurations_with_the_same_params_share_one_build(
+            self, demo, monkeypatch):
+        """AC5: identical override maps are one cache entry — the second
+        configuration costs a sidecar read, not a kernel build."""
+        first = demo._ensure_config_built("demo", "flange", "m")
+        configs = dict(demo.store.get_part("demo", "flange").configs)
+        configs["m2"] = {"params": dict(configs["m"]["params"]),
+                         "label": "Medium (again)"}
+        demo.store.update_part_entry("demo", "flange", configs=configs)
+
+        calls = _counting(demo, monkeypatch)
+        second = demo._ensure_config_built("demo", "flange", "m2")
+        assert second["ok"]
+        assert second["cache_key"] == first["cache_key"]
+        assert second["metrics"] == first["metrics"]
+        assert "build" not in calls
+
+    # ------------------------------------------------------------- meshes
+
+    def test_mesh_info_keys_the_mesh_per_configuration(self, demo):
+        info = {name: demo.mesh_info("demo", "flange", config=name)
+                for name in ("s", "l")}
+        assert info["s"]["key"] != info["l"]["key"]
+        for name, got in info.items():
+            assert got["key"] == demo._ensure_config_built(
+                "demo", "flange", name)["cache_key"]
+            assert got["path"].name == f"{got['key']}.acm"
+            assert got["path"].is_file() and got["lod"] is None
+            assert demo.ensure_mesh("demo", "flange", config=name) == \
+                got["path"]
+        base = demo.mesh_info("demo", "flange")
+        assert base["key"] not in {got["key"] for got in info.values()}
+
+    def test_mesh_info_refuses_an_undeclared_configuration(self, demo):
+        """Never a silent fall back to the base geometry: a caller asking for
+        a size that does not exist must not be handed another one."""
+        with pytest.raises(ValidationError):
+            demo.mesh_info("demo", "flange", config="xl")
+        with pytest.raises(ValidationError) as exc:
+            demo.mesh_info("demo", "plate", config="m")
+        assert exc.value.details["declared"] == []
+
+    # ------------------------------------------------------------ exports
+
+    def test_the_base_export_is_unchanged(self, demo):
+        result = demo.export_part("demo", "flange", "step")
+        assert Path(result["path"]).name == "flange.step"
+        assert result["size_bytes"] > 500
+        assert "config" not in result
+
+    def test_a_configuration_export_names_the_file_and_echoes_the_config(
+            self, demo):
+        result = demo.export_part("demo", "flange", "step", config="l")
+        assert Path(result["path"]).name == "flange_l.step"
+        assert result["config"] == "l"
+        assert result["size_bytes"] > 500
+        assert (demo.store.exports_dir("demo") / "flange_l.step").is_file()
+        # Pure resolution: the working state is still base, unexported.
+        assert not (demo.store.exports_dir("demo") / "flange.step").exists()
+
+    def test_an_export_of_an_undeclared_configuration_refuses(self, demo):
+        with pytest.raises(ValidationError):
+            demo.export_part("demo", "flange", "step", config="xl")
+        assert list(demo.store.exports_dir("demo").glob("flange*")) == []
+
+    def test_the_export_tool_and_route_forward_the_configuration(self, demo):
+        registry = build_registry(demo)
+        schema = registry.get("export_part").input_schema
+        assert "config" in schema["properties"]
+        assert schema["properties"]["config"]["type"] == "string"
+        result = registry.call("export_part", {
+            "project": "demo", "part_id": "flange", "format": "stl",
+            "config": "s"})
+        assert Path(result["path"]).name == "flange_s.stl"
+        assert result["config"] == "s"
+
+        app = create_app(demo, registry, extra_allowed_hosts={"testserver"})
+        client = TestClient(app, base_url="http://127.0.0.1")
+        response = client.post(
+            "/api/projects/demo/parts/flange/export",
+            json={"format": "stl", "config": "m"})
+        assert response.status_code == 200, response.text
+        assert Path(response.json()["path"]).name == "flange_m.stl"
+        assert response.json()["config"] == "m"
+
+    # ------------------------------------------------------- exposed state
+
+    def test_get_part_and_get_project_carry_the_configuration_state(self, demo):
+        plain = demo.get_part("demo", "plate")
+        assert plain["configs"] == {} and plain["active_config"] is None
+        assert plain["status"]["diverged"] is False
+        assert plain["status"]["diverged_params"] == []
+
+        demo.store.update_part_entry("demo", "flange", active_config="l")
+        detail = demo.get_part("demo", "flange")
+        assert list(detail["configs"]) == ["s", "m", "l"]   # family order
+        assert detail["active_config"] == "l"
+        assert detail["status"]["diverged"] is False
+
+        rows = {p["id"]: p for p in demo.get_project("demo")["parts"]}
+        assert list(rows["flange"]["configs"]) == ["s", "m", "l"]
+        assert rows["flange"]["active_config"] == "l"
+        assert rows["plate"]["configs"] == {}
+        assert rows["plate"]["active_config"] is None
+
+    def test_an_override_on_top_of_the_active_configuration_diverges(self, demo):
+        demo.store.update_part_entry("demo", "flange", active_config="m")
+        demo.set_params("demo", "flange", {"thick": 20.0})
+        detail = demo.get_part("demo", "flange")
+        assert detail["params"] == {"thick": 20.0}      # overrides, as stored
+        assert detail["active_config"] == "m"
+        assert detail["status"]["diverged"] is True
+        assert detail["status"]["diverged_params"] == ["thick"]
+
+    def test_an_override_equal_to_the_configuration_is_not_divergence(
+            self, demo):
+        """Divergence is semantic: the geometry — and the cache key — are the
+        pure configuration's, so the chip must stay off."""
+        demo.store.update_part_entry("demo", "flange", active_config="m")
+        demo.set_params("demo", "flange",
+                        {"outer_d": THREE_SIZE_CONFIGS["m"]["params"]["outer_d"]})
+        status = demo.get_part("demo", "flange")["status"]
+        assert status["diverged"] is False and status["diverged_params"] == []
+        assert demo.mesh_info("demo", "flange")["key"] == \
+            demo._ensure_config_built("demo", "flange", "m")["cache_key"]
+
+    def test_clearing_the_override_returns_to_the_configurations_key(self, demo):
+        demo.store.update_part_entry("demo", "flange", active_config="m")
+        demo.set_params("demo", "flange", {"thick": 20.0})
+        diverged_key = demo.mesh_info("demo", "flange")["key"]
+
+        demo.set_params("demo", "flange", {"thick": None})
+        detail = demo.get_part("demo", "flange")
+        assert detail["status"]["diverged"] is False
+        assert detail["status"]["diverged_params"] == []
+        pure = demo._ensure_config_built("demo", "flange", "m")["cache_key"]
+        assert demo.mesh_info("demo", "flange")["key"] == pure != diverged_key

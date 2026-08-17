@@ -7,6 +7,7 @@ and the chat agent are all thin wrappers over this class.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import math
@@ -39,6 +40,10 @@ LOD_TRIANGLE_THRESHOLD = 150_000
 # A tier suffix names a cache sidecar file, so it must stay a plain token
 # (never a path fragment) no matter what a URL query hands us.
 _LOD_SUFFIX_RE = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
+
+# "no value here", distinct from a stored None (a parameter a configuration
+# does not set at all vs. one it sets — `_divergence` compares the two maps).
+_UNSET = object()
 
 
 class EventBus:
@@ -97,6 +102,11 @@ class AgentCADService:
         # Per-part build state, keyed by _status_key: the caller's working
         # tree, not the project name, so branches keep their own badges.
         self._status: dict[tuple[str, str], dict] = {}
+        # Per-CONFIGURATION build state, keyed by _config_status_key — a
+        # separate dict on purpose: `_status` is the part's working-state badge
+        # (and three tests plus one pack index it as a literal 2-tuple), while
+        # a pure-configuration build must publish nothing on a hit (Decision 4).
+        self._config_status: dict[tuple[str, str, str], dict] = {}
         self._spec_cache: dict[str, dict] = {}
         # Seams the v2 feature packs replace; defaults preserve v1 behavior.
         self.materials = _DefaultMaterialResolver()
@@ -191,6 +201,8 @@ class AgentCADService:
         entries would outlive it for the life of the process."""
         for key in [k for k in self._status if k[0] == lock_key]:
             self._status.pop(key, None)
+        for key in [k for k in self._config_status if k[0] == lock_key]:
+            self._config_status.pop(key, None)
 
     def get_project(self, proj: str) -> dict:
         manifest = self.store.manifest(proj)
@@ -205,6 +217,8 @@ class AgentCADService:
                     "params": entry.get("params", {}),
                     "kind": entry.get("kind", "script"),
                     "source": entry.get("source"),
+                    "configs": entry.get("configs", {}),
+                    "active_config": entry.get("active_config"),
                     "state": status["state"] if status else "unbuilt",
                 }
             )
@@ -267,6 +281,7 @@ class AgentCADService:
         status = self._status.get(
             self._status_key(proj, part_id), {"state": "unbuilt"}
         )
+        diverged, diverged_params = _divergence(record)
         detail = {
             "id": record.id,
             "label": record.label,
@@ -275,12 +290,18 @@ class AgentCADService:
             "kind": record.kind,
             "source": record.source,
             "solid_materials": record.solid_materials,
+            # Always present: {} / None when the part has no family, so the UI
+            # and an agent never have to distinguish "absent" from "base".
+            "configs": record.configs or {},
+            "active_config": record.active_config,
             "script": script,
             "params_spec": None if is_reference else self._params_spec(script),
             "status": {
                 "state": status.get("state", "unbuilt"),
                 "error": status.get("error"),
                 "warnings": status.get("warnings", []),
+                "diverged": diverged,
+                "diverged_params": diverged_params,
             },
             "metrics": status.get("metrics"),
         }
@@ -376,7 +397,12 @@ class AgentCADService:
     def delete_part(self, proj: str, part_id: str) -> None:
         with self._lock:
             self.store.remove_part(proj, part_id)
-            self._status.pop(self._status_key(proj, part_id), None)
+            prefix = self._status_key(proj, part_id)
+            self._status.pop(prefix, None)
+            # ...and every configuration build state of that part (the
+            # `_config_status` key is the `_status` key plus the name).
+            for key in [k for k in self._config_status if k[:2] == prefix]:
+                self._config_status.pop(key, None)
         self.bus.publish(
             {"type": "project_changed", "project": proj, "part": part_id}
         )
@@ -388,16 +414,25 @@ class AgentCADService:
             raise KernelErrorFromResult(result)
         return result["metrics"]
 
-    def mesh_info(self, proj: str, part_id: str, lod: str | None = None) -> dict:
+    def mesh_info(self, proj: str, part_id: str, lod: str | None = None, *,
+                  config: str | None = None) -> dict:
         """Built mesh path + cache key, from the build result (no racy re-read
         of the shared status dict — a concurrent delete cannot KeyError us).
 
         When *lod* names an existing sidecar tier (``<key>.<lod>.acm``) that
         tier's path is returned with ``lod`` set; otherwise the full-resolution
         mesh with ``lod: None`` (small parts have no tier — that is the normal
-        fallback, not an error)."""
-        self.store.get_part(proj, part_id)
-        result = self._ensure_built(proj, part_id)
+        fallback, not an error).
+
+        ``config`` asks for one declared configuration's mesh (pure
+        resolution). An undeclared name is a refusal, never a fall back to the
+        working state: a caller asking for a size that does not exist must not
+        be handed a different one."""
+        if config is not None:
+            result = self._ensure_config_built(proj, part_id, config)
+        else:
+            self.store.get_part(proj, part_id)
+            result = self._ensure_built(proj, part_id)
         if not result["ok"]:
             raise KernelErrorFromResult(result)
         key = result["cache_key"]
@@ -408,8 +443,9 @@ class AgentCADService:
                 return {"path": tier, "key": key, "lod": lod}
         return {"path": cache / f"{key}.acm", "key": key, "lod": None}
 
-    def ensure_mesh(self, proj: str, part_id: str) -> Path:
-        return self.mesh_info(proj, part_id)["path"]
+    def ensure_mesh(self, proj: str, part_id: str, *,
+                    config: str | None = None) -> Path:
+        return self.mesh_info(proj, part_id, config=config)["path"]
 
     def mesh_summary(self, proj: str, part_id: str) -> dict:
         from ..kernel import acm
@@ -428,12 +464,18 @@ class AgentCADService:
         }
 
     def export_part(
-        self, proj: str, part_id: str, format: str, tolerance: float = EXPORT_TOLERANCE
+        self, proj: str, part_id: str, format: str,
+        tolerance: float = EXPORT_TOLERANCE, *, config: str | None = None
     ) -> dict:
+        """Export the working state, or — with ``config`` — one declared
+        configuration resolved purely, to ``exports/<part>_<config>.<fmt>``
+        (base naming unchanged). Configuration names are dot- and slash-free by
+        grammar, so the file name needs no sanitizing."""
         self._check_format(format)
-        record = self.store.get_part(proj, part_id)
+        record = self._record_for(proj, part_id, config)
         script = self.store.read_script(proj, part_id)
-        out = self.store.exports_dir(proj) / f"{part_id}.{format}"
+        name = part_id if config is None else f"{part_id}_{config}"
+        out = self.store.exports_dir(proj) / f"{name}.{format}"
         result = self.kernel.request(
             "export",
             {
@@ -445,6 +487,8 @@ class AgentCADService:
             },
             timeout_s=300.0,  # export may rebuild the shape from scratch
         )
+        if config is not None:
+            result["config"] = config
         return result
 
     # ------------------------------------------------------------- assembly
@@ -602,6 +646,34 @@ class AgentCADService:
             for key, material_id in record.solid_materials.items()
         }
 
+    def _record_for(self, proj: str, part_id: str, config: str | None = None):
+        """The record a build should be run against.
+
+        ``config is None`` → the stored record (the working state). Otherwise a
+        DERIVED record whose ``params`` are the pure configuration map and whose
+        ``active_config`` is cleared, so every record-driven helper
+        (`_cache_key_for`, `_content_signature`, `_solid_densities`,
+        `_shape_item`) produces the configuration's identity with no
+        `config=` argument threaded through it. Nothing is written: the derived
+        record never reaches the store (that would bake the configuration into
+        the overrides on the next `set_params`).
+        """
+        record = self.store.get_part(proj, part_id)
+        if config is None:
+            return record
+        if record.kind != "script":
+            raise ValidationError(
+                f"part {part_id!r} is a reference part and has no configurations"
+            )
+        if not record.configs or config not in record.configs:
+            raise ValidationError(
+                f"part {part_id!r} declares no configuration {config!r}",
+                {"declared": sorted(record.configs or {})},
+            )
+        return dataclasses.replace(
+            record, params=record.config_params(config), active_config=None
+        )
+
     def _cache_key_for(self, proj: str, record) -> str:
         # Config-aware by construction: the resolved override map is hashed, so
         # nothing new enters _cache_key's payload, two configurations with the
@@ -645,16 +717,83 @@ class AgentCADService:
                 return {"ok": False, "error": status["error"]}
         return self._rebuild(proj, part_id)
 
+    def _config_status_key(self, proj: str, part_id: str,
+                           config: str) -> tuple[str, str, str]:
+        """Key of one configuration's build state — the `_status_key` identity
+        (the caller's working tree, not the project name) plus the name."""
+        return (self.store.lock_key(proj), part_id, config)
+
+    def _ensure_config_built(self, proj: str, part_id: str,
+                             config: str) -> dict:
+        """`_ensure_built` for a pure configuration.
+
+        Memoized in `_config_status`, never in `_status`, and a **hit publishes
+        nothing** — that is what keeps a bound assembly quiet: with one slot per
+        part, two instances bound to different configurations would miss on
+        alternate `get_assembly` calls, republish `rebuild_finished` even on a
+        disk hit, and drive the browser's refresh loop forever.
+        """
+        record = self._record_for(proj, part_id, config)
+        key = self._cache_key_for(proj, record)
+        memo = self._config_status.get(
+            self._config_status_key(proj, part_id, config)
+        )
+        if memo is not None and memo["cache_key"] == key:
+            if memo["state"] == "ok" and \
+                    (self.store.cache_dir(proj) / f"{key}.acm").is_file():
+                return {"ok": True, "metrics": memo["metrics"],
+                        "warnings": memo["warnings"], "lods": memo["lods"],
+                        "cache_key": key}
+            if memo["state"] == "error":
+                return {"ok": False, "error": memo["error"]}
+        result = self._build_with(proj, record, affinity=part_id,
+                                  status_key=None, config=config)
+        self._config_status[self._config_status_key(proj, part_id, config)] = {
+            "state": "ok" if result["ok"] else "error",
+            "cache_key": key,
+            "metrics": result.get("metrics"),
+            "warnings": result.get("warnings", []),
+            "lods": result.get("lods", []),
+            "error": result.get("error"),
+        }
+        return result
+
     def _rebuild(self, proj: str, part_id: str) -> dict:
+        """Build a part's WORKING state (defaults < active config < overrides).
+
+        The signature is frozen: `tools_specs` and `tools_holes` rebind this
+        attribute with wrappers declaring exactly `(proj, part_id)`, so it can
+        never grow a `config=` keyword. Pure-configuration builds go through
+        `_build_with` / `_ensure_config_built` instead (design Decision 4).
+        """
         record = self.store.get_part(proj, part_id)
+        return self._build_with(
+            proj, record,
+            affinity=part_id,
+            status_key=self._status_key(proj, part_id),
+        )
+
+    def _build_with(self, proj: str, record, *, affinity: str,
+                    status_key: tuple | None, config: str | None = None) -> dict:
+        """The one build path: cache key, sidecar hit, kernel build, events.
+
+        ``record`` carries the params to build (``effective_params``) — the
+        stored record for the working state, or the derived pure-configuration
+        record `_record_for` returns. ``status_key`` is the `_status` slot to
+        write, or **None** for a build whose state must not become the part's
+        badge (every pure-configuration build). ``config`` only tags the
+        events: a base rebuild's payload stays byte-identical (G5).
+        """
+        part_id = record.id
         density = self.material_density(proj, record.material)
         key = self._cache_key_for(proj, record)
         cache = self.store.cache_dir(proj)
         mesh_path = cache / f"{key}.acm"
         metrics_path = cache / f"{key}.metrics.json"
+        tag = {"config": config} if config else {}
 
         self.bus.publish(
-            {"type": "rebuild_started", "project": proj, "part": part_id}
+            {"type": "rebuild_started", "project": proj, "part": part_id, **tag}
         )
 
         if mesh_path.is_file() and metrics_path.is_file():
@@ -669,14 +808,15 @@ class AgentCADService:
                 except OSError:
                     pass
             else:
-                self._status[self._status_key(proj, part_id)] = {
-                    "state": "ok",
-                    "cache_key": key,
-                    "metrics": cached_metrics,
-                    "warnings": stored.get("warnings", []),
-                    "lods": stored.get("lods", []),
-                    "error": None,
-                }
+                if status_key is not None:
+                    self._status[status_key] = {
+                        "state": "ok",
+                        "cache_key": key,
+                        "metrics": cached_metrics,
+                        "warnings": stored.get("warnings", []),
+                        "lods": stored.get("lods", []),
+                        "error": None,
+                    }
                 self.bus.publish(
                     {
                         "type": "rebuild_finished",
@@ -684,6 +824,7 @@ class AgentCADService:
                         "part": part_id,
                         "metrics": cached_metrics,
                         "cached": True,
+                        **tag,
                     }
                 )
                 return {"ok": True, "metrics": cached_metrics,
@@ -719,24 +860,25 @@ class AgentCADService:
         build_params["lod_min_triangles"] = LOD_TRIANGLE_THRESHOLD
         try:
             result = self.kernel.request(
-                method, build_params, timeout_s=300.0, affinity=part_id
+                method, build_params, timeout_s=300.0, affinity=affinity
             )
         except KernelError as exc:
             payload = exc.to_payload()
-            status_key = self._status_key(proj, part_id)
-            self._status[status_key] = {
-                "state": "error",
-                "cache_key": key,
-                "metrics": self._status.get(status_key, {}).get("metrics"),
-                "warnings": [],
-                "error": payload,
-            }
+            if status_key is not None:
+                self._status[status_key] = {
+                    "state": "error",
+                    "cache_key": key,
+                    "metrics": self._status.get(status_key, {}).get("metrics"),
+                    "warnings": [],
+                    "error": payload,
+                }
             self.bus.publish(
                 {
                     "type": "rebuild_failed",
                     "project": proj,
                     "part": part_id,
                     "error": payload,
+                    **tag,
                 }
             )
             return {"ok": False, "error": payload}
@@ -750,14 +892,15 @@ class AgentCADService:
                 {"metrics": metrics, "warnings": warnings, "lods": lods}
             ).encode(),
         )
-        self._status[self._status_key(proj, part_id)] = {
-            "state": "ok",
-            "cache_key": key,
-            "metrics": metrics,
-            "warnings": warnings,
-            "lods": lods,
-            "error": None,
-        }
+        if status_key is not None:
+            self._status[status_key] = {
+                "state": "ok",
+                "cache_key": key,
+                "metrics": metrics,
+                "warnings": warnings,
+                "lods": lods,
+                "error": None,
+            }
         self.bus.publish(
             {
                 "type": "rebuild_finished",
@@ -765,6 +908,7 @@ class AgentCADService:
                 "part": part_id,
                 "metrics": metrics,
                 "cached": False,
+                **tag,
             }
         )
         return {"ok": True, "metrics": metrics, "warnings": warnings,
@@ -804,6 +948,27 @@ class KernelErrorFromResult(KernelError):
             err.get("message", "build failed"),
             err.get("details", {}),
         )
+
+
+def _divergence(record) -> tuple[bool, list[str]]:
+    """Is the working state modified relative to its active configuration?
+
+    Semantic, not syntactic: an override whose value equals the
+    configuration's is NOT divergence — the geometry, and the cache key, are
+    the pure configuration's, so the chip must stay off. A dangling
+    `active_config` (a merge or a hand edit) resolves as base, hence never
+    diverges. Names include a parameter the configuration does not set at all.
+    """
+    if (not record.active_config or not record.configs
+            or record.active_config not in record.configs):
+        return False, []
+    pure = record.config_params(record.active_config)
+    eff = record.effective_params
+    names = sorted(
+        k for k in set(pure) | set(eff)
+        if pure.get(k, _UNSET) != eff.get(k, _UNSET)
+    )
+    return bool(names), names
 
 
 def _normalize_param(name: str, entry: dict, value):

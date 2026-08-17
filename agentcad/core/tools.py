@@ -201,18 +201,21 @@ def build_registry(service: AgentCADService) -> ToolRegistry:
     ))
     reg(Tool(
         "export_part",
-        "Export a part to exports/<part_id>.<format>. Formats: step, stl, 3mf.",
+        "Export a part to exports/<part_id>.<format> (or exports/<part_id>_<config>.<format> "
+        "with config). Formats: step, stl, 3mf.",
         _schema(
             {
                 "project": _PROJ,
                 "part_id": _PART,
                 "format": {"type": "string", "description": "step | stl | 3mf"},
                 "tolerance": {"type": "number", "description": "Mesh tolerance for stl/3mf (mm, default 0.05)"},
+                "config": {"type": "string", "description": "Configuration to export (pure config resolution); omit for the current state"},
             },
             ["project", "part_id", "format"],
         ),
-        lambda project, part_id, format, tolerance=0.05:
-            service.export_part(project, part_id, format, tolerance),
+        lambda project, part_id, format, tolerance=0.05, config=None:
+            service.export_part(project, part_id, format, tolerance,
+                                config=config),
     ))
     reg(Tool(
         "get_assembly",

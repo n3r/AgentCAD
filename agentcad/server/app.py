@@ -266,7 +266,8 @@ def create_app(
     async def export_part(proj: str, part_id: str, request: Request):
         body = await request.json()
         return service.export_part(
-            proj, part_id, body.get("format", ""), body.get("tolerance", 0.05)
+            proj, part_id, body.get("format", ""), body.get("tolerance", 0.05),
+            config=body.get("config"),
         )
 
     # ------------------------------------------------------------ assembly

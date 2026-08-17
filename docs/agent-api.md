@@ -101,7 +101,7 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 |---|---|---|
 | `get_metrics` | **project, part_id** | `{volume_mm3, mass_g, area_mm2, bbox, center_of_mass, is_valid, n_faces, n_edges, n_solids, solids?}` — `solids` (multi-solid parts only) is an index-ordered `[{label, volume_mm3, mass_g, bbox, center_of_mass}]`. |
 | `get_mesh_summary` | **project, part_id** | `{vertices, triangles, edges, bbox}` — statistics only, no binary buffer. |
-| `export_part` | **project, part_id, format**, tolerance | Writes `exports/<part_id>.<format>`; formats `step`, `stl`, `3mf`. |
+| `export_part` | **project, part_id, format**, tolerance, config | Writes `exports/<part_id>.<format>`; formats `step`, `stl`, `3mf`. With `config` it exports that declared configuration resolved purely to `exports/<part_id>_<config>.<format>` and echoes `config` in the result. |
 
 ### Assembly and mates
 
