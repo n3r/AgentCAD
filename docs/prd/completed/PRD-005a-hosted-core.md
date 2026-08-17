@@ -1,6 +1,6 @@
 # PRD-005a — Hosted core ("005-lite"): deployment, identity, public read
 
-- **Status:** implemented — AC1–AC11 verified, AC3's *browser session* half
+- **Status:** completed — merged to main in PR #17. AC1–AC11 verified, AC3's *browser session* half
   graded as evidence rather than driven (no Chrome extension was available in
   any of the three sessions that tried; see "Verification levels" below and
   changelog 0197). Moves to `completed/` at merge, per the house rule.
