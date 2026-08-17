@@ -34,7 +34,12 @@ from agentcad.core.model import NotFoundError, ValidationError
 from agentcad.core.packages import content, gate
 from .conftest import make_test_service
 
-pytestmark = pytest.mark.slow
+pytestmark = [
+    pytest.mark.slow,
+    # headroom against 8-worker contention; the 120 s default is a 2-worker
+    # number and the module's heaviest setup measured 55 s at -n 2
+    pytest.mark.timeout(600),
+]
 
 # A part that loads, builds and meets the package standard (every numeric
 # parameter declares min, max, unit and description).

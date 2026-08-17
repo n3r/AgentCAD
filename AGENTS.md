@@ -25,9 +25,9 @@ Python + browser UI so Windows/Linux are reachable (packaging only).
 
 ```bash
 make setup        # uv sync  (installs build123d/OCCT wheels, ~2 GB, one time)
-make test-fast    # two-worker suite excluding broad/timeout-driven slow tests
+make test-fast    # parallel suite (workers auto-scale, cap 8) minus slow tests
 make test-pr      # required PR gate; defers exhaustive bundled-engine coverage
-make test         # full two-worker suite; needs the kernel
+make test         # full parallel suite; needs the kernel (PYTEST_PARALLEL to override)
 make test-portability  # OS-sensitive filesystem/process/kernel smoke suite
 make run          # start the server AND open the browser UI (port 8630)
 make serve        # headless server only
@@ -1458,8 +1458,16 @@ identity and resources:**
 
 ## Testing (`make test`)
 
-- Two xdist workers run by module scope, each with one **session-scoped
-  `kernel` fixture** (`tests/conftest.py`) that amortizes the warm import.
+- xdist workers (`-n auto`, physical cores, capped at 8 — override via
+  `PYTEST_PARALLEL`) run by `loadscope`: one scheduling unit per module, or
+  per class where a module defines test classes. Each worker holds one
+  **session-scoped `kernel` fixture** (`tests/conftest.py`) that amortizes
+  the warm import. `tests/test_examples.py` is deliberately class-per-example
+  with the engine sweep split into generated part-chunk classes, each
+  per-part parametrized — 1-test classes would defeat xdist's pending≤2
+  refill watermark and its count-descending queue reorder (see the module
+  docstring) — so the examples spread across workers instead of pinning
+  ~18 minutes to one.
 - Ordinary service tests use `make_test_service`, which disables synchronous
   git snapshots; `tests/test_history.py` and MCP integration keep real history.
 - Mark broad/process-heavy coverage `slow`; `make test-fast` excludes it while
