@@ -263,15 +263,33 @@ because it looks like an inconsistency and is not.
 creates a disabled account and prints a single-use, 7-day URL
 `/api/auth/enrol/<token>`; the enrolee sets a password there and lands signed
 in. No email, no SMTP, works air-gapped, works over `docker compose exec`.
-Second use of the token `404`s.
+Second use of the token `404`s. Spending a link **revokes every existing
+session for that handle** — the path is also the recovery path for a *stolen*
+password (review finding M4 — changelog 0198).
 
-**Rate limiting.** Login is bucketed per handle **and** per client address,
+**Rate limiting.** Login is bucketed per `(handle, address)` **and** per
+client address,
 reusing `agentcad.core.presence.TokenBucket` (`presence.py:137`) *by import* —
 no edit to PRD-008 code. Unknown handle and wrong password return identical
 bodies; the unknown-handle path performs a dummy scrypt against a fixed salt
 so the timings do not separate. PRD-007 will want the bucket as a shared
 module; promoting it is that PRD's change, noted here so it is not
 rediscovered.
+
+> **Correction (review finding M3 — changelog 0198).** "Per handle" as written
+> was a lockout primitive: `TokenBucket.take` does not consume on refusal, so a
+> stranger spending 0.5 req/s against a *known* handle — and handles are public
+> — held its bucket empty indefinitely and the owner could never sign in. The
+> key is `(handle, address)`; the per-address bucket is unchanged.
+>
+> **Correction, round 2 (same finding).** `address` is `request.client.host`,
+> the raw socket peer — which behind the reverse proxy Decision 2 prescribes is
+> the proxy for every client, collapsing the key back to per-handle. The fix
+> parses `X-Forwarded-For`: uvicorn runs with `proxy_headers` bounded to
+> `AGENTCAD_TRUSTED_PROXY` (default the local proxy; `*` refused) so it resolves
+> the real client, and the documented proxy must forward the header. This is
+> option (a) — a hosted app has to parse the forwarded address eventually
+> (audit principals in full PRD-005), so it is done right rather than dropped.
 
 ---
 
@@ -438,6 +456,16 @@ two lines here and saves PRD-007 a third core edit. Shipped now, used later.
    there are five of them and a path-pattern list would be a second place to
    get wrong.
 
+> **Correction (PRD-005a security review, finding M1 — changelog 0198).** The
+> order above is wrong, and the implementation copied it faithfully: step 4
+> returns for the anonymous surface, so step 6 was never reached by
+> `POST /api/auth/login` or `POST /api/auth/enrol/{token}` — the only unsafe
+> methods an anonymous caller can reach, and precisely the ones a cross-site
+> POST would target (signing a victim into the attacker's account, or spending
+> an enrolment link). **Step 6 runs before step 4**, and it treats "no
+> principal" as "not a bearer". Origin-absent stays allowed, identically on
+> both branches.
+
 `PUBLIC_PATHS` is a literal in `security.py` — exact paths plus two prefixes
 (`/api/public/`, `/api/auth/enrol/`) — and **default deny** means a route pack
 added tomorrow is private with no action by its author (FR13).
@@ -486,12 +514,20 @@ anonymous attack surface of a 005-lite instance.
 → `search_packages`), and `…/preview` loops over every configured index
 (`routes_packages.py:153-155`). A user's private git index would be searchable
 and its previews served. `routes_public.py` therefore does its own filtering:
-`[ix for ix in service.packages.indexes if ix.scope == "public"]`, using the
-scope property that PRD-011 already made load-bearing
-(`core/packages/indexes.py:105-110`; `LocalIndex.publish` already refuses
-non-redistributable vendor content into a `public` index,
-`indexes.py:490-498`). A package carried only by a private index returns the
-same `404` as one that does not exist — no oracle.
+a filter on the index's scope. A package carried only by a private index
+returns the same `404` as one that does not exist — no oracle.
+
+> **Correction (review finding M2 — changelog 0198).** The filter as designed
+> was `ix.scope == "public"`, reusing the property PRD-011 made load-bearing
+> for *publish policy* (`indexes.py`; `LocalIndex.publish` refuses
+> non-redistributable vendor content into a `public` index). That property
+> lets the index **document** win over the operator's configuration, which is
+> right for policy and wrong for access control: for a git index the third
+> party who authors `index.json` would decide whether this instance serves it
+> to the internet, overriding a configured `scope: "private"`. The filter now
+> requires `ix.configured_scope == "public"` (the operator's own word) **and**
+> `ix.scope == "public"` (so a document saying `private` still hides itself).
+> PRD-011's `scope` property is unchanged.
 
 The payload is exactly what `catalog/index.json` already ships: name, version,
 `content_id`, summary, license, disclosure, per-part `params` (name, type,

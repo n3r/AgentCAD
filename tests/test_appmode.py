@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from agentcad.core.appmode import (
+    DEFAULT_TRUSTED_PROXY,
     HOSTED,
     LOCAL,
     AppMode,
@@ -20,6 +21,7 @@ from agentcad.core.appmode import (
     check_bind,
     resolve_mode,
     state_dir,
+    trusted_proxy,
 )
 
 
@@ -141,6 +143,54 @@ def test_a_generated_secret_is_persisted_0600_and_stable(tmp_path, monkeypatch):
     assert key.is_file()
     assert oct(key.stat().st_mode & 0o777) == "0o600"
     assert resolve_mode(env).secret == first.secret   # stable across restarts
+
+
+def test_trusted_proxy_defaults_to_loopback_and_refuses_wildcard():
+    """`AGENTCAD_TRUSTED_PROXY` decides whose `X-Forwarded-For` uvicorn believes,
+    which is what makes the login limiter's address the real client behind the
+    documented proxy (review finding M3, round 2). The default is the local
+    proxy; `*` is refused because it re-opens the forgery it exists to prevent."""
+    assert trusted_proxy({}) == DEFAULT_TRUSTED_PROXY == "127.0.0.1"
+    assert trusted_proxy({"AGENTCAD_TRUSTED_PROXY": ""}) == "127.0.0.1"
+    assert trusted_proxy({"AGENTCAD_TRUSTED_PROXY": "10.0.0.0/8"}) == "10.0.0.0/8"
+    assert trusted_proxy(
+        {"AGENTCAD_TRUSTED_PROXY": "10.0.0.1, 10.0.0.2"}) == "10.0.0.1, 10.0.0.2"
+    # Refused by MEANING, not spelling: uvicorn 0.52.1 reads 0.0.0.0/0 and
+    # ::/0 as trust-everyone, identical to `*` (review m11). A bounded CIDR is
+    # fine; a prefixlen-0 network in any position is not.
+    for danger in ("*", "127.0.0.1, *", "0.0.0.0/0", "::/0",
+                   "127.0.0.1, 0.0.0.0/0", " ::/0 "):
+        with pytest.raises(ModeError, match="AGENTCAD_TRUSTED_PROXY"):
+            trusted_proxy({"AGENTCAD_TRUSTED_PROXY": danger})
+    # A bounded CIDR and a bare IP both survive — refusing them would be wrong.
+    assert trusted_proxy({"AGENTCAD_TRUSTED_PROXY": "0.0.0.0/1"}) == "0.0.0.0/1"
+
+
+def test_the_state_directory_itself_is_0700_however_it_was_created(
+        tmp_path, monkeypatch):
+    """Review finding m2: the *directory* holding the secret and the password
+    hashes was 0755 on a real first boot.
+
+    `mkdir(parents=True, mode=0o700)` sets the final component only, and
+    `agentcad admin user add` builds `AuthStore(state_dir()/"auth")` first —
+    so `state` was born as an intermediate parent at 0755 and `exist_ok=True`
+    left it there. `ensure_state_dir` is what repairs it, and this test
+    reproduces that exact order.
+    """
+    import stat as stat_mod
+
+    from agentcad.core.appmode import ensure_state_dir
+    from agentcad.core.authstore import AuthStore
+
+    monkeypatch.setenv("AGENTCAD_STATE_DIR", str(tmp_path / "state"))
+    AuthStore(state_dir() / "auth")                  # the admin CLI's order
+    assert stat_mod.S_IMODE((tmp_path / "state").stat().st_mode) & 0o077
+
+    assert ensure_state_dir() == tmp_path / "state"
+    assert oct(stat_mod.S_IMODE((tmp_path / "state").stat().st_mode)) == "0o700"
+    # And on a directory it creates itself.
+    monkeypatch.setenv("AGENTCAD_STATE_DIR", str(tmp_path / "fresh"))
+    assert oct(stat_mod.S_IMODE(ensure_state_dir().stat().st_mode)) == "0o700"
 
 
 def test_state_dir_follows_the_config_path_so_tests_are_isolated(tmp_path, monkeypatch):

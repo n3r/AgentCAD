@@ -63,21 +63,33 @@ NO_SUCH_PACKAGE = "no such package in the public catalog"
 
 
 def _public_indexes(service):
-    """Indexes an anonymous caller may read.
+    """Indexes an anonymous caller may read: **both scopes must say public.**
 
     `routes_packages.py`'s search and preview walk EVERY configured index,
     including a user's `scope: "private"` git index — exposing them would leak
-    it. The scope property is PRD-011's, already load-bearing at publish time
-    (`indexes.py:490-498` refuses non-redistributable vendor content into a
-    public index); this route pack is the only consumer that filters on it for
-    *access* rather than for policy.
+    it. So this pack filters, and it filters on two properties:
 
-    A `scope` that is anything but the literal ``"public"`` — including an
-    index kind that has none at all — is refused, so the failure direction of
-    a future index type is invisible rather than exposed.
+    * ``index.configured_scope`` — what the **operator** wrote in
+      `~/.agentcad/config.json`. This is the authority. PRD-011's
+      ``index.scope`` lets the index *document* win, which is correct for
+      publish policy (`indexes.py` refuses non-redistributable vendor content
+      into a public index) and was wrong the moment PRD-005a reused it for
+      access control: for a git index the third party who authors `index.json`
+      would then decide whether the operator's instance serves it to the
+      internet, overriding a `scope: "private"` the operator had set (review
+      finding M2).
+    * ``index.scope`` — the effective, document-aware answer, kept as well so
+      the refusal direction is preserved: a document that says "private" still
+      hides itself even from an operator who configured it public.
+
+    Requiring agreement means a disagreement serves nothing, which is the
+    fail-closed direction. Anything but the literal ``"public"`` on either —
+    including an index kind carrying neither property — is refused, so a
+    future index type is invisible rather than exposed.
     """
     return [index for index in service.packages.indexes
-            if getattr(index, "scope", None) == "public"]
+            if getattr(index, "configured_scope", None) == "public"
+            and getattr(index, "scope", None) == "public"]
 
 
 def _entries(index) -> dict:
@@ -110,7 +122,22 @@ def _find(service, name: str) -> tuple[object, dict]:
         versions = _versions(index, name)
         if versions:
             return index, versions
-    raise NotFoundError(NO_SUCH_PACKAGE)
+    raise _miss()
+
+
+def _miss() -> NotFoundError:
+    """The one miss, carrying the cache header.
+
+    Setting `response.headers` and *then* raising loses the header: the
+    `Response` the handler was given is discarded and the exception handler
+    builds a fresh one. So the 404s — the majority of a flood, since a flood
+    asks for names that do not exist — went out uncacheable, which is exactly
+    the traffic Decision 9 says a CDN absorbs (review finding m1). The house
+    error contract carries `headers` for this; `core/model.AppError` renders
+    them in `server/app.py`'s handler.
+    """
+    return NotFoundError(NO_SUCH_PACKAGE,
+                         headers={"cache-control": CACHE_CONTROL})
 
 
 def _version_key(version: str):
@@ -159,7 +186,7 @@ def build_router(service, registry) -> APIRouter:
         index, versions = _find(service, name)
         latest = pkgformat.resolve(versions, "*")
         if latest is None:
-            raise NotFoundError(NO_SUCH_PACKAGE)
+            raise _miss()
         return {"name": name, "index": index.name, "latest": latest,
                 "versions": sorted(versions, key=_version_key),
                 **{key: versions[latest].get(key)
@@ -173,30 +200,41 @@ def build_router(service, registry) -> APIRouter:
         index, versions = _find(service, name)
         entry = versions.get(version)
         if not isinstance(entry, dict):
-            raise NotFoundError(NO_SUCH_PACKAGE)
+            raise _miss()
         return _document(index, name, version, entry)
 
     @router.get("/public/packages/{name}/versions/{version}/preview")
-    def public_preview(name: str, version: str, path: str):
+    def public_preview(name: str, version: str, path: str | None = None):
         """A shipped PNG, resolved inside the version's own directory.
 
         `path` is caller data (it comes back to us from a listing), so it gets
         the same two-part containment `routes_packages.py` applies: the `.png`
         suffix, then `content.resolve_within`, which refuses an absolute path,
         a `..` segment and anything a symlink resolves outside the root.
+
+        It is declared **optional and checked here** so that a missing `path`
+        is the house `{"error": {...}}` envelope rather than FastAPI's native
+        `{"detail": [...]}` 422 — the only route on the anonymous surface that
+        answered in a second error dialect, which a client written against
+        this API has no reason to parse (review finding m5).
         """
         from ..core.packages import content
 
         index, versions = _find(service, name)
         if not isinstance(versions.get(version), dict):
-            raise NotFoundError(NO_SUCH_PACKAGE)
+            raise _miss()
+        if not isinstance(path, str) or not path.strip():
+            raise ValidationError(
+                "a preview needs a 'path' query parameter naming a "
+                f"{PREVIEW_SUFFIX} file shipped with this version",
+                {"parameter": "path"})
         if not str(path).lower().endswith(PREVIEW_SUFFIX):
             raise ValidationError(
                 f"a preview must be a {PREVIEW_SUFFIX} file, got {path!r}")
         root = index.fetch(name, version)
         resolved = content.resolve_within(Path(root), path, what="preview")
         if not resolved.is_file():
-            raise NotFoundError(NO_SUCH_PACKAGE)
+            raise _miss()
         return FileResponse(resolved, media_type="image/png",
                             headers={"cache-control": CACHE_CONTROL})
 

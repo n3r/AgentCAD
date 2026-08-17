@@ -423,11 +423,22 @@ class AuthStore:
         return row.get("handle")
 
     def enrol(self, token: str, password: str) -> str:
-        """Spend an enrolment token: set the password, enable the account.
+        """Spend an enrolment token: set the password, enable the account, and
+        **sign the handle out everywhere else**.
 
         Order is deliberate. The token is judged *first*, so a bad token is a
         404 that says nothing about the password — otherwise the response tells
         a stranger their guessed token was real.
+
+        The revocation is the recovery path's whole point (review finding M4).
+        ``agentcad admin enrol <handle>`` re-mints a link for an account that
+        already exists, which is what an operator runs when a password is lost
+        *or stolen*; without it an attacker's stolen cookie outlived the reset
+        by up to ``ABSOLUTE_SESSION_S`` (30 days). It is also what a person
+        expects a password reset to do. The caller's own new session is created
+        after this returns, so it survives — ``disable_user`` does the same
+        thing from ``routes_auth``, one layer up; here it is inside the write
+        scope so a reset cannot half-apply.
         """
         key = _digest(token or "")
         with self._scope():
@@ -448,6 +459,9 @@ class AuthStore:
             enrolments[key] = {**row, "used": True, "used_at": _now()}
             self._write(USERS, users)
             self._write(ENROLMENTS, enrolments)
+            # Reentrant: `_scope` counts depth, so this is the same lock and
+            # the same flock, not a second one.
+            self.revoke_sessions_for(handle)
         return handle
 
     def verify_password(self, handle: str, password: str) -> bool:

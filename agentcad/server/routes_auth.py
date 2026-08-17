@@ -108,10 +108,24 @@ def build_router(service, registry) -> APIRouter:
 
         # The buckets are taken BEFORE the scrypt call, so a flood cannot
         # spend 63 ms of CPU per request. Address first (the cheaper, broader
-        # bound), then handle.
+        # bound), then the handle **at this address**.
+        #
+        # `sec.login_key` is what makes the second bucket a throttle rather than
+        # a lockout: keyed on the handle alone, a stranger could hold it empty
+        # forever and the account's owner would never sign in again (review
+        # finding M3, `security.LOGIN_RATE_PER_S`). The refusal is also
+        # identical for a right and a wrong password — the buckets are taken
+        # before the credential is looked at, so nothing here is an oracle.
+        #
+        # `request.client.host` is the REAL client behind the deployment guide's
+        # reverse proxy, because uvicorn is run with `proxy_headers` bounded to
+        # the trusted proxy (`cli._uvicorn_proxy_kwargs`) and the proxy sets
+        # `X-Forwarded-For`. If that plumbing is missing this is the proxy's
+        # address for everyone and the key degrades to per-handle — the round-2
+        # reopening of M3. See `sec.login_key`.
         address = (request.client.host if request.client else "?") or "?"
         for bucket, key in ((cfg.address_rate, f"addr:{address}"),
-                            (cfg.login_rate, f"handle:{handle[:64]}")):
+                            (cfg.login_rate, sec.login_key(handle, address))):
             if not bucket.take(key):
                 raise RateLimitedError(
                     "too many sign-in attempts",

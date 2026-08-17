@@ -198,7 +198,7 @@ def _security_config(mode=None):
     it was. The imports are **lazy** on purpose — ``authstore`` reaches for
     ``fcntl``, and a local run on Windows must never touch it.
     """
-    from .core.appmode import HOSTED, state_dir
+    from .core.appmode import HOSTED, ensure_state_dir
 
     mode = mode if mode is not None else _resolve_mode_or_exit()
     if mode.name != HOSTED:
@@ -207,7 +207,7 @@ def _security_config(mode=None):
     from .core.authstore import AuthStore
     from .server.security import SecurityConfig
 
-    return SecurityConfig(mode=mode, store=AuthStore(state_dir() / "auth"))
+    return SecurityConfig(mode=mode, store=AuthStore(ensure_state_dir() / "auth"))
 
 
 def _serve_bind(args, mode) -> tuple[str, int]:
@@ -221,14 +221,18 @@ def _serve_bind(args, mode) -> tuple[str, int]:
     costs nothing: building the service first would spawn ~0.5 GB of kernel
     worker per pool slot and then exit.
     """
-    from .core.appmode import ModeError, check_bind
+    from .core.appmode import ModeError, check_bind, trusted_proxy
 
     host = args.host or os.environ.get("AGENTCAD_HOST") or "127.0.0.1"
     # The interlock first, before anything with a side effect: `get_port()`
     # WRITES the config file when no port is stored yet, and a refused start
-    # should leave nothing behind.
+    # should leave nothing behind. `trusted_proxy()` is validated in the same
+    # breath so a dangerous `AGENTCAD_TRUSTED_PROXY=*` is a clean exit here
+    # rather than a traceback later at `uvicorn.run`.
     try:
         check_bind(mode, host)
+        if mode.hosted:
+            trusted_proxy()
     except ModeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
@@ -271,7 +275,38 @@ def cmd_serve(args, open_browser: bool) -> None:
     if open_browser and not args.no_open:
         threading.Timer(1.0, lambda: webbrowser.open(local_url)).start()
     print(f"AgentCAD {agentcad.__version__} — {url} (listening on {host}:{port})")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    uvicorn.run(app, host=host, port=port, log_level="warning",
+                **_uvicorn_proxy_kwargs(mode))
+
+
+def _uvicorn_proxy_kwargs(mode) -> dict:
+    """How uvicorn should treat ``X-Forwarded-For`` for this mode.
+
+    **Local mode: off.** A single-user loopback tool has no proxy in front of
+    it, and uvicorn's default is to trust `127.0.0.1` — which in local mode is
+    the client itself. Left on, a local page could set its own forwarded
+    address; there is nothing here that reads it today, but "the loopback
+    client cannot spoof its address" is cheaper to keep true than to reason
+    about, so the header is not parsed at all.
+
+    **Hosted mode: on, bounded to the trusted proxy** (`appmode.trusted_proxy`,
+    default `127.0.0.1`). This is what makes the login rate limit's
+    `(handle, address)` key name the real client rather than the reverse proxy
+    the deployment guide puts in front — without it, every internet client
+    shares the proxy's address and the per-handle half collapses to a
+    site-wide lockout (review finding M3, round 2, changelog 0198). It is set
+    **explicitly** rather than left to uvicorn's default so a version bump that
+    flipped `proxy_headers` cannot silently change a security property, and so
+    the value is one we validated (`*` is refused). It is safe even with no
+    proxy and a direct public bind: the immediate peer is then the public
+    client, which is not in the trusted set, so `X-Forwarded-For` is ignored
+    and the socket peer stands.
+    """
+    from .core.appmode import trusted_proxy
+
+    if not mode.hosted:
+        return {"proxy_headers": False, "forwarded_allow_ips": ""}
+    return {"proxy_headers": True, "forwarded_allow_ips": trusted_proxy()}
 
 
 def cmd_mcp(args) -> None:
@@ -590,10 +625,13 @@ def _auth_store():
     are the authority, the writes are atomic, and `fcntl.flock` is what keeps
     this process and a running server from clobbering each other.
     """
-    from .core.appmode import state_dir
+    from .core.appmode import ensure_state_dir
     from .core.authstore import AuthStore
 
-    return AuthStore(state_dir() / "auth")
+    # `ensure_state_dir`, not `state_dir`: this is usually the FIRST thing to
+    # create the directory (the admin CLI runs before any server), and
+    # AuthStore's own `parents=True` would leave the parent 0755.
+    return AuthStore(ensure_state_dir() / "auth")
 
 
 def _enrol_url(token: str) -> str:

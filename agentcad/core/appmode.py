@@ -31,6 +31,7 @@ trust boundary, and this feature's whole thesis is that an account on a
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import secrets
@@ -97,6 +98,91 @@ def state_dir() -> Path:
     if override:
         return Path(override)
     return config_path().parent / "state"
+
+
+def ensure_state_dir() -> Path:
+    """:func:`state_dir`, created and **0700**, returned.
+
+    ``mkdir(mode=0o700)`` sets the mode of the *final* component only, and
+    only when it actually creates it. Both escapes were real: ``agentcad admin
+    user add`` builds ``AuthStore(state_dir()/"auth")`` first, so ``state``
+    was born as an intermediate parent at 0755 and the later
+    ``mkdir(exist_ok=True)`` in :func:`_secret` left it there — measured 0755
+    on a first boot in that order (review finding m2). The directory holds the
+    session secret and the password hashes; on a multi-account host 0755 means
+    every local account can list it.
+
+    The chmod is best-effort: a bind-mounted volume owned by another uid can
+    refuse, and refusing to start over a directory mode would turn a hardening
+    step into an outage. The secret file's own check in :func:`_secret` is the
+    one that is fatal, and it is unchanged.
+    """
+    path = state_dir()
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        if stat.S_IMODE(path.stat().st_mode) & 0o077:
+            path.chmod(0o700)
+    except OSError:
+        pass
+    return path
+
+
+#: The immediate peer a hosted instance trusts to have set `X-Forwarded-For`.
+#: The docs put the reverse proxy on the same host, so the default is loopback.
+DEFAULT_TRUSTED_PROXY = "127.0.0.1"
+
+
+def trusted_proxy(env: Mapping[str, str] | None = None) -> str:
+    """Which immediate peers may set the client's forwarded address.
+
+    Returned verbatim to uvicorn's ``forwarded_allow_ips`` (its
+    ``ProxyHeadersMiddleware``): a comma-separated list of IPs / CIDRs, defaulting
+    to :data:`DEFAULT_TRUSTED_PROXY` because the deployment guide runs the TLS
+    proxy on the same host as the app. uvicorn walks ``X-Forwarded-For`` from the
+    right and returns the first entry whose immediate hop is *not* trusted, so
+    with exactly one trusted local proxy the resolved address is the real client
+    as that proxy saw it, and a client that prepends its own value has it
+    overwritten by the proxy's append — it cannot forge the address across a
+    single correctly configured hop.
+
+    Trust-everyone is **refused**, and refused by *meaning*, not spelling:
+    ``*`` and any prefix-length-zero network (``0.0.0.0/0``, ``::/0``) all tell
+    uvicorn to trust every peer, which turns ``X-Forwarded-For`` back into
+    attacker-controlled input: any client could then set its own rate-limit
+    bucket key (or, later, its audit principal). uvicorn 0.52.1 treats
+    ``0.0.0.0/0`` as functionally identical to ``*`` (measured in review m11),
+    so catching only the literal ``*`` would leave the footgun loaded. The
+    rate-limit key is only as honest as this value, so a config that silently
+    re-opens review finding M3 is a refusal, not a warning.
+    """
+    env = os.environ if env is None else env
+    value = (env.get("AGENTCAD_TRUSTED_PROXY") or "").strip()
+    if not value:
+        return DEFAULT_TRUSTED_PROXY
+    for item in (part.strip() for part in value.split(",")):
+        if item == "*" or _is_trust_everyone_cidr(item):
+            raise ModeError(
+                "AGENTCAD_TRUSTED_PROXY must not trust every peer "
+                f"(got {item!r}): it lets any client forge its own "
+                "X-Forwarded-For, and the login rate limit is keyed on that "
+                "address. Name the reverse proxy's address explicitly (an IP "
+                "or a bounded CIDR, e.g. 127.0.0.1 or 10.0.0.0/8); leave it "
+                "unset to trust the local proxy the deployment guide describes."
+            )
+    return value
+
+
+def _is_trust_everyone_cidr(item: str) -> bool:
+    """True for a network that covers every address (prefix length 0), the
+    CIDR spelling of ``*`` — ``0.0.0.0/0`` and ``::/0``. Anything uvicorn would
+    not read as a network (a bare IP, a bounded CIDR, junk) is not our concern
+    here: a bare IP trusts one peer, and uvicorn ignores what it cannot parse."""
+    if "/" not in item:
+        return False
+    try:
+        return ipaddress.ip_network(item, strict=False).prefixlen == 0
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -206,8 +292,7 @@ def _resolve_secret(env: Mapping[str, str]) -> bytes:
             )
         return given.encode("utf-8")
 
-    path = state_dir() / SECRET_FILE
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = ensure_state_dir() / SECRET_FILE
     try:
         # O_EXCL, so two processes racing at first boot cannot each generate a
         # key and have the loser's sessions silently belong to a dead secret.

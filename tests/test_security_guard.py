@@ -23,7 +23,8 @@ from agentcad.server import security
 from agentcad.server.app import create_app
 from agentcad.server.security import Principal, SecurityConfig
 
-from .conftest import ADMIN_PASSWORD, HOSTED_ORIGIN, make_test_service
+from .conftest import (ADMIN_HANDLE, ADMIN_PASSWORD, HOSTED_ORIGIN,
+                       make_test_service)
 
 ORIGIN = HOSTED_ORIGIN
 
@@ -98,6 +99,78 @@ def test_a_cookie_post_from_the_right_origin_is_allowed(hosted):
     r = client.post("/api/projects", json={"name": "ok"},
                     headers={"Origin": ORIGIN})
     assert r.status_code == 201
+
+
+# --- the anonymous unsafe methods (review finding M1) ------------------------
+#
+# `POST /api/auth/login` and `POST /api/auth/enrol/{token}` are the ONLY unsafe
+# methods an anonymous caller can reach, and until the PRD-005a security review
+# the CSRF check sat below the `principal is None` branch — so it covered every
+# route except the two it exists for. A cross-site POST that signed a victim
+# into the attacker's account, or spent an enrolment link, was accepted.
+
+def test_anonymous_login_from_a_foreign_origin_is_403(hosted):
+    client, _ = hosted
+    r = client.post("/api/auth/login",
+                    json={"handle": ADMIN_HANDLE, "password": ADMIN_PASSWORD},
+                    headers={"Origin": "https://evil.example"})
+    assert r.status_code == 403, r.text
+    assert r.json()["error"]["type"] == "ForbiddenOrigin"
+    # And no session was handed out on the way to the refusal.
+    assert "set-cookie" not in {k.lower() for k in r.headers}
+
+
+def test_anonymous_login_from_the_right_origin_still_works(hosted):
+    client, _ = hosted
+    r = client.post("/api/auth/login",
+                    json={"handle": ADMIN_HANDLE, "password": ADMIN_PASSWORD},
+                    headers={"Origin": ORIGIN})
+    assert r.status_code == 200, r.text
+    assert "agentcad_session" in r.cookies
+
+
+def test_anonymous_login_with_no_origin_header_still_works(hosted):
+    """Origin-absent is allowed, identically to the authenticated branch.
+
+    A browser always sends `Origin` on a cross-site POST; `curl`, the MCP
+    client and a same-origin `fetch` may omit it. Refusing on absence would
+    break every non-browser client without stopping a browser attack.
+    """
+    client, _ = hosted
+    r = client.post("/api/auth/login",
+                    json={"handle": ADMIN_HANDLE, "password": ADMIN_PASSWORD})
+    assert r.status_code == 200, r.text
+
+
+def test_anonymous_enrol_from_a_foreign_origin_is_403(hosted):
+    client, store = hosted
+    token = store.add_user("anya")
+    r = client.post(f"/api/auth/enrol/{token}",
+                    json={"password": "another good password"},
+                    headers={"Origin": "https://evil.example"})
+    assert r.status_code == 403, r.text
+    assert r.json()["error"]["type"] == "ForbiddenOrigin"
+    # The refusal is BEFORE the store: the link is unspent and still works.
+    assert store.peek_enrolment(token) == "anya"
+
+
+def test_anonymous_enrol_from_the_right_origin_still_works(hosted):
+    client, store = hosted
+    token = store.add_user("anya")
+    r = client.post(f"/api/auth/enrol/{token}",
+                    json={"password": "another good password"},
+                    headers={"Origin": ORIGIN})
+    assert r.status_code == 200, r.text
+    assert store.peek_enrolment(token) is None      # spent
+
+
+def test_a_public_get_from_a_foreign_origin_is_still_allowed(hosted):
+    """The check is on unsafe methods only; moving it up must not start
+    refusing the anonymous READ surface, which a CDN fetches with whatever
+    Origin it likes."""
+    client, _ = hosted
+    r = client.get("/api/health", headers={"Origin": "https://evil.example"})
+    assert r.status_code == 200
 
 
 def test_a_bare_x_agent_id_is_not_an_identity(hosted):

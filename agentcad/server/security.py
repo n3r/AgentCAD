@@ -28,10 +28,12 @@ The guard, in the order Decision 7 fixes:
 2. ``Host`` must equal the configured public origin's host.
 3. Resolve a principal: ``Authorization: Bearer`` first, then the session
    cookie.
-4. No principal + a public path → allow, anonymously, with **no** client id.
-5. No principal + anything else → ``401``.
-6. State-changing methods that are not bearer-authenticated: an ``Origin``,
+4. State-changing methods that are not bearer-authenticated: an ``Origin``,
    when present, must equal the configured public origin → else ``403``.
+   **Before** the anonymous branch, because ``login`` and ``enrol`` are the
+   only anonymous unsafe methods and are exactly what it protects.
+5. No principal + a public path → allow, anonymously, with **no** client id.
+6. No principal + anything else → ``401``.
 7. ``set_client_id`` the composed principal, **after** ``check_client_id``
    validation — closing the gap where the ContextVar is set unvalidated today.
 8. Roles are checked in ``routes_auth.py``, not here: there are five
@@ -111,6 +113,19 @@ RESERVED_DEVICE_PREFIXES = ("user:", "agent:")
 # NIST SP 800-63B 5.2.2 asks that consecutive failed attempts be throttled to
 # at most 100; at this setting the hundredth failure is ~475 s (~8 min) away,
 # and a sustained attacker costs 0.2 x 63 ms = 1.3% of one core in scrypt.
+#
+# **The key is `(handle, address)`, never the handle alone** (`routes_auth`,
+# `_login_key`). `TokenBucket.take` does not consume on refusal, so a bucket
+# held empty stays empty: a handle-only key let any third party at 0.5 req/s
+# lock a *known* handle out of every address on the internet, permanently, and
+# handles are public — presence rosters, comment authors, history trailers all
+# carry them. That is the PRD-005a security review's finding M3, and the fix
+# is the key rather than the rate. What it costs: an attacker with many
+# addresses now gets `burst` guesses per address against one handle instead of
+# five in total. What bounds them is the per-address bucket below, which is
+# unchanged, plus scrypt at 63 ms — a botnet is not what a token bucket keyed
+# on anything was ever going to stop, and denying the account's owner in the
+# attempt is the worse of the two failures.
 LOGIN_RATE_PER_S = 0.2
 LOGIN_BURST = 5.0
 # Addresses are looser than handles: a NAT, an office or a CI runner is many
@@ -118,6 +133,26 @@ LOGIN_BURST = 5.0
 # service against the innocent ones.
 ADDRESS_RATE_PER_S = 0.5
 ADDRESS_BURST = 15.0
+
+
+def login_key(handle: str, address: str) -> str:
+    """The per-attempt bucket key for a sign-in: ``handle:<handle>@<address>``.
+
+    Both halves, and here rather than inline in ``routes_auth`` so the reason
+    lives next to the rate that depends on it (see ``LOGIN_RATE_PER_S``). The
+    handle is bounded because it arrives unvalidated from the request body and
+    an unbounded key is an unbounded dict.
+
+    ``address`` is only as honest as the deployment. It is ``request.client.host``,
+    which behind the reverse proxy the deployment guide prescribes is the
+    **real client** — but only because ``cli._uvicorn_proxy_kwargs`` runs uvicorn
+    with ``proxy_headers`` bounded to the trusted proxy and the proxy sets
+    ``X-Forwarded-For`` (`docs/deployment.md`). Without that plumbing every
+    client collapses to the proxy's address and this key degrades to
+    per-handle — the site-wide lockout of review finding M3 (round 2). The
+    security property is a property of the whole path, not of this function.
+    """
+    return f"handle:{(handle or '')[:64]}@{address or '?'}"
 
 
 @dataclass(frozen=True)
@@ -343,22 +378,40 @@ def guard(cfg: SecurityConfig | None, request) -> JSONResponse | None:
     path = request.url.path
     method = (request.method or "GET").upper()
 
-    if principal is None:
-        if is_public(path):
-            return None                      # anonymous, and no client id
-        return _deny(401, "AuthError", "authentication required",
-                     {"path": path})
-
-    # CSRF. `SameSite=Lax` is the first layer; this is the second, and it
-    # covers the anonymous state-changing routes (login, enrol) too — a
-    # cross-site POST that signs a victim into the ATTACKER's account is a
-    # real, if quiet, attack, and exempting it would be an accident.
-    if principal.via != "bearer" and method in UNSAFE_METHODS:
+    # CSRF. `SameSite=Lax` is the first layer; this is the second.
+    #
+    # **It runs BEFORE the anonymous branch below, and that ordering is the
+    # whole control.** `POST /api/auth/login` and `POST /api/auth/enrol/{token}`
+    # are the only unsafe methods an anonymous caller can reach, so a check
+    # placed after `principal is None: return None` would cover every route
+    # except the two it exists for — which is what it did until the PRD-005a
+    # security review (finding M1). A cross-site POST that signs a victim into
+    # the ATTACKER's account, or that spends an enrolment link the victim
+    # pasted, is a real if quiet attack.
+    #
+    # A bearer is exempt because a browser cannot attach one cross-site, and
+    # `principal is None` is treated as "not a bearer" — an anonymous request
+    # carries no credential to exempt.
+    #
+    # Origin-*absent* is allowed, deliberately and identically for anonymous
+    # and authenticated callers: a browser always sends `Origin` on a
+    # cross-site POST (and on any `Content-Type` it could forge from a form),
+    # while `curl`, the MCP client and a same-origin `fetch` may omit it.
+    # Refusing on absence would break every non-browser client without
+    # stopping a browser attack.
+    if method in UNSAFE_METHODS and (principal is None
+                                     or principal.via != "bearer"):
         origin = request.headers.get("origin")
         if origin is not None and origin != cfg.mode.public_origin:
             return _deny(403, "ForbiddenOrigin",
                          f"cross-origin request from {origin!r} rejected",
                          {"expected": cfg.mode.public_origin})
+
+    if principal is None:
+        if is_public(path):
+            return None                      # anonymous, and no client id
+        return _deny(401, "AuthError", "authentication required",
+                     {"path": path})
 
     try:
         set_client_id(check_client_id(principal.client_id))

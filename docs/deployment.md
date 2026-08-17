@@ -54,10 +54,11 @@ container ships.
 |---|---|---|
 | `AGENTCAD_MODE` | `local` | `local` or `hosted`. **Never inferred** — an unrecognised value refuses to start, because defaulting would fail open. |
 | `AGENTCAD_PUBLIC_ORIGIN` | — | Required in hosted mode. Scheme + host (+ port), no path, no trailing slash. Host and Origin checks compare against it; enrolment URLs are built from it. |
-| `AGENTCAD_SECRET_KEY` | generated | ≥32 characters. When unset, one is generated and persisted `0600` at `$AGENTCAD_STATE_DIR/secret.key`. |
-| `AGENTCAD_STATE_DIR` | `<config-dir>/state` | Identity state (`auth/`, `secret.key`). Compose sets `/data/state`. |
+| `AGENTCAD_SECRET_KEY` | generated | ≥32 characters. **Leave it unset — that is the recommended path**: one is generated and persisted `0600` at `$AGENTCAD_STATE_DIR/secret.key`, where it is readable only by the server's own user. An explicit value is process environment, so it is visible to `docker inspect`, to anything that can read `/proc/<pid>/environ`, and to whatever shell history or CI log the value passed through. Set it only when you have a reason the file cannot serve (several instances sharing one key), and then treat it as a secret in the orchestrator rather than in `.env`. |
+| `AGENTCAD_STATE_DIR` | `<config-dir>/state` | Identity state (`auth/`, `secret.key`). Created `0700` and repaired to `0700` at startup — it holds the session secret and the password hashes. Compose sets `/data/state`. |
 | `AGENTCAD_PROJECTS_DIR` | `~/AgentCAD/projects` | Where projects and their `.history` git repos live. Compose sets `/data/projects`. |
 | `AGENTCAD_HOST` | `127.0.0.1` | Listen address. A non-loopback bind **requires** `AGENTCAD_MODE=hosted`. |
+| `AGENTCAD_TRUSTED_PROXY` | `127.0.0.1` | Hosted mode only. The immediate peer(s) allowed to set `X-Forwarded-For`, passed to uvicorn's `forwarded_allow_ips` (IPs or CIDRs, comma-separated). Default matches the local proxy above. **`*` is refused** — it would let any client forge the address the login limiter keys on. |
 | `AGENTCAD_PORT` | `8630` | Listen port. |
 | `AGENTCAD_KERNEL_POOL_SIZE` | `max(1, min(3, cores//3))` | Kernel workers, ≈0.5 GB RSS each. Compose pins `1` rather than letting it float with the host. |
 | `AGENTCAD_EXAMPLES` | `1` | `0` skips registering the bundled examples. Compose sets `0`: in a container they live in a read-only image layer, so edits vanish on redeploy. |
@@ -107,10 +108,18 @@ server {
         proxy_set_header   Host cad.example.com;     # must equal the origin's host
         proxy_set_header   Upgrade $http_upgrade;    # /ws carries the event stream
         proxy_set_header   Connection "upgrade";
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;  # the real client
         proxy_read_timeout 600s;                     # a long build is a long request
     }
 }
 ```
+
+The `X-Forwarded-For` line is **not optional**. The login rate limit is keyed on
+`(handle, address)`, and without this header every internet client arrives at the
+app as `127.0.0.1` (the proxy), which collapses the key to per-handle — one
+stranger can then lock any known handle out for everyone. `$proxy_add_x_forwarded_for`
+appends the connecting client to any inbound value, so the app trusts the entry
+*this* proxy added, not one a client sent (see the caveat below).
 
 **Caddy**
 
@@ -119,6 +128,26 @@ cad.example.com {
     reverse_proxy 127.0.0.1:8630
 }
 ```
+
+Caddy's `reverse_proxy` sets `X-Forwarded-For` (and `X-Forwarded-Proto`,
+`X-Forwarded-Host`) automatically, appending the client's address, so the plain
+directive above is already correct — nothing to add.
+
+**How the address is trusted, and the one way to break it.** The app runs
+uvicorn with `proxy_headers` bounded to `AGENTCAD_TRUSTED_PROXY` (default
+`127.0.0.1`, since the proxy above is local). uvicorn reads `X-Forwarded-For`
+from the right and takes the first hop that is **not** trusted — which, with a
+single local proxy, is the client as that proxy saw it. A client that prepends
+its own `X-Forwarded-For` has it overwritten by the proxy's append, so it cannot
+forge its address across one correctly configured hop. This holds only for
+*exactly* the trusted hop count: if you set `AGENTCAD_TRUSTED_PROXY` to a range
+that includes untrusted clients — and above all to `*` — any client can forge
+its address and the rate-limit key becomes attacker-controlled. `*` is refused
+at startup for that reason. If you run **two** proxies in series (e.g. a CDN in
+front of nginx), trust both hops explicitly and make sure each appends rather
+than overwrites `X-Forwarded-For`. Directly bound to the internet with no proxy
+at all, the trusted default is safe: the immediate peer is then the public
+client, so its `X-Forwarded-For` is ignored and the socket address stands.
 
 **Bundled Caddy (one command).** Set `AGENTCAD_DOMAIN` in `.env` to a name that
 resolves publicly to this host, then:
@@ -168,7 +197,11 @@ docker compose exec agentcad agentcad admin enrol anya           # re-mint a lin
 
 Adding a handle that already exists is refused rather than treated as a
 password reset. Use `admin enrol` for the recovery path; it kills any earlier
-outstanding link for that handle.
+outstanding link for that handle, and **setting the new password signs that
+handle out everywhere** — every existing session for it is revoked the moment
+the link is spent. That is the point of the path: you run it when a password
+was lost *or stolen*, and a reset that left the thief's cookie alive for the
+remaining 30 days of its life would not be a recovery.
 
 ---
 
@@ -184,7 +217,7 @@ author, and a forgotten entry fails the build rather than passing quietly.
 | `GET` | `/` | `index.html` off disk — the app needs a login page |
 | `GET` | `/js/**`, `/css/**`, `/vendor/**` | static files off disk |
 | `GET` | `/api/health` | trimmed to `{status, mode}` |
-| `POST` | `/api/auth/login` | rate-limited per handle **and** per address; every failure is one indistinguishable answer |
+| `POST` | `/api/auth/login` | rate-limited per `(handle, address)` **and** per address — where *address* is the real client only when the proxy forwards `X-Forwarded-For` (above); every failure is one indistinguishable answer |
 | `GET`·`POST` | `/api/auth/enrol/{token}` | single-use, 7-day, admin-minted, unguessable |
 | `GET` | `/api/public/packages` | the parts catalog, `scope: "public"` indexes only |
 | `GET` | `/api/public/packages/{name}` | ditto |
@@ -195,15 +228,34 @@ Nine entries, every one a file read. **Zero kernel calls**, proved by a test
 that exercises the whole surface with the kernel instrumented — with a positive
 control, so a broken counter cannot make it pass.
 
-**A private index stays private.** The catalog routes serve only indexes whose
-`index.json` declares `scope: "public"`; a package carried only by a
-`scope: "private"` index answers exactly the same `404` as a package that does
-not exist, so the surface is not an oracle for what you have. The
-*authenticated* `GET /api/packages/search` does walk every index, which is why
-it is not public and why this is a separate route pack rather than a flag on
-that one. If you configure a private index, configure it with `scope:
-"private"` in `~/.agentcad/config.json` (inside the container: `/data/home`) —
-the default is `public`.
+**A private index stays private, and *you* decide which.** An index is
+anonymously readable only when **both** your configuration and the index's own
+`index.json` say `scope: "public"`. Your configuration is the one that
+matters for exposure: write `"scope": "private"` on the entry in
+`~/.agentcad/config.json` (inside the container: `/data/home/config.json`) and
+that index is never consulted by the anonymous routes, whatever its document
+claims. That direction is load-bearing for a **git** index, where the
+`index.json` is written by whoever owns the repository and not by you — before
+this was fixed (PRD-005a security review, finding M2) that third party could
+publish `"scope": "public"` and have your instance serve their content to the
+internet over your `private`. The reverse still holds too: a document that says
+`private` hides itself even from an operator who configured it public.
+
+The default on both sides is `public`, so an entry with no `scope` at all is
+anonymously readable — set it explicitly on anything that is not meant to be.
+
+A package carried only by a private index answers exactly the same `404` as a
+package that does not exist, so the surface is not an oracle for what you have.
+The *authenticated* `GET /api/packages/search` does walk every index, which is
+why it is not public and why this is a separate route pack rather than a flag
+on that one.
+
+```json
+{"indexes": [
+  {"name": "acme-internal", "kind": "git",
+   "url": "https://git.example.com/acme/parts.git", "scope": "private"}
+]}
+```
 
 Everything else — every project, every part, every geometry route, the
 WebSocket, and the package management routes — requires a session cookie or a
@@ -211,8 +263,10 @@ bearer token. Anonymous requests to them get `401`, including to paths that do
 not exist, because the guard answers before routing and a `404` would be a free
 map of the instance.
 
-Responses on the public routes carry `Cache-Control: public, max-age=300`, so a
-CDN or reverse proxy in front absorbs a flood. There is no per-IP limit on them
+Responses on the public routes carry `Cache-Control: public, max-age=300` —
+including the `404`s, which are most of a flood, since a flood asks for names
+that do not exist — so a CDN or reverse proxy in front absorbs it. There is no
+per-IP limit on them
 in this release; the payload is a static file read.
 
 ---

@@ -58,6 +58,9 @@ def _error_response(exc: AppError) -> JSONResponse:
                 "details": exc.details,
             }
         },
+        # Almost always empty; the anonymous catalog's misses use it to stay
+        # cacheable (`core/model.AppError.headers`).
+        headers=getattr(exc, "headers", None) or None,
     )
 
 
@@ -471,7 +474,18 @@ def _mount_route_packs(app: FastAPI, service: AgentCADService, registry: ToolReg
             # A pack may declare `PREFIX` to mount somewhere other than /api;
             # PRD-007's share links need `/s/<token>` at the root and the
             # extension point could not express it. The default is unchanged,
-            # so the sixteen existing packs do not move. It is NOT a way past
-            # the allowlist: `security.is_public` is consulted with the full
-            # request path, so a pack mounted at the root is still private.
+            # so the sixteen existing packs do not move.
+            #
+            # `security.is_public` is consulted with the full request path, so
+            # a pack that moves to the root is still private — but be exact
+            # about the limit of that: a pack declaring `PREFIX = "/api/public"`
+            # or `"/js"` WOULD land inside `PUBLIC_PREFIXES` and be anonymously
+            # reachable. No pack does, and none may; that is an invariant this
+            # comment states and code review enforces, not one the mechanism
+            # provides. `security.py` says a pack author cannot open the
+            # anonymous surface *from a decorator* — this is the seam where
+            # they could, and the reason the prefixes are a short literal list
+            # in one file rather than a pattern. If a pack ever needs an
+            # anonymous route, the entry goes in `PUBLIC_PATHS` /
+            # `PUBLIC_PREFIXES` where `test_hosted_surface.py` counts it.
             app.include_router(router, prefix=getattr(module, "PREFIX", "/api"))

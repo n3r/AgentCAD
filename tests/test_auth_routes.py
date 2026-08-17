@@ -13,7 +13,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from .conftest import ADMIN_PASSWORD, HOSTED_ORIGIN
+from .conftest import ADMIN_HANDLE, ADMIN_PASSWORD, HOSTED_ORIGIN
 
 ORIGIN = HOSTED_ORIGIN
 GOOD = {"handle": "nikita", "password": ADMIN_PASSWORD}
@@ -249,6 +249,112 @@ def test_a_throttled_handle_does_not_lock_out_a_different_one(hosted):
     assert r.status_code == 200
 
 
+def test_a_third_party_cannot_lock_a_known_handle_out(hosted):
+    """Review finding M3: the per-attempt bucket is keyed on `(handle,
+    address)`, so a stranger cannot deny the account's owner.
+
+    Keyed on the handle alone this was a **permanent** lockout primitive:
+    `TokenBucket.take` does not consume on refusal, so anyone willing to spend
+    0.5 req/s against a handle held its bucket empty forever, and handles are
+    public — presence rosters, comment authors and history trailers all carry
+    them. Measured before the fix: the victim, with the correct password, was
+    refused in 6 of 6 rounds over 12 s.
+
+    Both halves are asserted. The attacker must still be throttled, or the fix
+    would be "delete the limit".
+    """
+    app = hosted[0].app
+    attacker = TestClient(app, base_url=HOSTED_ORIGIN, client=("203.0.113.7", 4444))
+    victim = TestClient(app, base_url=HOSTED_ORIGIN, client=("198.51.100.9", 4444))
+
+    guesses = [attacker.post("/api/auth/login",
+                             json={"handle": ADMIN_HANDLE, "password": "no"}
+                             ).status_code for _ in range(10)]
+    assert 429 in guesses, "the attacker's own address is not throttled"
+    assert victim.post("/api/auth/login", json=GOOD).status_code == 200
+
+
+# --- M3 round 2: the address behind the recommended reverse proxy -------------
+#
+# `request.client.host` is the RAW socket peer. Behind the nginx/Caddy proxy the
+# deployment guide prescribes, that peer is the proxy for every internet client,
+# so `(handle, address)` collapses back to per-handle and the round-1 lockout
+# reopens. The fix is uvicorn's `ProxyHeadersMiddleware`, bounded to the trusted
+# proxy, resolving the real client from `X-Forwarded-For` — which
+# `cli._uvicorn_proxy_kwargs` turns on in hosted mode. These tests wrap the app
+# in that exact middleware so the simulation is the real thing, not a mock.
+
+PROXY = "127.0.0.1"
+
+
+def _behind(app_or_client, trusted=PROXY):
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    app = getattr(app_or_client, "app", app_or_client)
+    return ProxyHeadersMiddleware(app, trusted_hosts=trusted)
+
+
+def _client(app, peer, xff=None):
+    c = TestClient(app, base_url=HOSTED_ORIGIN, client=(peer, 5555))
+    if xff is not None:
+        c.headers.update({"X-Forwarded-For": xff})
+    return c
+
+
+def test_without_forwarded_for_the_proxy_collapses_the_bucket(hosted):
+    """The regression this whole round exists for. Behind the proxy with **no**
+    `X-Forwarded-For` — the docs as they were — every client is `127.0.0.1`, so
+    an attacker locks the victim out. This asserts the collapse so the doc
+    requirement to forward the header has a test behind it."""
+    proxied = _behind(hosted[0])
+    attacker = _client(proxied, PROXY)          # no XFF: arrives as the proxy
+    victim = _client(proxied, PROXY)
+    for _ in range(9):
+        attacker.post("/api/auth/login", json={"handle": ADMIN_HANDLE, "password": "no"})
+    assert victim.post("/api/auth/login", json=GOOD).status_code == 429
+
+
+def test_behind_a_proxy_the_bucket_keys_on_the_real_client(hosted):
+    """The fix. With the proxy forwarding `X-Forwarded-For`, two clients at the
+    same socket peer (the proxy) get DIFFERENT buckets — the attacker's flood
+    does not touch the victim, who signs in with the correct password."""
+    proxied = _behind(hosted[0])
+    attacker = _client(proxied, PROXY, xff="203.0.113.7")
+    victim = _client(proxied, PROXY, xff="198.51.100.9")
+    guesses = [attacker.post("/api/auth/login",
+                             json={"handle": ADMIN_HANDLE, "password": "no"}
+                             ).status_code for _ in range(10)]
+    assert 429 in guesses, "the attacker's real address is not throttled"
+    assert victim.post("/api/auth/login", json=GOOD).status_code == 200
+
+
+def test_a_client_cannot_forge_its_forwarded_address_across_the_proxy(hosted):
+    """The spoof guard. nginx APPENDS the real peer, so the trusted header is
+    `<forged>, <real-ip>`; uvicorn takes the rightmost untrusted hop, which is
+    the real attacker. Forging the victim's address to frame them does not put
+    the attacker in the victim's bucket."""
+    proxied = _behind(hosted[0])
+    # The attacker prepends the victim's address; the proxy appends the real one.
+    attacker = _client(proxied, PROXY, xff="198.51.100.9, 203.0.113.7")
+    victim = _client(proxied, PROXY, xff="198.51.100.9")
+    for _ in range(9):
+        attacker.post("/api/auth/login", json={"handle": ADMIN_HANDLE, "password": "no"})
+    assert victim.post("/api/auth/login", json=GOOD).status_code == 200
+
+
+def test_direct_bind_ignores_a_clients_x_forwarded_for(hosted):
+    """The direct-bind spoof guard. With no proxy middleware (local/direct mode
+    runs uvicorn with `proxy_headers` off), a client's own `X-Forwarded-For` is
+    ignored and the address is the socket peer — so an attacker cannot forge the
+    victim's address to lock them out."""
+    app = hosted[0].app                          # raw app, no proxy middleware
+    attacker = _client(app, "203.0.113.7", xff="198.51.100.9")   # forging
+    victim = _client(app, "198.51.100.9")
+    for _ in range(9):
+        attacker.post("/api/auth/login", json={"handle": ADMIN_HANDLE, "password": "no"})
+    assert victim.post("/api/auth/login", json=GOOD).status_code == 200
+
+
 def test_the_correct_password_still_wins_after_a_throttle_lapses(hosted, monkeypatch):
     from agentcad.server import security as security_mod
 
@@ -276,6 +382,30 @@ def test_enrolment_is_public_single_use_and_signs_you_in(hosted):
     fresh = _fresh(client)
     assert fresh.post(f"/api/auth/enrol/{token}",
                       json={"password": "again"}).status_code == 404
+
+
+def test_a_recovery_enrolment_kills_the_sessions_it_is_recovering_from(hosted):
+    """Review finding M4, through the route.
+
+    The recovery path is `agentcad admin enrol <handle>` for an account that
+    already has a password — run precisely when one was stolen. The attacker's
+    cookie must die with the password, and the person doing the recovery must
+    end up signed in.
+    """
+    client, store = hosted
+    store.enrol(store.add_user("anya"), "hunter2hunter2")
+    attacker = _fresh(client)
+    attacker.cookies.set("agentcad_session",
+                         store.create_session("anya", device=None))
+    assert attacker.get("/api/auth/session").status_code == 200
+
+    recovery = _fresh(client)
+    r = recovery.post(f"/api/auth/enrol/{store.mint_enrolment('anya')}",
+                      json={"password": "a brand new password"})
+    assert r.status_code == 200
+
+    assert attacker.get("/api/auth/session").status_code == 401
+    assert recovery.get("/api/auth/session").json()["principal"] == "user:anya"
 
 
 def test_enrolment_needs_no_credential(hosted):

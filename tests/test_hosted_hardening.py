@@ -314,6 +314,53 @@ def test_a_nonsense_port_in_the_environment_is_refused(monkeypatch):
                         AppMode("hosted", "https://x.example", b"k" * 32))
 
 
+def test_uvicorn_trusts_the_proxy_only_in_hosted_mode(monkeypatch):
+    """Review finding M3 (round 2): the login limit's `(handle, address)` key
+    is only real when uvicorn resolves the client from `X-Forwarded-For`.
+
+    Hosted → `proxy_headers` on, bounded to the trusted proxy (default
+    loopback). Local → off, so a loopback page cannot set its own forwarded
+    address. Set explicitly rather than left to uvicorn's default, so a version
+    bump cannot silently flip the security property.
+    """
+    from agentcad import cli
+    from agentcad.core.appmode import AppMode
+
+    monkeypatch.delenv("AGENTCAD_TRUSTED_PROXY", raising=False)
+    hosted = cli._uvicorn_proxy_kwargs(AppMode("hosted", "https://x.example", b"k" * 32))
+    assert hosted == {"proxy_headers": True, "forwarded_allow_ips": "127.0.0.1"}
+
+    local = cli._uvicorn_proxy_kwargs(AppMode("local", None, None))
+    assert local["proxy_headers"] is False
+    assert not local["forwarded_allow_ips"]        # empty: no peer is trusted
+
+    monkeypatch.setenv("AGENTCAD_TRUSTED_PROXY", "10.0.0.0/8")
+    hosted2 = cli._uvicorn_proxy_kwargs(AppMode("hosted", "https://x.example", b"k" * 32))
+    assert hosted2["forwarded_allow_ips"] == "10.0.0.0/8"
+
+
+def test_serve_refuses_a_wildcard_trusted_proxy(monkeypatch, capsys):
+    """`AGENTCAD_TRUSTED_PROXY=*` lets any client forge the address the login
+    limiter keys on, so the start is refused (clean exit 2, not a traceback),
+    and before the kernel pool spawns."""
+    from agentcad import cli
+
+    def explode(*args, **kwargs):                     # pragma: no cover
+        raise AssertionError("a dangerous trusted-proxy must refuse before the "
+                             "service is built")
+
+    monkeypatch.setattr(cli, "_build_service", explode)
+    monkeypatch.setenv("AGENTCAD_MODE", "hosted")
+    monkeypatch.setenv("AGENTCAD_PUBLIC_ORIGIN", "https://cad.example.com")
+    monkeypatch.setenv("AGENTCAD_TRUSTED_PROXY", "*")
+    monkeypatch.setattr("sys.argv",
+                        ["agentcad", "serve", "--host", "0.0.0.0", "--no-open"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    assert "AGENTCAD_TRUSTED_PROXY" in capsys.readouterr().err
+
+
 def _serve_args(host=None, port=None):
     import argparse
 

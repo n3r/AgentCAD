@@ -224,8 +224,15 @@ def hosted_with_catalog(hosted_client):
 PRIVATE_PACKAGE = "acme-internal"
 
 
-def configure_private_index(client, root, package_name=PRIVATE_PACKAGE):
+def configure_private_index(client, root, package_name=PRIVATE_PACKAGE,
+                            document_scope="private"):
     """Configure a `scope: "private"` local index carrying *package_name*.
+
+    *document_scope* is what the index **document** declares, separately from
+    the `scope: "private"` written into the operator's config. They agree by
+    default, which is why the original leak tests passed over review finding
+    M2; pass `document_scope="public"` for the disagreement — a third party's
+    `index.json` claiming to be public over an operator who said private.
 
     Derived from the bundled catalog's own `din625` entry — copied directory
     and all — so it is a genuinely valid index rather than a hand-written
@@ -259,7 +266,7 @@ def configure_private_index(client, root, package_name=PRIVATE_PACKAGE):
     root = Path(root)
     shutil.copytree(catalog / "din625" / "1.0.0", root / package_name / "1.0.0")
     doc["name"] = "acme"
-    doc["scope"] = "private"
+    doc["scope"] = document_scope
     doc["packages"] = {package_name: {"versions": {"1.0.0": entry}}}
     (root / "index.json").write_text(json.dumps(doc, indent=2), encoding="utf-8")
 

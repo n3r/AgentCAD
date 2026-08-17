@@ -51,7 +51,7 @@ Claude Code (MCP) ─┐         Browser UI ─┐        Chat agent ─┐
                    │ HTTP               │ REST+WS            │ in-process
                    ▼                    ▼                    ▼
         ┌───────────────────────────────────────────────────────┐
-        │  FastAPI server (127.0.0.1 only)                       │
+        │  FastAPI server (127.0.0.1 local / bound+authed hosted) │
         │  ToolRegistry ─► AgentCADService ─► ProjectStore(files)│
         │                        │ line-delimited JSON-RPC       │
         │              Kernel worker subprocess(es)              │
@@ -197,9 +197,14 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   passes the union of both world bboxes to both sides.
 - **`allow_invalid` overrides the kernel validation gate only** — never the
   approvals policy. One field must not mean two unrelated things.
-- **`actor_kind` is `human` only for the `browser` identity.** The chat dock is
-  a human asking an *agent*, so those actions are the agent's. It is
-  bookkeeping, not authentication, until PRD-005.
+- **`actor_kind` is `human` for the `browser` identity and for an
+  authenticated `user:` principal.** The chat dock is a human asking an
+  *agent*, so those actions are the agent's. In local mode it is still
+  bookkeeping rather than authentication — anyone can send any `X-Agent-Id`.
+  In **hosted** mode a `user:` prefix is authenticated (the guard composes the
+  principal and `X-Agent-Id` can only contribute the device suffix), which is
+  why `core/proposals.actor_kind` must classify `user:nikita/browser:7f3a1b2c`
+  as human; see the hosted-core gotchas.
 - A packet is generated from the **branches' existing worktrees**
   (`branches.tree_of` + `branches.pinned`) and refuses a dirty tree, so its
   pinned head SHAs always describe the bytes it measured.
@@ -565,9 +570,14 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   applied (a repo hook rejecting the commit) resets tree, index and HEAD to
   where they started before the error leaves. "Never a partial apply" is a
   statement about the way out too.
-- **`actor_kind`/`author_kind` is bookkeeping, not authentication.** It is
-  `human` iff the identity is the browser. Say so on every surface that shows
-  it, until PRD-005.
+- **`actor_kind`/`author_kind` is bookkeeping in LOCAL mode, and
+  authenticated in hosted mode.** It is `human` for the browser identity and
+  for a `user:` principal. In local mode any client may claim any
+  `X-Agent-Id`, so say so on the surfaces that show it; in hosted mode the
+  `user:` half is the guard's own composition and cannot be spoofed
+  (PRD-005a). `core/proposals.actor_kind` must classify a composed
+  `user:<handle>/<device>` as human — see the hosted-core gotchas for what
+  broke when it did not.
 
 ## Sketcher gotchas (PRD-009 — read before touching the solver, the emitter or `sketcher.js`)
 
@@ -1490,12 +1500,52 @@ it lower-cases "Python".
 - **`routes_packages.py`'s `search` and `preview` walk EVERY configured
   index**, `scope: "private"` ones included. That is why they stay
   authenticated and why the anonymous catalog read is a separate pack
-  (`server/routes_public.py`) that filters on `scope == "public"` **before**
-  it looks anything up. Every miss on that pack raises **one name-free
-  message**, so a private package and a nonexistent one are indistinguishable;
-  a private index configured first must not shadow a public package of the
-  same name. It never calls `refresh()`, so an anonymous request cannot make
-  the server perform a network git fetch.
+  (`server/routes_public.py`) that filters **before** it looks anything up.
+  The filter needs **both** `index.configured_scope` (what the OPERATOR wrote
+  in `config.json`) and `index.scope` (PRD-011's document-aware property) to
+  equal `"public"`. Do not collapse them: `scope` lets the *document* win,
+  which is right for publish policy and was wrong for access control — for a
+  git index the third party who authors `index.json` could declare
+  `"public"` over the operator's configured `private` and have the instance
+  serve it to the internet (review finding M2, changelog 0198). Every miss on
+  that pack raises **one name-free message** and carries `Cache-Control`, so a
+  private package and a nonexistent one are indistinguishable and a flood of
+  misses is still absorbable by a CDN; a private index configured first must
+  not shadow a public package of the same name. It never calls `refresh()`, so
+  an anonymous request cannot make the server perform a network git fetch.
+
+- **The CSRF Origin check sits ABOVE the `principal is None` branch in
+  `security.guard`, and that ordering is the control.** `POST
+  /api/auth/login` and `POST /api/auth/enrol/{token}` are the only unsafe
+  methods an anonymous caller can reach; a check placed after the anonymous
+  early-return covers every route *except* the two it exists for, which is
+  what it did for four changelogs (review finding M1, changelog 0198).
+  Origin-absent is allowed, identically for anonymous and authenticated
+  callers — a browser always sends it on a cross-site POST, `curl` and the MCP
+  client may not.
+
+- **The login limiter is keyed on `(handle, address)`, never the handle
+  alone** (`security.login_key`). `TokenBucket.take` does not consume on
+  refusal, so a handle-only bucket held empty by a stranger at 0.5 req/s was a
+  *permanent* lockout of a known handle — and handles are public (presence
+  rosters, comment authors, history trailers). The per-address bucket is the
+  other half and stays. Measured before the fix: the victim, with the correct
+  password, refused 6 of 6 rounds. **`address` is only real if the proxy
+  plumbing is right:** it is `request.client.host`, which behind the deployment
+  guide's reverse proxy is the proxy for *everyone* unless (a) uvicorn runs with
+  `proxy_headers` bounded to the trusted peer — `cli._uvicorn_proxy_kwargs` does
+  this in hosted mode, off in local — and (b) the proxy sets `X-Forwarded-For`
+  (the nginx block must; Caddy does by default). Without both, the key collapses
+  to per-handle (M3 round 2, changelog 0198). `AGENTCAD_TRUSTED_PROXY` bounds the
+  trust and **refuses `*`** (`appmode.trusted_proxy`) — trusting every peer lets
+  a client forge the address the limiter keys on.
+
+- **`AuthStore.enrol` revokes every existing session for that handle.**
+  `agentcad admin enrol <handle>` is the *recovery* path — it is run when a
+  password was lost or stolen — so leaving the old cookies live let a thief
+  outlast the reset by up to `ABSOLUTE_SESSION_S` (30 days). It is inside the
+  same `_scope()` (reentrant) as the password write, so a reset cannot
+  half-apply.
 
 - **Registration order: `security.install(cfg)` must run BEFORE
   `build_registry(service)`.** A tool pack decides *at registration time*
@@ -1638,9 +1688,16 @@ it lower-cases "Python".
 - **Atomic writes** (temp + `os.replace`) for every manifest/script/cache file.
 - **Determinism**: same script + params ⇒ identical geometry and byte-identical
   meshes. Cache key = `sha256(content, params, density, tolerance)`.
-- **Security/trust**: server binds `127.0.0.1` only, with a Host-allowlist +
-  same-origin guard (`server/app._browser_request_allowed`) on HTTP and WS.
-  Part scripts run with user privileges by design (local single-user tool);
+- **Security/trust**: in the default **local** mode the server binds
+  `127.0.0.1` only, with a Host-allowlist + same-origin guard
+  (`server/app._browser_request_allowed`) on HTTP and WS — and a non-loopback
+  bind is *refused* in that mode. In **hosted** mode (`AGENTCAD_MODE=hosted`,
+  PRD-005a) it may bind a public interface, and the loopback assumption is
+  replaced by the default-deny request guard in `server/security.py`: every
+  request is an authenticated principal or one of nine enumerated anonymous
+  paths. Read the hosted-core gotchas before assuming either half.
+  Part scripts run with user privileges by design (an account on a hosted
+  instance is therefore a shell, which is why registration is closed);
   on macOS the kernel worker is additionally confined by a deny-by-default
   `sandbox-exec` profile (`kernel/sandbox.py`: writes only in project roots,
   no network; `AGENTCAD_NO_SANDBOX=1` opts out). API key from env only,

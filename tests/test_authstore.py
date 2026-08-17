@@ -46,6 +46,29 @@ def test_enrolment_is_single_use(store):
         store.enrol(token, "second try")
 
 
+def test_enrolment_revokes_every_existing_session_for_that_handle(store):
+    """Review finding M4: a password reset signs the handle out everywhere.
+
+    `agentcad admin enrol <handle>` re-mints a link for an account that
+    already exists, and the reason an operator runs it is that the password
+    was lost **or stolen**. Leaving the old sessions live let an attacker's
+    cookie outlive the recovery by up to `ABSOLUTE_SESSION_S` (30 days), which
+    is the opposite of what the path is for — and the opposite of what anyone
+    expects a password reset to do.
+    """
+    store.enrol(store.add_user("anya"), "hunter2hunter2")
+    store.enrol(store.add_user("nikita"), "correct horse battery")
+    stolen = store.create_session("anya", device=None)
+    other = store.create_session("nikita", device=None)
+    assert store.resolve_session(stolen) is not None
+
+    store.enrol(store.mint_enrolment("anya"), "a brand new password")
+
+    assert store.resolve_session(stolen) is None
+    # Only that handle's: a reset must not sign the whole instance out.
+    assert store.resolve_session(other) is not None
+
+
 def test_password_round_trip_and_no_digest_leaks(store):
     token = store.add_user("anya")
     store.enrol(token, "hunter2hunter2")

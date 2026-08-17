@@ -84,6 +84,22 @@ def test_every_json_route_is_cacheable(hosted_with_catalog, path):
         "public, max-age=300"
 
 
+@pytest.mark.parametrize("path", [
+    "/api/public/packages/no-such-package",
+    "/api/public/packages/no-such-package/versions/1.0.0",
+    "/api/public/packages/din625/versions/9.9.9",
+    "/api/public/packages/din625/versions/1.0.0/preview?path=previews/gone.png",
+])
+def test_the_misses_are_cacheable_too(hosted_with_catalog, path):
+    """Review finding m1. A flood asks for names that do not exist, so the
+    404s are the majority of it — and they went out with no `Cache-Control`
+    because raising discards the handler's `Response`. `AppError.headers` is
+    what carries it now."""
+    r = hosted_with_catalog.get(path)
+    assert r.status_code == 404, path
+    assert r.headers["cache-control"] == "public, max-age=300", path
+
+
 def test_the_whole_surface_answers_with_no_credential(hosted_with_catalog):
     """These are the four routes `security.PUBLIC_PREFIXES` opens; assert they
     answer 200 with an empty cookie jar rather than trusting the enumeration."""
@@ -142,6 +158,37 @@ def test_a_private_index_cannot_shadow_a_public_package(hosted_with_catalog,
     assert "internal only" not in body["summary"]
 
 
+def test_the_operators_private_scope_beats_the_documents_public_one(
+        hosted_with_catalog, tmp_path):
+    """Review finding M2, end to end.
+
+    The operator wrote `scope: "private"` in `~/.agentcad/config.json`; the
+    index document — which for a git index is written by whoever owns the
+    repository, not by the operator — declares `"scope": "public"`. The
+    operator's word is the one that decides internet exposure, so this index
+    is not consulted at all and its package answers the same name-free 404 as
+    a package that does not exist.
+    """
+    private_name = configure_private_index(
+        hosted_with_catalog, tmp_path / "doc-says-public",
+        document_scope="public")
+    listed = {p["name"] for p in
+              hosted_with_catalog.get("/api/public/packages").json()["packages"]}
+    assert private_name not in listed
+    mine = hosted_with_catalog.get(f"/api/public/packages/{private_name}")
+    missing = hosted_with_catalog.get("/api/public/packages/does-not-exist-at-all")
+    assert mine.status_code == missing.status_code == 404
+    assert mine.json() == missing.json()
+    # And the version and preview routes, which reach `_find` by a second path.
+    assert hosted_with_catalog.get(
+        f"/api/public/packages/{private_name}/versions/1.0.0"
+    ).status_code == 404
+    # Not disabled, just not anonymous: a signed-in member still finds it.
+    login(hosted_with_catalog)
+    hits = hosted_with_catalog.get("/api/packages/search").json()["hits"]
+    assert private_name in {h["name"] for h in hits}
+
+
 def test_the_authenticated_search_route_still_sees_private_indexes(
         hosted_with_private):
     """The private index is not *disabled*; it is not anonymously readable.
@@ -156,14 +203,16 @@ def test_the_authenticated_search_route_still_sees_private_indexes(
 
 def test_the_filter_is_on_scope_not_on_the_index_name():
     """`_public_indexes` is the whole access rule, so test it directly: an
-    index is admitted for its declared scope and never for what it is called
-    or for where it sits in precedence order."""
+    index is admitted for its scope and never for what it is called or for
+    where it sits in precedence order."""
     import types
 
     from agentcad.server.routes_public import _public_indexes
 
-    def stub(name, scope):
-        return types.SimpleNamespace(name=name, scope=scope)
+    def stub(name, scope, configured=None):
+        return types.SimpleNamespace(
+            name=name, scope=scope,
+            configured_scope=scope if configured is None else configured)
 
     service = types.SimpleNamespace(packages=types.SimpleNamespace(indexes=[
         stub("public-mirror", "private"),   # named public, is not
@@ -172,6 +221,33 @@ def test_the_filter_is_on_scope_not_on_the_index_name():
         stub("unscoped", None),             # a kind that has no scope at all
     ]))
     assert [ix.name for ix in _public_indexes(service)] == ["agentcad-core"]
+
+
+def test_both_scopes_must_agree_before_an_index_is_anonymously_readable():
+    """Review finding M2, at the filter itself.
+
+    `index.scope` lets the index *document* win, which is right for publish
+    policy and wrong for access control — for a git index the third party who
+    writes `index.json` would otherwise decide whether the operator's instance
+    serves it to the internet. `configured_scope` is the operator's own word,
+    and the filter needs both.
+    """
+    import types
+
+    from agentcad.server.routes_public import _public_indexes
+
+    def stub(name, configured, declared):
+        return types.SimpleNamespace(name=name, configured_scope=configured,
+                                     scope=declared)
+
+    service = types.SimpleNamespace(packages=types.SimpleNamespace(indexes=[
+        stub("doc-says-public", "private", "public"),   # the finding
+        stub("doc-says-private", "public", "private"),  # the old refusal
+        stub("agreed", "public", "public"),
+        stub("no-configured-scope-attribute",
+             None, "public"),                            # a future index kind
+    ]))
+    assert [ix.name for ix in _public_indexes(service)] == ["agreed"]
 
 
 # ------------------------------------------------------------- the containment
@@ -205,9 +281,21 @@ def test_a_non_png_preview_is_refused(hosted_with_catalog):
     assert r.status_code == 422
 
 
-def test_a_preview_with_no_path_is_a_422_not_a_500(hosted_with_catalog):
-    assert hosted_with_catalog.get(
-        "/api/public/packages/din625/versions/1.0.0/preview").status_code == 422
+def test_a_preview_with_no_path_is_the_house_envelope(hosted_with_catalog):
+    """422, and in `{"error": {...}}` — not FastAPI's native `{"detail": ...}`.
+
+    Review finding m5: this was the one route on the anonymous surface that
+    answered in a second error dialect, which a client written against this
+    API has no reason to parse. `path` is therefore optional in the signature
+    and checked in the handler.
+    """
+    r = hosted_with_catalog.get(
+        "/api/public/packages/din625/versions/1.0.0/preview")
+    assert r.status_code == 422
+    body = r.json()
+    assert "detail" not in body, body
+    assert body["error"]["type"] == "ValidationError"
+    assert body["error"]["details"] == {"parameter": "path"}
 
 
 def test_a_missing_preview_file_is_a_404(hosted_with_catalog):
@@ -233,9 +321,23 @@ def test_the_catalog_read_makes_no_kernel_calls(hosted_with_catalog,
 
 
 def test_the_pack_does_not_reach_the_registry_or_the_store(hosted_with_catalog):
-    """`routes_packages.py` is a registry passthrough; this pack deliberately
-    is not. A tool call would be a second code path to the kernel and a place
-    for a future tool to acquire a side effect."""
+    """A **lint, not a proof**: this pack must not name `service.kernel`,
+    `service.store` or `registry.call`.
+
+    Stated plainly because the review asked for it (finding m8). A source scan
+    for three attribute spellings is defeated by `getattr(service, "kernel")`,
+    by an alias, or by a helper in another module — it catches the change
+    somebody writes by hand, not the one somebody hides. The *proof* that no
+    anonymous request reaches execution is the runtime one above
+    (`test_the_catalog_read_makes_no_kernel_calls`), which counts at the
+    kernel's own door with a positive control. This test earns its place by
+    failing at review time instead of at runtime, and by documenting the
+    intent; it is not evidence on its own.
+
+    `routes_packages.py` is a registry passthrough; this pack deliberately is
+    not. A tool call would be a second code path to the kernel and a place for
+    a future tool to acquire a side effect.
+    """
     import ast
     import inspect
 
