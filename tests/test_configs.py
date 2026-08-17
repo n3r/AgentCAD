@@ -748,3 +748,163 @@ class TestFlangeFamily:
         assert detail["status"]["diverged_params"] == []
         pure = demo._ensure_config_built("demo", "flange", "m")["cache_key"]
         assert demo.mesh_info("demo", "flange")["key"] == pure != diverged_key
+
+
+# ------------------------------------------ per-configuration spec results
+
+
+#: The flange family's script with one part-scope declaration. Volume is the
+#: right check to key a test on: it is measured from the built shape, so the
+#: three members cannot agree on it by accident.
+SPEC_FLANGE_SCRIPT = FLANGE_SCRIPT.replace(
+    "from build123d import *",
+    "from build123d import *\n"
+    "from agentcad.toolkit.specs import check_valid, check_volume",
+) + '''
+SPECS = [
+    check_valid(requirement="ENG-001"),
+    check_volume(min_mm3=1000.0, requirement="ENG-002"),
+]
+'''
+
+
+#: The same declaration on the fragile script: one member builds, one
+#: raises. `spec_results` must be absent from the row that failed — a
+#: second kernel round trip could only restate the error the row carries.
+SPEC_FRAGILE_SCRIPT = FRAGILE_SCRIPT.replace(
+    "from build123d import *",
+    "from build123d import *\n"
+    "from agentcad.toolkit.specs import check_valid",
+) + '''
+SPECS = [check_valid(requirement="ENG-003")]
+'''
+
+
+def _volume_of(payload: dict) -> float:
+    return next(check["measured"] for check in payload["checks"]
+                if check["kind"] == "volume")
+
+
+@pytest.mark.timeout(600)
+class TestConfigSpecResults:
+    """`build_configs` rows carry the SHAPE tier, per configuration.
+
+    The failure this is built to catch is a silent params fall-through: a
+    `_shape_tier` that took the derived record's cache key for its sidecar but
+    the STORED record's params for the measurement would write the base
+    numbers into a config-keyed file, and every assertion about the key would
+    still pass. So both halves are asserted together — a different sidecar
+    *and* a different measurement.
+    """
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def spec_projects(cls, kernel, tmp_path_factory):
+        projects = tmp_path_factory.mktemp("configs_specs_projects")
+        svc = make_test_service(projects, kernel)
+        svc.create_project("demo")
+        svc.store.add_part("demo", "flange", "Flange", DEFAULT_MATERIAL,
+                           SPEC_FLANGE_SCRIPT)
+        svc.store.update_part_entry("demo", "flange",
+                                    configs=THREE_SIZE_CONFIGS)
+        # The same family on a script that declares nothing: the control.
+        svc.store.add_part("demo", "plain", "Plain", DEFAULT_MATERIAL,
+                           FLANGE_SCRIPT)
+        svc.store.update_part_entry("demo", "plain",
+                                    configs=THREE_SIZE_CONFIGS)
+        # A declaring script with one member that cannot build.
+        svc.store.add_part("demo", "fragile", "Fragile", DEFAULT_MATERIAL,
+                           SPEC_FRAGILE_SCRIPT)
+        svc.store.update_part_entry("demo", "fragile", configs=FRAGILE_CONFIGS)
+        return projects
+
+    @pytest.fixture
+    def demo(self, kernel, tmp_path, spec_projects):
+        service = clone_test_service(spec_projects, tmp_path / "projects",
+                                     kernel)
+        return service, build_registry(service)
+
+    def test_every_matrix_row_carries_its_own_shape_tier(self, demo):
+        service, registry = demo
+        out = registry.call("build_configs", {"project": "demo",
+                                              "part_id": "flange"})
+
+        assert "error" not in out, out
+        rows = out["configs"]
+        assert [row["name"] for row in rows] == ["s", "m", "l"]
+        for row in rows:
+            assert row["ok"], row.get("error")
+            results = row["spec_results"]
+            assert [check["kind"] for check in results["checks"]] == \
+                ["valid", "volume"]
+            assert all(check["status"] == "pass" for check in results["checks"])
+            assert isinstance(results["cached"], bool)
+        # The point of a matrix: three members, three different measurements.
+        volumes = [_volume_of(row["spec_results"]) for row in rows]
+        assert volumes[0] < volumes[1] < volumes[2]
+        # The assembly tier is deliberately absent — an assembly is not per
+        # configuration.
+        assert all("tiers" not in row["spec_results"] for row in rows)
+        # Every sidecar landed under its own configuration's cache key.
+        for row in rows:
+            assert (service.store.cache_dir("demo") /
+                    f"{row['cache_key']}.specs.json").is_file()
+
+    def test_a_config_keyed_sidecar_never_holds_the_base_measurement(self, demo):
+        service, _registry = demo
+        build_registry(service)               # installs `service.specs`
+        derived = service._record_for("demo", "flange", "l")
+
+        base, _c1, base_sidecar = service.specs._shape_tier("demo", "flange")
+        large, _c2, large_sidecar = service.specs._shape_tier(
+            "demo", "flange", record=derived)
+
+        assert base_sidecar != large_sidecar
+        assert base["cache_key"] == service._cache_key_for(
+            "demo", service.store.get_part("demo", "flange"))
+        assert large["cache_key"] == service._cache_key_for("demo", derived)
+        # ...and the numbers moved with the key. `l` is a 200 mm flange and the
+        # base is the 140 mm default, so a fall-through to the stored record's
+        # params would show up here and nowhere else.
+        assert _volume_of(large) > _volume_of(base) * 1.5
+
+    def test_a_second_read_of_one_configuration_is_a_sidecar_hit(self, demo):
+        service, registry = demo
+        first = registry.call("build_configs", {"project": "demo",
+                                                "part_id": "flange",
+                                                "configs": ["l"]})
+        second = registry.call("build_configs", {"project": "demo",
+                                                 "part_id": "flange",
+                                                 "configs": ["l"]})
+
+        assert first["configs"][0]["spec_results"]["cached"] is False
+        assert second["configs"][0]["spec_results"]["cached"] is True
+        assert second["configs"][0]["spec_results"]["checks"] == \
+            first["configs"][0]["spec_results"]["checks"]
+
+    def test_a_member_that_did_not_build_is_not_measured_again(self, demo):
+        """A configuration whose build just failed would fail `spec_eval` for
+        the same reason and at the same cost, to restate the error the row
+        already carries."""
+        _service, registry = demo
+        out = registry.call("build_configs", {"project": "demo",
+                                              "part_id": "fragile"})
+
+        assert "error" not in out, out
+        rows = {row["name"]: row for row in out["configs"]}
+        assert rows["ok"]["ok"] is True
+        assert [check["kind"] for check in
+                rows["ok"]["spec_results"]["checks"]] == ["valid"]
+        assert rows["bad"]["ok"] is False and rows["bad"]["error"]
+        assert "spec_results" not in rows["bad"]
+
+    def test_a_part_that_declares_nothing_gets_no_spec_results_key(self, demo):
+        """Zero added work for a part that declares nothing — and no empty
+        `spec_results` to be misread as "measured, found nothing"."""
+        _service, registry = demo
+        out = registry.call("build_configs", {"project": "demo",
+                                              "part_id": "plain"})
+
+        assert "error" not in out, out
+        assert [row["name"] for row in out["configs"]] == ["s", "m", "l"]
+        assert all("spec_results" not in row for row in out["configs"])

@@ -19,11 +19,13 @@ Word choice: the object is a **configuration**, the field is ``configs``, and
 
 from __future__ import annotations
 
+from ..kernel.client import KernelError
 from . import locks
 from .model import ConflictError, NotFoundError, ValidationError
 from .packages import format as pkgformat
 from .packages.manager import manifest_scope
 from .service import _divergence
+from .specs import declares_specs
 from .tools import Tool, schema, with_hint
 
 _NO_SCRIPT = ("cannot set configurations: the part script does not currently "
@@ -207,6 +209,37 @@ def register(registry, service) -> None:
 
     # --------------------------------------------------------- build_configs
 
+    def _spec_results(runner, project: str, part_id: str,
+                      name: str) -> dict | None:
+        """One configuration's SHAPE-tier spec results.
+
+        The derived record carries both halves of the identity into
+        ``_shape_tier`` at once — the sidecar key is that record's cache key
+        and the ``spec_eval`` params are its ``effective_params`` — which is
+        what stops a config-keyed sidecar from ever holding the base
+        measurement. The assembly tier is deliberately absent: an assembly is
+        not per configuration, and answering it here would mean measuring the
+        whole project once per member.
+
+        A ``KernelError`` is DATA, exactly as a failed build is: a member whose
+        script will not evaluate is one row carrying its error, never the loss
+        of the matrix.
+
+        Only reached for a member that BUILT. A configuration whose build just
+        failed would fail ``spec_eval`` for the same reason and at the same
+        cost — a second kernel round trip, up to a 300 s timeout — to restate
+        the error the row already carries in ``error``.
+        """
+        derived = service._record_for(project, part_id, name)
+        try:
+            payload, cached, _sidecar = runner._shape_tier(
+                project, part_id, record=derived)
+        except KernelError as exc:
+            return {"error": exc.to_payload()}
+        if payload is None:                     # declares nothing after all
+            return None
+        return {"checks": payload["checks"], "cached": cached}
+
     def _rows(project: str, record, wanted) -> list[dict]:
         """One row per requested configuration, in family order.
 
@@ -216,6 +249,10 @@ def register(registry, service) -> None:
         kernel pool was measured at 1.08x-1.40x against a pre-registered 1.5x
         bar in PRD-011 and deleted; two configurations sharing a key would also
         race the worker's fixed-name staging file.
+
+        A part that declares SPECS also gets ``spec_results`` per row — read
+        through ``getattr(service, "specs", None)``, because this pack sorts at
+        ``con`` and the specs pack may simply not be loaded.
         """
         declared = record.configs or {}
         names = [n for n in declared if wanted is None or n in wanted]
@@ -241,6 +278,12 @@ def register(registry, service) -> None:
             for name in group[1:]:
                 built[name] = (result, True)
 
+        # Read once per part, not per member: `declares_specs` is a memoized
+        # AST scan, but the script is a file read.
+        runner = getattr(service, "specs", None)
+        declares = bool(names) and runner is not None and declares_specs(
+            service.store.read_script(project, record.id))
+
         rows = []
         for name in names:
             result, cached = built[name]
@@ -258,6 +301,10 @@ def register(registry, service) -> None:
             }
             if not row["ok"]:
                 row["error"] = result.get("error")
+            if declares and row["ok"]:
+                spec_results = _spec_results(runner, project, record.id, name)
+                if spec_results is not None:
+                    row["spec_results"] = spec_results
             rows.append(row)
         return rows
 
@@ -443,7 +490,9 @@ def register(registry, service) -> None:
         "build_configs",
         "Build a part's configurations (or every configured part's) and return "
         "one row per configuration: {name, label, ok, cached, cache_key, "
-        "metrics, warnings, error?}. Serial and de-duplicated by cache key, so "
+        "metrics, warnings, error?}, plus spec_results {checks, cached} when "
+        "the part declares SPECS (shape tier — an assembly is not per "
+        "configuration). Serial and de-duplicated by cache key, so "
         "two configurations with identical parameters cost one build. A "
         "configuration that fails to build is a row with ok: false and error, "
         "never a refusal of the whole call. Rows are in family order; the "
