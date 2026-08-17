@@ -18,12 +18,18 @@ import * as proposals from "./proposals.js";
 import * as presence from "./presence.js";
 import * as comments from "./comments.js";
 import * as library from "./library.js";
+import * as configs from "./configs.js";
 import * as auth from "./auth.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 const BRANCH_RE = /^[a-z0-9][a-z0-9_/-]{0,63}$/;
 
 const meshBuffers = new Map(); // partId -> {buffer, key, lod} from api.getMesh
+// Assembly geometry is CONTENT-addressed, not part-addressed: two instances of
+// one part bound to different configurations are two different meshes, and
+// `partId -> mesh` cannot hold both. `get_assembly` publishes a `mesh_key` for
+// every built instance and this map is keyed by exactly that.
+const instanceMeshes = new Map(); // mesh_key -> {buffer, key, lod}
 let selectSeq = 0;
 let lastFittedTarget = null; // part id or "__assembly__"
 let localPatchUntil = 0; // suppress our own project_changed echo until this ts
@@ -74,6 +80,7 @@ async function loadProject(name) {
     return;
   }
   meshBuffers.clear();
+  instanceMeshes.clear();
   viewport.clear();
   clearFaceSelection();
   lastFittedTarget = null;
@@ -239,17 +246,29 @@ async function loadAssembly() {
   }
   if (proj !== state.projectName) return; // project switched mid-flight
   setState({ assembly: asm });
-  const partIds = [...new Set(asm.instances.map((i) => i.part))];
+  const wanted = [...new Set(asm.instances.map((i) => i.mesh_key).filter(Boolean))];
+  // Content-addressed, so a key we already hold is the same bytes: only the
+  // keys that are new to this session are fetched, and the unconditional
+  // per-refresh refetch of every part goes away with it.
   await Promise.all(
-    partIds.map(async (pid) => {
-      try {
-        meshBuffers.set(pid, await api.getMesh(proj, pid));
-      } catch {
-        /* broken part: instance is skipped, error visible in sidebar/inspector */
-      }
-    })
+    wanted
+      .filter((key) => !instanceMeshes.has(key))
+      .map(async (key) => {
+        try {
+          instanceMeshes.set(key, await api.getMeshByKey(proj, key));
+        } catch {
+          /* not built / broken part: the instance is skipped, and the error is
+             already visible in the sidebar and the inspector */
+        }
+      })
   );
   if (proj !== state.projectName) return;
+  // Keep the map bounded: a session that walks a family would otherwise hold
+  // every configuration it ever rendered.
+  const live = new Set(wanted);
+  for (const key of [...instanceMeshes.keys()]) {
+    if (!live.has(key)) instanceMeshes.delete(key);
+  }
   renderAssemblyFromCache();
   updateHUD();
 }
@@ -265,7 +284,7 @@ function renderAssemblyFromCache() {
   if (state.mode !== "assembly" || !state.assembly) return;
   const items = [];
   state.assembly.instances.forEach((inst, i) => {
-    const entry = meshBuffers.get(inst.part);
+    const entry = inst.mesh_key ? instanceMeshes.get(inst.mesh_key) : null;
     if (!entry) return;
     items.push({
       instanceId: inst.id,
@@ -326,12 +345,11 @@ async function reloadMesh(partId) {
     const used = state.assembly &&
       state.assembly.instances.some((i) => i.part === partId);
     if (!used) return;
-    try {
-      meshBuffers.set(partId, await api.getMesh(state.projectName, partId));
-    } catch {
-      return;
-    }
-    renderAssemblyFromCache();
+    // A part-addressed refetch cannot answer "which mesh does THIS instance
+    // show now" — a rebuild moves the part's key, and a bound instance's key
+    // did not move at all. `get_assembly` is the only thing that knows, so the
+    // refresh goes through it (debounced: a burst of rebuilds costs one call).
+    scheduleAssemblyRefresh();
   }
   updateHUD();
 }
@@ -428,6 +446,10 @@ async function deletePart(partId) {
     return;
   }
   meshBuffers.delete(partId);
+  // instanceMeshes is keyed by CONTENT, not by part, so a part id cannot
+  // select its entries: drop the lot. The next loadAssembly refetches exactly
+  // the keys the surviving instances name, and nothing else.
+  instanceMeshes.clear();
   toast(`Deleted ${partId}`);
   await refreshProject();
 }
@@ -438,17 +460,48 @@ async function runExport(kind, format) {
   if (!state.projectName) return;
   try {
     let result;
+    let diverged = false;
     if (kind === "part") {
       if (!state.selectedPart) {
         toast("Select a part to export", "error");
         return;
       }
-      result = await api.exportPart(state.projectName, state.selectedPart, format);
+      // With a configuration loaded, "export this part" means export the
+      // CONFIGURATION — `flange_l.step`, not `flange.step` — resolved purely
+      // (defaults < config), so parameters you typed over on top of it are
+      // deliberately NOT in the file: a variant's identity never depends on
+      // session state (Decision 3/8). Use the base export for the working
+      // state. The core export route takes no `config`, so this goes through
+      // the tool passthrough.
+      const cfg = state.part && state.part.id === state.selectedPart
+        ? state.part.active_config
+        : null;
+      // ...and when the working state IS diverged, say so, because the file
+      // and the viewport genuinely disagree. The flag is already on the part
+      // payload, so this costs no round trip.
+      diverged = !!(cfg && state.part && state.part.status
+        && state.part.status.diverged);
+      result = cfg
+        ? await api.callTool("export_part", {
+            project: state.projectName,
+            part_id: state.selectedPart,
+            format,
+            config: cfg,
+          })
+        : await api.exportPart(state.projectName, state.selectedPart, format);
+      // The passthrough answers {error} at HTTP 200 on a tool failure.
+      if (result && result.error) {
+        toast(`Export failed: ${result.error.message || "error"}`, "error");
+        return;
+      }
     } else {
       result = await api.exportAssembly(state.projectName, format);
     }
     const kb = (result.size_bytes / 1024).toFixed(1);
-    toast(`Exported ${result.path} (${kb} KB)`);
+    const note = diverged
+      ? " — the configuration as declared; your edits are not in it"
+      : "";
+    toast(`Exported ${result.path} (${kb} KB)${note}`);
   } catch (err) {
     const detail = err instanceof ApiError ? err.error.message : String(err);
     toast(`Export failed: ${detail}`, "error");
@@ -677,6 +730,14 @@ function handleEvent(ev) {
       return;
     case "rebuild_started": {
       if (ev.project !== state.projectName) return;
+      // A config-tagged rebuild is a MATRIX or an instance build, not the
+      // part's own: `state.rebuilding` holds bare part ids, so the first
+      // configuration to finish would clear the part's dot and the inspector
+      // would repaint another configuration's metrics. It belongs to the matrix.
+      if (ev.config) {
+        configs.onRebuildEvent(ev);
+        return;
+      }
       state.rebuilding.add(ev.part);
       setState({ rebuilding: state.rebuilding });
       // A rebuild for a part we don't know about: created behind our back
@@ -686,12 +747,20 @@ function handleEvent(ev) {
     }
     case "rebuild_finished": {
       if (ev.project !== state.projectName) return;
+      if (ev.config) {
+        configs.onRebuildEvent(ev);
+        return;
+      }
       state.rebuilding.delete(ev.part);
       setState({ rebuilding: state.rebuilding });
       markPartState(ev.part, "ok");
       if (state.part && state.part.id === ev.part && ev.metrics) {
         state.part.metrics = ev.metrics;
+        // Spread: `status` also carries `diverged` / `diverged_params`, and a
+        // rebuild says nothing about either. Replacing the object blinked the
+        // config bar's divergence chip off on every rebuild event.
         state.part.status = {
+          ...(state.part.status || {}),
           state: "ok",
           error: null,
           warnings: state.part.status ? state.part.status.warnings : [],
@@ -713,11 +782,20 @@ function handleEvent(ev) {
     }
     case "rebuild_failed": {
       if (ev.project !== state.projectName) return;
+      if (ev.config) {
+        configs.onRebuildEvent(ev);
+        return;
+      }
       state.rebuilding.delete(ev.part);
       setState({ rebuilding: state.rebuilding });
       markPartState(ev.part, "error");
       if (state.part && state.part.id === ev.part) {
-        state.part.status = { state: "error", error: ev.error, warnings: [] };
+        state.part.status = {
+          ...(state.part.status || {}),
+          state: "error",
+          error: ev.error,
+          warnings: [],
+        };
         state.part.specs = null;   // stale green chips beside a red banner
         setState({ part: state.part });
         inspector.showBanner(ev.error);
@@ -1174,6 +1252,7 @@ async function reloadBranchContext() {
   const proj = state.projectName;
   if (!proj) return;
   meshBuffers.clear();
+  instanceMeshes.clear();
   viewport.clear();
   clearFaceSelection();
   lastFittedTarget = null;
@@ -2168,6 +2247,7 @@ async function boot() {
   merge.init(actions);
   proposals.init(actions);
   library.init(actions);
+  configs.init(actions);
   presence.init();
   // After inspector.init: comments.js registers inspector's param decorator
   // and subscribes to `part` behind it, so a badge is applied to rows the

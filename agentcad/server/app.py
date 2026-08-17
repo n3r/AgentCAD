@@ -29,6 +29,10 @@ from ..core.model import (
 )
 from ..core.service import AgentCADService
 from ..core.tools import ToolRegistry
+# The strict body reader the configuration routes already use: it reads the
+# BYTES (not `content-length`) and refuses a non-object body, which every route
+# below used to dereference with `.get(...)` and turn into a 500.
+from .routes_configs import _json as _object_body
 from . import security as security_module
 from ..kernel import sandbox
 from ..kernel.client import KernelError
@@ -268,7 +272,7 @@ def create_app(
 
     @app.patch("/api/projects/{proj}/parts/{part_id}/params")
     async def set_params(proj: str, part_id: str, request: Request):
-        body = await request.json()
+        body = await _object_body(request)
         return service.set_params(proj, part_id, body)
 
     @app.delete("/api/projects/{proj}/parts/{part_id}")
@@ -319,9 +323,10 @@ def create_app(
 
     @app.post("/api/projects/{proj}/parts/{part_id}/export")
     async def export_part(proj: str, part_id: str, request: Request):
-        body = await request.json()
+        body = await _object_body(request)
         return service.export_part(
-            proj, part_id, body.get("format", ""), body.get("tolerance", 0.05)
+            proj, part_id, body.get("format", ""), body.get("tolerance", 0.05),
+            config=body.get("config"),
         )
 
     # ------------------------------------------------------------ assembly
@@ -332,8 +337,18 @@ def create_app(
 
     @app.put("/api/projects/{proj}/assembly")
     async def set_assembly(proj: str, request: Request):
-        body = await request.json()
-        return service.set_assembly(proj, body.get("instances", []))
+        body = await _object_body(request)
+        # The key is REQUIRED for the reason the instance PATCH's `config` is:
+        # this is a full-list REPLACE, so "no instances key" cannot mean
+        # "nothing to change" — `body.get("instances", [])` would wipe the
+        # assembly, and the strict body reader (which answers `{}` for a
+        # genuinely absent body) is exactly what makes that reachable at 200.
+        if "instances" not in body:
+            raise ValidationError(
+                'instances is required; send {"instances": []} to clear the '
+                "assembly"
+            )
+        return service.set_assembly(proj, body["instances"])
 
     @app.post("/api/projects/{proj}/assembly/interference")
     async def check_interference(proj: str, request: Request):

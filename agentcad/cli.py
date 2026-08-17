@@ -5,7 +5,7 @@ Commands:
     agentcad open                    # serve + open the browser
     agentcad mcp                     # MCP stdio server (proxies the HTTP API)
     agentcad new <name>              # create a project
-    agentcad export <project> <part> --format step|stl|3mf [-o OUT]
+    agentcad export <project> <part> --format step|stl|3mf [--config NAME] [-o OUT]
     agentcad check [--project P] [--ref REF] [--report R] [--md M]
     agentcad admin user|token add|list|... / admin enrol  # hosted identity
     agentcad package validate <dir> [--strict] [--report R] [--budget S]
@@ -340,7 +340,8 @@ def cmd_export(args) -> None:
         project = args.project
         if "/" in project or project.startswith("."):
             project = service.open_project(project)["name"]
-        result = service.export_part(project, args.part, args.format)
+        result = service.export_part(project, args.part, args.format,
+                                     config=args.config)
         out = result["path"]
         if args.output:
             import shutil
@@ -1179,6 +1180,9 @@ def main() -> None:
     p.add_argument("project", help="project name or path")
     p.add_argument("part")
     p.add_argument("--format", default="step", choices=["step", "stl", "3mf"])
+    p.add_argument("--config", default=None,
+                   help="export one declared configuration (pure resolution) "
+                        "to exports/<part>_<config>.<format>")
     p.add_argument("-o", "--output", default=None)
     p.add_argument("--projects-dir", default=None)
 

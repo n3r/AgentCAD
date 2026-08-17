@@ -770,6 +770,53 @@ def test_an_int_valued_number_parameter_is_accepted():
         {"params": {"length": 16}}, PARAMS_SPEC) == []
 
 
+# ------------------------------------- a whole configuration map (PRD-012)
+
+
+CONFIG_MAP = {
+    "s": {"params": {"length": 10.0}, "label": "Short"},
+    "m": {"params": {"length": 16.0, "knurled": True}},
+}
+
+
+def test_a_whole_configuration_map_validates():
+    assert pkgformat.validate_configurations(CONFIG_MAP, None) == []
+    assert pkgformat.validate_configurations(CONFIG_MAP, PARAMS_SPEC) == []
+    # a map that declares nothing is legitimate (a part with no family)
+    assert pkgformat.validate_configurations({}, PARAMS_SPEC) == []
+
+
+def test_a_configuration_name_in_a_map_must_match_the_grammar():
+    """One spelling per name: the grammar nine published packages already obey
+    (`presets.json` shares this loop by construction)."""
+    problems = pkgformat.validate_configurations(
+        {"M": {"params": {"length": 16.0}}}, PARAMS_SPEC)
+    assert codes(problems) == {"bad_value"}
+    assert fields(problems) == {"configs.M"}
+    assert pkgformat.CONFIG_RE.pattern in problems[0]["message"]
+
+
+def test_a_bad_entry_in_a_map_is_reported_under_its_configuration_name():
+    problems = pkgformat.validate_configurations(
+        {"s": {"length": 10.0}}, PARAMS_SPEC)
+    assert codes(problems) == {"unknown_key", "missing_field"}
+    assert fields(problems) == {"configs.s.length", "configs.s.params"}
+
+
+def test_a_bad_parameter_in_a_map_names_the_configuration_and_the_parameter():
+    problems = pkgformat.validate_configurations(
+        {"m": {"params": {"width": 10.0}}}, PARAMS_SPEC)
+    assert codes(problems) == {"bad_value"}
+    assert fields(problems) == {"configs.m.params.width"}
+
+
+def test_a_non_object_configuration_map_is_one_problem_not_a_crash():
+    for value in ([{"s": {}}], "s", None, 3):
+        problems = pkgformat.validate_configurations(value, PARAMS_SPEC)
+        assert codes(problems) == {"wrong_type"}
+        assert len(problems) == 1
+
+
 # --------------------------------------------------------------- presets.json
 
 

@@ -168,6 +168,13 @@
         <pre id="banner-body"></pre>
       </div>
 
+      <!-- The configuration switcher. A STATIC host outside #pane-params,
+           which every full param rebuild wipes: the <select> here is rebuilt
+           only when the part, the active configuration or the declared names
+           change, so a rebuild landing while the dropdown is open cannot close
+           it. Hidden entirely for a part with no configurations. -->
+      <div id="config-bar" class="hidden"></div>
+
       <div id="pane-params" class="pane"></div>
       <div id="pane-code" class="pane hidden">
         <div id="editor-host"></div>
@@ -204,6 +211,14 @@
       <header class="modal-head">
         <span id="drawing-title" class="modal-title">Drawing</span>
         <div class="modal-actions">
+          <!-- FR8's dimension table. Shown only for a part that declares
+               configurations: the table's columns are the configured
+               parameters, so it has nothing to say about an unconfigured
+               part. -->
+          <label id="drawing-dimtable-wrap" class="drawing-opt hidden">
+            <input id="drawing-dimtable" type="checkbox">
+            <span>dim table</span>
+          </label>
           <a id="drawing-download" class="tb-btn hidden" download>Download SVG</a>
           <button id="drawing-close" class="tb-btn" type="button">Close</button>
         </div>
@@ -288,6 +303,22 @@
           <span class="meta">See docs/packages.md.</span>
         </span>
       </footer>
+    </div>
+  </div>
+
+  <!-- The configuration matrix. Same `.modal-overlay` shape as the other five
+       (see the library note above): the inspector is 326 px and `flex: none`,
+       so a family's metrics side by side simply do not fit there. -->
+  <div id="configs-modal" class="modal-overlay hidden">
+    <div class="modal wide">
+      <header class="modal-head">
+        <span id="configs-title" class="modal-title">Configurations</span>
+        <div class="modal-actions">
+          <button id="configs-build" class="tb-btn" type="button">Build all</button>
+          <button id="configs-close" class="tb-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div id="configs-body" class="cfg-body"></div>
     </div>
   </div>
 

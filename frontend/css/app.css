@@ -2616,6 +2616,147 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
 .lib-nonclaim b { color: var(--text); }
 .lib-nonclaim .meta { color: var(--faint); }
 
+/* ---------------------------------------------------- configurations */
+/* PRD-012. Only existing tokens, so light mode keeps working unchanged.
+   The bar is a STATIC host between #banner and #pane-params — outside the
+   pane a full param rebuild wipes — and `.hidden` for a part with no
+   family, so an unconfigured project looks exactly as it did before. */
+
+#config-bar {
+  flex: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.cfg-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.cfg-label {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+/* The parameter controls' recipe: one control shape in the app, shared with
+   the placement panel's instance picker. */
+.cfg-select {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid var(--hairline);
+  background: var(--ink);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+}
+.cfg-select:focus { outline: none; border-color: var(--accent); }
+.cfg-matrix { flex: none; height: 24px; font-size: 11.5px; }
+
+.cfg-chip-host {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin-top: 7px;
+}
+/* No divergence, no strip of margin that reads as "something is here". */
+.cfg-chip-host:empty { display: none; }
+/* .spec-chip's recipe, accent-toned: divergence is a state worth naming, not
+   an error. */
+.cfg-chip {
+  font-family: var(--mono);
+  font-size: 10px;
+  border-radius: 9px;
+  padding: 2px 7px;
+  border: 1px solid var(--hairline);
+  color: var(--dim);
+  cursor: default;
+}
+.cfg-chip.diverged {
+  color: var(--accent-bright);
+  border-color: var(--accent-ring);
+  background: var(--accent-soft);
+}
+.cfg-reset {
+  font-size: 11px;
+  color: var(--dim);
+  border-bottom: 1px solid var(--hairline);
+  padding: 0 0 1px;
+}
+.cfg-reset:hover { color: var(--accent-bright); border-bottom-color: var(--accent-ring); }
+
+/* Provenance, as a left rule and never a background: PRD-008's per-param
+   thread badge sits inside the same row and has to stay readable. The
+   negative margin cancels the rule's own width so the labels stay aligned
+   with the rows that carry no mark. */
+.param-from-config,
+.param-overridden {
+  border-left: 2px solid var(--accent-ring);
+  padding-left: 8px;
+  margin-left: -10px;
+}
+/* An override is the value actually in effect, so where a row is both (the
+   configuration declares it AND you typed over it) this one wins — which is
+   the only reason it is ordered second. */
+.param-overridden { border-left-color: var(--accent); }
+
+/* The matrix modal. `.prop-table` supplies the grid; these are the columns
+   this table adds. */
+.cfg-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 16px 16px;
+}
+.cfg-table { margin-top: 0; }
+.cfg-name { color: var(--text); }
+.cfg-name.cfg-active { color: var(--accent-bright); }
+/* Which instances are bound to this row — secondary to the name it follows. */
+.cfg-refs { color: var(--dim); font-size: 10.5px; }
+/* `.bad` is only ever scoped (metric-val, analysis-v, conflict-report), so a
+   failed matrix row needs its own — otherwise it inherits the cell colour and
+   the one word that has to read as a failure does not. */
+.cfg-body .bad { color: var(--err); }
+.cfg-error {
+  color: var(--err-text);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The placement panel's instance binding. */
+.placement-config {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+.placement-config-label {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+/* The drawing modal's dimension-table toggle. */
+.drawing-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--dim);
+  cursor: pointer;
+}
+.drawing-opt input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+.drawing-opt:hover { color: var(--text); }
+
 /* ---------------------------------------------------------------- identity
    Hosted mode only (PRD-005a). In local mode #auth-view and #auth-chip stay
    hidden and none of this paints. Every colour routes through the existing

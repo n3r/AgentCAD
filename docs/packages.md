@@ -113,9 +113,12 @@ An entry may not carry the other kind's key.
 
 ### `presets.json` — configurations
 
-A preset **is** a configuration. One entry shape, and it is the schema
-[PRD-012](prd/pending/PRD-012-configurations.md) adopts for
-`parts.<id>.configs` entry for entry:
+A preset **is** a configuration. One entry shape, and it is the schema a part
+record's own configurations use, entry for entry — a family declared with
+`set_part_configs` and a preset published here are the same object, validated
+by the same function (see
+[Configurations](agent-api.md#configurations) and
+[architecture.md](architecture.md#configurations)):
 
 ```jsonc
 {
@@ -138,6 +141,12 @@ declares a parameter called `label` — and part scripts declare arbitrary
 parameter names. One object, one validator
 (`packages.format.validate_configuration`), one word: the object is a
 **configuration** and `preset` names only *where* one lives.
+
+`use_part` does **not** copy a package's presets into the part's `configs`:
+it applies the chosen preset's parameters as ordinary overrides and records
+the preset *name* in the provenance header, because a copied family would live
+outside what that header attests to. Declare the family on your part
+(`set_part_configs`) if you want one there.
 
 ### The content id
 
@@ -182,6 +191,26 @@ atomic** (the `materials.<id>` precedent): two branches adding *different*
 packages merge clean; the same package at two versions conflicts at
 `packages_lock.<name>`, because one side's version with the other's content id
 is an entry nobody authored.
+
+A **configuration** — the same object a preset is, now living at
+`parts.<id>.configs.<name>` (PRD-012) — merges the other way, and the contrast
+is the argument:
+
+| Key | Granularity |
+|---|---|
+| `packages.<name>` · `packages_lock.<name>` | per package, **entry atomic** (content-determined) |
+| `parts.<id>.configs.<name>` | per name; entry add/remove, else field-wise ↓ |
+| `…<name>.label` · `.description` | whole value |
+| `…<name>.params.<param>` | **per parameter** (a set of independent values) |
+| `parts.<id>.active_config` · `assembly.instances.<id>.config` | whole value (a selection) |
+
+Half of a lock entry verifies against nothing, so it is atomic; a configuration
+is a set of independent parameter values, so it merges per parameter. And
+because a selection lives in a different key from the map it names, one branch
+removing a configuration while the other selects it merges *clean* —
+`manifest_merge.config_problems` reports that at the merge's validation pass
+(a bound instance blocks, a stale `active_config` warns), exactly as
+`package_problems` reports the requirement/lock hybrid.
 
 ### The provenance header
 

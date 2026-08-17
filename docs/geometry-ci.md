@@ -115,7 +115,7 @@ whether a stage was green or never ran.
 
 | Stage | What it drives | What a row means |
 |---|---|---|
-| `build` | `service._ensure_built` per manifest part | `pass` — the part built; `details` carries `cache_key`, `volume_mm3`, `mass_g`, `n_solids`, `is_valid`, `cached`. `fail` — the build failed, or a **script** part reported `is_valid: false`; `error` carries the tool payload. |
+| `build` | `service._ensure_built` per manifest part | `pass` — the part built; `details` carries `cache_key`, `volume_mm3`, `mass_g`, `n_solids`, `is_valid`, `cached`. `fail` — the build failed, or a **script** part reported `is_valid: false`; `error` carries the tool payload. A **configured** part (PRD-012) adds one row per configuration after its own, subject `part@config`, built purely through `service._ensure_config_built` and with `details.config` beside the same fields — no new stage and no new item kind, and the budget is read before every one of them. |
 | `assembly` | `_resolved_instances`, then `check_interference` | One `pass` row per resolved instance; an unresolvable mate is one `fail` row of kind `mate`; each interfering pair is a `fail` row of kind `pair` with `{a, b, volume_mm3}`; each `skipped_mesh` id is a `skip`/`mesh_only`. Under two instances, the whole stage is `skip`/`no_instances`. |
 | `specs` | `SpecRunner.run` — PRD-003, all three tiers | One row per declared check, preserving `status`, `requirement`, `reason`, `hint`, `error`, with `measured`, `limit`, `unit`, `scope`, `part` and `location` in `details`. The spec report is embedded whole as `stage["report"]`, and the check report's top-level `requirements` map is that report's traceability. Nothing declared → `skip`/`not_declared`. |
 | `drawings` | `generate_drawing` (**SVG only**) per script part, then `flat_pattern` where the script defines one | `pass` — regenerated, with `path` and `size_bytes`. A part that does not define `flat_pattern` gets **no row** (absent, not green — the presence scan is `ast.parse` and never executes the script). A reference part is `skip`/`not_script`. |
@@ -127,7 +127,13 @@ whether a stage was green or never ran.
   enforced**: OCCT calls the shipped `examples/rocketry` STEP import invalid
   across its 180 solids, which is exactly why `tests/test_examples.py` exempts
   reference parts from that assertion. The row passes, `details.is_valid`
-  carries the fact and a warning names the part.
+  carries the fact and a warning names the part. A `part@config` row claims the
+  same thing about **that configuration's pure resolution** (defaults <
+  configuration) and nothing about the part's working state — the part's own
+  row is still the one that says whether what you are looking at builds. A
+  harness failure on one of them is a `report.errors[]` entry carrying
+  `config` beside `part`, so "size XL is broken" is never reported as "the
+  part is broken".
 - The assembly stage claims *the mates resolve and no pair of B-rep instances
   overlaps by more than `--min-volume`*. **It does not claim a mesh instance
   clears anything**: booleans on an imported STL segfault OCCT, so those are
@@ -355,7 +361,11 @@ partial report is evidence, a missing one is not.
 
 Every stage is under it:
 
-- **build** and **drawings** check it before each part;
+- **build** checks it before every row it emits — the part's own **and** each
+  `part@config` row of a configured part — so a budget that dies mid-family
+  names the members it never reached instead of dropping them;
+- **drawings** checks it before each part; the drawings stage draws the
+  working state only and emits no per-configuration rows;
 - the two **assembly** calls take the remainder as their `timeout_s`;
 - the **specs** stage runs `SpecRunner.run(deadline=…)`, so PRD-003's own
   machinery bounds each tier's kernel call and reports a check it never reached

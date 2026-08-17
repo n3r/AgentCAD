@@ -678,9 +678,24 @@ export function reportBlock(validation) {
     el.appendChild(heading("Referential integrity"));
     el.appendChild(
       bullets(
-        integrity.map((i) =>
-          `${i.kind}: ${[i.instance, i.part, i.mate].filter(Boolean).join(" → ")}`
-        )
+        // `config` is here because PRD-012's `dangling_instance_config` (an
+        // instance bound to a configuration the merge deleted) is ABOUT the
+        // configuration — without it the row read `…: box_1 → box` and named
+        // nothing that was wrong. Its `message` carries the REMEDIATION
+        // (`set_instance_config null`), so it is printed alongside the path
+        // and not merely as a fallback for a kind this build has never heard
+        // of — though it is that too, so an unknown row still says something.
+        integrity.map((i) => {
+          const path = [i.instance, i.part && i.config
+            ? `${i.part}@${i.config}`
+            : i.part, i.mate]
+            .filter(Boolean)
+            .join(" → ");
+          if (!path) return `${i.kind}: ${i.message || ""}`;
+          return i.message
+            ? `${i.kind}: ${path} — ${i.message}`
+            : `${i.kind}: ${path}`;
+        })
       )
     );
   }

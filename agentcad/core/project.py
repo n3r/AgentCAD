@@ -28,6 +28,11 @@ from .model import (
 
 SCHEMA_VERSION = 2  # v2 adds part kind/source (reference imports) and instance mates
 
+#: "this keyword was not passed", for a field whose ``None`` is a real value.
+#: ``active_config=None`` MEANS "return to base" (pop the key), so it cannot
+#: double as "leave it alone" the way ``label=None`` does.
+_UNSET = object()
+
 
 def _empty_manifest(name: str) -> dict:
     return {
@@ -151,6 +156,12 @@ class ProjectStore:
                     kind=entry.get("kind", "script"),
                     source=entry.get("source"),
                     solid_materials=entry.get("solid_materials"),
+                    # Read back as stored: resolution is the record's job
+                    # (PartRecord.effective_params), never this read's — a
+                    # store that resolved would let the next set_params bake
+                    # the active configuration into the overrides.
+                    configs=entry.get("configs"),
+                    active_config=entry.get("active_config"),
                 )
         raise NotFoundError(f"part {part_id!r} not found in project {proj!r}")
 
@@ -247,12 +258,16 @@ class ProjectStore:
         label: str | None = None,
         material: str | None = None,
         params: dict[str, float | int | bool | str] | None = None,
+        configs: dict | None = None,
+        active_config: str | None | object = _UNSET,
     ) -> PartRecord:
         # The params/material/label path: scoped like write_script, so the
         # guard called by save_manifest below sees the part this is about.
         with locks.write_scope(part_id):
             return self._update_part_entry(proj, part_id, label=label,
-                                           material=material, params=params)
+                                           material=material, params=params,
+                                           configs=configs,
+                                           active_config=active_config)
 
     def _update_part_entry(
         self,
@@ -262,6 +277,8 @@ class ProjectStore:
         label: str | None = None,
         material: str | None = None,
         params: dict[str, float | int | bool | str] | None = None,
+        configs: dict | None = None,
+        active_config: str | None | object = _UNSET,
     ) -> PartRecord:
         manifest = self.manifest(proj)
         for entry in manifest["parts"]:
@@ -279,6 +296,21 @@ class ProjectStore:
                                 "or string"
                             )
                     entry["params"] = dict(params)
+                # A full replace, never a merge (the validated whole map is
+                # what a caller wrote); an emptied map POPS the key so a part
+                # that no longer has a family is byte-identical to one that
+                # never had one. Order is the caller's — a family is not a
+                # lockfile.
+                if configs is not None:
+                    if configs:
+                        entry["configs"] = dict(configs)
+                    else:
+                        entry.pop("configs", None)
+                if active_config is not _UNSET:
+                    if active_config:
+                        entry["active_config"] = active_config
+                    else:
+                        entry.pop("active_config", None)
                 self.save_manifest(proj, manifest)
                 return self.get_part(proj, part_id)
         raise NotFoundError(f"part {part_id!r} not found")
@@ -294,6 +326,11 @@ class ProjectStore:
                 rotation_deg=[float(v) for v in i.get("rotation_deg", [0, 0, 0])],
                 color=i.get("color"),
                 mate=i.get("mate"),
+                # Load-bearing, not cosmetic: set_instances rewrites the whole
+                # list from to_manifest(), and both tools_mates and the gizmo
+                # drag read-all/write-all — a field the dataclass does not
+                # carry is destroyed by the next mate edit.
+                config=i.get("config"),
             )
             for i in self.manifest(proj)["assembly"]["instances"]
         ]
@@ -311,6 +348,26 @@ class ProjectStore:
                 raise ValidationError(
                     f"instance {inst.id!r} references unknown part {inst.part!r}"
                 )
+            # A configuration binding is validated HERE because three writers
+            # reach the store (service.set_assembly, tools_mates and the
+            # instance PATCH) and only the store sees all three.
+            if inst.config is not None:
+                part_entry = next(
+                    p for p in manifest["parts"] if p["id"] == inst.part
+                )
+                if part_entry.get("kind", "script") != "script":
+                    raise ValidationError(
+                        f"instance {inst.id!r}: reference/imported parts have "
+                        "no parameters and cannot bind a configuration"
+                    )
+                declared = part_entry.get("configs") or {}
+                if inst.config not in declared:
+                    raise ValidationError(
+                        f"instance {inst.id!r}: part {inst.part!r} declares no "
+                        f"configuration {inst.config!r} "
+                        f"(declares {sorted(declared)})",
+                        {"declared": sorted(declared)},
+                    )
             inst.position = validate_vec3(inst.position, f"{inst.id}.position")
             inst.rotation_deg = validate_vec3(
                 inst.rotation_deg, f"{inst.id}.rotation_deg"

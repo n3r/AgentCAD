@@ -143,7 +143,7 @@ commit. The 031a licensing precondition is closed.
 | [009](prd/completed/PRD-009-sketcher-v2.md) | Sketcher v2 — arcs/splines/ellipses/slots/conics, full constraints, drag-to-solve, DOF diagnostics | completed (PR #13, AC1–AC7 verified) | analysis + residual | — |
 | [010](prd/completed/PRD-010-feature-toolkit-ii.md) | Feature toolkit II — patterns, ISO/ANSI hole wizard with flowing metadata, ribs/draft, sheet-metal v2 (relief, partial flanges) | completed (PR #14, AC1–AC8 + AC7b verified) | analysis + residual | — |
 | [011](prd/completed/PRD-011-parts-library-registry.md) | Parts library & package registry — "pip for parts": versioned, kernel-validated packages; git-hosted indexes; a seeded COTS catalog; McMaster ingestion | completed (PR #15, AC1–AC9 verified) | analysis + idea 1d | 003 |
-| [012](prd/pending/PRD-012-configurations.md) | Configurations — named variants with per-config metrics/BOM/drawings; matrix builds | pending | analysis | — |
+| [012](prd/in-progress/PRD-012-configurations.md) | Configurations — named parameter sets with per-config metrics/BOM/drawings; matrix builds | in progress (design spec + implementation; AC1–AC9 graded in `tests/test_prd012_acceptance.py`) | analysis | — |
 | [013](prd/pending/PRD-013-assembly-v2.md) | Assembly v2 — sub-assemblies, instance patterns, simplified reps for 1k+ instances, richer joints, exploded views, URDF export | pending | analysis + idea 6 | — |
 | [014](prd/pending/PRD-014-drawings-v2.md) | Drawings v2 — ASME/ISO sheets, title/revision blocks, assembly drawings with BOM+balloons, sections, PDF, deterministic regen | pending | analysis | 010 · 012 · 015 (soft) |
 | [015](prd/pending/PRD-015-bom-release-management.md) | BOM & release management — structured BOMs, Rev approval on proposals, immutable release bundles | pending | analysis | 001 · 002 · 003 |
@@ -191,7 +191,7 @@ renders for agent vision; git-backed undo/history; turn locks and
 concurrent multi-agent sessions; mesh LOD streaming; macOS-sandboxed
 execution; a fast macOS PR gate, focused Linux/Windows portability jobs, and
 scheduled exhaustive macOS coverage; single-binary packaging; a then-42-tool
-agent surface (45 with `[fem]`) over MCP, chat, and REST — 73/76 today, and
+agent surface (45 with `[fem]`) over MCP, chat, and REST — 85/88 today, and
 this line is a v3 snapshot, not a current count.
 
 ## Deliberate non-goals

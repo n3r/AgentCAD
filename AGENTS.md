@@ -1448,6 +1448,199 @@ identity and resources:**
   catalog package declares the same. The format requires a licence per
   package; third-party packages choose their own.
 
+## Configuration gotchas (PRD-012 — read before touching configs, the build path or the merge)
+
+Every item is traceable to a measurement in `docs/changelog/0200`–`0209`.
+User-facing reference: `docs/agent-api.md` (the `Configurations` section) and
+`docs/user-guide.md`.
+
+- **The kernel never sees a configuration, and resolution never happens in the
+  store.** Every request carries a resolved override map exactly as before.
+  Resolving inside `ProjectStore.get_part` would make the next `set_params`
+  bake the active configuration into the overrides — a data-corruption bug,
+  not a shortcut. The two pure members on `PartRecord` are
+  `config_params(name)` (pure: defaults < configuration) and
+  `effective_params` (working state: defaults < active configuration <
+  explicit overrides), and "PARAMS defaults <" costs no code because
+  `worker._resolve_params` already fills every unset name.
+- **Resolution is TOTAL over the value and strict about the name.** `configs`
+  is JSON a merge or a hand edit can shape, and the driver merges a non-object
+  entry **whole**, so `5`, `None`, `{"label": "M"}` and `{"params": None}` are
+  all reachable without a hand edit. `config_params`/`effective_params` return
+  `{}` for every one of them (an unknown *name* is still a `KeyError` — that is
+  a programming error). This is not defensive polish: `_cache_key_for` reads
+  `effective_params` inside `_ensure_built`, **upstream** of every
+  configuration-aware branch, so raising there was a 500 on
+  `GET /api/projects/{p}/parts/{id}` — the browser's first read of a part — and
+  on every build of it. The damage is reported, not swallowed:
+  `manifest_merge.config_problems` emits `malformed_configuration` (a
+  **warning**, like the dangling `active_config`, because it resolves as base),
+  and `merge.py` routes it into `report["warnings"]`. Guards at call sites that
+  read *`params`* are therefore redundant; guards that read *`label`* off the
+  raw entry are **not** (there is no accessor for it) — do not delete those.
+- **`_rebuild(proj, part_id)` and `get_part(proj, part_id)` keep their
+  signatures byte-for-byte.** `tools_specs`, `tools_holes` and
+  `tools_packages` rebind them with **two-positional** wrappers, and packs load
+  alphabetically, so a `config=` kwarg would be a `TypeError` through the chain
+  *and* `configs` would sort innermost. The body lives in
+  `_build_with(proj, record, *, affinity, status_key, config=None)`; a pure
+  build goes through `_ensure_config_built`. The accepted consequence: those
+  wrappers do **not** decorate configuration builds, which is why
+  `build_configs` produces per-configuration `spec_results` deliberately
+  instead.
+- **`_status` stays 2-tuple keyed and a configuration build writes none of
+  it** — `_config_status[(lock_key, part, config)]` is a separate dict, swept
+  by the same two prefixes (`_forget_status`, `delete_part`). This is a
+  livelock guard, not bookkeeping: with one slot per part, two instances bound
+  to different configurations miss the memo on alternate `get_assembly` reads,
+  republish `rebuild_finished`, and the browser's handler schedules another
+  refresh — a self-sustaining 400 ms loop with full mesh re-downloads. A memo
+  hit **publishes nothing**.
+- **Config names are lowercase** (`CONFIG_RE = ^[a-z0-9][a-z0-9_-]{0,31}$`) and
+  `label` is the display name: `s`/`m`/`l`, never `S`/`M`/`L`, so the export is
+  `flange_l.step`. The object is a **configuration**; `preset` names only where
+  one lives (a configuration a package publishes); never `variant` (`Variant`
+  is the gate's build-sweep namedtuple). `config` already means
+  `~/.agentcad/config.json` in `library.js` and `AGENTCAD_CONFIG` in tests.
+- **A declared configuration is range- and enum-strict; `set_params` on top
+  clamps.** The publish gate already chose *refuse* for presets, and a family
+  is a published thing. Values are also **normalized on write**
+  (`service.normalize_params`), or `{"n": 3}` and `{"n": 3.0}` are two
+  configurations and two cache entries for one geometry.
+- **`build_configs` is serial and de-duplicated by cache key**, `affinity=part_id`
+  throughout. Do not re-add a fan-out: PRD-011 measured the identical
+  many-variants-of-one-part parallelism at 1.08×/1.40×/1.17× against a
+  pre-registered 1.5× bar and **deleted** it, and two members sharing one key
+  race the worker's fixed-name `.tmp` staging. An empty matrix always carries a
+  `warnings` reason (nothing declared / nothing requested / none of the
+  requested names declared) — never an empty list with no explanation.
+- **`set_active_config` clears the explicit overrides only when the active
+  configuration actually CHANGES.** Switching *loads* that configuration, so
+  the overrides go (one publish, one undo step) unless `keep_overrides`; but a
+  re-selection of the already-active name, or a `DELETE …/active-config` on a
+  part already at base, must not drop a `set_params` value as a side effect of
+  a no-op. The consequence for the browser is written down because it is not
+  guessable: the chip's **Reset to M** cannot be `set_active_config m` while
+  `m` is active — it removes the overrides the pinned way, `set_params` with
+  `null` per parameter.
+- **Divergence is semantic, not syntactic.** `diverged` is
+  `effective_params != config_params(active)`, so an override equal to the
+  configuration's own value is **not** divergence (the geometry, and the cache
+  key, are the pure configuration's), a parameter the configuration does not
+  set at all counts, and a dangling `active_config` resolves as **base** and
+  never diverges.
+- **Assembly meshes are addressed by `mesh_key`, not by part.** `get_assembly`
+  publishes every *built* instance's cache key and the browser fetches through
+  `GET /projects/{p}/meshes/{key}` — a pack route that serves `.cache/<key>.acm`
+  behind a `fullmatch` `^[0-9a-f]{32}$` gate (`$` also matches before a
+  trailing newline, so an anchored `.match` accepted `"<key>\n"`) and **never
+  builds**. There is deliberately no `?config=` parameter: one identity for a
+  mesh, not two. `app.py`'s mesh routes are byte-identical.
+- **`routes_configs._result`: a refusal raises, a build post-state is a 200
+  whatever its `ok`.** The two are told apart by shape — `ToolRegistry.call`
+  emits exactly `{"error": …}` for a refusal (**no `ok` key**) while a rebuild
+  always carries one, so the raise is gated on `"ok" not in payload`. Only
+  `set_active_config` merges its rebuild at the top level (`set_part_configs`
+  nests it under `out["rebuild"]`), and that is the case this exists for: the
+  manifest was written and `project_changed` published, so answering 422 gave
+  the client a world-model no retry fixes and left the browser repainting the
+  switcher from stale state. `_BODY_ERRORS` is still empty; the docstring's old
+  absolute ("nothing about a configuration is a legitimate HTTP 200 error
+  body") is gone.
+- **`routes_configs._json` is strict, and the instance PATCH requires its
+  key.** A parsed body that is not an object is a `ValidationError`
+  (`"body must be a JSON object"`, 422); `{}` means a **genuinely absent** body
+  and nothing else (it still reads the BYTES, not `content-length` — a chunked
+  request carries none). `PATCH …/assembly/instances/{id}/config` then refuses
+  a body with no `config` key, so **`{"config": null}` is the only way to
+  unbind**: folding `[]`/`"bad"`/an empty body into `{}` made malformed input
+  fire the tool's `config=None` default, which is the destructive verb — the
+  one place in the branch where garbage silently mutated persisted state. The
+  same `_json` is imported by `app.py` (export, `PUT /assembly`,
+  `PATCH …/params`) and `routes_drawing.py`'s POST, where the identical shape
+  used to be a 500 — and **`PUT /assembly` needs the same required-key guard
+  for the same reason**: it is a full-list replace, so `{}` from an absent body
+  wiped the assembly at 200 (`instances` is now required;
+  `{"instances": []}` is the explicit clear). The rule generalises: *absence
+  cannot mean "nothing to change" when the default is the destructive verb* —
+  check it before putting any other route on the strict reader; `routes_drawing`'s SVG GET additionally gates `?config=`
+  with a `fullmatch` `CONFIG_RE` before it builds a filename, and raises the
+  refusal instead of serving it as JSON at HTTP 200.
+- **Binding validation lives in `ProjectStore.set_instances`**, beside the
+  unknown-part and dangling-mate refusals — three writers reach the store
+  (`service.set_assembly`, `tools_mates._set_instance_mate`,
+  `routes_assembly2.patch_instance`) and only the store sees all three. A
+  bound instance resolves **purely**, so a part viewed with an override on top
+  of `m` legitimately differs from its own instance bound to `m`.
+- **`tools_configs` sorts at `con`** — before `drawing`, `holes`, `packages`,
+  `proposals`, `specs`, `vision`. Read `service.specs` / `service.packages`
+  inside handlers behind `getattr(service, …, None)`, and never append to
+  `gate_providers` (`tools_proposals` resets it unconditionally — the
+  `tools_run_checks` trap).
+- **Every mutating tool writes under `manifest_scope` across the WHOLE
+  read-modify-write**, not just the write: the FR11 referential check reads the
+  part entry *and* the instance list, and `cleared_overrides` reports a map
+  read before the write — a lock around the write alone leaves both TOCTOU.
+  `set_instance_config` additionally takes `service._lock` (the lock
+  `set_assembly` serializes the identical read-all/write-all on) but **no**
+  `locks.write_scope`, because a claim is a *part* claim. Still open and
+  deliberately out of scope: `tools_mates._set_instance_mate` and
+  `routes_assembly2.patch_instance` do the same read-all/write-all with **no**
+  lock at all.
+- **The merge reaches `configs.<name>.params.<param>`, and the per-name
+  `_keyed` guard is load-bearing.** `_PART_ENTRY_DICTS = {"configs":
+  ("params",)}` is *threaded* through `_merge_entry_list`/`_merge_entry`/
+  `_write_entry`, never read as a module global — read globally, a
+  forward-compatible *instance* field named `configs` merged deep and
+  contradicted the docstring. A map entry that is not an object (a hand-edited
+  `"m": 5`) merges **whole**; without the guard `_as_dict` rewrites it to `{}`,
+  a clean merge that destroys data. `_write_keyed_entry` goes through the
+  recorded path segments and **raises** rather than joining leftovers into a
+  dotted flat key.
+- **A selection lives in a different key from the map it names**, so one branch
+  removing a configuration while the other selects it merges *clean*.
+  `config_problems` reports it, deliberately asymmetric: an instance binding is
+  **blocking** `integrity` (`dangling_instance_config` — the binding is that
+  instance's whole parameter set and it now resolves to nothing), a stale
+  `active_config` is a **warning** (it resolves as base), and so is
+  `malformed_configuration` — the same damage one level down, a *member* the
+  key-wise merge took whole that is no longer an object with a `params` map
+  (`{"params": {}}` is a legitimate configuration and is never reported). The
+  repair is a tool call, never a read-time fallback that hides it.
+- **The dimension table is a MEASUREMENT, not a printout.** Every number comes
+  from `build_shape` inside the drawing handler — which is why the timeout
+  scales `120 + 60·rows`, why the cells echo the **resolved** parameter map
+  (echoing the request's overrides printed an em dash wherever a ragged member
+  used the script's default), and why the config cell reads `Label (name)`
+  (the name is the identity every other surface uses; a member with no label,
+  or one equal to its name, prints the bare name). SVG only: DXF ignores
+  it as it ignores PMI, and the guard is `if dim_table and declared and format
+  == "svg"` — a DXF request used to pay 60 s per configuration for a payload
+  it discards.
+- **`render_view` refuses `config` without `part_id`.** An assembly render
+  takes each instance's own binding, so one image can legitimately mix sizes;
+  silently ignoring the argument would hand back a different picture than the
+  one asked for.
+- **`SpecRunner._shape_tier(…, *, record=)` moves both halves of the identity
+  together**: the sidecar key is `_cache_key_for(record)` and the `spec_eval`
+  params are `record.effective_params`. A `record=` that keyed the sidecar but
+  not the measurement would write the base numbers into a config-keyed file and
+  every key assertion would still pass. `specs._project_key` catches
+  `ValidationError` on a stale binding — escaping it evaluated the whole
+  project's assembly tier uncached.
+- **`m`'s cache key is not the base key**, even when a configuration's params
+  *are* the script's defaults: the service hashes the override map (`{}` versus
+  an explicit map) while the worker resolves defaults. Making them agree would
+  need an `inspect` inside every key computation and would move every existing
+  key. AC5's "identical resolved params" therefore means **identical override
+  maps**.
+- **Zero cost when unused is a test, not an intention.** `to_manifest` writes
+  `configs`/`active_config`/`config` only when set, `set_part_configs {}` pops
+  the key, base `rebuild_*` payloads gain no field, and there is no
+  `SCHEMA_VERSION` bump (it is written and `setdefault`-ed but never read to
+  branch behaviour). `tests/test_prd012_acceptance.py::test_ac8_a_project_without_
+  configurations_is_byte_identical` grades it against PRD-010's `.acm` sha
+  golden.
 ## Hosted-core gotchas (PRD-005a — read before touching `server/security.py`, `core/authstore.py`, `core/appmode.py` or the deployment)
 
 Every item is traceable to a decision in
@@ -1687,7 +1880,10 @@ it lower-cases "Python".
   from the Error Doctor. Mutating operations return post-state, never bare OK.
 - **Atomic writes** (temp + `os.replace`) for every manifest/script/cache file.
 - **Determinism**: same script + params ⇒ identical geometry and byte-identical
-  meshes. Cache key = `sha256(content, params, density, tolerance)`.
+  meshes. Cache key = `sha256(content, params, density, tolerance)`. PRD-012
+  added **nothing** to that payload: a configuration is config-aware because
+  `_cache_key_for` hashes `record.effective_params`, so every pre-existing key
+  still hits and `tests/test_solids.py`'s pinned bytes never move.
 - **Security/trust**: in the default **local** mode the server binds
   `127.0.0.1` only, with a Host-allowlist + same-origin guard
   (`server/app._browser_request_allowed`) on HTTP and WS — and a non-loopback
@@ -1765,7 +1961,7 @@ Write the changelog from the real diff, not from memory.
 ## Where to read more
 
 - `docs/architecture.md` — processes, components, ACM1 format, rebuild flow
-- `docs/agent-api.md` — the 73/76 agent tools with schemas + a worked loop
+- `docs/agent-api.md` — the 85/88 agent tools with schemas + a worked loop
 - `docs/geometry-ci.md` — `agentcad check`, the report schema, the GitHub Action
 - `docs/part-authoring.md` — the script contract, toolkit, mates, sketch solver
 - `docs/user-guide.md` — the UI surface by surface

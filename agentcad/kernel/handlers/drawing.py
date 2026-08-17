@@ -15,6 +15,15 @@ and a column of feature control frames above the title block.
 ``detected["pmi_warnings"]`` names PMI entries that could not be placed.
 DXF output ignores PMI (v1).
 
+Optional ``params["dim_table"]`` (PRD-012) adds a boxed **dimension table** in
+the sheet's clear right column: one row per configuration, its configured
+parameters, and the overall X/Y/Z extents of that configuration's own built
+shape. The rows are built and measured *here* — the module's contract is that
+a drawing prints what the geometry is, and a table of parameters the caller
+already had would assert nothing. A member that will not build is one row of
+em dashes with its error, never the loss of the sheet.
+``detected["dim_table"]`` echoes the whole thing structurally. DXF ignores it.
+
 Hole callouts read the part's **hole records** when it has them (PRD-010): the
 records ride on the built shape, this handler already builds it, so they are
 read in-process — no second kernel call and no service round trip. A record
@@ -159,6 +168,157 @@ _FCF_SYMBOLS = {
 
 def _esc(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# ---- dimension table (PRD-012) --------------------------------------------
+
+#: The sheet's one clear rectangle is (264,18)-(414,60): the right column above
+#: the ISO view, below its label. 150 mm wide, 42 mm tall.
+_TABLE_X, _TABLE_Y, _TABLE_W, _TABLE_ROW_H = 264.0, 18.0, 150.0, 4.5
+
+#: Rows beyond this are dropped with a warning rather than drawn off the sheet:
+#: nine rows at 4.5 mm plus the header is already 45 mm in a 42 mm rectangle.
+_MAX_TABLE_ROWS = 8
+
+
+def _cell(value) -> str:
+    """One table cell. ``None`` is an em dash, not an empty box: a blank cell
+    reads as a value someone forgot to fill in."""
+    if value is None:
+        return "—"
+    if isinstance(value, bool):          # before int: bool IS an int
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return f"{value:.2f}"
+    return str(value)
+
+
+def _measure_table(build_shape, script, table):
+    """One measured row per configuration: ``{columns, rows, warnings}``.
+
+    **Every number here comes from a built shape**, which is this module's
+    contract and the reason the table is worth drawing at all — a row of
+    parameters could have been printed by the caller. ``X``/``Y``/``Z`` are the
+    overall extents of the WORLD bounding box (the same quantity the front and
+    top views' overall dimensions print, which are that bbox projected).
+
+    A configuration that will not build is ``ok: false`` with its error: the
+    row prints em dashes and the rest of the table is still drawn. One member
+    of a family being broken is exactly when the others are worth seeing.
+
+    ``values`` carries the **resolved** parameter map ``build_shape`` returned,
+    not the override map the request sent. A family is routinely ragged — one
+    member overrides three parameters, another only one — and echoing the
+    overrides would print an em dash where the geometry has the script's
+    default, and an un-canonicalized enum where the build canonicalized it.
+    The table would then disagree with the shape it just measured, which is the
+    one thing it exists not to do. Extra resolved keys are inert: the renderer
+    prints only the requested ``columns``.
+    """
+    columns = [name for name in (table.get("columns") or [])
+               if isinstance(name, str)]
+    requested = list(table.get("rows") or [])
+    warnings: list[str] = []
+    if len(requested) > _MAX_TABLE_ROWS:
+        warnings.append(
+            f"{len(requested)} configurations were requested; the dimension "
+            f"table prints the first {_MAX_TABLE_ROWS} (the sheet's table "
+            f"rectangle holds no more)")
+        requested = requested[:_MAX_TABLE_ROWS]
+    rows = []
+    for entry in requested:
+        name = entry.get("config")
+        params = entry.get("params") or {}
+        # `str(...)`: a hand-edited or merged manifest can put anything in
+        # `label`, and a non-string would TypeError the whole sheet in `_esc`.
+        row = {"config": name, "label": str(entry.get("label") or name),
+               "values": {}, "ok": True}
+        try:
+            shape, values, _warnings = build_shape(script, params)
+            size = shape.bounding_box().size
+            row["values"] = {**values,
+                             "X": round(size.X, 3),
+                             "Y": round(size.Y, 3),
+                             "Z": round(size.Z, 3)}
+        except Exception as exc:  # noqa: BLE001 — one broken member must not
+            # take the sheet with it; the row carries the reason instead.
+            row["ok"] = False
+            row["error"] = getattr(exc, "message", None) or str(exc)
+            warnings.append(f"configuration {name!r} did not build, so its row "
+                            f"prints no values: {row['error']}")
+        rows.append(row)
+    return {"columns": columns, "rows": rows, "warnings": warnings}
+
+
+def _row_label(row) -> str:
+    """The first cell: the configuration NAME, and the label beside it.
+
+    The name is the identity every other surface uses (the manifest key, the
+    ``part@config`` CI subject, ``?config=``), so a sheet that printed only
+    ``Small`` could not be traced back to ``s``. A label that adds nothing —
+    absent, or equal to the name — is not repeated.
+    """
+    config = row.get("config") or ""
+    label = row.get("label")
+    if label and label != config:
+        return f"{label} ({config})"
+    return config
+
+
+def _dim_table(rows, columns, x=_TABLE_X, y_top=_TABLE_Y, row_h=_TABLE_ROW_H):
+    """``(elements, dropped, warnings)`` — the boxed table itself.
+
+    Header (``config``, the configured parameters, ``X``/``Y``/``Z``) then one
+    row per configuration. Column widths follow ``_fcf_frame``'s rule
+    (``max(14, 2.2·len + 4)``) so the numbers stay deterministic, and the whole
+    table has to fit the sheet's 150 mm column: trailing PARAMETER columns are
+    dropped, with a warning naming each, until it does. ``config`` and the
+    measured extents are never dropped — they are what the table is for, and
+    *dropped* names what came off so a caller can say why a column is missing.
+
+    Every string goes through :func:`_esc`. A label is author-supplied text and
+    a single ``&`` in one would otherwise make the whole sheet unparseable.
+    """
+    warnings: list[str] = []
+    columns = list(columns)
+    dropped: list[str] = []
+    while True:
+        lines = [["config", *columns, "X", "Y", "Z"]]
+        for row in rows:
+            label = _row_label(row)
+            if not row.get("ok", True):
+                # A row that did not build prints em dashes: there is no
+                # measurement, and an empty cell would read as one.
+                lines.append([label] + ["—"] * (len(columns) + 3))
+                continue
+            values = row.get("values") or {}
+            lines.append([label]
+                         + [_cell(values.get(name)) for name in columns]
+                         + [_cell(values.get(axis)) for axis in ("X", "Y", "Z")])
+        widths = [max(14.0, 2.2 * max(len(line[i]) for line in lines) + 4.0)
+                  for i in range(len(lines[0]))]
+        if sum(widths) <= _TABLE_W or not columns:
+            break
+        cut = columns.pop()
+        dropped.append(cut)
+        warnings.append(
+            f"column {cut!r} was dropped from the dimension table: "
+            f"the table is wider than the sheet's {_TABLE_W:g} mm column")
+    if sum(widths) > _TABLE_W:
+        warnings.append(
+            f"the dimension table is {sum(widths):.0f} mm wide and overflows "
+            f"the sheet's {_TABLE_W:g} mm column (the configuration labels "
+            f"alone do not fit)")
+    els, y = [], y_top
+    for line in lines:
+        cx = x
+        for width, text in zip(widths, line):
+            els.append(f'<rect x="{cx:.3f}" y="{y:.3f}" width="{width:.3f}" '
+                       f'height="{row_h:.3f}" {_BOX}/>')
+            els.append(_text((cx + width / 2, y + row_h / 2 + 1.0), _esc(text)))
+            cx += width
+        y += row_h
+    return els, dropped, warnings
 
 
 def _tol_suffix(plus, minus):
@@ -566,7 +726,8 @@ def _callout_text(designation: str, count: int) -> str:
     return f"{count}× {designation}" if count > 1 else designation
 
 
-def _build_svg(part, views, detected_out, pmi=None, hole_records=()):
+def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
+               dim_table=None):
     proj = {name: part.project_to_viewport(look_at=(0, 0, 0), **_VIEW_DIRS[name])
             for name in views}
     W, H = 420, 297
@@ -849,6 +1010,24 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=()):
                 f"this drawing does not render one"))
         detected_out["hole_warnings"] = hole_warnings
 
+    # The per-configuration dimension table, in the sheet's clear right column
+    # above the ISO view. `detected` echoes it structurally, so a caller never
+    # has to parse the SVG back to find out what was measured.
+    if dim_table:
+        table_els, table_dropped, table_warnings = _dim_table(
+            dim_table["rows"], dim_table["columns"])
+        svg += table_els
+        detected_out["dim_table"] = {
+            # `columns` is what was ASKED for, and `dropped` what did not fit:
+            # a caller comparing the echo to its own request should not have to
+            # diff two lists to discover a column is missing.
+            "columns": list(dim_table["columns"]),
+            "dropped": table_dropped,
+            "rows": dim_table["rows"],
+            "placement": "right-column",
+            "warnings": list(dim_table.get("warnings") or []) + table_warnings,
+        }
+
     # title block
     tb_x, tb_y, tb_w, tb_h = W - 6 - 150, H - 6 - 28, 150, 28
     svg.append(f'<rect x="{tb_x}" y="{tb_y}" width="{tb_w}" height="{tb_h}" '
@@ -941,11 +1120,20 @@ def register(toolbox: dict):
         shape, _values, _warnings = build_shape(params["script"], params.get("params", {}))
         detected: dict = {"label": params.get("label", "part")}
         if fmt == "svg":
+            # One extra `build_shape` per configuration — measured here, in the
+            # process that owns the kernel, because a drawing prints geometry.
+            # DXF ignores the table exactly as it ignores PMI (v1), so nothing
+            # is measured for a format that cannot draw it.
+            table = params.get("dim_table")
+            measured = (_measure_table(build_shape, params["script"], table)
+                        if isinstance(table, dict) and table.get("rows")
+                        else None)
             svg = _build_svg(shape, views, detected, pmi=params.get("pmi"),
-                             hole_records=_records_on(shape))
+                             hole_records=_records_on(shape),
+                             dim_table=measured)
             atomic_write(out_path, svg.encode())
         elif fmt == "dxf":
-            _build_dxf(shape, out_path)  # DXF ignores PMI (v1)
+            _build_dxf(shape, out_path)  # DXF ignores PMI and the table (v1)
         else:
             raise WorkerError(ERROR_CONTRACT, f"unknown drawing format {fmt!r}")
         import os

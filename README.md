@@ -114,7 +114,7 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   change proposal, where a red or stale report blocks the merge. See
   [docs/geometry-ci.md](docs/geometry-ci.md).
 
-The agent tool surface is now **73 tools** (was 17; 76 with the optional
+The agent tool surface is now **85 tools** (was 17; 88 with the optional
 `[fem]` extra installed), and multi-part rebuilds fan out across a small pool of warm kernel
 workers. v3 added typed parameters, per-solid semantics, sheet metal with
 flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,
@@ -259,7 +259,7 @@ def build(p):
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — processes, components, data flow
-- [docs/agent-api.md](docs/agent-api.md) — the 73-tool agent surface, MCP setup
+- [docs/agent-api.md](docs/agent-api.md) — the 85-tool agent surface, MCP setup
 - [docs/geometry-ci.md](docs/geometry-ci.md) — `agentcad check`, the report schema, the GitHub Action
 - [docs/packages.md](docs/packages.md) — packages, indexes, the publish gate, the bundled catalog
 - [docs/part-authoring.md](docs/part-authoring.md) — the script contract and toolkit

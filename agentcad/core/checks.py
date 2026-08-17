@@ -1486,19 +1486,37 @@ class CheckRunner:
                      errors: list[dict], started: float) -> dict:
         """One row per manifest part, through the same ``_ensure_built`` that
         ``get_assembly``, ``merge._validate`` and the packet already use — so
-        the cache the app warms is the cache a check hits."""
+        the cache the app warms is the cache a check hits.
+
+        A **configured** part (PRD-012) gets one extra row per configuration
+        after its own, subject ``part@config`` — the packages gate's subject
+        grammar, and no new stage or item kind, so ``STAGES``/``ITEM_KINDS``
+        and the tests that pin them are untouched. A project with no
+        configurations produces exactly the rows it produced before: the inner
+        loop degenerates to the part itself.
+        """
         items = []
         for entry in self.service.store.manifest(proj)["parts"]:
             part_id = entry["id"]
-            # `_cannot_afford`, not `_out_of_budget`: a build takes seconds at
-            # best and takes no `timeout_s`, so starting one the budget cannot
-            # pay for is exactly the overshoot the floor exists to stop.
-            if self._cannot_afford():
-                items.append(self._budget_item("build", "part", part_id, seen,
-                                               warnings))
-                continue
-            items.append(self._build_item(proj, part_id, seen, warnings,
-                                          errors))
+            subjects = [(part_id, None)]
+            subjects += [(f"{part_id}@{name}", name)
+                         for name in (entry.get("configs") or {})]
+            for subject, config in subjects:
+                # `_cannot_afford`, not `_out_of_budget`: a build takes seconds
+                # at best and takes no `timeout_s`, so starting one the budget
+                # cannot pay for is exactly the overshoot the floor exists to
+                # stop. Checked before EVERY row, the working state's included:
+                # a budget that dies mid-family still names what it skipped.
+                if self._cannot_afford():
+                    items.append(self._budget_item("build", "part", subject,
+                                                   seen, warnings))
+                    continue
+                if config is None:
+                    items.append(self._build_item(proj, part_id, seen,
+                                                  warnings, errors))
+                else:
+                    items.append(self._config_item(proj, part_id, config, seen,
+                                                   warnings, errors))
         return make_stage("build", items, duration_s=_elapsed(started))
 
     def _build_item(self, proj: str, part_id: str, seen: set,
@@ -1564,6 +1582,88 @@ class CheckRunner:
             + ("valid" if metrics.get("is_valid")
                else "is_valid=false (imported: reported, not enforced)"),
             details=details, seen=seen, warnings=warnings)
+
+    def _config_item(self, proj: str, part_id: str, config: str, seen: set,
+                     warnings: list[str], errors: list[dict]) -> dict:
+        """One configuration's build row — ``_build_item``'s branches, through
+        ``_ensure_config_built``.
+
+        The one branch deliberately absent is the imported-geometry escape:
+        ``_record_for`` refuses a reference part outright, so a configuration
+        of one never reaches a metric to forgive. It would be dead code that
+        reads like a policy.
+        """
+        subject = f"{part_id}@{config}"
+        key, cached = self._config_cache(proj, part_id, config)
+        try:
+            result = self.service._ensure_config_built(proj, part_id, config)
+        except Exception as exc:  # noqa: BLE001 — same defensive edge as
+            # `_build_item`: an unreadable script, or a configuration a hand
+            # edit left on a reference part, is one row rather than the end of
+            # the run.
+            payload = _payload(exc)
+            errors.append({**payload, "stage": "build", "part": subject,
+                           "config": config})
+            return make_item("build", "part", subject, "error",
+                             f"the build did not complete: "
+                             f"{payload['message']}", error=payload,
+                             seen=seen, warnings=warnings)
+        details = {"config": config, "cache_key": key, "cached": cached}
+        if not result.get("ok"):
+            payload = result.get("error") or {
+                "type": "kernel_error", "message": "the build failed",
+                "details": {}}
+            return make_item("build", "part", subject, "fail",
+                             f"build failed: {payload.get('message')}",
+                             error=payload, details=details,
+                             seen=seen, warnings=warnings)
+        warnings.extend(f"{subject}: {warning}"
+                        for warning in result.get("warnings") or [])
+        metrics = result.get("metrics") or {}
+        details = {"config": config,
+                   "cache_key": result.get("cache_key") or key,
+                   "volume_mm3": metrics.get("volume_mm3"),
+                   "mass_g": metrics.get("mass_g"),
+                   "n_solids": metrics.get("n_solids"),
+                   "is_valid": metrics.get("is_valid"),
+                   "cached": cached}
+        if metrics.get("is_valid") is False:
+            return make_item("build", "part", subject, "fail",
+                             "built, but the kernel reports the shape is not "
+                             "valid B-rep geometry",
+                             details={**details,
+                                      "solids": metrics.get("solids")},
+                             seen=seen, warnings=warnings)
+        return make_item(
+            "build", "part", subject, "pass",
+            f"built{' from cache' if cached else ''} — "
+            f"{_number(metrics.get('volume_mm3'))} mm³, "
+            f"{_number(metrics.get('mass_g'))} g, "
+            f"{metrics.get('n_solids', 0)} solid(s), "
+            + ("valid" if metrics.get("is_valid")
+               else "is_valid=false (imported: reported, not enforced)"),
+            details=details, seen=seen, warnings=warnings)
+
+    def _config_cache(self, proj: str, part_id: str,
+                      config: str) -> tuple[str | None, bool]:
+        """``(cache_key, cached)`` for one configuration's **pure** key.
+
+        ``_is_cached``'s question, asked of a derived record. Observed on disk
+        rather than read off ``_ensure_config_built``'s memo on purpose: the
+        memo only ever holds a key whose ``.acm`` this process verified, so the
+        two agree where the memo has an answer, and the disk also answers for a
+        key warmed by another run.
+
+        The key travels back because a build that FAILS returns none, and a row
+        that cannot name the key its parameters hash to cannot be correlated
+        with anything.
+        """
+        try:
+            record = self.service._record_for(proj, part_id, config)
+            key = self.service._cache_key_for(proj, record)
+        except Exception:  # noqa: BLE001 — provenance must never break a row
+            return None, False
+        return key, (self.service.store.cache_dir(proj) / f"{key}.acm").is_file()
 
     def _is_reference(self, proj: str, part_id: str) -> bool:
         try:

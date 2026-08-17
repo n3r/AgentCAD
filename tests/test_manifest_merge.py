@@ -54,9 +54,21 @@ def triple(doc):
     return copy.deepcopy(doc), copy.deepcopy(doc), copy.deepcopy(doc)
 
 
+def configuration(params=None, **fields):
+    entry = {"params": dict(params or {})}
+    entry.update(copy.deepcopy(fields))
+    return entry
+
+
 def sample():
     return manifest(
-        parts=[part("flange", params={"bolt_d": 6.0, "thick": 14.0})],
+        parts=[
+            part(
+                "flange",
+                params={"bolt_d": 6.0, "thick": 14.0},
+                configs={"m": configuration({"bolt_d": 6.0}, label="M")},
+            )
+        ],
         instances=[instance("flange_1", "flange")],
         materials={"custom_al": {"density_g_cm3": 2.70, "yield_mpa": 276.0}},
     )
@@ -116,6 +128,22 @@ def _r_material(doc):
     return doc["materials"]["custom_al"]
 
 
+def _w_config_param(doc, v):
+    entry_of(doc["parts"], "flange")["configs"]["m"]["params"]["bolt_d"] = v
+
+
+def _r_config_param(doc):
+    return entry_of(doc["parts"], "flange")["configs"]["m"]["params"]["bolt_d"]
+
+
+def _w_config_label(doc, v):
+    entry_of(doc["parts"], "flange")["configs"]["m"]["label"] = v
+
+
+def _r_config_label(doc):
+    return entry_of(doc["parts"], "flange")["configs"]["m"]["label"]
+
+
 KEY_CLASSES = [
     ("units", _w_units, _r_units, ("mm", "cm", "in")),
     ("parts.flange.label", _w_label, _r_label, ("base", "ours", "theirs")),
@@ -135,6 +163,20 @@ KEY_CLASSES = [
             {"density_g_cm3": 2.80},
             {"density_g_cm3": 2.90},
         ),
+    ),
+    # PRD-012: a configuration's parameter is a leaf of the same kind as a
+    # part's own parameter, and its label a leaf of the same kind as a part's.
+    (
+        "parts.flange.configs.m.params.bolt_d",
+        _w_config_param,
+        _r_config_param,
+        (6.0, 9.0, 4.0),
+    ),
+    (
+        "parts.flange.configs.m.label",
+        _w_config_label,
+        _r_config_label,
+        ("M", "M ours", "M theirs"),
     ),
 ]
 
@@ -1108,3 +1150,464 @@ def test_an_agreeing_pair_is_silent():
 # surfaces in `validation.integrity` — is
 # `test_packages_index.py::test_a_real_merge_blocks_on_the_package_hybrid`,
 # which drives two branches through `merge_branch` rather than reading source.
+
+
+# ---- PRD-012: the configs map
+#
+# `parts.<id>.configs` merges per NAME and, inside a configuration, per
+# PARAMETER (FR12). Merged as one atomic value it failed FR12 in both
+# directions at once: two branches adding *different* configurations
+# conflicted, and two branches editing *different* parameters of one
+# configuration conflicted.
+#
+# Why a configuration is not atomic while a `packages_lock` entry is: a lock
+# entry is content-determined and half of one verifies against nothing, while a
+# configuration is a set of independent parameter values — the same argument
+# that makes `parts.<id>.params` merge per key, one level deeper.
+
+
+def configs_of(doc, pid="flange"):
+    return entry_of(doc["parts"], pid)["configs"]
+
+
+def test_two_branches_adding_different_configurations_merge_clean():
+    """FR12's headline: a family grows on two branches at once."""
+    base, ours, theirs = triple(
+        manifest(parts=[part("flange", params={"bolt_d": 6.0})])
+    )
+    entry_of(ours["parts"], "flange")["configs"] = {
+        "l": configuration({"bolt_d": 8.0}, label="L")
+    }
+    entry_of(theirs["parts"], "flange")["configs"] = {
+        "xl": configuration({"bolt_d": 10.0}, label="XL")
+    }
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts == []
+    assert sorted(configs_of(merged)) == ["l", "xl"]
+    assert configs_of(merged)["l"]["params"] == {"bolt_d": 8.0}
+    assert configs_of(merged)["xl"]["label"] == "XL"
+
+
+def test_different_parameters_of_one_configuration_merge_clean():
+    base, ours, theirs = triple(
+        manifest(
+            parts=[
+                part(
+                    "flange",
+                    configs={"l": configuration({"bolt_d": 6.0, "thick": 14.0})},
+                )
+            ]
+        )
+    )
+    configs_of(ours)["l"]["params"]["bolt_d"] = 8.0
+    configs_of(theirs)["l"]["params"]["thick"] = 20.0
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts == []
+    assert configs_of(merged)["l"]["params"] == {"bolt_d": 8.0, "thick": 20.0}
+
+
+def test_the_same_configuration_parameter_at_two_values_conflicts_at_the_param():
+    base, ours, theirs = triple(
+        manifest(parts=[part("flange", configs={"m": configuration({"bolt_d": 6.0})})])
+    )
+    configs_of(ours)["m"]["params"]["bolt_d"] = 8.0
+    configs_of(theirs)["m"]["params"]["bolt_d"] = 5.0
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert len(conflicts) == 1
+    assert conflicts[0] == {
+        "kind": "manifest",
+        "key": "parts.flange.configs.m.params.bolt_d",
+        "path": ["parts", "flange", "configs", "m", "params", "bolt_d"],
+        "base": 6.0,
+        "ours": 8.0,
+        "theirs": 5.0,
+    }
+    assert list(conflicts[0]) == list(CONFLICT_KEYS)
+    assert configs_of(merged)["m"]["params"]["bolt_d"] == 8.0
+
+
+def test_add_add_of_the_same_configuration_name_conflicts_on_the_whole_config():
+    base, ours, theirs = triple(manifest(parts=[part("flange")]))
+    entry_of(ours["parts"], "flange")["configs"] = {
+        "m": configuration({"bolt_d": 8.0}, label="ours")
+    }
+    entry_of(theirs["parts"], "flange")["configs"] = {
+        "m": configuration({"bolt_d": 5.0}, label="theirs")
+    }
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert keys_of(conflicts) == ["parts.flange.configs.m"]
+    assert "base" not in conflicts[0]  # add/add has no base
+    assert conflicts[0]["ours"] == configs_of(ours)["m"]
+    assert conflicts[0]["theirs"] == configs_of(theirs)["m"]
+    assert configs_of(merged)["m"] == configs_of(ours)["m"]
+
+
+def test_delete_modify_of_a_configuration_conflicts_on_the_whole_config():
+    base, ours, theirs = triple(
+        manifest(
+            parts=[
+                part(
+                    "flange",
+                    configs={
+                        "m": configuration({"bolt_d": 6.0}, label="M"),
+                        "l": configuration({"bolt_d": 8.0}),
+                    },
+                )
+            ]
+        )
+    )
+    configs_of(ours).pop("m")
+    configs_of(theirs)["m"]["label"] = "M6"
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert keys_of(conflicts) == ["parts.flange.configs.m"]
+    assert "ours" not in conflicts[0]  # the deleting side: absent, never null
+    assert conflicts[0]["base"] == configuration({"bolt_d": 6.0}, label="M")
+    assert list(configs_of(merged)) == ["l"]  # merged carries ours': deleted
+
+    restored, remaining = apply_choices(
+        merged, conflicts, {"parts.flange.configs.m": {"take": "theirs"}}
+    )
+    assert remaining == []
+    assert configs_of(restored)["m"]["label"] == "M6"
+
+    dropped, remaining = apply_choices(
+        merged, conflicts, {"parts.flange.configs.m": {"take": "ours"}}
+    )
+    assert remaining == []
+    assert list(configs_of(dropped)) == ["l"]
+
+
+def test_resolving_a_configuration_parameter_writes_into_the_map():
+    base, ours, theirs = triple(
+        manifest(parts=[part("flange", configs={"m": configuration({"bolt_d": 6.0})})])
+    )
+    configs_of(ours)["m"]["params"]["bolt_d"] = 8.0
+    configs_of(theirs)["m"]["params"]["bolt_d"] = 5.0
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+    resolved, remaining = apply_choices(
+        merged, conflicts, {conflicts[0]["key"]: {"take": "theirs"}}
+    )
+
+    assert remaining == []
+    assert configs_of(resolved)["m"]["params"] == {"bolt_d": 5.0}
+    entry = entry_of(resolved["parts"], "flange")
+    assert [k for k in entry if "." in k] == []  # no bogus flat key beside the map
+
+
+def test_a_configuration_label_and_its_params_merge_independently():
+    base, ours, theirs = triple(
+        manifest(
+            parts=[
+                part(
+                    "flange",
+                    configs={"m": configuration({"bolt_d": 6.0}, label="M")},
+                )
+            ]
+        )
+    )
+    configs_of(ours)["m"]["label"] = "M6 coarse"
+    configs_of(theirs)["m"]["params"]["bolt_d"] = 5.0
+    configs_of(theirs)["m"]["description"] = "the small one"
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts == []
+    assert configs_of(merged)["m"] == {
+        "params": {"bolt_d": 5.0},
+        "label": "M6 coarse",
+        "description": "the small one",
+    }
+
+
+def test_a_non_dict_configuration_entry_merges_whole():
+    """The map-level analogue of `_entry_list`'s guard. A hand-edited
+    ``"m": 5`` (or an authored null) is not a configuration; without the guard
+    `_merge_entry`'s `_as_dict` rewrites it to `{}` — a *clean* merge that
+    silently destroys it."""
+    base, ours, theirs = triple(manifest(parts=[part("a", configs={"m": 5})]))
+    configs_of(ours, "a")["m"] = 7
+    configs_of(theirs, "a")["m"] = None
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert keys_of(conflicts) == ["parts.a.configs.m"]
+    assert conflicts[0]["ours"] == 7 and conflicts[0]["theirs"] is None
+    assert configs_of(merged, "a") == {"m": 7}
+
+    # one-sided, and against a real configuration on the other side: still whole
+    base, ours, theirs = triple(manifest(parts=[part("a", configs={"m": 5})]))
+    configs_of(theirs, "a")["m"] = None
+    merged, conflicts = merge_manifests(base, ours, theirs)
+    assert conflicts == []
+    assert configs_of(merged, "a") == {"m": None}
+
+    base, ours, theirs = triple(
+        manifest(parts=[part("a", configs={"m": configuration({"x": 1.0})})])
+    )
+    configs_of(ours, "a")["m"]["params"]["x"] = 2.0
+    configs_of(theirs, "a")["m"] = 5
+    merged, conflicts = merge_manifests(base, ours, theirs)
+    assert keys_of(conflicts) == ["parts.a.configs.m"]
+    assert configs_of(merged, "a")["m"] == {"params": {"x": 2.0}}
+
+
+def test_a_dotted_configuration_name_resolves_to_the_real_mapping():
+    """X13's sibling: `CONFIG_RE` forbids a dot, but the driver must resolve
+    through the recorded segments and never by re-splitting the key."""
+    base, ours, theirs = triple(
+        manifest(
+            parts=[part("flange", configs={"m.5": configuration({"bolt_d": 6.0})})]
+        )
+    )
+    configs_of(ours)["m.5"]["params"]["bolt_d"] = 8.0
+    configs_of(theirs)["m.5"]["params"]["bolt_d"] = 5.0
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts[0]["path"] == [
+        "parts", "flange", "configs", "m.5", "params", "bolt_d"
+    ]
+    resolved, remaining = apply_choices(
+        merged, conflicts, {conflicts[0]["key"]: {"take": "theirs"}}
+    )
+
+    assert remaining == []
+    assert configs_of(resolved) == {"m.5": {"params": {"bolt_d": 5.0}}}
+    entry = entry_of(resolved["parts"], "flange")
+    assert [k for k in entry if "." in k] == []
+
+
+def test_resolving_a_parameter_of_a_configuration_that_is_gone_is_refused():
+    """`_write_keyed_entry` may not conjure a configuration out of a path: the
+    map entry has to be there, or the resolution is a lie."""
+    base, ours, theirs = triple(
+        manifest(parts=[part("flange", configs={"m": configuration({"bolt_d": 6.0})})])
+    )
+    configs_of(ours)["m"]["params"]["bolt_d"] = 8.0
+    configs_of(theirs)["m"]["params"]["bolt_d"] = 5.0
+    merged, conflicts = merge_manifests(base, ours, theirs)
+    configs_of(merged).pop("m")
+
+    with pytest.raises(ValidationError):
+        apply_choices(merged, conflicts, {conflicts[0]["key"]: {"take": "theirs"}})
+
+
+def test_a_path_deeper_than_a_configuration_parameter_is_refused():
+    """The one line in the write path that could still produce a flat key.
+
+    Inside a configuration the merge records exactly two shapes — a whole field,
+    or ``params.<param>``. Anything deeper is unreachable from a recorded
+    conflict, so it is refused instead of joined into a `"params.a.b"` key that
+    nothing can read back.
+    """
+    doc = manifest(
+        parts=[part("flange", configs={"m": configuration({"bolt_d": 6.0})})]
+    )
+    for path in (
+        ["parts", "flange", "configs", "m", "params", "a", "b"],
+        ["parts", "flange", "configs", "m", "label", "x"],
+    ):
+        conflict = {"kind": "manifest", "key": ".".join(path), "path": path,
+                    "ours": 1.0}
+        with pytest.raises(ValidationError):
+            apply_choices(doc, [conflict], {conflict["key"]: {"take": "ours"}})
+
+    assert configs_of(doc) == {"m": {"params": {"bolt_d": 6.0}}}
+
+
+def test_an_instance_field_named_configs_still_merges_as_a_whole_value():
+    """`_PART_ENTRY_DICTS` names a field of a **part**. The descriptor is
+    threaded like `subdicts` rather than read as a module global, because an
+    instance has no sub-map of any kind (the docstring's table says every
+    instance field is a whole value) — read globally, a forward-compatible
+    instance field called `configs` got the keyed-map treatment and conflicted
+    at `assembly.instances.i1.configs.m.params.x`.
+    """
+    base, ours, theirs = triple(
+        manifest(parts=[part("a")], instances=[instance("i1", "a")])
+    )
+    for doc in (base, ours, theirs):
+        entry_of(doc["assembly"]["instances"], "i1")["configs"] = {
+            "m": {"params": {"x": 1.0}}
+        }
+    ours_inst = entry_of(ours["assembly"]["instances"], "i1")
+    theirs_inst = entry_of(theirs["assembly"]["instances"], "i1")
+    ours_inst["configs"]["m"]["params"]["x"] = 2.0
+    theirs_inst["configs"]["m"]["params"]["y"] = 3.0
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert keys_of(conflicts) == ["assembly.instances.i1.configs"]
+    assert entry_of(merged["assembly"]["instances"], "i1")["configs"] == (
+        ours_inst["configs"]
+    )
+
+    # and a resolution writes the whole field back, not into the map
+    resolved, remaining = apply_choices(
+        merged, conflicts, {conflicts[0]["key"]: {"take": "theirs"}}
+    )
+    assert remaining == []
+    assert entry_of(resolved["assembly"]["instances"], "i1")["configs"] == (
+        theirs_inst["configs"]
+    )
+
+
+def test_a_manifest_with_no_configurations_is_untouched_by_the_new_head():
+    """G5 from the merge side: a project that never declared a configuration
+    merges exactly as it did before the keys existed."""
+    base, ours, theirs = triple(
+        manifest(
+            parts=[part("flange", params={"bolt_d": 6.0})],
+            instances=[instance("flange_1", "flange")],
+        )
+    )
+    entry_of(ours["parts"], "flange")["label"] = "ours"
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts == []
+    entry = entry_of(merged["parts"], "flange")
+    assert "configs" not in entry and "active_config" not in entry
+    assert "config" not in entry_of(merged["assembly"]["instances"], "flange_1")
+
+
+def test_active_config_and_an_instance_binding_merge_as_whole_values():
+    base, ours, theirs = triple(sample())
+    configs_of(base)["l"] = configuration({"bolt_d": 8.0})
+    configs_of(ours)["l"] = configuration({"bolt_d": 8.0})
+    configs_of(theirs)["l"] = configuration({"bolt_d": 8.0})
+
+    # one-sided: both selections land
+    one_side_ours, one_side_theirs = copy.deepcopy(ours), copy.deepcopy(theirs)
+    entry_of(one_side_ours["parts"], "flange")["active_config"] = "m"
+    entry_of(one_side_theirs["assembly"]["instances"], "flange_1")["config"] = "l"
+    merged, conflicts = merge_manifests(base, one_side_ours, one_side_theirs)
+    assert conflicts == []
+    assert entry_of(merged["parts"], "flange")["active_config"] == "m"
+    assert entry_of(merged["assembly"]["instances"], "flange_1")["config"] == "l"
+
+    # divergent: one conflict each, at the field and never inside it
+    entry_of(ours["parts"], "flange")["active_config"] = "m"
+    entry_of(theirs["parts"], "flange")["active_config"] = "l"
+    entry_of(ours["assembly"]["instances"], "flange_1")["config"] = "m"
+    entry_of(theirs["assembly"]["instances"], "flange_1")["config"] = "l"
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert sorted(keys_of(conflicts)) == [
+        "assembly.instances.flange_1.config",
+        "parts.flange.active_config",
+    ]
+    assert entry_of(merged["parts"], "flange")["active_config"] == "m"
+
+
+# ============== the config/binding hybrid a clean merge can build (Decision 9)
+
+
+def _bound(config_name="l", declared=("l",), active=None):
+    configs = {name: configuration({"bolt_d": 8.0}) for name in declared}
+    doc = manifest(
+        parts=[part("flange", params={"bolt_d": 6.0}, configs=configs)],
+        instances=[instance("flange_1", "flange", config=config_name)],
+    )
+    if active is not None:
+        entry_of(doc["parts"], "flange")["active_config"] = active
+    return doc
+
+
+def test_an_instance_bound_to_a_configuration_the_merge_removed_is_caught():
+    """One branch removes a configuration, the other binds an instance to it:
+    neither side touched the other's key, so the driver is clean by design and
+    the instance now resolves to nothing. Blocking, like `dangling_instance`."""
+    problems = manifest_merge.config_problems(_bound(declared=()))
+
+    assert [p["kind"] for p in problems] == ["dangling_instance_config"]
+    detail = problems[0]
+    assert detail["instance"] == "flange_1"
+    assert detail["part"] == "flange"
+    assert detail["config"] == "l"
+    assert "no longer declares" in detail["message"]
+
+
+def test_an_active_config_the_merge_removed_is_caught_as_a_warning():
+    problems = manifest_merge.config_problems(
+        _bound(config_name="l", declared=("l",), active="xl")
+    )
+
+    assert [p["kind"] for p in problems] == ["dangling_active_config"]
+    detail = problems[0]
+    assert detail["part"] == "flange"
+    assert detail["config"] == "xl"
+    assert "no longer declares" in detail["message"]
+    assert "instance" not in detail
+
+
+def test_a_healthy_family_is_silent():
+    """The false-positive guard: a project that merged correctly may not
+    redden, and a part whose whole entry is gone is already reported by
+    `dangling_instance` — this check does not say it twice."""
+    assert manifest_merge.config_problems(
+        _bound(config_name="l", declared=("l", "xl"), active="xl")) == []
+
+    orphan = _bound(declared=("l",))
+    orphan["parts"] = []
+    assert manifest_merge.config_problems(orphan) == []
+
+
+def test_a_project_without_configurations_is_silent():
+    assert manifest_merge.config_problems({}) == []
+    assert manifest_merge.config_problems(sample()) == []
+    assert manifest_merge.config_problems(
+        manifest(parts=[part("flange")], instances=[instance("flange_1", "flange")])
+    ) == []
+    assert manifest_merge.config_problems(
+        manifest(parts=[part("flange", configs={})])) == []
+
+
+def test_a_malformed_configuration_entry_is_named_as_a_warning():
+    """Fix wave (F3/V2): the driver merges a non-object configuration entry
+    WHOLE (`test_a_non_dict_configuration_entry_merges_whole` pins the
+    one-sided `{"m": None}`), so a clean merge alone can leave a member that is
+    not a configuration. `PartRecord.config_params` now resolves it as an empty
+    map rather than raising, which is exactly why the report has to say it: the
+    project loads, and the member silently holds no parameters.
+
+    A **warning**, like `dangling_active_config` and for the same reason — it
+    resolves, so nothing is left pointing at nothing.
+    """
+    doc = manifest(parts=[part("flange", configs={
+        "scalar": 5,
+        "null": None,
+        "no_params": {"label": "M"},
+        "null_params": {"params": None},
+        "fine": configuration({"bolt_d": 8.0}),
+        "empty": configuration(),
+    })])
+
+    problems = manifest_merge.config_problems(doc)
+
+    assert [p["kind"] for p in problems] == ["malformed_configuration"] * 4
+    assert [p["config"] for p in problems] == [
+        "scalar", "null", "no_params", "null_params"]
+    assert all(p["part"] == "flange" for p in problems)
+    assert "no parameters" in problems[0]["message"]
+    # `{"params": {}}` is a legitimate configuration (defaults, nothing
+    # overridden) and must not be reported.
+    assert all(p["config"] != "empty" for p in problems)
+
+
+# The orchestrator half — that a dangling binding actually blocks a REAL merge
+# through `validation.integrity` while a dangling `active_config` is only a
+# warning — is `tests/test_configs_merge.py`, which drives two branches through
+# `merge_branch` rather than reading source.

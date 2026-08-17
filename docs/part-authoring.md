@@ -116,6 +116,15 @@ Clamping in `build()` is invisible to callers, so prefer tightening
 `min`/`max` in `PARAMS` when the constraint is expressible there; use inline
 guards for constraints that couple two parameters.
 
+**Named sizes are not a script concept.** A part's family — S/M/L, left/right,
+three bolt counts — lives in the *manifest* as
+[configurations](user-guide.md#configurations), declared with
+`set_part_configs` and validated against this `PARAMS` spec. A script never
+mentions them: it just has to build at every value they can name, which is the
+same robustness this section asks for. Feature variation is expressible the
+ordinary way, as script logic branching on an enum parameter a configuration
+sets.
+
 ## Common OCCT failure modes
 
 | Symptom | Cause and fix |

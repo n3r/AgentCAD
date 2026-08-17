@@ -616,8 +616,25 @@ class MergeOrchestrator:
             # part/instance graph — but it is the same kind of damage and it
             # travels the same way: a clean key-wise merge of two halves of one
             # fact (see its docstring, PRD-011 review changelog 0181).
+            # `config_problems` (PRD-012) is the same kind of damage in the
+            # other direction: a *selection* (an instance binding, a part's
+            # `active_config`) that one branch kept while the other removed the
+            # configuration it names. A binding blocks — the instance would
+            # resolve to nothing; a stale `active_config` only warns, because
+            # it resolves as base (Decision 9). `malformed_configuration` (a
+            # member the merge took whole and that is no longer an object with
+            # a params map) warns for the same reason: it resolves as base too,
+            # so it must be said out loud rather than block.
+            configs = manifest_merge.config_problems(merged)
             report["integrity"] = (_manifest_shape(merged) + _integrity(merged)
-                                   + manifest_merge.package_problems(merged))
+                                   + manifest_merge.package_problems(merged)
+                                   + [p for p in configs
+                                      if p["kind"] == "dangling_instance_config"])
+            report["warnings"] += [
+                p["message"] for p in configs
+                if p["kind"] in ("dangling_active_config",
+                                 "malformed_configuration")
+            ]
             if not report["integrity"] and not report["failures"]:
                 try:
                     self.service._resolved_instances(proj)

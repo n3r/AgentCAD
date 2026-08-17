@@ -75,6 +75,20 @@ function renderParts() {
       li.appendChild(badge);
     }
 
+    // A configured part wears the configuration it is showing (or a neutral
+    // `cfg` at base) — get_project carries both fields, so this costs no
+    // fetch. A part with no family gets no badge at all.
+    const cfgNames = Object.keys(part.configs || {});
+    if (cfgNames.length) {
+      const badge = document.createElement("span");
+      badge.className = "row-badge";
+      badge.textContent = part.active_config || "cfg";
+      badge.title =
+        `${cfgNames.length} configuration${cfgNames.length === 1 ? "" : "s"}` +
+        ` · active: ${part.active_config || "base"}`;
+      li.appendChild(badge);
+    }
+
     // Presence and claims, rendered FROM STATE like everything else here —
     // this list is cleared and rebuilt on every relevant change, so an
     // indicator poked in imperatively would survive exactly until the next
@@ -166,7 +180,13 @@ function renderInstances() {
 
     const ref = document.createElement("span");
     ref.className = "row-id";
-    ref.textContent = inst.part;
+    // `part@config` for a bound instance: two instances of one part showing
+    // different geometry is the whole point of a binding, and the part id
+    // alone cannot say which is which.
+    ref.textContent = inst.config ? `${inst.part}@${inst.config}` : inst.part;
+    if (inst.config) {
+      ref.title = `${inst.part}, configuration ${inst.config}`;
+    }
     li.appendChild(ref);
 
     li.addEventListener("click", () => actions.selectAssembly(inst.id));

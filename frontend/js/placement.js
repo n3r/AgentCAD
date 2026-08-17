@@ -48,7 +48,11 @@ function render() {
   }
   panel.classList.remove("hidden");
   const mated = !!inst.mate;
-  const nextSig = `${inst.id}|${mated}|${mated ? "" : state.gizmoMode}`;
+  // `config` is in the signature because the picker below is rebuilt with the
+  // panel: a binding changed elsewhere (the agent, another tab) has to move
+  // this <select>, and nothing else in the panel would notice.
+  const nextSig =
+    `${inst.id}|${mated}|${mated ? "" : state.gizmoMode}|${inst.config || ""}`;
   if (nextSig !== sig) {
     sig = nextSig;
     build(inst, mated);
@@ -70,6 +74,12 @@ function build(inst, mated) {
   ref.textContent = inst.part;
   title.append(name, ref);
   bodyEl.appendChild(title);
+
+  // BEFORE the mated early-return: a mate positions an instance, it does not
+  // choose which configuration of the part is instanced, and the two questions
+  // are independent. A mated instance can still be bound.
+  const config = configRow(inst);
+  if (config) bodyEl.appendChild(config);
 
   if (mated) {
     const note = document.createElement("div");
@@ -133,6 +143,85 @@ function build(inst, mated) {
     `<span class="placement-scale-glyph" aria-hidden="true">⇲</span>` +
     `<span>No scale handle — resize via the part's <b>Parameters</b>.</span>`;
   bodyEl.appendChild(scale);
+}
+
+// The instance's configuration binding. The declared family comes from
+// `state.project.parts` — get_project carries `configs` per part — so opening
+// the panel costs no request. Returns null for a part with no family, which is
+// what keeps the panel identical to what it was before configurations existed.
+function configRow(inst) {
+  const parts = (state.project && state.project.parts) || [];
+  const entry = parts.find((p) => p.id === inst.part);
+  const declared = (entry && entry.configs) || {};
+  const names = Object.keys(declared);
+  if (!names.length) return null;
+
+  const wrap = document.createElement("div");
+  wrap.className = "placement-config";
+
+  const label = document.createElement("span");
+  label.className = "placement-config-label";
+  label.textContent = "Config";
+  wrap.appendChild(label);
+
+  const select = document.createElement("select");
+  select.className = "cfg-select";
+  select.setAttribute("aria-label", `Configuration for instance ${inst.id}`);
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "— unbound —";
+  none.title =
+    "Unbound: the instance follows the part's live working state, including " +
+    "its active configuration and any parameter overrides.";
+  if (!inst.config) none.selected = true;
+  select.appendChild(none);
+  for (const name of names) {
+    const cfg = typeof declared[name] === "object" ? declared[name] : {};
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = cfg.label || name;
+    if (name === inst.config) opt.selected = true;
+    select.appendChild(opt);
+  }
+  select.addEventListener("change", () =>
+    setInstanceConfig(inst.id, select.value || null)
+  );
+  wrap.appendChild(select);
+  return wrap;
+}
+
+async function setInstanceConfig(instanceId, config) {
+  const proj = state.projectName;
+  if (!proj) return;
+  const inst = currentInstance();
+  const partId = inst ? inst.part : null;
+  const write = () => api.setInstanceConfig(proj, instanceId, config);
+  try {
+    try {
+      await write();
+    } catch (err) {
+      // The same single-use override every other write in the app offers.
+      // `set_instance_config` takes no `write_scope` today — a claim is a
+      // *part* claim and this is a whole-manifest write — so this is defence
+      // in depth rather than a path that fires now; handleWriteConflict
+      // answers false for anything that is not an overridable 409, and the
+      // error rethrows unchanged.
+      if (!(await actions.handleWriteConflict(err, partId))) throw err;
+      await write();
+    }
+  } catch (err) {
+    actions.toast(`Could not bind ${instanceId}: ${err.message}`, "error");
+    sig = null;              // the <select> is showing a value the server refused
+    render();
+    return;
+  }
+  // The bound instance is built from the configuration's PURE resolution, so
+  // its mesh key moved: the assembly (and the sidebar's `part@config`) have to
+  // be re-read, which is exactly what refreshProject does in assembly mode.
+  actions.refreshProject();
+  actions.toast(
+    config ? `${instanceId} → ${config}` : `${instanceId} unbound`
+  );
 }
 
 // Motion: drive the mate's DOF through an angle range and watch the sweep on
