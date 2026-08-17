@@ -230,7 +230,16 @@ fall out for free while unbranched behavior stays bit-identical.
    thought — a line-wise merge of a manifest is either garbage or a clean
    result nobody authored. Non-text content (`imports/*.stl|step`) is read and
    staged as raw **bytes**: a binary conflict reports sizes and digests, takes
-   a side verbatim, and never becomes conflict-marked text.
+   a side verbatim, and never becomes conflict-marked text. Its key space (the
+   full table is in the module docstring):
+
+   | Key | Granularity |
+   |---|---|
+   | `parts.<id>.params.<name>` · `.solid_materials.<key>` | per key |
+   | `parts.<id>.configs.<name>` | per name; then field-wise |
+   | `parts.<id>.configs.<name>.params.<param>` | per parameter |
+   | `parts.<id>.active_config` · `assembly.instances.<id>.config` | whole value (a selection) |
+   | `parts.<id>.pmi` · `materials.<id>` · `packages[_lock].<name>` | atomic per entry |
 4. The result is staged in a detached worktree under `.history/agentcad/`.
    Nothing outside that directory is written while conflicts are outstanding,
    and no ref moves, so a conflicted merge is never partially applied.
@@ -243,8 +252,12 @@ fall out for free while unbranched behavior stays bit-identical.
    `check_interference`), so the kernel pool, the mesh cache and the mates
    resolver are reused verbatim and already-built parts are cache hits. It
    reports built parts, build failures, referential integrity (dangling
-   instances/mates a clean key-wise merge can still produce) and interference
-   diffed against the pre-merge target — only **new** pairs block.
+   instances/mates a clean key-wise merge can still produce, plus
+   `manifest_merge.package_problems`' requirement/lock hybrid and
+   `config_problems`' instance bound to a configuration the merge removed) and
+   interference diffed against the pre-merge target — only **new** pairs block.
+   A part whose `active_config` the merge removed resolves as base, so it is a
+   `warnings` string and does not block.
 6. Landing is `commit-tree` with both parents plus a compare-and-swap
    `update-ref`: a commit that arrived on the target while the merge was
    staged fails the swap and surfaces as a `conflict_error` instead of

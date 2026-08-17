@@ -183,6 +183,26 @@ packages merge clean; the same package at two versions conflicts at
 `packages_lock.<name>`, because one side's version with the other's content id
 is an entry nobody authored.
 
+A **configuration** — the same object a preset is, now living at
+`parts.<id>.configs.<name>` (PRD-012) — merges the other way, and the contrast
+is the argument:
+
+| Key | Granularity |
+|---|---|
+| `packages.<name>` · `packages_lock.<name>` | per package, **entry atomic** (content-determined) |
+| `parts.<id>.configs.<name>` | per name; entry add/remove, else field-wise ↓ |
+| `…<name>.label` · `.description` | whole value |
+| `…<name>.params.<param>` | **per parameter** (a set of independent values) |
+| `parts.<id>.active_config` · `assembly.instances.<id>.config` | whole value (a selection) |
+
+Half of a lock entry verifies against nothing, so it is atomic; a configuration
+is a set of independent parameter values, so it merges per parameter. And
+because a selection lives in a different key from the map it names, one branch
+removing a configuration while the other selects it merges *clean* —
+`manifest_merge.config_problems` reports that at the merge's validation pass
+(a bound instance blocks, a stale `active_config` warns), exactly as
+`package_problems` reports the requirement/lock hybrid.
+
 ### The provenance header
 
 `use_part` prepends an immutable header to the copied script:

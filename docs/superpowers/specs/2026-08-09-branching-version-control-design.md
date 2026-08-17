@@ -307,10 +307,27 @@ def merge_manifests(base: dict, ours: dict, theirs: dict)
 | part params | `parts.<id>.params.<name>` | per parameter |
 | per-solid materials | `parts.<id>.solid_materials.<key>` | per key |
 | part PMI | `parts.<id>.pmi` | **whole section** (atomic) |
+| `configs` (dict, PRD-012) | `parts.<id>.configs.<name>` | entry add/remove; else field-wise ↓ |
+| configuration fields | `…<name>.label` · `.description` | whole value |
+| configuration params | `…<name>.params.<param>` | per parameter |
+| active configuration | `parts.<id>.active_config` | whole value (a selection) |
 | `assembly.instances[]` (keyed by `id`) | `assembly.instances.<id>` | entry add/remove; else field-wise ↓ |
-| instance fields | `…<id>.part` · `.position` · `.rotation_deg` · `.color` · `.mate` | whole value |
+| instance fields | `…<id>.part` · `.position` · `.rotation_deg` · `.color` · `.mate` · `.config` | whole value |
 | `materials` (dict) | `materials.<id>` | **whole entry** (atomic) |
 | any other top-level key | `<key>` | whole value (forward compatible) |
+
+A configuration is not atomic *because* a `materials.<id>` entry is: a material
+is one physical fact and half of one is over-clever, while a configuration is a
+set of **independent parameter values** — the same argument that makes
+`parts.<id>.params` merge per key, one level deeper (PRD-012 FR12: two branches
+adding two different configurations of one part must merge clean). A map entry
+that is not an object (a hand edit, an authored null) merges whole all the
+same. The two *selections* — `active_config` and an instance's `config` — are
+single values in a different key from the map they name, so a clean key-wise
+merge can leave one of them naming nothing: `manifest_merge.config_problems`
+reports that at the validation pass (a bound instance blocks, a stale
+`active_config` warns), the way `package_problems` reports the packages/lock
+hybrid.
 
 **Per-key rule** (classic three-way):
 

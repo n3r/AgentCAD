@@ -10,11 +10,15 @@ Key space (every leaf merges independently)::
     schema_version | name | units | <any other top-level key>   whole value
     parts.<id>                       entry add/remove, else field-wise:
       parts.<id>.label|material|kind|source                     whole value
+      parts.<id>.active_config                                  whole value
       parts.<id>.params.<name>                                  per parameter
       parts.<id>.solid_materials.<key>                          per key
+      parts.<id>.configs.<name>      entry add/remove, else field-wise:
+        …<name>.label|description                               whole value
+        …<name>.params.<param>                                  per parameter
       parts.<id>.pmi                                            atomic
     assembly.instances.<id>          entry add/remove, else field-wise:
-      …<id>.part|position|rotation_deg|color|mate               whole value
+      …<id>.part|position|rotation_deg|color|mate|config        whole value
     materials.<id>                                              atomic
     packages.<name>                                             atomic
     packages_lock.<name>                                        atomic
@@ -28,6 +32,18 @@ package maps (PRD-011) because merging one side's ``version`` with the other's
 nothing. Per *name* they merge key-wise, so two branches adding two different
 packages merge clean — which is the whole reason the maps carry only
 content-determined values.
+
+``parts.<id>.configs`` (PRD-012) goes the other way, and the contrast is the
+argument: a lock entry is *content-determined*, so half of one verifies against
+nothing, while a configuration is a **set of independent parameter values** —
+exactly what makes ``parts.<id>.params`` merge per key, one level deeper. So
+the map merges per NAME (two branches adding two different configurations of
+one part merge clean, FR12) and a configuration present on all three sides
+merges per FIELD, with its ``params`` per parameter. Add/add of the same name
+and delete/modify still conflict on the whole configuration, and a map entry
+that is not a dict (a hand edit, an authored null) merges whole rather than
+being silently rewritten to ``{}``. ``active_config`` and an instance's
+``config`` are single selections, so they are whole values.
 
 Values compare by type *and* JSON shape, so ``6`` and ``6.0`` are different
 values — matching how params are stored and how a byte comparison of
@@ -62,6 +78,10 @@ CONFLICT_KEYS = ("kind", "key", "path", "base", "ours", "theirs")
 _MISSING = object()
 
 _PART_SUBDICTS = ("params", "solid_materials")
+
+# Part fields that are a MAP of name -> entry, each entry merged field-wise
+# with the listed fields merged key-wise (PRD-012 configs).
+_PART_ENTRY_DICTS = {"configs": ("params",)}
 
 # Top-level maps whose ENTRIES merge key-wise and are themselves atomic.
 # ``_write_path`` has to know the same set, or a resolution writes a bogus
@@ -202,10 +222,33 @@ def _merge_entry(segs, base, ours, theirs, conflicts, subdicts):
         b, o, t = _get(base, field), _get(ours, field), _get(theirs, field)
         if field in subdicts and _keyed(b, o, t):
             value = _merge_scalar_dict((*segs, field), b, o, t, conflicts)
+        elif field in _PART_ENTRY_DICTS and _keyed(b, o, t):
+            value = _merge_keyed_entries(
+                (*segs, field), b, o, t, conflicts,
+                subdicts=_PART_ENTRY_DICTS[field],
+            )
         else:
             value = _merge_atomic((*segs, field), b, o, t, conflicts)
         if value is not _MISSING:
             result[field] = value
+    return result
+
+
+def _merge_keyed_entries(prefix, base, ours, theirs, conflicts, *, subdicts):
+    """A map of NAME -> entry (parts.<id>.configs): per name, then per field,
+    with ``subdicts`` (``params``) merged per parameter."""
+    result = {}
+    for name in _key_order(_as_dict(ours), _as_dict(theirs)):
+        b, o, t = _get(base, name), _get(ours, name), _get(theirs, name)
+        # `_entry_list`'s guard, at map level: a non-dict entry (a hand-edited
+        # `"m": 5`, an authored null) must merge WHOLE, or `_merge_entry`'s
+        # `_as_dict` silently rewrites it to `{}` — a clean merge that loses data.
+        if _keyed(b, o, t):
+            value = _merge_entry((*prefix, name), b, o, t, conflicts, subdicts)
+        else:
+            value = _merge_atomic((*prefix, name), b, o, t, conflicts)
+        if value is not _MISSING:
+            result[name] = value
     return result
 
 
@@ -384,8 +427,28 @@ def _write_entry(seq, eid, rest, value, present, subdicts, key) -> None:
     entry = seq[index]
     if len(rest) == 2 and rest[0] in subdicts:
         _write_slot(entry.setdefault(rest[0], {}), rest[1], value, present)
+    elif len(rest) >= 2 and rest[0] in _PART_ENTRY_DICTS:
+        _write_keyed_entry(entry.setdefault(rest[0], {}), rest[1], rest[2:],
+                           value, present, _PART_ENTRY_DICTS[rest[0]], key)
     else:
         _write_slot(entry, rest[0] if len(rest) == 1 else ".".join(rest),
+                    value, present)
+
+
+def _write_keyed_entry(container, name, rest, value, present, subdicts, key):
+    """Into parts.<id>.configs.<name>[.field[.param]] — through the recorded
+    segments, never a dotted flat key (a config name may contain '-')."""
+    if not rest:
+        _write_slot(container, name, value, present)
+        return
+    inner = container.get(name)
+    if not isinstance(inner, dict):
+        raise ValidationError(
+            f"cannot resolve {key!r}: configuration {name!r} is not present")
+    if len(rest) == 2 and rest[0] in subdicts:
+        _write_slot(inner.setdefault(rest[0], {}), rest[1], value, present)
+    else:
+        _write_slot(inner, rest[0] if len(rest) == 1 else ".".join(rest),
                     value, present)
 
 
@@ -474,3 +537,83 @@ def package_problems(manifest: dict) -> list[dict]:
                            f"provenance, and this merge silently changed it",
             })
     return problems
+
+
+def config_problems(manifest: dict) -> list[dict]:
+    """Post-merge damage the key-wise merge cannot see: a **dangling selection**.
+
+    ``parts.<id>.configs`` merges per name and a *selection* of one of those
+    names — ``parts.<id>.active_config``, ``assembly.instances.<id>.config`` —
+    is a whole value in another key. One branch removing a configuration while
+    the other selects it touches no common key, so the merge is clean by design
+    and the selection now names nothing. It is the shape of damage
+    :func:`package_problems` exists for, and the tool choke points cannot see
+    it: each side was valid where it was written.
+
+    Two kinds, and the difference is deliberate (Decision 9):
+
+    ``dangling_instance_config``
+        an instance bound to a configuration the merged part no longer
+        declares. **Blocking**, like ``dangling_instance``: the binding is the
+        instance's whole parameter set, so it resolves to nothing.
+    ``dangling_active_config``
+        a part whose ``active_config`` is gone. A **warning**: an unknown
+        active configuration resolves as base (Decision 3), so the project is
+        loadable and someone only has to re-pick.
+
+    Silent on a project with no configurations, on ``{}``, and on a healthy
+    family. An instance whose *part* is missing is skipped —
+    ``merge._integrity``'s ``dangling_instance`` already says so, and saying it
+    twice in two vocabularies is worse than saying it once.
+    """
+    parts: dict[str, dict] = {}
+    entries = manifest.get("parts") if isinstance(manifest, dict) else None
+    for entry in entries if isinstance(entries, list) else []:
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str):
+            parts.setdefault(entry["id"], entry)
+
+    problems: list[dict] = []
+    for pid, entry in parts.items():
+        active = entry.get("active_config")
+        if isinstance(active, str) and active not in _declared(entry):
+            problems.append({
+                "kind": "dangling_active_config", "part": pid,
+                "config": active,
+                "message": f"part {pid!r} has active_config {active!r}, which "
+                           f"the merged project no longer declares: one branch "
+                           f"removed the configuration and the other left it "
+                           f"selected, so the part resolves to its base "
+                           f"parameters until someone re-picks",
+            })
+
+    assembly = manifest.get("assembly") if isinstance(manifest, dict) else None
+    instances = assembly.get("instances") if isinstance(assembly, dict) else None
+    for inst in instances if isinstance(instances, list) else []:
+        if not isinstance(inst, dict):
+            continue
+        name = inst.get("config")
+        if not isinstance(name, str):
+            continue
+        entry = parts.get(inst.get("part"))
+        if entry is None:
+            continue  # `dangling_instance` already reports the missing part
+        if name not in _declared(entry):
+            problems.append({
+                "kind": "dangling_instance_config",
+                "instance": inst.get("id"), "part": inst.get("part"),
+                "config": name,
+                "message": f"instance {inst.get('id')!r} is bound to "
+                           f"configuration {name!r} of part "
+                           f"{inst.get('part')!r}, which the merged project no "
+                           f"longer declares: one branch removed the "
+                           f"configuration and the other kept the binding, so "
+                           f"this instance resolves to nothing — re-bind it "
+                           f"with set_instance_config or restore the "
+                           f"configuration",
+            })
+    return problems
+
+
+def _declared(entry: dict) -> dict:
+    configs = entry.get("configs")
+    return configs if isinstance(configs, dict) else {}
