@@ -485,9 +485,12 @@ def test_the_browser_mints_and_sends_a_per_profile_identity(client):
 
     assert '"agentcad.client_id"' in source and "localStorage" in source
     assert re.search(r'"browser:"\s*\+', source), "identity must be browser:<hex>"
-    # The four hand-rolled fetches bypass request(), so each needs the header
-    # of its own or half the app would speak under a different identity.
-    assert source.count("X-Agent-Id") == 5
+    # The five hand-rolled fetches bypass request(), so each needs the header
+    # of its own or half the app would speak under a different identity:
+    # getDiffMesh, uploadImport, getMesh, getMeshByKey (PRD-012's
+    # content-addressed assembly geometry) and getMeshFaces — plus the one in
+    # request() itself.
+    assert source.count("X-Agent-Id") == 6
 
 
 def test_presence_js_heartbeats_and_leaves_on_pagehide(client):

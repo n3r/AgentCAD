@@ -139,8 +139,47 @@ export const api = {
   // ---- drawings ----
   generateDrawing: (proj, id, body) =>
     request("POST", `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing`, body),
-  drawingSvgUrl: (proj, id) =>
-    `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing.svg`,
+  /** `params`: {config?, dim_table?} — the GET regenerates the sheet, so the
+   *  configuration and the dimension table have to ride it too or the preview
+   *  would show a base sheet the POST did not write. */
+  drawingSvgUrl: (proj, id, params) =>
+    `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing.svg${query(params)}`,
+
+  // ---- configurations (PRD-012) ----
+  // A configuration is a named parameter set declared on the part; `label` is
+  // its display name and the name itself is lowercase. Every route below is a
+  // registry passthrough, so a refusal is an ApiError (422/404/409) — a red
+  // matrix ROW, by contrast, is payload (`ok: false`) at HTTP 200.
+  /** `{parts: [{part_id, configs, active_config, diverged, diverged_params,
+   *  referrers}]}` — the whole project, or one part. */
+  listConfigs: (proj, id) =>
+    id
+      ? request("GET", `/api/projects/${enc(proj)}/parts/${enc(id)}/configs`)
+      : request("GET", `/api/projects/${enc(proj)}/configs`),
+  /** Load a configuration. Switching to a DIFFERENT one clears the part's
+   *  explicit overrides unless `keepOverrides`; re-selecting the active one is
+   *  a no-op for them. A null config is a 422 here — clearActiveConfig is the
+   *  verb for "back to base". */
+  setActiveConfig: (proj, id, config, keepOverrides) =>
+    request("PUT", `/api/projects/${enc(proj)}/parts/${enc(id)}/active-config`, {
+      config,
+      keep_overrides: !!keepOverrides,
+    }),
+  clearActiveConfig: (proj, id) =>
+    request("DELETE", `/api/projects/${enc(proj)}/parts/${enc(id)}/active-config`),
+  /** body: {part_id?, configs?} — one part answers {part_id, configs: [rows]},
+   *  the project answers {parts: [...]}; either may carry `warnings`. */
+  buildConfigs: (proj, body) =>
+    request("POST", `/api/projects/${enc(proj)}/configs/build`, body || {}),
+  /** Bind an assembly instance to a configuration. `null` UNBINDS, so the key
+   *  is sent either way — the route forwards on `"config" in body`, and an
+   *  omitted key would read as "no argument at all". */
+  setInstanceConfig: (proj, iid, config) =>
+    request(
+      "PATCH",
+      `/api/projects/${enc(proj)}/assembly/instances/${enc(iid)}/config`,
+      { config: config == null ? null : config }
+    ),
 
   // ---- design specs ----
   // The inspector chips need none of these: `specs` rides the part payload
@@ -439,6 +478,38 @@ export const api = {
     const servedLod = res.headers.get("X-Mesh-Lod") || "full";
     const buffer = await res.arrayBuffer();
     return { buffer, key, lod: servedLod };
+  },
+
+  /** Fetch a built ACM1 mesh by its CONTENT KEY — the assembly's addressing
+   *  (`get_assembly` publishes `mesh_key` per built instance), so two
+   *  configurations of one part are two meshes rather than one racing entry.
+   *  Resolves {buffer, key, lod}; this route NEVER builds, so a key with
+   *  nothing on disk is a 404 and the instance is simply skipped. */
+  async getMeshByKey(proj, key, lod) {
+    let res;
+    const url =
+      `/api/projects/${enc(proj)}/meshes/${enc(key)}` +
+      (lod ? `?lod=${enc(lod)}` : "");
+    try {
+      res = await fetch(url, { headers: { "X-Agent-Id": clientId } });
+    } catch {
+      throw new ApiError(0, {
+        error: { type: "network_error", message: "server unreachable", details: {} },
+      });
+    }
+    if (!res.ok) {
+      let payload = null;
+      try {
+        payload = await res.json();
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(res.status, payload);
+    }
+    const servedKey = res.headers.get("X-Mesh-Key") || key;
+    const servedLod = res.headers.get("X-Mesh-Lod") || "full";
+    const buffer = await res.arrayBuffer();
+    return { buffer, key: servedKey, lod: servedLod };
   },
 
   /** Fetch the mesh's triangle->B-rep-face sidecar (one u32 per triangle of

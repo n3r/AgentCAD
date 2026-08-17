@@ -5,6 +5,7 @@ import { api, ApiError } from "./api.js";
 import { state, setState, onKeys } from "./state.js";
 import * as editor from "./editor.js";
 import * as presence from "./presence.js";
+import * as configs from "./configs.js";
 
 let actions = null;
 
@@ -28,6 +29,16 @@ let paramChoices = {};
 // (which fires often) can't tear it down while the user has the dropdown open.
 let materialBlockEl = null;
 let materialSig = null;
+
+// The configuration switcher lives in a STATIC host outside #pane-params (a
+// full param rebuild wipes that pane) and follows the materialSig idiom for
+// the same reason the material block does: a rebuild fires often, and the
+// <select> must survive one that lands while the dropdown is open. The chip
+// beside it is repainted every render — divergence changes on a param edit,
+// which does not move the signature.
+let configBarEl = null;
+let configSig = null;
+let configChipHost = null;
 
 // analysis results survive metric re-renders (a param edit shouldn't wipe them)
 let analysisPartId = null;
@@ -65,6 +76,7 @@ export function init(a) {
     tab.addEventListener("click", () => setTab(tab.dataset.tab));
   }
 
+  configBarEl = document.getElementById("config-bar");
   bannerEl = document.getElementById("banner");
   bannerTitle = document.getElementById("banner-title");
   bannerBody = document.getElementById("banner-body");
@@ -163,6 +175,7 @@ function render() {
     metricsPane.innerHTML = '<div class="pane-note">Select a part to see its metrics.</div>';
     editor.setPart(null, "");
     hideBanner();
+    renderConfigBar(null);
     decorateParams();
     return;
   }
@@ -205,7 +218,235 @@ function render() {
   } else {
     hideBanner();
   }
+  renderConfigBar(part);
+  // Before the decorator, never through it: `setParamDecorator` has one slot
+  // and comments.js owns it (the per-param thread badge). These are classes on
+  // the row, so the two coexist.
+  markConfigSources(part);
   decorateParams();
+}
+
+// ----------------------------------------------------- configurations (bar)
+
+/** The display token for a configuration NAME. Names are lowercase by grammar
+ *  (`^[a-z0-9][a-z0-9_-]{0,31}$`) and the label is the prose one; the chip and
+ *  its reset button want the identity, short and unmistakable. */
+function configToken(name) {
+  return String(name).toUpperCase();
+}
+
+/** The bar between the error banner and the parameters: a base/configuration
+ *  <select>, the divergence chip with its reset, and the Matrix button.
+ *  Invisible — not empty, invisible — for a part that declares no
+ *  configurations, so the app looks exactly as it did before the feature. */
+export function renderConfigBar(part) {
+  if (!configBarEl) return;
+  const declared = (part && part.configs) || {};
+  const names = Object.keys(declared);
+  if (!part || !names.length) {
+    configBarEl.classList.add("hidden");
+    configBarEl.textContent = "";
+    configChipHost = null;
+    configSig = null;
+    return;
+  }
+  configBarEl.classList.remove("hidden");
+  const sig = JSON.stringify([part.id, part.active_config, names]);
+  if (sig !== configSig) {
+    configSig = sig;
+    buildConfigBar(part, declared, names);
+  }
+  renderConfigChip(part, declared);
+}
+
+function buildConfigBar(part, declared, names) {
+  configBarEl.textContent = "";
+
+  const row = document.createElement("div");
+  row.className = "cfg-row";
+
+  const label = document.createElement("span");
+  label.className = "cfg-label";
+  label.textContent = "Config";
+  row.appendChild(label);
+
+  const select = document.createElement("select");
+  select.className = "cfg-select";
+  select.setAttribute("aria-label", `Active configuration for ${part.id}`);
+  const base = document.createElement("option");
+  base.value = "base";
+  base.textContent = "base";
+  base.title = "The part's own parameters, with no configuration loaded";
+  if (!part.active_config) base.selected = true;
+  select.appendChild(base);
+  for (const name of names) {
+    const entry = declared[name] && typeof declared[name] === "object"
+      ? declared[name]
+      : {};
+    const opt = document.createElement("option");
+    opt.value = name;
+    // The label is the display name; the NAME is the identity and the value.
+    opt.textContent = entry.label || name;
+    if (entry.description) opt.title = entry.description;
+    if (name === part.active_config) opt.selected = true;
+    select.appendChild(opt);
+  }
+  select.addEventListener("change", () => setActiveConfig(select.value));
+  row.appendChild(select);
+
+  const matrix = document.createElement("button");
+  matrix.type = "button";
+  matrix.className = "tb-btn cfg-matrix";
+  matrix.textContent = "Matrix";
+  matrix.title =
+    `Build every configuration of ${part.id} and compare their metrics ` +
+    "side by side";
+  matrix.addEventListener("click", () => configs.open(part.id));
+  row.appendChild(matrix);
+
+  configBarEl.appendChild(row);
+  configChipHost = document.createElement("div");
+  configChipHost.className = "cfg-chip-host";
+  configBarEl.appendChild(configChipHost);
+}
+
+function renderConfigChip(part, declared) {
+  if (!configChipHost) return;
+  configChipHost.textContent = "";
+  const status = part.status || {};
+  const active = part.active_config;
+  if (!active || !status.diverged) return;
+
+  const names = status.diverged_params || [];
+  const entry = declared[active] && typeof declared[active] === "object"
+    ? declared[active]
+    : {};
+  const token = configToken(active);
+
+  const chip = document.createElement("span");
+  chip.className = "cfg-chip diverged";
+  chip.textContent = `${token} — modified`;
+  chip.title = names.length
+    ? `overrides: ${names.join(", ")}`
+    : `${entry.label || active} is loaded, with parameter overrides on top`;
+  configChipHost.appendChild(chip);
+
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "cfg-reset";
+  reset.textContent = `Reset to ${token}`;
+  reset.title =
+    `Drop every parameter override and show ${entry.label || active} as ` +
+    "declared. One step — ⌘Z puts them back.";
+  reset.addEventListener("click", () => resetToActiveConfig());
+  configChipHost.appendChild(reset);
+}
+
+/** Load a configuration (or `"base"`). Shaped like setMaterial, including the
+ *  single-use write-conflict override: this writes the part's manifest entry,
+ *  so a soft claim refuses it exactly as a param write is refused. */
+export async function setActiveConfig(name) {
+  const part = state.part;
+  if (!part) return;
+  const partId = part.id;
+  const next = name === "base" ? null : name;
+  if (next === (part.active_config || null)) return;
+  const proj = state.projectName;
+  const write = () =>
+    next === null
+      ? api.clearActiveConfig(proj, partId)
+      : api.setActiveConfig(proj, partId, next);
+  try {
+    let result;
+    try {
+      result = await write();
+    } catch (err) {
+      if (!(await actions.handleWriteConflict(err, partId))) throw err;
+      result = await write();
+    }
+    if (state.project) {
+      const entry = state.project.parts.find((p) => p.id === partId);
+      if (entry) {
+        entry.active_config = result.active_config || null;
+        setState({ project: state.project });
+      }
+    }
+    applyRebuildResult(partId, result);
+    // Switching CLEARS the explicit overrides server-side, so the local params
+    // map is stale in a way no response key can patch: re-read the part.
+    actions.refreshPartDetail(partId);
+    const cleared = Object.keys(result.cleared_overrides || {}).length;
+    const what = next === null ? "base" : configToken(next);
+    actions.toast(
+      cleared
+        ? `Loaded ${what} — cleared ${cleared} override${cleared === 1 ? "" : "s"}`
+        : `Loaded ${what}`
+    );
+  } catch (err) {
+    // Put the control back on the truth before showing why.
+    configSig = null;
+    renderConfigBar(state.part);
+    showBanner(err instanceof ApiError ? err.error : { message: String(err) });
+  }
+}
+
+/** Drop every explicit override so the part shows its configuration as
+ *  declared. `set_active_config` on the ALREADY-ACTIVE configuration is a
+ *  no-op for overrides (re-selecting must not silently discard a caller's
+ *  set_params), so this clears them itself — one PATCH, one undo step. */
+async function resetToActiveConfig() {
+  const part = state.part;
+  if (!part || !part.active_config) return;
+  const partId = part.id;
+  const names = Object.keys(part.params || {});
+  if (!names.length) {
+    actions.toast("No overrides to clear");
+    return;
+  }
+  const values = Object.fromEntries(names.map((n) => [n, null]));
+  try {
+    let result;
+    try {
+      result = await api.patchParams(state.projectName, partId, values);
+    } catch (err) {
+      if (!(await actions.handleWriteConflict(err, partId))) throw err;
+      result = await api.patchParams(state.projectName, partId, values);
+    }
+    // Deliberately not applyRebuildResult(…, values): its Object.assign would
+    // write `null` into state.part.params rather than removing the keys.
+    applyRebuildResult(partId, result);
+    actions.refreshPartDetail(partId);
+    actions.toast(`Reset to ${configToken(part.active_config)}`);
+  } catch (err) {
+    showBanner(err instanceof ApiError ? err.error : { message: String(err) });
+  }
+}
+
+/** Where each parameter's value comes from, as classes on the `.param` wrap.
+ *  Both can be set at once — a configuration declares `thick` and you typed
+ *  over it — and the CSS orders `.param-overridden` last so the override, the
+ *  value actually in effect, is the mark you see. */
+export function markConfigSources(part) {
+  if (!paramsPane) return;
+  const active = part && part.active_config;
+  const declared = (part && part.configs) || {};
+  const configured = Object.keys(declared).length > 0;
+  const entry = active && typeof declared[active] === "object" ? declared[active] : null;
+  // Nothing to be "from" and nothing to be "over" without a family: a part
+  // with no configurations keeps exactly the parameter rows it always had.
+  const fromConfig = configured ? (entry && entry.params) || {} : {};
+  const overrides = configured ? (part && part.params) || {} : {};
+  for (const wrap of paramsPane.querySelectorAll(".param")) {
+    const name = wrap.dataset.param;
+    wrap.classList.toggle(
+      "param-from-config",
+      Object.prototype.hasOwnProperty.call(fromConfig, name)
+    );
+    wrap.classList.toggle(
+      "param-overridden",
+      Object.prototype.hasOwnProperty.call(overrides, name)
+    );
+  }
 }
 
 function effectiveValue(part, name, spec) {
@@ -696,7 +937,17 @@ function applyRebuildResult(partId, result, values) {
       // a failed build), so the chips repaint with this response instead of
       // waiting for the rebuild_finished → refreshPartDetail round trip.
       if ("specs" in result) state.part.specs = result.specs;
-      state.part.status = { state: "ok", error: null, warnings: result.warnings || [] };
+      // Spread, never replace: `status` also carries `diverged` /
+      // `diverged_params`, which a rebuild says nothing about. Overwriting the
+      // object wholesale blinked the divergence chip and its Reset button off
+      // after every debounced PATCH — a slider drag flapped them and jumped
+      // the pane by the chip row's height.
+      state.part.status = {
+        ...(state.part.status || {}),
+        state: "ok",
+        error: null,
+        warnings: result.warnings || [],
+      };
       setState({ part: state.part });
       hideBanner();
     }
@@ -705,6 +956,7 @@ function applyRebuildResult(partId, result, values) {
   } else {
     if (isCurrent) {
       state.part.status = {
+        ...(state.part.status || {}),
         state: "error",
         error: result.error,
         warnings: [],
