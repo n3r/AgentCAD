@@ -1,6 +1,9 @@
 # PRD-005a — Hosted core ("005-lite"): deployment, identity, public read
 
-- **Status:** in-progress
+- **Status:** implemented — AC1–AC11 verified, AC3's *browser session* half
+  graded as evidence rather than driven (no Chrome extension was available in
+  any of the three sessions that tried; see "Verification levels" below and
+  changelog 0197). Moves to `completed/` at merge, per the house rule.
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-17
 - **Origin:** carved out of [PRD-005](../pending/PRD-005-multi-tenant-cloud.md)
@@ -432,6 +435,60 @@ Unchanged: no new event type; the WebSocket payloads are byte-identical.
   against a hosted instance lists tools and calls one successfully; `whoami`
   returns `agent:<name>` and the role; clearing the token makes the same call
   `401` (test + documented session).
+
+## Verification levels
+
+What each criterion was graded against, so a reader never has to guess whether
+"verified" meant a unit test or a running system. Evidence is in changelogs
+0188–0197; `tests/test_prd005a_acceptance.py` carries one test per criterion.
+
+| AC | Direct test | Real server | Real container | Real browser |
+|---|---|---|---|---|
+| AC1 modes + bind interlock | yes | yes (`serve --host 0.0.0.0` refused in local mode, exit 2) | yes (`{"mode":"hosted"}`) | — |
+| AC2 default deny + enumeration | yes (~70 routes swept, set equality) | yes | yes (`/api/projects` → 401) | — |
+| AC3 enrolment, single use, attribution | yes | yes (link, replay 404, claim `holder_kind: human`, history author `user:nikita/browser:7f3a1b2c`) | yes (enrol + replay 404) | **no — graded as evidence** |
+| AC4 logout / revoked / expired | yes | yes (revoked bearer 200 → 401) | — | — |
+| AC5 rate limits, indistinguishable failures | yes | — | — | — |
+| AC6 public catalog, private 404 | yes | yes (byte-identical 404s) | yes | — |
+| AC7 zero kernel calls | yes (with a positive control on the counter) | — | — | — |
+| AC8 compose up, exec admin, restart survival | yes (38 artefact tests, no daemon) | — | **yes** (built, healthy, account + session + project survived `down`/`up`) | — |
+| AC9 local mode unchanged | yes (the full suite, unmodified) | — | — | — |
+| AC10 claim semantics under composed principals | yes (drives the real `ClaimRegistry`) | yes | — | — |
+| AC11 remote MCP with a bearer | yes | yes (`whoami` → `agent:ci`; cleared token → 401) | — | — |
+
+**AC3's browser half is not verified, and nothing here claims it is.** Three
+sessions (slices 3, 6 and 8) found no connected Chrome browser
+(`list_connected_browsers` → `[]`), so the sign-in view, the identity chip, a
+lock chip under a real edit and the enrolment page were **never rendered by a
+browser**. What *is* verified is every HTTP contract those views consume,
+against a real hosted server and inside the container, plus the JavaScript
+parsing. The criterion is unchanged and unmet at the visual level; it is the
+first thing a reviewer with a browser should close.
+
+## Residual gaps (recorded, not fixed)
+
+- **The `open_project` TOOL is not refused in hosted mode.** FR19 names the
+  route (`POST /api/projects/open`) and `import_cad_file`, and both are closed.
+  The registry-level `open_project` tool lives in `core/tools.py`, which this
+  feature's constraints forbid editing, and `ToolRegistry` has no unregister
+  seam. It is reachable **only by an authenticated member**, who can already
+  run arbitrary Python by writing a part script (Decision 1), so it adds
+  nothing to the threat model — but it is a real gap in FR19's letter. Closing
+  it means a tool-level mode guard in `core/tools.py` or an unregister seam on
+  the registry; both are core edits.
+- **The `proxy` compose profile (Caddy + ACME) was never brought up.** It is
+  syntax-checked by `docker compose config` and read, not run: it needs a
+  public DNS name pointed at the host. The nginx snippet in
+  `docs/deployment.md` is likewise read, not run.
+- **`deploy-smoke.yml` has never executed on GitHub.** Its assertions were
+  executed locally, step for step, against the real container (changelog
+  0197), but the workflow itself needs a push to `main` or a
+  `workflow_dispatch`, neither of which this branch can do. First run on merge.
+- **`comments.plausible_mention` still resolves `@user:handle` only for a
+  member who is currently connected** (`comments.py:193-221` accepts the
+  `browser`/`chat` families plus the live presence roster). Editing it means
+  editing finished PRD-008 code for a cosmetic gain; PRD-005's member list is
+  the right place.
 
 ## Risks & open questions
 

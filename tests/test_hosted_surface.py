@@ -45,17 +45,14 @@ EXPECTED_PUBLIC = {
     ("GET", "/api/public/packages/{name}/versions/{version}/preview"),
 }
 
-# Routes named in EXPECTED_PUBLIC that this slice has not created yet.
-# Slice 3 removes the three /api/auth ones; slice 7 removes the four
-# /api/public ones. The final list is written ONCE, above, so the enumeration
-# cannot drift slice by slice — and the set equality below is what stops a
-# forgotten removal from passing silently.
-NOT_YET_BUILT = {
-    ("GET", "/api/public/packages"),
-    ("GET", "/api/public/packages/{name}"),
-    ("GET", "/api/public/packages/{name}/versions/{version}"),
-    ("GET", "/api/public/packages/{name}/versions/{version}/preview"),
-}
+# Routes named in EXPECTED_PUBLIC that a slice has not created yet. Slice 3
+# removed the three /api/auth ones; slice 7 emptied it. The final list is
+# written ONCE, above, so the enumeration cannot drift slice by slice — and
+# the set equality below is what stops a forgotten removal from passing
+# silently. It stays here, empty, because the *next* feature to add a public
+# route (PRD-007's share links) should grow `EXPECTED_PUBLIC` and this
+# subtrahend together rather than editing the enumeration mid-flight.
+NOT_YET_BUILT: set[tuple[str, str]] = set()
 
 BUILT_PUBLIC = EXPECTED_PUBLIC - NOT_YET_BUILT
 
@@ -188,13 +185,38 @@ def _fill(path: str) -> str:
             .replace("{token}", "not-a-real-enrolment-token"))
 
 
-def test_public_surface_makes_no_kernel_calls(hosted_client, kernel_counter):
-    """AC7: nothing anonymous may reach exec() in the worker."""
+def test_public_surface_makes_no_kernel_calls(hosted_with_catalog,
+                                              kernel_counter):
+    """AC7: nothing anonymous may reach exec() in the worker.
+
+    Driven against a client with the bundled catalog configured, so the four
+    `/api/public/packages…` routes actually *serve* rather than 404 — a
+    kernel-silence proof over a surface that answered "not found" everywhere
+    would be silence about nothing. The 200s are asserted below.
+    """
+    client = hosted_with_catalog
     before = kernel_counter.calls
+    answered = {}
     for method, path in sorted(BUILT_PUBLIC):
-        hosted_client.request(method, _fill(path))
+        answered[(method, path)] = client.request(method, _fill(path)).status_code
     for asset in ("/js/api.js", "/css/app.css", "/"):
-        hosted_client.get(asset)
+        answered[("GET", asset)] = client.get(asset).status_code
+    assert kernel_counter.calls == before, kernel_counter.seen
+
+    # The routes that must have really run. `POST /api/auth/login` (no body)
+    # and the enrolment reads (a token that does not exist) are exercised for
+    # kernel silence but cannot be 200s.
+    served = {path for (method, path), status in answered.items()
+              if status == 200}
+    assert {"/", "/api/health", "/js/api.js", "/css/app.css",
+            "/api/public/packages",
+            "/api/public/packages/{name}",
+            "/api/public/packages/{name}/versions/{version}",
+            } <= served, answered
+    # The preview needs a `?path=`, which `_fill` cannot supply.
+    assert client.get(
+        "/api/public/packages/din625/versions/1.0.0/preview"
+        "?path=previews/ball_bearing_iso.png").status_code == 200
     assert kernel_counter.calls == before, kernel_counter.seen
 
 

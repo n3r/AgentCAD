@@ -189,17 +189,53 @@ def test_login_is_rate_limited_with_retry_after(hosted):
     assert r.json()["error"]["type"] == "RateLimitedError"
 
 
-def test_the_rate_limit_is_taken_before_the_password_is_hashed(hosted):
+def test_the_rate_limit_is_taken_before_the_password_is_hashed(hosted,
+                                                               monkeypatch):
     """A flood must not buy 63 ms of scrypt per request — the limiter is the
-    cheap door, so it goes first."""
+    cheap door, so it goes first.
+
+    **Counted, not timed, and that is the whole lesson of this test's
+    history.** It was `elapsed < 0.03`, which is a claim about the *machine*:
+    it passes standalone in 3.6 s and failed at 0.083 s in an 8-way co-loaded
+    suite. Rewriting it as a ratio against the same run's own scrypt failed
+    too, at 0.067 s throttled against 0.076 s hashing — on a loaded box the
+    ASGI round trip alone can cost more than the KDF, so **no** wall-clock
+    formulation of this property is stable (the `test_sketch_bench` /
+    `test_sketch_drag` flake class, changelogs 0186 and 0195).
+
+    The property is structural — "the throttled path never reaches the KDF" —
+    so it is asserted structurally, by counting `hashlib.scrypt` calls. That
+    is deterministic under any load, and strictly stronger: a wall clock could
+    be fooled by a fast machine, a counter cannot.
+    """
+    import hashlib
+
     client, _ = hosted
+    body = {"handle": "nikita", "password": "no"}
+    calls: list[int] = []
+    real_scrypt = hashlib.scrypt
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real_scrypt(*args, **kwargs)
+
+    monkeypatch.setattr(hashlib, "scrypt", counting)
+
+    # A wrong password inside the burst: a 401 that DOES pay the KDF. Without
+    # this half, "zero hashes" would also pass if login stopped hashing at all.
+    first = client.post("/api/auth/login", json=body)
+    assert first.status_code == 401, first.text
+    assert calls, "a wrong password did not reach scrypt at all"
+
     for _ in range(6):
-        client.post("/api/auth/login", json={"handle": "nikita", "password": "no"})
-    start = time.perf_counter()
-    r = client.post("/api/auth/login", json={"handle": "nikita", "password": "no"})
-    elapsed = time.perf_counter() - start
-    assert r.status_code == 429
-    assert elapsed < 0.03, f"a throttled login still cost {elapsed:.3f}s"
+        client.post("/api/auth/login", json=body)
+    before = len(calls)
+    throttled = client.post("/api/auth/login", json=body)
+
+    assert throttled.status_code == 429
+    assert len(calls) == before, (
+        f"a throttled login still called scrypt {len(calls) - before} time(s) "
+        "— the limiter is not in front of the KDF")
 
 
 def test_a_throttled_handle_does_not_lock_out_a_different_one(hosted):

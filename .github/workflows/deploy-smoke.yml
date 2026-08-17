@@ -1,0 +1,150 @@
+name: Deploy smoke
+
+# PRD-005a AC8: `docker compose up` on a clean host serves the UI, reports
+# `{"mode": "hosted"}`, takes an admin through `docker compose exec`, and keeps
+# projects and identities across `down`/`up`.
+#
+# Deliberately **not** on `pull_request`. The OCCT wheels make the runtime
+# image multi-GB, so the build costs minutes on every push — the same split
+# `ci.yml` (macOS on PRs, exhaustive nightly) and `geometry-ci.yml` already
+# make. What PRs get instead is the seconds-long `docker compose config
+# --quiet` lint in `ci.yml`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - "compose.yaml"
+      - ".dockerignore"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "agentcad/**"
+      - "frontend/**"
+      - ".github/workflows/deploy-smoke.yml"
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: docker compose up
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # The guard requires `Host` to equal this origin's host, so every curl
+      # below must be addressed to `localhost` and not to `127.0.0.1`.
+      AGENTCAD_PUBLIC_ORIGIN: http://localhost:8630
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write .env
+        run: |
+          {
+            echo "AGENTCAD_PUBLIC_ORIGIN=$AGENTCAD_PUBLIC_ORIGIN"
+            echo "AGENTCAD_SECRET_KEY=$(openssl rand -hex 32)"
+          } > .env
+
+      # Plain `docker compose build`, and no cross-run layer cache. Exporting
+      # to the GHA cache needs `docker buildx bake`, which would make CI build
+      # the image by a different path from the one an operator runs — and this
+      # job exists to prove *that* path. It runs weekly and on main, not per
+      # PR, so the cold build is affordable.
+      - name: Build the image
+        run: docker compose build
+
+      - name: Start the instance
+        run: docker compose up -d
+
+      - name: Wait for the healthcheck
+        run: |
+          for _ in $(seq 1 60); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' \
+              "$(docker compose ps -q agentcad)")
+            echo "health: $state"
+            [ "$state" = "healthy" ] && exit 0
+            [ "$state" = "unhealthy" ] && break
+            sleep 5
+          done
+          echo "the container never became healthy"
+          exit 1
+
+      - name: /api/health reports hosted, and nothing else
+        run: |
+          body=$(curl -sf "$AGENTCAD_PUBLIC_ORIGIN/api/health")
+          echo "$body"
+          # FR21: trimmed to {status, mode} without a principal. Version,
+          # kernel state, chat availability and sandbox status are a
+          # reconnaissance leak on an anonymous route.
+          python3 - "$body" <<'PY'
+          import json, sys
+          body = json.loads(sys.argv[1])
+          assert set(body) == {"status", "mode"}, body
+          assert body["mode"] == "hosted", body
+          PY
+
+      - name: The UI and the anonymous catalog are served; everything else is 401
+        run: |
+          curl -sf -o /dev/null "$AGENTCAD_PUBLIC_ORIGIN/"
+          curl -sf -o /dev/null "$AGENTCAD_PUBLIC_ORIGIN/js/api.js"
+          curl -sf "$AGENTCAD_PUBLIC_ORIGIN/api/public/packages" | head -c 200
+          echo
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            "$AGENTCAD_PUBLIC_ORIGIN/api/projects")
+          [ "$code" = "401" ] || { echo "anonymous /api/projects -> $code"; exit 1; }
+
+      - name: An admin is created through `docker compose exec`
+        run: |
+          docker compose exec -T agentcad \
+            agentcad admin user add smoke --admin | tee add.txt
+          grep -o "$AGENTCAD_PUBLIC_ORIGIN/api/auth/enrol/[^ ]*" add.txt > enrol.txt
+          test -s enrol.txt
+
+      - name: Enrol and sign in
+        run: |
+          curl -sf -c jar -X POST -H 'Content-Type: application/json' \
+            -H "Origin: $AGENTCAD_PUBLIC_ORIGIN" \
+            -d '{"password":"smoke test password"}' "$(cat enrol.txt)"
+          echo
+          code=$(curl -s -b jar -o /dev/null -w '%{http_code}' \
+            "$AGENTCAD_PUBLIC_ORIGIN/api/projects")
+          [ "$code" = "200" ] || { echo "signed-in /api/projects -> $code"; exit 1; }
+          # AC3: a second use of the same enrolment link is a 404.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' \
+            -H "Origin: $AGENTCAD_PUBLIC_ORIGIN" \
+            -d '{"password":"another one"}' "$(cat enrol.txt)")
+          [ "$code" = "404" ] || { echo "enrolment replay -> $code"; exit 1; }
+
+      - name: A real project, so restart persistence is about real state
+        run: |
+          curl -sf -b jar -X POST -H 'Content-Type: application/json' \
+            -H "Origin: $AGENTCAD_PUBLIC_ORIGIN" \
+            -d '{"name":"smoke"}' "$AGENTCAD_PUBLIC_ORIGIN/api/projects"
+          echo
+
+      - name: Restart, and the account, session and project all survive
+        run: |
+          docker compose down
+          docker compose up -d
+          for _ in $(seq 1 60); do
+            curl -sf -o /dev/null "$AGENTCAD_PUBLIC_ORIGIN/api/health" && break
+            sleep 5
+          done
+          # The SAME cookie jar: sessions live on the volume, not in memory.
+          curl -sf -b jar "$AGENTCAD_PUBLIC_ORIGIN/api/auth/session"
+          echo
+          curl -sf -b jar "$AGENTCAD_PUBLIC_ORIGIN/api/projects" | grep -q smoke
+          docker compose exec -T agentcad agentcad admin user list | grep -q smoke
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 400
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

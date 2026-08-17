@@ -1438,6 +1438,198 @@ identity and resources:**
   catalog package declares the same. The format requires a licence per
   package; third-party packages choose their own.
 
+## Hosted-core gotchas (PRD-005a — read before touching `server/security.py`, `core/authstore.py`, `core/appmode.py` or the deployment)
+
+Every item is traceable to a decision in
+`docs/superpowers/specs/2026-08-17-hosted-core-design.md` or to a test.
+Changelogs `0188`–`0197`. Operator-facing reference: `docs/deployment.md`.
+
+**The defining fact, stated before anything else: an account on a hosted
+instance is a shell.** A part script is arbitrary Python
+(`kernel/worker.py:57-59`) and Linux has no worker confinement until PRD-006
+(`kernel/sandbox.py` gates the whole module on `sys.platform == "darwin"`).
+So `member` and `admin` are **not** a security boundary between each other, a
+per-project ACL would be a label rather than a boundary, registration is
+closed by construction (there is no self-registration route), and the trust
+sentence is repeated in four places (FR17: `docs/deployment.md`, the
+`compose.yaml` header, `agentcad admin … --help`, and the output of
+`agentcad admin user add`). Do not add a feature whose safety argument assumes
+otherwise. And when you print it, do **not** reach for `str.capitalize()` —
+it lower-cases "Python".
+
+- **`actor_kind` must classify `user:` as human** (`core/proposals.py`). A
+  composed principal `user:nikita/browser:7f3a1b2c` does not start with
+  `browser:`, so before the two-line fix every signed-in human classified as
+  an *agent* — and `ClaimRegistry.acquire` returns `None` for a non-human
+  holder while `_blocking` never blocks an agent. The day hosting turned on,
+  per-part claims would have silently stopped protecting anybody, with no
+  error anywhere. `tests/test_claims.py` drives the real registry, not the
+  classifier.
+
+- **The anonymous surface is nine entries in one frozenset**
+  (`server/security.py`: `PUBLIC_PATHS` + `PUBLIC_PREFIXES`) and default-deny
+  means **a route pack added tomorrow is private with no action by its
+  author**. There is deliberately no per-route `@public` decorator: a pack
+  author must not be able to open the surface from their own module.
+  `tests/test_hosted_surface.py` asserts the reachable set by **equality**, so
+  a forgotten removal fails too.
+
+- **`is_public` is `startswith` on `PUBLIC_PREFIXES`, so every prefix must end
+  in `/`.** `/api/public` without the slash would make `/api/publicity` public.
+  Each addition gets its own negation test in
+  `test_paths_that_must_not_be_public`, and `/api/public`, `/api/publicity`
+  and `/jsx/evil.js` are already in that list.
+
+- **A naive `[r.path for r in app.routes]` walk sees 23 of ~83 routes.**
+  FastAPI 0.141 leaves each `include_router` as one opaque `_IncludedRouter`
+  with `path = None`, so the obvious enumeration misses **every** route pack —
+  exactly the population it exists to police, passing green while a pack goes
+  public. Use `tests/conftest.flatten_routes`, which recurses and is
+  cross-checked against `app.openapi()`.
+
+- **`routes_packages.py`'s `search` and `preview` walk EVERY configured
+  index**, `scope: "private"` ones included. That is why they stay
+  authenticated and why the anonymous catalog read is a separate pack
+  (`server/routes_public.py`) that filters on `scope == "public"` **before**
+  it looks anything up. Every miss on that pack raises **one name-free
+  message**, so a private package and a nonexistent one are indistinguishable;
+  a private index configured first must not shadow a public package of the
+  same name. It never calls `refresh()`, so an anonymous request cannot make
+  the server perform a network git fetch.
+
+- **Registration order: `security.install(cfg)` must run BEFORE
+  `build_registry(service)`.** A tool pack decides *at registration time*
+  whether its tool can run (the FEM precedent), and `whoami` only registers in
+  hosted mode. `build_registry` is evaluated in the caller, before
+  `create_app` installs anything — so the obvious order leaves a real hosted
+  server without the tool while every route test still passes. `cli.cmd_serve`
+  and the `hosted` fixture both install first, each with a comment saying why.
+
+- **`security.current_config()` has a process-global fallback, so a router
+  must capture its configuration at MOUNT time, not per request.** Otherwise a
+  *local* app built after a hosted one in the same process grows working auth
+  routes backed by the other app's identity store. `create_app` installs
+  before it mounts packs, which is what makes mount-time capture correct;
+  `routes_auth` and `routes_presence`'s beacon rule both do it, and both have
+  a test that builds a local app after a hosted one.
+
+- **Identity state derives from `config.config_path().parent`, never from
+  `--projects-dir`** (`core/appmode.state_dir()`, with an
+  `AGENTCAD_STATE_DIR` override) — the derivation `AGENTCAD_PACKAGES_DIR` and
+  `AGENTCAD_INDEXES_DIR` already use. That is why PRD-004/011 ephemeral
+  services are unaffected *by construction*, and why setting `AGENTCAD_CONFIG`
+  in a test isolates the identity store for free. No `AgentCADService`
+  constructs or reads it.
+
+- **`fcntl.flock` in `authstore`, because `docker compose exec` is a second
+  writer.** `agentcad admin …` runs as its own process against the same files
+  while the server is up, so the `LocalIndex._index_scope` idiom (registry
+  RLock **plus** an flock on a `.lock` file beside the documents) is
+  load-bearing rather than decorative; a nesting depth counter keeps an inner
+  scope from blocking on its own outer flock. `fcntl` is imported through
+  `try/except ImportError` so the module stays importable on Windows.
+
+- **Staleness has no TTL, and that is the point.** `_read` reuses a cached
+  parse only while `(st_mtime_ns, st_size, st_ino)` is unchanged, and every
+  write stages a random temp file and `os.replace`s it — a new inode every
+  time. So an account disabled or a token revoked through
+  `docker compose exec` is honoured by the running server on its **next**
+  request, with no restart and no polling. `resolve_session` additionally
+  reads the *user row* live, so a role change or a disable takes effect on the
+  next request too. Every read-modify-write re-reads with `fresh=True`; skip
+  that and you drop the other writer's row.
+
+- **Tokens are SHA-256, passwords are scrypt, and the asymmetry is
+  deliberate.** A bearer secret is 256 bits of `secrets.token_urlsafe(32)` —
+  there is nothing to brute-force, and scrypt would put tens of milliseconds
+  on every agent request. A password is human-chosen, so it gets
+  `hashlib.scrypt` at n=2^15, r=8, p=1 (**63 ms measured** on Apple silicon).
+  That is **below** OWASP's scrypt minimum (n=2^17) and the module says so out
+  loud: registration is closed, an account is already RCE on the host so the
+  password is not the weakest link, login is rate-limited per handle *and* per
+  address (which is what NIST SP 800-63B relies on against online guessing),
+  n=2^17 is 4× the memory on a documented 2 vCPU / 4 GB floor, and the
+  parameters are stored **beside every digest**, so raising them re-hashes on
+  next login instead of invalidating accounts.
+
+- **`create_app(security=None)` is the same code path, not a disabled
+  feature.** The middleware branches once at the top and everything after that
+  branch is byte-identical to what local mode ran before. "Local mode is
+  untouched" is therefore a property of the diff rather than a test we have to
+  keep passing. Security is constructed explicitly by the caller and fails
+  closed — unlike `_mount_route_packs` and `_load_tool_packs`, which fail
+  *open* (a module with no `router` is silently skipped), which is the whole
+  argument for the one sanctioned `app.py` edit.
+
+- **The healthcheck must present the configured `Host`.** The hosted guard
+  requires `Host` to equal `AGENTCAD_PUBLIC_ORIGIN`'s host, so the obvious
+  probe — `urlopen("http://127.0.0.1:8630/api/health")` — sends
+  `Host: 127.0.0.1:8630` and is **403**: the container reports *unhealthy
+  while serving perfectly*, which under `restart: unless-stopped` is a restart
+  loop on a healthy instance. `compose.yaml`'s probe dials the loopback
+  interface and *says* it is `$AGENTCAD_PUBLIC_ORIGIN`;
+  `test_the_healthcheck_sends_the_configured_host_header` pins all three
+  parts. The same trap catches any `curl 127.0.0.1` you write against a hosted
+  instance.
+
+- **`X-Agent-Id` is not an identity in hosted mode**; at most it contributes a
+  `<device>` suffix under the authenticated principal. `DEVICE_RE` allows at
+  most one colon, bans the `user:`/`agent:` prefixes and caps at 24 chars —
+  `user:` + 32 + `/` + 24 = 62 ≤ `locks.MAX_CLIENT_ID_CHARS` (which **refuses**
+  rather than truncates). Without the prefix ban, `X-Agent-Id: user:anya`
+  composed to `user:nikita/user:anya`: not an impersonation, but an identity
+  that reads as two people everywhere it is rendered.
+
+- **An invalid bearer never falls back to a valid cookie** on the same
+  request. A revoked token quietly becoming a session is a confused deputy.
+  `resolve_principal` never raises either: a store that cannot be read yields
+  no principal, which fails closed.
+
+- **A registry-level tool refusal has no seam, and one gap is left open on
+  purpose.** FR19 disables `POST /api/projects/open` and the absolute-path
+  form of `import_cad_file` in hosted mode. The registry-level `open_project`
+  **tool** is *not* refused: it lives in `core/tools.py`, which this feature's
+  constraints forbid editing, and there is no unregister seam. It is reachable
+  only by an authenticated member — who can already run arbitrary Python by
+  writing a part script — so it adds nothing to the threat model, but it is a
+  real gap in FR19's letter. Closing it means either a tool-level mode guard
+  in `core/tools.py` or an unregister seam on `ToolRegistry`; both are core
+  edits and neither belongs in a follow-up commit made in a hurry.
+
+- **A tool refusal is a 200 with an `{"error": …}` payload, not a 403.**
+  `ToolRegistry.call` converts every `AppError` that way *by design* so agents
+  can read and react. `import_cad_file`'s hosted refusal is therefore pinned as
+  `authz_error` in the payload plus "nothing was ingested" — asserting a status
+  code there would be asserting against the house contract.
+
+- **The CSRF Origin rule is applied to anonymous state-changing routes too**,
+  not only authenticated ones. A cross-site `POST /api/auth/login` that signs a
+  victim into the *attacker's* account is a real if quiet attack. Bearer
+  requests are exempt (a browser cannot attach one cross-site).
+
+- **Admin HTTP routes require a signed-in *person*** (`kind == "user"`), so an
+  `admin`-role bearer token is `403`: a credential must not mint another
+  credential while there is no audit log. And `POST /api/auth/logout` with no
+  session is **401**, not 200 — logout is not on the nine-entry allowlist, and
+  widening the allowlist to make that neat would be the wrong fix.
+
+- **`agentcad admin …` builds `AuthStore(state_dir()/"auth")` directly** — no
+  service, no kernel, no port — which is what makes it cheap over
+  `docker compose exec` and what lets it work while the server is down. Keep
+  it that way.
+
+- **The image copies `/app` wholesale on purpose.** `_resources.resource_root()`
+  is the *parent* of the `agentcad` package, so `frontend/`, `examples/` and
+  `catalog/` must sit beside it. A `pip install agentcad` into `site-packages`
+  serves a 404 for the UI and silently loses the bundled catalog. The runtime
+  image also installs **`git`**, which `core/history.py` shells out to and
+  which no CI step ever had to install because runners ship it.
+
+- **The compose smoke job is not on `pull_request`.** The OCCT wheels make the
+  image multi-GB; PRs get the seconds-long `docker compose config --quiet`
+  lint instead, and `deploy-smoke.yml` runs on main, weekly and on demand —
+  the same split `ci.yml` and `geometry-ci.yml` already make.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script

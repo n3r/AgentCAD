@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 73 tools (76 with the
+Agents drive AgentCAD through a single tool surface — 83 tools (86 with the
 optional `[fem]` extra installed), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -44,6 +44,20 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
   payload — over REST at HTTP **200**, not 409 — because a conflict is a
   workflow state to render, not a failure. Everything else keeps the usual
   `validation_error` / `notfound_error` / `conflict_error` mapping.
+- **Hosted mode (PRD-005a) adds three error types**, in the same structured
+  envelope. Over HTTP the `type` is the class name — `AuthError` (401, no
+  usable credential), `AuthzError` (403, a valid principal that may not do
+  this), `RateLimitedError` (429, with `details.retry_after_s`). Through a
+  **tool call** the same failures arrive as the registry's snake_case payload
+  at HTTP 200, like every other expected failure: `auth_error`, `authz_error`,
+  `ratelimited_error`. Do not test a tool refusal by status code. (The names
+  are `AuthzError`/`ratelimited_error`, not PRD-005a's prose
+  `permission_error`/`rate_limited`: `PermissionError` is a builtin this
+  codebase catches around filesystem work, and shadowing it in `core.model`
+  would be a trap.)
+- `AuthError` deliberately says nothing about *why*. "No such handle", "wrong
+  password", "never enrolled", "disabled" and "expired session" are one
+  answer, because the differences are a user-enumeration oracle.
 - A review thread's anchor resolves into **four** statuses, and they are not
   interchangeable: `ok` (it still points at what it pointed at), `moved`
   (re-matched at a **new** address, which the block carries), `orphaned` (the
@@ -889,10 +903,24 @@ part, holder, holder_kind, expires_at, overridden_by?}`. With
 all four ride the existing `/ws` broadcast and none of them is
 `project_changed`.
 
-**Identity is self-asserted.** `X-Agent-Id` is an unvalidated header, so
-presence, claims, authorship and mentions are bookkeeping and coordination, not
-authentication or access control. That is honest for a single-node,
-127.0.0.1-only server; PRD-005 is what makes it a principal.
+**Identity is self-asserted in local mode, and only there.** On the default
+`127.0.0.1` server `X-Agent-Id` is an unvalidated header, so presence, claims,
+authorship and mentions are bookkeeping and coordination, not authentication or
+access control. That is honest for a single-node local tool, and it is
+unchanged.
+
+**In hosted mode (`AGENTCAD_MODE=hosted`, PRD-005a) `X-Agent-Id` is not an
+identity.** The server derives the principal from a session cookie or an
+`Authorization: Bearer acad_…` token and composes the client id itself:
+`user:<handle>/<device>` for a person, `agent:<token-name>` for a credentialed
+agent. `X-Agent-Id` at most contributes the `<device>` suffix, namespaced under
+the authenticated principal, and it may not carry a `user:`/`agent:` prefix or
+a second colon. That composed string is what claims, the presence roster,
+comment authorship and history trailers all render — so a claim holder reads
+`user:nikita/browser:7f3a1b2c`, and `holder_kind` reads `human` for a person
+and `agent` for a token. Every route and the WebSocket require a principal
+except a nine-entry public allowlist. `whoami` (below) is how an agent asks who
+the server thinks it is.
 
 ### Sketch solving
 
@@ -1062,6 +1090,33 @@ extra, the routes answer 501 with an install hint.
 
 Routes: `POST /api/projects/{proj}/parts/{id}/fem`, `.../fem/modal`,
 `.../fem/thermal`.
+
+### Hosted mode — `whoami` and the bearer token
+
+Registered **only** when this process is serving a hosted app — the same
+"never show an agent a tool that cannot run" rule the FEM tools follow. On a
+local server the tool does not exist.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `whoami` | — | `{principal, kind, role, mode}`. `principal` is the **composed** identity (`agent:ci`, or `user:nikita/browser:7f3a1b2c`) — the same string claims, the roster and history trailers carry, not a bare handle. `kind` is `agent` or `user`; `role` is `admin` or `member`; `mode` is `hosted`. |
+
+**Connecting an MCP client to a hosted instance.** Set `AGENTCAD_URL` to the
+public origin and `AGENTCAD_TOKEN` to a bearer minted with
+`agentcad admin token add <name>`; the proxy attaches
+`Authorization: Bearer …` to every call. With a non-loopback `AGENTCAD_URL`
+the proxy **refuses to auto-spawn a local server** and says so on stderr —
+silently starting an empty local instance because the remote one is
+unreachable would be a confusing lie. Clearing the token turns the same calls
+into `401`. The decision is made on the parsed **host**, so
+`http://127.0.0.1.evil.example` is remote.
+
+Bearer requests are exempt from the browser `Origin` rule (a browser cannot
+attach a bearer cross-site), a token carries the role it was minted with, and
+`admin token revoke` takes effect on the **next** call. An `admin`-role token
+still cannot manage users or mint another token: those routes require a
+signed-in person, because a credential minting a credential is the escalation
+shape to avoid while there is no audit log.
 
 ## A worked loop
 

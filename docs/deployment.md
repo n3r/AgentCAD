@@ -172,6 +172,51 @@ outstanding link for that handle.
 
 ---
 
+## What a stranger can reach
+
+The whole anonymous surface, enumerated. It is a literal in one file
+(`agentcad/server/security.py`), and a test asserts the reachable set by
+**equality** — a route pack added tomorrow is private with no action by its
+author, and a forgotten entry fails the build rather than passing quietly.
+
+| Method | Path | What it is |
+|---|---|---|
+| `GET` | `/` | `index.html` off disk — the app needs a login page |
+| `GET` | `/js/**`, `/css/**`, `/vendor/**` | static files off disk |
+| `GET` | `/api/health` | trimmed to `{status, mode}` |
+| `POST` | `/api/auth/login` | rate-limited per handle **and** per address; every failure is one indistinguishable answer |
+| `GET`·`POST` | `/api/auth/enrol/{token}` | single-use, 7-day, admin-minted, unguessable |
+| `GET` | `/api/public/packages` | the parts catalog, `scope: "public"` indexes only |
+| `GET` | `/api/public/packages/{name}` | ditto |
+| `GET` | `/api/public/packages/{name}/versions/{version}` | ditto — the pre-generated metadata |
+| `GET` | `/api/public/packages/{name}/versions/{version}/preview` | a shipped `.png`, resolved inside the version directory |
+
+Nine entries, every one a file read. **Zero kernel calls**, proved by a test
+that exercises the whole surface with the kernel instrumented — with a positive
+control, so a broken counter cannot make it pass.
+
+**A private index stays private.** The catalog routes serve only indexes whose
+`index.json` declares `scope: "public"`; a package carried only by a
+`scope: "private"` index answers exactly the same `404` as a package that does
+not exist, so the surface is not an oracle for what you have. The
+*authenticated* `GET /api/packages/search` does walk every index, which is why
+it is not public and why this is a separate route pack rather than a flag on
+that one. If you configure a private index, configure it with `scope:
+"private"` in `~/.agentcad/config.json` (inside the container: `/data/home`) —
+the default is `public`.
+
+Everything else — every project, every part, every geometry route, the
+WebSocket, and the package management routes — requires a session cookie or a
+bearer token. Anonymous requests to them get `401`, including to paths that do
+not exist, because the guard answers before routing and a `404` would be a free
+map of the instance.
+
+Responses on the public routes carry `Cache-Control: public, max-age=300`, so a
+CDN or reverse proxy in front absorbs a flood. There is no per-IP limit on them
+in this release; the payload is a static file read.
+
+---
+
 ## Agents, tokens and MCP
 
 ```bash

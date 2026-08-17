@@ -176,6 +176,21 @@ def test_dot_env_is_never_built_into_the_image():
     assert ".venv/" in [line.strip() for line in ignored]
 
 
+def test_dot_env_is_never_committed_either():
+    """The quick start is literally `cp .env.example .env`, and the file it
+    makes holds `AGENTCAD_SECRET_KEY`. Keeping it out of the image
+    (`.dockerignore`) and out of the repository (`.gitignore`) are the same
+    requirement; only the first was covered, and an operator who follows the
+    documented steps is exactly the person who would push it."""
+    ignored = [line.strip() for line
+               in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()]
+    assert ".env" in ignored
+    # ...and not by a blanket rule that would also swallow the template the
+    # docs tell people to copy.
+    assert ".env.example" not in ignored
+    assert ENV_EXAMPLE.is_file()
+
+
 def test_the_trust_sentence_is_in_the_compose_header_and_the_docs():
     assert TRUST in COMPOSE.read_text(encoding="utf-8")
     assert TRUST in DEPLOYMENT_DOC.read_text(encoding="utf-8")

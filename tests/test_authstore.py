@@ -263,9 +263,24 @@ def test_a_token_with_no_ttl_does_not_expire(store, monkeypatch):
 
 
 def test_secrets_are_not_stored_raw(store, tmp_path):
+    """`split("_", 2)`, and the maxsplit is the whole point.
+
+    The plan's `bearer.split("_")[2]` checked only the secret's first
+    underscore-free *fragment*, because `token_urlsafe`'s alphabet contains
+    `_` — and roughly once in sixty-four that fragment is a single character,
+    at which point the assertion is "does the letter `0` appear in a
+    64-hex-digit digest", which it does. That is not a weaker test, it is a
+    **randomly red** one: it took the full suite down at
+    `assert '0' not in '{...}'` on the third consecutive run of this branch.
+    With the maxsplit, `[2]` is the entire secret, underscores and all —
+    which is also the module's own idiom (every split in `authstore` is
+    `split("_", 2)`).
+    """
     bearer = store.add_token("ci")
     blob = (tmp_path / "auth" / "tokens.json").read_text()
-    assert bearer.split("_")[2] not in blob
+    secret = bearer.split("_", 2)[2]
+    assert len(secret) >= 40, secret          # the whole thing, not a fragment
+    assert secret not in blob
 
 
 def test_the_whole_token_secret_is_absent_even_when_it_contains_underscores(

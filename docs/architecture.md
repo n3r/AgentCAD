@@ -18,7 +18,7 @@ the same service humans use through the browser UI.
 │ FastAPI server — 127.0.0.1:<port>   (agentcad serve)        │
 │                                                             │
 │   ToolRegistry ──► AgentCADService ──► ProjectStore (files) │
-│   (73 tools,       (cache, events,     ~/AgentCAD/projects  │
+│   (83 tools,       (cache, events,     ~/AgentCAD/projects  │
 │    single source    orchestration)     or --projects-dir    │
 │    of truth)             │                                  │
 │                          │ line-delimited JSON-RPC (stdio)  │
@@ -28,7 +28,7 @@ the same service humans use through the browser UI.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-The registry registers **73 tools** (76 with the optional `[fem]` extra
+The registry registers **83 tools** (86 with the optional `[fem]` extra
 installed — `fem_static`, `fem_modal`, `fem_thermal` register only when their
 deps are importable).
 
@@ -38,6 +38,34 @@ build123d once (~3 s) and then executes part scripts in ~10–100 ms per
 rebuild. The server never imports OCCT; if a script hangs or crashes a
 kernel, that worker is killed and respawned (`agentcad/kernel/client.py`) and
 the server keeps running.
+
+**Hosted mode (PRD-005a)** is the same two tiers with one thing added in front
+and nothing rearranged behind:
+
+```
+   internet ──► [ reverse proxy / TLS ] ──► ┌──────────────────────────────┐
+                                            │ FastAPI — 0.0.0.0:8630       │
+   anonymous ─────────────────────────────► │  security.guard (default     │
+     nine public entries only               │  deny; 9 public entries)     │
+                                            │        │ principal           │
+   member (session cookie) ────────────────►│        ▼                     │
+   agent   (Bearer acad_…) ────────────────►│  set_client_id("user:nikita/ │
+                                            │   browser:7f3a1b2c")         │
+                                            │  ToolRegistry ─► Service ─►  │
+                                            │  ProjectStore  /data/projects│
+                                            └──────────────┬───────────────┘
+                                        AuthStore /data/state/auth/*.json
+                                        (4 atomic JSON docs, flock-guarded)
+```
+
+`AGENTCAD_MODE=hosted` is explicit and never inferred; with it unset the
+middleware runs the pre-005a local path unchanged (`create_app(security=None)`
+is the same code path, not a disabled feature). The resolved principal is set
+through the existing `locks.set_client_id`, so turn locks, per-part claims,
+presence, comments, notifications and history attribution became
+principal-aware with **zero** changes to PRD-008 code. Identity state lives
+beside the config file (`core/appmode.state_dir()`), never inside a project
+and never under `--projects-dir`. See `docs/deployment.md`.
 
 The service talks to a **`KernelPool`** (`agentcad/kernel/pool.py`) rather
 than a bare client: it fans requests across N warm workers so multi-part
@@ -759,3 +787,39 @@ on every materialisation, so a tampered download, checkout or cache is
 refused. An index that lies about both the tree and the id is a compromised
 index; the `signatures` slot is reserved and empty for that, and PRD-006 is
 the confinement backstop.
+
+**Hosted mode (PRD-005a) changes who can reach that trust model, and says so
+plainly.** With `AGENTCAD_MODE=hosted` the server binds a public interface and
+every request resolves to an authenticated principal or to *anonymous*. The
+authentication is real — invite-only accounts, server-side sessions, revocable
+bearer tokens, default-deny on every route — but **it is not confinement**. A
+part script is arbitrary Python (`kernel/worker.py`) and the seatbelt profile
+is macOS-only (`kernel/sandbox.py` gates on `sys.platform == "darwin"`), so on
+the Linux host a deployment actually runs on there is none. Therefore:
+
+- **An account on a hosted instance is a shell.** Give one only to someone you
+  would give a shell to. Registration is closed by construction — there is no
+  self-registration route; an admin mints a single-use enrolment link.
+- **`member` and `admin` are not a security boundary between each other.**
+  Admins manage users and tokens; both can run code. Authorization is
+  deliberately flat because, with RCE available to every member, a per-project
+  ACL would be a *label* and not a boundary. PRD-005 revisits this once PRD-006
+  makes isolation real.
+- **The anonymous surface is nine entries and executes nothing**: `/`, the
+  static `/js`, `/css`, `/vendor` mounts, a `/api/health` trimmed to
+  `{status, mode}`, `POST /api/auth/login`, `GET|POST /api/auth/enrol/{token}`,
+  and four read-only `/api/public/packages…` routes that serve pre-generated
+  `scope: "public"` index JSON and shipped preview PNGs. Every one of them is a
+  file read; a test exercises the whole surface with the kernel instrumented
+  and asserts **zero** kernel requests, with a positive control on the counter.
+  A package carried only by a `scope: "private"` index answers the same 404 as
+  one that does not exist.
+- **What hosted mode refuses rather than confines**: `POST /api/projects/open`
+  and the absolute-path form of `import_cad_file` (both are host-filesystem
+  reach), a presence beacon naming an identity outside the caller's own
+  namespace, and the full health body without a principal.
+- **Residuals it does not close, named in the PRD**: an authenticated DoS
+  (any member can queue an expensive kernel job), no queryable audit log
+  (history trailers and the proposal/comment `audit.jsonl` carry attribution),
+  no envelope encryption of the state files (`0600` in a volume), and an
+  unmetered — but cacheable and static — anonymous read.

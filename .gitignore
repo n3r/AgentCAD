@@ -11,3 +11,8 @@ node_modules/
 .DS_Store
 .tiden/
 .history/
+
+# PRD-005a: `cp .env.example .env` holds AGENTCAD_SECRET_KEY. It is in
+# .dockerignore so it never lands in an image layer; this keeps it out of the
+# repository for the same reason.
+.env

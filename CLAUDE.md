@@ -131,6 +131,32 @@ This project is built skill-first. Use the Superpowers process skills:
   process-global) · `manifest_merge.package_problems` catches the
   requirement-from-theirs + lock-from-ours **hybrid nobody authored** · the
   gate **warns** (never reds) when a swept parameter moves no geometry.
+- Hosted core (`server/security.py`, `core/authstore.py`, `core/appmode.py`;
+  changelogs 0188–0197): **an account is a shell** until PRD-006 (a part script
+  is arbitrary Python and Linux has no confinement), so roles are not a
+  boundary and registration is closed — say it, don't soften it · `actor_kind`
+  must read `user:` as **human** or every hosted person silently loses their
+  claims · the anonymous surface is **nine entries in one frozenset** and
+  default-deny makes a new pack private with no action by its author; there is
+  deliberately **no `@public` decorator** · `is_public` is `startswith`, so
+  every prefix ends in `/` (`/api/public` would open `/api/publicity`) and each
+  addition gets a negation test · a naive `[r.path for r in app.routes]` walk
+  sees **23 of 83** routes (FastAPI leaves `include_router` opaque) — use
+  `conftest.flatten_routes` · `routes_packages`' search/preview walk **every**
+  index, so the anonymous catalog is a **separate** scope-filtered pack whose
+  misses share **one name-free 404** · `security.install()` must run **before**
+  `build_registry` or hosted-only tools register nowhere · a router captures
+  `current_config()` at **mount** time (the slot is process-global) · identity
+  state comes from `config.config_path().parent`, **never** `--projects-dir` ·
+  `fcntl.flock` because `docker compose exec` is a second writer, and the read
+  cache keys on `(mtime_ns, size, inode)` so a revocation lands on the **next**
+  request with no restart · tokens are **sha256**, passwords **scrypt n=2^15**
+  (63 ms measured, below OWASP's n=2^17 and argued out loud) · a hosted
+  healthcheck or `curl` must send `Host: $AGENTCAD_PUBLIC_ORIGIN` — `127.0.0.1`
+  is **403** and reads as "unhealthy while serving perfectly" · a tool refusal
+  is a **200 with an `{"error": …}` payload**, not a 403 · the `open_project`
+  **tool** is a known, deliberate FR19 gap (`core/tools.py` is off-limits, no
+  unregister seam; reachable only by a member who already has RCE).
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests
@@ -154,7 +180,8 @@ commit manifest-reformatting churn or the venv.
 ## Deeper docs
 
 `AGENTS.md` (contributor guide) · `docs/architecture.md` · `docs/agent-api.md`
-· `docs/part-authoring.md` · `docs/user-guide.md` · `docs/packages.md`
+· `docs/part-authoring.md` · `docs/user-guide.md` · `docs/deployment.md`
+(hosted mode: `docker compose`, accounts, tokens, backup) · `docs/packages.md`
 (packages, indexes, the publish gate, the bundled catalog) · `docs/geometry-ci.md`
 (`agentcad check` + the GitHub Action) · `docs/roadmap.md` (PRD
 index) · `docs/prd/` (one PRD per feature) · `docs/market_research.md` ·

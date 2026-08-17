@@ -79,6 +79,14 @@ jobs:
         env:
           AGENTCAD_KERNEL_POOL_SIZE: "1"
 
+      # Seconds, no image build: catches a malformed compose file on every PR.
+      # The full `docker compose up` smoke lives in deploy-smoke.yml, off the
+      # PR path, because the OCCT wheels make the image multi-GB — the same
+      # split ci.yml and geometry-ci.yml already make.
+      - name: Lint the compose file (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: docker compose -f compose.yaml config --quiet
+
   exhaustive:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.exhaustive)
     name: pytest (macos-latest, exhaustive)

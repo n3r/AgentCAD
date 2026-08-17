@@ -562,6 +562,17 @@ TRUST_SENTENCE = (
     "give one only to someone you would give a shell to"
 )
 
+
+def _trust_sentence_capitalized() -> str:
+    """`TRUST_SENTENCE` as its own sentence.
+
+    **Not `str.capitalize()`**, which lower-cases everything after the first
+    character and turns "arbitrary Python" into "arbitrary python" — the
+    language is a proper noun, and this string is the one FR17 puts in front of
+    every person who is about to be handed an account.
+    """
+    return TRUST_SENTENCE[0].upper() + TRUST_SENTENCE[1:]
+
 _TRUST_NOTE = (
     f"WARNING: {TRUST_SENTENCE}.\n"
     "A part script is arbitrary Python (agentcad/kernel/worker.py) and Linux "
@@ -1272,13 +1283,13 @@ def main() -> None:
         description="Create, list and disable accounts on a hosted instance. "
                     "Operates directly on the identity state files, so it "
                     "works over `docker compose exec` with no running server "
-                    "and starts no kernel. " + TRUST_SENTENCE.capitalize() + ".")
+                    "and starts no kernel. " + _trust_sentence_capitalized() + ".")
     admin_sub = p.add_subparsers(dest="admin_command",
                                  metavar="{user,token,enrol}")
 
     user_p = admin_sub.add_parser(
         "user", help="create, list and disable accounts",
-        description=TRUST_SENTENCE.capitalize() + ".")
+        description=_trust_sentence_capitalized() + ".")
     user_sub = user_p.add_subparsers(dest="admin_action",
                                      metavar="{add,list,disable}")
 
@@ -1305,7 +1316,7 @@ def main() -> None:
         description="Bearer tokens are how an agent, a CI job or a remote MCP "
                     "client authenticates (AGENTCAD_TOKEN). A token is shown "
                     "once and stored only as a SHA-256 digest. "
-                    + TRUST_SENTENCE.capitalize() + ".")
+                    + _trust_sentence_capitalized() + ".")
     token_sub = token_p.add_subparsers(dest="admin_action",
                                        metavar="{add,list,revoke}")
 

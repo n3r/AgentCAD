@@ -1,4 +1,5 @@
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -138,7 +139,7 @@ class CountingKernel:
 
 
 @pytest.fixture
-def hosted(kernel, tmp_path):
+def hosted(kernel, tmp_path, monkeypatch):
     """`(client, store)` for a hosted app with one enrolled admin, `nikita`."""
     from fastapi.testclient import TestClient
 
@@ -148,6 +149,14 @@ def hosted(kernel, tmp_path):
     from agentcad.server import security as security_module
     from agentcad.server.app import create_app
     from agentcad.server.security import SecurityConfig
+
+    # Slice 7 gave the hosted app a route that reads `service.packages`, which
+    # resolves its index configuration through `config.load_config()` — the
+    # REAL `~/.agentcad/config.json` unless this is set. Without it a hosted
+    # test would load the developer's own indexes (git ones included, which
+    # shell out to git), so the isolation is here rather than in the one test
+    # file that noticed.
+    monkeypatch.setenv("AGENTCAD_CONFIG", str(tmp_path / "cfg" / "config.json"))
 
     service = make_test_service(tmp_path / "projects", kernel)
     counter = CountingKernel(service.kernel)
@@ -193,6 +202,83 @@ def hosted_app(hosted_client):
 @pytest.fixture
 def kernel_counter(hosted_client):
     return hosted_client.agentcad_kernel
+
+
+@pytest.fixture
+def hosted_with_catalog(hosted_client):
+    """The hosted app with the bundled `catalog/` configured (scope: public).
+
+    `cli._register_catalog`'s declaration, made without starting a CLI — the
+    `tests/test_catalog.py::bundled` precedent. `reload_indexes()` is explicit
+    because `PackageManager.indexes` caches on first read.
+    """
+    from agentcad.cli import bundled_index_entries
+
+    service = hosted_client.agentcad_service
+    service.bundled_indexes = bundled_index_entries()
+    service.packages.reload_indexes()
+    assert [ix.name for ix in service.packages.indexes] == ["agentcad-core"]
+    return hosted_client
+
+
+PRIVATE_PACKAGE = "acme-internal"
+
+
+def configure_private_index(client, root, package_name=PRIVATE_PACKAGE):
+    """Configure a `scope: "private"` local index carrying *package_name*.
+
+    Derived from the bundled catalog's own `din625` entry — copied directory
+    and all — so it is a genuinely valid index rather than a hand-written
+    document that might be rejected for an unrelated reason and let a leak
+    test pass by accident. Configured FIRST, so it also wins precedence: a
+    public read that walked `indexes` in order without filtering on scope
+    would serve it.
+    """
+    import json
+    import os
+    import shutil
+
+    from agentcad import config as user_config
+    from agentcad._resources import resource_root
+
+    # This writes a CONFIG FILE, and `config.config_path()` falls back to the
+    # developer's real `~/.agentcad/config.json`. Refuse rather than trust the
+    # caller: a helper that silently reconfigured somebody's own indexes would
+    # be found long after the test that did it.
+    override = os.environ.get("AGENTCAD_CONFIG")
+    assert override, "set AGENTCAD_CONFIG before configuring an index"
+    real = Path.home() / ".agentcad"
+    assert real not in Path(override).resolve().parents, override
+
+    catalog = resource_root() / "catalog"
+    doc = json.loads((catalog / "index.json").read_text(encoding="utf-8"))
+    entry = dict(doc["packages"]["din625"]["versions"]["1.0.0"])
+    entry["path"] = f"{package_name}/1.0.0"
+    entry["summary"] = "internal only, never anonymously readable"
+
+    root = Path(root)
+    shutil.copytree(catalog / "din625" / "1.0.0", root / package_name / "1.0.0")
+    doc["name"] = "acme"
+    doc["scope"] = "private"
+    doc["packages"] = {package_name: {"versions": {"1.0.0": entry}}}
+    (root / "index.json").write_text(json.dumps(doc, indent=2), encoding="utf-8")
+
+    user_config.save_config({"indexes": [
+        {"name": "acme", "kind": "local", "path": str(root),
+         "scope": "private"}]})
+    service = client.agentcad_service
+    service.packages.reload_indexes()
+    assert [ix.name for ix in service.packages.indexes] == ["acme",
+                                                            "agentcad-core"]
+    return package_name
+
+
+@pytest.fixture
+def hosted_with_private(hosted_with_catalog, tmp_path):
+    """`(client, private_name)`: the public catalog **plus** a private index."""
+    name = configure_private_index(hosted_with_catalog,
+                                   tmp_path / "private-index")
+    return hosted_with_catalog, name
 
 
 def login(client, handle=ADMIN_HANDLE, password=ADMIN_PASSWORD):
