@@ -2,11 +2,39 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from .imports import ingest_file, safe_import_name
-from .model import ValidationError
+from .model import AuthzError, ValidationError
 from .tools import Tool, schema
+
+#: Read through ``sys.modules`` rather than imported: a headless registry build
+#: (``agentcad check``, the publish gate) never loads the server, has no hosted
+#: config, and must not pay for FastAPI to learn that. Same shape as
+#: ``core/tools_auth.py``.
+_SECURITY_MODULE = "agentcad.server.security"
+
+
+def _refuse_a_host_path_in_hosted_mode(source: str) -> None:
+    """FR19. ``source`` as an absolute path makes the tool read the *server's*
+    disk, which on a loopback bind was the caller's own disk and on a hosted
+    instance is not.
+
+    Guarded so local behaviour is byte-identical: this is a pack, not a core,
+    and the whole refusal is one early return that never fires without a
+    hosted ``SecurityConfig``.
+    """
+    module = sys.modules.get(_SECURITY_MODULE)
+    cfg = module.current_config() if module is not None else None
+    if cfg is None or not cfg.mode.hosted:
+        return
+    raise AuthzError(
+        "import_cad_file may not read a path on the server in hosted mode. "
+        "Upload the file to the project's imports/ directory first and pass "
+        "its filename.",
+        {"mode": cfg.mode.name},
+    )
 
 
 def register(registry, service) -> None:
@@ -16,6 +44,7 @@ def register(registry, service) -> None:
         # dir, or an absolute path to ingest.
         src = Path(source)
         if src.is_absolute() or "/" in source:
+            _refuse_a_host_path_in_hosted_mode(source)
             name = ingest_file(service.store, project, src.name, str(src))
         else:
             name = safe_import_name(source)

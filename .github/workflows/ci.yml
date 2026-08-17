@@ -68,8 +68,8 @@ jobs:
       - name: Run PR test suite
         if: matrix.suite == 'pr'
         run: |
-          uv run pytest -q -n 2 --dist loadscope -m "not exhaustive" --ignore=tests/test_sketch_bench.py
-          uv run pytest -q tests/test_sketch_bench.py
+          uv run pytest -q -n 2 --dist loadscope -m "not exhaustive" --ignore=tests/test_sketch_bench.py --ignore=tests/test_sketch_drag.py
+          uv run pytest -q tests/test_sketch_bench.py tests/test_sketch_drag.py
         env:
           AGENTCAD_KERNEL_POOL_SIZE: "1"
 
@@ -78,6 +78,14 @@ jobs:
         run: uv run pytest -q -n 2 --dist loadscope -m portability
         env:
           AGENTCAD_KERNEL_POOL_SIZE: "1"
+
+      # Seconds, no image build: catches a malformed compose file on every PR.
+      # The full `docker compose up` smoke lives in deploy-smoke.yml, off the
+      # PR path, because the OCCT wheels make the image multi-GB — the same
+      # split ci.yml and geometry-ci.yml already make.
+      - name: Lint the compose file (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: docker compose -f compose.yaml config --quiet
 
   exhaustive:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.exhaustive)
@@ -100,7 +108,7 @@ jobs:
       # drag budget under parallel co-load twice in the week before this.
       - name: Run complete test suite
         run: |
-          uv run pytest -q -n 2 --dist loadscope --ignore=tests/test_sketch_bench.py
-          uv run pytest -q tests/test_sketch_bench.py
+          uv run pytest -q -n 2 --dist loadscope --ignore=tests/test_sketch_bench.py --ignore=tests/test_sketch_drag.py
+          uv run pytest -q tests/test_sketch_bench.py tests/test_sketch_drag.py
         env:
           AGENTCAD_KERNEL_POOL_SIZE: "1"

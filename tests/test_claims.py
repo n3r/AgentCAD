@@ -651,3 +651,43 @@ def test_a_library_caller_overrides_with_the_context_manager(http):
         locks.client_id_var.reset(token)
     assert service.claims.get(service.store.lock_key("demo"),
                               "box")["holder"] == "browser:bbbbbbbb"
+
+
+def test_composed_principals_keep_prd008_claim_semantics():
+    """AC10: two hosted humans contend; a hosted agent neither takes nor is
+    blocked.
+
+    The assertion shapes are deliberately identical to the
+    ``browser:<nonce>`` cases above, so the *parity* is what the diff shows:
+    a composed ``user:<handle>/<device>`` principal behaves exactly as a bare
+    browser identity does today, and ``agent:<name>`` exactly as ``bot`` does.
+    Without ``actor_kind``'s two prefix tests (PRD-005a FR10) the first
+    assertion returns None and the second one passes for the wrong reason —
+    nobody holds anything, so nobody conflicts with anybody.
+    """
+    claims = ClaimRegistry()
+    alice = "user:alice/browser:aaaaaaaa"
+    bob = "user:bob/browser:bbbbbbbb"
+    agent = "agent:ci"
+
+    taken = claims.acquire("proj", "bracket", alice)
+    assert taken is not None and taken["holder_kind"] == "human"
+    # A second human's acquire returns the STANDING claim unchanged, exactly
+    # as it does for browser identities.
+    assert claims.acquire("proj", "bracket", bob)["holder"] == alice
+    assert claims.acquire("proj", "bracket", agent) is None   # agents never hold
+    assert claims.check("proj", "bracket", agent) is None     # agents never blocked
+
+    with pytest.raises(ConflictError):
+        claims.check("proj", "bracket", bob)                  # humans still are
+
+
+def test_a_composed_principal_still_fits_the_identity_ceiling():
+    """The handle grammar is derived from this arithmetic, not chosen: a
+    32-character handle plus the longest device suffix must still be accepted
+    by ``check_client_id``, which REFUSES rather than truncates."""
+    longest = "user:" + "n" * 32 + "/browser:7f3a1b2c"
+    assert len(longest) == 54 <= locks.MAX_CLIENT_ID_CHARS
+    claims = ClaimRegistry()
+    assert claims.acquire("proj", "bracket", longest)["holder"] == longest
+    assert claims.claim_write("proj", "bracket", longest) is not None
