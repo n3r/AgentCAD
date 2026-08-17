@@ -18,7 +18,7 @@ the same service humans use through the browser UI.
 │ FastAPI server — 127.0.0.1:<port>   (agentcad serve)        │
 │                                                             │
 │   ToolRegistry ──► AgentCADService ──► ProjectStore (files) │
-│   (73 tools,       (cache, events,     ~/AgentCAD/projects  │
+│   (85 tools,       (cache, events,     ~/AgentCAD/projects  │
 │    single source    orchestration)     or --projects-dir    │
 │    of truth)             │                                  │
 │                          │ line-delimited JSON-RPC (stdio)  │
@@ -28,7 +28,7 @@ the same service humans use through the browser UI.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-The registry registers **73 tools** (76 with the optional `[fem]` extra
+The registry registers **85 tools** (88 with the optional `[fem]` extra
 installed — `fem_static`, `fem_modal`, `fem_thermal` register only when their
 deps are importable).
 
@@ -85,9 +85,9 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/core/presence.py` | `PresenceRegistry`: an in-memory, TTL'd (45 s) roster keyed `(lock_key, client_id)`, fed by an HTTP heartbeat and expired lazily on read — never persisted, no background thread. Also `install_claim_guard`/`ensure_*`, the lazy wrapper that teaches `ProjectStore.write_guard` about per-part claims without changing its signature. |
 | `agentcad/core/locks.py` | `TurnLock` (project-wide, explicit) and `ClaimRegistry` (per-part, implicit, human-vs-human, 90 s), plus the client-identity and `write_scope` contextvars that carry "who" and "which part" to the write guard. |
 | `agentcad/core/tools.py` | ToolRegistry — the 17 core tools defined once; discovers and loads `tools_*.py` packs. MCP and chat render from the merged registry. |
-| `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals, specs, run_checks, comments), each exporting `register(registry, service)`. `tools_specs` additionally *wraps* `service._rebuild` and `service.get_part` (the `install_write_guard` precedent) and appends the `specs` gate provider; `tools_run_checks` installs `service.checks` and appends the `checks` gate — and is named for **load order**, since packs load alphabetically and `tools_proposals` resets `gate_providers`. |
+| `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals, specs, run_checks, comments, packages, configs), each exporting `register(registry, service)`. `tools_specs` additionally *wraps* `service._rebuild` and `service.get_part` (the `install_write_guard` precedent) and appends the `specs` gate provider; `tools_run_checks` installs `service.checks` and appends the `checks` gate — and is named for **load order**, since packs load alphabetically and `tools_proposals` resets `gate_providers`. |
 | `agentcad/server/app.py` | Core REST routes (thin), `/api/tools` passthrough, WebSocket channel, static hosting; mounts `routes_*.py` packs under `/api`. |
-| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve + sketch blocks, history, branches/versions/merge, proposals, specs, checks, comments, presence). |
+| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve + sketch blocks, history, branches/versions/merge, proposals, specs, checks, comments, presence, packages, configs + the content-addressed mesh route). |
 | `agentcad/agent/mcp_server.py` | MCP stdio server proxying `/api/tools`; auto-starts the HTTP server when unreachable. |
 | `agentcad/agent/chat.py` | Server-side Anthropic tool-use loop streaming to the UI over the WebSocket. |
 | `frontend/` | Static ES modules (no bundler): Three.js viewport, tree, parameter inspector, CodeMirror editor, chat panel. |
@@ -438,7 +438,7 @@ return:
 
 | Stage | Surface |
 |---|---|
-| `build` | `service._ensure_built` per manifest part |
+| `build` | `service._ensure_built` per manifest part, plus `service._ensure_config_built` per declared configuration (subject `part@config`) |
 | `assembly` | `service._resolved_instances`, then `service.check_interference` (the **service** method — the tool's schema has no `timeout_s`) |
 | `specs` | `service.specs.run` (PRD-003, all three tiers), embedded whole |
 | `drawings` | the registered `generate_drawing` (SVG) and `flat_pattern` tools |
@@ -697,6 +697,90 @@ price is that consumers do not get fixes automatically; `list_packages`
 reports `latest` and `stale`.
 
 Full reference: [`docs/packages.md`](packages.md).
+
+## Configurations
+
+A **configuration** is a named parameter set on a part, living in the manifest
+at `parts.<id>.configs.<name>` in the schema the package format froze
+(`{params, label?, description?}`, validated by
+`packages.format.validate_configuration` — one object, one validator, no
+second copy of the rules). `parts.<id>.active_config` names the one the
+working state is showing; `assembly.instances.<id>.config` binds an instance
+to one. All three are written **only when set**, so a project without a family
+serializes byte-identically to a pre-configuration one and needs no schema
+bump or migration.
+
+**The kernel never sees a configuration.** Resolution is two pure members on
+`PartRecord` — `config_params(name)` (a copy of one configuration's map) and
+`effective_params` (`{**config_params(active), **params}`) — and every
+geometry consumer reads `effective_params` where it used to read `params`.
+Resolution happens on the way *into* a request, never inside
+`ProjectStore.get_part`: a store that resolved would let the next `set_params`
+bake the active configuration into the overrides. "PARAMS defaults <" needs no
+code at all, because `worker._resolve_params` already fills every unset name —
+which is exactly what keeps every pre-existing cache key byte-identical.
+
+**Nothing new entered the cache key.** `_cache_key_for` hashes
+`record.effective_params`, so configuration-awareness is a property of the
+record rather than a new field in the hashed payload: two configurations with
+the same map share one entry, a declared family nobody activated changes no
+key, and every cache entry written before the feature still hits.
+
+**One build path, two entry points.** `service._rebuild(proj, part_id)` keeps
+its signature byte-for-byte — three tool packs monkey-patch it and
+`get_part` with two-positional wrappers, so it cannot grow a `config=` kwarg —
+and its body lives in
+`_build_with(proj, record, *, affinity, status_key, config=None)`. The
+working state calls it with the stored record and the existing 2-tuple
+`_status` slot; a pure-configuration build goes through
+`_ensure_config_built`, which memoizes in a **separate**
+`_config_status[(lock_key, part, config)]` and passes `status_key=None`. That
+separation is why `get_project.parts[].state`, `get_part.status` and the tree
+badge still mean *the working state* — and it is a livelock guard, not
+bookkeeping: with one slot per part, two instances bound to different
+configurations would miss the memo on alternate `get_assembly` reads,
+republish `rebuild_finished` and drive the browser's refresh loop forever.
+`service._record_for(proj, part_id, config)` returns the stored record or a
+derived one whose `params` are the pure configuration map, so
+`_cache_key_for`, `_content_signature`, `_solid_densities` and `_shape_item`
+all work on a configuration build unchanged.
+
+`build_configs` is **serial and de-duplicated by cache key** (compute every
+requested member's pure key, build each distinct key once, fan the row back
+out) with `affinity=part_id` throughout. There is no fan-out and no `--jobs`:
+the same many-variants-of-one-part parallelism was measured at 1.08×/1.40×/1.17×
+against a pre-registered 1.5× bar and deleted in PRD-011, and two members
+sharing a key would race the worker's fixed-name staging file.
+
+**Assembly geometry is content-addressed.** The one-mesh-per-part assumption
+lived in exactly two places — the server's `_status` (above) and the browser's
+`meshBuffers` map — and it is removed rather than patched: `get_assembly`
+publishes each built instance's cache key as `mesh_key`, and the browser
+fetches through `GET /api/projects/{proj}/meshes/{key}?lod=`, a pack route
+that serves `.cache/<key>.acm` behind a `^[0-9a-f]{32}$` gate and **never
+builds** (an unbuilt key is a 404, so a browser cannot storm the kernel
+through it). There is no `?config=` query parameter — one identity for a mesh,
+not two. Part mode needed no mesh work at all: `active_config` resolves in the
+manifest path, so the part-keyed route already serves the active
+configuration's geometry.
+
+Binding validation lives in `ProjectStore.set_instances`, beside the existing
+unknown-part and dangling-mate refusals, because three writers reach the store
+and only the store sees all three. The merge reaches
+`parts.<id>.configs.<name>.params.<param>` (the key-space table in [Branches,
+versions and merges](#branches-versions-and-merges) above), and
+`manifest_merge.config_problems` reports the hybrid a clean key-wise merge can
+still produce — a binding whose configuration the other branch removed.
+
+Reached through the ordinary extension points: `core/tools_configs.py` (five
+tools, sorting at `con` — before `drawing`, `holes`, `packages`, `proposals`,
+`specs` and `vision`, so it reads `service.specs` and `service.packages`
+inside handlers behind `getattr` and never touches `gate_providers`),
+`server/routes_configs.py`, and `frontend/js/configs.js` plus the config bar
+in `inspector.js`.
+
+Full reference: [`docs/agent-api.md`](agent-api.md#configurations) and the
+user-facing [`docs/user-guide.md`](user-guide.md#configurations).
 
 ## Anatomy of one rebuild
 

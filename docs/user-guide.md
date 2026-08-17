@@ -22,7 +22,7 @@ UI after a second. The other entry points:
 | `agentcad serve` | Start the server; no browser (`make serve` adds `--no-open` explicitly). |
 | `agentcad open` | Serve **and** open `http://127.0.0.1:<port>` in the default browser. |
 | `agentcad new <name>` | Create an empty project on disk without starting the server. |
-| `agentcad export <project> <part> --format step\|stl\|3mf [-o OUT]` | Headless one-shot export. |
+| `agentcad export <project> <part> --format step\|stl\|3mf [--config NAME] [-o OUT]` | Headless one-shot export. `--config` exports one declared [configuration](#configurations) to `exports/<part>_<config>.<format>`. |
 | `agentcad check [--project P] [--ref R]` | Certify a whole project headlessly — rebuild, assembly, specs, drawings — writing a JSON report and a markdown summary and answering with an exit code (`0` green, `1` red, `2` no verdict). See [geometry-ci.md](geometry-ci.md). |
 | `agentcad mcp` | The MCP stdio server for external agents — see [agent-api.md](agent-api.md). |
 | `make app` | Build `dist/AgentCAD.app`, a macOS wrapper that runs `agentcad open` (logs to `~/Library/Logs/AgentCAD.log`). |
@@ -144,6 +144,10 @@ Build-state dot on the right of a row:
   details are in the inspector's error banner;
 - **no dot** — built fine (or not built yet this session).
 
+A part that declares [configurations](#configurations) also wears a small
+**badge**: the configuration it is currently showing, or `cfg` at base (hover
+for `N configurations · active: …`).
+
 **＋** in the section header creates a part: you are prompted for an id
 (`[a-z][a-z0-9_]{0,39}`), and the part starts from the default template — a
 parametric rounded plate with four parameters — so there is immediately
@@ -166,6 +170,13 @@ at the whole machine.
 Instances (position, rotation, color) are edited through the agent tools
 (`set_assembly`) or by editing `project.json` directly — the v1 UI displays
 and selects them but has no drag-to-place editor.
+
+An instance of a part that declares [configurations](#configurations) shows
+`part@config` instead of the bare part name, and the placement card gains a
+**configuration picker**: choose which size of that part this instance *is*.
+The binding is per instance, so two instances of one part can be two sizes on
+stage at once. Leave it on the part's live state to keep today's behaviour —
+that instance then follows whatever the part is currently showing.
 
 ## Viewport
 
@@ -225,6 +236,25 @@ Controls are generated from the script's `PARAMS` spec:
   appears under the controls.
 - A part with no `PARAMS` shows a note telling you to define one in the
   script.
+
+**The configuration bar.** A part that declares a family (see
+[Configurations](#configurations)) gets a bar above its parameters:
+
+- a **switcher** listing `base` plus every declared configuration by its
+  display label — pick one and the parameters, the metrics and the viewport
+  all become that configuration's;
+- **provenance marks** on the parameter rows: a left rule says a value came
+  from the active configuration, a second, stronger one says you have typed
+  over it. A row can be both (the family declares it, you changed it), and the
+  mark you see is the value actually in effect;
+- the **divergence chip** — `M — modified`, hover for which parameters moved —
+  which appears the moment you edit a parameter on top of an active
+  configuration, so nobody ships an undeclared parameter set unknowingly.
+  **Reset to M**
+  beside it removes every override in one step;
+- a **Matrix** button opening the family table (below).
+
+A part with no configurations shows none of this: no bar, no marks, no badge.
 
 **Design-spec chips.** Under the parameter warnings, one chip per design spec
 the script declares (`SPECS` — see
@@ -296,7 +326,7 @@ instead. Everything else in the app works normally.
 
 **With the key** (set in the environment before `make run` /
 `agentcad serve`) it becomes a full tool-using assistant with the same
-73-tool surface external agents get ([agent-api.md](agent-api.md)):
+85-tool surface external agents get ([agent-api.md](agent-api.md)):
 
 - The hint in the header reads `agent works on <project>` — each chat is
   scoped to the currently open project, with a separate in-memory history
@@ -369,7 +399,14 @@ check and are listed under `skipped_mesh`, exactly as in `check_interference`.
 front/top/right/iso views with overall dimensions and hole callouts detected
 from the geometry, writing `exports/<part>_drawing.svg` (or `.dxf`). A
 server-rendered SVG preview is available at
-`GET /api/projects/<proj>/parts/<part>/drawing.svg`.
+`GET /api/projects/<proj>/parts/<part>/drawing.svg`. For a part with
+[configurations](#configurations) the drawing panel adds a **dim table**
+checkbox: the sheet then carries a tabulated **dimension table** in its right
+column — one row per configuration, columns for the configured parameters plus
+the overall X/Y/Z, every number measured from that configuration's own built
+geometry (not echoed back from the parameters you typed). A drawing made while
+a configuration is active is that configuration's, and saves as
+`<part>_<config>_drawing.svg`.
 
 **Geometric analysis.** Ask the agent to measure a cross-section area, the
 minimum wall thickness (optionally against a requirement), the projected
@@ -829,6 +866,60 @@ interaction the button exists for.
 Threads are workflow metadata, not model state: they live in
 `<project>/.history/agentcad/comments/`, outside every working tree, so every
 branch sees the same list and **Undo / Restore never rewinds them**.
+
+## Configurations
+
+Most real parts are a family, not a part: an enclosure in S/M/L, a bracket in
+left and right, a flange with three bolt counts. A **configuration** is a
+named, validated set of parameter values on one part — and it is ordinary,
+reviewable data in `project.json`, not a hidden mode.
+
+**Declaring a family is done through the tools or the chat**, not through a
+dialog: "give the flange three sizes — small at ⌀100, medium at ⌀140, large at
+⌀200" (`set_part_configs`). Names are lowercase (`s`, `m`, `l`); the display
+name you see in the switcher is each configuration's `label`. The browser is
+where you *use* a family, and everything it does is described above: the
+switcher and the divergence chip in the Inspector, the badge in the sidebar,
+the picker in the placement card.
+
+**Switching loads the configuration.** Picking `M` shows M's parameters, M's
+metrics and M's geometry — and it *clears* any parameters you had typed over,
+because a half-loaded configuration with invisible leftovers is the failure
+mode this feature exists to prevent. Type over a value afterwards and the chip
+says `M — modified`; **Reset to M** takes you back. (Re-picking the
+configuration that is already active changes nothing, so you cannot lose an
+edit to a stray click.)
+
+**Two rules that differ on purpose, and both are deliberate.** A parameter you
+drag past its limit is *clamped* with a warning — that is a live edit, and
+stopping you mid-drag would be worse. A parameter in a **declared**
+configuration that is out of range is **refused**: a family is a published
+thing, and a size nobody can build should not be sitting in the manifest
+looking legitimate. The refusal names every problem in the map at once, and
+nothing is written until the whole map is valid.
+
+**The Matrix** (the button in the configuration bar) builds the whole family
+in one go and shows a row per configuration: mass, volume, bounding box, and
+the design-spec chips when the part declares any. A member that fails to build
+is a red row **in place** — you still see the rest of the family, which is the
+point of asking about all of them at once. Members with identical parameters
+cost one build, and a second look is served from the cache.
+
+**Configurations reach everything downstream.** An export made while one
+is active writes `<part>_<config>.step`; a drawing writes
+`<part>_<config>_drawing.svg` and can carry the family's dimension table; an
+assembly instance can be *bound* to a configuration, so two sizes of one part
+stand on the stage with two masses and two meshes; `agentcad check` builds
+every configuration of every configured part, so a change that breaks only
+size XL is caught before merge. And a configuration an instance is using
+cannot simply be deleted — the removal is refused, naming the instances that
+would have been left pointing at nothing.
+
+Agents get the same surface as one call each — `set_part_configs`,
+`list_configs`, `build_configs`, `set_active_config`, `set_instance_config` —
+documented in [agent-api.md](agent-api.md#configurations). A part that
+declares no configurations is completely unaffected: same manifest, same
+caches, same UI.
 
 ## The Parts library
 

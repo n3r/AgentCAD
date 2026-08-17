@@ -131,6 +131,35 @@ This project is built skill-first. Use the Superpowers process skills:
   process-global) · `manifest_merge.package_problems` catches the
   requirement-from-theirs + lock-from-ours **hybrid nobody authored** · the
   gate **warns** (never reds) when a swept parameter moves no geometry.
+- Configurations (`core/tools_configs.py`, the build path, the merge — PRD-012,
+  changelogs 0189–0196): config names are **lowercase** (`CONFIG_RE`), `label`
+  is the display name, and the object is a *configuration* (never `variant`,
+  never `preset` for a manifest one) · **`_rebuild`/`get_part` keep their
+  signatures byte-for-byte** (three packs rebind them two-positionally) — a
+  config build goes through `_build_with` / `_ensure_config_built`, so those
+  wrappers deliberately do **not** decorate it · **nothing new entered
+  `_cache_key`'s payload**: config-awareness is `record.effective_params`, and
+  a config's key is never the base key even when its params *are* the defaults
+  (the service hashes overrides, the worker resolves defaults) · `build_configs`
+  is **serial and de-duplicated by cache key**, `affinity=part_id` — do not
+  re-add the deleted fan-out — and an empty matrix always carries a `warnings`
+  reason · `_status` stays **2-tuple keyed** and a config build writes none of
+  it (`_config_status` is separate, and a memo hit publishes nothing — one slot
+  per part is a browser **livelock**) · a **declared** config is range/enum-strict
+  and normalized on write while `set_params` on top still clamps ·
+  `set_active_config` clears the explicit overrides **only when the active
+  config actually changes** (so the UI's "Reset to M" is `set_params` nulls,
+  not a re-selection) and divergence is *semantic* (`effective !=
+  config_params(active)`) · assembly meshes are addressed by **`mesh_key`**
+  through `GET /projects/{p}/meshes/{key}` (never builds, `fullmatch` gate, no
+  `?config=`) and a bound instance resolves **purely** · `tools_configs` loads
+  at **`con`** (read `service.specs`/`packages` inside handlers; never touch
+  `gate_providers`) · the merge reaches `configs.<name>.params.<param>` and the
+  per-name `_keyed` guard stops a non-object entry merging to `{}`;
+  `dangling_instance_config` **blocks**, a dangling `active_config` warns · the
+  drawing's dim table is a **measurement** (resolved values, `Label (name)`,
+  SVG only, timeout `120 + 60·rows`) and `render_view` refuses `config` without
+  `part_id`.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests

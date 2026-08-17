@@ -127,7 +127,13 @@ whether a stage was green or never ran.
   enforced**: OCCT calls the shipped `examples/rocketry` STEP import invalid
   across its 180 solids, which is exactly why `tests/test_examples.py` exempts
   reference parts from that assertion. The row passes, `details.is_valid`
-  carries the fact and a warning names the part.
+  carries the fact and a warning names the part. A `part@config` row claims the
+  same thing about **that configuration's pure resolution** (defaults <
+  configuration) and nothing about the part's working state — the part's own
+  row is still the one that says whether what you are looking at builds. A
+  harness failure on one of them is a `report.errors[]` entry carrying
+  `config` beside `part`, so "size XL is broken" is never reported as "the
+  part is broken".
 - The assembly stage claims *the mates resolve and no pair of B-rep instances
   overlaps by more than `--min-volume`*. **It does not claim a mesh instance
   clears anything**: booleans on an imported STL segfault OCCT, so those are
@@ -355,7 +361,11 @@ partial report is evidence, a missing one is not.
 
 Every stage is under it:
 
-- **build** and **drawings** check it before each part;
+- **build** checks it before every row it emits — the part's own **and** each
+  `part@config` row of a configured part — so a budget that dies mid-family
+  names the members it never reached instead of dropping them;
+- **drawings** checks it before each part; the drawings stage draws the
+  working state only and emits no per-configuration rows;
 - the two **assembly** calls take the remainder as their `timeout_s`;
 - the **specs** stage runs `SpecRunner.run(deadline=…)`, so PRD-003's own
   machinery bounds each tier's kernel call and reports a check it never reached

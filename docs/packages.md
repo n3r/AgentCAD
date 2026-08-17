@@ -113,9 +113,12 @@ An entry may not carry the other kind's key.
 
 ### `presets.json` — configurations
 
-A preset **is** a configuration. One entry shape, and it is the schema
-[PRD-012](prd/pending/PRD-012-configurations.md) adopts for
-`parts.<id>.configs` entry for entry:
+A preset **is** a configuration. One entry shape, and it is the schema a part
+record's own configurations use, entry for entry — a family declared with
+`set_part_configs` and a preset published here are the same object, validated
+by the same function (see
+[Configurations](agent-api.md#configurations) and
+[architecture.md](architecture.md#configurations)):
 
 ```jsonc
 {
@@ -138,6 +141,12 @@ declares a parameter called `label` — and part scripts declare arbitrary
 parameter names. One object, one validator
 (`packages.format.validate_configuration`), one word: the object is a
 **configuration** and `preset` names only *where* one lives.
+
+`use_part` does **not** copy a package's presets into the part's `configs`:
+it applies the chosen preset's parameters as ordinary overrides and records
+the preset *name* in the provenance header, because a copied family would live
+outside what that header attests to. Declare the family on your part
+(`set_part_configs`) if you want one there.
 
 ### The content id
 

@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 73 tools (76 with the
+Agents drive AgentCAD through a single tool surface — 85 tools (88 with the
 optional `[fem]` extra installed), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -70,9 +70,9 @@ of truth, and it omits the FEM tools unless the `[fem]` extra is installed.
 | `list_projects` | — | `{projects: [{name, path, n_parts}]}` |
 | `create_project` | **name** | Project detail. Names match `[a-z][a-z0-9_]{0,39}`. |
 | `open_project` | **path** | Opens an existing project directory (e.g. a bundled example) by absolute path. |
-| `get_project` | **project** | Manifest: parts (with build state), assembly instances, and a `materials` map (`id → {label, density_g_cm3}`). |
+| `get_project` | **project** | Manifest: parts (with build state), assembly instances, and a `materials` map (`id → {label, density_g_cm3}`). Each part row also carries `configs` (its configuration map, `{}` when it declares none) and `active_config` (`null` at base) — see [Configurations](#configurations). |
 | `create_part` | **project, part_id**, label, script, material | Part detail with metrics (default template if no `script`; `material` defaults to `al6061`). |
-| `get_part` | **project, part_id** | Script, `params_spec`, current params, status (state/error/warnings), metrics, `specs` (the part's design-spec verdict, from cache — `null` when it declares none, and absent when the part does not build), `holes` (the part's hole records, read from the sidecar — never a kernel call; see [Hole metadata](#hole-metadata-holes) for its four states), plus `kind` (`script`\|`reference`) and `source`. For reference parts `script`/`params_spec` are `null` and `source` is the imported file. |
+| `get_part` | **project, part_id** | Script, `params_spec`, current params, status (state/error/warnings), metrics, `specs` (the part's design-spec verdict, from cache — `null` when it declares none, and absent when the part does not build), `holes` (the part's hole records, read from the sidecar — never a kernel call; see [Hole metadata](#hole-metadata-holes) for its four states), plus `kind` (`script`\|`reference`) and `source`. For reference parts `script`/`params_spec` are `null` and `source` is the imported file. `configs` (always present, `{}` when the part declares none), `active_config` (always present, `null` at base) and `status.diverged` / `status.diverged_params` describe the part's [configuration](#configurations) state; `params` stays the **explicit overrides**, not the resolved values. |
 | `update_part_script` | **project, part_id**, script, label, material | Rebuild result. On failure: traceback + failing line + hint; previous geometry kept. |
 | `set_params` | **project, part_id, values** | Rebuild result. Values (numbers, booleans, enum choices, or strings, per each param's `type` in `params_spec`) merge with existing overrides; numeric values clamp to min/max with warnings, while a wrong-typed value or non-member enum choice is rejected. Unknown names are rejected before anything is written, and a `null` value removes an override. |
 | `delete_part` | **project, part_id** | `{deleted}` — fails with a conflict while assembly instances reference the part. |
@@ -107,14 +107,14 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `get_assembly` | **project** | Instances with per-instance mass/state plus rolled-up `total_mass_g` and world bbox. Mate-driven instances are returned with their **resolved** concrete `position`/`rotation_deg`. |
-| `set_assembly` | **project, instances** | Full replacement list: `{id, part, position [x,y,z], rotation_deg [rx,ry,rz], color?, mate?}`. |
-| `check_interference` | **project**, min_volume | Boolean-intersects every instance pair; `{pairs: [{a, b, volume_mm3}], checked, skipped_mesh?}` above the threshold. STL references are `skipped_mesh` (booleans on a mesh segfault OCCT). |
+| `get_assembly` | **project** | Instances with per-instance mass/state plus rolled-up `total_mass_g` and world bbox. Mate-driven instances are returned with their **resolved** concrete `position`/`rotation_deg`. A [configuration](#configurations)-bound instance carries `config`, and every **built** instance carries `mesh_key` — the content-addressed handle its geometry is served under (`GET /api/projects/{proj}/meshes/{key}`), so two instances of one part at two sizes are two meshes. |
+| `set_assembly` | **project, instances** | Full replacement list: `{id, part, position [x,y,z], rotation_deg [rx,ry,rz], color?, mate?, config?}`. `config` binds the instance to one declared configuration of its part (validated against the part's declared names); omit it for the part's live working state. Because this is a full replace, `set_instance_config` is the tool for changing one binding. |
+| `check_interference` | **project**, min_volume | Boolean-intersects every instance pair; `{pairs: [{a, b, volume_mm3}], checked, skipped_mesh?}` above the threshold. STL references are `skipped_mesh` (booleans on a mesh segfault OCCT). Each instance is measured at its **own** configuration's geometry. |
 | `export_assembly` | **project, format** | Whole placed assembly as `step` or `stl`. |
 | `set_mate` | **project, instance, connector, to_instance, to_connector**, angle_deg, offset_mm | Constrain `instance` to `to_instance` via named connectors declared by a part's `connectors(p, part)`. The moving-side `connector` must be *rigid*; the anchor `to_connector` may be rigid/revolute/cylindrical, with `angle_deg`/`offset_mm` driving its DOF. Returns the updated assembly. |
 | `clear_mate` | **project, instance** | Removes the instance's mate; it reverts to its explicit position/rotation. Returns the updated assembly. |
-| `sweep_motion` | **project, instance**, angle_range, offset_range, samples, min_volume | Sweep a mated instance's driven DOF across `[start, end]` (exactly one of `angle_range` deg / `offset_range` mm; `samples` 2–60, default 12), re-resolving mates and boolean-checking every instance pair at each sample. Returns `{samples: [{value, pairs}], frames, clear, first_collision, skipped_mesh}` plus an `{instance, param, values}` echo — `frames[i]` maps every instance id to its resolved `{position, rotation_deg}` for animation; `first_collision` is the first swept value that overlaps (null when `clear`). STL references are skipped like `check_interference`. |
-| `tolerance_stackup` | **project, axis, from_instance, to_instance** | 1-D tolerance stack-up along a world axis (`x`\|`y`\|`z`) over the unique mate-forest path between the two instances (endpoints included; `from == to` analyzes that one instance's own dims). Each path instance contributes its part's linear PMI dims matching the axis (x=`width`, y=`depth`, z=`height`, via `set_part_pmi`). Returns `{axis, target, nominal_mm, worst_case: {plus, minus}, rss: {plus, minus}, contributors: [{instance, part, dims, plus, minus}], path, warnings}` — worst case is the linear sum, RSS the root-sum-of-squares per dim, `nominal_mm` the resolved axis distance; instances not connected by mates are a validation error. |
+| `sweep_motion` | **project, instance**, angle_range, offset_range, samples, min_volume | Sweep a mated instance's driven DOF across `[start, end]` (exactly one of `angle_range` deg / `offset_range` mm; `samples` 2–60, default 12), re-resolving mates and boolean-checking every instance pair at each sample. Returns `{samples: [{value, pairs}], frames, clear, first_collision, skipped_mesh}` plus an `{instance, param, values}` echo — `frames[i]` maps every instance id to its resolved `{position, rotation_deg}` for animation; `first_collision` is the first swept value that overlaps (null when `clear`). STL references are skipped like `check_interference`. The mate graph is re-resolved at each instance's bound [configuration](#configurations), so a connector riding a configured parameter moves with it. |
+| `tolerance_stackup` | **project, axis, from_instance, to_instance** | 1-D tolerance stack-up along a world axis (`x`\|`y`\|`z`) over the unique mate-forest path between the two instances (endpoints included; `from == to` analyzes that one instance's own dims). Each path instance contributes its part's linear PMI dims matching the axis (x=`width`, y=`depth`, z=`height`, via `set_part_pmi`). Returns `{axis, target, nominal_mm, worst_case: {plus, minus}, rss: {plus, minus}, contributors: [{instance, part, dims, plus, minus}], path, warnings}` — worst case is the linear sum, RSS the root-sum-of-squares per dim, `nominal_mm` the resolved axis distance; instances not connected by mates are a validation error. A path instance bound to a [configuration](#configurations) adds a `warnings` row naming it: PMI is per **part** while the nominal is per configuration, and a silently mixed answer is worse than a named one. |
 
 ### Materials
 
@@ -134,7 +134,7 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `generate_drawing` | **project, part_id**, views, format | Projected front/top/right/iso views with overall dimensions and hole callouts detected from the geometry. `views` is a subset of `[top, front, right, iso]` (default all); `format` is `svg` (default) or `dxf`. Writes `exports/<part_id>_drawing.<ext>` and returns `{path, size_bytes, detected: {diameters_mm, hole_groups, hole_warnings, label}}`. A hole drilled through `agentcad.toolkit.holes` prints its **designation** (`8× M5×0.8 - 6H ↧12`) instead of a measured diameter: its `hole_groups` entry carries `from_metadata: true` plus `designation`, `family`, `record_id`, `bottom_present` and `seat_present`, and a record is drawn whatever its count (the `count >= 3` grouping threshold applies to *guessing*, not to intent). **A callout never asserts more than the sheet supports**: the printed count is the number of circles actually matched (not the record's), a record whose designation is not what its own numbers spell is skipped with a warning, and a recorded blind depth whose material is gone in the final geometry is dropped from the callout — the recorded value travels in `hole_warnings`, where it cannot be read as a dimension. A counterbore's or countersink's **seat** is measured the same way — four points around its outer radius at its own mid-depth plus one inside it — and dropped from the callout when nothing surrounds it or its space is no longer empty. Each field is exactly its own measurement and no more: `bottom_present` catches a hole made deeper, **not** one made shallower from the top; `seat_present` catches a seat region milled off completely and a pocket filled back in, **not** one milled off that leaves anything at one azimuth, a slot cut across it, or a changed diameter/depth/angle (it asks `any` of four azimuths, measured against the alternative: a stricter rule catches those two and falsely degrades a correct seat beside an ordinary pocket); and nothing off the top view is measured at all. A group with no record keeps the measured text (`8× ⌀6.60`) and `from_metadata: false`. **Callouts come from the top view only**, so a record on a side face — or any record when `views` omits `top` — is named in `hole_warnings` rather than silently dropped (PRD-014). When the part has PMI (`set_part_pmi`), the SVG gains tolerance suffixes on the overall/diameter dimensions, boxed datum flags, and feature control frames; `detected` then also carries `pmi_rendered: {dims, datums, fcf}` and `pmi_warnings`. DXF output ignores PMI (v1). Script parts only. |
+| `generate_drawing` | **project, part_id**, views, format, config, dim_table | Projected front/top/right/iso views with overall dimensions and hole callouts detected from the geometry. `views` is a subset of `[top, front, right, iso]` (default all); `format` is `svg` (default) or `dxf`. Writes `exports/<part_id>_drawing.<ext>` and returns `{path, size_bytes, detected: {diameters_mm, hole_groups, hole_warnings, label}}`. A hole drilled through `agentcad.toolkit.holes` prints its **designation** (`8× M5×0.8 - 6H ↧12`) instead of a measured diameter: its `hole_groups` entry carries `from_metadata: true` plus `designation`, `family`, `record_id`, `bottom_present` and `seat_present`, and a record is drawn whatever its count (the `count >= 3` grouping threshold applies to *guessing*, not to intent). **A callout never asserts more than the sheet supports**: the printed count is the number of circles actually matched (not the record's), a record whose designation is not what its own numbers spell is skipped with a warning, and a recorded blind depth whose material is gone in the final geometry is dropped from the callout — the recorded value travels in `hole_warnings`, where it cannot be read as a dimension. A counterbore's or countersink's **seat** is measured the same way — four points around its outer radius at its own mid-depth plus one inside it — and dropped from the callout when nothing surrounds it or its space is no longer empty. Each field is exactly its own measurement and no more: `bottom_present` catches a hole made deeper, **not** one made shallower from the top; `seat_present` catches a seat region milled off completely and a pocket filled back in, **not** one milled off that leaves anything at one azimuth, a slot cut across it, or a changed diameter/depth/angle (it asks `any` of four azimuths, measured against the alternative: a stricter rule catches those two and falsely degrades a correct seat beside an ordinary pocket); and nothing off the top view is measured at all. A group with no record keeps the measured text (`8× ⌀6.60`) and `from_metadata: false`. **Callouts come from the top view only**, so a record on a side face — or any record when `views` omits `top` — is named in `hole_warnings` rather than silently dropped (PRD-014). When the part has PMI (`set_part_pmi`), the SVG gains tolerance suffixes on the overall/diameter dimensions, boxed datum flags, and feature control frames; `detected` then also carries `pmi_rendered: {dims, datums, fcf}` and `pmi_warnings`. DXF output ignores PMI (v1). `config` draws one declared [configuration](#configurations) — resolved **purely**, so the part's own overrides never reach the sheet — and writes `exports/<part_id>_<config>_drawing.<ext>`. `dim_table: true` adds a boxed table of the whole family in the sheet's right column: one row per configuration, columns = the configured parameters (union, first-seen order) plus overall X/Y/Z, every number **measured from that configuration's own built shape** and every parameter cell the value the build actually resolved (so a member that overrides nothing still prints the script's default, not an em dash). The config cell reads `Label (name)`, because the *name* is the identity every other surface uses — a configuration with no label (or one equal to its name) prints the bare name rather than repeating it. Echoed as `detected.dim_table = {columns, rows: [{config, label, values, ok, error?}], placement, warnings, dropped}` (and as a top-level `dim_table`); a row that will not build prints em dashes and says so in place. Beyond eight rows the rest are dropped with a warning, and trailing parameter columns are dropped until the table fits — `config` and the extents never are. **SVG only**: DXF ignores the table exactly as it ignores PMI, and `dim_table` on a part with no configurations is a question, not an error (no table, byte-identical sheet). The browser preview route `GET /api/projects/{proj}/parts/{id}/drawing.svg` takes the same two as query parameters — `?config=<name>` and `?dim_table=1` (or `true`) — because the GET **regenerates** the sheet and then serves the suffixed file, so asking for `?config=` without `?dim_table=` returns a sheet with no table. Script parts only. |
 | `flat_pattern` | **project, part_id**, format | Sheet-metal flat pattern: the unfolded blank's outline plus dashed bend lines with angle/radius callouts. Requires the script to define `flat_pattern(p)` returning a flat part or `(part, bend_lines)` — `SheetPart` from `agentcad.toolkit.sheetmetal` provides both. `format` is `svg` (default) or `dxf` (layers `OUTLINE`/`BEND`). Writes `exports/<part_id>_flat.<ext>` and returns `{path, size_bytes, flat_bbox_mm: {w, h}, n_bend_lines}`. Script parts only. |
 | `set_part_pmi` | **project, part_id, pmi** | Replaces the part's PMI / GD&T section (`{}` clears it): `dims` (`{id, kind: linear\|diameter, target: width\|height\|depth or nominal hole ⌀ mm, plus, minus, note?}`), `datums` (`{id: "A".."Z", face: top\|bottom\|left\|right\|front\|back}`), `fcf` (`{id, type: flatness\|position\|perpendicularity\|parallelism\|cylindricity, tol_mm, datums: [letters], note?}`). Validated before writing; works for script and reference parts. Returns `{part_id, pmi}`. |
 | `get_part_pmi` | **project, part_id** | The part's stored PMI section, with empty `dims`/`datums`/`fcf` when unset. |
@@ -145,7 +145,7 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 | `undo` | **project**, scope | Undo the last mutation by stepping back through the git history: `{undone, history: {available, undo, redo, mine}}`. `scope` is `any` (**default** — one shared stack, so you may take back another client's edit, which is the point of Cmd+Z next to a working agent) or `mine` (skip other clients' entries and take back your own most recent one). A `mine` undo of an entry that is no longer the branch head is a **`git revert` of exactly that commit**, so nobody else's later work moves; a later change that overlaps it is a `conflict_error` with `details: {commit, reason: "overlapping_changes", paths, blocked_by}` — never a merge, never a partial apply. Every other refusal has the same shape: `uncommitted_changes`, `already_reverted`, and `merge_in_range` when the range an undo would invert contains a merge commit. conflict_error when there is nothing to undo; after a server restart one step remains available. |
 | `redo` | **project**, scope | Redo the most recently undone mutation. The redo stack clears when any new mutation happens. A step that was undone by a revert is redone by reverting that revert. |
 | `get_history` | **project** | Undoable/redoable action labels, newest first, plus `available` (false when git is missing) and `mine: {undo, redo}` — how many entries on each stack are yours. The full durable snapshot log with commit ids is `project_history`. |
-| `render_view` | **project**, part_id, view, width, height | Server-side shaded orthographic render of built geometry so the agent can *see* the shape. `part_id` renders one part; omit it to render the whole placed assembly (instance transforms and colors honored; unbuildable instances are listed in `skipped`). `view` is `iso` (default), `front`, `top` or `right`; `width`/`height` are 64..2048 px (default 800×600). Writes `exports/renders/<part|assembly>_<view>.png` and returns `{path, width, height, view, png_base64}`; over MCP and in chat the PNG arrives as actual image content. |
+| `render_view` | **project**, part_id, view, width, height, config | Server-side shaded orthographic render of built geometry so the agent can *see* the shape. `part_id` renders one part; omit it to render the whole placed assembly (instance transforms and colors honored; unbuildable instances are listed in `skipped`). `view` is `iso` (default), `front`, `top` or `right`; `width`/`height` are 64..2048 px (default 800×600). Writes `exports/renders/<part|assembly>_<view>.png` and returns `{path, width, height, view, png_base64}`; over MCP and in chat the PNG arrives as actual image content. `config` renders one declared [configuration](#configurations) of `part_id` to `renders/<part>_<config>_<view>.png` — and **requires `part_id`**: an assembly render already takes each instance's own binding (so one image can mix sizes), and silently ignoring the argument would hand back a different picture than the one asked for. |
 | `analyze_part` | **project, part_id, kind**, plane, axis, min_required | `kind=section` (cross-section area on `plane` XY\|XZ\|YZ), `wall` (min wall thickness; with `min_required` it adds an `ok` flag), `inertia` (mass-properties tensor + centre of mass), `projected_area` (silhouette area along `axis` X\|Y\|Z), `curvature` (per-face gaussian K in 1/mm² and mean H in 1/mm sampled on an 8×8 UV grid: `faces[]` with min/max/mean per face, `worst_gaussian_abs`, `n_faces`, `sampled_points`; H's sign is orientation-dependent — compare magnitudes; a true G2 blend shows no jump in K/H across the seam). Script parts only. |
 
 ### Hole standards
@@ -1002,6 +1002,114 @@ namespace belongs to handles and compiled sub-entities. `tangent {a, b, at?,
 kind?}` dispatches on what `a` and `b` are (line+circle/arc, or curve+curve);
 `symmetric {a, b, about}` mirrors two points or two lines about a line in two
 rows (midpoint on the axis **and** perpendicular to it).
+
+### Configurations
+
+Five tools over `agentcad/core/tools_configs.py`. A **configuration** is a
+named, validated parameter set on a part — S/M/L sizes, left/right brackets,
+a 3- and a 5-bolt flange — living in the manifest at
+`parts.<id>.configs.<name>`. The kernel never learns the word: every
+configuration is resolved into an ordinary override map on the way *into* a
+request, exactly as `set_params` values are today.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `set_part_configs` | **project, part_id, configs** | Full replace of the part's family (the `set_project_materials` pattern): `{name: {params: {…}, label?, description?}}`. Names match `[a-z0-9][a-z0-9_-]{0,31}` — **lowercase**, with `label` carrying the display name — and the map's insertion order is the family order every surface shows. An omitted name is removed; `{}` clears the family and the manifest key with it. The whole map is validated before one byte is written and a refusal lists **every** problem at once in `details.problems`. Returns `{part_id, configs, active_config, rebuild?}` — `rebuild` only when the *active* configuration's parameters moved. |
+| `list_configs` | **project**, part_id | `{parts: [{part_id, configs, active_config, diverged, diverged_params, referrers}]}` for one part or for every configured part in the project. `referrers` (`{name: [instance ids]}`) is the lookup that makes the removal conflict below predictable instead of surprising. A project with no configured parts answers `{parts: [], warnings: ["no configured parts"]}` — never an empty list with no reason. |
+| `build_configs` | **project**, part_id, configs | Builds the family (or a named subset, or every configured part's) and returns one row per member: `{name, label, ok, cached, cache_key, metrics, warnings, error?}`, plus `spec_results: {checks, cached}` when the part declares `SPECS` (shape tier — an assembly verdict is not per configuration). Single part → `{part_id, configs: [row]}`; project-wide → `{parts: [{part_id, configs: [row]}]}`. **Serial and de-duplicated by cache key**: two configurations with identical parameters cost one build and the second row says `cached`. An empty matrix always carries a `warnings` reason (nothing declared, nothing requested, or none of the requested names declared by that part) — never an empty list with no explanation. The working state and the part's build badge are untouched. |
+| `set_active_config` | **project, part_id**, config, keep_overrides | Loads one configuration into the part's working state (omit `config` to return to base) and returns the rebuild result merged with `{part_id, active_config, diverged, diverged_params, cleared_overrides}`. |
+| `set_instance_config` | **project, instance**, config | Binds one assembly instance to a declared configuration of its part; omit `config` to unbind. A bound instance resolves **purely** (defaults < configuration), so the part's own overrides never reach it. Returns the assembly. |
+
+**A configuration is the object a package preset is, validated by the same
+function.** `packages.format.validate_configuration` is the one validator
+both features use — the schema PRD-011 froze and the bundled catalog's
+`presets.json` files already publish — so a manifest family and a published
+preset cannot drift on what a configuration is. `params` is a full override
+set (not a delta), `null` values are refused, and an empty `params` map is
+legal.
+
+**A declared configuration is range- and enum-strict; an override on top
+clamps.** `set_part_configs` *refuses* an out-of-range value — a family is a
+published thing, and the publish gate already made that choice for presets —
+while `set_params` keeps today's semantics: it stores the value raw and the
+worker clamps it with a warning. Values are normalized on write (int/float
+coercion, enum canonicalization), so `{"n": 3}` and `{"n": 3.0}` are one
+configuration and one cache entry.
+
+**Resolution order is defaults < active configuration < explicit overrides**,
+and *divergence* is semantic rather than syntactic: `status.diverged` is true
+when the effective values differ from the active configuration's own, so an
+override that happens to equal the configuration's value is not divergence
+(the geometry, and the cache key, are the configuration's).
+`status.diverged_params` names the parameters that moved. A **bound instance**
+uses pure resolution instead, so a part viewed with an override on top of `m`
+legitimately differs from its own instance bound to `m` — the divergence chip
+is a part-level concept.
+
+**`set_active_config` clears the explicit overrides — but only on a real
+switch.** Selecting a configuration *loads it*, so the overrides go
+(reported as `cleared_overrides`, one publish and therefore one undo step)
+unless `keep_overrides: true`, which layers them on top and leaves the part
+diverged. Re-selecting the configuration that is **already active**, or
+returning to base a part **already at base**, changes nothing and keeps the
+overrides — so nothing drops a `set_params` value as a side effect of a no-op.
+To drop the overrides without switching, remove them the ordinary way
+(`set_params` with `null` per parameter).
+
+**A red matrix row is a 200 payload, not a refusal.** A member that fails to
+build is a row with `ok: false` and its `error`; the matrix never aborts on
+the first failure, because "which sizes are broken" is the question being
+asked. Refusals — an unknown configuration name, a non-object map, a
+reference part, a script that does not currently load — are ordinary
+`validation_error`s and write nothing.
+
+**Removing a referenced configuration is a `conflict_error`.** If an assembly
+instance is bound to the name being removed (or it is the part's
+`active_config`), `set_part_configs` refuses with
+`details: {part, configs, instances, active_config}` naming every referrer,
+and the family is left exactly as it was. Clear the references
+(`set_instance_config` with no `config`, `set_active_config` with no `config`)
+and the same call succeeds.
+
+Per-configuration identity reaches every derived artifact:
+`export_part {config}` → `exports/<part>_<config>.<fmt>`,
+`render_view {config}` → `renders/<part>_<config>_<view>.png`,
+`generate_drawing {config, dim_table}` → `<part>_<config>_drawing.<ext>` plus
+the family's dimension table, `get_assembly`'s `mesh_key`, and one extra
+`build` row per configuration in `agentcad check` (subject `part@config` —
+see [geometry-ci.md](geometry-ci.md)). The CLI carries it too:
+`agentcad export <project> <part> --format step --config l`.
+
+Routes (all in `agentcad/server/routes_configs.py`):
+
+```
+GET    /api/projects/{proj}/configs
+GET    /api/projects/{proj}/parts/{id}/configs
+PUT    /api/projects/{proj}/parts/{id}/configs           {configs}
+PUT    /api/projects/{proj}/parts/{id}/active-config     {config, keep_overrides?}
+DELETE /api/projects/{proj}/parts/{id}/active-config
+POST   /api/projects/{proj}/configs/build                {part_id?, configs?}
+PATCH  /api/projects/{proj}/assembly/instances/{id}/config  {config|null}
+GET    /api/projects/{proj}/meshes/{key}?lod=
+```
+
+The `DELETE` exists because the route helpers strip a `null` body value, so
+the `PUT` cannot express "return to base" and refuses instead of guessing. The
+mesh route is **content-addressed and never builds** — an unbuilt key is a
+404, so a browser cannot storm the kernel through it.
+
+Events: `project_changed` with `reason` ∈ {`configs`, `active_config`,
+`instance_config`}; `rebuild_started` / `rebuild_finished` / `rebuild_failed`
+gain a `config` field **only** for a pure-configuration build, so a base
+rebuild's payload is unchanged. A merge can also land a state no tool would
+write — an instance bound to a configuration the merged part no longer
+declares — which the merge's validation pass reports as the blocking
+`integrity` kind `dangling_instance_config`, while a stale `active_config` is
+a non-blocking warning (it resolves as base).
+
+A part that declares no configurations is unchanged in every respect: nothing
+new is written to its manifest entry, its cache keys are the keys it always
+had, and `configs` / `active_config` simply answer `{}` and `null`.
 
 ### Packages — the parts library and registry
 
