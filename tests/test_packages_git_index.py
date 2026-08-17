@@ -291,6 +291,9 @@ def test_add_by_url_then_search_then_install(remote, service, cache_root):
     assert [(hit["name"], hit["index"], hit["kind"])
             for hit in hits] == [(WIDGET, "acme", "git")]
     added = registry.call("add_package", {"project": "rig", "name": WIDGET})
+    # Surface a structured error instead of dying on KeyError below — on the
+    # first Windows CI runs the envelope was invisible behind `added["lock"]`.
+    assert "error" not in added, added
     assert added["lock"]["source"]["url"] == remote["url"]
     detail = registry.call("use_part", {
         "project": "rig", "package": WIDGET, "part": "mount_block",
@@ -442,7 +445,8 @@ def test_ac4_the_remote_disappears_and_everything_still_works(
     user_config.save_config({"indexes": [
         {"name": "acme", "kind": "git", "url": remote["url"], "ref": "main"}]})
     registry = build_registry(service)
-    registry.call("add_package", {"project": "rig", "name": WIDGET})
+    added = registry.call("add_package", {"project": "rig", "name": WIDGET})
+    assert "error" not in added, added
     online = json.dumps(service.store.manifest("rig")["packages_lock"][WIDGET],
                         indent=2, sort_keys=True)
 
