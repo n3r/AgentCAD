@@ -430,7 +430,13 @@ overlaps stays mergeable; `skipped: "instances"` means the assembly was above
 the pair-check cap (40 instances) or had fewer than two — above the cap it also
 appears in `warnings`, so an `ok: true` report never hides a check it did not
 run. `integrity` also carries `kind: "manifest_invalid"` when the merged
-`project.json` would not load (no `name`, a malformed `parts` list, …).
+`project.json` would not load (no `name`, a malformed `parts` list, …), and
+`kind: "dangling_instance_config"` (with `instance`, `part`, `config`) when an
+instance is bound to a configuration the merged part no longer declares — one
+branch removed it while the other kept the binding, which merges *clean* per
+key and leaves the instance resolving to nothing, so it **blocks**; the same
+removal against a part's `active_config` is a `warnings` string instead, because
+an unknown active configuration resolves to the part's base parameters.
 Failures block the merge with a `validation_error` carrying the same report
 under `details.validation`; `allow_invalid: true` lands it anyway, with the
 failures recorded in the merge commit message and returned to the caller. Parts

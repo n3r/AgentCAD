@@ -32,6 +32,9 @@ _GIT = [
     pytest.mark.integration,
     pytest.mark.portability,
     pytest.mark.skipif(shutil.which("git") is None, reason="git not found on PATH"),
+    # Two real kernel builds and four snapshots per test, against a global
+    # 120 s default that a loaded machine can trip.
+    pytest.mark.timeout(600),
 ]
 
 pytestmark = _GIT

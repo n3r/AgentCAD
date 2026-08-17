@@ -1403,6 +1403,66 @@ def test_resolving_a_parameter_of_a_configuration_that_is_gone_is_refused():
         apply_choices(merged, conflicts, {conflicts[0]["key"]: {"take": "theirs"}})
 
 
+def test_a_path_deeper_than_a_configuration_parameter_is_refused():
+    """The one line in the write path that could still produce a flat key.
+
+    Inside a configuration the merge records exactly two shapes — a whole field,
+    or ``params.<param>``. Anything deeper is unreachable from a recorded
+    conflict, so it is refused instead of joined into a `"params.a.b"` key that
+    nothing can read back.
+    """
+    doc = manifest(
+        parts=[part("flange", configs={"m": configuration({"bolt_d": 6.0})})]
+    )
+    for path in (
+        ["parts", "flange", "configs", "m", "params", "a", "b"],
+        ["parts", "flange", "configs", "m", "label", "x"],
+    ):
+        conflict = {"kind": "manifest", "key": ".".join(path), "path": path,
+                    "ours": 1.0}
+        with pytest.raises(ValidationError):
+            apply_choices(doc, [conflict], {conflict["key"]: {"take": "ours"}})
+
+    assert configs_of(doc) == {"m": {"params": {"bolt_d": 6.0}}}
+
+
+def test_an_instance_field_named_configs_still_merges_as_a_whole_value():
+    """`_PART_ENTRY_DICTS` names a field of a **part**. The descriptor is
+    threaded like `subdicts` rather than read as a module global, because an
+    instance has no sub-map of any kind (the docstring's table says every
+    instance field is a whole value) — read globally, a forward-compatible
+    instance field called `configs` got the keyed-map treatment and conflicted
+    at `assembly.instances.i1.configs.m.params.x`.
+    """
+    base, ours, theirs = triple(
+        manifest(parts=[part("a")], instances=[instance("i1", "a")])
+    )
+    for doc in (base, ours, theirs):
+        entry_of(doc["assembly"]["instances"], "i1")["configs"] = {
+            "m": {"params": {"x": 1.0}}
+        }
+    ours_inst = entry_of(ours["assembly"]["instances"], "i1")
+    theirs_inst = entry_of(theirs["assembly"]["instances"], "i1")
+    ours_inst["configs"]["m"]["params"]["x"] = 2.0
+    theirs_inst["configs"]["m"]["params"]["y"] = 3.0
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert keys_of(conflicts) == ["assembly.instances.i1.configs"]
+    assert entry_of(merged["assembly"]["instances"], "i1")["configs"] == (
+        ours_inst["configs"]
+    )
+
+    # and a resolution writes the whole field back, not into the map
+    resolved, remaining = apply_choices(
+        merged, conflicts, {conflicts[0]["key"]: {"take": "theirs"}}
+    )
+    assert remaining == []
+    assert entry_of(resolved["assembly"]["instances"], "i1")["configs"] == (
+        theirs_inst["configs"]
+    )
+
+
 def test_a_manifest_with_no_configurations_is_untouched_by_the_new_head():
     """G5 from the merge side: a project that never declared a configuration
     merges exactly as it did before the keys existed."""

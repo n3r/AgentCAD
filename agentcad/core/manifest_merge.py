@@ -159,7 +159,8 @@ def apply_choices(
 def _merge_section(key, base, ours, theirs, conflicts):
     if key == "parts" and _entry_list(base, ours, theirs):
         return _merge_entry_list(("parts",), base, ours, theirs, conflicts,
-                                 subdicts=_PART_SUBDICTS)
+                                 subdicts=_PART_SUBDICTS,
+                                 entry_dicts=_PART_ENTRY_DICTS)
     if key == "assembly" and _keyed(base, ours, theirs):
         return _merge_assembly(base, ours, theirs, conflicts)
     if key in _ENTRY_DICTS and _keyed(base, ours, theirs):
@@ -172,8 +173,12 @@ def _merge_assembly(base, ours, theirs, conflicts):
     for sub in _key_order(_as_dict(ours), _as_dict(theirs)):
         b, o, t = _get(base, sub), _get(ours, sub), _get(theirs, sub)
         if sub == "instances" and _entry_list(b, o, t):
+            # An instance has neither kind of sub-map: every field of it is a
+            # whole value (the docstring's table), and the two descriptors are
+            # threaded rather than read as globals so it stays that way.
             value = _merge_entry_list(
-                ("assembly", "instances"), b, o, t, conflicts, subdicts=()
+                ("assembly", "instances"), b, o, t, conflicts, subdicts=(),
+                entry_dicts={},
             )
         else:
             value = _merge_atomic(("assembly", sub), b, o, t, conflicts)
@@ -182,7 +187,8 @@ def _merge_assembly(base, ours, theirs, conflicts):
     return result
 
 
-def _merge_entry_list(prefix, base, ours, theirs, conflicts, *, subdicts):
+def _merge_entry_list(prefix, base, ours, theirs, conflicts, *, subdicts,
+                      entry_dicts):
     b, o, t = _by_id(base), _by_id(ours), _by_id(theirs)
     result = []
     for eid in _key_order(o, t):
@@ -193,6 +199,7 @@ def _merge_entry_list(prefix, base, ours, theirs, conflicts, *, subdicts):
             _get(t, eid),
             conflicts,
             subdicts,
+            entry_dicts,
         )
         if value is not _MISSING:
             result.append(value)
@@ -212,9 +219,15 @@ def _merge_entry_dict(prefix, base, ours, theirs, conflicts):
     return result
 
 
-def _merge_entry(segs, base, ours, theirs, conflicts, subdicts):
+def _merge_entry(segs, base, ours, theirs, conflicts, subdicts, entry_dicts):
     """One list entry: field-wise when it exists on all three sides, whole-value
-    otherwise (add/add, delete/modify — the entry is the conflict unit)."""
+    otherwise (add/add, delete/modify — the entry is the conflict unit).
+
+    ``subdicts`` and ``entry_dicts`` are the caller's descriptors, never module
+    globals: which fields of *this* kind of entry are a scalar map and which are
+    a map of sub-entries is a property of the entry, and an instance has
+    neither.
+    """
     if _MISSING in (base, ours, theirs):
         return _merge_atomic(segs, base, ours, theirs, conflicts)
     result = {}
@@ -222,10 +235,10 @@ def _merge_entry(segs, base, ours, theirs, conflicts, subdicts):
         b, o, t = _get(base, field), _get(ours, field), _get(theirs, field)
         if field in subdicts and _keyed(b, o, t):
             value = _merge_scalar_dict((*segs, field), b, o, t, conflicts)
-        elif field in _PART_ENTRY_DICTS and _keyed(b, o, t):
+        elif field in entry_dicts and _keyed(b, o, t):
             value = _merge_keyed_entries(
                 (*segs, field), b, o, t, conflicts,
-                subdicts=_PART_ENTRY_DICTS[field],
+                subdicts=entry_dicts[field],
             )
         else:
             value = _merge_atomic((*segs, field), b, o, t, conflicts)
@@ -244,7 +257,10 @@ def _merge_keyed_entries(prefix, base, ours, theirs, conflicts, *, subdicts):
         # `"m": 5`, an authored null) must merge WHOLE, or `_merge_entry`'s
         # `_as_dict` silently rewrites it to `{}` — a clean merge that loses data.
         if _keyed(b, o, t):
-            value = _merge_entry((*prefix, name), b, o, t, conflicts, subdicts)
+            # `entry_dicts={}`: a configuration has no map of sub-entries of its
+            # own, so the recursion is exactly one level deep.
+            value = _merge_entry((*prefix, name), b, o, t, conflicts, subdicts,
+                                 {})
         else:
             value = _merge_atomic((*prefix, name), b, o, t, conflicts)
         if value is not _MISSING:
@@ -391,14 +407,16 @@ def _write_path(manifest, segs, value, present, key) -> None:
     if head == "parts" and len(segs) >= 2:
         _write_entry(
             manifest.setdefault("parts", []), segs[1], segs[2:],
-            value, present, _PART_SUBDICTS, key,
+            value, present, _PART_SUBDICTS, _PART_ENTRY_DICTS, key,
         )
         return
     if head == "assembly" and len(segs) >= 3 and segs[1] == "instances":
         assembly = manifest.setdefault("assembly", {})
+        # `{}`: the merge writes no sub-map inside an instance, so neither does
+        # a resolution — the two descriptors travel together (see `_merge_entry`).
         _write_entry(
             assembly.setdefault("instances", []), segs[2], segs[3:],
-            value, present, (), key,
+            value, present, (), {}, key,
         )
         return
     if head in ("assembly", *_ENTRY_DICTS) and len(segs) == 2:
@@ -408,7 +426,8 @@ def _write_path(manifest, segs, value, present, key) -> None:
                 value, present)
 
 
-def _write_entry(seq, eid, rest, value, present, subdicts, key) -> None:
+def _write_entry(seq, eid, rest, value, present, subdicts, entry_dicts,
+                 key) -> None:
     index = next(
         (i for i, e in enumerate(seq) if isinstance(e, dict) and e.get("id") == eid),
         None,
@@ -427,9 +446,9 @@ def _write_entry(seq, eid, rest, value, present, subdicts, key) -> None:
     entry = seq[index]
     if len(rest) == 2 and rest[0] in subdicts:
         _write_slot(entry.setdefault(rest[0], {}), rest[1], value, present)
-    elif len(rest) >= 2 and rest[0] in _PART_ENTRY_DICTS:
+    elif len(rest) >= 2 and rest[0] in entry_dicts:
         _write_keyed_entry(entry.setdefault(rest[0], {}), rest[1], rest[2:],
-                           value, present, _PART_ENTRY_DICTS[rest[0]], key)
+                           value, present, entry_dicts[rest[0]], key)
     else:
         _write_slot(entry, rest[0] if len(rest) == 1 else ".".join(rest),
                     value, present)
@@ -437,7 +456,15 @@ def _write_entry(seq, eid, rest, value, present, subdicts, key) -> None:
 
 def _write_keyed_entry(container, name, rest, value, present, subdicts, key):
     """Into parts.<id>.configs.<name>[.field[.param]] — through the recorded
-    segments, never a dotted flat key (a config name may contain '-')."""
+    segments, never a dotted flat key (a config name may contain '-').
+
+    The merge records exactly two shapes inside a configuration: a whole field
+    (``rest`` is one segment) and a parameter of a ``subdicts`` map (two, the
+    first being ``params``). Anything deeper cannot come from a conflict this
+    module produced, so it is **refused** rather than joined into a flat
+    ``"params.a.b"`` key — writing a key nobody can read back is the failure
+    this whole function exists to prevent.
+    """
     if not rest:
         _write_slot(container, name, value, present)
         return
@@ -445,11 +472,15 @@ def _write_keyed_entry(container, name, rest, value, present, subdicts, key):
     if not isinstance(inner, dict):
         raise ValidationError(
             f"cannot resolve {key!r}: configuration {name!r} is not present")
-    if len(rest) == 2 and rest[0] in subdicts:
+    if len(rest) == 1:
+        _write_slot(inner, rest[0], value, present)
+    elif len(rest) == 2 and rest[0] in subdicts:
         _write_slot(inner.setdefault(rest[0], {}), rest[1], value, present)
     else:
-        _write_slot(inner, rest[0] if len(rest) == 1 else ".".join(rest),
-                    value, present)
+        raise ValidationError(
+            f"cannot resolve {key!r}: {'.'.join(rest)} is not addressable "
+            f"inside configuration {name!r} (a field, or "
+            f"{'|'.join(subdicts)}.<name>)")
 
 
 def _write_slot(container, key, value, present) -> None:

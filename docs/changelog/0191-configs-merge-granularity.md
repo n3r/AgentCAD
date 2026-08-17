@@ -71,6 +71,22 @@ plus one call site in the merge orchestrator: no kernel, no server, no tool.
   values — the argument that already makes `params` per-key, one level deeper).
   The same rows land in the three docs that assert the key space.
 
+- **Fix round 1 (review):** `docs/agent-api.md`'s validation-pass paragraph now
+  names `kind: "dangling_instance_config"` (blocking, with `instance`/`part`/
+  `config`) and the non-blocking `active_config` warning, so the documented
+  agent-facing surface matches what a merge can now return. `_PART_SUBDICTS`'
+  companion `_PART_ENTRY_DICTS` is **threaded** through `_merge_entry_list` /
+  `_merge_entry` / `_write_entry` (`{}` for instances) instead of being read as
+  a module global — read globally, a forward-compatible *instance* field named
+  `configs` got the keyed-map treatment and merged deep, contradicting the
+  docstring's "instance fields … whole value". `_write_keyed_entry`'s final
+  fallback now **raises** `ValidationError` instead of joining ≥ 2 leftover
+  segments into a dotted flat key (unreachable from a recorded conflict, and
+  the one line left in the new code that could write a key nothing reads back).
+  `tests/test_configs_merge.py` carries `@pytest.mark.timeout(600)` (two real
+  kernel builds against a 120 s global default). Two new tests, red against
+  e61b7e9 and green after: the instance-field probe and the deep-path refusal.
+
 ## Files
 - `agentcad/core/manifest_merge.py` — `_PART_ENTRY_DICTS`,
   `_merge_keyed_entries`, the `_merge_entry` branch, `_write_keyed_entry`, the
@@ -88,6 +104,8 @@ plus one call site in the merge orchestrator: no kernel, no server, no tool.
   `test_packages_index.py::test_a_real_merge_blocks_on_the_package_hybrid`
   shape): a bound instance lands in `validation.integrity` and blocks; a stale
   `active_config` is a `validation.warnings` string on an `ok: true` merge
+- `docs/agent-api.md` — the validation-pass paragraph names the new `integrity`
+  kind and the new warning (fix round 1)
 - `docs/architecture.md` — the merge walkthrough's step 3 gains a key-space
   table and step 5 names both problem reporters and the warning
 - `docs/packages.md` — the `manifest_merge` paragraph gains the configs rows
