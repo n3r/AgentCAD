@@ -543,6 +543,11 @@ class AgentCADService:
                     ),
                     color=item.get("color"),
                     mate=item.get("mate"),
+                    # A per-instance configuration binding (PRD-012). The store
+                    # validates it (three writers reach set_instances and only
+                    # the store sees all three); `set_instance_config` is the
+                    # narrow tool that does not need the whole list.
+                    config=item.get("config"),
                 )
             )
         with self._lock:
