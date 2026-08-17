@@ -90,16 +90,25 @@ def _drop_big(manifest) -> None:
     manifest["parts"][0].pop("configs", None)
 
 
-def _fork_and_shrink_the_family(service, registry, prepare) -> dict:
-    """master declares `big` (plus whatever `prepare` selects); `feat` removes
-    the configuration; master edits a script so the merge is real work and not
-    a fast-forward. Returns `merge_branch`'s payload."""
+def _null_big(manifest) -> None:
+    """`feat` replaces the member with a null instead of removing it — the
+    driver merges a non-object configuration entry WHOLE, so this is the shape
+    a clean merge can land without anyone hand-editing project.json."""
+    manifest["parts"][0]["configs"]["big"] = None
+
+
+def _fork_and_shrink_the_family(service, registry, prepare,
+                                mutate=_drop_big) -> dict:
+    """master declares `big` (plus whatever `prepare` selects); `feat` applies
+    `mutate` (by default: removes the configuration); master edits a script so
+    the merge is real work and not a fast-forward. Returns `merge_branch`'s
+    payload."""
     _edit_manifest(service, prepare)
     service.branches.create("demo", "feat")
 
     locks.set_client_id("agent_a")
     service.branches.switch("demo", "feat")
-    _edit_manifest(service, _drop_big)
+    _edit_manifest(service, mutate)
 
     locks.set_client_id("agent_b")
     service.branches.switch("demo", "master")
@@ -156,3 +165,26 @@ def test_a_real_merge_only_warns_when_the_removed_configuration_was_active(rig):
     # Decision 3 says — the warning is the only thing that changed.
     entry = service.store.manifest("demo")["parts"][0]
     assert entry["active_config"] == "big" and entry.get("configs") in ({}, None)
+
+
+def test_a_real_merge_only_warns_when_a_member_merged_into_a_non_object(rig):
+    """Fix wave (F3/V2): the third shape of the same damage. `feat` replaces a
+    member with a null, the driver takes it whole, and the merged family holds
+    a member that is not a configuration. It resolves as the part's base
+    (`PartRecord.config_params` is total), so — like `dangling_active_config`
+    and unlike a dangling binding — it warns and must not block.
+    """
+    service, registry = rig
+
+    out = _fork_and_shrink_the_family(service, registry, _declare_big,
+                                      mutate=_null_big)
+
+    assert "error" not in out, out
+    validation = out["validation"]
+    assert validation["ok"] is True
+    assert validation["integrity"] == []
+    assert any("holds no parameters" in w for w in validation["warnings"]), (
+        validation["warnings"]
+    )
+    # The merge landed and the damage is on disk, named rather than silent.
+    assert service.store.manifest("demo")["parts"][0]["configs"] == {"big": None}

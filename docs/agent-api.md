@@ -101,7 +101,7 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 |---|---|---|
 | `get_metrics` | **project, part_id** | `{volume_mm3, mass_g, area_mm2, bbox, center_of_mass, is_valid, n_faces, n_edges, n_solids, solids?}` — `solids` (multi-solid parts only) is an index-ordered `[{label, volume_mm3, mass_g, bbox, center_of_mass}]`. |
 | `get_mesh_summary` | **project, part_id** | `{vertices, triangles, edges, bbox}` — statistics only, no binary buffer. |
-| `export_part` | **project, part_id, format**, tolerance, config | Writes `exports/<part_id>.<format>`; formats `step`, `stl`, `3mf`. With `config` it exports that declared configuration resolved purely to `exports/<part_id>_<config>.<format>` and echoes `config` in the result. |
+| `export_part` | **project, part_id, format**, tolerance, config | Writes `exports/<part_id>.<format>`; formats `step`, `stl`, `3mf`. With `config` it exports that declared configuration resolved purely to `exports/<part_id>_<config>.<format>` and echoes `config` in the result — pure means the part's own overrides are **not** in the file even when it is diverged, so omit `config` to export the working state. |
 
 ### Assembly and mates
 
@@ -1070,6 +1070,11 @@ instance is bound to the name being removed (or it is the part's
 and the family is left exactly as it was. Clear the references
 (`set_instance_config` with no `config`, `set_active_config` with no `config`)
 and the same call succeeds.
+
+Every per-configuration artifact is the configuration **as declared** — pure
+resolution, so the part's own `set_params` overrides are never in it even when
+the part is currently diverged (`status.diverged`); ask for the artifact
+without `config` if what you want is the working state.
 
 Per-configuration identity reaches every derived artifact:
 `export_part {config}` → `exports/<part>_<config>.<fmt>`,

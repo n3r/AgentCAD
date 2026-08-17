@@ -62,6 +62,12 @@ FRAGILE_CONFIGS = {
     "heavy": {"params": {"thick": 55.0}, "label": "Too thick"},
 }
 
+#: The mirror of FRAGILE_SCRIPT: its DEFAULT thickness is the unbuildable one,
+#: so the part builds at a declared configuration and fails at base — which is
+#: what a `DELETE .../active-config` whose rebuild fails needs.
+INVERTED_SCRIPT = FRAGILE_SCRIPT.replace('"default": 10.0', '"default": 55.0')
+assert INVERTED_SCRIPT != FRAGILE_SCRIPT
+
 #: A script that does not load at all: `_params_spec` negative-caches None and
 #: the pack must refuse with `set_params`' wording rather than persist a map it
 #: could not check.
@@ -630,6 +636,23 @@ class TestConfigTools:
         assert rows["m"]["cached"] is False and rows["m2"]["cached"] is True
         assert calls.get("build") == 1
 
+        # Fix wave (F5): `cached` is a claim about artifacts on disk, so the
+        # de-duplicated sibling of a FAILED build must report False — there is
+        # no `.acm` and no `.metrics.json` for it to have hit.
+        assert "error" not in registry.call("set_part_configs", {
+            "project": "demo", "part_id": "fragile",
+            "configs": {"heavy": {"params": {"thick": 55.0}},
+                        "heavy2": {"params": {"thick": 55.0}}}})
+        failed = registry.call("build_configs", {"project": "demo",
+                                                 "part_id": "fragile"})
+        rows = failed["configs"]
+        assert [row["name"] for row in rows] == ["heavy", "heavy2"]
+        assert [row["ok"] for row in rows] == [False, False]
+        assert rows[0]["cache_key"] == rows[1]["cache_key"]
+        assert [row["cached"] for row in rows] == [False, False]
+        cache = service.store.cache_dir("demo")
+        assert not (cache / f"{rows[0]['cache_key']}.acm").is_file()
+
     def test_build_configs_refuses_a_name_the_part_does_not_declare(self, stack):
         _service, registry = stack
         self._family(registry)
@@ -816,6 +839,88 @@ class TestConfigRoutes:
         assert deleted.status_code == 200, deleted.text
         assert deleted.json()["active_config"] is None
         assert service.store.get_part("demo", "flange").active_config is None
+
+    def test_a_switch_whose_rebuild_fails_is_a_200_post_state(self, client):
+        """Fix wave (F1/V4): the write LANDED — the manifest holds the new
+        `active_config` and `project_changed` was published — so throwing the
+        post-state away and answering 422 gives the client a model of the world
+        no retry can fix. The house answer on the identical failure is
+        `PATCH .../params`: 200 with `ok: false`. A refusal envelope (which
+        carries no `ok`) still raises; a build post-state (which always has
+        one) does not.
+        """
+        service, http = client
+        assert http.put("/api/projects/demo/parts/fragile/configs",
+                        json={"configs": FRAGILE_CONFIGS}).status_code == 200
+
+        response = http.put("/api/projects/demo/parts/fragile/active-config",
+                            json={"config": "heavy"})
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["ok"] is False
+        assert body["active_config"] == "heavy"
+        assert "not manufacturable" in json.dumps(body["error"])
+        assert service.store.get_part("demo", "fragile").active_config == "heavy"
+
+        # ...and a genuine refusal is still a refusal, not a 200 body.
+        refused = http.put("/api/projects/demo/parts/fragile/active-config",
+                           json={"config": "nope"})
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["error"]["type"] == "ValidationError"
+        assert service.store.get_part("demo", "fragile").active_config == "heavy"
+
+    def test_a_return_to_base_whose_rebuild_fails_is_a_200_post_state(
+            self, client):
+        """The DELETE half of the same defect (V4): the part returns to base,
+        base does not build, and the client was told the return-to-base failed
+        while `project.json` already held it."""
+        service, http = client
+        service.store.add_part("demo", "inverted", "Inverted", DEFAULT_MATERIAL,
+                               INVERTED_SCRIPT)
+        assert http.put(
+            "/api/projects/demo/parts/inverted/configs",
+            json={"configs": {"thin": {"params": {"thick": 10.0}}}}
+        ).status_code == 200
+        put = http.put("/api/projects/demo/parts/inverted/active-config",
+                       json={"config": "thin"})
+        assert put.status_code == 200, put.text
+        assert put.json()["ok"] is True
+
+        response = http.delete("/api/projects/demo/parts/inverted/active-config")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["ok"] is False
+        assert response.json()["active_config"] is None
+        assert service.store.get_part("demo", "inverted").active_config is None
+
+    def test_a_malformed_or_empty_instance_patch_never_unbinds(self, client):
+        """Fix wave (C3/V3): the only place in the branch where **malformed
+        input silently mutated persisted state**. `_json` folded `[]`, `"bad"`
+        and *no body at all* into `{}`, `"config" in body` was then false, and
+        the tool's `config=None` default — whose documented meaning is
+        *unbind* — fired. The state assertion is the load-bearing half.
+        """
+        service, http = client
+        self._put_family(http)
+        service.set_assembly("demo", [{"id": "f1", "part": "flange",
+                                       "config": "l"}])
+        url = "/api/projects/demo/assembly/instances/f1/config"
+
+        for payload in ([], "bad", 3, {}):
+            response = http.patch(url, json=payload)
+            assert response.status_code == 422, (payload, response.text)
+            assert service.store.instances("demo")[0].config == "l"
+
+        empty = http.patch(url)
+        assert empty.status_code == 422, empty.text
+        assert "config is required" in empty.json()["error"]["message"]
+        assert service.store.instances("demo")[0].config == "l"
+
+        # `{"config": null}` stays the one way to say "unbind".
+        cleared = http.patch(url, json={"config": None})
+        assert cleared.status_code == 200, cleared.text
+        assert service.store.instances("demo")[0].config is None
 
     def test_deleting_the_active_config_at_base_keeps_the_overrides(self, client):
         """Fix round 1 (MINOR 5): the DELETE is idempotent, and an idempotent

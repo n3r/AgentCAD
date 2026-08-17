@@ -495,8 +495,8 @@ def test_ac8_a_project_without_configurations_is_byte_identical(
     assert_matches_golden(measured, GOLDENS[("rocketry", "flange")],
                           "rocketry/flange")
 
-    raw = json.loads((projects / "rocketry" / "project.json")
-                     .read_text(encoding="utf-8"))
+    manifest_path = projects / "rocketry" / "project.json"
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     for entry in raw["parts"]:
         assert "configs" not in entry, entry["id"]
         assert "active_config" not in entry, entry["id"]
@@ -504,10 +504,12 @@ def test_ac8_a_project_without_configurations_is_byte_identical(
         assert "config" not in instance, instance["id"]
 
     # ...and the same is true after a rebuild has rewritten the manifest.
+    # Fix wave (F8): AC8a's word is **byte**-identical, and a `json.loads` on
+    # both sides would pass a file that had been reordered or reformatted. The
+    # bytes are the assertion; the parsed one above is what names the keys.
+    raw_bytes = manifest_path.read_bytes()
     service.set_params(name, "flange", {})
-    rewritten = json.loads((projects / "rocketry" / "project.json")
-                           .read_text(encoding="utf-8"))
-    assert rewritten == raw
+    assert manifest_path.read_bytes() == raw_bytes
 
     # The part payload still *answers* the configuration question — an empty
     # map and a null, never a missing key, so a client never has to guess.
@@ -584,6 +586,12 @@ def test_ac9_the_ui_surfaces_exist_and_the_session_was_clean():
     assert "mesh_key" in main
     # The matrix modal (step 6).
     assert "buildConfigs" in configs and "configs-modal" in index
+    # Fix wave (F2): a per-configuration export or drawing is the **pure**
+    # configuration (Decision 3/8), so when the working state is diverged the
+    # browser says so instead of letting the file be read as "what is on
+    # screen". Both surfaces already have the flag on the payload.
+    drawings = (FRONTEND / "js" / "drawings.js").read_text(encoding="utf-8")
+    assert "status.diverged" in drawings and "status.diverged" in main
 
     routes = (REPO / "agentcad" / "server"
               / "routes_configs.py").read_text(encoding="utf-8")

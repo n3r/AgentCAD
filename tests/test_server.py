@@ -118,6 +118,68 @@ def test_error_mapping(demo):
     assert body["error"]["type"] == "NotFoundError"
 
 
+@pytest.mark.parametrize("body", [[], "bad", 3])
+def test_a_non_object_body_is_a_422_not_a_500(demo, body):
+    """Fix wave (C1/C2): a house-wide, **pre-existing** gap, not a PRD-012
+    regression — every one of these routes read `body = await request.json()`
+    and then dereferenced it with `body.get(...)`, so a JSON array (or a bare
+    string, or a number) was an `AttributeError` 500. `PUT /assembly` and
+    `PATCH .../params` are untouched by PRD-012 and were in the same state,
+    which is what makes it house-wide."""
+    for path, method in (
+        ("/api/projects/demo/parts/box/export", demo.post),
+        ("/api/projects/demo/parts/box/drawing", demo.post),
+        ("/api/projects/demo/assembly", demo.put),
+        ("/api/projects/demo/parts/box/params", demo.patch),
+    ):
+        response = method(path, json=body)
+        assert response.status_code == 422, (path, body, response.text)
+        assert "JSON object" in response.json()["error"]["message"], path
+
+
+def test_an_absent_assembly_body_is_a_422_and_never_wipes_the_assembly(demo):
+    """Fix-wave re-review (Important, introduced by S6): `_json` returns `{}`
+    for a **genuinely absent** body, and `set_assembly(proj,
+    body.get("instances", []))` reads that as "replace the assembly with
+    nothing" — a 200 that silently emptied `assembly.instances`, where the
+    pre-wave code raised (a 500, but no mutation). It is the M3 shape exactly:
+    the key is REQUIRED, because its absence cannot mean "nothing to change"
+    when the default is the destructive verb.
+    """
+    placed = demo.put("/api/projects/demo/assembly", json={"instances": [
+        {"id": "a", "part": "box", "position": [0, 0, 0]}]})
+    assert placed.status_code == 200, placed.text
+    assert [i["id"] for i in placed.json()["instances"]] == ["a"]
+
+    empty = demo.put("/api/projects/demo/assembly")
+
+    assert empty.status_code == 422, empty.text
+    assert "instances is required" in empty.json()["error"]["message"]
+    kept = demo.get("/api/projects/demo/assembly").json()["instances"]
+    assert [i["id"] for i in kept] == ["a"]
+
+    # ...and the explicit clear still clears.
+    cleared = demo.put("/api/projects/demo/assembly", json={"instances": []})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["instances"] == []
+    assert demo.get("/api/projects/demo/assembly").json()["instances"] == []
+
+
+def test_an_absent_body_is_harmless_on_the_other_strict_reader_routes(demo):
+    """The other half of the same re-review: `_json` also lets an ABSENT body
+    reach `PATCH .../params` and `POST .../export`, where it is benign rather
+    than destructive — an empty override map merges nothing, and an empty
+    format is the export's own refusal. Confirmed, not assumed."""
+    before = demo.get("/api/projects/demo/parts/box").json()["params"]
+
+    patched = demo.patch("/api/projects/demo/parts/box/params")
+    assert patched.status_code == 200, patched.text
+    assert demo.get("/api/projects/demo/parts/box").json()["params"] == before
+
+    exported = demo.post("/api/projects/demo/parts/box/export")
+    assert exported.status_code == 422, exported.text
+
+
 def test_tools_endpoints(demo):
     tools = demo.get("/api/tools").json()["tools"]
     assert len(tools) >= 25  # 17 core + v2 packs

@@ -1453,6 +1453,21 @@ User-facing reference: `docs/agent-api.md` (the `Configurations` section) and
   `effective_params` (working state: defaults < active configuration <
   explicit overrides), and "PARAMS defaults <" costs no code because
   `worker._resolve_params` already fills every unset name.
+- **Resolution is TOTAL over the value and strict about the name.** `configs`
+  is JSON a merge or a hand edit can shape, and the driver merges a non-object
+  entry **whole**, so `5`, `None`, `{"label": "M"}` and `{"params": None}` are
+  all reachable without a hand edit. `config_params`/`effective_params` return
+  `{}` for every one of them (an unknown *name* is still a `KeyError` — that is
+  a programming error). This is not defensive polish: `_cache_key_for` reads
+  `effective_params` inside `_ensure_built`, **upstream** of every
+  configuration-aware branch, so raising there was a 500 on
+  `GET /api/projects/{p}/parts/{id}` — the browser's first read of a part — and
+  on every build of it. The damage is reported, not swallowed:
+  `manifest_merge.config_problems` emits `malformed_configuration` (a
+  **warning**, like the dangling `active_config`, because it resolves as base),
+  and `merge.py` routes it into `report["warnings"]`. Guards at call sites that
+  read *`params`* are therefore redundant; guards that read *`label`* off the
+  raw entry are **not** (there is no accessor for it) — do not delete those.
 - **`_rebuild(proj, part_id)` and `get_part(proj, part_id)` keep their
   signatures byte-for-byte.** `tools_specs`, `tools_holes` and
   `tools_packages` rebind them with **two-positional** wrappers, and packs load
@@ -1511,6 +1526,36 @@ User-facing reference: `docs/agent-api.md` (the `Configurations` section) and
   trailing newline, so an anchored `.match` accepted `"<key>\n"`) and **never
   builds**. There is deliberately no `?config=` parameter: one identity for a
   mesh, not two. `app.py`'s mesh routes are byte-identical.
+- **`routes_configs._result`: a refusal raises, a build post-state is a 200
+  whatever its `ok`.** The two are told apart by shape — `ToolRegistry.call`
+  emits exactly `{"error": …}` for a refusal (**no `ok` key**) while a rebuild
+  always carries one, so the raise is gated on `"ok" not in payload`. Only
+  `set_active_config` merges its rebuild at the top level (`set_part_configs`
+  nests it under `out["rebuild"]`), and that is the case this exists for: the
+  manifest was written and `project_changed` published, so answering 422 gave
+  the client a world-model no retry fixes and left the browser repainting the
+  switcher from stale state. `_BODY_ERRORS` is still empty; the docstring's old
+  absolute ("nothing about a configuration is a legitimate HTTP 200 error
+  body") is gone.
+- **`routes_configs._json` is strict, and the instance PATCH requires its
+  key.** A parsed body that is not an object is a `ValidationError`
+  (`"body must be a JSON object"`, 422); `{}` means a **genuinely absent** body
+  and nothing else (it still reads the BYTES, not `content-length` — a chunked
+  request carries none). `PATCH …/assembly/instances/{id}/config` then refuses
+  a body with no `config` key, so **`{"config": null}` is the only way to
+  unbind**: folding `[]`/`"bad"`/an empty body into `{}` made malformed input
+  fire the tool's `config=None` default, which is the destructive verb — the
+  one place in the branch where garbage silently mutated persisted state. The
+  same `_json` is imported by `app.py` (export, `PUT /assembly`,
+  `PATCH …/params`) and `routes_drawing.py`'s POST, where the identical shape
+  used to be a 500 — and **`PUT /assembly` needs the same required-key guard
+  for the same reason**: it is a full-list replace, so `{}` from an absent body
+  wiped the assembly at 200 (`instances` is now required;
+  `{"instances": []}` is the explicit clear). The rule generalises: *absence
+  cannot mean "nothing to change" when the default is the destructive verb* —
+  check it before putting any other route on the strict reader; `routes_drawing`'s SVG GET additionally gates `?config=`
+  with a `fullmatch` `CONFIG_RE` before it builds a filename, and raises the
+  refusal instead of serving it as JSON at HTTP 200.
 - **Binding validation lives in `ProjectStore.set_instances`**, beside the
   unknown-part and dangling-mate refusals — three writers reach the store
   (`service.set_assembly`, `tools_mates._set_instance_mate`,
@@ -1547,8 +1592,11 @@ User-facing reference: `docs/agent-api.md` (the `Configurations` section) and
   `config_problems` reports it, deliberately asymmetric: an instance binding is
   **blocking** `integrity` (`dangling_instance_config` — the binding is that
   instance's whole parameter set and it now resolves to nothing), a stale
-  `active_config` is a **warning** (it resolves as base). The repair is a tool
-  call, never a read-time fallback that hides it.
+  `active_config` is a **warning** (it resolves as base), and so is
+  `malformed_configuration` — the same damage one level down, a *member* the
+  key-wise merge took whole that is no longer an object with a `params` map
+  (`{"params": {}}` is a legitimate configuration and is never reported). The
+  repair is a tool call, never a read-time fallback that hides it.
 - **The dimension table is a MEASUREMENT, not a printout.** Every number comes
   from `build_shape` inside the drawing handler — which is why the timeout
   scales `120 + 60·rows`, why the cells echo the **resolved** parameter map

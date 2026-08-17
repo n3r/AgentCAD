@@ -19,12 +19,21 @@ Two consequences of that whitelist are load-bearing here:
   quietly do the right thing for the wrong reason. The **DELETE** is that verb,
   and the PUT refuses a null body key instead of guessing.
 * the instance ``PATCH`` therefore forwards ``config`` on ``"config" in body``
-  rather than on truthiness, because ``null`` there genuinely means *unbind*.
+  rather than on truthiness, because ``null`` there genuinely means *unbind* —
+  and for the same reason it **requires** the key: absence cannot be read as
+  "nothing to change" when the tool's default for it is the destructive verb.
 
-``_BODY_ERRORS`` is **empty**: nothing about a configuration is a legitimate
-HTTP 200 error body. A red matrix row is payload (``build_configs`` returns
-``ok: false`` per row and never raises), so a project whose members fail to
-build is an ordinary 200.
+``_BODY_ERRORS`` is **empty**, and the rule ``_result`` enforces is not "no
+error dict is ever a 200 body" — it is **a refusal raises; a build post-state
+is a 200 whatever its `ok`**. The two are distinguishable by shape:
+``ToolRegistry.call`` emits exactly ``{"error": …}`` for a refusal (no ``ok``
+key), while a rebuild always carries one. ``set_active_config`` merges its
+rebuild at the top level, so a switch that lands and then fails to build is a
+200 with ``ok: false`` — the same answer ``PATCH …/params`` has always given on
+the identical failure. Answering 422 there threw away a post-state the manifest
+had already committed, which is a client model no retry fixes. A red matrix row
+is payload the same way (``build_configs`` returns ``ok: false`` per row and
+never raises), so a project whose members fail to build is an ordinary 200.
 """
 
 from __future__ import annotations
@@ -57,8 +66,18 @@ _KEY_RE = re.compile(r"[0-9a-f]{32}")
 
 
 def _result(payload: dict) -> dict:
+    """Raise a refusal; return a build post-state.
+
+    ``"ok" not in payload`` is the whole test (see the module docstring): a
+    refusal envelope is exactly ``{"error": …}``, a post-state always carries
+    ``ok``. Without it a landed write — manifest saved, ``project_changed``
+    published — was served as a 422, and the browser's ``catch`` repainted the
+    switcher from stale state while ``project.json`` already held the new
+    configuration.
+    """
     error = payload.get("error") if isinstance(payload, dict) else None
-    if isinstance(error, dict) and error.get("type") not in _BODY_ERRORS:
+    if (isinstance(error, dict) and "ok" not in payload
+            and error.get("type") not in _BODY_ERRORS):
         cls = _RAISE.get(error.get("type"), ValidationError)
         raise cls(error.get("message", ""), error.get("details"))
     return payload
@@ -71,16 +90,28 @@ def _body_keys(body: dict, *keys: str) -> dict:
 
 
 async def _json(request: Request) -> dict:
-    """The body, or ``{}`` when there is none.
+    """The body as an OBJECT, or ``{}`` when there is genuinely none.
 
     Read the BYTES, not the header: a chunked request carries no
     ``content-length``, and trusting the header turns its body into "no
     arguments at all".
+
+    A body that parses to anything else is a **refusal**, not an empty one.
+    Folding ``[]`` / ``"bad"`` / ``3`` into ``{}`` made malformed input
+    indistinguishable from an absent body, and on the instance ``PATCH`` that
+    difference is destructive: the tool's ``config: str | None = None`` default
+    means *unbind*, so garbage silently cleared a live binding. It is also the
+    one guard the house's other body-reading routes want (``app.py``'s export /
+    ``PUT assembly`` / ``PATCH …/params`` and ``routes_drawing``'s POST import
+    it from here), where the same shape was a 500.
     """
     if not await request.body():
         return {}
     body = await request.json()
-    return body if isinstance(body, dict) else {}
+    if not isinstance(body, dict):
+        raise ValidationError("body must be a JSON object",
+                              {"got": type(body).__name__})
+    return body
 
 
 def build_router(service, registry) -> APIRouter:
@@ -133,9 +164,16 @@ def build_router(service, registry) -> APIRouter:
     async def set_instance_config(proj: str, instance_id: str,
                                   request: Request):
         body = await _json(request)
-        args: dict = {"project": proj, "instance": instance_id}
-        if "config" in body:
-            args["config"] = body["config"]   # null unbinds — forward it
+        # The key is REQUIRED, because its absence cannot mean "nothing to
+        # change" here: the tool's default for `config` is *unbind*, so a PATCH
+        # with nothing in it would be the most destructive call on the route.
+        # `{"config": null}` is the one way to say it — the same shape the
+        # sibling `PUT active-config` already enforces from the other side.
+        if "config" not in body:
+            raise ValidationError(
+                'config is required; send {"config": null} to unbind')
+        args = {"project": proj, "instance": instance_id,
+                "config": body["config"]}   # null unbinds — forward it
         return _result(registry.call("set_instance_config", args))
 
     @router.get("/projects/{proj}/meshes/{key}")

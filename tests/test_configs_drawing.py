@@ -251,6 +251,33 @@ class TestConfigDrawings:
         assert len(seen[-1]["params"]["dim_table"]["rows"]) == 3
         assert seen[-1]["timeout_s"] == 120.0 + 60.0 * 3
 
+    def test_the_drawing_request_is_pinned_to_the_parts_worker(self, stack,
+                                                                monkeypatch):
+        """Fix wave (F6): `affinity=part_id` is the house rule everywhere that
+        issues repeated builds of one part (`tools_holes` cites an 11 354 ms →
+        1 ms measurement for it). `dim_table` turned one drawing request into
+        up to eight builds, and the browser preview issues the request twice —
+        the POST, then the GET that regenerates — so an unpinned request pays
+        for a cold worker every time."""
+        service, registry = stack
+        seen: list[dict] = []
+        original = service.kernel.request
+
+        def capturing(method, params, timeout_s=None, affinity=None):
+            seen.append({"method": method, "affinity": affinity})
+            return original(method, params, timeout_s=timeout_s,
+                            affinity=affinity)
+
+        monkeypatch.setattr(service.kernel, "request", capturing)
+
+        assert "error" not in registry.call("generate_drawing", {
+            "project": "demo", "part_id": "flange", "config": "l",
+            "dim_table": True})
+
+        drawings = [call for call in seen if call["method"] == "drawing"]
+        assert drawings, seen
+        assert all(call["affinity"] == "flange" for call in drawings), seen
+
     # ------------------------------------------------------------ the routes
 
     def test_the_routes_forward_the_configuration_and_the_table(self, stack):
@@ -300,6 +327,10 @@ class TestConfigDrawings:
             assert tabulated.text == _svg(service, "flange_l_drawing.svg")
 
     def test_the_svg_route_refuses_an_undeclared_configuration(self, stack):
+        """Fix wave (V1): the refusal is an HTTP **error**, not a 200 whose
+        body happens to be JSON. An endpoint declared to serve SVG answering
+        `content-type: application/json` at HTTP 200 is a success the caller
+        has to sniff to disbelieve."""
         service, registry = stack
         app = create_app(service, registry, extra_allowed_hosts={"testserver"})
         http = TestClient(app, base_url="http://127.0.0.1")
@@ -307,7 +338,41 @@ class TestConfigDrawings:
         response = http.get("/api/projects/demo/parts/flange/drawing.svg"
                             "?config=xl")
 
-        assert response.json()["error"]["type"] == "validation_error"
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["type"] == "ValidationError"
+        assert response.json()["error"]["details"]["declared"] == ["l", "m", "s"]
+
+    def test_the_svg_route_validates_the_configuration_name_itself(
+            self, stack, monkeypatch):
+        """Fix wave (S7, the defence-in-depth half of the refuted C4): the
+        route joins `?config=` into a filename it then reads. Today nothing
+        leaks — `generate_drawing`'s first statement is `_record_for`, which
+        refuses an undeclared name, so the `if "error" in result` branch
+        returns before `suffix` is computed — but the route's own safety must
+        not depend on a tool three modules away keeping that order. Same
+        grammar (`CONFIG_RE`) and the same `fullmatch` as `_KEY_RE`, for the
+        same trailing-newline reason."""
+        service, registry = stack
+        app = create_app(service, registry, extra_allowed_hosts={"testserver"})
+        http = TestClient(app, base_url="http://127.0.0.1")
+        called: list[str] = []
+        original = registry.call
+        monkeypatch.setattr(
+            registry, "call",
+            lambda name, args: called.append(name) or original(name, args))
+
+        for bad in ("../../etc/passwd", "m%0a", "M", "-m", "x" * 33):
+            response = http.get("/api/projects/demo/parts/flange/drawing.svg"
+                                f"?config={bad}")
+            assert response.status_code == 422, (bad, response.text)
+            assert "configuration name" in response.json()["error"]["message"]
+        # Refused IN THE ROUTE: the tool was never reached, so no path was
+        # ever built from the query value.
+        assert called == []
+
+        ok = http.get("/api/projects/demo/parts/flange/drawing.svg?config=l")
+        assert ok.status_code == 200, ok.text
+        assert called == ["generate_drawing"]
 
 
 # ------------------------------------------- the renderer's formatting rules

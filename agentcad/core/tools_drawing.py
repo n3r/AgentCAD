@@ -64,14 +64,15 @@ def register(registry, service) -> None:
         if dim_table and declared and format == "svg":
             names = list(declared)                       # family order
             columns: list[str] = []                      # union, first-seen
-            for entry in declared.values():
-                # A hand-edited or merged entry need not be an object
-                # (`tools_configs._rows` guards the same way).
-                if not isinstance(entry, dict):
-                    continue
-                for name in entry.get("params") or {}:
-                    if name not in columns:
-                        columns.append(name)
+            for name in names:
+                # Through the same accessor the ROWS use, so the two cannot
+                # disagree about what a member holds — and `config_params` is
+                # total (a merged or hand-edited member that is not an object
+                # with a params map resolves as an empty configuration), so
+                # this needs no shape guard of its own.
+                for param in record.config_params(name):
+                    if param not in columns:
+                        columns.append(param)
             request["dim_table"] = {
                 "rows": [{"config": name,
                           "label": (declared[name].get("label")
@@ -82,7 +83,12 @@ def register(registry, service) -> None:
                 "columns": columns,
             }
             timeout += _ROW_TIMEOUT_S * len(names)
-        result = service.kernel.request("drawing", request, timeout_s=timeout)
+        # Pinned to the part's worker, the house rule everywhere that issues
+        # repeated builds of one part (`tools_holes` cites 11 354 ms -> 1 ms):
+        # `dim_table` makes this request up to eight builds, and the browser
+        # preview issues it twice (the POST, then the regenerating GET).
+        result = service.kernel.request("drawing", request, timeout_s=timeout,
+                                        affinity=part_id)
         if config:
             result["config"] = config
         table = (result.get("detected") or {}).get("dim_table")

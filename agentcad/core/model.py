@@ -87,8 +87,22 @@ class PartRecord:
         membership first, so reaching here with one is a programming error.
         "defaults <" needs no code — ``worker._resolve_params`` fills every
         unset name from ``PARAMS[name]["default"]``.
+
+        **Total over the VALUE, strict about the NAME.** ``configs`` is JSON a
+        merge or a hand edit can shape, and the key-wise merge takes a
+        non-object entry whole, so ``5``, ``None``, ``{"label": "M"}`` and
+        ``{"params": None}`` are all reachable without anyone editing
+        project.json. A member that carries no params map holds no parameters,
+        so it resolves as an empty configuration — loudly in the merge report
+        (``manifest_merge.config_problems``), never as an exception out of a
+        geometry read. Raising here was a **500 on the part's primary read**:
+        ``effective_params`` is read by ``_cache_key_for`` inside
+        ``_ensure_built``, upstream of every configuration-aware branch.
         """
-        return dict((self.configs or {})[name]["params"])
+        entry = (self.configs or {})[name]      # KeyError for an unknown NAME
+        if not isinstance(entry, dict):
+            return {}
+        return dict(entry.get("params") or {})
 
     @property
     def effective_params(self) -> dict:
@@ -99,7 +113,8 @@ class PartRecord:
         (resolving inside the store would make the next ``set_params`` bake the
         configuration into the overrides). An ``active_config`` the map no
         longer declares resolves as base — silently here, loudly in the merge
-        report.
+        report — and so does one that names a member which is not an object
+        with a params map (see :meth:`config_params`).
         """
         base: dict = {}
         if (
@@ -107,7 +122,9 @@ class PartRecord:
             and self.configs
             and self.active_config in self.configs
         ):
-            base = dict(self.configs[self.active_config].get("params") or {})
+            entry = self.configs[self.active_config]
+            base = dict(entry.get("params") or {}) if isinstance(entry, dict) \
+                else {}
         base.update(self.params)
         return base
 

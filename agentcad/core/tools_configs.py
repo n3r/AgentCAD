@@ -152,11 +152,12 @@ def register(registry, service) -> None:
         out = {"part_id": part_id, "configs": normalized,
                "active_config": record.active_config}
         active = record.active_config
-        # A hand-edited or merged entry need not be an object; `_rows` guards
-        # the same way, and a non-dict entry must not raise out of a rebuild
-        # decision.
-        was = (record.configs or {}).get(active)
-        before = was.get("params") if isinstance(was, dict) else None
+        # Through `config_params`, which is total: a hand-edited or merged
+        # member that is not an object with a params map resolves as an empty
+        # configuration, so it needs no shape guard here and a rewrite of it
+        # into `{"params": {}}` correctly moves no geometry.
+        before = (record.config_params(active)
+                  if active and active in (record.configs or {}) else None)
         if active and active in normalized and \
                 normalized[active]["params"] != before:
             # The visible geometry moved, so the post-state a caller needs next
@@ -276,7 +277,11 @@ def register(registry, service) -> None:
             result = service._ensure_config_built(project, record.id, group[0])
             built[group[0]] = (result, cached)
             for name in group[1:]:
-                built[name] = (result, True)
+                # ...and the de-duplicated sibling reports the same measurement,
+                # not a blanket True: when the shared build FAILED there is no
+                # `.acm` and no `.metrics.json`, so claiming a cache hit would
+                # contradict the tool description and `docs/agent-api.md`.
+                built[name] = (result, bool(result.get("ok")))
 
         # Read once per part, not per member: `declares_specs` is a memoized
         # AST scan, but the script is a file read.

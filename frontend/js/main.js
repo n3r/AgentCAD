@@ -459,18 +459,27 @@ async function runExport(kind, format) {
   if (!state.projectName) return;
   try {
     let result;
+    let diverged = false;
     if (kind === "part") {
       if (!state.selectedPart) {
         toast("Select a part to export", "error");
         return;
       }
-      // With a configuration loaded, "export this part" means export what is
-      // on screen — `flange_l.step`, not `flange.step`. The core export route
-      // takes no `config`, so it goes through the tool passthrough instead of
-      // silently writing the base geometry under the base name.
+      // With a configuration loaded, "export this part" means export the
+      // CONFIGURATION — `flange_l.step`, not `flange.step` — resolved purely
+      // (defaults < config), so parameters you typed over on top of it are
+      // deliberately NOT in the file: a variant's identity never depends on
+      // session state (Decision 3/8). Use the base export for the working
+      // state. The core export route takes no `config`, so this goes through
+      // the tool passthrough.
       const cfg = state.part && state.part.id === state.selectedPart
         ? state.part.active_config
         : null;
+      // ...and when the working state IS diverged, say so, because the file
+      // and the viewport genuinely disagree. The flag is already on the part
+      // payload, so this costs no round trip.
+      diverged = !!(cfg && state.part && state.part.status
+        && state.part.status.diverged);
       result = cfg
         ? await api.callTool("export_part", {
             project: state.projectName,
@@ -488,7 +497,10 @@ async function runExport(kind, format) {
       result = await api.exportAssembly(state.projectName, format);
     }
     const kb = (result.size_bytes / 1024).toFixed(1);
-    toast(`Exported ${result.path} (${kb} KB)`);
+    const note = diverged
+      ? " — the configuration as declared; your edits are not in it"
+      : "";
+    toast(`Exported ${result.path} (${kb} KB)${note}`);
   } catch (err) {
     const detail = err instanceof ApiError ? err.error.message : String(err);
     toast(`Export failed: ${detail}`, "error");

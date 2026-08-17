@@ -138,6 +138,43 @@ def test_config_params_of_an_unknown_name_raises_key_error():
         record().config_params("s")
 
 
+#: The four shapes a merge or a hand edit can leave in `configs` that are not
+#: a configuration: a scalar, a null, an object with no `params`, and one whose
+#: `params` is null. `tests/test_manifest_merge.py::
+#: test_a_non_dict_configuration_entry_merges_whole` pins that the driver
+#: merges the first two WHOLE, so none of this needs a hand edit.
+MALFORMED_ENTRIES = [5, None, {"label": "M"}, {"params": None}]
+
+
+@pytest.mark.parametrize("entry", MALFORMED_ENTRIES)
+def test_a_malformed_configuration_entry_resolves_as_empty(entry):
+    """Fix wave (F3/V2): resolution is TOTAL over the map.
+
+    `effective_params` is read by `_cache_key_for` inside `_ensure_built`, i.e.
+    upstream of every configuration-aware branch, so a raise here is a 500 on
+    `GET /api/projects/{p}/parts/{id}` — the browser's first read of the part.
+    A member that is not an object holds no parameters, so it resolves as
+    *nothing*, loudly in the merge report (`config_problems`) and never as an
+    exception out of a geometry read. This is the `active_config`-dangling rule
+    (Decision 3) applied one level down.
+    """
+    rec = record(configs={"m": entry}, active_config="m")
+    assert rec.effective_params == {}
+    assert rec.config_params("m") == {}
+    assert _divergence(rec) == (False, [])
+
+    # The explicit overrides still layer on top of the (empty) configuration.
+    over = record(params={"thick": 20.0}, configs={"m": entry},
+                  active_config="m")
+    assert over.effective_params == {"thick": 20.0}
+    assert over.config_params("m") == {}
+
+    # An unknown NAME is still a KeyError — that is a programming error, and
+    # totality over malformed VALUES must not soften it into a silent {}.
+    with pytest.raises(KeyError):
+        rec.config_params("xl")
+
+
 def test_an_instance_writes_its_config_only_when_bound():
     assert "config" not in InstanceSpec(id="f1", part="flange").to_manifest()
     bound = InstanceSpec(id="f1", part="flange", config="l").to_manifest()
@@ -715,6 +752,30 @@ class TestFlangeFamily:
         assert rows["flange"]["active_config"] == "l"
         assert rows["plate"]["configs"] == {}
         assert rows["plate"]["active_config"] is None
+
+    def test_a_malformed_member_does_not_break_the_parts_primary_read(
+            self, demo):
+        """Fix wave (F3/V2), the service half: a hand-edited or merged
+        `configs: {"m": null}` used to raise `AttributeError` out of
+        `_cache_key_for` — a **500 on the part's primary read**, and on every
+        build of that part, because the crash is upstream of the
+        configuration-specific code. It now resolves as an empty configuration.
+        """
+        manifest = demo.store.manifest("demo")
+        entry = next(p for p in manifest["parts"] if p["id"] == "flange")
+        entry["configs"] = {"m": None}
+        entry["active_config"] = "m"
+        demo.store.save_manifest("demo", manifest)
+
+        detail = demo.get_part("demo", "flange")
+
+        assert detail["active_config"] == "m"
+        assert detail["configs"] == {"m": None}      # read back as stored
+        assert detail["status"]["diverged"] is False
+        assert detail["status"]["diverged_params"] == []
+        # It resolved as base, so it is the plain script's geometry.
+        assert detail["metrics"]["volume_mm3"] > 0
+        assert demo.get_part("demo", "flange")["metrics"] == detail["metrics"]
 
     def test_an_override_on_top_of_the_active_configuration_diverges(self, demo):
         demo.store.update_part_entry("demo", "flange", active_config="m")

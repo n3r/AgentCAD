@@ -156,10 +156,23 @@ This project is built skill-first. Use the Superpowers process skills:
   at **`con`** (read `service.specs`/`packages` inside handlers; never touch
   `gate_providers`) · the merge reaches `configs.<name>.params.<param>` and the
   per-name `_keyed` guard stops a non-object entry merging to `{}`;
-  `dangling_instance_config` **blocks**, a dangling `active_config` warns · the
+  `dangling_instance_config` **blocks**, a dangling `active_config` warns, and
+  so does `malformed_configuration` · **resolution is total over the value**:
+  `config_params`/`effective_params` return `{}` for a non-object entry or a
+  missing/`None` `params` (an unknown *name* is still a `KeyError`), because
+  `_cache_key_for` reads them inside `_ensure_built` and a raise there was a
+  500 on the part's primary read — but a call site reading `label` off the raw
+  entry still needs its own guard · `routes_configs._result`: a **refusal
+  envelope raises** (it has no `ok` key), a **build post-state is a 200
+  whatever its `ok`** (the write landed) · `routes_configs._json` is **strict**
+  (non-object body → 422; `{}` only for a genuinely absent body) and is shared
+  by `app.py`'s export/`PUT assembly`/`PATCH params` and `routes_drawing`'s
+  POST; `PATCH …/instances/{id}/config` **requires** the `config` key, so
+  `{"config": null}` is the only unbind, and `PUT /assembly` requires
+  `instances` for the same reason (a full-list replace: `{}` wiped it at 200) · the
   drawing's dim table is a **measurement** (resolved values, `Label (name)`,
-  SVG only, timeout `120 + 60·rows`) and `render_view` refuses `config` without
-  `part_id`.
+  SVG only, timeout `120 + 60·rows`), its kernel request is pinned
+  `affinity=part_id`, and `render_view` refuses `config` without `part_id`.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests

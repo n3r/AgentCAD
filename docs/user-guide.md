@@ -915,6 +915,15 @@ size XL is caught before merge. And a configuration an instance is using
 cannot simply be deleted — the removal is refused, naming the instances that
 would have been left pointing at nothing.
 
+**A per-configuration file is the configuration *as declared*.** It is
+resolved purely (defaults, then the configuration), so parameters you have
+typed over on top of it — the "modified" chip — are deliberately not in
+`flange_l.step` or `flange_l_drawing.svg`; a file named after a configuration
+that quietly contained someone's unsaved slider drag would be the worse
+surprise. Return the part to base if what you want exported is the working
+state. While the part is modified the browser says so, in the export toast and
+in the drawing preview's title.
+
 Agents get the same surface as one call each — `set_part_configs`,
 `list_configs`, `build_configs`, `set_active_config`, `set_instance_config` —
 documented in [agent-api.md](agent-api.md#configurations). A part that

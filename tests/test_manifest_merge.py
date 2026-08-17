@@ -1575,6 +1575,38 @@ def test_a_project_without_configurations_is_silent():
         manifest(parts=[part("flange", configs={})])) == []
 
 
+def test_a_malformed_configuration_entry_is_named_as_a_warning():
+    """Fix wave (F3/V2): the driver merges a non-object configuration entry
+    WHOLE (`test_a_non_dict_configuration_entry_merges_whole` pins the
+    one-sided `{"m": None}`), so a clean merge alone can leave a member that is
+    not a configuration. `PartRecord.config_params` now resolves it as an empty
+    map rather than raising, which is exactly why the report has to say it: the
+    project loads, and the member silently holds no parameters.
+
+    A **warning**, like `dangling_active_config` and for the same reason — it
+    resolves, so nothing is left pointing at nothing.
+    """
+    doc = manifest(parts=[part("flange", configs={
+        "scalar": 5,
+        "null": None,
+        "no_params": {"label": "M"},
+        "null_params": {"params": None},
+        "fine": configuration({"bolt_d": 8.0}),
+        "empty": configuration(),
+    })])
+
+    problems = manifest_merge.config_problems(doc)
+
+    assert [p["kind"] for p in problems] == ["malformed_configuration"] * 4
+    assert [p["config"] for p in problems] == [
+        "scalar", "null", "no_params", "null_params"]
+    assert all(p["part"] == "flange" for p in problems)
+    assert "no parameters" in problems[0]["message"]
+    # `{"params": {}}` is a legitimate configuration (defaults, nothing
+    # overridden) and must not be reported.
+    assert all(p["config"] != "empty" for p in problems)
+
+
 # The orchestrator half — that a dangling binding actually blocks a REAL merge
 # through `validation.integrity` while a dangling `active_config` is only a
 # warning — is `tests/test_configs_merge.py`, which drives two branches through

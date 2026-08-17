@@ -63,19 +63,28 @@ function close() {
   downloadEl.removeAttribute("href");
 }
 
-/** The part's declared family and loaded configuration, from whichever piece
- *  of state already has them — the drawing panel makes no request of its own
- *  to find out whether a part is configured. */
+/** The part's declared family, loaded configuration and divergence, from
+ *  whichever piece of state already has them — the drawing panel makes no
+ *  request of its own to find out whether a part is configured.
+ *
+ *  `diverged` comes only from the loaded part detail (the project list carries
+ *  no status), which is exactly where it matters: a per-configuration sheet is
+ *  the configuration resolved PURELY, so the parameters typed over it are not
+ *  on the sheet and the title has to say so. */
 function configOf(partId) {
   let entry = null;
-  if (state.part && state.part.id === partId) entry = state.part;
-  else if (state.project) {
+  let diverged = false;
+  if (state.part && state.part.id === partId) {
+    entry = state.part;
+    diverged = !!(state.part.status && state.part.status.diverged);
+  } else if (state.project) {
     entry = state.project.parts.find((p) => p.id === partId) || null;
   }
   const declared = (entry && entry.configs) || {};
   return {
     configured: Object.keys(declared).length > 0,
     active: (entry && entry.active_config) || null,
+    diverged,
   };
 }
 
@@ -83,15 +92,20 @@ export async function previewSvg(project, partId) {
   open();
   const seq = ++previewSeq;
   const stale = () => seq !== previewSeq;
-  const { configured, active } = configOf(partId);
+  const { configured, active, diverged } = configOf(partId);
   // The table's columns are the configured parameters, so it has nothing to
   // say about a part with no family: the control simply isn't there.
   if (dimTableWrap) dimTableWrap.classList.toggle("hidden", !configured);
   if (dimTableEl) dimTableEl.checked = dimTable && configured;
   const wantTable = configured && dimTable;
   previewing = { project, partId };
+  // A configuration sheet is the configuration AS DECLARED; when the working
+  // state has been typed over, the title says so rather than letting the sheet
+  // be read as "what is on screen".
   titleEl.textContent = active
-    ? `${partId}@${active} · drawing`
+    ? `${partId}@${active} · drawing${
+        diverged ? " (configuration as declared — your edits are not shown)" : ""
+      }`
     : `${partId} · drawing`;
   downloadEl.classList.add("hidden");
   viewEl.textContent = "";

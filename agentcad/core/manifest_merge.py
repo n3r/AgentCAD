@@ -581,7 +581,7 @@ def config_problems(manifest: dict) -> list[dict]:
     :func:`package_problems` exists for, and the tool choke points cannot see
     it: each side was valid where it was written.
 
-    Two kinds, and the difference is deliberate (Decision 9):
+    Three kinds, and the difference is deliberate (Decision 9):
 
     ``dangling_instance_config``
         an instance bound to a configuration the merged part no longer
@@ -591,6 +591,14 @@ def config_problems(manifest: dict) -> list[dict]:
         a part whose ``active_config`` is gone. A **warning**: an unknown
         active configuration resolves as base (Decision 3), so the project is
         loadable and someone only has to re-pick.
+    ``malformed_configuration``
+        a *member* that is not an object with a ``params`` map. The same
+        clean-merge damage one level down: ``_merge_entry`` takes a non-object
+        configuration entry **whole**, so one branch replacing ``m`` with a
+        null (or a scalar) is enough. A **warning** for the same reason as the
+        one above — ``PartRecord.config_params`` resolves it as an empty
+        configuration, so the project loads; what it must not do is load
+        *silently*, because the member now holds no parameters at all.
 
     Silent on a project with no configurations, on ``{}``, and on a healthy
     family. An instance whose *part* is missing is skipped —
@@ -605,6 +613,24 @@ def config_problems(manifest: dict) -> list[dict]:
 
     problems: list[dict] = []
     for pid, entry in parts.items():
+        for name, member in _declared(entry).items():
+            # `{"params": {}}` is a legitimate configuration (defaults,
+            # nothing overridden) and must not be reported; a member with no
+            # params map at all is the damage.
+            if isinstance(member, dict) and isinstance(member.get("params"),
+                                                       dict):
+                continue
+            problems.append({
+                "kind": "malformed_configuration", "part": pid,
+                "config": name,
+                "message": f"part {pid!r} declares a configuration {name!r} "
+                           f"that is not an object with a params map, so it "
+                           f"holds no parameters and resolves as the part's "
+                           f"base: the key-wise merge takes a non-object "
+                           f"configuration entry whole, so one branch "
+                           f"replacing the member is enough — re-declare it "
+                           f"with set_part_configs or remove it",
+            })
         active = entry.get("active_config")
         if isinstance(active, str) and active not in _declared(entry):
             problems.append({
