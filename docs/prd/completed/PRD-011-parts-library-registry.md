@@ -1,6 +1,6 @@
 # PRD-011 — Parts library and package registry
 
-- **Status:** implemented — in review on `prd-011-parts-library-registry` (slices 1–14; AC1–AC8 verified, plus AC9 adopted at design review)
+- **Status:** completed — merged to main in PR #15 (AC1–AC9 verified; AC9 adopted at design review)
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026) + founder idea #1d ("Library" tab, Aug 2026)
