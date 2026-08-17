@@ -147,7 +147,8 @@ Five example projects are bundled and appear in the project switcher:
   every joint modeled the way the real engine bolts together
 
 Other useful targets: `make test-fast` (quick feedback), `make test-pr` (the
-required merge gate), `make test` (complete two-worker suite), `make
+required merge gate), `make test` (complete parallel suite — xdist workers
+auto-scale to physical cores, capped at 8; override via `PYTEST_PARALLEL`), `make
 test-portability` (OS-sensitive boundaries), `make app` (builds
 `dist/AgentCAD.app`), and `make serve` (headless). Use `make test-sequential`
 when debugging process interactions. PR CI runs the required suite on macOS

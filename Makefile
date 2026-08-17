@@ -1,6 +1,10 @@
 .PHONY: setup run serve test test-fast test-pr test-full test-portability test-sequential app dist smoke
 
-PYTEST_PARALLEL = -n 2 --dist loadscope
+# ?= so a small machine (or CI) can override: make test PYTEST_PARALLEL="-n 2 --dist loadscope"
+# --no-loadscope-reorder: xdist's count-descending queue sort sends the
+# heaviest (few-test) engine classes to the queue tail, where a late start
+# sets the suite's wall; collection order starts them early instead.
+PYTEST_PARALLEL ?= -n auto --maxprocesses=8 --dist loadscope --no-loadscope-reorder
 
 setup:
 	uv sync
