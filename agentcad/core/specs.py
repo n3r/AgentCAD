@@ -836,7 +836,7 @@ class SpecRunner:
         try:
             result = self._kernel(
                 "spec_eval",
-                {"script": script, "params": record.params,
+                {"script": script, "params": record.effective_params,
                  "density_g_cm3": self.service.material_density(
                      proj, record.material),
                  "densities": self.service._solid_densities(proj, record)
@@ -957,7 +957,7 @@ class SpecRunner:
         store = self.service.store
         record = store.get_part(proj, part_id)
         args = {"script": store.read_script(proj, part_id),
-                "params": record.params,
+                "params": record.effective_params,
                 "fixed_face": options.get("fixed_face"),
                 "load_face": options.get("load_face"),
                 "load_N": options.get("load_N"),

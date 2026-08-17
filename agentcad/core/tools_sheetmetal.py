@@ -18,7 +18,7 @@ def register(registry, service) -> None:
         script = service.store.read_script(project, part_id)
         out = service.store.exports_dir(project) / f"{part_id}_flat.{format}"
         return service.kernel.request("flat_pattern", {
-            "script": script, "params": record.params,
+            "script": script, "params": record.effective_params,
             "format": format, "out_path": str(out),
             "label": f"{project} / {part_id}",
         }, timeout_s=120.0)

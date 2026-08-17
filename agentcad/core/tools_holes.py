@@ -302,7 +302,7 @@ def _holes_for(service, proj: str, part_id: str, cache_key: str | None, *,
         return None
     result = service.kernel.request(
         "hole_records",
-        {"script": script, "params": record.params},
+        {"script": script, "params": record.effective_params},
         # affinity=part_id keeps the harvest on the worker that just built this
         # part; unkeyed it round-robins onto a cold shape cache (see the module
         # docstring's 11 354 ms / 1 ms measurement).
@@ -706,7 +706,7 @@ def register(registry, service) -> None:
             try:
                 return service.kernel.request(
                     "sketch_plane",
-                    {"script": script, "params": record.params,
+                    {"script": script, "params": record.effective_params,
                      "face_index": index},
                     timeout_s=300.0,     # may rebuild the shape from scratch
                 )

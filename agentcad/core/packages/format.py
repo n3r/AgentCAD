@@ -610,6 +610,37 @@ def validate_configuration(entry, params_spec) -> list[dict]:
     return out
 
 
+def validate_configurations(configs, params_spec) -> list[dict]:
+    """Problems with a whole ``configs`` map — ``parts.<id>.configs`` (PRD-012).
+
+    Name grammar (``CONFIG_RE``) per key, then ``validate_configuration`` per
+    entry with each field re-prefixed ``configs.<name>.<field>``. The presets
+    loop below is the same loop over a different container, so the two cannot
+    drift on what a configuration is; only the field prefix differs.
+
+    ``params_spec`` is the kernel-normalized PARAMS spec (or ``None`` for a
+    shape-only check), exactly as ``validate_configuration`` takes it.
+    """
+    if not isinstance(configs, dict):
+        return [problem("wrong_type",
+                        "configs must be an object of name -> configuration")]
+    out = []
+    for name, entry in configs.items():
+        cfield = f"configs.{name}"
+        if not CONFIG_RE.match(str(name)):
+            out.append(problem(
+                "bad_value",
+                f"configuration name {name!r} must match {CONFIG_RE.pattern}",
+                field=cfield))
+        for item in validate_configuration(entry, params_spec):
+            item = dict(item)
+            item["field"] = (
+                f"{cfield}.{item['field']}" if item.get("field") else cfield
+            )
+            out.append(item)
+    return out
+
+
 def validate_presets(doc, parts) -> list[dict]:
     """Problems with a `presets.json` document.
 

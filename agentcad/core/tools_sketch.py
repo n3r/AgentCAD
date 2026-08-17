@@ -484,7 +484,7 @@ def register(registry, service) -> None:
         script = service.store.read_script(project, part_id)
         info = service.kernel.request(
             "sketch_plane",
-            {"script": script, "params": record.params,
+            {"script": script, "params": record.effective_params,
              "face_index": int(face_index)},
             timeout_s=300.0,          # may rebuild the shape from scratch
         )

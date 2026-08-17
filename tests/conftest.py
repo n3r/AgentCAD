@@ -79,6 +79,42 @@ def build(p):
 '''
 
 
+# A flange-like part: plate with a central bore and a bolt circle. Every
+# parameter carries a unit and a description, so it is also the fixture for
+# anything that reads a normalized PARAMS spec (PRD-012 configurations).
+FLANGE_SCRIPT = '''\
+from build123d import *
+
+PARAMS = {
+    "outer_d":  {"default": 140.0, "min": 40.0, "max": 400.0, "unit": "mm", "description": "OD"},
+    "bore_d":   {"default": 80.0,  "min": 10.0, "max": 300.0, "unit": "mm", "description": "bore"},
+    "thick":    {"default": 14.0,  "min": 4.0,  "max": 60.0,  "unit": "mm", "description": "thickness"},
+    "n_bolts":  {"default": 8.0,   "min": 3.0,  "max": 16.0,  "unit": "ct", "description": "bolt count"},
+    "bolt_d":   {"default": 9.0,   "min": 3.0,  "max": 30.0,  "unit": "mm", "description": "bolt hole dia"},
+    "bc_d":     {"default": 118.0, "min": 20.0, "max": 360.0, "unit": "mm", "description": "bolt circle dia"},
+}
+
+def build(p):
+    with BuildPart() as part:
+        Cylinder(radius=p.outer_d / 2, height=p.thick)
+        Cylinder(radius=p.bore_d / 2, height=p.thick, mode=Mode.SUBTRACT)
+        with PolarLocations(radius=p.bc_d / 2, count=int(p.n_bolts)):
+            Hole(radius=p.bolt_d / 2)
+    return part.part
+'''
+
+# A three-member size family for FLANGE_SCRIPT, in family (insertion) order —
+# the configuration map shape PRD-011 froze: {name: {params, label?}}.
+THREE_SIZE_CONFIGS = {
+    "s": {"params": {"outer_d": 100.0, "bore_d": 50.0, "bc_d": 80.0},
+          "label": "Small"},
+    "m": {"params": {"outer_d": 140.0, "bore_d": 80.0, "bc_d": 118.0},
+          "label": "Medium"},
+    "l": {"params": {"outer_d": 200.0, "bore_d": 120.0, "bc_d": 170.0},
+          "label": "Large"},
+}
+
+
 def make_test_service(projects_dir, kernel, bus=None):
     """Build a service without synchronous git snapshots for unrelated tests."""
     bus = bus if bus is not None else EventBus()

@@ -913,7 +913,7 @@ class PacketBuilder:
             return {"source": str(self.service.store.imports_dir(proj)
                                   / Path(record.source or "").name)}
         return {"script": self.service.store.read_script(proj, record.id),
-                "params": record.params}
+                "params": record.effective_params}
 
     def _geom_diff(self, proj: str, pid: str, generation: str, part_id: str,
                    states: dict, errors: list) -> dict:

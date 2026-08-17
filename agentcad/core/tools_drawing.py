@@ -22,7 +22,7 @@ def register(registry, service) -> None:
                     if entry["id"] == part_id), None)
         out = service.store.exports_dir(project) / f"{part_id}_drawing.{format}"
         result = service.kernel.request("drawing", {
-            "script": script, "params": record.params,
+            "script": script, "params": record.effective_params,
             "views": views, "format": format,
             "out_path": str(out), "label": f"{project} / {part_id}",
             "pmi": pmi,

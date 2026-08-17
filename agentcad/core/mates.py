@@ -61,7 +61,7 @@ def resolve(service, proj: str, instances: list,
         # Scripts carry connectors; reference parts have none (script omitted).
         if record.kind == "script":
             item["script"] = service.store.read_script(proj, inst.part)
-            item["params"] = record.params
+            item["params"] = record.effective_params
         items.append(item)
 
     try:

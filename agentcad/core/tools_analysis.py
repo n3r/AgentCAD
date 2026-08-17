@@ -17,7 +17,7 @@ def register(registry, service) -> None:
         script = service.store.read_script(project, part_id)
         density = service.material_density(project, record.material)
         return service.kernel.request("analyze", {
-            "script": script, "params": record.params, "kind": kind,
+            "script": script, "params": record.effective_params, "kind": kind,
             "plane": plane, "axis": axis, "min_required": min_required,
             "density_g_cm3": density,
         }, timeout_s=120.0)
@@ -64,7 +64,7 @@ def register(registry, service) -> None:
             record = service.store.get_part(project, part_id)
             script = service.store.read_script(project, part_id)
             return service.kernel.request("fem_static", {
-                "script": script, "params": record.params,
+                "script": script, "params": record.effective_params,
                 "fixed_face": fixed_face, "load_face": load_face,
                 "load_N": load_N, "load_dir": load_dir or [0, 0, -1],
                 "E_mpa": E_mpa, "nu": nu, "mesh_size_mm": mesh_size_mm,
@@ -110,7 +110,7 @@ def register(registry, service) -> None:
                     )
                 E_mpa = material.E_gpa * 1000.0
             args = {
-                "script": script, "params": record.params,
+                "script": script, "params": record.effective_params,
                 "n_modes": int(n_modes), "E_mpa": E_mpa,
                 "nu": 0.3 if nu is None else nu, "density_g_cm3": density,
             }
@@ -153,7 +153,7 @@ def register(registry, service) -> None:
                     )
                 k_w_m_k = material.k_w_m_k
             return service.kernel.request("fem_thermal", {
-                "script": script, "params": record.params,
+                "script": script, "params": record.effective_params,
                 "hot_face": hot_face, "cold_face": cold_face,
                 "t_hot_c": t_hot_c, "t_cold_c": t_cold_c,
                 "k_w_m_k": k_w_m_k,

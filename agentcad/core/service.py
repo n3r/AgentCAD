@@ -351,6 +351,28 @@ class AgentCADService:
         )
         return self._rebuild(proj, part_id)
 
+    def normalize_params(self, spec: dict, values: dict) -> dict:
+        """Coerce and canonicalize ``values`` against a kernel-normalized PARAMS
+        ``spec`` the way ``set_params`` does: int for an int parameter, the
+        declared choice for an enum, float for a number. Unknown names raise.
+
+        The public seam over ``_normalize_param``, so a stored configuration
+        cannot spell one geometry two ways (``{"n": 3}`` and ``{"n": 3.0}``
+        would otherwise be two configurations and two cache keys). Ranges are
+        NOT checked here — the validator refuses an out-of-range configuration,
+        and an explicit override is stored raw and clamped by the worker.
+        """
+        unknown = sorted(set(values) - set(spec))
+        if unknown:
+            raise ValidationError(
+                f"unknown parameter(s): {', '.join(unknown)}",
+                {"unknown": unknown, "known": sorted(spec)},
+            )
+        return {
+            name: _normalize_param(name, spec[name], value)
+            for name, value in values.items()
+        }
+
     def delete_part(self, proj: str, part_id: str) -> None:
         with self._lock:
             self.store.remove_part(proj, part_id)
@@ -416,7 +438,7 @@ class AgentCADService:
             "export",
             {
                 "script": script,
-                "params": record.params,
+                "params": record.effective_params,
                 "format": format,
                 "out_path": str(out),
                 "tolerance": tolerance,
@@ -496,7 +518,7 @@ class AgentCADService:
             )
         else:
             item["script"] = self.store.read_script(proj, record.id)
-            item["params"] = record.params
+            item["params"] = record.effective_params
         return item
 
     def check_interference(self, proj: str, min_volume: float = 0.001,
@@ -581,9 +603,12 @@ class AgentCADService:
         }
 
     def _cache_key_for(self, proj: str, record) -> str:
+        # Config-aware by construction: the resolved override map is hashed, so
+        # nothing new enters _cache_key's payload, two configurations with the
+        # same overrides share one entry, and every pre-PRD-012 key still hits.
         return self._cache_key(
             self._content_signature(proj, record),
-            record.params,
+            record.effective_params,
             self.material_density(proj, record.material),
             self._solid_densities(proj, record),
         )
@@ -680,7 +705,7 @@ class AgentCADService:
             method = "build"
             build_params = {
                 "script": self.store.read_script(proj, part_id),
-                "params": record.params,
+                "params": record.effective_params,
                 "density_g_cm3": density,
                 "mesh_path": str(mesh_path),
                 "tolerance": MESH_TOLERANCE,

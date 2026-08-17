@@ -57,7 +57,7 @@ def register(registry, service) -> None:
 
     def face_info(project: str, part_id: str, face_index: int) -> dict:
         record, script = _script_part(project, part_id)
-        info = _face_info(script, record.params, int(face_index))
+        info = _face_info(script, record.effective_params, int(face_index))
         return {"face_index": int(face_index), **info}
 
     def push_pull(
@@ -68,7 +68,7 @@ def register(registry, service) -> None:
         distance = float(distance_mm)
         if distance == 0:
             raise ValidationError("distance_mm must be nonzero")
-        info = _face_info(script, record.params, face_index)
+        info = _face_info(script, record.effective_params, face_index)
         if not info["planar"]:
             raise ValidationError(
                 f"face {face_index} is not planar — push/pull needs a planar "
