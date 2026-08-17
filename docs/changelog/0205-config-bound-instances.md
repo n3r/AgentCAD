@@ -1,4 +1,4 @@
-# 0193 — PRD-012 slice 4: an assembly instance bound to a configuration, end to end
+# 0205 — PRD-012 slice 4: an assembly instance bound to a configuration, end to end
 
 - **Commit:** pending
 - **Date:** 2026-08-17

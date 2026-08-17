@@ -1,4 +1,4 @@
-# 0196 — PRD-012 slice 8: the configuration surface documented, and AC1–AC9 graded
+# 0208 — PRD-012 slice 8: the configuration surface documented, and AC1–AC9 graded
 
 - **Commit:** pending
 - **Date:** 2026-08-17
@@ -37,7 +37,7 @@ cloned per test) built on `tests/conftest.py`'s `FLANGE_SCRIPT` +
   `detected.dim_table` echoes `{columns, rows, placement, warnings, dropped}`
   with X/Y measured as the OD (100/140/200) and Z as the thickness — numbers
   that come from three built shapes, not from the request. The browser half of
-  the criterion ("one browser check") is graded as evidence in changelog 0195.
+  the criterion ("one browser check") is graded as evidence in changelog 0207.
 - **AC3** — removing a bound configuration is a `conflict_error` naming the
   instance in `details.instances` **and** in the message, with the family
   unwritten; `list_configs.referrers` is asserted as the lookup that makes it
@@ -67,7 +67,7 @@ cloned per test) built on `tests/conftest.py`'s `FLANGE_SCRIPT` +
   answers `{}`/`None`/`diverged: False`.
   `test_ac8_the_full_suite_count_is_cited` is the evidence check on this entry
   (and on the newest entry, if a later one lands).
-- **AC9** — a structural grep over the surfaces the 0195 browser session drove
+- **AC9** — a structural grep over the surfaces the 0207 browser session drove
   (`renderConfigBar`/`markConfigSources`/`cfg-chip` in `inspector.js`,
   `row-badge` in `tree.js`, `setInstanceConfig` in `placement.js` and `api.js`,
   `getMeshByKey` in `api.js` and `main.js`, `buildConfigs` in `configs.js`,
@@ -133,7 +133,7 @@ cloned per test) built on `tests/conftest.py`'s `FLANGE_SCRIPT` +
 
 - **`AGENTS.md`** — a `## Configuration gotchas (PRD-012 …)` section in the
   house style, 19 items, each traceable to a measurement in changelogs
-  0188–0196: the kernel never sees a configuration and the store never
+  0200–0208: the kernel never sees a configuration and the store never
   resolves; the pinned `_rebuild`/`get_part` signatures and what that costs;
   `_status` vs `_config_status` as a **livelock** guard; lowercase names and
   the naming collisions; strict-declared vs clamped-override; the serial
@@ -177,7 +177,7 @@ cloned per test) built on `tests/conftest.py`'s `FLANGE_SCRIPT` +
   `docs/packages.md`), the two naming rules themselves, and PRD-011's
   "many-variants-of-one-part" fan-out measurement quoted verbatim in
   `AGENTS.md` and `docs/architecture.md`.
-- **I4 — the suite-count placeholder** in this entry (and `0195`) is the
+- **I4 — the suite-count placeholder** in this entry (and `0207`) is the
   controller's to fill; `test_ac8_the_full_suite_count_is_cited` stays red
   until it is, by design.
 - **Minor (a)** — `Label (name)`'s fallback is now stated where the table is
@@ -210,7 +210,7 @@ cloned per test) built on `tests/conftest.py`'s `FLANGE_SCRIPT` +
 - `AGENTS.md` — `## Configuration gotchas (PRD-012 …)`; the determinism and
   read-more lines
 - `CLAUDE.md` — the condensed traps bullet
-- `docs/changelog/0196-prd-012-docs-and-acceptance.md` — this entry
+- `docs/changelog/0208-prd-012-docs-and-acceptance.md` — this entry
 
 ## Notes
 - **Where the docs describe the code rather than the spec**, deliberately, and

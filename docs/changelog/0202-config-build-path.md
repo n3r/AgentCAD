@@ -1,4 +1,4 @@
-# 0190 — PRD-012 slice 2: the configuration build path
+# 0202 — PRD-012 slice 2: the configuration build path
 
 - **Commit:** pending
 - **Date:** 2026-08-17
@@ -110,7 +110,7 @@ payloads.
 - `agentcad/cli.py` — `agentcad export --config` (usage line + argument)
 - `docs/agent-api.md` — the `export_part` tool row documents `config`
 - `tests/test_configs.py` — 18 new tests (2 module-level + `TestFlangeFamily`)
-- `docs/changelog/0190-config-build-path.md` — this entry
+- `docs/changelog/0202-config-build-path.md` — this entry
 
 ## Notes
 - No new tool, route or UI yet (slices 3+). `set_active_config` does not exist

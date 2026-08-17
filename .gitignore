@@ -11,3 +11,13 @@ node_modules/
 .DS_Store
 .tiden/
 .history/
+
+# PRD-005a: `cp .env.example .env` holds AGENTCAD_SECRET_KEY. It is in
+# .dockerignore so it never lands in an image layer; this keeps it out of the
+# repository for the same reason. `.env.*` too — `.env.prod`, `.env.staging`
+# and `.env.local` are the ordinary way to keep two deployments apart, and the
+# one carrying the production secret is exactly the one that must not be
+# committed. `!.env.example` keeps the checked-in template visible.
+.env
+.env.*
+!.env.example

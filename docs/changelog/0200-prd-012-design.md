@@ -1,4 +1,4 @@
-# 0188 — PRD-012 design: configurations spec and implementation plan
+# 0200 — PRD-012 design: configurations spec and implementation plan
 
 - **Commit:** pending
 - **Date:** 2026-08-17
@@ -33,7 +33,7 @@ folded back. No code changes.
   (Decision 8); the merge reaches `configs.<name>.params.<param>` and reports
   the dangling-binding hybrid (Decision 9); the browser surfaces (Decision 10).
 - `docs/superpowers/plans/2026-08-17-configurations.md` — eight slices with
-  changelog numbers 0189–0196, files, shapes, tasks, tests, verification.
+  changelog numbers 0201–0208 (renumbered from 0189–0196 at merge time — PRD-005a landed 0188–0199 first), files, shapes, tasks, tests, verification.
 - `docs/prd/pending/PRD-012-configurations.md` →
   `docs/prd/in-progress/PRD-012-configurations.md`, status line updated, and
   four fold-backs marked *Amended at design*: config names lowercase
@@ -48,7 +48,7 @@ folded back. No code changes.
 - `docs/superpowers/specs/2026-08-17-configurations-design.md` — new
 - `docs/superpowers/plans/2026-08-17-configurations.md` — new
 - `docs/prd/in-progress/PRD-012-configurations.md` — moved + amended
-- `docs/changelog/0188-prd-012-design.md` — this entry
+- `docs/changelog/0200-prd-012-design.md` — this entry
 
 ## Notes
 

@@ -1,4 +1,4 @@
-# 0191 — PRD-012 slice 5: the merge reaches a configuration's parameter, and a dangling selection is reported
+# 0203 — PRD-012 slice 5: the merge reaches a configuration's parameter, and a dangling selection is reported
 
 - **Commit:** pending
 - **Date:** 2026-08-17

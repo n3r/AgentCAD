@@ -85,15 +85,15 @@ ES modules + THREE.js, pytest + xdist (`make test`).
 
 | # | Slice | Lands | Changelog |
 |---|---|---|---|
-| 0 | Design: spec, plan, PRD → in-progress (this commit) | docs only | 0188 |
-| 1 | Model, store, validator, resolution: `PartRecord`/`InstanceSpec` fields and methods, `validate_configurations`, `ProjectStore` read/write/validate, `service.normalize_params`, every consumer → `effective_params`, config-aware cache key | Decisions 1, 2, 3 | 0189 |
-| 2 | Build path: `_record_for`, `_build_with`, `_ensure_config_built`, `_config_status`, events with `config`, `mesh_info`/`ensure_mesh(config=)`, `export_part(config=)` (+ tool schema, route whitelist, CLI), `get_part`/`get_project` config fields + divergence | Decisions 3, 4, 5 (state), 8 (export) | 0190 |
-| 3 | The tool pack and the routes: `tools_configs.py` (5 tools), `routes_configs.py` (7 routes + `/meshes/{key}`) | Decision 6, 7 (mesh route) | 0191 |
-| 4 | Assembly binding end to end: `get_assembly` (config builds, `mesh_key`), `_shape_item` callers via `_record_for`, `mates.resolve`, `sweep_motion`, specs instance/assembly key, stackup warning, `render_view` assembly + packet renders, `assembly_delta` | Decision 7 | 0192 |
-| 5 | Merge: `configs.<name>.params.<param>` granularity, `apply_choices` write path, `config_problems`, `merge.py` integration, docstring table | Decision 9 | 0193 |
-| 6 | Artifacts: `render_view {config}`, `generate_drawing {config, dim_table}` (tool + handler + route/UI filename), `SpecRunner._shape_tier(record=)` + `spec_results`, CI per-config build rows | Decision 8 | 0194 |
-| 7 | Frontend: config bar, provenance marks, tree badge, placement picker, assembly meshes by key, event guard, matrix modal, export/drawing config; AC9 session | Decision 10 | 0195 |
-| 8 | Docs, AGENTS/CLAUDE gotchas, acceptance tests `tests/test_prd012_acceptance.py`, roadmap row | — | 0196 |
+| 0 | Design: spec, plan, PRD → in-progress (this commit) | docs only | 0200 |
+| 1 | Model, store, validator, resolution: `PartRecord`/`InstanceSpec` fields and methods, `validate_configurations`, `ProjectStore` read/write/validate, `service.normalize_params`, every consumer → `effective_params`, config-aware cache key | Decisions 1, 2, 3 | 0201 |
+| 2 | Build path: `_record_for`, `_build_with`, `_ensure_config_built`, `_config_status`, events with `config`, `mesh_info`/`ensure_mesh(config=)`, `export_part(config=)` (+ tool schema, route whitelist, CLI), `get_part`/`get_project` config fields + divergence | Decisions 3, 4, 5 (state), 8 (export) | 0202 |
+| 3 | The tool pack and the routes: `tools_configs.py` (5 tools), `routes_configs.py` (7 routes + `/meshes/{key}`) | Decision 6, 7 (mesh route) | 0204 |
+| 4 | Assembly binding end to end: `get_assembly` (config builds, `mesh_key`), `_shape_item` callers via `_record_for`, `mates.resolve`, `sweep_motion`, specs instance/assembly key, stackup warning, `render_view` assembly + packet renders, `assembly_delta` | Decision 7 | 0205 |
+| 5 | Merge: `configs.<name>.params.<param>` granularity, `apply_choices` write path, `config_problems`, `merge.py` integration, docstring table | Decision 9 | 0203 |
+| 6 | Artifacts: `render_view {config}`, `generate_drawing {config, dim_table}` (tool + handler + route/UI filename), `SpecRunner._shape_tier(record=)` + `spec_results`, CI per-config build rows | Decision 8 | 0206 |
+| 7 | Frontend: config bar, provenance marks, tree badge, placement picker, assembly meshes by key, event guard, matrix modal, export/drawing config; AC9 session | Decision 10 | 0207 |
+| 8 | Docs, AGENTS/CLAUDE gotchas, acceptance tests `tests/test_prd012_acceptance.py`, roadmap row | — | 0208 |
 
 Slices 1 → 2 → 3 are strictly ordered. 4, 5, 6 depend on 3 (4 and 6 also on
 2) and are independent of each other. 7 depends on 3, 4, 6. 8 is last.
@@ -102,7 +102,7 @@ Slices 1 → 2 → 3 are strictly ordered. 4, 5, 6 depend on 3 (4 and 6 also on
 
 ## Slice 1 — model, store, validator, resolution
 
-**Changelog:** `docs/changelog/0189-configs-model-and-resolution.md`
+**Changelog:** `docs/changelog/0201-configs-model-and-resolution.md`
 
 ### Files
 
@@ -272,13 +272,13 @@ cache-key cases above — at least 14 tests.
 ### Verification
 
 `uv run pytest tests/test_configs.py tests/test_packages_format.py tests/test_service.py tests/test_solids.py tests/test_manifest_merge.py -q` green, then
-`make test` green (cite the count in `0189-…`).
+`make test` green (cite the count in `0201-…`).
 
 ---
 
 ## Slice 2 — the build path
 
-**Changelog:** `docs/changelog/0190-config-build-path.md`
+**Changelog:** `docs/changelog/0202-config-build-path.md`
 
 ### Files
 
@@ -403,13 +403,13 @@ and `delete_part` also sweep `_config_status` (prefix `(lock_key, part_id)`).
 ### Verification
 
 `uv run pytest tests/test_configs.py -q` (≥ 12 new tests) then `make test`
-green; count cited in `0190-…`.
+green; count cited in `0202-…`.
 
 ---
 
 ## Slice 3 — the tool pack and the routes
 
-**Changelog:** `docs/changelog/0191-configs-tools-and-routes.md`
+**Changelog:** `docs/changelog/0204-configs-tools-and-routes.md`
 
 ### Files
 
@@ -556,7 +556,7 @@ GET    /projects/{proj}/meshes/{key}?lod=                -> the content-addresse
 ### Verification
 
 `uv run pytest tests/test_configs.py tests/test_configs_api.py -q` (≥ 20
-new tests) then `make test`; count in `0191-…`. Also
+new tests) then `make test`; count in `0204-…`. Also
 `uv run agentcad mcp` unaffected: `registry.tools()` lists the five names
 (one assertion in the api test).
 
@@ -622,13 +622,13 @@ new tests) then `make test`; count in `0191-…`. Also
 
 ### Verification
 
-`uv run pytest tests/test_configs_assembly.py tests/test_mates.py tests/test_motion.py tests/test_packet.py tests/test_specs.py -q` then `make test`; count in `0192-…`.
+`uv run pytest tests/test_configs_assembly.py tests/test_mates.py tests/test_motion.py tests/test_packet.py tests/test_specs.py -q` then `make test`; count in `0205-…`.
 
 ---
 
 ## Slice 5 — the merge
 
-**Changelog:** `docs/changelog/0193-configs-merge-granularity.md`
+**Changelog:** `docs/changelog/0203-configs-merge-granularity.md`
 
 ### Files
 
@@ -722,13 +722,13 @@ def config_problems(manifest: dict) -> list[dict]:
 
 ### Verification
 
-`uv run pytest tests/test_manifest_merge.py tests/test_merge.py tests/test_branches.py -q` then `make test`; count in `0193-…`.
+`uv run pytest tests/test_manifest_merge.py tests/test_merge.py tests/test_branches.py -q` then `make test`; count in `0203-…`.
 
 ---
 
 ## Slice 6 — artifacts: renders, drawings, specs, CI
 
-**Changelog:** `docs/changelog/0194-config-artifacts-drawings-specs-ci.md`
+**Changelog:** `docs/changelog/0206-config-artifacts-drawings-specs-ci.md`
 
 ### Files
 
@@ -827,13 +827,13 @@ memo).
 
 ### Verification
 
-`uv run pytest tests/test_configs_drawing.py tests/test_configs_checks.py tests/test_configs.py tests/test_drawings.py tests/test_checks*.py tests/test_specs*.py -q` then `make test`; count in `0194-…`.
+`uv run pytest tests/test_configs_drawing.py tests/test_configs_checks.py tests/test_configs.py tests/test_drawings.py tests/test_checks*.py tests/test_specs*.py -q` then `make test`; count in `0206-…`.
 
 ---
 
 ## Slice 7 — the frontend
 
-**Changelog:** `docs/changelog/0195-configs-ui.md` (must contain the AC9
+**Changelog:** `docs/changelog/0207-configs-ui.md` (must contain the AC9
 session block with `ERROR COUNT: 0`)
 
 ### Files
@@ -904,13 +904,13 @@ session block with `ERROR COUNT: 0`)
 ### Verification
 
 `uv run pytest tests/test_server.py -q` green (theme/asset tests), the
-session block written, `make test`; count in `0195-…`.
+session block written, `make test`; count in `0207-…`.
 
 ---
 
 ## Slice 8 — docs, gotchas, acceptance
 
-**Changelog:** `docs/changelog/0196-prd-012-docs-and-acceptance.md`
+**Changelog:** `docs/changelog/0208-prd-012-docs-and-acceptance.md`
 
 ### Files
 
@@ -961,7 +961,7 @@ session block written, `make test`; count in `0195-…`.
   `configs.js`/`index.html` for `renderConfigBar(`, `markConfigSources(`,
   `config-bar`, `setActiveConfig`, `cfg-chip`, `getMeshByKey`,
   `setInstanceConfig`; routes present in `routes_configs.py`; changelog
-  0195 contains `ERROR COUNT: 0`), plus the house meta-test that the
+  0207 contains `ERROR COUNT: 0`), plus the house meta-test that the
   roadmap row for `[012]` links to the folder the PRD lives in.
 - [ ] **Task 2 — docs** as listed; grep every new tool name appears in
   `docs/agent-api.md` (one assertion in the acceptance module, the PRD-011
@@ -970,14 +970,14 @@ session block written, `make test`; count in `0195-…`.
 
 ### Verification
 
-`make test` green (cite the count in `0196-…`), `uv run pytest tests/test_prd012_acceptance.py -q -m ""` green.
+`make test` green (cite the count in `0208-…`), `uv run pytest tests/test_prd012_acceptance.py -q -m ""` green.
 
 ## Rollback / landing notes
 
 Each slice is one commit on `prd-012-configurations`; the branch lands as
 one PR after two independent reviews (Opus subagent; Codex GPT-5.6 xhigh) and
 an adversarial verification pass, then the roadmap/PRD move commit on main
-(the PRD-011 close-out shape, changelog `0197-prd-012-completed.md`). Nothing
+(the PRD-011 close-out shape, changelog `0211-prd-012-completed.md`). Nothing
 here migrates data: a checkout of an older commit reads a manifest with
 `configs` and ignores it (in-place entry edits keep the key; a whole-list
 `set_assembly` on an old build drops instance bindings — the one lossy path,

@@ -102,7 +102,24 @@ class LocalIndex:
         return self.path / INDEX_FILE
 
     @property
+    def configured_scope(self) -> str:
+        """What the **operator's own config** says, ignoring the document.
+
+        :attr:`scope` lets the index document win, which is right for publish
+        policy (a third party's `index.json` saying "private" must be able to
+        refuse content) and wrong for access control (that same third party
+        must not be able to say "public" about an index the operator marked
+        private). PRD-005a's anonymous catalog read consumes *this* one and
+        requires both to agree; see `server/routes_public._public_indexes`.
+        """
+        return self._configured_scope
+
+    @property
     def scope(self) -> str:
+        """The effective scope for **publish policy**: the document wins.
+
+        Not an access-control answer — use :attr:`configured_scope` for that.
+        """
         try:
             declared = self.entries().get("scope")
         except (NotFoundError, ValidationError):

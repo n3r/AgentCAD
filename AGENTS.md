@@ -51,7 +51,7 @@ Claude Code (MCP) ─┐         Browser UI ─┐        Chat agent ─┐
                    │ HTTP               │ REST+WS            │ in-process
                    ▼                    ▼                    ▼
         ┌───────────────────────────────────────────────────────┐
-        │  FastAPI server (127.0.0.1 only)                       │
+        │  FastAPI server (127.0.0.1 local / bound+authed hosted) │
         │  ToolRegistry ─► AgentCADService ─► ProjectStore(files)│
         │                        │ line-delimited JSON-RPC       │
         │              Kernel worker subprocess(es)              │
@@ -197,9 +197,14 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   passes the union of both world bboxes to both sides.
 - **`allow_invalid` overrides the kernel validation gate only** — never the
   approvals policy. One field must not mean two unrelated things.
-- **`actor_kind` is `human` only for the `browser` identity.** The chat dock is
-  a human asking an *agent*, so those actions are the agent's. It is
-  bookkeeping, not authentication, until PRD-005.
+- **`actor_kind` is `human` for the `browser` identity and for an
+  authenticated `user:` principal.** The chat dock is a human asking an
+  *agent*, so those actions are the agent's. In local mode it is still
+  bookkeeping rather than authentication — anyone can send any `X-Agent-Id`.
+  In **hosted** mode a `user:` prefix is authenticated (the guard composes the
+  principal and `X-Agent-Id` can only contribute the device suffix), which is
+  why `core/proposals.actor_kind` must classify `user:nikita/browser:7f3a1b2c`
+  as human; see the hosted-core gotchas.
 - A packet is generated from the **branches' existing worktrees**
   (`branches.tree_of` + `branches.pinned`) and refuses a dirty tree, so its
   pinned head SHAs always describe the bytes it measured.
@@ -565,9 +570,14 @@ contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
   applied (a repo hook rejecting the commit) resets tree, index and HEAD to
   where they started before the error leaves. "Never a partial apply" is a
   statement about the way out too.
-- **`actor_kind`/`author_kind` is bookkeeping, not authentication.** It is
-  `human` iff the identity is the browser. Say so on every surface that shows
-  it, until PRD-005.
+- **`actor_kind`/`author_kind` is bookkeeping in LOCAL mode, and
+  authenticated in hosted mode.** It is `human` for the browser identity and
+  for a `user:` principal. In local mode any client may claim any
+  `X-Agent-Id`, so say so on the surfaces that show it; in hosted mode the
+  `user:` half is the guard's own composition and cannot be spoofed
+  (PRD-005a). `core/proposals.actor_kind` must classify a composed
+  `user:<handle>/<device>` as human — see the hosted-core gotchas for what
+  broke when it did not.
 
 ## Sketcher gotchas (PRD-009 — read before touching the solver, the emitter or `sketcher.js`)
 
@@ -1440,7 +1450,7 @@ identity and resources:**
 
 ## Configuration gotchas (PRD-012 — read before touching configs, the build path or the merge)
 
-Every item is traceable to a measurement in `docs/changelog/0188`–`0196`.
+Every item is traceable to a measurement in `docs/changelog/0200`–`0209`.
 User-facing reference: `docs/agent-api.md` (the `Configurations` section) and
 `docs/user-guide.md`.
 
@@ -1631,6 +1641,237 @@ User-facing reference: `docs/agent-api.md` (the `Configurations` section) and
   branch behaviour). `tests/test_prd012_acceptance.py::test_ac8_a_project_without_
   configurations_is_byte_identical` grades it against PRD-010's `.acm` sha
   golden.
+## Hosted-core gotchas (PRD-005a — read before touching `server/security.py`, `core/authstore.py`, `core/appmode.py` or the deployment)
+
+Every item is traceable to a decision in
+`docs/superpowers/specs/2026-08-17-hosted-core-design.md` or to a test.
+Changelogs `0188`–`0197`. Operator-facing reference: `docs/deployment.md`.
+
+**The defining fact, stated before anything else: an account on a hosted
+instance is a shell.** A part script is arbitrary Python
+(`kernel/worker.py:57-59`) and Linux has no worker confinement until PRD-006
+(`kernel/sandbox.py` gates the whole module on `sys.platform == "darwin"`).
+So `member` and `admin` are **not** a security boundary between each other, a
+per-project ACL would be a label rather than a boundary, registration is
+closed by construction (there is no self-registration route), and the trust
+sentence is repeated in four places (FR17: `docs/deployment.md`, the
+`compose.yaml` header, `agentcad admin … --help`, and the output of
+`agentcad admin user add`). Do not add a feature whose safety argument assumes
+otherwise. And when you print it, do **not** reach for `str.capitalize()` —
+it lower-cases "Python".
+
+- **`actor_kind` must classify `user:` as human** (`core/proposals.py`). A
+  composed principal `user:nikita/browser:7f3a1b2c` does not start with
+  `browser:`, so before the two-line fix every signed-in human classified as
+  an *agent* — and `ClaimRegistry.acquire` returns `None` for a non-human
+  holder while `_blocking` never blocks an agent. The day hosting turned on,
+  per-part claims would have silently stopped protecting anybody, with no
+  error anywhere. `tests/test_claims.py` drives the real registry, not the
+  classifier.
+
+- **The anonymous surface is nine entries in one frozenset**
+  (`server/security.py`: `PUBLIC_PATHS` + `PUBLIC_PREFIXES`) and default-deny
+  means **a route pack added tomorrow is private with no action by its
+  author**. There is deliberately no per-route `@public` decorator: a pack
+  author must not be able to open the surface from their own module.
+  `tests/test_hosted_surface.py` asserts the reachable set by **equality**, so
+  a forgotten removal fails too.
+
+- **`is_public` is `startswith` on `PUBLIC_PREFIXES`, so every prefix must end
+  in `/`.** `/api/public` without the slash would make `/api/publicity` public.
+  Each addition gets its own negation test in
+  `test_paths_that_must_not_be_public`, and `/api/public`, `/api/publicity`
+  and `/jsx/evil.js` are already in that list.
+
+- **A naive `[r.path for r in app.routes]` walk sees 23 of ~83 routes.**
+  FastAPI 0.141 leaves each `include_router` as one opaque `_IncludedRouter`
+  with `path = None`, so the obvious enumeration misses **every** route pack —
+  exactly the population it exists to police, passing green while a pack goes
+  public. Use `tests/conftest.flatten_routes`, which recurses and is
+  cross-checked against `app.openapi()`.
+
+- **`routes_packages.py`'s `search` and `preview` walk EVERY configured
+  index**, `scope: "private"` ones included. That is why they stay
+  authenticated and why the anonymous catalog read is a separate pack
+  (`server/routes_public.py`) that filters **before** it looks anything up.
+  The filter needs **both** `index.configured_scope` (what the OPERATOR wrote
+  in `config.json`) and `index.scope` (PRD-011's document-aware property) to
+  equal `"public"`. Do not collapse them: `scope` lets the *document* win,
+  which is right for publish policy and was wrong for access control — for a
+  git index the third party who authors `index.json` could declare
+  `"public"` over the operator's configured `private` and have the instance
+  serve it to the internet (review finding M2, changelog 0198). Every miss on
+  that pack raises **one name-free message** and carries `Cache-Control`, so a
+  private package and a nonexistent one are indistinguishable and a flood of
+  misses is still absorbable by a CDN; a private index configured first must
+  not shadow a public package of the same name. It never calls `refresh()`, so
+  an anonymous request cannot make the server perform a network git fetch.
+
+- **The CSRF Origin check sits ABOVE the `principal is None` branch in
+  `security.guard`, and that ordering is the control.** `POST
+  /api/auth/login` and `POST /api/auth/enrol/{token}` are the only unsafe
+  methods an anonymous caller can reach; a check placed after the anonymous
+  early-return covers every route *except* the two it exists for, which is
+  what it did for four changelogs (review finding M1, changelog 0198).
+  Origin-absent is allowed, identically for anonymous and authenticated
+  callers — a browser always sends it on a cross-site POST, `curl` and the MCP
+  client may not.
+
+- **The login limiter is keyed on `(handle, address)`, never the handle
+  alone** (`security.login_key`). `TokenBucket.take` does not consume on
+  refusal, so a handle-only bucket held empty by a stranger at 0.5 req/s was a
+  *permanent* lockout of a known handle — and handles are public (presence
+  rosters, comment authors, history trailers). The per-address bucket is the
+  other half and stays. Measured before the fix: the victim, with the correct
+  password, refused 6 of 6 rounds. **`address` is only real if the proxy
+  plumbing is right:** it is `request.client.host`, which behind the deployment
+  guide's reverse proxy is the proxy for *everyone* unless (a) uvicorn runs with
+  `proxy_headers` bounded to the trusted peer — `cli._uvicorn_proxy_kwargs` does
+  this in hosted mode, off in local — and (b) the proxy sets `X-Forwarded-For`
+  (the nginx block must; Caddy does by default). Without both, the key collapses
+  to per-handle (M3 round 2, changelog 0198). `AGENTCAD_TRUSTED_PROXY` bounds the
+  trust and **refuses `*`** (`appmode.trusted_proxy`) — trusting every peer lets
+  a client forge the address the limiter keys on.
+
+- **`AuthStore.enrol` revokes every existing session for that handle.**
+  `agentcad admin enrol <handle>` is the *recovery* path — it is run when a
+  password was lost or stolen — so leaving the old cookies live let a thief
+  outlast the reset by up to `ABSOLUTE_SESSION_S` (30 days). It is inside the
+  same `_scope()` (reentrant) as the password write, so a reset cannot
+  half-apply.
+
+- **Registration order: `security.install(cfg)` must run BEFORE
+  `build_registry(service)`.** A tool pack decides *at registration time*
+  whether its tool can run (the FEM precedent), and `whoami` only registers in
+  hosted mode. `build_registry` is evaluated in the caller, before
+  `create_app` installs anything — so the obvious order leaves a real hosted
+  server without the tool while every route test still passes. `cli.cmd_serve`
+  and the `hosted` fixture both install first, each with a comment saying why.
+
+- **`security.current_config()` has a process-global fallback, so a router
+  must capture its configuration at MOUNT time, not per request.** Otherwise a
+  *local* app built after a hosted one in the same process grows working auth
+  routes backed by the other app's identity store. `create_app` installs
+  before it mounts packs, which is what makes mount-time capture correct;
+  `routes_auth` and `routes_presence`'s beacon rule both do it, and both have
+  a test that builds a local app after a hosted one.
+
+- **Identity state derives from `config.config_path().parent`, never from
+  `--projects-dir`** (`core/appmode.state_dir()`, with an
+  `AGENTCAD_STATE_DIR` override) — the derivation `AGENTCAD_PACKAGES_DIR` and
+  `AGENTCAD_INDEXES_DIR` already use. That is why PRD-004/011 ephemeral
+  services are unaffected *by construction*, and why setting `AGENTCAD_CONFIG`
+  in a test isolates the identity store for free. No `AgentCADService`
+  constructs or reads it.
+
+- **`fcntl.flock` in `authstore`, because `docker compose exec` is a second
+  writer.** `agentcad admin …` runs as its own process against the same files
+  while the server is up, so the `LocalIndex._index_scope` idiom (registry
+  RLock **plus** an flock on a `.lock` file beside the documents) is
+  load-bearing rather than decorative; a nesting depth counter keeps an inner
+  scope from blocking on its own outer flock. `fcntl` is imported through
+  `try/except ImportError` so the module stays importable on Windows.
+
+- **Staleness has no TTL, and that is the point.** `_read` reuses a cached
+  parse only while `(st_mtime_ns, st_size, st_ino)` is unchanged, and every
+  write stages a random temp file and `os.replace`s it — a new inode every
+  time. So an account disabled or a token revoked through
+  `docker compose exec` is honoured by the running server on its **next**
+  request, with no restart and no polling. `resolve_session` additionally
+  reads the *user row* live, so a role change or a disable takes effect on the
+  next request too. Every read-modify-write re-reads with `fresh=True`; skip
+  that and you drop the other writer's row.
+
+- **Tokens are SHA-256, passwords are scrypt, and the asymmetry is
+  deliberate.** A bearer secret is 256 bits of `secrets.token_urlsafe(32)` —
+  there is nothing to brute-force, and scrypt would put tens of milliseconds
+  on every agent request. A password is human-chosen, so it gets
+  `hashlib.scrypt` at n=2^15, r=8, p=1 (**63 ms measured** on Apple silicon).
+  That is **below** OWASP's scrypt minimum (n=2^17) and the module says so out
+  loud: registration is closed, an account is already RCE on the host so the
+  password is not the weakest link, login is rate-limited per handle *and* per
+  address (which is what NIST SP 800-63B relies on against online guessing),
+  n=2^17 is 4× the memory on a documented 2 vCPU / 4 GB floor, and the
+  parameters are stored **beside every digest**, so raising them re-hashes on
+  next login instead of invalidating accounts.
+
+- **`create_app(security=None)` is the same code path, not a disabled
+  feature.** The middleware branches once at the top and everything after that
+  branch is byte-identical to what local mode ran before. "Local mode is
+  untouched" is therefore a property of the diff rather than a test we have to
+  keep passing. Security is constructed explicitly by the caller and fails
+  closed — unlike `_mount_route_packs` and `_load_tool_packs`, which fail
+  *open* (a module with no `router` is silently skipped), which is the whole
+  argument for the one sanctioned `app.py` edit.
+
+- **The healthcheck must present the configured `Host`.** The hosted guard
+  requires `Host` to equal `AGENTCAD_PUBLIC_ORIGIN`'s host, so the obvious
+  probe — `urlopen("http://127.0.0.1:8630/api/health")` — sends
+  `Host: 127.0.0.1:8630` and is **403**: the container reports *unhealthy
+  while serving perfectly*, which under `restart: unless-stopped` is a restart
+  loop on a healthy instance. `compose.yaml`'s probe dials the loopback
+  interface and *says* it is `$AGENTCAD_PUBLIC_ORIGIN`;
+  `test_the_healthcheck_sends_the_configured_host_header` pins all three
+  parts. The same trap catches any `curl 127.0.0.1` you write against a hosted
+  instance.
+
+- **`X-Agent-Id` is not an identity in hosted mode**; at most it contributes a
+  `<device>` suffix under the authenticated principal. `DEVICE_RE` allows at
+  most one colon, bans the `user:`/`agent:` prefixes and caps at 24 chars —
+  `user:` + 32 + `/` + 24 = 62 ≤ `locks.MAX_CLIENT_ID_CHARS` (which **refuses**
+  rather than truncates). Without the prefix ban, `X-Agent-Id: user:anya`
+  composed to `user:nikita/user:anya`: not an impersonation, but an identity
+  that reads as two people everywhere it is rendered.
+
+- **An invalid bearer never falls back to a valid cookie** on the same
+  request. A revoked token quietly becoming a session is a confused deputy.
+  `resolve_principal` never raises either: a store that cannot be read yields
+  no principal, which fails closed.
+
+- **A registry-level tool refusal has no seam, and one gap is left open on
+  purpose.** FR19 disables `POST /api/projects/open` and the absolute-path
+  form of `import_cad_file` in hosted mode. The registry-level `open_project`
+  **tool** is *not* refused: it lives in `core/tools.py`, which this feature's
+  constraints forbid editing, and there is no unregister seam. It is reachable
+  only by an authenticated member — who can already run arbitrary Python by
+  writing a part script — so it adds nothing to the threat model, but it is a
+  real gap in FR19's letter. Closing it means either a tool-level mode guard
+  in `core/tools.py` or an unregister seam on `ToolRegistry`; both are core
+  edits and neither belongs in a follow-up commit made in a hurry.
+
+- **A tool refusal is a 200 with an `{"error": …}` payload, not a 403.**
+  `ToolRegistry.call` converts every `AppError` that way *by design* so agents
+  can read and react. `import_cad_file`'s hosted refusal is therefore pinned as
+  `authz_error` in the payload plus "nothing was ingested" — asserting a status
+  code there would be asserting against the house contract.
+
+- **The CSRF Origin rule is applied to anonymous state-changing routes too**,
+  not only authenticated ones. A cross-site `POST /api/auth/login` that signs a
+  victim into the *attacker's* account is a real if quiet attack. Bearer
+  requests are exempt (a browser cannot attach one cross-site).
+
+- **Admin HTTP routes require a signed-in *person*** (`kind == "user"`), so an
+  `admin`-role bearer token is `403`: a credential must not mint another
+  credential while there is no audit log. And `POST /api/auth/logout` with no
+  session is **401**, not 200 — logout is not on the nine-entry allowlist, and
+  widening the allowlist to make that neat would be the wrong fix.
+
+- **`agentcad admin …` builds `AuthStore(state_dir()/"auth")` directly** — no
+  service, no kernel, no port — which is what makes it cheap over
+  `docker compose exec` and what lets it work while the server is down. Keep
+  it that way.
+
+- **The image copies `/app` wholesale on purpose.** `_resources.resource_root()`
+  is the *parent* of the `agentcad` package, so `frontend/`, `examples/` and
+  `catalog/` must sit beside it. A `pip install agentcad` into `site-packages`
+  serves a 404 for the UI and silently loses the bundled catalog. The runtime
+  image also installs **`git`**, which `core/history.py` shells out to and
+  which no CI step ever had to install because runners ship it.
+
+- **The compose smoke job is not on `pull_request`.** The OCCT wheels make the
+  image multi-GB; PRs get the seconds-long `docker compose config --quiet`
+  lint instead, and `deploy-smoke.yml` runs on main, weekly and on demand —
+  the same split `ci.yml` and `geometry-ci.yml` already make.
 
 ## Conventions (match these)
 
@@ -1643,9 +1884,16 @@ User-facing reference: `docs/agent-api.md` (the `Configurations` section) and
   added **nothing** to that payload: a configuration is config-aware because
   `_cache_key_for` hashes `record.effective_params`, so every pre-existing key
   still hits and `tests/test_solids.py`'s pinned bytes never move.
-- **Security/trust**: server binds `127.0.0.1` only, with a Host-allowlist +
-  same-origin guard (`server/app._browser_request_allowed`) on HTTP and WS.
-  Part scripts run with user privileges by design (local single-user tool);
+- **Security/trust**: in the default **local** mode the server binds
+  `127.0.0.1` only, with a Host-allowlist + same-origin guard
+  (`server/app._browser_request_allowed`) on HTTP and WS — and a non-loopback
+  bind is *refused* in that mode. In **hosted** mode (`AGENTCAD_MODE=hosted`,
+  PRD-005a) it may bind a public interface, and the loopback assumption is
+  replaced by the default-deny request guard in `server/security.py`: every
+  request is an authenticated principal or one of nine enumerated anonymous
+  paths. Read the hosted-core gotchas before assuming either half.
+  Part scripts run with user privileges by design (an account on a hosted
+  instance is therefore a shell, which is why registration is closed);
   on macOS the kernel worker is additionally confined by a deny-by-default
   `sandbox-exec` profile (`kernel/sandbox.py`: writes only in project roots,
   no network; `AGENTCAD_NO_SANDBOX=1` opts out). API key from env only,

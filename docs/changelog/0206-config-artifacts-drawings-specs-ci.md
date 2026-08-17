@@ -1,4 +1,4 @@
-# 0194 — PRD-012 slice 6: per-configuration drawings, spec results and CI rows
+# 0206 — PRD-012 slice 6: per-configuration drawings, spec results and CI rows
 
 - **Commit:** pending
 - **Date:** 2026-08-17

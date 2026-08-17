@@ -8,7 +8,7 @@ One PRD per roadmap feature. The index with statuses lives in
 
 - **Location = status.** `docs/prd/pending/` → not started; move the file to
   `docs/prd/in-progress/` when a feature enters its design/spec cycle, and to
-  `docs/prd/shipped/` when its acceptance criteria are verified. The move is
+  `docs/prd/completed/` when its acceptance criteria are verified. The move is
   the status change; the `Status:` line in the file and the roadmap index row
   must be updated in the same commit.
 - **Naming:** `PRD-NNN-<kebab-slug>.md`, zero-padded, stable forever.

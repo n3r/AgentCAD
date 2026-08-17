@@ -1,11 +1,77 @@
 # PRD-005 — Multi-tenant cloud service
 
-- **Status:** pending
+- **Status:** pending — **the remainder after the PRD-005a carve-out** (orgs,
+  workspaces, per-project roles, audit principals, OIDC/passkeys, per-tenant
+  fair scheduling, local-first sync, signed desktop builds)
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
-- **Depends on:** — (none hard; PRD-006 must land before hosting untrusted tenants)
+- **Depends on:** PRD-005a (hard — the hosted deployment, identity substrate
+  and default-deny surface this PRD extends) · PRD-006 (must land before
+  hosting untrusted tenants, and before per-project roles can mean anything)
 - **Related:** PRD-001 (push/pull syncs branches and tags), PRD-006 (worker isolation and metering), PRD-007 (share links ride tenancy), PRD-008 (presence names principals), PRD-020 (fleet principals and quotas)
+
+---
+
+## Carved out to PRD-005a (17 Aug 2026)
+
+The founder decision recorded in [roadmap.md](../../roadmap.md), "Sequencing
+decision — the marketplace chain (16 Aug 2026)" — *"005-lite: deploy +
+identity + public read only. Orgs, roles, audit principals and local-first
+sync stay deferred as genuine deployment work"* — lifted the hosted-core slice
+of this PRD onto the critical path as
+[**PRD-005a**](../in-progress/PRD-005a-hosted-core.md) (step 2), because
+PRD-007 and PRD-031a need a hosted instance, identity and public read, and
+need none of the tenancy work.
+
+This document stays `pending` and keeps everything below that is marked
+*retained*. Its design spec is
+[2026-08-17-hosted-core-design.md](../../superpowers/specs/2026-08-17-hosted-core-design.md).
+
+**Requirements: moved vs retained**
+
+| | Moved to PRD-005a | Retained here |
+|---|---|---|
+| Identity & auth | FR2 (principal through `client_id_var`; bare `X-Agent-Id` rejected in cloud mode), FR3 (agent tokens — scoped to the instance rather than to orgs/projects), FR4 (local mode unchanged) | **FR1** (OIDC + WebAuthn passkeys — 005a ships local accounts only) |
+| Tenancy & roles | FR7 (HTTPS, the Host/origin guard extended to configured public origins) | **FR5** (orgs → workspaces → projects, per-tenant storage roots), **FR6** (per-project view/comment/edit/admin at `write_guard` / tool dispatch / read routes) |
+| Sync | — | **FR8, FR9, FR10** (`push`/`pull`/`clone` over authenticated smart-HTTP) |
+| Scheduling, audit, deployment | FR13 (UI identity chips, principal in history), FR14 (one `docker compose up`) | **FR11** (per-tenant fair scheduling), **FR12** (append-only audit log), **FR15** (signed/notarised desktop builds) |
+| Acceptance | AC4 (compose deploy + `/api/health` reports the mode), AC7 (local mode unchanged) | **AC1, AC2** (two users, per-project roles), **AC3** (offline clone + push), **AC5** (token scoped to project A, 403 on B), **AC6** (audit log distinguishes principals), **AC8** (notarisation/signing) |
+
+**Technical-approach lines superseded for the hosted-core slice** (each with
+the reasoning in design-spec Decision 14):
+
+1. *"Identity/membership/audit persist in a per-instance SQLite (WAL)"* —
+   005a uses four atomically-written JSON documents with `fcntl.flock`,
+   because the audit volume that motivated SQLite is retained *here*, not
+   shipped there. If this PRD's audit log needs SQLite, it may introduce it
+   for the audit log.
+2. *"default to bundled Caddy-style [ACME] automation with an escape hatch"* —
+   005a inverts it: bring-your-own proxy by default, Caddy behind
+   `--profile proxy`, because default ACME forces a public DNS name at first
+   `up` and breaks air-gapped installs, staging boxes and the CI smoke job.
+3. **FR2 needs a caveat this PRD did not anticipate.** "The resolved principal
+   flows through the existing `client_id_var` … so turn locks, history
+   attribution, and events need no per-feature changes" is true *except* for
+   `actor_kind` (`agentcad/core/proposals.py:112-124`): `user:nikita` does not
+   start with `browser:`, so without a two-line change every authenticated
+   human classifies as an agent and PRD-008's human-only per-part claims
+   (`agentcad/core/locks.py:292-293`, `:398-399`) silently stop protecting
+   anybody. 005a makes that change; this PRD inherits it.
+4. The agent-surface tools `grant_role`, `revoke_role`, `list_members` and
+   `sync_status` are retained here — they presuppose roles and sync that do
+   not exist in 005a. `create_agent_token` / `revoke_agent_token` are
+   **CLI-only** in 005a (`agentcad admin token …`); promoting them to tools is
+   this PRD's call to make once an audit log exists.
+
+**Open questions this carve-out closes for the remainder:** the identity-store
+shape question is answered *for identity* (files) and left open *for audit*
+(where SQLite's motivation actually lives); the "single-org self-host is safe
+earlier" risk is restated more strictly by 005a's Decision 1 — what makes a
+hosted instance unsafe is that Linux has no confinement, not that it has more
+than one org.
+
+---
 
 ## Problem & motivation
 

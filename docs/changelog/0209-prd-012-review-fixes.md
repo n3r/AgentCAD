@@ -1,4 +1,4 @@
-# 0197 — PRD-012 review fixes: total configuration resolution, honest HTTP verdicts, strict bodies
+# 0209 — PRD-012 review fixes: total configuration resolution, honest HTTP verdicts, strict bodies
 
 - **Commit:** pending
 - **Date:** 2026-08-18
@@ -12,7 +12,7 @@ finding (`V1`–`V4`) — and this entry applies exactly the consolidated
 `MUST` + `SHOULD` set from
 `.superpowers/sdd/2026-08-17-configurations/final-review-verified.md`
 (`M1`, `M2`, `M3`, `S1`, `S2`, `S4`, `S5`, `S6`, `S7`). `S3` is the
-controller's (the suite count in `0196`), and everything under `DEFER` — `D1`
+controller's (the suite count in `0208`), and everything under `DEFER` — `D1`
 (a dangling instance binding failing the whole `get_assembly`, refuted as an
 inconsistency by the unknown-*part* precedent), `D2`, `D3` — is deliberately
 untouched.

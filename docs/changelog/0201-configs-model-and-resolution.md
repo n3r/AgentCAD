@@ -1,4 +1,4 @@
-# 0189 — PRD-012 slice 1: the configuration model, the store, and resolution
+# 0201 — PRD-012 slice 1: the configuration model, the store, and resolution
 
 - **Commit:** pending
 - **Date:** 2026-08-17

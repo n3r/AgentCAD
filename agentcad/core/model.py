@@ -11,10 +11,19 @@ ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 class AppError(Exception):
     """Base for expected application errors (mapped to HTTP 4xx)."""
 
-    def __init__(self, message: str, details: dict | None = None):
+    def __init__(self, message: str, details: dict | None = None,
+                 headers: dict | None = None):
         super().__init__(message)
         self.message = message
         self.details = details or {}
+        #: Response headers the refusal must carry, for the callers where a
+        #: header is part of the answer rather than decoration. Raising
+        #: discards the handler's own `Response`, so setting one there and
+        #: then raising loses it — which is how PRD-005a's anonymous catalog
+        #: 404s went out with no `Cache-Control` while the flood argument
+        #: depended on them being cacheable (review finding m1). Empty for
+        #: every other error, so nothing else changes.
+        self.headers = dict(headers or {})
 
 
 class NotFoundError(AppError):
@@ -27,6 +36,28 @@ class ValidationError(AppError):
 
 class ConflictError(AppError):
     pass
+
+
+class AuthError(AppError):
+    """No usable credential (401). PRD-005a hosted mode only.
+
+    Deliberately says nothing about *why*: "no such handle", "wrong password"
+    and "expired session" are one answer, because the differences are a user
+    enumeration oracle.
+    """
+
+
+class AuthzError(AppError):
+    """A valid principal that may not do this (403).
+
+    Named ``AuthzError`` rather than ``PermissionError`` on purpose — the
+    builtin of that name is a real exception this codebase catches around
+    filesystem work, and shadowing it in ``core.model`` would be a trap.
+    """
+
+
+class RateLimitedError(AppError):
+    """Too many attempts (429). Carries ``details.retry_after_s``."""
 
 
 @dataclass

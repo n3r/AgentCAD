@@ -19,6 +19,7 @@ import * as presence from "./presence.js";
 import * as comments from "./comments.js";
 import * as library from "./library.js";
 import * as configs from "./configs.js";
+import * as auth from "./auth.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 const BRANCH_RE = /^[a-z0-9][a-z0-9_/-]{0,63}$/;
@@ -2200,8 +2201,41 @@ async function handleWriteConflict(err, partId) {
 
 // -------------------------------------------------------------------- boot
 
+/** Swap the workbench for the sign-in view.
+ *
+ *  Reached at boot when nobody is signed in, and again if a session dies
+ *  mid-session (`agentcad:unauthenticated`, dispatched from the single
+ *  `request()` funnel in api.js). Never reached in local mode: there is no
+ *  401 to hear and `/api/auth/session` answers 404.
+ */
+function showSignIn() {
+  for (const id of ["toolbar", "workspace"]) {
+    document.getElementById(id)?.classList.add("hidden");
+  }
+  // A full reload rather than re-running boot(): every panel's init() is
+  // written to run once (setupMenus snapshots .menu-wrap, comments.js
+  // registers an inspector decorator), so re-booting in place would be a
+  // second, subtly different app.
+  auth.renderSignIn(document.getElementById("auth-view"),
+                    () => location.reload());
+}
+
 async function boot() {
   theme.init(); // before viewport.init so the scene is born with the stored palette
+
+  // Identity first: in hosted mode there is nothing to render until we know
+  // who is asking, and every panel below would 401 on its first call.
+  let identity = null;
+  try {
+    identity = await auth.session();
+  } catch {
+    identity = { mode: "local", principal: null };   // offline: fall through
+  }
+  if (identity === null) {
+    showSignIn();
+    return;
+  }
+  window.addEventListener("agentcad:unauthenticated", showSignIn, { once: true });
   viewport.init(document.getElementById("viewport"), { onPick });
   tree.init(actions);
   inspector.init(actions);
@@ -2234,6 +2268,9 @@ async function boot() {
   onKeys(["selectedPart", "projectName"], syncHoleFormPart);
   onKeys(["gizmoMode"], () => viewport.setGizmoMode(state.gizmoMode));
   connectWS();
+
+  auth.renderChip(document.getElementById("auth-chip"), identity,
+                  () => location.reload());
 
   try {
     const health = await api.health();

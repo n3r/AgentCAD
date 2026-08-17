@@ -1,4 +1,4 @@
-# 0195 — Configurations in the browser: a config bar, provenance marks, a matrix
+# 0207 — Configurations in the browser: a config bar, provenance marks, a matrix
 
 - **Commit:** pending
 - **Date:** 2026-08-17

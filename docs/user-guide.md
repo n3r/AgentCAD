@@ -1007,6 +1007,44 @@ tweaks and script edits **write into your checkout**. `git checkout -- examples/
 restores pristine state. Their parameter sweeps are also part of the test
 suite, so the shipped defaults always build.
 
+## Signing in (a hosted instance)
+
+Everything above describes AgentCAD on your own machine, where there is no
+sign-in at all. An operator can also run one **hosted** instance that a team
+shares — `docs/deployment.md` is the operator's guide; this is what changes for
+you as a user.
+
+- **You are invited, never self-registered.** An admin runs
+  `agentcad admin user add <you>` and sends you a **one-time enrolment link**.
+  Open it in a browser, choose a password (8 characters minimum), and you are
+  signed in. The link works once; a second visit is a 404, so ask for a fresh
+  one rather than reusing an old mail.
+- **The identity chip**, top right, shows who the server thinks you are and
+  signs you out. Your session survives a browser restart and the server being
+  restarted, and it expires after 14 idle days (30 at the outside).
+- **Attribution becomes your name.** Lock chips, the presence roster, comment
+  authors, proposal actors and history entries read `user:<handle>` instead of
+  `browser:7f3a1b2c` — and per-part claims now actually protect you from other
+  *people*, while an agent with a token is never blocked by a human's claim and
+  cannot take one.
+- **Everyone shares one project space.** There are two roles: `member` (read
+  and write every project) and `admin` (that, plus managing users and tokens).
+  There is deliberately no per-project permission — see the trust note below.
+- **Anonymous visitors can see the public parts catalog and nothing else**:
+  the package list, per-version metadata and the shipped preview images. No
+  project, no part, no geometry, and nothing that runs the kernel.
+- **For agents and CI**, an admin mints a bearer token
+  (`agentcad admin token add ci`). Point an MCP client at the instance with
+  `AGENTCAD_URL` and `AGENTCAD_TOKEN`; revoking the token cuts it off on the
+  next call.
+
+> **Trust.** An account on a hosted instance can execute arbitrary Python on
+> the server — a part script *is* Python, and worker confinement does not exist
+> on Linux yet. So accounts are for people you would give a shell to,
+> registration is closed, and `member` versus `admin` is not a wall between
+> colleagues. That is a statement of what the software does today, not a
+> caveat to skim.
+
 ## Where files live
 
 | Path | Contents |
@@ -1022,6 +1060,7 @@ suite, so the shipped defaults always build.
 | `<project>/exports/` | STEP/STL/3MF part & assembly exports, plus `<part>_drawing.svg`/`.dxf` drawings, from the Export menu, agent tools, or `agentcad export`. |
 | `examples/` (repo) | The bundled example projects, registered at startup. |
 | `~/.agentcad/config.json` | The persisted port (`AGENTCAD_CONFIG` overrides the path). |
+| `~/.agentcad/state/auth/*.json` | **Hosted mode only.** Accounts, enrolments, sessions and tokens — four atomically-written `0600` documents (`AGENTCAD_STATE_DIR` overrides the directory; in the container it is `/data/state`). Passwords are scrypt digests and session/token secrets are stored only as SHA-256 digests, so the files hold nothing that can be replayed — but back them up as a secret anyway. Never inside a project, and unaffected by `--projects-dir`. |
 | `~/Library/Logs/AgentCAD.log` | Output of the `AgentCAD.app` wrapper. |
 
 The Anthropic API key is read from the environment only — it is never

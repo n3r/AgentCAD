@@ -90,6 +90,14 @@ async function request(method, path, body) {
     } catch {
       /* non-JSON error body */
     }
+    // Hosted mode: a session that expired, was revoked, or belongs to an
+    // account an admin just disabled. Announced from the ONE funnel every
+    // call already passes through, so exactly one place knows — main.js
+    // listens and swaps the workbench for the sign-in view. Local mode never
+    // emits it, because local mode never answers 401.
+    if (res.status === 401 && !path.startsWith("/api/auth/")) {
+      window.dispatchEvent(new CustomEvent("agentcad:unauthenticated"));
+    }
     throw new ApiError(res.status, payload);
   }
   return res.json();
@@ -97,6 +105,15 @@ async function request(method, path, body) {
 
 export const api = {
   health: () => request("GET", "/api/health"),
+
+  // ---- identity (hosted mode; 404 in local mode) ---------------------------
+  session: () => request("GET", "/api/auth/session"),
+  login: (handle, password) =>
+    request("POST", "/api/auth/login", { handle, password }),
+  logout: () => request("POST", "/api/auth/logout"),
+  enrolInfo: (token) => request("GET", `/api/auth/enrol/${enc(token)}`),
+  enrol: (token, password) =>
+    request("POST", `/api/auth/enrol/${enc(token)}`, { password }),
 
   listProjects: () => request("GET", "/api/projects"),
   createProject: (name) => request("POST", "/api/projects", { name }),

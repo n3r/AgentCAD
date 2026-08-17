@@ -30,7 +30,7 @@ Three of them are worth reading before you believe them:
   is a claim about a *run*, so it stays an evidence check on the newest
   changelog entry (the PRD-004 AC10 / PRD-011 AC8 precedent).
 * **AC9 is a browser session, and a test cannot be one.** The session is in
-  changelog `0195-configs-ui.md` (real headless Chrome, `ERROR COUNT: 0` /
+  changelog `0207-configs-ui.md` (real headless Chrome, `ERROR COUNT: 0` /
   `FAILED REQUESTS: 0`). What a test grades is the *evidence*: the surfaces
   that session drove still exist, the routes they call are still mounted, and
   the entry still records the counts.
@@ -242,8 +242,8 @@ class TestTheFlangeFamily:
             assert value in svg
 
         # The browser half of AC2 ("one browser check") is the session in
-        # changelog 0195, where the preview was opened with the table on.
-        entry = (CHANGELOG / "0195-configs-ui.md").read_text(encoding="utf-8")
+        # changelog 0207, where the preview was opened with the table on.
+        entry = (CHANGELOG / "0207-configs-ui.md").read_text(encoding="utf-8")
         assert "dim table" in entry and "flange_m_drawing.svg" in entry
         assert "ERROR COUNT: 0" in entry
 
@@ -533,7 +533,7 @@ def test_ac8_the_full_suite_count_is_cited():
     that cites nothing. The literal placeholder ("N passed, M skipped") is red
     here on purpose, so the close-out cannot forget to fill it in.
     """
-    entry = CHANGELOG / "0196-prd-012-docs-and-acceptance.md"
+    entry = CHANGELOG / "0208-prd-012-docs-and-acceptance.md"
     assert entry.is_file(), "the PRD-012 close-out changelog entry is missing"
     text = entry.read_text(encoding="utf-8")
     assert "make test" in text
@@ -555,7 +555,7 @@ def test_ac9_the_ui_surfaces_exist_and_the_session_was_clean():
     """**AC9** — the browser session (switch configurations in the inspector,
     watch the viewport and metrics follow, see the divergence chip appear on a
     manual parameter edit, zero console errors) is in changelog
-    `0195-configs-ui.md`, driven against a real headless Chrome.
+    `0207-configs-ui.md`, driven against a real headless Chrome.
 
     A test cannot be a session. What it grades is that the surfaces that
     session drove are still here — the config bar and its switcher, the
@@ -603,7 +603,7 @@ def test_ac9_the_ui_surfaces_exist_and_the_session_was_clean():
                  "/projects/{proj}/meshes/{key}"):
         assert path in routes, f"the browser's route {path} is gone"
 
-    entry = (CHANGELOG / "0195-configs-ui.md").read_text(encoding="utf-8")
+    entry = (CHANGELOG / "0207-configs-ui.md").read_text(encoding="utf-8")
     assert "ERROR COUNT: 0" in entry and "FAILED REQUESTS: 0" in entry
 
 
