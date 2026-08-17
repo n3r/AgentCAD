@@ -9,6 +9,10 @@ requested world axis — x -> "width", y -> "depth", z -> "height". Totals are
 accumulated two ways: worst case (linear sum of plus and of minus) and RSS
 (root sum of squares over the individual dims). The nominal distance between
 the endpoints comes from the mate-resolved assembly transforms.
+
+A path instance bound to a configuration (PRD-012) gets a warning of its own:
+its tolerances are the part's, while its nominal is that configuration's, and
+per-configuration PMI is a stated non-goal.
 """
 
 from __future__ import annotations
@@ -92,6 +96,15 @@ def compute_stackup(service, project: str, axis: str, from_instance: str,
     squares = {"plus": 0.0, "minus": 0.0}
     for iid in path:
         part_id = by_id[iid].part
+        # PMI is per PART, but a bound instance's nominal comes from its
+        # CONFIGURATION's geometry (PRD-012). Per-configuration PMI is a stated
+        # non-goal, so the mixed answer is named rather than silently produced.
+        bound = by_id[iid].config
+        if bound:
+            warnings.append(
+                f"instance {iid} (part {part_id}) is bound to configuration "
+                f"{bound!r}: tolerances are per part, the nominal is per "
+                "configuration")
         pmi = parts[part_id].get("pmi") or {}
         dims = [
             {"id": d["id"], "plus": d["plus"], "minus": d["minus"]}
@@ -146,8 +159,9 @@ def register(registry, service) -> None:
         "z=height; declared via set_part_pmi). Returns worst-case (linear sum) "
         "and RSS plus/minus totals, the nominal resolved distance along the "
         "axis (mm), per-instance contributors in path order, and a warning for "
-        "each path instance with no matching tolerance. Errors if the "
-        "instances are not connected by mates.",
+        "each path instance with no matching tolerance (and for each one bound "
+        "to a configuration: tolerances are per part, the nominal is per "
+        "configuration). Errors if the instances are not connected by mates.",
         schema(
             {
                 "project": {"type": "string", "description": "Project name"},

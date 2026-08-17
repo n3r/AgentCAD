@@ -796,7 +796,8 @@ class SpecRunner:
 
     def _shape_tier(self, proj: str, part_id: str,
                     cache_key: str | None = None,
-                    deadline: float | None = None, refresh: bool = False):
+                    deadline: float | None = None, refresh: bool = False, *,
+                    record=None):
         """``(payload, cached, sidecar_path)`` for one part's shape tier.
 
         ``(None, False, None)`` means the part declares nothing — which is not
@@ -815,9 +816,17 @@ class SpecRunner:
         never cached (the budget, not the script, may have caused it), and
         *refresh* — which is ``run_specs``, the unbounded surface — ignores a
         cached failure and measures again.
+
+        *record* (keyword-only, PRD-012) evaluates a **derived** record — a
+        configuration's pure parameter map — instead of the stored one. Both
+        halves of the identity move together on purpose: the sidecar key
+        becomes that record's cache key and the ``spec_eval`` params become its
+        ``effective_params``, so a config-keyed sidecar can never end up
+        holding the base measurement. Passing the record rather than a name is
+        what keeps this method ignorant of configurations.
         """
         store = self.service.store
-        record = store.get_part(proj, part_id)
+        record = record if record is not None else store.get_part(proj, part_id)
         if record.kind != "script":
             return None, False, None
         script = store.read_script(proj, part_id)
@@ -1041,7 +1050,8 @@ class SpecRunner:
         project checks read, not only the ones ``clearance`` reads.
 
         The specs text, plus each placed instance's identity, part cache key
-        and resolved transform (moving one instance changes every clearance, so
+        (the *instance's* — a configuration binding moves it, PRD-012) and
+        resolved transform (moving one instance changes every clearance, so
         the whole placement is the key), plus the two inputs ``check_stackup``
         consumes that live in the manifest rather than in a script: the **mate
         graph** (it is what the stack path is walked over, and two chains can
@@ -1059,9 +1069,18 @@ class SpecRunner:
         for instance in self.service._resolved_instances(
                 proj, timeout_s=self._mate_timeout(deadline)):
             try:
-                record = self.service.store.get_part(proj, instance.part)
+                # The instance's OWN record: a bound instance keys on its
+                # configuration's cache key, so an assembly verdict measured at
+                # S is never reused at L. Two configurations with the same
+                # override map are one geometry and legitimately share it.
+                record = self.service._record_for(
+                    proj, instance.part, instance.config)
                 part_key = self.service._cache_key_for(proj, record)
-            except (NotFoundError, OSError):
+            except (NotFoundError, ValidationError, OSError):
+                # ValidationError too: a stale binding (a configuration the
+                # part no longer declares) degrades THAT row to "missing" —
+                # escaping here would reach the caller's bare `except` and
+                # disable assembly-tier caching for the whole project.
                 part_key = "missing"
             rows.append([instance.id, instance.part, part_key,
                          [float(v) for v in instance.position],
@@ -1074,7 +1093,8 @@ class SpecRunner:
         return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
     def _instance_item(self, proj: str, instance) -> dict:
-        record = self.service.store.get_part(proj, instance.part)
+        # A bound instance is measured at its configuration's size (Decision 7).
+        record = self.service._record_for(proj, instance.part, instance.config)
         item = self.service._shape_item(proj, record, instance)
         item["name"] = instance.id
         return item

@@ -32,7 +32,12 @@ def resolve(service, proj: str, instances: list,
     kinds = {inst.id: service.store.get_part(proj, inst.part).kind for inst in instances}
     items = []
     for inst in instances:
-        record = service.store.get_part(proj, inst.part)
+        # An instance bound to a configuration resolves its connectors from
+        # THAT configuration's geometry (a connector position routinely rides a
+        # parameter), so the derived record is what feeds the item below. The
+        # kernel's `conn_cache` is keyed by instance id, so two instances of one
+        # part at two sizes never share a cached connector frame.
+        record = service._record_for(proj, inst.part, inst.config)
         # Reference/imported parts declare no connectors and cannot mate; give a
         # clear error instead of a cryptic KeyError deep in the resolver.
         if inst.mate:

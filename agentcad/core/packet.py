@@ -274,11 +274,17 @@ def _spec_rows(old_spec, new_spec, added: list, removed: list,
 
 
 def assembly_delta(old_asm: dict, new_asm: dict) -> dict:
-    """Instance and mate changes between two ``get_assembly`` payloads.
+    """Instance, mate and configuration changes between two ``get_assembly``
+    payloads.
 
     The payloads carry *resolved* transforms, so an instance whose mate anchor
     moved reports as moved — comparing authored positions would call that "no
     change".
+
+    A configuration binding is treated exactly like a mate: rebinding an
+    instance from S to L is a change even when the mass happens not to move
+    (two sizes can weigh the same), so ``configs_changed`` is its own row set
+    and counts towards ``changed``.
     """
     old = _instances_by_id(old_asm)
     new = _instances_by_id(new_asm)
@@ -286,7 +292,7 @@ def assembly_delta(old_asm: dict, new_asm: dict) -> dict:
              for iid in sorted(set(new) - set(old))]
     removed = [{"id": iid, "part": old[iid].get("part")}
                for iid in sorted(set(old) - set(new))]
-    moved, mates = [], []
+    moved, mates, configs = [], [], []
     for iid in sorted(set(old) & set(new)):
         before, after = old[iid], new[iid]
         if not _same_placement(before, after):
@@ -297,14 +303,21 @@ def assembly_delta(old_asm: dict, new_asm: dict) -> dict:
         if _norm(before.get("mate")) != _norm(after.get("mate")):
             mates.append({"id": iid, "old": before.get("mate"),
                           "new": after.get("mate")})
+        # `config` is a name or absent, so a plain compare is exact (no
+        # 6-vs-6.0 ambiguity to normalize away).
+        if before.get("config") != after.get("config"):
+            configs.append({"id": iid, "old": before.get("config"),
+                            "new": after.get("config")})
     mass = _scalar_delta((old_asm or {}).get("total_mass_g"),
                          (new_asm or {}).get("total_mass_g"))
     return {
-        "changed": bool(added or removed or moved or mates or mass["delta"]),
+        "changed": bool(added or removed or moved or mates or configs
+                        or mass["delta"]),
         "instances_added": added,
         "instances_removed": removed,
         "instances_moved": moved,
         "mates_changed": mates,
+        "configs_changed": configs,
         "total_mass_g": mass,
         "renders": None,  # assembly renders are on demand (proposal_render)
     }
@@ -1027,7 +1040,10 @@ class PacketBuilder:
         with self._branches().pinned(proj, tree):
             for inst in self.service._resolved_instances(proj):
                 try:
-                    mesh = acm.read(self.service.ensure_mesh(proj, inst.part))
+                    # Each instance at its own configuration (PRD-012), so the
+                    # two sides of a rebinding render as the sizes they are.
+                    mesh = acm.read(self.service.ensure_mesh(
+                        proj, inst.part, config=inst.config))
                 except (KernelError, AppError):
                     continue  # an unbuildable instance is skipped, not fatal
                 meshes.append({

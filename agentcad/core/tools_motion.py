@@ -62,7 +62,10 @@ def register(registry, service) -> None:
 
         items = []
         for inst in instances:
-            record = service.store.get_part(project, inst.part)
+            # A bound instance sweeps at its configuration's size — the
+            # kernel re-resolves the mate graph from these items, so the
+            # derived record is what puts the connector where it belongs.
+            record = service._record_for(project, inst.part, inst.config)
             item = service._shape_item(project, record, inst)
             item["id"] = inst.id
             if inst.mate:

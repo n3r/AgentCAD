@@ -501,11 +501,21 @@ class AgentCADService:
         bounds_max = [-math.inf] * 3
         for inst in instances:
             entry = inst.to_manifest()
-            built = self._ensure_built(proj, inst.part)
+            # A bound instance is built from its configuration's PURE
+            # resolution (Decision 7) and memoized per configuration: one
+            # `_status` slot per part would miss on alternate reads and
+            # republish `rebuild_finished` forever.
+            built = (self._ensure_config_built(proj, inst.part, inst.config)
+                     if inst.config else self._ensure_built(proj, inst.part))
             if built["ok"]:
                 metrics = built["metrics"]  # from the build result, not a racy re-read
                 entry["mass_g"] = metrics["mass_g"]
                 entry["state"] = "ok"
+                # Content-addressed geometry: the browser fetches an instance's
+                # mesh by key (GET /projects/{p}/meshes/{key}), so sibling
+                # configurations of one part are two meshes, not one. Published
+                # for EVERY built instance, bound or not.
+                entry["mesh_key"] = built["cache_key"]
                 total_mass += metrics["mass_g"]
                 corners = _bbox_corners(metrics["bbox"])
                 for corner in corners:
@@ -579,7 +589,9 @@ class AgentCADService:
         resolved = self._resolved_instances(proj, timeout_s=timeout_s)
         items = []
         for inst in resolved:
-            record = self.store.get_part(proj, inst.part)
+            # The derived record when the instance is bound: an overlap has to
+            # be measured at the size the instance actually is.
+            record = self._record_for(proj, inst.part, inst.config)
             item = self._shape_item(proj, record, inst)
             item["name"] = inst.id
             items.append(item)
@@ -600,7 +612,7 @@ class AgentCADService:
             raise ValidationError("assembly export supports formats: step, stl")
         items = []
         for inst in self._resolved_instances(proj):
-            record = self.store.get_part(proj, inst.part)
+            record = self._record_for(proj, inst.part, inst.config)
             items.append(self._shape_item(proj, record, inst))
         if not items:
             raise ValidationError("assembly has no instances to export")
