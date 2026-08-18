@@ -131,8 +131,17 @@ def test_the_container_binds_every_interface_and_is_therefore_hosted(service):
 
 def test_the_kernel_pool_is_pinned_not_floated(service):
     """`max(1, min(3, cores//3))` on a big host would be 3 workers at ~0.5 GB
-    each on a box the docs say can be 4 GB. Pinning is the safe default."""
-    assert service["environment"]["AGENTCAD_KERNEL_POOL_SIZE"] == "1"
+    each on a box the docs say can be 4 GB. Pinning is the safe default —
+    pinned, not floated to a host-dependent value.
+
+    The pinned value is **2**, not 1, as of PRD-007: the share customizer
+    reserves one worker for signed-in members (effective in-flight cap =
+    pool_size - 1), so it needs at least 2 to run at all — a 1-worker pool
+    answers `/variant`/`/download` with a `503`. Two workers is ~1 GB RSS,
+    within the documented 2 vCPU / 4 GB floor (deployment.md), so this is
+    still the memory-safe pin the test guards, just at the value the
+    customizer requires. A viewer-only deployment can set it back to 1."""
+    assert service["environment"]["AGENTCAD_KERNEL_POOL_SIZE"] == "2"
 
 
 def test_the_healthcheck_actually_hits_the_health_route(service):

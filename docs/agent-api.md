@@ -1256,6 +1256,32 @@ still cannot manage users or mint another token: those routes require a
 signed-in person, because a credential minting a credential is the escalation
 shape to avoid while there is no audit log.
 
+### Share links and the customizer (PRD-007)
+
+Registered **only** in hosted mode (a share link needs a public origin — the
+same rule `whoami` follows). A share link turns one part, at one immutable
+version, into an unlisted URL a logged-out visitor can open; a *customizer*
+link additionally exposes the part's typed PARAMS as bounded sliders that
+rebuild real B-rep geometry server-side.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `share_create` | **project, part_id**, scope, ref, customizer, exports, show_script, expires_days | `{url, pub_id}`. `url` carries the secret and is returned **once** — copy it now. `scope` is `part` (MVP; project is Phase 2). `ref` is a version tag; a branch (or an omitted ref) auto-tags the current head and pins that immutable commit, so the link never drifts. `customizer: true` exposes sliders that rebuild. `exports` is a subset of `["step", "stl", "3mf"]` (a variant download mask; `[]` = view-only). `show_script: true` serves the pinned script read-only. `expires_days` defaults to **never** (revocable). |
+| `share_list` | **project** | `{links: [{pub_id, scope, part_id, ref, settings, counters, created, revoked}]}` — the caller's links with coarse `{views, rebuilds, downloads}` counters. **Never the raw token** (only a `sha256` digest is stored, and the listing omits even that). |
+| `share_revoke` | **project, pub_id** | `{revoked, pub_id}`. Immediate — the store is the authority — and a link that is not the caller's is a silent no-op (`revoked: false`), never an oracle over who published what. |
+
+**Event:** `share_changed {project}` fires on create and revoke, so a Links
+panel refreshes.
+
+The pin is a **copy** of the script bytes at the resolved commit, built in a
+service that never touches the owner's project; a later edit to the working part
+cannot change what a live link serves. The visitor's rebuild is a `GET` of a
+content-addressed variant — a pure read (owner state never changes) — validated
+to the same `set_params` parity, rate-limited per link and per IP, and capped by
+a global in-flight semaphore (`AGENTCAD_SHARE_MAX_INFLIGHT`). Over the limit the
+visitor endpoints answer `quota_exceeded` with `retry_after_s`; a disabled export
+format or a `customizer:false` link answers `not_found` before any build.
+
 ## A worked loop
 
 The canonical agent workflow — create, hit an error, read it, fix, verify,

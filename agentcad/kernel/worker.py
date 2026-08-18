@@ -23,6 +23,7 @@ from pathlib import Path
 
 import build123d as b3d
 
+from . import paramclamp
 from .mesh import tessellate, tessellate_with_faces
 from .protocol import ERROR_CONTRACT, ERROR_KERNEL, ERROR_SCRIPT, WorkerError
 
@@ -210,17 +211,15 @@ def _resolve_numeric(
         raise WorkerError(
             ERROR_CONTRACT, f"parameter {name!r} must be a number, got {value!r}"
         )
-    mn, mx = entry.get("min"), entry.get("max")
-    if ptype == "int":  # bounds were validated integral; keep the value an int
-        mn = None if mn is None else int(mn)
-        mx = None if mx is None else int(mx)
-    if mn is not None and value < mn:
-        warnings.append(f"param {name} clamped to min {mn}")
-        value = mn
-    if mx is not None and value > mx:
-        warnings.append(f"param {name} clamped to max {mx}")
-        value = mx
-    return value
+    # A NaN passes neither the min nor the max comparison below (both are
+    # False), so without this guard it would slip past the clamp and reach
+    # build(p) as a degenerate value (PRD-007 review finding m-2). inf is left
+    # alone — it clamps to max correctly.
+    if paramclamp.is_nan(value):
+        raise WorkerError(
+            ERROR_CONTRACT, f"parameter {name!r} must be a finite number, got {value!r}"
+        )
+    return paramclamp.clamp_numeric(entry, value, name, ptype, warnings)
 
 
 def _resolve_params(spec: dict, overrides: dict) -> tuple[dict, list[str]]:

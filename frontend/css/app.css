@@ -2830,3 +2830,30 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ------------------------------------------------ PRD-007 share dialog */
+.share-modal-body { padding: 16px 18px 22px; overflow-y: auto; }
+.share-hint { color: var(--muted, #7a828c); font-size: 12.5px; margin: 0 0 14px; }
+.share-form { display: flex; flex-direction: column; gap: 12px; }
+.share-field { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px;
+  align-items: center; }
+.share-field-label { color: var(--muted, #7a828c); font-size: 12.5px; }
+.share-input { padding: 5px 8px; border: 1px solid var(--line, #d8dce1);
+  border-radius: 6px; background: transparent; color: inherit; }
+.share-exports { display: flex; gap: 12px; }
+.share-export { display: inline-flex; align-items: center; gap: 4px; }
+.share-result { margin-top: 6px; font-size: 12.5px; }
+.share-result.error { color: var(--error, #b23b3b); }
+.share-result.ok { color: var(--accent, #2f6f4f); }
+.share-created-row { display: flex; gap: 8px; margin-top: 6px; }
+.share-created-row .share-input { flex: 1 1 auto; }
+.share-links { margin-top: 20px; border-top: 1px solid var(--line, #d8dce1);
+  padding-top: 14px; }
+.share-links-head { margin: 0 0 8px; font-size: 12px; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted, #7a828c); }
+.share-link-row { display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line, #eceef1); }
+.share-link-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.share-link-counts { color: var(--muted, #7a828c); font-size: 11.5px; }
+.tb-btn.danger { color: var(--error, #b23b3b); }
+.tb-btn.primary { border-color: var(--accent, #2f6f4f); color: var(--accent, #2f6f4f); }

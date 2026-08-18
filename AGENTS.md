@@ -1901,6 +1901,85 @@ it lower-cases "Python".
   lint instead, and `deploy-smoke.yml` runs on main, weekly and on demand —
   the same split `ci.yml` and `geometry-ci.yml` already make.
 
+## Share/customizer gotchas (PRD-007 — read before touching `core/publications.py`, `core/share_build.py`, `server/routes_share*.py` or the share frontend)
+
+- **The customizer rebuild is a `GET`, not a `POST`, and that is load-bearing.**
+  `GET /s/<token>/variant?<params>` is a *pure read* of a content-addressed
+  artifact — the owner's state never changes — so CSRF is moot, `SameSite`/Origin
+  never applies, cross-origin embedding works by construction, and the response
+  is CDN-cacheable. The **only** `security.py` change PRD-007 makes is the two
+  public prefixes; no Origin-check exemption exists, and none may be added. Do
+  not "fix" it to a POST.
+
+- **`/s/` and `/embed/` MUST carry the trailing slash** in `PUBLIC_PREFIXES`
+  (`is_public` is `startswith`): `/s` would make `/status` public and `/embed`
+  would make `/embedding` public. The negation params in
+  `test_hosted_surface.py::test_paths_that_must_not_be_public` (`/s`, `/status`,
+  `/svg`, `/embed`, `/embedding`) are the guard against exactly that.
+
+- **The pin is a COPY, not a reference.** At publish the ref is resolved to an
+  immutable commit and the part's script bytes are read with `cat-file blob`
+  (no worktree) into `<state-dir>/publications/scripts/<sha>.py`; a later
+  `write_script` on the owner's working part changes neither the stored commit
+  nor the copied bytes, so a live link never drifts (AC8). The record stores
+  `ref.commit` + `script_sha`.
+
+- **The visitor path never touches a user `ProjectStore`.** Variants build in a
+  single **muzzled** `AgentCADService` rooted at `.../publications/build/` — the
+  PRD-004 `_ephemeral_service` recipe (`bus.on_publish=None`, then AFTER
+  `build_registry`: `store.branch_resolver=None`, `store.write_guard=None`). The
+  build is `_build_with(record, affinity="share:<pub>", status_key=None)`; the
+  owner-tree-byte-unchanged AC (AC5/AC8) is a property of this construction.
+  `ensure_share` is called only from a route pack, **never** from
+  `AgentCADService.__init__`, so PRD-004/011 ephemeral services stay unaffected.
+
+- **The viewer is kernel-free; exactly two routes reach `exec()`.** `/model`,
+  `/mesh/{key}`, `/params`, `/script` (and the shells) are file reads of
+  sidecars the pin wrote — `/mesh/{key}` is **404-if-absent and never builds**
+  (the `get_mesh_by_key` discipline). Only `/variant` and `/download` build, and
+  the surface-equality test enumerates all eight `/s/`+`/embed/` templates so a
+  ninth cannot go public unreviewed. **`NOT_YET_BUILT` must stay `== set()`**
+  (`test_prd005a_acceptance.py` hard-asserts it) — grow `EXPECTED_PUBLIC` and
+  mount a route in the SAME change, never stage a route as "planned".
+
+- **The customizer's containment, all of it:** param parity is the authoring
+  path's own `service.normalize_params` (reject unknown/out-of-type/out-of-enum
+  BEFORE build); the **range clamp is the shared pure `kernel/paramclamp.py`**
+  helper, called BOTH by `worker._resolve_numeric` (inside the build) AND by
+  `share_build._clamp_params` **server-side before the variant cache key** — so
+  two out-of-range values that clamp to the same geometry coalesce to one key
+  and one build (PRD-007 review M-2), and NaN is refused (not a degenerate 200,
+  finding m-2); never re-implemented. Then a per-link AND per-IP `TokenBucket`
+  (from `core/ratelimit.py`); a **global** `BoundedSemaphore` whose effective
+  size is `min(AGENTCAD_SHARE_MAX_INFLIGHT, pool_size - 1)` — the `pool_size-1`
+  **worker reservation** keeps a member's worker free (the real containment wall;
+  `affinity="share:<pub>"` is consistent-hash cache-warmth routing, **NOT**
+  segregation), and on a single-worker pool the cap is 0 so `/variant` and
+  `/download` refuse with a `503 ServiceUnavailableError` naming
+  `AGENTCAD_KERNEL_POOL_SIZE` rather than starving members (`require_customizer_capacity`);
+  acquired non-blocking; and the content-addressed variant cache (a repeat is a
+  disk read, zero kernel). The **per-IP key is `request.client.host`** (the
+  proxy-resolved address), NEVER a hand-parsed `X-Forwarded-For` — a visitor
+  could forge that header and mint a fresh bucket per request (the PRD-005a M3
+  lesson, kept).
+
+- **`TokenBucket` lives in `core/ratelimit.py` now**, re-exported from
+  `presence.py` for PRD-008; `presence.TokenBucket is ratelimit.TokenBucket`.
+  Import it from `ratelimit`, never re-implement.
+
+- **Four senses of "token", named to stay apart:** the share capability is a
+  `share_token` in code (`shr_<pub_id8>_<secret43>`, stored as a `sha256`
+  digest, `split("_", 2)` because the secret's alphabet includes `_`); the
+  management handle is `pub_id`; the rate-limit tokens are `bucket`; and PRD-005a
+  already has the agent bearer and the enrolment token. A publication's
+  `part|project` reach is `share_scope`, never the package-index `scope` or
+  `locks.write_scope`.
+
+- **No `core/gltf.py`.** The viewer streams the shipped OCP-free ACM
+  (`viewport.js::parseACM`); the glTF exporter is PRD-017's, deferred to avoid
+  build-then-migrate churn. **Only `agentcad/kernel/` imports OCP/build123d** —
+  nothing in the share path does.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script

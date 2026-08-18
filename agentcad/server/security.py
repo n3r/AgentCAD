@@ -54,7 +54,7 @@ from ..core.appmode import AppMode, _hostname
 from ..core.authstore import AuthStore
 from ..core.locks import check_client_id, set_client_id
 from ..core.model import ValidationError
-from ..core.presence import TokenBucket
+from ..core.ratelimit import TokenBucket
 
 #: The session cookie's name. `HttpOnly`, `SameSite=Lax`, `Path=/`, and
 #: `Secure` whenever the public origin is https (`AppMode.secure_cookies`).
@@ -83,7 +83,24 @@ PUBLIC_PREFIXES: tuple[str, ...] = (
     "/js/",
     "/css/",
     "/vendor/",
+    "/s/",                      # PRD-007 share links — the token is in the path
+    "/embed/",                 # PRD-007 embeds — every handler validates the token
 )
+
+#: PRD-007 share/embed routes carry a capability token in the path and every
+#: handler validates it. **The trailing slash is load-bearing**: `is_public` is
+#: `startswith`, so `/s` would make `/status` public and `/embed` would make
+#: `/embedding` public (the negation tests in `test_hosted_surface.py` pin it).
+
+#: The main app's frame policy (founder decision, 2026-08-18): the authenticated
+#: surface must not be frameable, so hosted responses carry
+#: `Content-Security-Policy: frame-ancestors 'none'`. The public **embed** page
+#: opts out — it sets its own `frame-ancestors *` so any site may embed the
+#: auth-free customizer (the growth loop) — so it is excluded here. This is a
+#: response HEADER, not a route: it adds nothing to the reachable set the
+#: anonymous-surface equality test enumerates.
+FRAME_ANCESTORS_NONE = "frame-ancestors 'none'"
+EMBED_PREFIX = "/embed/"
 
 #: Methods that change state and therefore carry the CSRF rule.
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -105,9 +122,10 @@ DEVICE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,10}(:[a-z0-9._-]{1,12})?$")
 RESERVED_DEVICE_PREFIXES = ("user:", "agent:")
 
 # --- rate limiting ----------------------------------------------------------
-# `presence.TokenBucket` is IMPORTED, never re-implemented — PRD-008 code is
-# not this feature's to edit. PRD-007 wants it as a shared module; promoting it
-# is that PRD's change.
+# `TokenBucket` is IMPORTED, never re-implemented. PRD-005a took it from
+# `presence`; PRD-007 promoted it to `core/ratelimit.py` (design Decision 6),
+# so the import moved here — behaviour byte-identical, the same shared class the
+# share/customizer limiter uses.
 #
 # rate=0.2/s, burst=5: five attempts immediately, then one every five seconds.
 # NIST SP 800-63B 5.2.2 asks that consecutive failed attempts be throttled to
@@ -264,6 +282,20 @@ def is_hosted() -> bool:
 
 
 # --------------------------------------------------------------------- paths
+
+def response_headers(path: str) -> dict[str, str]:
+    """Security headers the guard stamps on a hosted response.
+
+    The authenticated surface must not be frameable (founder decision), so every
+    hosted response carries ``frame-ancestors 'none'`` — except the ``/embed/``
+    page, which sets its own ``frame-ancestors *`` so any site may embed the
+    public customizer. Applied with ``setdefault`` at the middleware, so a
+    handler that set its own policy (the embed page) wins.
+    """
+    if isinstance(path, str) and path.startswith(EMBED_PREFIX):
+        return {}
+    return {"Content-Security-Policy": FRAME_ANCESTORS_NONE}
+
 
 def is_public(path: str) -> bool:
     """Is *path* reachable with no credential?

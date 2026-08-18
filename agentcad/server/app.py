@@ -25,6 +25,7 @@ from ..core.model import (
     ConflictError,
     NotFoundError,
     RateLimitedError,
+    ServiceUnavailableError,
     ValidationError,
 )
 from ..core.service import AgentCADService
@@ -46,6 +47,7 @@ _ERROR_STATUS = {
     AuthError: 401,
     AuthzError: 403,
     RateLimitedError: 429,
+    ServiceUnavailableError: 503,
 }
 
 
@@ -150,9 +152,17 @@ def create_app(
     async def local_origin_guard(request: Request, call_next):
         if security is not None:
             denied = security_module.guard(security, request)
-            if denied is not None:
-                return denied
-            return await call_next(request)
+            response = denied if denied is not None else await call_next(request)
+            # The one hardening header (founder decision 2026-08-18): the
+            # authenticated surface is not frameable. `setdefault`, so the
+            # `/embed/` page's own `frame-ancestors *` (set in its handler and
+            # excluded by `response_headers`) is not clobbered. This is a
+            # header, not a route — the anonymous-surface equality test is
+            # untouched.
+            for name, value in security_module.response_headers(
+                    request.url.path).items():
+                response.headers.setdefault(name, value)
+            return response
         # --- unchanged local-mode path below this line ---
         allowed, reason = _browser_request_allowed(request.headers, allowed_hosts)
         if not allowed:
