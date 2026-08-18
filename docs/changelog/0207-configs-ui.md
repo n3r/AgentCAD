@@ -166,6 +166,8 @@ ones that count):
   bound configurations plus the part-mode mesh is three cache entries). Feel on
   a real GPU is the same as any two-instance assembly: the extra cost of a bound
   instance is one extra cached mesh, and `loadAssembly` fetches a key only once.
+- Frame time re-measured on a real GPU in 0212 — the figures above are
+  swiftshader software GL.
 
 Two smaller decisions worth recording. The chip and its reset use the
 configuration's **name**, upper-cased (`M — modified`, `Reset to M`); the

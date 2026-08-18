@@ -60,6 +60,22 @@ class RateLimitedError(AppError):
     """Too many attempts (429). Carries ``details.retry_after_s``."""
 
 
+def error_type(exc: AppError) -> str:
+    """The wire ``type`` of an application error.
+
+    ``NotFoundError`` -> ``"notfound_error"``, ``ValidationError`` ->
+    ``"validation_error"``, ``ConflictError`` -> ``"conflict_error"``,
+    ``RateLimitedError`` -> ``"ratelimited_error"`` — the spelling
+    ``ToolRegistry.call`` has always put on the wire.
+
+    It lives here so the two producers can pin each other: ``service`` needs it
+    to synthesize a refusal it caught rather than let propagate, and a *copy*
+    of the registry's mapping with no test would drift (P16). Do not spell a
+    new one — ``notfound_error``, not ``not_found_error``.
+    """
+    return type(exc).__name__.replace("Error", "").lower() + "_error"
+
+
 @dataclass
 class ParamSpec:
     name: str

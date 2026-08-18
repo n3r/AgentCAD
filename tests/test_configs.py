@@ -969,3 +969,41 @@ class TestConfigSpecResults:
         assert "error" not in out, out
         assert [row["name"] for row in out["configs"]] == ["s", "m", "l"]
         assert all("spec_results" not in row for row in out["configs"])
+
+
+# ------------------------------------- PRD-012 follow-ups: the wire type pin
+
+
+def test_error_type_matches_the_spelling_the_registry_puts_on_the_wire():
+    """P16: `model.error_type` is a *copy* of `ToolRegistry.call`'s mapping,
+    and a copy with no test drifts. For every `AppError` subclass the two must
+    agree, so a pre-build refusal synthesized in `service._refused_build`
+    carries the same `error.type` a raised one would have carried."""
+    from agentcad.core.model import (
+        AppError,
+        AuthError,
+        AuthzError,
+        ConflictError,
+        NotFoundError,
+        RateLimitedError,
+        error_type,
+    )
+    from agentcad.core.tools import Tool, ToolRegistry, schema
+
+    registry = ToolRegistry()
+    subclasses = [NotFoundError, ValidationError, ConflictError, AuthError,
+                  AuthzError, RateLimitedError]
+    for index, cls in enumerate(subclasses):
+        def handler(_cls=cls) -> dict:
+            raise _cls("boom")
+        registry.register(Tool(f"raiser_{index}", "raises", schema({}, []),
+                               handler))
+
+    for index, cls in enumerate(subclasses):
+        exc = cls("boom")
+        assert isinstance(exc, AppError)
+        wire = registry.call(f"raiser_{index}", {})["error"]["type"]
+        assert error_type(exc) == wire, cls.__name__
+
+    assert error_type(NotFoundError("x")) == "notfound_error"
+    assert error_type(RateLimitedError("x")) == "ratelimited_error"

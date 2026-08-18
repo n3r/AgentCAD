@@ -1381,3 +1381,108 @@ class TestPacketBuilder:
         assert section["geom_diff"]["available"] is True
         assert section["geom_diff"]["removed_mm3"] > 0
         assert elapsed < 10.0, f"warm packet took {elapsed:.2f}s"
+
+
+# ---- PRD-012 follow-up 3: the summary counts what the reviewer can see ------
+
+
+def _cfg_instance(iid: str, part: str = "box", pos=(0.0, 0.0, 0.0),
+                  mate=None, config=None) -> dict:
+    entry = {"id": iid, "part": part, "position": list(pos),
+             "rotation_deg": [0.0, 0.0, 0.0]}
+    if mate is not None:
+        entry["mate"] = mate
+    if config is not None:
+        entry["config"] = config
+    return entry
+
+
+def test_the_summary_counts_a_rebinding_only_change():
+    """A configuration rebinding moves no instance and no mate — and used to
+    read `0 instance changes` beside an Assembly section the reviewer could
+    see was not empty."""
+    from agentcad.core.packet import _summary
+
+    delta = assembly_delta(
+        _assembly([_cfg_instance("f1", config="s")], 10.0),
+        _assembly([_cfg_instance("f1", config="l")], 10.0),
+    )
+    assert delta["changed"] is True
+    assert delta["configs_changed"] == [{"id": "f1", "old": "s", "new": "l"}]
+
+    summary = _summary([], delta)
+    assert summary["instances_changed"] == 1
+    assert summary["configs_changed"] == 1
+    assert summary["mates_changed"] == 0
+
+
+def test_the_summary_counts_a_mates_only_change():
+    from agentcad.core.packet import _summary
+
+    mate = {"to_instance": "a", "connector": "top"}
+    delta = assembly_delta(
+        _assembly([_cfg_instance("b")]),
+        _assembly([_cfg_instance("b", mate=mate)]),
+    )
+
+    summary = _summary([], delta)
+    assert summary["instances_changed"] == 1
+    assert summary["mates_changed"] == 1
+    assert summary["configs_changed"] == 0
+
+
+def test_one_instance_that_moved_re_mated_and_rebound_counts_once():
+    """The case that distinguishes the two designs: summing the five lists
+    would report `3 instance changes` for an assembly that holds one
+    instance — a number larger than the assembly, disagreeing with the
+    bullets right below it."""
+    from agentcad.core.packet import _summary
+
+    mate = {"to_instance": "a", "connector": "top"}
+    delta = assembly_delta(
+        _assembly([_cfg_instance("f1", config="s")], 10.0),
+        _assembly([_cfg_instance("f1", pos=(5.0, 0.0, 0.0), mate=mate,
+                                 config="l")], 12.0),
+    )
+    assert len(delta["instances_moved"]) == 1
+    assert len(delta["mates_changed"]) == 1
+    assert len(delta["configs_changed"]) == 1
+
+    summary = _summary([], delta)
+    assert summary["instances_changed"] == 1     # distinct ids, not the sum
+    assert summary["mates_changed"] == 1
+    assert summary["configs_changed"] == 1
+
+
+def test_the_summary_of_an_unchanged_assembly_is_zeros():
+    from agentcad.core.packet import _summary
+
+    same = _assembly([_cfg_instance("f1", config="s")], 8.0)
+    delta = assembly_delta(same, json.loads(json.dumps(same)))
+
+    summary = _summary([], delta)
+    assert summary["instances_changed"] == 0
+    assert summary["mates_changed"] == 0
+    assert summary["configs_changed"] == 0
+    assert _summary([], None)["mates_changed"] == 0
+    assert _summary([], None)["configs_changed"] == 0
+
+
+def test_distinct_instances_still_add_up():
+    """The de-duplication is by id, not a cap: three different instances that
+    each changed one way are three changes."""
+    from agentcad.core.packet import _summary
+
+    mate = {"to_instance": "a", "connector": "top"}
+    delta = assembly_delta(
+        _assembly([_cfg_instance("a"), _cfg_instance("b"),
+                   _cfg_instance("c", config="s")]),
+        _assembly([_cfg_instance("a", pos=(1.0, 0.0, 0.0)),
+                   _cfg_instance("b", mate=mate),
+                   _cfg_instance("c", config="l")]),
+    )
+
+    summary = _summary([], delta)
+    assert summary["instances_changed"] == 3
+    assert summary["mates_changed"] == 1
+    assert summary["configs_changed"] == 1

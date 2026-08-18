@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 
 from agentcad.core import tools_configs
 from agentcad.core.materials import DEFAULT_MATERIAL
+from agentcad.core.model import NotFoundError
 from agentcad.core.packages import manager as pkgmanager
 from agentcad.core.tools import ToolRegistry, build_registry
 from agentcad.server.app import create_app
@@ -1051,3 +1052,390 @@ class TestConfigRoutes:
         assert not _KEY_RE.fullmatch(f"{pure}\n")
         assert _KEY_RE.fullmatch(pure)
         assert http.get(f"/api/projects/nosuch/meshes/{pure}").status_code == 404
+
+
+# ------------------------------ PRD-012 follow-up 1: pre-build refusals ------
+# A write that LANDED must never be served as a refusal, whatever the failure
+# class. `_build_with` has always converted a `KernelError` into an `ok: false`
+# post-state; these pin the same treatment for an `AppError` raised *before*
+# the kernel is reached (a vanished script file, a vanished entry, an unknown
+# material, a resolver refusal).
+
+
+@pytest.mark.timeout(600)
+class TestPreBuildRefusalsArePostStates:
+    """The five `landed write + rebuild` call sites, driven for real —
+    plus the READ paths, which must keep raising exactly as on main."""
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def refusal_projects(cls, kernel, tmp_path_factory):
+        return _template(kernel, tmp_path_factory, "configs_refusal_projects")
+
+    @pytest.fixture
+    def stack(self, kernel, tmp_path, refusal_projects):
+        service = clone_test_service(refusal_projects, tmp_path / "projects",
+                                     kernel)
+        return service, build_registry(service)
+
+    @pytest.fixture
+    def client(self, kernel, tmp_path, refusal_projects):
+        service = clone_test_service(refusal_projects, tmp_path / "projects",
+                                     kernel)
+        registry = build_registry(service)
+        app = create_app(service, registry,
+                         extra_allowed_hosts={"testserver"})
+        return service, TestClient(app, base_url="http://127.0.0.1")
+
+    @staticmethod
+    def _family(registry, part_id="flange", configs=None) -> dict:
+        out = registry.call("set_part_configs", {
+            "project": "demo", "part_id": part_id,
+            "configs": THREE_SIZE_CONFIGS if configs is None else configs})
+        assert "error" not in out, out
+        return out
+
+    # ------------------------------------------------ the script file is gone
+
+    def test_a_switch_whose_script_vanished_is_a_refused_post_state(
+            self, stack):
+        """The REAL failure, not a monkeypatched `_rebuild`: the file backing
+        the part is deleted between the family write and the switch, so
+        `read_script` raises `NotFoundError` on the way into the build and
+        `rebuild_after_write` reports it as the post-state."""
+        from agentcad.core.service import _REBUILD_REFUSED_HINT
+
+        service, registry = stack
+        self._family(registry)
+        service.store.script_path("demo", "flange").unlink()
+
+        events = service.bus.subscribe()
+        out = registry.call("set_active_config", {
+            "project": "demo", "part_id": "flange", "config": "l"})
+
+        assert "error" in out and "ok" in out, out
+        assert out["ok"] is False
+        assert out["error"]["type"] == "notfound_error"
+        assert "script file missing" in out["error"]["message"]
+        assert out["hint"] == _REBUILD_REFUSED_HINT
+        assert out["active_config"] == "l"
+        # The write LANDED: the manifest holds the new active configuration.
+        assert _entry(service, "demo", "flange")["active_config"] == "l"
+        assert service.store.get_part("demo", "flange").active_config == "l"
+        # Exactly one project_changed and one rebuild_failed.
+        seen = _drain(events)
+        assert [e["type"] for e in seen if e["type"] == "project_changed"] == \
+            ["project_changed"]
+        failed = [e for e in seen if e["type"] == "rebuild_failed"]
+        assert len(failed) == 1, seen
+        assert failed[0]["part"] == "flange"
+        assert failed[0]["error"]["type"] == "notfound_error"
+        assert "config" not in failed[0]     # a base rebuild is untagged (G5)
+        # And the part's badge says so, like every other failed build.
+        row = next(p for p in service.get_project("demo")["parts"]
+                   if p["id"] == "flange")
+        assert row["state"] == "error"
+
+    def test_the_active_config_routes_answer_200_when_the_script_vanished(
+            self, client):
+        """`routes_configs`'s rule — a build post-state is a 200 whatever its
+        `ok` — now holds for a pre-build refusal too, on both verbs."""
+        service, http = client
+        assert http.put("/api/projects/demo/parts/flange/configs",
+                        json={"configs": THREE_SIZE_CONFIGS}
+                        ).status_code == 200
+        service.store.script_path("demo", "flange").unlink()
+
+        put = http.put("/api/projects/demo/parts/flange/active-config",
+                       json={"config": "l"})
+        assert put.status_code == 200, put.text
+        assert put.json()["ok"] is False
+        assert put.json()["error"]["type"] == "notfound_error"
+        assert put.json()["active_config"] == "l"
+
+        deleted = http.delete("/api/projects/demo/parts/flange/active-config")
+        assert deleted.status_code == 200, deleted.text
+        assert deleted.json()["ok"] is False
+        assert deleted.json()["active_config"] is None
+        assert service.store.get_part("demo", "flange").active_config is None
+
+        # A genuine refusal (nothing written) still raises.
+        refused = http.put("/api/projects/demo/parts/flange/active-config",
+                           json={"config": "nope"})
+        assert refused.status_code == 422, refused.text
+
+    # ------------------------------------------- the manifest entry is gone
+
+    @staticmethod
+    def _once_on(service, event_type: str, action):
+        """Run ``action`` the first time ``event_type`` is published.
+
+        `EventBus.on_publish` fires synchronously *inside* `publish`, and every
+        one of these call sites publishes `project_changed` after its write and
+        before its rebuild — so the hook is the exact instant the race the item
+        is about happens in. The mutation it performs is REAL (the store's own
+        `remove_part`, a real `unlink`); nothing about the build path is
+        monkeypatched.
+        """
+        fired = []
+
+        def hook(event):
+            if event["type"] == event_type and not fired:
+                fired.append(True)
+                action()
+
+        service.bus.on_publish = hook
+        return fired
+
+    def test_an_entry_that_vanishes_after_the_write_is_a_refused_post_state(
+            self, stack):
+        """P1's case C: the part is REALLY removed between the manifest write
+        and the rebuild. `set_active_config` reads its post-state inside the
+        lock, so the tail read cannot re-raise what `rebuild_after_write`
+        just converted."""
+        service, registry = stack
+        self._family(registry)
+        fired = self._once_on(
+            service, "project_changed",
+            lambda: service.store.remove_part("demo", "flange"))
+
+        out = registry.call("set_active_config", {
+            "project": "demo", "part_id": "flange", "config": "s"})
+
+        assert fired, "the hook never ran — the race was not driven"
+        assert out.get("ok") is False, out
+        assert out["error"]["type"] == "notfound_error"
+        assert out["active_config"] == "s"
+        assert "flange" not in service.store.part_ids("demo")
+
+    def test_the_route_answers_200_when_the_entry_vanishes(self, client):
+        service, http = client
+        assert http.put("/api/projects/demo/parts/flange/configs",
+                        json={"configs": THREE_SIZE_CONFIGS}
+                        ).status_code == 200
+        self._once_on(service, "project_changed",
+                      lambda: service.store.remove_part("demo", "flange"))
+
+        response = http.put("/api/projects/demo/parts/flange/active-config",
+                            json={"config": "s"})
+        assert response.status_code == 200, response.text
+        assert response.json()["ok"] is False
+        assert response.json()["error"]["type"] == "notfound_error"
+
+    # --------------------------------------------- the other four call sites
+
+    def test_set_part_configs_nested_rebuild_is_a_refused_post_state(
+            self, stack):
+        """`set_part_configs` rebuilds when the ACTIVE configuration's params
+        move. `_spec_for` reads the script before the write, so the file has to
+        disappear between the two — the same race, ten lines up."""
+        service, registry = stack
+        self._family(registry)
+        assert "error" not in registry.call("set_active_config", {
+            "project": "demo", "part_id": "flange", "config": "m"})
+        fired = self._once_on(
+            service, "project_changed",
+            lambda: service.store.script_path("demo", "flange").unlink())
+
+        out = registry.call("set_part_configs", {
+            "project": "demo", "part_id": "flange",
+            "configs": {**THREE_SIZE_CONFIGS,
+                        "m": {"params": {"thick": 14.0}}}})
+
+        assert fired
+        assert "error" not in out, out
+        assert out["rebuild"]["ok"] is False
+        assert out["rebuild"]["error"]["type"] == "notfound_error"
+
+    def test_set_params_on_a_part_whose_script_vanished(self, stack):
+        """The docstring's precedent: `PATCH …/params` gives the same answer on
+        the identical failure — now true for a pre-build refusal too.
+
+        `set_params` reads the script itself to VALIDATE, before the write, so
+        the only way to reach its rebuild with the file gone is to remove it
+        between the two — which is the real race, and the one the browser's
+        `PATCH …/params` route shares."""
+        service, _registry = stack
+        fired = self._once_on(
+            service, "project_changed",
+            lambda: service.store.script_path("demo", "flange").unlink())
+
+        out = service.set_params("demo", "flange", {"thick": 12.0})
+
+        assert fired
+        assert out["ok"] is False
+        assert out["error"]["type"] == "notfound_error"
+        # The override LANDED — that is the whole point.
+        assert service.store.get_part("demo", "flange").params == {
+            "thick": 12.0}
+
+    def test_the_params_route_answers_200_when_the_script_vanishes(
+            self, client):
+        service, http = client
+        self._once_on(
+            service, "project_changed",
+            lambda: service.store.script_path("demo", "flange").unlink())
+
+        # The PATCH body IS the override map (`service.set_params(…, body)`).
+        response = http.patch("/api/projects/demo/parts/flange/params",
+                              json={"thick": 12.0})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["ok"] is False
+        assert response.json()["error"]["type"] == "notfound_error"
+
+    def test_update_part_on_a_part_whose_script_vanished(self, stack):
+        service, _registry = stack
+        service.store.script_path("demo", "flange").unlink()
+
+        out = service.update_part("demo", "flange", label="Renamed")
+
+        assert out["ok"] is False
+        assert out["error"]["type"] == "notfound_error"
+        assert service.store.get_part("demo", "flange").label == "Renamed"
+
+    def test_set_solid_materials_on_a_part_whose_script_vanished(
+            self, stack):
+        service, registry = stack
+        service.store.script_path("demo", "flange").unlink()
+
+        out = registry.call("set_solid_materials", {
+            "project": "demo", "part_id": "flange",
+            "materials": {"0": "al7075"}})
+
+        assert "error" in out and out.get("ok") is False, out
+        assert out["error"]["type"] == "notfound_error"
+        assert out["solid_materials"] == {"0": "al7075"}
+
+    def test_set_solid_materials_when_the_entry_vanishes(self, stack):
+        """Review R2: the tail read for `solid_materials` used to sit AFTER the
+        rebuild, so the entry-vanished half of the case answered a bare refusal
+        (no `ok` key at all) for a manifest write that had already landed. The
+        read moved to right after the write."""
+        service, registry = stack
+        fired = self._once_on(
+            service, "project_changed",
+            lambda: service.store.remove_part("demo", "flange"))
+
+        out = registry.call("set_solid_materials", {
+            "project": "demo", "part_id": "flange",
+            "materials": {"0": "al7075"}})
+
+        assert fired
+        assert out.get("ok") is False, out
+        assert out["error"]["type"] == "notfound_error"
+        assert out["solid_materials"] == {"0": "al7075"}
+
+    def test_an_unknown_material_is_a_refused_post_state_too(self, stack):
+        """The other named `AppError` source: `material_density` raises a
+        `validation_error`, and no geometry was ever addressed, so the status
+        the refusal writes carries no `cache_key` at all."""
+        service, _registry = stack
+        manifest = service.store.manifest("demo")
+        for entry in manifest["parts"]:
+            if entry["id"] == "flange":
+                entry["material"] = "unobtainium"
+        service.store.save_manifest("demo", manifest)
+
+        out = service.rebuild_after_write("demo", "flange")
+
+        assert out["ok"] is False
+        assert out["error"]["type"] == "validation_error"
+        assert "unknown material" in out["error"]["message"]
+        assert service._status[service._status_key("demo", "flange")][
+            "cache_key"] is None
+
+    # ------------------------------------- the READ paths are unchanged, and
+    # ------------------------------- the KernelError arm regression
+
+    def test_the_metrics_route_404s_twice_for_a_missing_script(self, client):
+        """Review R1. `_rebuild` is also the READ paths' build
+        (`_ensure_built` <- `get_metrics` / `mesh_info` / `ensure_mesh` /
+        `mesh_summary`), and those callers re-raise an `ok: false` as a
+        `KernelError`, which `app.py` answers **502**. Converting inside
+        `_rebuild` therefore turned a permanent, client-side 404 into "the
+        kernel failed, retry" — and only on the FIRST call, because the second
+        takes `_ensure_built`'s memo branch, whose own `_cache_key_for` raises
+        the original `NotFoundError`. Two identical requests, two classes of
+        answer. The conversion lives in `rebuild_after_write` instead, so this
+        is 404 twice, exactly as on main."""
+        service, http = client
+        service.store.script_path("demo", "flange").unlink()
+
+        for attempt in (1, 2):
+            response = http.get("/api/projects/demo/parts/flange/metrics")
+            assert response.status_code == 404, (attempt, response.text)
+            assert response.json()["error"]["type"] == "NotFoundError"
+            assert "script file missing" in \
+                response.json()["error"]["message"]
+
+        # ...and the part read itself, which never reached `_ensure_built`.
+        assert http.get(
+            "/api/projects/demo/parts/flange").status_code == 404
+
+    def test_mesh_info_raises_twice_for_a_missing_script(self, stack):
+        """The service-level half of R1: both `_ensure_built` branches (memo
+        miss, then memo hit) raise the same `NotFoundError`."""
+        service, _registry = stack
+        service.store.script_path("demo", "flange").unlink()
+
+        for attempt in (1, 2):
+            with pytest.raises(NotFoundError) as caught:
+                service.mesh_info("demo", "flange")
+            assert "script file missing" in str(caught.value), attempt
+
+    def test_get_assembly_answers_a_missing_script_one_way(self, stack):
+        """Review R5. An UNBOUND instance builds through `_ensure_built` and a
+        BOUND one through `_ensure_config_built`; making `_rebuild` total split
+        those two answers (200 with `state: error` vs a 404 for the whole
+        assembly) purely on whether an instance happened to carry a
+        configuration. Both raise, as on main."""
+        service, registry = stack
+        self._family(registry)
+        script_path = service.store.script_path("demo", "flange")
+        source = script_path.read_text(encoding="utf-8")
+
+        for instance in ({"id": "f1", "part": "flange"},
+                         {"id": "f1", "part": "flange", "config": "l"}):
+            # `set_assembly` returns `get_assembly`, so the placement itself
+            # needs the script; the file vanishes afterwards.
+            script_path.write_text(source, encoding="utf-8")
+            service.set_assembly("demo", [instance])
+            script_path.unlink()
+            # A FRESH process — every `agentcad check` run, every ephemeral
+            # gate service, every part not yet read this session. It is the
+            # state that matters: with a warm `_status`, `_ensure_built` takes
+            # its memo branch and `_cache_key_for` raises there instead, which
+            # hides the split this pins.
+            service._status.clear()
+            service._config_status.clear()
+
+            with pytest.raises(NotFoundError) as caught:
+                service.get_assembly("demo")
+            assert "script file missing" in str(caught.value), instance
+
+    def test_a_kernel_failure_still_behaves_exactly_as_before(self, stack):
+        """Regression: the `KernelError` arm is untouched — `_status` written,
+        `rebuild_failed` published, and `with_hint`'s traceback hint (NOT the
+        refusal hint) on the tool's payload."""
+        from agentcad.core.service import _REBUILD_REFUSED_HINT
+
+        service, registry = stack
+        assert "error" not in registry.call("set_part_configs", {
+            "project": "demo", "part_id": "fragile",
+            "configs": FRAGILE_CONFIGS})
+
+        events = service.bus.subscribe()
+        out = registry.call("set_active_config", {
+            "project": "demo", "part_id": "fragile", "config": "heavy"})
+
+        assert out["ok"] is False
+        assert out["error"]["type"] in ("script_error", "contract_error")
+        assert out["error"]["details"].get("traceback")
+        assert out["hint"] != _REBUILD_REFUSED_HINT
+        assert "details.traceback" in out["hint"]
+        failed = [e for e in _drain(events) if e["type"] == "rebuild_failed"]
+        assert len(failed) == 1, failed
+        status = service._status[service._status_key("demo", "fragile")]
+        assert status["state"] == "error"
+        assert status["cache_key"]
