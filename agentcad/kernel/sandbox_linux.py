@@ -22,9 +22,10 @@ Quotas come in three tiers, and the mechanism string names only the ones this
 client actually installed (Decision 3):
 
 * ``cgroup`` — :class:`CgroupTier`, opt-in **by delegation**: a directory the
-  operator handed us (``AGENTCAD_CGROUP_DIR``) or a genuinely delegated own
-  cgroup. It is the only tier that OOM-kills, and the only one that can be
-  missing without anything being wrong.
+  operator handed us (``AGENTCAD_CGROUP_DIR=<path>``) or, with an explicit
+  ``=auto``, a genuinely delegated own cgroup. Unset means the tier is not
+  probed at all. It is the only tier that OOM-kills, and the only one that can
+  be missing without anything being wrong.
 * ``rlimit`` — ``RLIMIT_AS``/``RLIMIT_NPROC``, applied by the worker to itself
   from the payload. A breach here is a recoverable ``MemoryError`` or
   ``BlockingIOError`` *inside the script*, with a line number, and the warm
@@ -69,10 +70,19 @@ EXTRA_FILES = ["/dev/null", "/proc/self/clear_refs"]
 #: guessing low would kill it during ``import build123d`` for no security gain.
 _FALLBACK_UID_PROCESSES = 256
 
-#: An operator-delegated cgroup v2 directory (Decision 4's Model 2). ``off``
-#: switches the tier off outright, which is how a test pins the supervisor as
-#: the memory tier on a host that happens to have a delegated subtree.
+#: An operator-delegated cgroup v2 directory (Decision 4's Model 2), or
+#: :data:`CGROUP_AUTO`. **Unset means no cgroup tier at all**: the whole tier is
+#: opt-in, so nothing is probed and nothing is mutated unless an operator asked
+#: for it. ``off`` is an explicit "not even auto", which is how a test pins the
+#: supervisor as the memory tier on a host that has a delegated subtree.
 CGROUP_ENV = "AGENTCAD_CGROUP_DIR"
+
+#: ``AGENTCAD_CGROUP_DIR=auto`` — look at the process's *own* cgroup (the
+#: systemd ``Delegate=yes`` shape) instead of a directory the operator named.
+#: Opt-in on purpose: that route can move the server's own pids, and doing that
+#: to a machine nobody offered us is exactly the "activation by capability"
+#: Decision 4 rejects.
+CGROUP_AUTO = "auto"
 
 #: Where the unified hierarchy is mounted. Only used to resolve the path
 #: ``/proc/self/cgroup`` reports.
@@ -263,11 +273,13 @@ def _wants_cgroup(quotas: Quotas) -> bool:
 class CgroupTier:
     """A cgroup v2 subtree this process may create worker cgroups under.
 
-    Opt-in **by delegation, never by capability** (design spec, Decision 4).
-    The shipped container mounts ``/sys/fs/cgroup`` read-only and root-owned,
-    and the two ways to a writable subtree are ``--cap-add SYS_ADMIN`` (a
-    near-root capability, rejected) or a host-delegated subtree bind-mounted in
-    — Model 2, verified end to end in the spike as an unprivileged uid:
+    Opt-in **by delegation, never by capability** (design spec, Decision 4),
+    and opt-in by the operator: with ``AGENTCAD_CGROUP_DIR`` unset nothing here
+    runs. The shipped container mounts ``/sys/fs/cgroup`` read-only and
+    root-owned, and the two ways to a writable subtree are ``--cap-add
+    SYS_ADMIN`` (a near-root capability, rejected) or a host-delegated subtree
+    bind-mounted in — Model 2, verified end to end in the spike as an
+    unprivileged uid:
 
     .. code-block:: sh
 
@@ -281,11 +293,14 @@ class CgroupTier:
         volumes: ["/sys/fs/cgroup/agentcad:/cg:rw"]
         environment: {AGENTCAD_CGROUP_DIR: /cg}
 
+    ``AGENTCAD_CGROUP_DIR=auto`` is the second route, the systemd
+    ``Delegate=yes`` shape — see :meth:`_from_own_cgroup` for why it is a
+    separate opt-in and not something discovered.
+
     Every step of the probe is *verified* rather than assumed, and any failure
-    returns ``None`` so the caller falls back to the rlimit and supervisor
-    tiers. That is the whole point of the tier being opt-in: it is the only one
-    that needs the operator to have done something, so it is the only one that
-    may be missing without anything being wrong.
+    returns ``None`` **with a reason that reaches health's warnings**, so the
+    caller falls back to the rlimit and supervisor tiers and the operator can
+    see that it did.
     """
 
     def __init__(self, root: str) -> None:
@@ -301,23 +316,29 @@ class CgroupTier:
     def probe(warnings: list[str] | None = None) -> "CgroupTier | None":
         """The usable subtree, or ``None``.
 
-        *warnings* collects the plain-language reason when the operator asked
-        for the tier and it could not be had. A machine that simply has no
-        delegated subtree — the shipped container, every developer laptop — is
-        **not** a warning: it is the expected state, and saying so on every
-        health read would train operators to ignore the field.
+        **Nothing is probed unless an operator asked for it.** Unset (and
+        ``off``) means no cgroup tier: no directory is read, no cgroup is
+        created, and the server's own placement is left alone — which is the
+        state of the shipped container and of every developer laptop, and is
+        not a warning. ``AGENTCAD_CGROUP_DIR=<path>`` is Model 2 and
+        ``=auto`` is the own-cgroup route.
+
+        Every failure of a probe that *was* asked for lands in *warnings*:
+        Decision 4 says the tier "falls back with a health warning", and a
+        silent fallback is how an operator ends up believing in a cap that is
+        not there.
         """
         configured = os.environ.get(CGROUP_ENV, "").strip()
-        if configured.lower() in _OFF:
+        if not configured or configured.lower() in _OFF:
             return None
-        if configured:
+        if configured.lower() == CGROUP_AUTO:
+            tier, reason = CgroupTier._from_own_cgroup()
+        else:
             tier, reason = CgroupTier._from_dir(configured)
-            if tier is None and warnings is not None:
-                warnings.append(
-                    f"the cgroup quota tier is off: {reason} "
-                    f"(from {CGROUP_ENV}={configured!r})")
-            return tier
-        tier, _reason = CgroupTier._from_own_cgroup()
+        if tier is None and warnings is not None:
+            warnings.append(
+                f"the cgroup quota tier is off: {reason} "
+                f"(from {CGROUP_ENV}={configured!r})")
         return tier
 
     @staticmethod
@@ -342,42 +363,77 @@ class CgroupTier:
 
     @staticmethod
     def _from_own_cgroup() -> tuple["CgroupTier | None", str | None]:
-        """This process's own cgroup, when it was delegated to it.
+        """This process's own cgroup, *when it was genuinely delegated to it*.
 
-        The ``systemd Delegate=yes`` shape. Two refusals are deliberate:
+        The ``systemd Delegate=yes`` shape, reached only through
+        ``AGENTCAD_CGROUP_DIR=auto``. This is the route that can move the
+        server's own pids, so every refusal below exists to keep Decision 4's
+        rule — opt-in **by delegation, never by capability**:
 
-        * the **root** cgroup is never taken. A process there is not a
-          delegated subtree, it is the machine — a CI runner and a developer
-          box both land in it, and enabling controllers or moving pids around
-          up there is a system-wide change nobody asked for.
-        * the *no-internal-process* rule means a cgroup holding this process
-          cannot also have ``subtree_control`` set, so the server moves **its
-          own** process into a ``server`` leaf first. Only its own: migrating
-          strangers out of a shared cgroup would be someone else's decision.
+        * **root is refused outright.** ``os.access`` answers ``W_OK`` for uid
+          0 almost everywhere, so a root server would "discover" a delegated
+          subtree on any machine at all. That is activation by capability, and
+          the whole point of the ruling is that a near-root capability is not
+          a licence to reorganise the host's cgroups.
+        * **the subtree must be ours**: ``st_uid`` has to equal our euid.
+          Delegation is someone handing us a directory, which on every
+          documented route (systemd ``Delegate=``, the Model 2 ``chown``)
+          means it is chowned to us.
+        * the **root cgroup** (``0::/``) is never taken: a process there is not
+          in a delegated subtree, it is on the machine.
+        * everything is checked **before** anything is mutated — the
+          controllers are present and ``subtree_control`` is writable *first*,
+          and only then does the server move **its own** process into a
+          ``server`` leaf (the no-internal-process rule). Only its own:
+          migrating strangers out of a shared cgroup would be someone else's
+          decision. If a later step still fails, the reason says the move
+          happened, so the fallback warning is the whole truth.
         """
-        try:
-            with open("/proc/self/cgroup", encoding="utf-8") as handle:
-                lines = handle.read().splitlines()
-        except OSError as exc:
-            return None, f"cannot read /proc/self/cgroup: {exc}"
-        path = next((line.split("::", 1)[1] for line in lines
-                     if line.startswith("0::")), None)
-        if not path or path == "/":
+        euid = getattr(os, "geteuid", None)
+        if euid is None:
+            return None, "this platform has no uid to check delegation against"
+        euid = euid()
+        if euid == 0:
+            return None, ("this process is root: a delegated subtree has to be "
+                          "given to us, and root can write any cgroup on the "
+                          "machine — use AGENTCAD_CGROUP_DIR=<path> instead")
+        path = _own_cgroup_path()
+        if path is None:
+            return None, "cannot read /proc/self/cgroup"
+        if path == "/":
             return None, "this process is in the root cgroup, not a delegated one"
         own = os.path.join(CGROUP_ROOT, path.lstrip("/"))
-        if not (os.path.isdir(own) and os.access(own, os.W_OK | os.X_OK)):
+        if not os.path.isdir(own):
+            return None, f"{own} is not a directory"
+        try:
+            owner = os.stat(own).st_uid
+        except OSError as exc:
+            return None, f"cannot stat {own}: {exc.strerror or exc}"
+        if owner != euid:
+            return None, (f"{own} belongs to uid {owner}, not to this process "
+                          f"(uid {euid}): it was not delegated to us")
+        if not os.access(own, os.W_OK | os.X_OK):
             return None, f"{own} is not a writable cgroup directory"
         if not os.access(os.path.join(own, "cgroup.subtree_control"), os.W_OK):
             return None, f"{own} does not delegate cgroup.subtree_control"
-        reason = _leave_internal_cgroup(own)
+        available = _read_words(own, "cgroup.controllers")
+        absent = [name for name in CGROUP_CONTROLLERS if name not in available]
+        if absent:
+            return None, (f"{own} has no {', '.join(absent)} controller to "
+                          f"delegate (it offers: {' '.join(available) or 'nothing'})")
+        # Nothing above this line changed anything. Past it, the server may be
+        # in a different cgroup than it started in.
+        reason, moved = _leave_internal_cgroup(own)
         if reason is not None:
             return None, reason
+        moved_note = (f" (this process was moved into {own}/server and stays "
+                      f"there)" if moved else "")
         reason = _enable_controllers(own)
         if reason is not None:
-            return None, reason
+            return None, reason + moved_note
         reason = _probe_mkdir(own)
         if reason is not None:
-            return None, reason
+            return None, reason + moved_note
         return CgroupTier(own), None
 
     # ----------------------------------------------------------- per worker
@@ -477,24 +533,30 @@ def _enable_controllers(root: str) -> str | None:
     return None
 
 
-def _leave_internal_cgroup(own: str) -> str | None:
+def _leave_internal_cgroup(own: str) -> tuple[str | None, bool]:
     """Move this process out of *own* into ``<own>/server``, if it is in it.
 
-    A cgroup that holds processes cannot enable ``subtree_control`` (the
-    no-internal-process rule), and this is the only cgroup we are allowed to
-    reorganise — it is ours.
+    ``(reason, moved)`` — *moved* says whether the server's own placement
+    changed, so a later failure can name it. A cgroup that holds processes
+    cannot enable ``subtree_control`` (the no-internal-process rule), and this
+    is the only cgroup we are allowed to reorganise: it is ours, checked.
+
+    Only **this** process moves. Other pids in the cgroup are somebody else's,
+    and if they keep the no-internal-process rule unsatisfiable that is a
+    refusal, not an invitation to migrate them.
     """
     if str(os.getpid()) not in _read_words(own, "cgroup.procs"):
-        return None
+        return None, False
     leaf = os.path.join(own, "server")
     try:
         os.makedirs(leaf, exist_ok=True)
         _write(leaf, "cgroup.procs", str(os.getpid()))
     except OSError as exc:
-        return f"cannot move this process into {leaf}: {exc.strerror or exc}"
+        return f"cannot move this process into {leaf}: {exc.strerror or exc}", False
     if str(os.getpid()) in _read_words(own, "cgroup.procs"):
-        return f"this process is still in {own} (the no-internal-process rule)"
-    return None
+        return (f"this process is still in {own} (the no-internal-process "
+                f"rule)"), False
+    return None, True
 
 
 def _probe_mkdir(root: str) -> str | None:
@@ -511,6 +573,21 @@ def _probe_mkdir(root: str) -> str | None:
     except OSError:
         pass
     return None
+
+
+def _own_cgroup_path() -> str | None:
+    """This process's cgroup v2 path (``0::<path>``), or ``None``.
+
+    Its own function so a test can put the process anywhere without faking
+    ``/proc``.
+    """
+    try:
+        with open("/proc/self/cgroup", encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return None
+    return next((line.split("::", 1)[1] for line in lines
+                 if line.startswith("0::")), None)
 
 
 def _read_words(directory: str, name: str) -> list[str]:
@@ -584,6 +661,10 @@ class LinuxBackend:
             self.cgroup = None
             return
         self._oom0 = self.cgroup.oom_kills(self.cg_dir)
+
+    def can_sample(self) -> bool:
+        """``/proc/<pid>/statm`` is always there on a Linux worker."""
+        return True
 
     def rss_bytes(self, proc) -> int | None:
         """Resident size of *proc*, for one supervisor sample.

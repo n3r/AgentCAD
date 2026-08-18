@@ -251,35 +251,44 @@ class KernelClient:
         # integer.
         req_id = secrets.randbits(62)
         self._last_req_id = req_id
+        # Before the write: a broken pipe is still a request that spent wall
+        # clock, and `details.usage` is the contract for every path that ends
+        # without the worker answering.
+        interval, cap = self._supervision()
+        started = time.monotonic()
+        peak = 0
+        self._breach = None
         try:
             self._proc.stdin.write(
                 json.dumps({"id": req_id, "method": method, "params": params}) + "\n"
             )
             self._proc.stdin.flush()
         except (BrokenPipeError, OSError) as exc:
+            usage = self._usage_stub(started, peak)
             self._kill()
             raise KernelError(
-                ERROR_CRASH, f"kernel worker unreachable: {exc}", self._crash_details()
+                ERROR_CRASH, f"kernel worker unreachable: {exc}",
+                {**self._crash_details(), "usage": usage}
             ) from exc
 
         # The supervisor (design spec, Decision 5). It is this loop, not a
         # thread: the loop already wakes on a timer to enforce the timeout, so
         # sampling costs one `/proc` read (0.5 us) or one libproc call (1.3 us)
         # per wake, and a breach can raise straight into the caller.
-        interval, cap = self._supervision()
-        started = time.monotonic()
-        peak = 0
-        self._breach = None
-
         deadline = started + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                # Measured before the kill: `_kill` waits up to 5 s for the
+                # process to die, and that teardown is not what the request
+                # cost. A `wall_ms` five seconds past the timeout it reports
+                # would be the first thing a reader distrusted.
+                usage = self._usage_stub(started, peak)
                 self._kill()
                 raise KernelError(
                     ERROR_TIMEOUT,
                     f"kernel request {method!r} exceeded {timeout:.0f}s; worker restarted",
-                    {"usage": self._usage_stub(started, peak)},
+                    {"usage": usage},
                 )
             if cap is not None:
                 rss = self._sample_rss()
@@ -293,28 +302,30 @@ class KernelClient:
                         "limit_mb": limit_mb,
                         "observed_rss_mb": round(rss / _MB, 1),
                         "tier": "supervisor"})
+                    usage = self._usage_stub(started, peak)
                     self._kill()
                     raise KernelError(
                         ERROR_CRASH,
                         f"kernel worker exceeded its memory cap "
                         f"({limit_mb} MB); worker restarted",
                         {"reason": "memory_cap", **self._breach[1],
-                         "usage": self._usage_stub(started, peak),
-                         **self._crash_details()},
+                         "usage": usage, **self._crash_details()},
                     )
             try:
                 line = self._lines.get(timeout=min(remaining, interval))
             except queue.Empty:
                 continue
             if line is None:
-                # EOF. Why the worker died, if anything here can say: the
-                # supervisor's own flag first (it is the only one that knows
-                # its kill from a hang), then the platform backend's reading
-                # of the corpse — a cgroup OOM counter, a CPU signal.
-                why = self._breach_reason() or self._explain_exit()
+                # EOF. Why the worker died, if the platform backend can read it
+                # off the corpse — a cgroup OOM counter, a CPU signal. (The
+                # supervisor's own kills never arrive here: that branch raises
+                # where it kills, with `_breach` as the reason.) The usage is
+                # measured first: `_explain_exit` waits for the return code and
+                # `_kill` waits for the process, and neither is request time.
+                usage = self._usage_stub(started, peak)
+                why = self._explain_exit()
                 self._kill()
-                details = {**self._crash_details(),
-                           "usage": self._usage_stub(started, peak)}
+                details = {**self._crash_details(), "usage": usage}
                 if why:
                     details.update(why)
                 raise KernelError(
@@ -329,9 +340,9 @@ class KernelClient:
                 continue  # stray non-protocol output
             if response.get("id") != req_id:
                 continue  # stale response from an earlier request
-            usage = response.get("usage")
-            usage = dict(usage) if isinstance(usage, dict) else {}
-            if peak:
+            reported = response.get("usage")
+            usage = dict(reported) if isinstance(reported, dict) else {}
+            if peak and isinstance(reported, dict):
                 # The parent's samples belong to THIS request on every
                 # platform, which is what macOS and Windows cannot measure from
                 # inside (`ru_maxrss`/`PeakWorkingSetSize` are lifetime marks,
@@ -346,7 +357,12 @@ class KernelClient:
                     parent_mb if usage.get("peak_rss_is_lifetime", True)
                     else max(worker_mb, parent_mb))
                 usage["peak_rss_is_lifetime"] = False
-            self.last_usage = usage
+            if isinstance(reported, dict):
+                self.last_usage = usage
+            # else: a response with no usage envelope leaves `last_usage`
+            # describing the last request that DID report one. Overwriting it
+            # with `{}` would turn "nothing to say about this one" into "the
+            # last request cost nothing".
             self._emit_usage(method, usage, ok="error" not in response)
             if "error" in response:
                 err = response["error"]
@@ -378,7 +394,8 @@ class KernelClient:
         quotas = self._plan.quotas_obj
         interval = max(MIN_SAMPLE_INTERVAL_S,
                        quotas.sample_interval_s or DEFAULT_SAMPLE_INTERVAL_S)
-        if not quotas.memory_mb or self._plan.backend is None:
+        backend = self._plan.backend
+        if not quotas.memory_mb or backend is None or not backend.can_sample():
             return interval, None
         return interval, quotas.memory_mb * 1024 * 1024
 
@@ -395,13 +412,6 @@ class KernelClient:
             return self._plan.backend.rss_bytes(proc)
         except Exception:                      # pragma: no cover - defensive
             return None
-
-    def _breach_reason(self) -> dict | None:
-        """What the supervisor already decided about this request, if anything."""
-        if self._breach is None:
-            return None
-        reason, details = self._breach
-        return {"reason": reason, **details}
 
     def _explain_exit(self) -> dict | None:
         """The backend's reading of why the worker died; ``None`` if it cannot

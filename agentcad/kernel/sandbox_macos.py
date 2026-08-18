@@ -181,6 +181,10 @@ class MacBackend:
         """Nothing to place: macOS has no cgroup, and the rlimits are applied
         by the child itself. Kept so the client needs no platform branch."""
 
+    def can_sample(self) -> bool:
+        """libproc answers for any process of this uid."""
+        return True
+
     def rss_bytes(self, proc) -> int | None:
         """Resident size of *proc*, for the supervisor's sample.
 

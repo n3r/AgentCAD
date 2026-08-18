@@ -217,6 +217,10 @@ class WindowsBackend:
             _close_handle(self.job)
             self.job = None
 
+    def can_sample(self) -> bool:
+        """psapi is part of the OS; a failing call degrades per sample."""
+        return True
+
     def rss_bytes(self, proc) -> int | None:
         """Working-set size, for one supervisor sample; ``None`` if psapi
         could not answer (the process is gone)."""

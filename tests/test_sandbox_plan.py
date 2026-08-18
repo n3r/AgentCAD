@@ -78,6 +78,7 @@ class _Backend:
 
     # --- the Backend protocol
     def attach(self, proc): self.attached = proc
+    def can_sample(self): return True
     def rss_bytes(self, proc): return None
     def explain_exit(self, proc, returncode): return None
     def release(self): self.released += 1
@@ -239,6 +240,24 @@ def test_a_backend_that_raises_does_not_leak_the_temp_dir(isolated, monkeypatch)
     assert set(Path(tempfile.gettempdir()).glob(sandbox.TMP_PREFIX + "*")) == before
 
 
+def test_a_failure_after_the_backend_was_built_releases_it_too(isolated,
+                                                                backend,
+                                                                monkeypatch):
+    """Until a `SandboxPlan` exists nobody holds any of this: not the temp
+    dir, not the job handle a Windows backend opened, not the cgroup a Linux
+    one created. So "a plan() that raises leaves nothing behind" has to hold
+    for every step, not just for a backend that blew up on the way in."""
+    def _boom(*args, **kwargs):
+        raise RuntimeError("no plan today")
+
+    monkeypatch.setattr(sandbox, "SandboxPlan", _boom)
+    before = set(Path(tempfile.gettempdir()).glob(sandbox.TMP_PREFIX + "*"))
+    with pytest.raises(RuntimeError):
+        _plan([isolated])
+    assert backend.released == 1
+    assert set(Path(tempfile.gettempdir()).glob(sandbox.TMP_PREFIX + "*")) == before
+
+
 # ------------------------------------------------------------------ opting out
 
 def test_the_env_kill_switch_drops_confinement_but_not_quotas(isolated,
@@ -282,10 +301,15 @@ def test_an_unknown_platform_is_unsupported_rather_than_a_crash(isolated,
         assert plan.confinement["mechanism"] is None
         assert "sunos5" in plan.confinement["detail"]["reason"]
         assert plan.argv == BASE_ARGV
-        assert plan.quotas == {"status": "active", "mechanism": "supervisor",
+        # Decision 8: the supervisor is platform-independent in its logic but
+        # not in its one measurement, and this backend cannot take it — so the
+        # caps are published and NO tier is named. An armed, blind sampler
+        # would be a promise nothing can keep.
+        assert plan.quotas == {"status": "off", "mechanism": None,
                                "limits": plan.quotas_obj.limits()}
-        # the null backend answers the whole protocol, so the client and the
-        # (Slice 3) supervisor need no platform branches of their own
+        assert plan.backend.can_sample() is False
+        # the null backend still answers the whole protocol, so the client and
+        # the supervisor need no platform branches of their own
         assert plan.backend.rss_bytes(SimpleNamespace(pid=os.getpid())) is None
         assert plan.backend.explain_exit(None, -9) is None
         plan.backend.attach(None)
@@ -649,12 +673,19 @@ def test_a_cgroup_dir_that_is_not_one_falls_back_and_says_so(isolated, linux,
         plan.release()
 
 
+@pytest.mark.parametrize("value", [None, "off"])
 def test_no_delegated_cgroup_is_the_normal_state_and_not_a_warning(isolated,
                                                                     linux,
-                                                                    monkeypatch):
-    """The shipped container and every developer box land here. Warning on it
-    would train an operator to ignore the field."""
-    monkeypatch.setenv(sandbox_linux_module().CGROUP_ENV, "off")
+                                                                    monkeypatch,
+                                                                    value):
+    """The shipped container and every developer box land here — unset. The
+    tier is opt-in, so this is not a failure to report: warning on it would
+    train an operator to ignore the field."""
+    module = sandbox_linux_module()
+    if value is None:
+        monkeypatch.delenv(module.CGROUP_ENV, raising=False)
+    else:
+        monkeypatch.setenv(module.CGROUP_ENV, value)
     plan = _plan([isolated])
     try:
         assert plan.quotas["mechanism"] == "rlimit+supervisor"
@@ -663,26 +694,93 @@ def test_no_delegated_cgroup_is_the_normal_state_and_not_a_warning(isolated,
         plan.release()
 
 
-def test_the_root_cgroup_is_never_taken_for_a_delegated_one(monkeypatch,
-                                                             tmp_path):
-    """`0::/` is a CI runner and a developer laptop, not a delegated subtree.
-    Enabling controllers or moving pids around up there is a machine-wide
-    change nobody asked for."""
+posix_user_only = pytest.mark.skipif(
+    os.name != "posix" or getattr(os, "geteuid", lambda: 0)() == 0,
+    reason="the own-cgroup route is refused outright for root and off POSIX")
+
+
+def test_the_own_cgroup_route_is_not_probed_unless_asked_for(monkeypatch):
+    """Decision 4 is opt-in **by delegation**, and this is the route that can
+    move the server's own pids — so with `AGENTCAD_CGROUP_DIR` unset nothing
+    reads `/proc/self/cgroup` at all, let alone writes anything."""
     module = sandbox_linux_module()
+    looked: list[int] = []
     monkeypatch.delenv(module.CGROUP_ENV, raising=False)
-    proc = tmp_path / "cgroup"
-    proc.write_text("0::/\n", encoding="utf-8")
-    real_open = open
-
-    def _fake_open(path, *args, **kwargs):
-        if path == "/proc/self/cgroup":
-            return real_open(proc, *args, **kwargs)
-        return real_open(path, *args, **kwargs)
-
-    monkeypatch.setattr("builtins.open", _fake_open)
+    monkeypatch.setattr(module, "_own_cgroup_path",
+                        lambda: looked.append(1) or "/delegated")
     warnings: list[str] = []
     assert module.CgroupTier.probe(warnings) is None
-    assert warnings == []
+    assert looked == [] and warnings == []
+
+
+@posix_user_only
+def test_the_root_cgroup_is_never_taken_for_a_delegated_one(monkeypatch):
+    """`0::/` is a CI runner and a developer laptop, not a delegated subtree.
+    Enabling controllers or moving pids around up there is a machine-wide
+    change nobody asked for — and the refusal is reported, not swallowed."""
+    module = sandbox_linux_module()
+    monkeypatch.setenv(module.CGROUP_ENV, module.CGROUP_AUTO)
+    monkeypatch.setattr(module, "_own_cgroup_path", lambda: "/")
+    warnings: list[str] = []
+    assert module.CgroupTier.probe(warnings) is None
+    assert any("root cgroup" in warning for warning in warnings), warnings
+
+
+@posix_user_only
+def test_an_undelegated_own_cgroup_is_refused_before_anything_is_touched(
+        monkeypatch, tmp_path):
+    """The dangerous half of `=auto`: a cgroup we merely *sit in* is not one
+    that was given to us. Everything is checked first — ownership, write
+    access, the controllers — so a refusal leaves the machine exactly as it
+    was: no `server` leaf, no migrated pids, no `subtree_control` write.
+    """
+    module = sandbox_linux_module()
+    root = tmp_path / "sys"
+    own = root / "shared.slice"
+    own.mkdir(parents=True)
+    procs = f"{os.getpid()}\n4242\n"
+    (own / "cgroup.procs").write_text(procs, encoding="utf-8")
+    # A shared slice: no memory/pids to delegate.
+    (own / "cgroup.controllers").write_text("cpuset io\n", encoding="utf-8")
+    (own / "cgroup.subtree_control").write_text("\n", encoding="utf-8")
+
+    monkeypatch.setenv(module.CGROUP_ENV, module.CGROUP_AUTO)
+    monkeypatch.setattr(module, "CGROUP_ROOT", str(root))
+    monkeypatch.setattr(module, "_own_cgroup_path", lambda: "/shared.slice")
+    warnings: list[str] = []
+
+    assert module.CgroupTier.probe(warnings) is None
+    assert any("memory" in warning and str(own) in warning
+               for warning in warnings), warnings
+    # ...and nothing survived the refusal.
+    assert not (own / "server").exists()
+    assert (own / "cgroup.procs").read_text(encoding="utf-8") == procs
+    assert (own / "cgroup.subtree_control").read_text(encoding="utf-8") == "\n"
+    assert sorted(entry.name for entry in own.iterdir()) == [
+        "cgroup.controllers", "cgroup.procs", "cgroup.subtree_control"]
+
+
+@posix_user_only
+def test_an_own_cgroup_owned_by_somebody_else_is_refused(monkeypatch):
+    """Delegation means the subtree was handed to *us*; a directory owned by
+    another uid was not. (Root is refused before this check even runs: it
+    passes `W_OK` on every cgroup on the machine, which is activation by
+    capability — the thing Decision 4 rules out.)
+
+    `/tmp` stands in for the cgroup: a real directory, really owned by root,
+    so the refusal is measured rather than mocked.
+    """
+    module = sandbox_linux_module()
+    if os.stat("/tmp").st_uid == os.geteuid():
+        pytest.skip("/tmp belongs to this user here; nothing to prove")
+    monkeypatch.setenv(module.CGROUP_ENV, module.CGROUP_AUTO)
+    monkeypatch.setattr(module, "CGROUP_ROOT", "/")
+    monkeypatch.setattr(module, "_own_cgroup_path", lambda: "/tmp")
+    warnings: list[str] = []
+
+    assert module.CgroupTier.probe(warnings) is None
+    assert any("was not delegated to us" in warning
+               for warning in warnings), warnings
 
 
 # ----------------------------------------------------------------- the quotas

@@ -16,21 +16,29 @@ wall clock it burned) and AC6 (a breach on one pool worker leaves its sibling
 alone) pass on macOS and Linux.
 
 ## Changes
-- **`kernel/sandbox_linux.py`** — `CgroupTier` (Decision 4): `probe()` takes an
-  operator-delegated directory from `AGENTCAD_CGROUP_DIR` (Model 2) or a
-  genuinely delegated own cgroup, verifying every step — it is a directory, it
-  is a cgroup v2 one, it delegates `memory`+`pids` (enabling them if it may),
-  and a child cgroup can really be created and removed. The **root cgroup is
-  refused outright**: a CI runner and a developer laptop both land in it, and
-  reorganising it is a machine-wide change nobody asked for. A non-root own
-  cgroup that holds this process gets a `server` leaf and **only this process**
-  moved into it (the no-internal-process rule). `make_worker` writes
+- **`kernel/sandbox_linux.py`** — `CgroupTier` (Decision 4). The tier is
+  **opt-in twice over**: with `AGENTCAD_CGROUP_DIR` unset nothing is probed at
+  all — no directory read, no cgroup created, the server's own placement
+  untouched — which is the state of the shipped container and every laptop.
+  `AGENTCAD_CGROUP_DIR=<path>` is Model 2; `=auto` is the own-cgroup (systemd
+  `Delegate=yes`) route, a separate opt-in because it is the one that can move
+  the server's own pids. `probe()` verifies every step and **every failure of a
+  probe that was asked for reaches `plan.warnings`** ("falls back with a health
+  warning", not silently). The `auto` route additionally refuses: **root**
+  (`os.access` answers `W_OK` for uid 0 almost everywhere, so a root server
+  would "discover" a subtree on any machine — that is activation by
+  capability), a subtree whose **`st_uid` is not ours** (delegation means it
+  was chowned to us), and the **root cgroup**. Ownership, write access, the
+  controllers and `subtree_control` are all checked **before anything is
+  mutated**; only then does the server move **its own** process into a `server`
+  leaf (the no-internal-process rule), and a failure after that says so in the
+  reason. `make_worker` writes
   `memory.max`, `memory.swap.max=0` (load-bearing: with swap at `max` the
   spike's 400 MB allocation under a 200 MB cap swapped instead of dying),
   `pids.max` and `cpu.max`; `attach` writes the pid after `Popen`; `oom_kills`
   reads the counter that separates a kernel OOM from the supervisor's kill and
   from a timeout kill (all three are `returncode == -9`); `release` rmdirs.
-  `AGENTCAD_CGROUP_DIR=off` switches the tier off outright.
+  `AGENTCAD_CGROUP_DIR=off` is an explicit "not even auto".
 - **`LinuxBackend`** — `rss_bytes` reads field 2 of `/proc/<pid>/statm` times
   the page size; `explain_exit` answers `{"reason": "memory_cap", "tier":
   "cgroup"}` on an OOM-counter delta and `{"reason": "cpu_cap", "tier":
@@ -70,6 +78,13 @@ alone) pass on macOS and Linux.
   on stderr — a metering bug may never fail a build. A client built with no
   `writable_dirs` and no `quotas` still runs the historical 0.5 s poll with no
   sampler and no plan.
+- **Backends gained `can_sample()`**, and the supervisor tier is named only
+  where it is true. `NullBackend` (a platform AgentCAD has no support for)
+  answers False: its `rss_bytes` is always `None`, so the request loop would
+  sample nothing forever and kill nobody. Its quotas are now
+  `{"status": "off", "mechanism": None, "limits": {...}}` — the caps are
+  published, no tier is promised (Decision 8). `KernelClient._supervision`
+  gates the cap on the same answer.
 - **`kernel/sandbox.py`** — `report(kernel)` (new): the per-facet health
   object, read through `getattr` so a plan-free client answers it without
   raising. Confinement stays `active` only while the worker's own ping report
@@ -84,6 +99,17 @@ alone) pass on macOS and Linux.
   have flipped.
 - **`kernel/pool.py`** — a `plan` property exposing worker 0's plan, which is
   how `sandbox.report()` reads a pool.
+- **`plan()` cleans up totally**: the whole body now sits inside the `try`, so
+  a failure anywhere — including in `SandboxPlan(...)` itself — releases the
+  backend (closing a Windows job handle, removing a Linux worker cgroup) as
+  well as removing the private temp dir. Until a plan exists, nobody holds any
+  of it.
+- **Every kill path measures its usage *before* `_kill()`**: the kill waits up
+  to 5 s for the process and the EOF branch first waits for a return code, and
+  neither is time the request spent. The unreachable worker (a broken stdin
+  pipe) now carries `details.usage` too. A response that carries **no** usage
+  envelope leaves `last_usage` describing the last request that did report one,
+  rather than overwriting it with `{}`.
 - **`kernel/_preamble.py` + `kernel/worker.py`** — the payload gains a `quotas`
   key: tiers the *parent* installed around the worker (`["job_object"]` on
   Windows, `["cgroup"]` on Linux). The worker applies nothing for it and
@@ -112,13 +138,13 @@ alone) pass on macOS and Linux.
 - `tests/test_protocol_ids.py` — the ping report gained a `quotas` key
 
 ## Notes
-- `make test — 4096 passed, 32 skipped in 560.15s` on macOS 26.6 (arm64).
-- `sh scripts/linux-test.sh` in `agentcad:local` — **84 passed, 2 skipped in
-  90.93s** (the skips are the delegated-cgroup test and one meter case). The cgroup
+- `make test — 4103 passed, 32 skipped in 525.47s` on macOS 26.6 (arm64).
+- `sh scripts/linux-test.sh` in `agentcad:local` — **86 passed, 2 skipped in
+  97.14s** (the skips are the delegated-cgroup test and one meter case). The cgroup
   tier was then exercised **for real** under Decision 4's Model 2 (host
   `mkdir /sys/fs/cgroup/agentcad` + `chown 10001`, `docker run
   --cgroup-parent=/agentcad -v /sys/fs/cgroup/agentcad:/cg:rw -e
-  AGENTCAD_CGROUP_DIR=/cg`): **24 passed, 0 skipped**, including a real kernel
+  AGENTCAD_CGROUP_DIR=/cg`): **27 passed, 0 skipped**, including a real kernel
   OOM kill reported as `reason: memory_cap`, `tier: cgroup`. The recipe is in
   `test_cgroup_tier_when_delegated`'s docstring.
 - Two numbers in the plan were changed against measured evidence and are
@@ -138,10 +164,10 @@ alone) pass on macOS and Linux.
   the cap. The two tiers share the `memory_mb` knob and the in-kernel one wins
   deterministically — which is why `tests/test_supervisor.py` sets
   `AGENTCAD_CGROUP_DIR=off` to pin the tier it is testing.
-- The `NullBackend` path (an unknown platform) still reports `supervisor` while
-  its `rss_bytes` always answers `None` — the loop is armed but blind. Left as
-  Slice 1 pinned it; it is only reachable on a platform AgentCAD has no backend
-  for at all.
+- The `auto` (own-cgroup) route is still **unverified on a real host** — no
+  systemd machine with a delegated slice was available, as the spike also
+  recorded. It is written to refuse rather than guess, and its refusals are
+  unit-tested against a faked cgroup tree.
 - Health does not publish the new object yet: `/api/health` still returns the
   legacy string, and wiring `sandbox.report()` into it (plus the docs) is
   Slice 5's step.

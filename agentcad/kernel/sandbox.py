@@ -79,6 +79,15 @@ class Backend:
         assignment. Never a ``preexec_fn`` — CPython documents it as unsafe in
         a threaded parent, and the server is threaded."""
 
+    def can_sample(self) -> bool:
+        """Whether :meth:`rss_bytes` can actually measure this platform.
+
+        The supervisor tier is only *named* where this is true: a sampler that
+        always answers ``None`` enforces nothing, and `mechanism` is read as a
+        promise (design spec, Decision 8).
+        """
+        return True
+
     def rss_bytes(self, proc) -> int | None:
         """Resident size for one supervisor sample; ``None`` if unmeasurable."""
         return None
@@ -93,11 +102,20 @@ class Backend:
 
 
 class NullBackend(Backend):
-    """The backend for a platform with no confinement of its own. Quotas fall
-    to the supervisor, which is platform-independent."""
+    """The backend for a platform AgentCAD has no support for at all.
+
+    It confines nothing **and caps nothing**: the supervisor is
+    platform-independent in its *logic*, but its one measurement is not, so on
+    a platform with no ``rss_bytes`` the request loop would sample ``None``
+    forever and kill nobody. Health says ``off`` rather than naming a tier that
+    is armed and blind.
+    """
 
     def __init__(self) -> None:
         self.warnings = []
+
+    def can_sample(self) -> bool:
+        return False
 
 
 @dataclass
@@ -212,44 +230,54 @@ def plan(argv: list[str], writable_dirs: list[str], *,
         "PYTHONDONTWRITEBYTECODE": "1",
     }
 
+    backend: Backend | None = None
     try:
         opt_out = _opt_out_reason()
         build = _backend_build()
         if build is None:
-            backend: Backend = NullBackend()
+            backend = NullBackend()
             argv, additions, confinement = list(argv), {}, {
                 "status": "unsupported", "mechanism": None,
                 "detail": {
                     "reason": f"no confinement backend for {sys.platform!r}"},
             }
+            # No tier at all: this backend cannot sample, so naming the
+            # supervisor would promise a cap nothing can observe.
             report = enforcement(
-                quotas, ["supervisor"] if quotas.memory_mb > 0 else [])
+                quotas,
+                ["supervisor"] if quotas.memory_mb > 0 and backend.can_sample()
+                else [])
         else:
             argv, additions, confinement, report, backend = build(
                 argv, write_roots, quotas, posture, server_pid,
                 confine=opt_out is None)
+        if opt_out is not None and confinement.get("status") != "unsupported":
+            # The backend was told not to confine; name *why* it is off,
+            # because "off" with no reason reads as a bug in the sandbox.
+            #
+            # `unsupported` is left alone deliberately: on a platform with no
+            # confinement to begin with (Windows, an unknown OS) "off" would
+            # read as "there is a switch and it is down", and the operator
+            # would go looking for the switch. Nothing was opted out of.
+            confinement = {"status": "off", "mechanism": None,
+                           "detail": {"reason": opt_out}}
+        env.update(additions)
+
+        return SandboxPlan(
+            argv=list(argv), env=env, tmp_dir=tmp_dir,
+            posture=confinement.get("detail", {}).get("posture") or posture,
+            confinement=confinement, quotas=report, quotas_obj=quotas,
+            warnings=list(getattr(backend, "warnings", [])), backend=backend)
     except BaseException:
-        # Nobody holds the plan yet, so nobody would ever remove the directory
-        # it just made.
+        # Everything from the temp dir onwards is inside the try, because until
+        # a SandboxPlan exists nobody holds any of it: nobody would remove the
+        # directory this function just made, close the job handle a backend
+        # opened, or rmdir the cgroup it created. "A plan() that raises leaves
+        # nothing behind" is only true if it is true of every step.
+        if backend is not None:
+            backend.release()
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
-    if opt_out is not None and confinement.get("status") != "unsupported":
-        # The backend was told not to confine; name *why* it is off, because
-        # "off" with no reason reads as a bug in the sandbox.
-        #
-        # `unsupported` is left alone deliberately: on a platform with no
-        # confinement to begin with (Windows, an unknown OS) "off" would read
-        # as "there is a switch and it is down", and the operator would go
-        # looking for the switch. Nothing was opted out of.
-        confinement = {"status": "off", "mechanism": None,
-                       "detail": {"reason": opt_out}}
-    env.update(additions)
-
-    return SandboxPlan(
-        argv=list(argv), env=env, tmp_dir=tmp_dir,
-        posture=confinement.get("detail", {}).get("posture") or posture,
-        confinement=confinement, quotas=report, quotas_obj=quotas,
-        warnings=list(getattr(backend, "warnings", [])), backend=backend)
 
 
 def _backend_build():

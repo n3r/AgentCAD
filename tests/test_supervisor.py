@@ -20,8 +20,11 @@ and answer `tier: "cgroup"` — `test_cgroup_tier_when_delegated`).
 
 from __future__ import annotations
 
+import json
+import queue
 import sys
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -179,7 +182,11 @@ def test_a_timeout_carries_the_wall_clock_it_burned(tmp_path):
 
         assert err.type == "timeout"
         usage = err.details["usage"]
-        assert usage["wall_ms"] >= 1000
+        # Measured before the kill, so it is the request's wall clock and not
+        # the teardown's: `_kill` waits up to five seconds for the process to
+        # die, and a timeout that reported 6 000 ms for a 1 s budget would be
+        # the first number a reader stopped believing.
+        assert 1000 <= usage["wall_ms"] < 3000
         assert usage["cpu_ms"] is None
         assert usage["peak_rss_is_lifetime"] is False
         assert usage["peak_rss_mb"] > 0        # the supervisor's own samples
@@ -271,6 +278,65 @@ def test_the_sampling_interval_is_floored_and_the_cap_is_opt_in(tmp_path):
     assert _interval(memory_mb="off") == (0.25, None)
     # ...and a client with no plan is the historical loop, byte for byte.
     assert KernelClient()._supervision() == (0.5, None)
+
+
+@pytest.mark.timeout(300)
+def test_a_worker_that_dies_reports_the_crash_with_what_it_cost(tmp_path):
+    """The third path with no worker report to carry usage (breach, timeout,
+    crash — the global constraint names all three). The worker took its own
+    meter down with it, so the parent reports what the parent saw."""
+    client = _client(tmp_path, memory_mb=4096)
+    client.start()
+    try:
+        with pytest.raises(KernelError) as exc_info:
+            _build(client, _script("import os\nos._exit(9)"),
+                   tmp_path / "gone.acm")
+        err = exc_info.value
+
+        assert err.type == "kernel_crash"
+        assert err.details["usage"]["wall_ms"] > 0
+        assert err.details["usage"]["cpu_ms"] is None
+        assert "stderr_tail" in err.details
+        assert client.request("ping", {})["ok"] is True
+    finally:
+        client.stop()
+
+
+def test_a_response_with_no_usage_leaves_the_last_one_standing():
+    """No worker: the merge path, driven directly.
+
+    `last_usage` answers "what did the last request cost". A response with no
+    usage envelope has nothing to say about that, and overwriting it with `{}`
+    would turn "nothing to say" into "it cost nothing" — which is what a meter
+    would then roll up.
+    """
+    client = KernelClient()
+    client.last_usage = {"cpu_ms": 12.5, "wall_ms": 30.0}
+    records: list[dict] = []
+    client._on_usage = records.append
+
+    class _Answering(queue.Queue):
+        """Answers whatever id the request just chose.
+
+        `block=False` is the loop's own drain of stale lines and must still
+        run dry, or the request never gets as far as asking.
+        """
+
+        def get(self, block=True, timeout=None):
+            if not block:
+                raise queue.Empty
+            return json.dumps({"id": client._last_req_id,
+                               "result": {"ok": True}}) + "\n"
+
+    client._lines = _Answering()
+    client._proc = SimpleNamespace(
+        stdin=SimpleNamespace(write=lambda line: None, flush=lambda: None),
+        poll=lambda: None)
+
+    assert client._request_locked("ping", {}, 5.0) == {"ok": True}
+    assert client.last_usage == {"cpu_ms": 12.5, "wall_ms": 30.0}
+    assert records == [{"method": "ping", "usage": {}, "ok": True,
+                        "worker": None}]
 
 
 @pytest.mark.timeout(300)
