@@ -164,7 +164,16 @@ This project is built skill-first. Use the Superpowers process skills:
   500 on the part's primary read — but a call site reading `label` off the raw
   entry still needs its own guard · `routes_configs._result`: a **refusal
   envelope raises** (it has no `ok` key), a **build post-state is a 200
-  whatever its `ok`** (the write landed) · `routes_configs._json` is **strict**
+  whatever its `ok`** (the write landed) · the rebuild after a landed write
+  goes through **`service.rebuild_after_write`** (all five write sites), which
+  turns a pre-build `AppError` into that post-state — **`_rebuild` itself still
+  raises and must**, because it is also the READ paths' build and they re-raise
+  `ok: false` as a `KernelError` (502 instead of 404, `checks` rows moving
+  `error`→`fail`, `get_assembly` answering bound and unbound instances two
+  ways) · both drawing routes go through **`routes_drawing._drawing_result`**:
+  an `AppError` refusal is a 404/422, a kernel-class type (the five
+  `protocol.py` constants) a **502** with the worker's type intact ·
+  `routes_configs._json` is **strict**
   (non-object body → 422; `{}` only for a genuinely absent body) and is shared
   by `app.py`'s export/`PUT assembly`/`PATCH params` and `routes_drawing`'s
   POST; `PATCH …/instances/{id}/config` **requires** the `config` key, so

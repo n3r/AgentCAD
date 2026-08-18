@@ -30,6 +30,21 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
   or `{"ok": false, "error", "hint"}`. On failure the previous good geometry is
   kept. `specs` is the design-spec verdict for that part (below) — `null` when
   the part declares none, and absent entirely on a failed build.
+- A rebuild result with `ok: false` whose `error.type` is **not** one of
+  `script_error` / `contract_error` / `kernel_error` / `timeout` /
+  `kernel_crash` is a *pre-build refusal*: the build was never attempted (the
+  script file is gone, the part entry is gone, the material is unknown, a
+  resolver refused) rather than attempted and failed. Its type is an ordinary
+  `notfound_error` / `validation_error` / `conflict_error`, and its `hint`
+  begins "the change was saved; the rebuild could not run…". Do **not** use
+  `details.traceback` to tell the two apart — `contract_error`, `timeout` and
+  `kernel_crash` carry none either. Fix what `error.message` names, then
+  rebuild; do not rewrite the script.
+  You only ever see this from a tool that **wrote first** (`set_params`,
+  `update_part`, `set_active_config`, `set_part_configs`, `set_solid_materials`
+  — over HTTP a 200): the write landed, so the post-state is the honest answer.
+  A read (`get_part`, `get_metrics`, the mesh routes, `get_assembly`) still
+  **refuses** the same condition as an ordinary 404/422.
 - `holes` is the part's machine-readable hole metadata (below), on rebuild
   results and on `get_part`. It has **four** states and they are different
   answers: `[...]` the records; `null` the part declares none; `[]` **plus a
@@ -519,7 +534,11 @@ computed by kernel booleans, with ACM1 overlay meshes), and `renders` — before
 and after **URLs** sharing one camera `frame`. `assembly` carries instances
 added/removed/moved (at *resolved* transforms), mate changes and the total-mass
 delta; its `renders` are `null` (assembly renders are the expensive kind — ask
-for one with `proposal_render`).
+for one with `proposal_render`). `summary.instances_changed` counts the
+**distinct** instance ids touched in any way — added, removed, moved, re-mated
+or rebound to another configuration — so it never exceeds the assembly, and
+`summary.mates_changed` / `summary.configs_changed` carry those two kinds
+separately.
 
 Four things to know before you consume it:
 

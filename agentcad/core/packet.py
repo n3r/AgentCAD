@@ -1374,15 +1374,35 @@ def _hunk(header: str, index: int) -> dict:
 
 
 def _summary(parts: list[dict], assembly: dict | None) -> dict:
+    """The line a reviewer reads first, and it has to agree with the bullets
+    below it.
+
+    ``instances_changed`` counts **distinct touched instance ids** across all
+    five row sets — a rebinding and a re-mate are assembly changes the reviewer
+    can see, so leaving them out read "0 instance changes" beside a non-empty
+    Assembly section; summing the five lists instead would report ``3`` for one
+    instance that moved, was re-mated and was rebound, a number larger than the
+    assembly itself. ``mates_changed`` and ``configs_changed`` carry the two
+    kinds separately, because "which" is the next question.
+    """
     changes = [part["change"] for part in parts]
     moved = assembly or {}
+    added, removed, shifted = (
+        moved.get(key) or []
+        for key in ("instances_added", "instances_removed", "instances_moved")
+    )
+    mates = moved.get("mates_changed") or []
+    configs = moved.get("configs_changed") or []
+    touched = {row["id"] for row in (*added, *removed, *shifted, *mates,
+                                     *configs)}
     return {
         "parts_changed": changes.count("modified"),
         "parts_added": changes.count("added"),
         "parts_removed": changes.count("removed"),
-        "instances_changed": len(moved.get("instances_added") or [])
-        + len(moved.get("instances_removed") or [])
-        + len(moved.get("instances_moved") or []),
+        # Distinct instances, whatever changed about them.
+        "instances_changed": len(touched),
+        "mates_changed": len(mates),
+        "configs_changed": len(configs),
         "mass_delta_g": (moved.get("total_mass_g") or {}).get("delta"),
     }
 

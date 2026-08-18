@@ -22,7 +22,14 @@ from ..kernel.client import KernelClient, KernelError
 from .history import ProjectHistory, UndoCursor
 from .locks import TurnLock, current_client_id
 from .materials import MATERIALS, get_material
-from .model import InstanceSpec, NotFoundError, ValidationError, validate_vec3
+from .model import (
+    AppError,
+    InstanceSpec,
+    NotFoundError,
+    ValidationError,
+    error_type,
+    validate_vec3,
+)
 from .project import ProjectStore
 from .templates import CHEATSHEET, DEFAULT_PART_SCRIPT
 
@@ -44,6 +51,18 @@ _LOD_SUFFIX_RE = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
 # "no value here", distinct from a stored None (a parameter a configuration
 # does not set at all vs. one it sets — `_divergence` compares the two maps).
 _UNSET = object()
+
+#: The hint on a build that could not be ATTEMPTED, as opposed to one that ran
+#: and failed. `with_hint`'s fixed string points at `details.traceback`,
+#: `details.line` and `part_template`; none of the three is the fix here, and
+#: an agent that cannot tell the two failure classes apart will keep rewriting
+#: a script whose file is simply gone.
+_REBUILD_REFUSED_HINT = (
+    "the change was saved; the rebuild could not run because the part could "
+    "not be read (see error.message — a missing script file, an unknown "
+    "material, or a resolver refusal). Fix that, then rebuild (re-select the "
+    "configuration or call get_part)."
+)
 
 
 class EventBus:
@@ -326,7 +345,10 @@ class AgentCADService:
         self.bus.publish(
             {"type": "project_changed", "project": proj, "part": part_id}
         )
-        return self._rebuild(proj, part_id)
+        # The write landed, so a pre-build refusal is a post-state here, not a
+        # 4xx (`rebuild_after_write`). `_rebuild` itself still raises — it is
+        # also the read paths' build.
+        return self.rebuild_after_write(proj, part_id)
 
     def set_params(self, proj: str, part_id: str, values: dict) -> dict:
         """Set parameter overrides. A value of None removes the override.
@@ -370,7 +392,7 @@ class AgentCADService:
         self.bus.publish(
             {"type": "project_changed", "project": proj, "part": part_id}
         )
-        return self._rebuild(proj, part_id)
+        return self.rebuild_after_write(proj, part_id)
 
     def normalize_params(self, spec: dict, values: dict) -> dict:
         """Coerce and canonicalize ``values`` against a kernel-normalized PARAMS
@@ -785,6 +807,66 @@ class AgentCADService:
             "error": result.get("error"),
         }
         return result
+
+    def _refused_build(self, proj: str, part_id: str,
+                       exc: AppError, *, status_key: tuple) -> dict:
+        """The post-state of a build that could not be *attempted*.
+
+        Everything the `KernelError` arm of `_build_with` does for a build that
+        ran and failed: ``_status`` written (with ``cache_key: None`` — no
+        geometry was ever addressed, and the previous good ``metrics`` are
+        kept), ``rebuild_failed`` published so every connected client repaints
+        the badge, and ``{"ok": False, "error"}`` returned. The one difference
+        is the hint: `with_hint`'s talks about ``details.traceback`` and
+        `part_template`, neither of which is the fix for a vanished file.
+
+        Reached only through `rebuild_after_write` — a READ path must keep
+        raising, which is what makes `GET …/parts/{id}/metrics` a 404 rather
+        than a 502 for a missing script.
+        """
+        payload = {"type": error_type(exc), "message": exc.message,
+                   "details": exc.details}
+        self._status[status_key] = {
+            "state": "error",
+            "cache_key": None,
+            "metrics": self._status.get(status_key, {}).get("metrics"),
+            "warnings": [],
+            "error": payload,
+        }
+        self.bus.publish({"type": "rebuild_failed", "project": proj,
+                          "part": part_id, "error": payload})
+        return {"ok": False, "error": payload, "hint": _REBUILD_REFUSED_HINT}
+
+    def rebuild_after_write(self, proj: str, part_id: str) -> dict:
+        """The rebuild that follows a LANDED write.
+
+        A pre-build refusal is reported as the build post-state, never
+        re-raised, because the write already happened; read paths keep raising.
+
+        The five call sites that write and then rebuild — `set_params`,
+        `update_part`, `set_active_config`, `set_part_configs`' nested rebuild
+        and `set_solid_materials` — all had the same defect: an ``AppError``
+        raised before the kernel is reached (the script file is gone, the entry
+        is gone, the material is unknown, a resolver refused) propagated out as
+        a 4xx *after* the manifest was saved and ``project_changed`` published,
+        which is a model of the world no retry fixes.
+
+        The conversion lives HERE and not in `_rebuild`, because `_rebuild` is
+        also the read paths' build (`_ensure_built` ← `get_metrics`,
+        `mesh_info`, `ensure_mesh`, `mesh_summary`, `get_assembly`, `packet`,
+        `checks`, `merge`). Those callers re-raise an `ok: false` as a
+        ``KernelError`` — a **502** — so making `_rebuild` itself total turned
+        a permanent, client-side 404 into a "the kernel failed, retry" 502 on
+        the first call and a 404 on the second (whichever branch of the memo
+        answered), and split `get_assembly`'s answer by whether an instance
+        happened to carry a configuration. Nothing about a read path changes.
+        """
+        try:
+            return self._rebuild(proj, part_id)
+        except AppError as exc:
+            return self._refused_build(
+                proj, part_id, exc,
+                status_key=self._status_key(proj, part_id))
 
     def _rebuild(self, proj: str, part_id: str) -> dict:
         """Build a part's WORKING state (defaults < active config < overrides).

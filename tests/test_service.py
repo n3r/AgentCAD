@@ -3,6 +3,8 @@ import queue
 
 import pytest
 
+from agentcad.core.model import NotFoundError
+
 from .conftest import BOX_SCRIPT, NUMERIC_ENUM_SCRIPT, TYPED_SCRIPT, make_test_service
 
 BROKEN_SCRIPT = 'PARAMS = {"size": {"default": 1.0}}\ndef build(p):\n    raise RuntimeError("nope")\n'
@@ -246,3 +248,85 @@ def test_assembly_rollup_with_rotation(demo):
     assembly = demo.get_assembly("demo")
     extent_x = assembly["bbox"]["max"][0] - assembly["bbox"]["min"][0]
     assert extent_x == pytest.approx(14.142, abs=0.05)
+
+
+# ------------------- PRD-012 follow-up 1: the build path is total over
+# ------------------- pre-build refusals (service level, no tool packs)
+
+
+def test_a_pre_build_refusal_is_a_post_state_not_an_exception(demo):
+    """`rebuild_after_write` is the rebuild that follows a LANDED write: a
+    `NotFoundError` for a vanished script file used to propagate out of the
+    five write paths as a 4xx *after* the manifest was saved. It now answers
+    with the same shape the `KernelError` arm answers with, plus its own
+    hint. `_rebuild` itself still raises (see the next test)."""
+    from agentcad.core.service import _REBUILD_REFUSED_HINT
+
+    assert demo.get_part("demo", "box")["status"]["state"] == "ok"
+    good = demo._status[demo._status_key("demo", "box")]["metrics"]
+    demo.store.script_path("demo", "box").unlink()
+    events = demo.bus.subscribe()
+
+    result = demo.rebuild_after_write("demo", "box")
+
+    assert result["ok"] is False
+    assert result["error"] == {
+        "type": "notfound_error",
+        "message": "script file missing for part 'box'",
+        "details": {},
+    }
+    assert result["hint"] == _REBUILD_REFUSED_HINT
+    status = demo._status[demo._status_key("demo", "box")]
+    assert status["state"] == "error"
+    # No geometry ran, so there is no key — and the last good metrics are kept.
+    assert status["cache_key"] is None
+    assert status["metrics"] == good
+    seen = [e["type"] for e in _drain_events(events)]
+    # The failure precedes `rebuild_started`, so nothing is left unanswered.
+    assert seen == ["rebuild_failed"]
+
+
+def test_the_read_path_build_still_raises(demo):
+    """Review R1/R5: `_rebuild` is also the build every READ path runs
+    (`_ensure_built` <- `get_metrics` / `mesh_info` / `ensure_mesh` /
+    `mesh_summary` / `get_assembly`, plus `packet`, `checks` and `merge`).
+    Those callers turn an `ok: false` into a raised `KernelError` (HTTP 502),
+    so the conversion must NOT live here — a missing script file is a
+    permanent, client-side 404, not "the kernel failed, retry"."""
+    demo.store.script_path("demo", "box").unlink()
+
+    for _ in (1, 2):
+        with pytest.raises(NotFoundError) as caught:
+            demo._rebuild("demo", "box")
+        assert "script file missing" in str(caught.value)
+        with pytest.raises(NotFoundError):
+            demo.get_metrics("demo", "box")
+
+
+def test_a_kernel_failure_keeps_its_own_arm(demo):
+    """Regression: the `KernelError` arm is byte-for-byte what it was — status
+    written with the cache key it tried, `rebuild_failed` published, and NO
+    refusal hint (the two failure classes stay distinguishable)."""
+    from agentcad.core.service import _REBUILD_REFUSED_HINT
+
+    events = demo.bus.subscribe()
+    result = demo.update_part("demo", "box", script=BROKEN_SCRIPT)
+
+    assert result["ok"] is False
+    assert result["error"]["type"] == "script_error"
+    assert result["error"]["details"].get("traceback")
+    assert result.get("hint") != _REBUILD_REFUSED_HINT
+    status = demo._status[demo._status_key("demo", "box")]
+    assert status["state"] == "error"
+    assert status["cache_key"]
+    seen = [e["type"] for e in _drain_events(events)]
+    assert "rebuild_started" in seen and "rebuild_failed" in seen
+
+
+def _drain_events(q: queue.Queue) -> list[dict]:
+    out = []
+    while True:
+        try:
+            out.append(q.get_nowait())
+        except queue.Empty:
+            return out

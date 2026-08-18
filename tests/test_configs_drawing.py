@@ -458,3 +458,143 @@ def test_trailing_columns_are_dropped_until_the_table_fits_the_sheet():
     # `config` and the measured extents are never dropped: they are the point.
     assert sum(el.count(">X<") + el.count(">Z<") + el.count(">config<")
                for el in els) == 3
+
+
+# --------------- PRD-012 follow-up 2: one `_drawing_result` for both routes --
+
+#: A part whose `build` raises above 50 mm — the kernel-class failure both
+#: drawing routes have to answer as a 502 with the worker's own error type.
+DRAWING_FRAGILE_SCRIPT = '''\
+from build123d import *
+
+PARAMS = {
+    "thick": {"default": 10.0, "min": 4.0, "max": 60.0, "unit": "mm",
+              "description": "plate thickness"},
+}
+
+def build(p):
+    if p.thick > 50:
+        raise ValueError("thickness above 50 mm is not manufacturable")
+    return Box(40, 40, p.thick)
+'''
+
+
+@pytest.mark.timeout(900)
+class TestDrawingRouteFailureClasses:
+    """Two classes of failure, two answers — and the POST and the GET agree.
+
+    Before this, the POST served **every** failure as `200 {"error": …}` (a
+    caller had to sniff a success to disbelieve it) and the GET pushed every
+    failure through `_RAISE`'s default, which answered `422 ValidationError`
+    and renamed a worker crash or timeout a bad request.
+    """
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def failure_projects(cls, kernel, tmp_path_factory):
+        projects = tmp_path_factory.mktemp("drawing_failure_projects")
+        svc = make_test_service(projects, kernel)
+        svc.create_project("demo")
+        svc.store.add_part("demo", "flange", "Flange", DEFAULT_MATERIAL,
+                           FLANGE_SCRIPT)
+        svc.store.update_part_entry("demo", "flange",
+                                    configs=THREE_SIZE_CONFIGS)
+        svc.store.add_part("demo", "fragile", "Fragile", DEFAULT_MATERIAL,
+                           DRAWING_FRAGILE_SCRIPT)
+        svc.store.update_part_entry(
+            "demo", "fragile",
+            configs={"heavy": {"params": {"thick": 55.0}}},
+            active_config="heavy")
+        return projects
+
+    @pytest.fixture
+    def http(self, kernel, tmp_path, failure_projects):
+        service = clone_test_service(failure_projects, tmp_path / "projects",
+                                     kernel)
+        app = create_app(service, build_registry(service),
+                         extra_allowed_hosts={"testserver"})
+        return TestClient(app, base_url="http://127.0.0.1")
+
+    # ----------------------------------------- AppError-class: 4xx, type kept
+
+    def test_the_post_refuses_an_unsupported_format(self, http):
+        response = http.post("/api/projects/demo/parts/flange/drawing",
+                             json={"format": "gif"})
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["type"] == "ValidationError"
+        assert "svg or dxf" in response.json()["error"]["message"]
+
+    def test_both_routes_404_an_unknown_part(self, http):
+        posted = http.post("/api/projects/demo/parts/nosuch/drawing", json={})
+        assert posted.status_code == 404, posted.text
+        assert posted.json()["error"]["type"] == "NotFoundError"
+
+        got = http.get("/api/projects/demo/parts/nosuch/drawing.svg")
+        assert got.status_code == 404, got.text
+        assert got.json()["error"]["type"] == "NotFoundError"
+
+    def test_both_routes_422_an_undeclared_configuration(self, http):
+        posted = http.post("/api/projects/demo/parts/flange/drawing",
+                           json={"config": "xl"})
+        assert posted.status_code == 422, posted.text
+        assert posted.json()["error"]["type"] == "ValidationError"
+        assert posted.json()["error"]["details"]["declared"] == ["l", "m", "s"]
+
+        got = http.get(
+            "/api/projects/demo/parts/flange/drawing.svg?config=xl")
+        assert got.status_code == 422, got.text
+        assert got.json()["error"]["type"] == "ValidationError"
+
+    # ------------------------------- kernel-class: 502, the kernel type kept
+
+    def test_both_routes_502_a_kernel_failure_with_its_own_type(self, http):
+        """`_RAISE`'s default would answer 422 `ValidationError` — "your
+        request was invalid, do not retry" — for a worker timeout or crash.
+        The house answer for a `KernelError` is `app.py`'s 502 with the
+        kernel's own type, and it is the same three lines for both verbs."""
+        posted = http.post("/api/projects/demo/parts/fragile/drawing", json={})
+        assert posted.status_code == 502, posted.text
+        error = posted.json()["error"]
+        assert error["type"] == "script_error"
+        assert "not manufacturable" in error["message"]
+        assert error["details"]["traceback"]
+
+        got = http.get("/api/projects/demo/parts/fragile/drawing.svg")
+        assert got.status_code == 502, got.text
+        assert got.json()["error"] == error
+
+    def test_a_kernel_failure_on_a_named_configuration_is_a_502_too(self, http):
+        posted = http.post("/api/projects/demo/parts/fragile/drawing",
+                           json={"config": "heavy"})
+        assert posted.status_code == 502, posted.text
+        assert posted.json()["error"]["type"] == "script_error"
+
+        got = http.get(
+            "/api/projects/demo/parts/fragile/drawing.svg?config=heavy")
+        assert got.status_code == 502, got.text
+        assert got.json()["error"]["type"] == "script_error"
+
+    def test_every_kernel_error_constant_is_covered(self):
+        """The set is the protocol's, not a retyped list: there is no
+        `"crash"`, and `script_error`/`kernel_error` are in it."""
+        from agentcad.kernel.protocol import (ERROR_CONTRACT, ERROR_CRASH,
+                                              ERROR_KERNEL, ERROR_SCRIPT,
+                                              ERROR_TIMEOUT)
+        from agentcad.server.routes_drawing import _KERNEL_TYPES
+
+        assert _KERNEL_TYPES == {ERROR_SCRIPT, ERROR_CONTRACT, ERROR_KERNEL,
+                                 ERROR_TIMEOUT, ERROR_CRASH}
+        assert "crash" not in _KERNEL_TYPES
+
+    def test_a_success_is_still_a_plain_200(self, http):
+        """The split must not disturb the happy path: `generate_drawing`
+        returns no `ok` post-state, so every `{"error"}` it yields is one of
+        the two classes and nothing else changes shape."""
+        posted = http.post("/api/projects/demo/parts/flange/drawing",
+                           json={"config": "l"})
+        assert posted.status_code == 200, posted.text
+        assert posted.json()["path"].endswith("flange_l_drawing.svg")
+
+        got = http.get("/api/projects/demo/parts/flange/drawing.svg?config=l")
+        assert got.status_code == 200, got.text
+        assert got.headers["content-type"].startswith("image/svg+xml")

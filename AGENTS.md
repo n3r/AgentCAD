@@ -1547,6 +1547,33 @@ User-facing reference: `docs/agent-api.md` (the `Configurations` section) and
   switcher from stale state. `_BODY_ERRORS` is still empty; the docstring's old
   absolute ("nothing about a configuration is a legitimate HTTP 200 error
   body") is gone.
+- **`service.rebuild_after_write(proj, part_id)` is the seam for the rebuild
+  that follows a LANDED write** — `set_params`, `update_part`,
+  `set_active_config`, `set_part_configs`' nested rebuild and
+  `set_solid_materials`, all five of them: it converts an `AppError` raised
+  before the kernel is reached (script file gone, entry gone, unknown material,
+  resolver refusal) into the same `{ok: false, error}` post-state the
+  `KernelError` arm produces — `_status` written with `cache_key: None`,
+  `rebuild_failed` published, plus its own `_REBUILD_REFUSED_HINT` — because
+  the write already happened. **`_rebuild` itself still raises, and must:** it
+  is also the READ paths' build (`_ensure_built` ← `get_metrics` / `mesh_info`
+  / `ensure_mesh` / `mesh_summary` / `get_assembly`, plus `packet`, `checks`,
+  `merge`), and those callers re-raise an `ok: false` as a `KernelError` — so a
+  total `_rebuild` turned a permanent, client-side 404 into a 502 on the first
+  call and a 404 on the second (the two `_ensure_built` branches disagreed),
+  split `get_assembly`'s answer by whether an instance carried a configuration,
+  and moved `checks._build_item`'s row from `error` (+ a harness `errors[]`
+  entry) to `fail`. Also read the post-state (`store.get_part`) **before** the
+  publish, inside whatever lock the tool holds: a tail read after the rebuild
+  reintroduces the same defect ten lines down.
+- **Both drawing routes go through one `routes_drawing._drawing_result`:** an
+  `AppError`-class refusal raises through `_result` (404/422, house type intact
+  — the POST used to serve these as `200 {"error": …}`), and a kernel-class
+  failure (the five `kernel/protocol.py` constants, imported and never retyped
+  — there is no `"crash"`) re-raises as a `KernelError`, which `app.py` answers
+  **502** with the worker's own type and `details.traceback`; the GET used to
+  push those through `_RAISE`'s default and rename a timeout or a crash
+  `422 ValidationError`.
 - **`routes_configs._json` is strict, and the instance PATCH requires its
   key.** A parsed body that is not an object is a `ValidationError`
   (`"body must be a JSON object"`, 422); `{}` means a **genuinely absent** body
@@ -1565,7 +1592,8 @@ User-facing reference: `docs/agent-api.md` (the `Configurations` section) and
   cannot mean "nothing to change" when the default is the destructive verb* —
   check it before putting any other route on the strict reader; `routes_drawing`'s SVG GET additionally gates `?config=`
   with a `fullmatch` `CONFIG_RE` before it builds a filename, and raises the
-  refusal instead of serving it as JSON at HTTP 200.
+  refusal instead of serving it as JSON at HTTP 200 (its POST now raises too —
+  see `_drawing_result` above).
 - **Binding validation lives in `ProjectStore.set_instances`**, beside the
   unknown-part and dangling-mate refusals — three writers reach the store
   (`service.set_assembly`, `tools_mates._set_instance_mate`,
