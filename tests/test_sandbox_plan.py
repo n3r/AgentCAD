@@ -235,17 +235,143 @@ def test_an_unknown_platform_is_unsupported_rather_than_a_crash(isolated,
         plan.release()
 
 
-@pytest.mark.parametrize("platform", ["linux", "win32"])
-def test_linux_and_windows_are_unsupported_until_their_slices_land(isolated,
-                                                                   monkeypatch,
-                                                                   platform):
+def test_windows_is_unsupported_until_its_slice_lands(isolated, monkeypatch):
     """Documents the state of this slice, and fails the day a backend module
     appears without the facade being pointed at it."""
-    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(sys, "platform", "win32")
     plan = _plan([isolated])
     try:
         assert plan.confinement["status"] == "unsupported"
         assert plan.quotas["mechanism"] == "supervisor"
+    finally:
+        plan.release()
+
+
+# ----------------------------------------------------------- the Linux plan
+#
+# The payload the worker's preamble reads is decided in the SERVER process, so
+# it can be asserted on any OS: `sys.platform` picks the backend, and the two
+# functions that genuinely need Linux (the Landlock probe and the /proc walk)
+# are stubbed. The real thing runs in `tests/test_sandbox_linux.py`, inside
+# the shipped image.
+
+@pytest.fixture
+def linux(monkeypatch):
+    """The Linux backend, made answerable on a macOS dev box."""
+    from agentcad.kernel import sandbox_linux
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sandbox_linux, "landlock_abi", lambda: 6)
+    monkeypatch.setattr(sandbox_linux, "live_uid_process_count", lambda: 40)
+    monkeypatch.setattr(sandbox_linux, "platform",
+                        SimpleNamespace(machine=lambda: "aarch64"))
+    return sandbox_linux
+
+
+def test_the_linux_plan_confines_in_process_and_leaves_the_argv_alone(isolated,
+                                                                      linux):
+    """There is no wrapper binary on Linux: the worker restricts itself from
+    the payload, which is the only way this works inside the shipped image
+    (bwrap needs `unshare`, denied by Docker's default seccomp profile)."""
+    plan = _plan([isolated])
+    try:
+        assert plan.argv == BASE_ARGV
+        assert plan.confinement == {
+            "status": "active", "mechanism": "landlock+seccomp",
+            "detail": {"landlock_abi": 6, "posture": "local"}}
+        payload = json.loads(plan.env["AGENTCAD_CONFINE"])
+        assert set(payload) == {"posture", "rlimits", "landlock", "seccomp"}
+        assert payload["posture"] == "local"
+        assert payload["landlock"]["read_roots"] == ["/"]   # the local posture
+        assert payload["landlock"]["write_roots"] == [
+            os.path.realpath(str(isolated)), os.path.realpath(plan.tmp_dir)]
+        assert payload["landlock"]["extra_files"] == [
+            "/dev/null", "/proc/self/clear_refs"]
+        assert payload["seccomp"] == {"server_pid": os.getpid()}
+        assert plan.quotas["mechanism"] == "rlimit+supervisor"
+    finally:
+        plan.release()
+
+
+def test_the_linux_rlimits_are_the_address_space_and_the_fork_budget(isolated,
+                                                                     linux):
+    plan = _plan([isolated], quotas={"memory_mb": 1024, "pids_headroom": 7})
+    try:
+        rlimits = json.loads(plan.env["AGENTCAD_CONFINE"])["rlimits"]
+        # address_space_mb defaults to 3 x memory_mb, in bytes
+        assert rlimits["RLIMIT_AS"] == [3 * 1024 * 1024 * 1024] * 2
+        assert rlimits["RLIMIT_NPROC"] == [47, 47]      # 40 live + 7 headroom
+    finally:
+        plan.release()
+
+    plan = _plan([isolated], quotas={"address_space_mb": "off",
+                                     "pids_headroom": 0})
+    try:
+        assert json.loads(plan.env["AGENTCAD_CONFINE"])["rlimits"] == {}
+        assert plan.quotas["mechanism"] == "supervisor"  # no rlimit tier left
+    finally:
+        plan.release()
+
+
+def test_the_hosted_posture_narrows_reads_to_an_allow_list(isolated, linux):
+    """FR5's cloud posture: a member's script may no longer read the state dir
+    (and so may no longer forge a session), while everything a Python process
+    needs to run is still readable."""
+    plan = _plan([isolated], posture="hosted")
+    try:
+        from agentcad._resources import resource_root
+
+        payload = json.loads(plan.env["AGENTCAD_CONFINE"])
+        roots = payload["landlock"]["read_roots"]
+        assert "/" not in roots
+        assert "/usr" in roots and "/etc" in roots
+        # `/proc` is on the allow-list but does not exist on a macOS dev box,
+        # and a rule on a missing path is a failure in the worker's own
+        # report — so the list is filtered to what is actually there.
+        assert ("/proc" in roots) == os.path.isdir("/proc")
+        assert sys.prefix in roots and str(resource_root()) in roots
+        assert os.path.realpath(str(isolated)) in roots  # its own project
+        assert plan.tmp_dir in roots or os.path.realpath(plan.tmp_dir) in roots
+        assert all(os.path.exists(root) for root in roots)
+        assert plan.posture == "hosted"
+    finally:
+        plan.release()
+
+
+def test_opting_out_drops_the_confinement_keys_but_keeps_the_caps(isolated,
+                                                                  linux,
+                                                                  monkeypatch):
+    monkeypatch.setenv("AGENTCAD_NO_SANDBOX", "1")
+    plan = _plan([isolated])
+    try:
+        payload = json.loads(plan.env["AGENTCAD_CONFINE"])
+        assert set(payload) == {"posture", "rlimits"}
+        assert payload["rlimits"]["RLIMIT_NPROC"] == [104, 104]
+        assert plan.confinement["status"] == "off"
+        assert plan.quotas["status"] == "active"
+    finally:
+        plan.release()
+
+
+@pytest.mark.parametrize("abi,machine,expected", [
+    (0, "aarch64", "no Landlock"),
+    (2, "x86_64", "ABI 2 < 3"),
+    (6, "riscv64", "unknown machine"),
+])
+def test_a_kernel_or_machine_that_cannot_confine_says_so(isolated, linux,
+                                                          abi, machine,
+                                                          expected):
+    """Decision 8: `unsupported` names its reason. The payload still ships —
+    `landlock_apply` refuses below the ABI floor by itself, and seccomp is
+    worth having on a kernel whose Landlock is too old."""
+    linux.landlock_abi = lambda: abi
+    linux.platform = SimpleNamespace(machine=lambda: machine)
+    plan = _plan([isolated])
+    try:
+        assert plan.confinement["status"] == "unsupported"
+        assert expected in plan.confinement["detail"]["reason"]
+        assert any(expected in warning for warning in plan.warnings)
+        assert "landlock" in json.loads(plan.env["AGENTCAD_CONFINE"])
     finally:
         plan.release()
 
@@ -448,6 +574,16 @@ OCP_FREE = {
     "agentcad.kernel.quotas": 'mod.DEFAULTS["memory_mb"] == 2048',
     "agentcad.kernel.sandbox": 'mod.status() in ("active", "off", "unsupported")',
     "agentcad.kernel.sandbox_macos": 'mod.SANDBOX_EXEC.endswith("sandbox-exec")',
+    "agentcad.kernel.sandbox_linux": 'mod.HOSTED_READ_ROOTS[0] == "/usr"',
+    # The three the WORKER imports before build123d — if one of them ever
+    # imported a geometry kernel, the preamble would confine a process that
+    # had already loaded 500 MB of OCCT, which is the opposite of the point.
+    "agentcad.kernel._confine":
+        "mod.LANDLOCK_ABI_MASK[3] & mod.FS_TRUNCATE and mod.landlock_abi() >= 0",
+    "agentcad.kernel._preamble": 'mod.ENV == "AGENTCAD_CONFINE" and mod.REPORT == {}',
+    "agentcad.kernel._meter": 'mod.Meter().finish()["wall_ms"] >= 0',
+    "agentcad.kernel.denials":
+        'mod.classify("MemoryError", "", active=True) == "memory"',
 }
 
 

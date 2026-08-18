@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import secrets
 import subprocess
 import sys
 import threading
@@ -57,7 +58,9 @@ class KernelClient:
         self._lines: queue.Queue[str | None] = queue.Queue()
         self._stderr_tail: deque[str] = deque(maxlen=200)
         self._lock = threading.Lock()
-        self._next_id = 0
+        #: The id of the request in flight. Random, not a counter — see
+        #: `_request_locked`. Kept for tests and for a crash report.
+        self._last_req_id: int | None = None
         #: Which worker this is, in a pool ("worker-0"); None for a lone client.
         self.name = name
         # Confinement and quotas are decided once, at construction, so every
@@ -134,7 +137,18 @@ class KernelClient:
         threading.Thread(
             target=self._drain_stderr, args=(self._proc,), daemon=True
         ).start()
-        self._request_locked("ping", {}, timeout_s=STARTUP_TIMEOUT_S)
+        result = self._request_locked("ping", {}, timeout_s=STARTUP_TIMEOUT_S)
+        # What the worker says it applied to ITSELF — the only thing allowed
+        # to make `sandboxed` true (design spec, Decision 8). A plan that
+        # intended to confine but whose preamble reported a failure is `off`,
+        # and on Linux a worker with no Landlock ABI is not confined at all
+        # however good the intention was.
+        self.sandbox_report = result.get("sandbox") or {}
+        self.sandboxed = bool(
+            self.sandboxed
+            and not self.sandbox_report.get("failures")
+            and (sys.platform != "linux"
+                 or self.sandbox_report.get("landlock_abi")))
 
     def _drain_stdout(self, proc: subprocess.Popen, lines: queue.Queue) -> None:
         assert proc.stdout is not None
@@ -186,8 +200,14 @@ class KernelClient:
             except queue.Empty:
                 break
 
-        self._next_id += 1
-        req_id = self._next_id
+        # A random 62-bit token, never a counter. A part script may `os.fork()`
+        # and the child inherits fd 1 — the protocol stream — so with a
+        # predictable id it could write the line the client is waiting for and
+        # have it accepted as the worker's answer. Confinement cannot close
+        # that (a process may write to its own stdout); an unguessable id can
+        # (design spec, "Risks"). 62 bits so it stays a JSON-safe integer.
+        req_id = secrets.randbits(62)
+        self._last_req_id = req_id
         try:
             self._proc.stdin.write(
                 json.dumps({"id": req_id, "method": method, "params": params}) + "\n"
@@ -227,6 +247,9 @@ class KernelClient:
                 continue  # stray non-protocol output
             if response.get("id") != req_id:
                 continue  # stale response from an earlier request
+            usage = response.get("usage")
+            if isinstance(usage, dict):
+                self.last_usage = usage
             if "error" in response:
                 err = response["error"]
                 raise KernelError(

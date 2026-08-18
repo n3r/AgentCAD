@@ -10,7 +10,16 @@ cannot corrupt the protocol stream.
 
 from __future__ import annotations
 
-import contextlib
+# Confinement first, before anything imports a geometry kernel: on Linux this
+# process restricts *itself* (Landlock + seccomp) and applies its rlimits, so
+# the OCCT import and every part script afterwards run inside it. A no-op when
+# the client set no `AGENTCAD_CONFINE` (PRD-006, design spec Decision 1).
+from ._preamble import REPORT as SANDBOX_REPORT
+from ._preamble import apply_from_env
+
+apply_from_env()
+
+import contextlib  # noqa: E402 - everything below runs confined
 import hashlib
 import json
 import os
@@ -23,6 +32,8 @@ from pathlib import Path
 
 import build123d as b3d
 
+from ._meter import Meter
+from .denials import classify
 from .mesh import tessellate, tessellate_with_faces
 from .protocol import ERROR_CONTRACT, ERROR_KERNEL, ERROR_SCRIPT, WorkerError
 
@@ -44,11 +55,14 @@ def _script_error_from_exc(exc: BaseException) -> WorkerError:
             if frame.filename == SCRIPT_FILENAME:
                 line = frame.lineno
                 break
-    return WorkerError(
-        ERROR_SCRIPT,
-        f"{type(exc).__name__}: {exc}",
-        {"traceback": tb, "line": line},
-    )
+    details = {"traceback": tb, "line": line}
+    # Which promise the script walked into, when there is a promise at all —
+    # `SANDBOX_REPORT` is this worker's own preamble, so an unconfined worker
+    # never labels an ordinary PermissionError a sandbox denial (Decision 9).
+    denied = classify(type(exc).__name__, str(exc), active=bool(SANDBOX_REPORT))
+    if denied is not None:
+        details["denied"] = denied
+    return WorkerError(ERROR_SCRIPT, f"{type(exc).__name__}: {exc}", details)
 
 
 def _exec_script(script: str) -> dict:
@@ -464,7 +478,11 @@ def _export_shape(shape, fmt: str, out_path: str, tolerance: float) -> dict:
 
 
 def handle_ping(params: dict) -> dict:
-    return {"ok": True, "build123d": getattr(b3d, "__version__", "unknown")}
+    # `sandbox` is what this process ACTUALLY applied to itself, which is how
+    # the client learns its live confinement rather than assuming the plan it
+    # asked for landed (design spec, Decision 8). Empty when unconfined.
+    return {"ok": True, "build123d": getattr(b3d, "__version__", "unknown"),
+            "sandbox": dict(SANDBOX_REPORT)}
 
 
 def handle_inspect(params: dict) -> dict:
@@ -827,8 +845,15 @@ def main() -> None:
             continue
         req_id = request.get("id")
         method = request.get("method", "")
+        # One meter per request, started before the handler and read after it,
+        # so `usage` describes this request and not the warm worker's history
+        # (design spec, Decision 6). It rides every response line: result,
+        # error and shutdown alike.
+        meter = Meter()
+        meter.start()
         if method == "shutdown":
-            stdout.write(json.dumps({"id": req_id, "result": {"ok": True}}) + "\n")
+            stdout.write(json.dumps({"id": req_id, "result": {"ok": True},
+                                     "usage": meter.finish()}) + "\n")
             stdout.flush()
             return
         try:
@@ -836,6 +861,7 @@ def main() -> None:
             response = {"id": req_id, "result": result}
         except WorkerError as err:
             response = {"id": req_id, "error": err.to_payload()}
+        response["usage"] = meter.finish()
         stdout.write(json.dumps(response) + "\n")
         stdout.flush()
 

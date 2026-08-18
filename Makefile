@@ -1,4 +1,4 @@
-.PHONY: setup run serve test test-fast test-pr test-full test-portability test-sequential app dist smoke
+.PHONY: setup run serve test test-fast test-pr test-full test-portability test-sequential test-linux app dist smoke
 
 # ?= so a small machine (or CI) can override: make test PYTEST_PARALLEL="-n 2 --dist loadscope"
 # --no-loadscope-reorder: xdist's count-descending queue sort sends the
@@ -31,6 +31,13 @@ test-portability:
 
 test-sequential:
 	uv run pytest -q
+
+# The Linux confinement loop on a macOS dev box: copies the tree into the
+# shipped image (Landlock is not coherent over Docker Desktop's bind mounts)
+# and runs the Linux battery inside it. Needs the `agentcad:local` image —
+# see scripts/linux-test.sh.
+test-linux:
+	sh scripts/linux-test.sh
 
 app:
 	bash scripts/make_app.sh

@@ -43,10 +43,10 @@ from .sandbox_macos import SANDBOX_EXEC, build_profile  # noqa: F401 — re-expo
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
-#: ``sys.platform`` -> the module implementing ``build(...)``. Slice 2 adds
-#: ``"linux": "sandbox_linux"``; Slice 3 adds ``"win32": "sandbox_windows"``.
-#: Anything else (and, for now, those two) falls to :class:`NullBackend`.
-_BACKENDS = {"darwin": "sandbox_macos"}
+#: ``sys.platform`` -> the module implementing ``build(...)``. Slice 3 adds
+#: ``"win32": "sandbox_windows"``; anything else (and, for now, Windows) falls
+#: to :class:`NullBackend`.
+_BACKENDS = {"darwin": "sandbox_macos", "linux": "sandbox_linux"}
 
 #: The read postures (design spec, Decision 2). ``local`` is the historical
 #: stance: read anywhere, write only in the roots. ``hosted`` narrows reads to
@@ -178,6 +178,10 @@ def plan(argv: list[str], writable_dirs: list[str], *,
     if not isinstance(quotas, Quotas):
         quotas = resolve_quotas(quotas)
     posture = posture or default_posture()
+    # The process planning the worker IS the server, so a caller that leaves
+    # this out still gets a filter that protects the right pid — a `None` here
+    # would silently reduce the seccomp rule to "no signals at pid 0".
+    server_pid = os.getpid() if server_pid is None else server_pid
 
     # The one temp root a worker gets. Never `tempfile.gettempdir()` itself:
     # that directory is shared, so granting it lets one worker's script read

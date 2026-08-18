@@ -23,7 +23,13 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
 
 - Expected failures return an `{"error": {"type", "message", "details"}}`
   **payload**, not a protocol error — read it and react. Script failures
-  carry `details.traceback` and `details.line`.
+  carry `details.traceback` and `details.line`. A script that walked into the
+  kernel sandbox or a resource quota also carries **`details.denied`** —
+  `network`, `filesystem`, `process_count` or `memory` — and an Error Doctor
+  `details.hint` naming the fix. It is still an ordinary `script_error`: the
+  previous good geometry is kept and the worker stays warm. The key is absent
+  when nothing was confining the worker, so its presence means the OS refused,
+  not that the script had a permissions bug.
 - Mutating tools return the post-state you need next (metrics, warnings,
   status), so a create → inspect → fix loop converges in few turns.
 - Rebuild results have `{"ok": true, "metrics", "warnings", "specs", "holes"}`

@@ -70,6 +70,22 @@ def test_ping_under_sandbox(sboxed):
     assert result["build123d"]
 
 
+# 1b — the preamble runs INSIDE the seatbelt (PRD-006, Decision 1)
+#
+# The design claims rlimits are not a seatbelt-governed operation, so the same
+# in-process preamble that confines a Linux worker can apply macOS's quota
+# tier from inside sandbox-exec. This is that claim's verification point: the
+# report comes from the worker's own `setrlimit`, not from the plan's
+# intention, and `RLIMIT_NPROC` is the one rlimit Darwin actually honours
+# (RLIMIT_AS/DATA/RSS are EINVAL there).
+def test_the_preamble_applied_the_rlimits_inside_the_seatbelt(sboxed):
+    report = sboxed.request("ping", {})["sandbox"]
+    assert report["rlimits"] == ["RLIMIT_NPROC"]
+    assert report["failures"] == []
+    assert report["landlock_abi"] is None and report["seccomp"] is None
+    assert sboxed.sandbox_report == report
+
+
 # 2 — writes inside the writable root work (mesh cache path)
 def test_build_writes_mesh_inside_root(sboxed, writable):
     mesh_path = writable / "box.acm"
