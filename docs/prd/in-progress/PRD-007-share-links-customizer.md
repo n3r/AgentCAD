@@ -224,8 +224,10 @@ failures.
 - **Variant builds**: a service method `build_variant(project, part_id,
   ref, params) -> {mesh_key, metrics}` resolves the script at the ref,
   validates params, and builds through the normal kernel pool under a
-  share `affinity=` key (the pool-routing seam) so visitor load can be
-  segregated; results live in a shared variant cache with LRU/GC.
+  share `affinity=` key (the pool-routing seam, for cache warmth — **not**
+  isolation); member starvation is prevented by reserving `pool_size - 1`
+  workers for the anonymous cap, not by the affinity. Results live in a
+  shared variant cache with LRU/GC.
   `ProjectStore` is never written on the visitor path — no
   `write_guard` interaction at all.
 - **Rate limiting**: middleware on the public routes (token bucket per
@@ -310,12 +312,16 @@ a browser should close.
   a visitor gains no code execution (bounded PARAMS are data, not code), the
   per-request timeout kills a runaway build, per-link + per-IP token buckets
   bound the rate, a global in-flight semaphore
-  (`AGENTCAD_SHARE_MAX_INFLIGHT`) bounds concurrency below the pool, pool
-  affinity (`share:<pub>`) segregates share builds from members' workers, and the
-  content-addressed variant cache makes "popular = cheap". What is **not**:
-  memory, process/pid, variant-cache disk budget, and worker network egress —
-  all PRD-006's. Until then the operator's backstop for a link under a
-  distinct-param flood is `AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE` (off by default).
+  (`AGENTCAD_SHARE_MAX_INFLIGHT`) bounds concurrency with its effective size
+  clamped to `pool_size - 1` so a member's worker is always reserved (a
+  single-worker pool refuses the customizer with `503`; pool affinity
+  `share:<pub>` is cache-warmth routing, **not** segregation), and the
+  content-addressed variant cache — keyed on the **clamped** params so
+  out-of-range floods coalesce — makes "popular = cheap". What is **not**
+  bounded: memory, process/pid, **variant-cache disk** (a distinct-in-range
+  flood still builds and fills it), and worker network egress — all PRD-006's.
+  Until then the operator's backstop for a link under a distinct-param flood is
+  `AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE` (off by default).
 - **Project/assembly-scope links, embeds-with-sliders polish, drawings/flat
   pattern exports, script-visibility UI beyond the raw route, branch-following
   ("live") links, and the config-mode customizer (PRD-012)** are Phase 2/3, per
@@ -333,10 +339,13 @@ a browser should close.
 ## Risks & open questions
 
 - **Stranger compute** is the existential risk — a popular link is a
-  free rebuild farm. Defense in depth: the variant cache (popular =
-  cheap), token buckets, PRD-006 CPU/memory/wall caps, pool-affinity
-  segregation. Open: a per-deployment policy for requiring login above a
-  rebuild threshold.
+  free rebuild farm. Defense in depth: the variant cache (popular = cheap,
+  keyed on clamped params so out-of-range floods coalesce), token buckets, the
+  in-flight cap's `pool_size - 1` **worker reservation** (a member's worker is
+  never occupied by anonymous builds; a single-worker pool refuses), and PRD-006
+  CPU/memory/wall caps. Residual: a distinct-in-range flood still builds and the
+  variant-cache disk is unbounded until 006. Open: a per-deployment policy for
+  requiring login above a rebuild threshold (shipped as the login-gate knob).
 - **Guard carve-out** — any mistake in the public-route enumeration
   widens the attack surface; single-file enumeration plus the AC9 test,
   reviewed in PRD-005's security pass.

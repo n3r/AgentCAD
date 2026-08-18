@@ -15,10 +15,12 @@ Two jobs, both about isolation:
    ``<state-dir>/publications/build/`` and built with the PRD-004
    ``checks._ephemeral_service`` recipe (``bus.on_publish=None``,
    ``store.branch_resolver=None``, ``store.write_guard=None`` — the last two
-   *after* ``build_registry``). It shares the main kernel pool. Because the
-   build store is under the state dir and outside every user project, the
-   isolation is doubled: even without the muzzles a build here could not reach a
-   user repo, and with them it writes only its own content-addressed ``.cache/``.
+   *after* ``build_registry``). It shares the main kernel pool, but the in-flight
+   cap reserves at least one worker for members (see ``effective_max_inflight``).
+   Because the build store is under the state dir and outside every user project,
+   the isolation is doubled: even without the muzzles a build here could not
+   reach a user repo, and with them it writes only its own content-addressed
+   ``.cache/``.
 
 The build project is content-addressed: one project named for the script sha,
 one part called ``part``. Every build runs a *derived* record
@@ -47,8 +49,14 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
+from ..kernel import paramclamp
 from .materials import DEFAULT_MATERIAL
-from .model import NotFoundError, RateLimitedError, ValidationError
+from .model import (
+    NotFoundError,
+    RateLimitedError,
+    ServiceUnavailableError,
+    ValidationError,
+)
 from .publications import PublicationStore
 
 #: The one part every content-addressed build project holds. The owner's part
@@ -56,33 +64,47 @@ from .publications import PublicationStore
 #: build), so a fixed id keeps ``read_script`` deterministic.
 BUILD_PART = "part"
 
-#: The affinity prefix that routes visitor builds onto a segregated pool slice,
-#: so a customizer flood cannot poison a member's worker (design Decision 4).
+#: The affinity prefix that routes visitor builds by consistent hash onto a
+#: warm worker (``kernel/pool.py`` ``_pick`` — ``hash(affinity) % size``). This
+#: is cache-warmth routing, NOT isolation: it does not fence anonymous builds
+#: off members' workers (two affinities can hash to the same worker, and on a
+#: small pool they collide often). The real containment wall is the
+#: ``pool_size - 1`` worker reservation in :func:`effective_max_inflight`.
 SHARE_AFFINITY = "share"
 
 # --------------------------------------------------------- the in-flight cap
 #
-# A **global** ``BoundedSemaphore`` around the *build call only*, sized BELOW
-# the kernel pool, is what keeps a customizer flood from starving signed-in
-# members of workers (design Decision 4). It is acquired NON-BLOCKING: a
-# refusal is a ``quota_exceeded`` the page degrades on, never a queue that ties
-# up a request thread. The segregation ``affinity="share:<pub>"`` is the second
-# layer — even the ``SHARE_MAX_INFLIGHT`` builds that DO run route onto a
-# bounded pool slice, off the members' workers.
+# A **global** ``BoundedSemaphore`` around the *build call only* is what keeps a
+# customizer flood from starving signed-in members of workers (design Decision
+# 4). Two rules make it real containment rather than a slogan:
 #
-# The size is read from the environment on every call so an operator (and a
-# test) can move it without a restart; the semaphore is rebuilt only when the
-# size actually changes, so within one setting it is the one shared object the
-# whole process contends on.
+#   1. It is acquired NON-BLOCKING: a refusal is a ``quota_exceeded`` the page
+#      degrades on, never a queue that ties up a request thread.
+#   2. Its effective size is CLAMPED to leave at least one worker free for
+#      members: ``min(SHARE_MAX_INFLIGHT, max(0, pool_size - 1))``. On a
+#      single-worker pool the clamp is 0 and the customizer refuses cleanly
+#      (a 503 naming ``AGENTCAD_KERNEL_POOL_SIZE``) rather than occupying the
+#      members' sole worker. This — not the ``affinity=`` routing, which is
+#      consistent-hash cache-warmth and does NOT segregate — is the wall.
+#
+# The operator ceiling is read from the environment on every call so it (and a
+# test) can move without a restart; the semaphore is rebuilt only when the
+# effective size actually changes, so within one setting it is the one shared
+# object the whole process contends on.
 ENV_MAX_INFLIGHT = "AGENTCAD_SHARE_MAX_INFLIGHT"
 
 #: Conservative by design (design "Risks"): customizer responsiveness traded
-#: against member starvation, with the affinity segregation as the second wall.
+#: against member starvation. The operator's ceiling; the effective cap is this
+#: clamped by the ``pool_size - 1`` worker reservation.
 DEFAULT_MAX_INFLIGHT = 2
 
 #: A refused build is retryable almost immediately — a slot frees the moment any
 #: in-flight build returns; unlike the token buckets this is not a refill delay.
 SHARE_BUSY_RETRY_AFTER_S = 1
+
+#: The customizer needs at least this many kernel workers: one to build on and
+#: one left free for members. Below it, a variant/download request refuses.
+MIN_CUSTOMIZER_POOL_SIZE = 2
 
 _INFLIGHT_LOCK = threading.Lock()
 _INFLIGHT: dict = {"size": None, "sem": None}
@@ -92,6 +114,8 @@ _INT_RE = re.compile(r"^[+-]?\d+$")
 
 
 def _configured_max_inflight() -> int:
+    """The operator's requested ceiling (``ENV_MAX_INFLIGHT`` or the default),
+    floored at 1 — before the pool reservation clamps it."""
     raw = os.environ.get(ENV_MAX_INFLIGHT)
     if raw is None:
         return DEFAULT_MAX_INFLIGHT
@@ -101,13 +125,56 @@ def _configured_max_inflight() -> int:
         return DEFAULT_MAX_INFLIGHT
 
 
-def inflight_semaphore() -> threading.BoundedSemaphore:
-    """The process-global build slot, sized by :data:`ENV_MAX_INFLIGHT`.
+def _pool_size() -> int:
+    """The kernel pool size, read from the SAME source the pool is built from
+    (``config.get_kernel_pool_size`` — env ``AGENTCAD_KERNEL_POOL_SIZE`` /
+    config / a cores-derived default), so the reservation below matches the
+    real worker count in a server process."""
+    from ..config import get_kernel_pool_size
+    try:
+        return max(1, int(get_kernel_pool_size()))
+    except Exception:                            # noqa: BLE001 — never crash a build
+        return 1
 
-    Rebuilt only when the configured size changes, so every concurrent caller
-    contends on the same object — which is the whole point of a *global* cap.
+
+def effective_max_inflight() -> int:
+    """Concurrent anonymous builds actually permitted: the operator ceiling
+    clamped to leave one worker free for members (``pool_size - 1``).
+
+    Zero on a single-worker pool — the customizer cannot run there without
+    starving members, so :meth:`ShareBuilder.build_variant` /
+    :meth:`ShareBuilder.export_variant` refuse with a 503 instead of building.
     """
-    size = _configured_max_inflight()
+    return min(_configured_max_inflight(), max(0, _pool_size() - 1))
+
+
+def require_customizer_capacity() -> None:
+    """Refuse (503) a variant/download build when no worker can be spared.
+
+    The containment wall for finding M-1: on a single-worker pool an anonymous
+    build would occupy the members' only worker, so it is refused with a clear,
+    structured message naming the knob to fix — never a build."""
+    if effective_max_inflight() <= 0:
+        raise ServiceUnavailableError(
+            f"the customizer needs a kernel pool of at least "
+            f"{MIN_CUSTOMIZER_POOL_SIZE}; this instance has {_pool_size()} "
+            f"worker(s). Set AGENTCAD_KERNEL_POOL_SIZE>="
+            f"{MIN_CUSTOMIZER_POOL_SIZE} to enable variant builds "
+            f"(viewer links are unaffected).",
+            {"kernel_pool_size": _pool_size(),
+             "required_kernel_pool_size": MIN_CUSTOMIZER_POOL_SIZE})
+
+
+def inflight_semaphore() -> threading.BoundedSemaphore:
+    """The process-global build slot, sized by :func:`effective_max_inflight`
+    (the operator ceiling clamped by the ``pool_size - 1`` reservation).
+
+    Rebuilt only when the effective size changes, so every concurrent caller
+    contends on the same object — which is the whole point of a *global* cap.
+    A size of 0 is legal (a single-worker pool); callers gate on
+    :func:`require_customizer_capacity` before ever acquiring it.
+    """
+    size = effective_max_inflight()
     with _INFLIGHT_LOCK:
         if _INFLIGHT["sem"] is None or _INFLIGHT["size"] != size:
             _INFLIGHT["sem"] = threading.BoundedSemaphore(size)
@@ -156,8 +223,17 @@ def _coerce_query_value(entry: dict, value):
             return False
         return value                       # normalize_params rejects a non-bool
     if ptype == "enum":
+        # An enum choice may be declared as a string OR a number. A raw string
+        # that IS a declared choice must win over its numeric coercion, or a
+        # choice like "1"/"2" (strings that look numeric) becomes unselectable
+        # (m-3): the query "1" would coerce to int 1 and fail to match "1".
+        choices = entry.get("choices") or []
+        if value in choices:
+            return value
         num = _try_number(value)
-        return num if num is not None else value
+        if num is not None and num in choices:
+            return num
+        return value                       # normalize_params refuses a non-member
     num = _try_number(value)               # number / int
     return num if num is not None else value
 
@@ -170,6 +246,33 @@ def _coerce_query_params(spec: dict, raw: dict) -> dict:
     return {name: (_coerce_query_value(spec[name], value) if name in spec
                    else value)
             for name, value in raw.items()}
+
+
+def _clamp_params(spec: dict, values: dict) -> tuple[dict, list[str]]:
+    """Range-clamp already-normalized numeric params against *spec*, returning
+    ``(clamped, warnings)`` — the worker's clamp, applied server-side BEFORE the
+    variant cache key is computed so clamp-equal requests coalesce (M-2).
+
+    Uses the shared pure ``paramclamp`` helper, so parity with the worker is
+    structural, not copied. A non-finite ``NaN`` (which the clamp comparisons
+    silently pass) is refused here as a ``validation_error`` rather than reaching
+    the kernel (m-2); ``inf`` is left to clamp to max, as the worker does."""
+    clamped = dict(values)
+    warnings: list[str] = []
+    for name, value in values.items():
+        entry = spec.get(name)
+        if not entry:
+            continue
+        ptype = entry.get("type") or "number"
+        if ptype not in paramclamp.NUMERIC_TYPES:
+            continue
+        if paramclamp.is_nan(value):
+            raise ValidationError(
+                f"parameter {name!r} must be a finite number",
+                {"param": name})
+        clamped[name] = paramclamp.clamp_numeric(entry, value, name, ptype,
+                                                 warnings)
+    return clamped, warnings
 
 
 def _proj_name(script_sha: str) -> str:
@@ -394,20 +497,26 @@ class ShareBuilder:
                                       material=material)
         return svc._cache_key_for(proj, derived)
 
-    def _validated_params(self, record: dict, raw: dict) -> tuple[str, str, dict]:
-        """``(proj, material, normalized)`` for a variant request, or raise.
+    def _validated_params(self, record: dict,
+                          raw: dict) -> tuple[str, str, dict, list[str]]:
+        """``(proj, material, clamped, warnings)`` for a variant request, or raise.
 
         Validation is the AUTHORING path's own logic, reused not forked:
         ``normalize_params`` rejects wrong types, non-member enum choices and
-        unknown names BEFORE any build; the out-of-range clamp-with-warning is
-        inherited from ``worker._resolve_params`` inside the build itself. The
-        visitor supplies DATA, never code (PRD-005a Decision 2)."""
+        unknown names BEFORE any build. The out-of-range clamp is then applied
+        **here, server-side**, using the SAME pure ``paramclamp`` helper the
+        worker uses — so two out-of-range values that clamp to identical
+        geometry produce identical params, one cache key and one build (PRD-007
+        review finding M-2). The clamp warnings ride back so a clamped request
+        still warns, exactly as before. The visitor supplies DATA, never code
+        (PRD-005a Decision 2)."""
         script_sha = record["script_sha"]
         material = record.get("material") or DEFAULT_MATERIAL
         spec = self.params_spec(script_sha) or {}
         coerced = _coerce_query_params(spec, raw)
         normalized = self._svc().normalize_params(spec, coerced)
-        return _proj_name(script_sha), material, normalized
+        clamped, warnings = _clamp_params(spec, normalized)
+        return _proj_name(script_sha), material, clamped, warnings
 
     # --------------------------------------------------------- public builds
 
@@ -415,33 +524,37 @@ class ShareBuilder:
         """Build one visitor variant, bounded. Returns ``{mesh_key, metrics,
         warnings, lods, ok, cached}``.
 
-        The order is the containment: **validate** (reject out-of-spec before a
-        build), **probe the cache** (a repeat is a free disk read — no slot, no
-        kernel), then take a **global in-flight slot** around the build only. A
-        failed build is a ``validation_error`` — a param set the author's script
-        cannot realise, not a server fault."""
+        The order is the containment: **refuse if no worker can be spared**
+        (single-worker pool → 503, finding M-1), **validate + range-clamp**
+        (reject out-of-spec, coalesce clamp-equal before a build), **probe the
+        cache** (a repeat is a free disk read — no slot, no kernel), then take a
+        **global in-flight slot** around the build only. A failed build is a
+        ``validation_error`` — a param set the author's script cannot realise,
+        not a server fault. Server-side clamp warnings ride back on both the
+        cached and the fresh path, so a clamped request still warns."""
+        require_customizer_capacity()
         record = self._store.get(pub_id)
         if record is None:
             raise NotFoundError("no such share link")
-        proj, material, normalized = self._validated_params(record, params)
+        proj, material, clamped, warnings = self._validated_params(record, params)
         script_sha = record["script_sha"]
 
-        key = self._variant_cache_key(proj, material, normalized)
+        key = self._variant_cache_key(proj, material, clamped)
         if self.mesh_path(script_sha, key) is not None:
             sidecar = self.metrics_for(script_sha, key) or {}
             return {"mesh_key": key, "metrics": sidecar.get("metrics"),
-                    "warnings": sidecar.get("warnings", []),
+                    "warnings": warnings + list(sidecar.get("warnings", [])),
                     "lods": sidecar.get("lods", []), "ok": True, "cached": True}
 
         with _inflight_slot():
-            result = self._build(proj, script_sha, material, normalized)
+            result = self._build(proj, script_sha, material, clamped)
         if not result["ok"]:
             raise ValidationError(
                 result.get("error", {}).get("message", "variant build failed"),
-                {"params": normalized})
+                {"params": clamped})
         return {"mesh_key": result["cache_key"],
                 "metrics": result.get("metrics"),
-                "warnings": result.get("warnings", []),
+                "warnings": warnings + list(result.get("warnings", [])),
                 "lods": result.get("lods", []), "ok": True, "cached": False}
 
     def export_variant(self, pub_id: str, params: dict, fmt: str) -> Path:
@@ -451,13 +564,14 @@ class ShareBuilder:
         export mask before this runs."""
         from .service import EXPORT_TOLERANCE
 
+        require_customizer_capacity()
         record = self._store.get(pub_id)
         if record is None:
             raise NotFoundError("no such share link")
-        proj, material, normalized = self._validated_params(record, params)
+        proj, material, clamped, _warnings = self._validated_params(record, params)
 
         svc = self._svc()
-        key = self._variant_cache_key(proj, material, normalized)
+        key = self._variant_cache_key(proj, material, clamped)
         out = svc.store.exports_dir(proj) / f"{key}.{fmt}"
         if out.is_file():
             return out                     # content-addressed: a cache read
@@ -467,7 +581,7 @@ class ShareBuilder:
         with _inflight_slot():
             result = svc.kernel.request(
                 "export",
-                {"script": script, "params": dict(normalized), "format": fmt,
+                {"script": script, "params": dict(clamped), "format": fmt,
                  "out_path": str(out), "tolerance": EXPORT_TOLERANCE},
                 timeout_s=300.0)
         if not result.get("ok", True):

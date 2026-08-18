@@ -78,7 +78,8 @@ Three questions decide the rest, and PRD-005a already answered the first:
      └──────────────────┬───────────────┘                     scripts/<sha>.py   (pinned bytes)
                         ▼                                       build/  (a muzzled AgentCADService
              shared kernel pool  ── affinity="share:<pub>"      rooted here: bus.on_publish=None,
-             (same workers members use, segregated by affinity) branch_resolver=None, write_guard=None)
+             (same workers members use; cap reserves     branch_resolver=None, write_guard=None)
+              pool_size-1, affinity is cache-warmth only)
 ```
 
 The visitor path never touches a user's `ProjectStore`, `.history`, or
@@ -288,14 +289,16 @@ from "a stranger uploads a script", which stays refused until PRD-006.
 |---|---|---|
 | A single expensive build (a param driving an O(n³) loop, a tessellation blow-up) | per-request timeout + kill-and-respawn | the kernel `KernelClient` lifecycle, unchanged (`docs/architecture.md:38-40`) |
 | One visitor hammering rebuilds | per-link **and** per-IP token buckets | `TokenBucket.take` (promoted to `core/ratelimit.py`, Decision 6); over-limit → `quota_exceeded` + `retry_after_s`, page degrades to view-only |
-| Many visitors exhausting the shared kernel pool (a popular link starving signed-in members) | a **global in-flight semaphore** `BoundedSemaphore(SHARE_MAX_INFLIGHT)`, acquired non-blocking around the *build call only*, sized **below** the pool | over-limit → `quota_exceeded`; and `affinity="share:<pub_id>"` routes visitor builds onto a segregated pool slice (`kernel/pool.py` `_pick`) so a customizer flood cannot poison a member's worker |
-| Repeated identical slider stops | the content-addressed variant cache | keyed on `(script_sha, params, density)` via the existing `_cache_key` (`service.py:713`); a second visitor at the same param set is served from disk with **zero** kernel calls — PRD-007 AC2 |
+| Many visitors exhausting the shared kernel pool (a popular link starving signed-in members) | a **global in-flight semaphore**, acquired non-blocking around the *build call only*, whose effective size is `min(SHARE_MAX_INFLIGHT, pool_size - 1)` — the **`pool_size - 1` worker reservation** | over-limit → `quota_exceeded`. The reservation always leaves ≥1 worker for members and is the real containment wall; on a single-worker pool the cap is 0 and `/variant`/`/download` refuse with `503` (`require_customizer_capacity`). `affinity="share:<pub_id>"` is consistent-hash **cache-warmth** routing (`kernel/pool.py` `_pick` — `hash(affinity) % size`), **NOT** segregation: it does not fence visitor builds off members' workers |
+| Repeated identical slider stops **or an out-of-range flood** | the content-addressed variant cache, keyed on the **range-clamped** params | keyed on `(script_sha, clamped_params, density)` via the existing `_cache_key` (`service.py:713`); the clamp is applied server-side (`_clamp_params`) BEFORE the key, so out-of-range values that clamp to identical geometry coalesce to one build. A second visitor at the same param set is served from disk with **zero** kernel calls — PRD-007 AC2 |
 
-The variant cache is why "popular = cheap": the first visitor at a slider stop
-pays one build; everyone after pays a file read. `SHARE_MAX_INFLIGHT` is what
-keeps the *worst* case — a coordinated flood of distinct param sets — from
-being more than N concurrent builds, and `affinity` keeps those N off the
-members' workers.
+The variant cache is why "popular = cheap" — with one honest limit: the first
+visitor at a slider stop pays one build; everyone after (and every out-of-range
+value that clamps to it) pays a file read. But a genuinely-distinct **in-range**
+flood still builds each variant, and the on-disk variant cache is **unbounded**
+until PRD-006 adds a disk budget (the login gate is the interim backstop). The
+worker reservation is what keeps even that worst case — a coordinated flood of
+distinct in-range param sets — from ever occupying the members' last worker.
 
 ### Output artifacts
 
@@ -308,9 +311,12 @@ the builder runs.
 
 ### What a malicious visitor can still do, stated plainly
 
-CPU burn, within the caps: distinct param sets, each a bounded build, at the
-token-bucket rate, at most `SHARE_MAX_INFLIGHT` at once, on a segregated pool
-slice. That is a bounded compute cost the operator accepts.
+CPU burn, within the caps: distinct in-range param sets, each a bounded build,
+at the token-bucket rate, at most `min(SHARE_MAX_INFLIGHT, pool_size - 1)` at
+once — the reservation guaranteeing a member's worker stays free. Disk burn
+too: a distinct-in-range flood fills the variant cache, which is unbounded until
+PRD-006's disk budget. That is a bounded compute cost, and a bounded-by-login-gate
+disk cost, the operator accepts pre-PRD-006.
 
 **What PRD-006 still owes, honestly** (the residual PRD-005a Decision 2 named):
 memory caps (a params-driven mesh can still balloon RSS and OOM the host),
@@ -461,11 +467,16 @@ PRD-005a's anonymous surface made zero kernel calls. This feature adds exactly
 two kernel-reaching anonymous routes and bounds them:
 
 - **The first anonymous `exec()`** is `GET /s/{token}/variant`. Bounded by:
-  param-validation parity (no code, only clamped data), per-link + per-IP token
-  buckets, a global in-flight semaphore sized below the pool, pool-affinity
-  segregation from members, the content-addressed variant cache, and the
-  kernel's per-request timeout. Residual: the 006 list (memory/pid/disk/egress),
-  named, with the login-gate knob as the pre-006 backstop.
+  param-validation parity (no code, only clamped data — clamped **server-side
+  before the cache key** so out-of-range floods coalesce), per-link + per-IP
+  token buckets, a global in-flight semaphore whose effective size is
+  `min(SHARE_MAX_INFLIGHT, pool_size - 1)` (the **worker reservation** that keeps
+  a member's worker free — `affinity` is cache-warmth routing, not segregation;
+  a single-worker pool refuses with `503`), the content-addressed variant cache,
+  and the kernel's per-request timeout. Residual: the 006 list
+  (memory/pid/**disk**/egress) — a distinct-in-range flood still builds and the
+  variant cache is unbounded until 006 — named, with the login-gate knob as the
+  pre-006 backstop.
 - **The guard carve-out** is two prefixes in one file, defended by the
   set-equality enumeration test — a ninth `/s/` route cannot go public
   unreviewed.
@@ -569,8 +580,12 @@ routes and their caps), the `AGENTCAD_SHARE_*` env vars
   Until PRD-006 the extreme (a memory balloon) is bounded only by operator
   posture and the login-gate knob.
 - **`SHARE_MAX_INFLIGHT` sizing** trades customizer responsiveness against
-  member starvation. Default conservative (e.g. 2), overridable; the affinity
-  segregation is the second layer.
+  member starvation. It is an operator *ceiling*; the effective cap is clamped
+  to `pool_size - 1`, so a member's worker is always reserved and a single-worker
+  pool refuses the customizer (`503`) rather than starving members. `affinity` is
+  cache-warmth routing, **not** a second isolation layer. (Review M-1 fix: the
+  old text called affinity "segregation" and let the default cap exceed the
+  pool.)
 - **Counter write amplification** — coarse counters under flock; mitigated by
   counting page loads, not asset fetches, and accepting best-effort integers.
 - **Founder decisions (18 Aug 2026), now settled:**

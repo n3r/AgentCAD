@@ -34,7 +34,11 @@ services:
       AGENTCAD_PROJECTS_DIR: /data/projects
       AGENTCAD_STATE_DIR: /data/state
       AGENTCAD_EXAMPLES: "0"
-      AGENTCAD_KERNEL_POOL_SIZE: "1"
+      # PRD-007: the share customizer reserves one worker for members, so it
+      # needs a pool of >=2 to run at all (on a 1-worker pool /variant returns
+      # 503). 2 lets the customizer work out of the box AND keeps a member
+      # worker free. Raise it (and the RAM, ~0.5 GB/worker) for more concurrency.
+      AGENTCAD_KERNEL_POOL_SIZE: "2"
     volumes:
       - agentcad-data:/data
     healthcheck:

@@ -34,6 +34,29 @@ from agentcad.server import security
 
 from .conftest import BOX_SCRIPT, TYPED_SCRIPT, login
 
+# An enum whose choices are strings that look numeric — the m-3 regression: the
+# query "1" must select the string choice "1", not coerce to int 1 and miss.
+NUMSTR_ENUM_SCRIPT = '''\
+PARAMS = {
+    "size": {"default": 20.0, "min": 10.0, "max": 40.0},
+    "mode": {"default": "1", "type": "enum", "choices": ["1", "2"]},
+}
+def build(p):
+    from build123d import Box
+    return Box(p.size, p.size, p.size)
+'''
+
+
+@pytest.fixture(autouse=True)
+def _customizer_pool(monkeypatch):
+    """PRD-007 finding M-1: the customizer reserves one worker for members, so
+    it needs a kernel pool of >=2. The session ``kernel`` fixture is a single
+    client, so pin the DECLARED pool size (the source ``effective_max_inflight``
+    reads) high enough that these tests exercise the customizer deterministically
+    regardless of the host core count. Tests that probe the single-worker
+    refusal override this back to 1."""
+    monkeypatch.setenv("AGENTCAD_KERNEL_POOL_SIZE", "4")
+
 
 # --------------------------------------------------------------- publishing
 
@@ -331,6 +354,119 @@ def test_the_login_gate_bites_an_anonymous_flood_when_set(share_link,
     login(client)
     assert client.get(f"/s/{token}/variant",
                       params={"size": 20}).status_code in (200, 429)
+
+
+# ---------------------------- the member-worker reservation (finding M-1)
+
+def test_the_inflight_cap_reserves_a_member_worker(monkeypatch):
+    """The containment wall for M-1: the anonymous in-flight cap is clamped to
+    ``pool_size - 1``, so it can NEVER occupy every worker — a member always has
+    one free. On a single-worker pool it clamps to 0 (the customizer refuses)."""
+    cases = [("1", None, 0), ("2", None, 1), ("2", "5", 1),
+             ("3", "2", 2), ("4", "10", 3), ("8", None, 2)]
+    for pool, ceiling, want in cases:
+        monkeypatch.setenv("AGENTCAD_KERNEL_POOL_SIZE", pool)
+        if ceiling is None:
+            monkeypatch.delenv("AGENTCAD_SHARE_MAX_INFLIGHT", raising=False)
+        else:
+            monkeypatch.setenv("AGENTCAD_SHARE_MAX_INFLIGHT", ceiling)
+        eff = share_build.effective_max_inflight()
+        assert eff == want, (pool, ceiling, eff)
+        assert eff <= max(0, int(pool) - 1)         # a worker is always spared
+
+
+def test_a_single_worker_pool_refuses_the_customizer_cleanly(share_link,
+                                                             kernel_counter,
+                                                             monkeypatch):
+    """On a 1-worker pool the customizer would starve members, so ``/variant``
+    and ``/download`` return a structured 503 naming the pool-size knob and make
+    NO build — while the kernel-free viewer surface still works (M-1)."""
+    monkeypatch.setenv("AGENTCAD_KERNEL_POOL_SIZE", "1")
+    client, token, _ = share_link
+    before = kernel_counter.calls
+
+    v = client.get(f"/s/{token}/variant", params={"size": 25})
+    assert v.status_code == 503, v.text
+    assert v.json()["error"]["type"] == "ServiceUnavailableError"
+    assert "AGENTCAD_KERNEL_POOL_SIZE" in v.json()["error"]["message"]
+    assert v.json()["error"]["details"]["kernel_pool_size"] == 1
+
+    d = client.get(f"/s/{token}/download/step", params={"size": 25})
+    assert d.status_code == 503
+    assert kernel_counter.calls == before           # neither built
+
+    # Viewer links are kernel-free and unaffected on a 1-worker pool.
+    assert client.get(f"/s/{token}/model").status_code == 200
+    assert client.get(f"/s/{token}/params").status_code == 200
+
+
+# ------------------------- clamp-equal cache coalescing (finding M-2)
+
+def test_clamp_equal_out_of_range_values_coalesce_to_one_build(share_link,
+                                                              kernel_counter):
+    """The M-2 probe: five out-of-range values that all clamp to max=40 make ONE
+    build and one cache key — the variant cache keys on the CLAMPED params, so a
+    clamp flood is a cache hit, not a fresh build each time. Each still warns."""
+    client, token, _ = share_link
+    before = kernel_counter.calls
+    keys = []
+    for size in (100000, 100001, 100002, 100003, 100004):
+        r = client.get(f"/s/{token}/variant", params={"size": size})
+        assert r.status_code == 200, r.text
+        assert any("clamp" in w.lower() for w in r.json()["warnings"]), r.json()
+        keys.append(r.json()["mesh_key"])
+    assert len(set(keys)) == 1                       # coalesced
+    assert kernel_counter.calls == before + 1        # exactly one build
+
+
+def test_a_genuinely_distinct_in_range_set_still_builds(share_link,
+                                                       kernel_counter):
+    """The positive control for M-2: distinct IN-RANGE values are distinct
+    geometry and still build — the coalescing above is clamp-equality, not a
+    broken cache that fuses everything."""
+    client, token, _ = share_link
+    before = kernel_counter.calls
+    keys = {client.get(f"/s/{token}/variant",
+                       params={"size": s}).json()["mesh_key"]
+            for s in (11, 21, 31)}
+    assert len(keys) == 3
+    assert kernel_counter.calls == before + 3
+
+
+# ------------------------- NaN guard (finding m-2)
+
+def test_a_nan_numeric_is_refused_before_the_kernel(share_link, kernel_counter):
+    """``size=nan`` slips past ``value<mn`` and ``value>mx`` (both False for
+    NaN), so without a guard it reaches ``build(p)`` and returns a degenerate
+    200. It is now a 422 before any kernel call (m-2)."""
+    client, token, _ = share_link
+    before = kernel_counter.calls
+    r = client.get(f"/s/{token}/variant", params={"size": "nan"})
+    assert r.status_code == 422, r.text
+    assert r.json()["error"]["type"] == "ValidationError"
+    assert kernel_counter.calls == before            # never reached the kernel
+
+
+def test_inf_still_clamps_and_is_not_rejected(share_link):
+    """The negation of the NaN guard: ``inf`` is finite-enough to clamp to max
+    (``inf > mx`` is True), so it stays a 200-with-warning, not a 422."""
+    client, token, _ = share_link
+    r = client.get(f"/s/{token}/variant", params={"size": "inf"})
+    assert r.status_code == 200, r.text
+    assert any("clamp" in w.lower() for w in r.json()["warnings"])
+
+
+# ------------------------- numeric-string enum choices (finding m-3)
+
+def test_a_numeric_string_enum_choice_is_selectable(hosted):
+    """m-3: an enum whose choices are strings that look numeric (``"1"``,
+    ``"2"``) must be selectable — the query ``"1"`` selects the string choice
+    rather than coercing to int 1 and being refused as a non-member."""
+    client, _ = hosted
+    token, _ = _publish(client, script=NUMSTR_ENUM_SCRIPT, part="widget",
+                        exports=())
+    r = client.get(f"/s/{token}/variant", params={"mode": "2", "size": 20})
+    assert r.status_code == 200, r.text
 
 
 # ------------------------------------------------ the anonymous surface

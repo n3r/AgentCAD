@@ -1916,14 +1916,24 @@ it lower-cases "Python".
 
 - **The customizer's containment, all of it:** param parity is the authoring
   path's own `service.normalize_params` (reject unknown/out-of-type/out-of-enum
-  BEFORE build) + `worker._resolve_params` (clamp-and-warn inside the build) —
-  never re-implemented; a per-link AND per-IP `TokenBucket` (from
-  `core/ratelimit.py`); a **global** `BoundedSemaphore(AGENTCAD_SHARE_MAX_INFLIGHT)`
-  (`share_build.inflight_semaphore()`) sized below the pool, acquired
-  non-blocking; and the content-addressed variant cache (a repeat is a disk read,
-  zero kernel). The **per-IP key is `request.client.host`** (the proxy-resolved
-  address), NEVER a hand-parsed `X-Forwarded-For` — a visitor could forge that
-  header and mint a fresh bucket per request (the PRD-005a M3 lesson, kept).
+  BEFORE build); the **range clamp is the shared pure `kernel/paramclamp.py`**
+  helper, called BOTH by `worker._resolve_numeric` (inside the build) AND by
+  `share_build._clamp_params` **server-side before the variant cache key** — so
+  two out-of-range values that clamp to the same geometry coalesce to one key
+  and one build (PRD-007 review M-2), and NaN is refused (not a degenerate 200,
+  finding m-2); never re-implemented. Then a per-link AND per-IP `TokenBucket`
+  (from `core/ratelimit.py`); a **global** `BoundedSemaphore` whose effective
+  size is `min(AGENTCAD_SHARE_MAX_INFLIGHT, pool_size - 1)` — the `pool_size-1`
+  **worker reservation** keeps a member's worker free (the real containment wall;
+  `affinity="share:<pub>"` is consistent-hash cache-warmth routing, **NOT**
+  segregation), and on a single-worker pool the cap is 0 so `/variant` and
+  `/download` refuse with a `503 ServiceUnavailableError` naming
+  `AGENTCAD_KERNEL_POOL_SIZE` rather than starving members (`require_customizer_capacity`);
+  acquired non-blocking; and the content-addressed variant cache (a repeat is a
+  disk read, zero kernel). The **per-IP key is `request.client.host`** (the
+  proxy-resolved address), NEVER a hand-parsed `X-Forwarded-For` — a visitor
+  could forge that header and mint a fresh bucket per request (the PRD-005a M3
+  lesson, kept).
 
 - **`TokenBucket` lives in `core/ratelimit.py` now**, re-exported from
   `presence.py` for PRD-008; `presence.TokenBucket is ratelimit.TokenBucket`.

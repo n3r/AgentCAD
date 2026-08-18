@@ -60,8 +60,8 @@ container ships.
 | `AGENTCAD_HOST` | `127.0.0.1` | Listen address. A non-loopback bind **requires** `AGENTCAD_MODE=hosted`. |
 | `AGENTCAD_TRUSTED_PROXY` | `127.0.0.1` | Hosted mode only. The immediate peer(s) allowed to set `X-Forwarded-For`, passed to uvicorn's `forwarded_allow_ips` (IPs or CIDRs, comma-separated). Default matches the local proxy above. **`*` is refused** — it would let any client forge the address the login limiter keys on. |
 | `AGENTCAD_PORT` | `8630` | Listen port. |
-| `AGENTCAD_KERNEL_POOL_SIZE` | `max(1, min(3, cores//3))` | Kernel workers, ≈0.5 GB RSS each. Compose pins `1` rather than letting it float with the host. |
-| `AGENTCAD_SHARE_MAX_INFLIGHT` | `2` | Hosted mode, PRD-007. The global cap on **concurrent anonymous customizer builds**, sized **below** `AGENTCAD_KERNEL_POOL_SIZE` so a share flood cannot starve signed-in members of workers. Over the cap a `/s/<token>/variant` returns `429 quota_exceeded`; share builds also run on a pool slice segregated by `affinity="share:<pub>"`, off members' workers. |
+| `AGENTCAD_KERNEL_POOL_SIZE` | `max(1, min(3, cores//3))` | Kernel workers, ≈0.5 GB RSS each. Compose pins `2` rather than letting it float with the host: the PRD-007 share customizer reserves one worker for members, so it needs `>= 2` to run (a 1-worker pool answers `/variant`/`/download` with `503`). A viewer-only deployment can drop back to `1`. |
+| `AGENTCAD_SHARE_MAX_INFLIGHT` | `2` | Hosted mode, PRD-007. The operator ceiling on **concurrent anonymous customizer builds**. The *effective* cap is this clamped to `AGENTCAD_KERNEL_POOL_SIZE - 1`, so at least one worker is always reserved for signed-in members — that reservation, not the `affinity=` routing (which is consistent-hash cache-warmth, **not** isolation), is what keeps a share flood from starving members. Over the cap a `/s/<token>/variant` returns `429 quota_exceeded`. On a **single-worker pool** the effective cap is `0`: the customizer cannot run without starving members, so `/variant` and `/download` return `503 service_unavailable` (viewer links stay up) — the customizer needs `AGENTCAD_KERNEL_POOL_SIZE >= 2`. |
 | `AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE` | unset | Hosted mode, PRD-007. **Off by default.** Set to `N` to require sign-in once an anonymous address crosses `N` customizer rebuilds/hour (`/variant` → `401`) — a login wall on a link under a distinct-param flood, without taking the viewer offline. The pre-006 backstop for stranger compute; the per-IP threshold is only honest behind the trusted proxy (see `AGENTCAD_TRUSTED_PROXY`). |
 | `AGENTCAD_EXAMPLES` | `1` | `0` skips registering the bundled examples. Compose sets `0`: in a container they live in a read-only image layer, so edits vanish on redeploy. |
 | `AGENTCAD_CONFIG` | `~/.agentcad/config.json` | User config path; also the root the packages/indexes/state defaults derive from. |
@@ -168,8 +168,10 @@ bug.
 ## Sizing
 
 - **≈0.5 GB RSS per kernel worker**, plus the server process.
-- **Floor: 2 vCPU / 4 GB** with `AGENTCAD_KERNEL_POOL_SIZE=1` (the compose
-  default). A single worker serialises builds; that is fine for a small team.
+- **Floor: 2 vCPU / 4 GB** with `AGENTCAD_KERNEL_POOL_SIZE=2` (the compose
+  default). Two workers is the minimum the **share customizer** needs — one to
+  build a visitor variant on, one kept free for members (a 1-worker pool refuses
+  `/variant` with `503`). A viewer-only deployment can run `1`.
 - **4 vCPU / 8 GB** for `AGENTCAD_KERNEL_POOL_SIZE=3`, which is what a handful
   of concurrent editors wants.
 - Disk is projects plus their `.history` git repos. Mesh caches live under each
@@ -243,6 +245,23 @@ backstop for a link under a distinct-param flood is
 `AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE` (off by default). The per-IP rate limit and
 that gate are only honest behind the trusted proxy (`AGENTCAD_TRUSTED_PROXY`) —
 the same caveat as the login limiter, for the same reason.
+
+**The share token rides in the URL path**, which keeps it out of a `Referer`
+(the pages send `Referrer-Policy: no-referrer`), but a path is **not**
+log-invisible: a reverse proxy (nginx/Caddy) logs the request path by default,
+so the token lands in the proxy access log — treat those logs as containing
+secrets. uvicorn's own access log is quieted (`log_level=warning`), so it is the
+proxy tier, not the app, that records the token. What makes a path token
+acceptable is not log-secrecy but **immediate revocation and expiry**: rotate a
+link (`agentcad share revoke`) if a log is exposed, and set a TTL on links that
+should not live forever.
+
+**Popular is cheaper, but not free.** The variant cache keys on the
+range-**clamped** params, so out-of-range floods (and any repeat) coalesce onto
+one build and one cached artifact. A genuinely-distinct **in-range** flood still
+builds each variant, and the on-disk variant cache is **unbounded** until
+PRD-006 adds a disk budget — the login gate above is the operator's backstop
+until then.
 
 **A private index stays private, and *you* decide which.** An index is
 anonymously readable only when **both** your configuration and the index's own

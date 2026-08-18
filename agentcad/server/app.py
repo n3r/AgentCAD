@@ -25,6 +25,7 @@ from ..core.model import (
     ConflictError,
     NotFoundError,
     RateLimitedError,
+    ServiceUnavailableError,
     ValidationError,
 )
 from ..core.service import AgentCADService
@@ -46,6 +47,7 @@ _ERROR_STATUS = {
     AuthError: 401,
     AuthzError: 403,
     RateLimitedError: 429,
+    ServiceUnavailableError: 503,
 }
 
 

@@ -1,8 +1,15 @@
 """PRD-007 slice 3: the anonymous viewer surface (kernel-free).
 
 Root-mounted (``PREFIX = ""``) so ``/s/<token>`` and ``/embed/<token>`` live at
-the origin's root, where the capability token belongs in the *path* (never a
-query param, so it never lands in an access log or a ``Referer``). Its
+the origin's root. The capability token rides in the *path*, not a query param:
+the page sends ``Referrer-Policy: no-referrer`` so a shared model never leaks
+its token through a ``Referer`` to an embedded/linked third party. **The token
+is NOT log-invisible, though:** a reverse proxy (nginx/Caddy) logs the request
+path by default, so the token lands in the proxy's access log — treat those logs
+as containing secrets. The mitigations that make a path token acceptable are
+elsewhere: immediate revocation and expiry (``publications.resolve``), and a
+value that is 256 bits of ``secrets.token_urlsafe``. (uvicorn's own access log
+is off by default in the hosted run; it is the proxy tier that logs.) Its
 authenticated twin — ``share_create/list/revoke`` — is ``routes_share.py`` at
 ``/api``; a route pack carries one ``PREFIX``, hence two packs.
 
