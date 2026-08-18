@@ -1,11 +1,46 @@
 # PRD-031 — Marketplace & community hub
 
-- **Status:** pending
+- **Status:** pending — **split.** The seeded read-only catalog (browse/search/listing/customizer + add-to-library) is carved into [PRD-031a](../in-progress/PRD-031a-marketplace-catalog.md) (marketplace chain step 4, needs only 011 · 005a · 007). This PRD retains the **031b remainder**: open publishing and everything that runs third-party code on our servers (needs PRD-006). See "Carved out to PRD-031a" below.
 - **Phase:** v6 — moats
 - **Created:** 2026-08-09
 - **Origin:** founder idea #1e (Aug 2026), engineering-reviewed; grounded by dedicated research (market_research.md, "Marketplace & community")
 - **Depends on:** PRD-005 (identity/hosting — hard) · PRD-007 (customizer preview — hard) · PRD-011 (package format & validation — hard) · PRD-006 (sandbox — hard, the safety boundary)
-- **Related:** PRD-029 (skills as a second content type), PRD-021 (rule packs as a third), PRD-024 (quality scoring), PRD-025 (Market workspace)
+- **Related:** PRD-031a (the seeded read-only catalog, in progress) · PRD-029 (skills as a second content type), PRD-021 (rule packs as a third), PRD-024 (quality scoring), PRD-025 (Market workspace)
+
+## Carved out to PRD-031a (18 Aug 2026)
+
+Following the founder decision in [roadmap.md](../../roadmap.md), "Sequencing decision —
+the marketplace chain (16 Aug 2026)", the **seeded read-only catalog** is its own
+PRD ([PRD-031a](../in-progress/PRD-031a-marketplace-catalog.md), chain step 4).
+The fault line is execution: anything that **reads/serves the platform-seeded
+catalog and adds to a library** is 031a and needs only completed deps
+(011 · 005a · 007); anything that **executes third-party uploaded code on our
+servers** or **accepts external publishing** is retained here as 031b and is
+blocked on PRD-006 (chain step 5). This PRD stays `pending` with the retained
+remainder below.
+
+| | Moved to PRD-031a (step 4) | Retained here (031b, needs PRD-006) |
+|---|---|---|
+| **FR1** listings + public read | ✓ served from the bundled `catalog/` via 005a public read (no cloud publish pipeline) | the cloud publish/storage pipeline for author-uploaded listings |
+| **FR2** publish gate (AST/policy/signing) | — | ✓ static AST gate, policy/malware/name-squat scan, signing |
+| **FR3** sandbox-only execution + rebuild limits | the customizer rebuild limits are reused from PRD-007 for *seeded* content | ✓ sandbox-confined execution of *uploaded* code (the PRD-006 blocker) |
+| **FR4** remix/ancestry, license-constrained | — | ✓ |
+| **FR5** add-to-library, lockfile pin, provenance in artifacts | ✓ the existing authenticated `add_package`/`use_part`; `market_install` | artifact-embedded provenance metadata (3MF/STEP header) beyond the header we ship |
+| **FR6** identity & trust tiers | — | ✓ verified publisher / curated shelf |
+| **FR7** moderation, takedown, name-reuse protection | — | ✓ |
+| **FR8** local-mode read-only browse/install | ✓ (self-hosted browses the public catalog, no account) | "publishing requires a cloud identity" (nothing to publish until 031b) |
+| **FR9** economy (free/paid, payouts) | — | ✓ |
+| **FR10** quality surfacing | ✓ the `gate: green` validated badge, read-only | makes/uses counters, curated collections, install-stats |
+| **AC1** browse + customizer + STEP download | ✓ | — |
+| **AC2** publish gate rejects `import os` / breaking geometry | — | ✓ |
+| **AC3** installed package pins version in lockfile | ✓ (PRD-011 inherited) | — |
+| **AC4** remix ancestry / CC-ND block | — | ✓ |
+| **AC5** agent publishes with `disclosure: agent`; `market_search` filters | `market_search` (as anonymous `/search`, and the disclosure filter surface) | *publishing* a listing |
+| **AC6** removed-listing name cannot be re-registered | — | ✓ |
+| **AC7** self-hosted browses/installs without account; publish refused | ✓ browse/install | publish-refused message (no publish path until 031b) |
+
+The remaining FRs and ACs in this file are the **031b** scope. Their acceptance
+is deferred until PRD-006 makes third-party server-side execution safe.
 
 ## Problem & motivation
 
