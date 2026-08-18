@@ -33,6 +33,21 @@ FRONTEND = REPO / "frontend"
 PRD_NAME = "PRD-007-share-links-customizer.md"
 
 
+@pytest.fixture(autouse=True)
+def _customizer_pool(monkeypatch):
+    """PRD-007 finding M-1: the customizer reserves one worker for members
+    (effective in-flight = pool_size - 1), so it needs a DECLARED kernel pool
+    of >=2 to build at all — on a single-worker pool `/variant`/`/download`
+    correctly answer 503. The session `kernel` fixture is one client and CI
+    pins `AGENTCAD_KERNEL_POOL_SIZE=1`, so these build-path ACs must pin the
+    declared pool high enough to exercise the customizer deterministically,
+    exactly as `test_share_customizer.py` does. No AC here probes the
+    single-worker refusal (that lives in `test_share_customizer.py`), so a
+    blanket pin is safe. The env is what `effective_max_inflight` reads; the
+    actual pool object is unchanged."""
+    monkeypatch.setenv("AGENTCAD_KERNEL_POOL_SIZE", "4")
+
+
 def _find_prd() -> Path:
     """Locate the PRD wherever it currently lives — a PRD moves stage at
     *merge*, not when the build finishes, so a hard-coded directory is red for
