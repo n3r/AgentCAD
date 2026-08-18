@@ -61,6 +61,8 @@ container ships.
 | `AGENTCAD_TRUSTED_PROXY` | `127.0.0.1` | Hosted mode only. The immediate peer(s) allowed to set `X-Forwarded-For`, passed to uvicorn's `forwarded_allow_ips` (IPs or CIDRs, comma-separated). Default matches the local proxy above. **`*` is refused** — it would let any client forge the address the login limiter keys on. |
 | `AGENTCAD_PORT` | `8630` | Listen port. |
 | `AGENTCAD_KERNEL_POOL_SIZE` | `max(1, min(3, cores//3))` | Kernel workers, ≈0.5 GB RSS each. Compose pins `1` rather than letting it float with the host. |
+| `AGENTCAD_SHARE_MAX_INFLIGHT` | `2` | Hosted mode, PRD-007. The global cap on **concurrent anonymous customizer builds**, sized **below** `AGENTCAD_KERNEL_POOL_SIZE` so a share flood cannot starve signed-in members of workers. Over the cap a `/s/<token>/variant` returns `429 quota_exceeded`; share builds also run on a pool slice segregated by `affinity="share:<pub>"`, off members' workers. |
+| `AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE` | unset | Hosted mode, PRD-007. **Off by default.** Set to `N` to require sign-in once an anonymous address crosses `N` customizer rebuilds/hour (`/variant` → `401`) — a login wall on a link under a distinct-param flood, without taking the viewer offline. The pre-006 backstop for stranger compute; the per-IP threshold is only honest behind the trusted proxy (see `AGENTCAD_TRUSTED_PROXY`). |
 | `AGENTCAD_EXAMPLES` | `1` | `0` skips registering the bundled examples. Compose sets `0`: in a container they live in a read-only image layer, so edits vanish on redeploy. |
 | `AGENTCAD_CONFIG` | `~/.agentcad/config.json` | User config path; also the root the packages/indexes/state defaults derive from. |
 | `AGENTCAD_PACKAGES_DIR` / `AGENTCAD_INDEXES_DIR` | under the config dir | PRD-011 package cache and index checkouts. |
@@ -223,10 +225,24 @@ author, and a forgotten entry fails the build rather than passing quietly.
 | `GET` | `/api/public/packages/{name}` | ditto |
 | `GET` | `/api/public/packages/{name}/versions/{version}` | ditto — the pre-generated metadata |
 | `GET` | `/api/public/packages/{name}/versions/{version}/preview` | a shipped `.png`, resolved inside the version directory |
+| `GET` | `/s/{token}`, `/embed/{token}` | a shared model's HTML shell off disk (PRD-007). `/embed/` sends `Content-Security-Policy: frame-ancestors *` so any site may embed the public customizer; every other hosted response sends `frame-ancestors 'none'`, so the authenticated app is never frameable |
+| `GET` | `/s/{token}/model`·`/mesh/{key}`·`/params`·`/script` | attribution + metrics, the cached `.acm` bytes (404-if-absent, **never builds**), the slider spec, and the pinned script iff enabled — all file reads of sidecars the publish pin wrote, **zero kernel** |
+| `GET` | `/s/{token}/variant`·`/download/{fmt}` | **the two kernel-reaching anonymous routes** — the customizer rebuild and its variant export. Param-validated to the authoring path's parity (unknown/out-of-type/out-of-enum refused before any build), per-link **and** per-IP token buckets, a global in-flight semaphore (`AGENTCAD_SHARE_MAX_INFLIGHT`), and the content-addressed variant cache in front. A disabled format or a `customizer:false` link `404`s **before** the builder |
 
-Nine entries, every one a file read. **Zero kernel calls**, proved by a test
-that exercises the whole surface with the kernel instrumented — with a positive
-control, so a broken counter cannot make it pass.
+Fifteen route templates. Thirteen are file reads that make **zero kernel calls**
+(proved by a test that exercises the surface with the kernel instrumented, with a
+positive control so a broken counter cannot make it pass). The **two** PRD-007
+customizer routes are the one deliberate exception — the first anonymous requests
+that reach the kernel, bounded exactly as the table says.
+
+**What the caps do NOT yet bound** is stated plainly, because it is the honest
+residual: a params-driven mesh can still **balloon RSS and OOM the host** (peak
+memory is uncapped until PRD-006), which also owes process/pid caps, a
+variant-cache disk budget, and worker egress denial. Until then the operator's
+backstop for a link under a distinct-param flood is
+`AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE` (off by default). The per-IP rate limit and
+that gate are only honest behind the trusted proxy (`AGENTCAD_TRUSTED_PROXY`) —
+the same caveat as the login limiter, for the same reason.
 
 **A private index stays private, and *you* decide which.** An index is
 anonymously readable only when **both** your configuration and the index's own

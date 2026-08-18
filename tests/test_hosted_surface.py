@@ -43,30 +43,35 @@ EXPECTED_PUBLIC = {
     ("GET", "/api/public/packages/{name}"),
     ("GET", "/api/public/packages/{name}/versions/{version}"),
     ("GET", "/api/public/packages/{name}/versions/{version}/preview"),
-    # PRD-007 share links (design Decision 2). Six viewer routes make ZERO
-    # kernel calls; two — /variant and /download — are the customizer path and
-    # the only anonymous routes that reach exec(). All eight are enumerated
-    # here so a ninth /s/ route cannot go public unreviewed.
+    # PRD-007 share links (design Decision 2). These SIX viewer routes make
+    # ZERO kernel calls. The two customizer routes that DO reach exec()
+    # (/variant, /download) join this set in PRD-007 slice 4, mounted in the
+    # same change — NOT staged through NOT_YET_BUILT, because
+    # `test_prd005a_acceptance.py::test_ac2...` asserts `NOT_YET_BUILT == set()`
+    # (the 005a surface is "finished"), so a non-empty subtrahend would turn
+    # that acceptance test red for a whole slice. Growing EXPECTED_PUBLIC and
+    # mounting the route together keeps every tree green and stays reviewable.
     ("GET", "/s/{token}"),
     ("GET", "/embed/{token}"),
     ("GET", "/s/{token}/model"),
     ("GET", "/s/{token}/mesh/{key}"),
     ("GET", "/s/{token}/params"),
     ("GET", "/s/{token}/script"),
+    # The two customizer routes that DO reach exec() — added in PRD-007 slice 4
+    # in the SAME change that mounts them (see the comment above). Both are
+    # gated (customizer flag / export mask), capped (per-link + per-IP buckets,
+    # a global in-flight semaphore) and param-validated to the authoring path's
+    # parity; the set-equality below is what stops a NINTH /s/ route going
+    # public unreviewed.
     ("GET", "/s/{token}/variant"),
     ("GET", "/s/{token}/download/{fmt}"),
 }
 
-# Routes named in EXPECTED_PUBLIC that a slice has not created yet. Slice 3
-# removed the three /api/auth ones; slice 7 emptied it; PRD-007 slice 3 (the
-# viewer) put the two customizer templates here so PRD-007 slice 4 removes
-# them. The final list is written ONCE, above, so the enumeration cannot drift
-# slice by slice — and the set equality below is what stops a forgotten removal
-# from passing silently.
-NOT_YET_BUILT: set[tuple[str, str]] = {
-    ("GET", "/s/{token}/variant"),
-    ("GET", "/s/{token}/download/{fmt}"),
-}
+# Routes named in EXPECTED_PUBLIC that a slice has not created yet. Kept EMPTY:
+# `test_prd005a_acceptance.py` hard-asserts it, so PRD-007 does not stage the
+# customizer templates here — slice 4 adds them to EXPECTED_PUBLIC and mounts
+# them in one change.
+NOT_YET_BUILT: set[tuple[str, str]] = set()
 
 BUILT_PUBLIC = EXPECTED_PUBLIC - NOT_YET_BUILT
 

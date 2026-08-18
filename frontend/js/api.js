@@ -239,6 +239,14 @@ export const api = {
   createVersion: (proj, name, message) =>
     request("POST", `/api/projects/${enc(proj)}/versions`, { name, message }),
 
+  // ---- share links & the customizer (PRD-007; hosted mode, 404 in local) ----
+  /** body: {project, part_id, scope?, ref?, customizer?, exports?,
+   *  show_script?, expires_days?} → {url, pub_id} (the URL is shown once). */
+  shareCreate: (body) => request("POST", "/api/share", body),
+  shareList: (project) =>
+    request("GET", `/api/share?project=${enc(project)}`),
+  shareRevoke: (pubId) => request("DELETE", `/api/share/${enc(pubId)}`),
+
   mergeStatus: (proj) => request("GET", `/api/projects/${enc(proj)}/merge`),
   /** body: {source, target?, allow_invalid?} */
   mergeBranch: (proj, body) =>

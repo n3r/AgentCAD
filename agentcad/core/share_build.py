@@ -40,12 +40,15 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
+import re
 import secrets
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from .materials import DEFAULT_MATERIAL
-from .model import NotFoundError, ValidationError
+from .model import NotFoundError, RateLimitedError, ValidationError
 from .publications import PublicationStore
 
 #: The one part every content-addressed build project holds. The owner's part
@@ -56,6 +59,117 @@ BUILD_PART = "part"
 #: The affinity prefix that routes visitor builds onto a segregated pool slice,
 #: so a customizer flood cannot poison a member's worker (design Decision 4).
 SHARE_AFFINITY = "share"
+
+# --------------------------------------------------------- the in-flight cap
+#
+# A **global** ``BoundedSemaphore`` around the *build call only*, sized BELOW
+# the kernel pool, is what keeps a customizer flood from starving signed-in
+# members of workers (design Decision 4). It is acquired NON-BLOCKING: a
+# refusal is a ``quota_exceeded`` the page degrades on, never a queue that ties
+# up a request thread. The segregation ``affinity="share:<pub>"`` is the second
+# layer — even the ``SHARE_MAX_INFLIGHT`` builds that DO run route onto a
+# bounded pool slice, off the members' workers.
+#
+# The size is read from the environment on every call so an operator (and a
+# test) can move it without a restart; the semaphore is rebuilt only when the
+# size actually changes, so within one setting it is the one shared object the
+# whole process contends on.
+ENV_MAX_INFLIGHT = "AGENTCAD_SHARE_MAX_INFLIGHT"
+
+#: Conservative by design (design "Risks"): customizer responsiveness traded
+#: against member starvation, with the affinity segregation as the second wall.
+DEFAULT_MAX_INFLIGHT = 2
+
+#: A refused build is retryable almost immediately — a slot frees the moment any
+#: in-flight build returns; unlike the token buckets this is not a refill delay.
+SHARE_BUSY_RETRY_AFTER_S = 1
+
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT: dict = {"size": None, "sem": None}
+
+#: A query-string integer, so an enum choice declared ``3`` matches a ``"3"``.
+_INT_RE = re.compile(r"^[+-]?\d+$")
+
+
+def _configured_max_inflight() -> int:
+    raw = os.environ.get(ENV_MAX_INFLIGHT)
+    if raw is None:
+        return DEFAULT_MAX_INFLIGHT
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_INFLIGHT
+
+
+def inflight_semaphore() -> threading.BoundedSemaphore:
+    """The process-global build slot, sized by :data:`ENV_MAX_INFLIGHT`.
+
+    Rebuilt only when the configured size changes, so every concurrent caller
+    contends on the same object — which is the whole point of a *global* cap.
+    """
+    size = _configured_max_inflight()
+    with _INFLIGHT_LOCK:
+        if _INFLIGHT["sem"] is None or _INFLIGHT["size"] != size:
+            _INFLIGHT["sem"] = threading.BoundedSemaphore(size)
+            _INFLIGHT["size"] = size
+        return _INFLIGHT["sem"]
+
+
+@contextmanager
+def _inflight_slot():
+    """Hold a global build slot for the duration of one kernel-reaching build,
+    or refuse with ``quota_exceeded`` when the cap is already full."""
+    sem = inflight_semaphore()
+    if not sem.acquire(blocking=False):
+        raise RateLimitedError(
+            "the customizer is busy; please retry shortly",
+            {"retry_after_s": SHARE_BUSY_RETRY_AFTER_S})
+    try:
+        yield
+    finally:
+        sem.release()
+
+
+def _try_number(value: str):
+    text = value.strip()
+    try:
+        return int(text) if _INT_RE.match(text) else float(text)
+    except ValueError:
+        return None
+
+
+def _coerce_query_value(entry: dict, value):
+    """A query string is all text; coerce one value to the type its spec entry
+    declares so the authoring-path validator can judge it. A value that will
+    not coerce is passed through UNCHANGED — ``normalize_params`` then refuses
+    it, so a bad value is one refusal, never a swallowed coercion."""
+    if not isinstance(value, str):
+        return value
+    ptype = entry.get("type") or "number"
+    if ptype == "string":
+        return value
+    if ptype == "bool":
+        low = value.strip().lower()
+        if low in ("true", "1", "yes", "on"):
+            return True
+        if low in ("false", "0", "no", "off"):
+            return False
+        return value                       # normalize_params rejects a non-bool
+    if ptype == "enum":
+        num = _try_number(value)
+        return num if num is not None else value
+    num = _try_number(value)               # number / int
+    return num if num is not None else value
+
+
+def _coerce_query_params(spec: dict, raw: dict) -> dict:
+    """Coerce a raw query dict against *spec*. An unknown name is left as-is so
+    ``normalize_params`` raises the same ``unknown parameter(s)`` it does for
+    the authoring path — the negation ``an out-of-spec param never reaches
+    build`` proves."""
+    return {name: (_coerce_query_value(spec[name], value) if name in spec
+                   else value)
+            for name, value in raw.items()}
 
 
 def _proj_name(script_sha: str) -> str:
@@ -268,6 +382,97 @@ class ShareBuilder:
         return svc._build_with(
             proj, record, affinity=f"{SHARE_AFFINITY}:{_proj_name(script_sha)}",
             status_key=None)
+
+    def _variant_cache_key(self, proj: str, material: str,
+                           params: dict) -> str:
+        """The content-addressed key a build of *params* WOULD produce, computed
+        without building — so a repeat visitor is a pure disk read that takes no
+        in-flight slot and makes zero kernel calls (AC2)."""
+        svc = self._svc()
+        base = svc.store.get_part(proj, BUILD_PART)
+        derived = dataclasses.replace(base, params=dict(params),
+                                      material=material)
+        return svc._cache_key_for(proj, derived)
+
+    def _validated_params(self, record: dict, raw: dict) -> tuple[str, str, dict]:
+        """``(proj, material, normalized)`` for a variant request, or raise.
+
+        Validation is the AUTHORING path's own logic, reused not forked:
+        ``normalize_params`` rejects wrong types, non-member enum choices and
+        unknown names BEFORE any build; the out-of-range clamp-with-warning is
+        inherited from ``worker._resolve_params`` inside the build itself. The
+        visitor supplies DATA, never code (PRD-005a Decision 2)."""
+        script_sha = record["script_sha"]
+        material = record.get("material") or DEFAULT_MATERIAL
+        spec = self.params_spec(script_sha) or {}
+        coerced = _coerce_query_params(spec, raw)
+        normalized = self._svc().normalize_params(spec, coerced)
+        return _proj_name(script_sha), material, normalized
+
+    # --------------------------------------------------------- public builds
+
+    def build_variant(self, pub_id: str, params: dict) -> dict:
+        """Build one visitor variant, bounded. Returns ``{mesh_key, metrics,
+        warnings, lods, ok, cached}``.
+
+        The order is the containment: **validate** (reject out-of-spec before a
+        build), **probe the cache** (a repeat is a free disk read — no slot, no
+        kernel), then take a **global in-flight slot** around the build only. A
+        failed build is a ``validation_error`` — a param set the author's script
+        cannot realise, not a server fault."""
+        record = self._store.get(pub_id)
+        if record is None:
+            raise NotFoundError("no such share link")
+        proj, material, normalized = self._validated_params(record, params)
+        script_sha = record["script_sha"]
+
+        key = self._variant_cache_key(proj, material, normalized)
+        if self.mesh_path(script_sha, key) is not None:
+            sidecar = self.metrics_for(script_sha, key) or {}
+            return {"mesh_key": key, "metrics": sidecar.get("metrics"),
+                    "warnings": sidecar.get("warnings", []),
+                    "lods": sidecar.get("lods", []), "ok": True, "cached": True}
+
+        with _inflight_slot():
+            result = self._build(proj, script_sha, material, normalized)
+        if not result["ok"]:
+            raise ValidationError(
+                result.get("error", {}).get("message", "variant build failed"),
+                {"params": normalized})
+        return {"mesh_key": result["cache_key"],
+                "metrics": result.get("metrics"),
+                "warnings": result.get("warnings", []),
+                "lods": result.get("lods", []), "ok": True, "cached": False}
+
+    def export_variant(self, pub_id: str, params: dict, fmt: str) -> Path:
+        """Export one visitor variant to a **content-addressed** file, so a
+        repeat download is a disk read (no kernel). Same param parity and the
+        same in-flight cap as :meth:`build_variant`; the caller checks the
+        export mask before this runs."""
+        from .service import EXPORT_TOLERANCE
+
+        record = self._store.get(pub_id)
+        if record is None:
+            raise NotFoundError("no such share link")
+        proj, material, normalized = self._validated_params(record, params)
+
+        svc = self._svc()
+        key = self._variant_cache_key(proj, material, normalized)
+        out = svc.store.exports_dir(proj) / f"{key}.{fmt}"
+        if out.is_file():
+            return out                     # content-addressed: a cache read
+
+        out.parent.mkdir(parents=True, exist_ok=True)
+        script = svc.store.read_script(proj, BUILD_PART)
+        with _inflight_slot():
+            result = svc.kernel.request(
+                "export",
+                {"script": script, "params": dict(normalized), "format": fmt,
+                 "out_path": str(out), "tolerance": EXPORT_TOLERANCE},
+                timeout_s=300.0)
+        if not result.get("ok", True):
+            raise ValidationError("variant export failed", {"format": fmt})
+        return out
 
     # ------------------------------------------------- kernel-free read helpers
 

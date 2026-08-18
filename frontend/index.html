@@ -93,6 +93,11 @@
       </div>
     </div>
 
+    <!-- Hosted mode only: share-links.js unhides this once we know the app is
+         hosted (a share link needs a public origin). -->
+    <button id="share-btn" class="tb-btn hidden" type="button"
+            aria-haspopup="dialog">Share…</button>
+
     <button id="theme-btn" class="tb-btn" title="Switch to light theme"
             aria-label="Switch to light theme">☀</button>
 
@@ -237,6 +242,18 @@
         </div>
       </header>
       <div id="versions-body" class="ver-body"></div>
+    </div>
+  </div>
+
+  <div id="share-modal" class="modal-overlay hidden">
+    <div class="modal narrow">
+      <header class="modal-head">
+        <span class="modal-title">Share a part</span>
+        <div class="modal-actions">
+          <button id="share-modal-close" class="tb-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div id="share-body" class="share-modal-body"></div>
     </div>
   </div>
 

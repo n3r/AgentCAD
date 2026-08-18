@@ -1045,6 +1045,43 @@ you as a user.
 > colleagues. That is a statement of what the software does today, not a
 > caveat to skim.
 
+## Sharing a part (a hosted instance)
+
+On a hosted instance you can turn a part into an **unlisted link** that anyone
+can open in a browser — no account, no install. A logged-out visitor sees the
+model, its metrics and your attribution; a *customizer* link also gives them
+sliders that rebuild real geometry within the bounds your PARAMS declare, and a
+STEP/STL/3MF of *their* variant.
+
+- **Publish.** Select a part and click **Share…** in the toolbar. In the dialog:
+  choose the **version** (a tag by default, so the link never drifts — leaving
+  it on "current state" tags a new version for you); turn the **customizer** on
+  or off; tick the **download** formats to allow (or none for view-only); choose
+  whether the **script** is visible; and optionally an **expiry** in days
+  (default: never, until you revoke). Click **Create link** — the URL is shown
+  **once**, so copy it then.
+- **The URL is the capability.** Anyone with the link can view (and, on a
+  customizer link, customize and download). There is no other login. Treat it
+  like a shared document link: unguessable, but not secret to those you send it
+  to. The page footer says as much to your visitors.
+- **Embed it.** `…/embed/<token>` is an iframe-embeddable version of the same
+  page — drop it into a forum post or a docs page and the model orbits inline.
+- **Watch and revoke.** The dialog's **Active links** list shows each link's
+  coarse view/rebuild/download counts and a **Revoke** button. Revocation is
+  immediate; a revoked, expired or unknown link all answer the same "no such
+  link", so the URL is never an oracle for what you have published.
+- **Your work is safe from visitors.** A link pins a *copy* of the script at the
+  chosen version, built in an isolated space; editing your working part never
+  changes what a live link serves, and no visitor action can touch your project,
+  its history or its cache. A visitor supplies slider *values*, never code — the
+  same validation the editor uses clamps a number out of range and refuses a bad
+  type. A busy link degrades to view-only with a plain "try again shortly"
+  rather than an error.
+
+Publishing is also an agent tool (`share_create` / `share_list` /
+`share_revoke`) — an agent can drop a share URL into chat or a proposal. See
+`docs/agent-api.md`.
+
 ## Where files live
 
 | Path | Contents |

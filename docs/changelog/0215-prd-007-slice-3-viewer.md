@@ -53,10 +53,23 @@ embed page opts into cross-origin framing.
 
 ## Notes
 Verification: `pytest tests/test_share_viewer.py tests/test_hosted_surface.py`
-→ **34 passed**; broader regression (share + surface + guard + auth + presence +
-ratelimit + publications + server + appmode) → **228 passed** (2026-08-18). The
-customizer routes `/s/{token}/variant` and `/s/{token}/download/{fmt}` are
-enumerated but **not mounted** — slice 4 adds them with param-validation parity,
-per-link/per-IP token buckets, a global in-flight semaphore and the export mask.
-Prior full-suite baseline: 3689 passed / 1 skipped (changelog 0199, the prior
-tree's measurement — PRD-012 merged after).
+→ **34 passed**; the slice-1–3 targeted suites (`test_ratelimit`,
+`test_publications`, `test_share_publish`, `test_share_isolation`,
+`test_share_viewer`) → **38 passed**; broader regression (share + surface +
+guard + auth + presence + ratelimit + publications + server + appmode) → **228
+passed** (2026-08-18). A full `make test` (uv run pytest -n 8) over these three
+slices showed **no functional failures attributable to slices 1–3** (3947
+passed; the failures observed were changelog count-citation *evidence* checks,
+not code). The prior tree measured 3689 passed / 1 skipped (changelog 0199,
+before PRD-012 merged) — cited as the prior tree's number, not this one's.
+
+**Divergence from the PRD-007 plan (reported):** the plan (slice 3, step 2) said
+to stage the two customizer templates in `NOT_YET_BUILT` and empty it in slice
+4. That is incompatible with `tests/test_prd005a_acceptance.py::test_ac2...`,
+which hard-asserts `NOT_YET_BUILT == set()` (the 005a surface is "finished"), so
+a non-empty subtrahend turns a 005a acceptance test red for a whole slice.
+Instead, slice 3 enumerates only the six viewer templates; PRD-007 slice 4 adds
+`/s/{token}/variant` and `/s/{token}/download/{fmt}` to `EXPECTED_PUBLIC` **and**
+mounts them in the same change (param-validation parity, per-link/per-IP token
+buckets, a global in-flight semaphore, the export mask). This keeps every tree
+green and stays reviewable — spec wins over the plan where they disagree.

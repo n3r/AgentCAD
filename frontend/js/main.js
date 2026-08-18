@@ -20,6 +20,7 @@ import * as comments from "./comments.js";
 import * as library from "./library.js";
 import * as configs from "./configs.js";
 import * as auth from "./auth.js";
+import { setupShare } from "./share-links.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 const BRANCH_RE = /^[a-z0-9][a-z0-9_/-]{0,63}$/;
@@ -2259,6 +2260,7 @@ async function boot() {
   setupProposals();
   setupClaimDialog();
   setupExportMenu();
+  setupShare(identity);
   setupImport();
   setupLibrary();
   setupUndo();
