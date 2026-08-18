@@ -293,14 +293,130 @@ def test_an_unknown_platform_is_unsupported_rather_than_a_crash(isolated,
         plan.release()
 
 
-def test_windows_is_unsupported_until_its_slice_lands(isolated, monkeypatch):
-    """Documents the state of this slice, and fails the day a backend module
-    appears without the facade being pointed at it."""
+# --------------------------------------------------------- the Windows plan
+#
+# The job object is created and configured in the SERVER process, at plan
+# time — which is what lets `quotas.mechanism` name `job_object` honestly
+# (a mechanism string is a promise; at plan time the job either exists with
+# its limits written, or the tier reports itself off). That also makes the
+# shape assertable anywhere: the five Win32 entry points are module-level
+# functions, so a macOS box can stub the boundary and drive the rest.
+
+@pytest.fixture
+def windows(monkeypatch):
+    """The Windows backend with its Win32 calls stubbed, on any OS."""
+    from agentcad.kernel import sandbox_windows
+
+    calls = SimpleNamespace(created=0, info=[], assigned=[], closed=[],
+                            working_set=321 * 1024 * 1024)
+
+    def _create():
+        calls.created += 1
+        return 4242                                   # a plausible HANDLE
+
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sandbox_windows, "_job_create", _create)
+    monkeypatch.setattr(sandbox_windows, "_set_information",
+                        lambda job, klass, info: calls.info.append((job, klass, info)))
+    monkeypatch.setattr(sandbox_windows, "_assign",
+                        lambda job, handle: calls.assigned.append((job, handle)))
+    monkeypatch.setattr(sandbox_windows, "_close_handle", calls.closed.append)
+    monkeypatch.setattr(
+        sandbox_windows, "_memory_counters",
+        lambda handle: SimpleNamespace(WorkingSetSize=calls.working_set))
+    return sandbox_windows, calls
+
+
+def test_the_windows_plan_caps_with_a_job_object_and_confines_with_nothing(
+        isolated, windows):
+    """Decision 7: the quotas are real, the confinement is `unsupported` and
+    says why. `off` would suggest a switch the operator could flip."""
+    module, calls = windows
+    plan = _plan([isolated], quotas={"memory_mb": 1024, "pids": 16})
+    try:
+        assert plan.argv == BASE_ARGV                # nothing wraps it
+        # The one payload key: Windows has no rlimit for the worker to apply,
+        # but a job object's MemoryError IS a cap being enforced, and
+        # `denials.classify` never names a denial no worker reported.
+        assert json.loads(plan.env["AGENTCAD_CONFINE"]) == {
+            "posture": "local", "quotas": ["job_object"]}
+        assert plan.confinement == {
+            "status": "unsupported", "mechanism": None,
+            "detail": {"posture": "local",
+                       "note": "AppContainer confinement is PRD-006b"}}
+        assert plan.quotas["status"] == "active"
+        assert plan.quotas["mechanism"] == "job_object+supervisor"
+
+        job, klass, info = calls.info[0]
+        assert klass == module.JobObjectExtendedLimitInformation
+        flags = info.BasicLimitInformation.LimitFlags
+        assert flags & module.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        assert flags & module.JOB_OBJECT_LIMIT_PROCESS_MEMORY
+        assert flags & module.JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+        assert info.ProcessMemoryLimit == 1024 * 1024 * 1024
+        assert info.BasicLimitInformation.ActiveProcessLimit == 16
+        # ...and the CPU rate control, a hard cap on a share of the MACHINE
+        _job, klass, rate = calls.info[1]
+        assert klass == module.JobObjectCpuRateControlInformation
+        assert rate.ControlFlags == (module.JOB_OBJECT_CPU_RATE_CONTROL_ENABLE
+                                     | module.JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP)
+        assert 1 <= rate.CpuRate <= module.CPU_RATE_MAX
+
+        # The process joins the job after Popen, never through a preexec_fn.
+        plan.backend.attach(SimpleNamespace(pid=99, _handle=7))
+        assert calls.assigned == [(job, 7)]
+        assert plan.backend.rss_bytes(SimpleNamespace(_handle=7)) == 321 * 1024 * 1024
+        assert plan.backend.explain_exit(None, -9) is None
+    finally:
+        plan.release()
+    assert calls.closed == [job]     # KILL_ON_JOB_CLOSE takes survivors with it
+
+
+def test_a_windows_job_object_that_cannot_be_made_is_not_claimed(isolated,
+                                                                  windows,
+                                                                  monkeypatch):
+    """Decision 8, on the tier that needs no operator action at all: if the
+    job object could not be created, `mechanism` must not say `job_object`."""
+    module, _calls = windows
+
+    def _refused():
+        raise OSError(5, "Access is denied")
+
+    monkeypatch.setattr(module, "_job_create", _refused)
+    plan = _plan([isolated])
+    try:
+        assert plan.quotas["mechanism"] == "supervisor"
+        assert plan.quotas["status"] == "active"      # the sampler still runs
+        assert any("job-object" in warning for warning in plan.warnings)
+        assert plan.backend.job is None
+        # ...and with no job there is no cap to tell the worker about, so its
+        # MemoryError stays what it is: the machine running out of memory.
+        assert "AGENTCAD_CONFINE" not in plan.env
+    finally:
+        plan.release()
+
+
+def test_the_windows_opt_out_stays_unsupported(isolated, windows, monkeypatch):
+    """`AGENTCAD_NO_SANDBOX` opts out of a confinement. Windows has none, so
+    there is nothing to opt out of and `off` would be a lie in the other
+    direction — the operator would go looking for the switch."""
+    monkeypatch.setenv("AGENTCAD_NO_SANDBOX", "1")
     plan = _plan([isolated])
     try:
         assert plan.confinement["status"] == "unsupported"
-        assert plan.quotas["mechanism"] == "supervisor"
+        assert plan.quotas["mechanism"] == "job_object+supervisor"
+    finally:
+        plan.release()
+
+
+def test_an_unknown_platform_with_the_opt_out_is_still_unsupported(isolated,
+                                                                   monkeypatch):
+    monkeypatch.setattr(sys, "platform", "sunos5")
+    monkeypatch.setenv("AGENTCAD_NO_SANDBOX", "1")
+    plan = _plan([isolated])
+    try:
+        assert plan.confinement["status"] == "unsupported"
+        assert "sunos5" in plan.confinement["detail"]["reason"]
     finally:
         plan.release()
 
@@ -434,6 +550,141 @@ def test_a_kernel_or_machine_that_cannot_confine_says_so(isolated, linux,
         plan.release()
 
 
+# ------------------------------------------------------------ the cgroup tier
+#
+# The tier is Linux-only in effect but pure file I/O in code — mkdir, four
+# writes and a read — so a fake delegated directory exercises all of it on any
+# OS. What CANNOT be faked (the kernel actually OOM-killing the worker) is
+# `tests/test_sandbox_linux.py::test_cgroup_tier_when_delegated`, which needs
+# a real delegated cgroup and skips without one.
+
+@pytest.fixture
+def delegated(tmp_path, monkeypatch):
+    """A directory shaped like a cgroup v2 subtree the operator delegated."""
+    root = tmp_path / "cg"
+    root.mkdir()
+    (root / "cgroup.controllers").write_text("cpuset cpu io memory pids\n",
+                                             encoding="utf-8")
+    (root / "cgroup.subtree_control").write_text("memory pids cpu\n",
+                                                 encoding="utf-8")
+    monkeypatch.setenv(sandbox_linux_module().CGROUP_ENV, str(root))
+    return root
+
+
+def sandbox_linux_module():
+    from agentcad.kernel import sandbox_linux
+
+    return sandbox_linux
+
+
+def test_a_delegated_cgroup_becomes_the_first_quota_tier(isolated, linux,
+                                                          delegated):
+    """Decision 4: opt-in by delegation. When the operator did the work, the
+    worker gets a real kernel-enforced cap and health says which one."""
+    plan = _plan([isolated], quotas={"memory_mb": 512, "pids": 16,
+                                     "cpu_percent": 200})
+    try:
+        assert plan.quotas["mechanism"] == "cgroup+rlimit+supervisor"
+        assert plan.warnings == []
+        # The worker applies none of this, and is told about it anyway: a
+        # `pids.max` breach arrives in the script as a `BlockingIOError`, and
+        # `denials.classify` names nothing without a reported live cap.
+        assert json.loads(plan.env["AGENTCAD_CONFINE"])["quotas"] == ["cgroup"]
+        worker = plan.backend.cg_dir
+        assert Path(worker).parent == delegated
+        assert (Path(worker) / "memory.max").read_text(
+            encoding="utf-8") == str(512 * 1024 * 1024)
+        # Load-bearing: with swap at `max` the spike's 400 MB allocation under
+        # a 200 MB cap swapped instead of dying.
+        assert (Path(worker) / "memory.swap.max").read_text(
+            encoding="utf-8") == "0"
+        assert (Path(worker) / "pids.max").read_text(encoding="utf-8") == "16"
+        assert (Path(worker) / "cpu.max").read_text(
+            encoding="utf-8") == "200000 100000"
+
+        # The parent places the pid after Popen — never a preexec_fn.
+        plan.backend.attach(SimpleNamespace(pid=4321))
+        assert (Path(worker) / "cgroup.procs").read_text(
+            encoding="utf-8") == "4321"
+    finally:
+        plan.release()
+
+
+def test_the_cgroup_names_the_oom_kill_that_the_return_code_cannot(isolated,
+                                                                    linux,
+                                                                    delegated):
+    """A kernel OOM kill, the supervisor's kill and a timeout kill all leave
+    `returncode == -9`. Only the counter delta tells them apart."""
+    plan = _plan([isolated], quotas={"memory_mb": 512})
+    try:
+        worker = Path(plan.backend.cg_dir)
+        (worker / "memory.events").write_text("low 0\nmax 39\noom_kill 0\n",
+                                              encoding="utf-8")
+        plan.backend.attach(SimpleNamespace(pid=4321))     # records oom_kill 0
+        assert plan.backend.explain_exit(None, -9) is None
+
+        (worker / "memory.events").write_text("low 0\nmax 39\noom_kill 1\n",
+                                              encoding="utf-8")
+        assert plan.backend.explain_exit(None, -9) == {"reason": "memory_cap",
+                                                        "tier": "cgroup"}
+    finally:
+        plan.release()
+
+
+def test_a_cgroup_dir_that_is_not_one_falls_back_and_says_so(isolated, linux,
+                                                              tmp_path,
+                                                              monkeypatch):
+    """The operator asked for the tier and did not get it: that is worth a
+    warning naming the directory. (A machine that delegated nothing at all is
+    *not* — see the next test.)"""
+    plain = tmp_path / "not-a-cgroup"
+    plain.mkdir()
+    monkeypatch.setenv(sandbox_linux_module().CGROUP_ENV, str(plain))
+    plan = _plan([isolated])
+    try:
+        assert plan.quotas["mechanism"] == "rlimit+supervisor"
+        assert plan.backend.cg_dir is None
+        assert any(str(plain) in warning for warning in plan.warnings), plan.warnings
+    finally:
+        plan.release()
+
+
+def test_no_delegated_cgroup_is_the_normal_state_and_not_a_warning(isolated,
+                                                                    linux,
+                                                                    monkeypatch):
+    """The shipped container and every developer box land here. Warning on it
+    would train an operator to ignore the field."""
+    monkeypatch.setenv(sandbox_linux_module().CGROUP_ENV, "off")
+    plan = _plan([isolated])
+    try:
+        assert plan.quotas["mechanism"] == "rlimit+supervisor"
+        assert plan.warnings == []
+    finally:
+        plan.release()
+
+
+def test_the_root_cgroup_is_never_taken_for_a_delegated_one(monkeypatch,
+                                                             tmp_path):
+    """`0::/` is a CI runner and a developer laptop, not a delegated subtree.
+    Enabling controllers or moving pids around up there is a machine-wide
+    change nobody asked for."""
+    module = sandbox_linux_module()
+    monkeypatch.delenv(module.CGROUP_ENV, raising=False)
+    proc = tmp_path / "cgroup"
+    proc.write_text("0::/\n", encoding="utf-8")
+    real_open = open
+
+    def _fake_open(path, *args, **kwargs):
+        if path == "/proc/self/cgroup":
+            return real_open(proc, *args, **kwargs)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", _fake_open)
+    warnings: list[str] = []
+    assert module.CgroupTier.probe(warnings) is None
+    assert warnings == []
+
+
 # ----------------------------------------------------------------- the quotas
 
 def test_the_plan_carries_both_the_report_and_the_resolved_object(isolated,
@@ -494,7 +745,126 @@ def test_the_posture_reported_is_the_one_in_effect(isolated, backend):
         plan.release()
 
 
+# ------------------------------------------------------------ the health object
+
+def test_report_answers_for_a_client_that_has_no_plan_at_all():
+    """`KernelClient()` — the historical form, and the test suite's session
+    fixture. There is nothing confining it and nothing capping it, and health
+    has to say that without raising on the missing plan."""
+    from agentcad.kernel.client import KernelClient
+
+    body = sandbox.report(KernelClient())
+    assert body["status"] in ("off", "unsupported")
+    assert body["mechanism"] is None
+    assert body["posture"] == "local"
+    assert body["confinement"] == {"status": body["status"], "mechanism": None,
+                                   "detail": {}}
+    assert body["quotas"] == {"status": "off", "mechanism": None, "limits": {}}
+    assert body["warnings"] == []
+
+
+def test_report_keeps_the_intent_until_a_worker_has_answered(isolated, backend):
+    """A plan that has not spawned anything yet has no report to disagree with.
+    Reporting `off` there would make a starting server look broken."""
+    plan = _plan([isolated])
+    try:
+        body = sandbox.report(SimpleNamespace(_plan=plan, sandbox_report=None,
+                                              sandboxed=True))
+        assert body["status"] == "active"
+        assert body["mechanism"] == "fake"
+        assert body["quotas"] == plan.quotas
+        assert body["warnings"] == ["a backend warning"]
+    finally:
+        plan.release()
+
+
+def test_report_downgrades_when_the_worker_says_the_preamble_failed(isolated,
+                                                                     backend):
+    """Decision 8, the whole point: `active` is never claimed from intent. The
+    failure travels into `warnings`, and the mechanism goes with the claim —
+    naming one beside `off` would say something is still in force."""
+    plan = _plan([isolated])
+    try:
+        live = {"landlock_abi": 0, "seccomp": None,
+                "failures": [{"stage": "landlock", "error": "EOPNOTSUPP"}]}
+        body = sandbox.report(SimpleNamespace(_plan=plan, sandbox_report=live,
+                                              sandboxed=False))
+        assert body["status"] == "off"
+        assert body["mechanism"] is None
+        assert body["confinement"]["detail"]["landlock_abi"] == 0
+        assert any("landlock" in w and "EOPNOTSUPP" in w
+                   for w in body["warnings"]), body["warnings"]
+    finally:
+        plan.release()
+
+
+def test_report_keeps_active_when_only_a_quota_stage_failed(isolated, backend):
+    """A refused rlimit is a cap that did not apply — it belongs in warnings,
+    and it says nothing at all about Landlock and seccomp. Letting it clear the
+    confinement would understate it as badly as overstating it does."""
+    plan = _plan([isolated])
+    try:
+        live = {"landlock_abi": 6, "seccomp": "seccomp(2)",
+                "rlimits": ["RLIMIT_NPROC"],
+                "failures": [{"stage": "rlimit", "error": "EINVAL"}]}
+        body = sandbox.report(SimpleNamespace(_plan=plan, sandbox_report=live,
+                                              sandboxed=True))
+        assert body["status"] == "active"
+        assert body["confinement"]["detail"]["seccomp"] == "seccomp(2)"
+        assert body["confinement"]["detail"]["rlimits"] == ["RLIMIT_NPROC"]
+        assert any("rlimit" in w and "EINVAL" in w for w in body["warnings"])
+    finally:
+        plan.release()
+
+
+def test_report_reads_a_pool_through_its_plan_property(isolated, backend):
+    """A pool has no `_plan` of its own; worker 0 speaks for all of them,
+    because they are constructed identically."""
+    plan = _plan([isolated])
+    try:
+        pool = SimpleNamespace(plan=plan, sandbox_report={},
+                               sandboxed=True)
+        assert sandbox.report(pool)["quotas"] == plan.quotas
+        assert sandbox.report(pool)["posture"] == plan.posture
+    finally:
+        plan.release()
+
+
+def test_report_surfaces_a_backend_failure_that_happened_after_the_plan(
+        isolated, backend):
+    """A cgroup that refused the pid, a job object that refused the assignment:
+    both happen at `attach()`, long after `plan.warnings` was copied."""
+    plan = _plan([isolated])
+    try:
+        plan.backend.warnings.append("the cgroup quota tier is off: EPERM")
+        warnings = sandbox.report(SimpleNamespace(_plan=plan))["warnings"]
+        assert warnings == ["a backend warning",
+                            "the cgroup quota tier is off: EPERM"]
+    finally:
+        plan.release()
+
+
 # ------------------------------------------------- the unchanged public names
+
+def test_supported_answers_for_the_platform_not_for_a_worker(monkeypatch):
+    """The legacy strings (`/api/health`'s `sandbox`, `agentcad check`'s
+    environment block) are a *capability*: could a new worker be confined here.
+    Linux answers yes since the worker confines itself — what a RUNNING worker
+    actually got is `report()`, from its own ping."""
+    from agentcad.kernel import _confine
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sandbox.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(_confine, "landlock_abi", lambda: 6)
+    assert sandbox.supported() is True
+    monkeypatch.setattr(_confine, "landlock_abi", lambda: 2)
+    assert sandbox.supported() is False       # below the TRUNCATE floor
+    monkeypatch.setattr(_confine, "landlock_abi", lambda: 6)
+    monkeypatch.setattr(sandbox.platform, "machine", lambda: "riscv64")
+    assert sandbox.supported() is False       # no seccomp syscall table
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert sandbox.supported() is False       # Decision 7: PRD-006b
+
 
 def test_wrap_argv_and_status_keep_their_semantics(monkeypatch, isolated):
     monkeypatch.setattr(sandbox, "available", lambda: False)
@@ -633,6 +1003,13 @@ OCP_FREE = {
     "agentcad.kernel.sandbox": 'mod.status() in ("active", "off", "unsupported")',
     "agentcad.kernel.sandbox_macos": 'mod.SANDBOX_EXEC.endswith("sandbox-exec")',
     "agentcad.kernel.sandbox_linux": 'mod.HOSTED_READ_ROOTS[0] == "/usr"',
+    # Imported on every OS by `sandbox.plan` only on Windows — but the ctypes
+    # structures are defined at import time, so this also proves they are
+    # portable enough to be *read* anywhere (which is what lets the plan-shape
+    # test above run on a macOS dev box).
+    "agentcad.kernel.sandbox_windows":
+        "mod.JobObjectExtendedLimitInformation == 9 "
+        "and mod.JOBOBJECT_EXTENDED_LIMIT_INFORMATION().ProcessMemoryLimit == 0",
     # The three the WORKER imports before build123d — if one of them ever
     # imported a geometry kernel, the preamble would confine a process that
     # had already loaded 500 MB of OCCT, which is the opposite of the point.
@@ -655,6 +1032,33 @@ def test_module_imports_with_no_geometry_kernel_available(module):
                           capture_output=True, text=True, timeout=180)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip().endswith("ok")
+
+
+@pytest.mark.integration
+@pytest.mark.portability
+def test_the_preamble_records_a_quota_tier_it_did_not_apply_itself():
+    """The Windows half of Decision 9, assertable anywhere.
+
+    A job object is installed by the *parent*, so the worker applies nothing —
+    and yet a breach lands in the script as a bare `MemoryError`, which
+    `denials.classify` refuses to name unless this worker reported a live cap.
+    Driven in a subprocess because the preamble is deliberately once-per-process
+    (`_APPLIED`), and applying it inside pytest would leave every later test
+    running against a worker that thinks it is confined.
+    """
+    repo = Path(__file__).resolve().parents[1]
+    probe = ("import json\n"
+             "from agentcad.kernel import _preamble\n"
+             "print(json.dumps(_preamble.apply_from_env()))\n")
+    payload = json.dumps({"posture": "local", "quotas": ["job_object"]})
+    proc = subprocess.run(
+        [sys.executable, "-c", probe], cwd=repo, capture_output=True,
+        text=True, timeout=180, env={**os.environ, "AGENTCAD_CONFINE": payload})
+    assert proc.returncode == 0, proc.stderr
+    report = json.loads(proc.stdout)
+    assert report["quotas"] == ["job_object"]
+    assert report["rlimits"] == [] and report["failures"] == []
+    assert "quotas=job_object" in proc.stderr
 
 
 # --------------------------------------------------------- the macOS backend

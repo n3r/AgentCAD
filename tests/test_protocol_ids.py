@@ -135,8 +135,8 @@ def test_a_preamble_that_applied_nothing_classifies_no_denials(monkeypatch,
     client.start()
     try:
         assert client.sandbox_report == {"posture": "local", "rlimits": [],
-                                         "landlock_abi": None, "seccomp": None,
-                                         "failures": []}
+                                         "quotas": [], "landlock_abi": None,
+                                         "seccomp": None, "failures": []}
         script = ("PARAMS = {}\n"
                   "def build(p):\n"
                   "    raise PermissionError('[Errno 13] Permission denied')\n")

@@ -20,6 +20,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 from collections import deque
 
 from .._spawn import worker_argv
@@ -27,6 +28,19 @@ from . import sandbox
 from .protocol import ERROR_CRASH, ERROR_TIMEOUT
 
 STARTUP_TIMEOUT_S = 180.0  # first ping pays the build123d import cost
+
+#: How often the request loop wakes when there is no plan: the historical poll
+#: interval, kept exactly so a plan-free client behaves as it always has.
+POLL_INTERVAL_S = 0.5
+
+#: The floor under the supervisor's sampling interval, and what a switched-off
+#: one falls back to. `sample_interval_s` is operator-settable and `"off"`
+#: resolves it to `0.0` — which, used as a queue timeout, is a busy spin on one
+#: core rather than a switched-off sampler, so it is read as "use the default".
+MIN_SAMPLE_INTERVAL_S = 0.05
+DEFAULT_SAMPLE_INTERVAL_S = 0.25
+
+_MB = 1024.0 * 1024.0
 
 #: The preamble stages whose failure means the worker is NOT confined. A
 #: refused rlimit is a quota that did not apply — it belongs in the report and
@@ -103,9 +117,12 @@ class KernelClient:
         self.sandboxed: bool = bool(
             self._plan and self._plan.confinement["status"] == "active")
         self.sandbox_report: dict | None = None  # the worker's own (Slice 2)
-        self.last_usage: dict | None = None      # per-request metering (Slice 2/3)
-        self._on_usage = on_usage                # the usage hook (Slice 4)
-        self._breach: tuple[str, dict] | None = None  # the supervisor's (Slice 3)
+        self.last_usage: dict | None = None      # per-request metering
+        self._on_usage = on_usage                # the usage hook (Slice 4's meter)
+        self._usage_hook_broken = False          # so it complains once, not per build
+        #: What the supervisor decided about the request in flight, before it
+        #: killed the worker: `("memory_cap", {...})`. Reset per request.
+        self._breach: tuple[str, dict] | None = None
 
     # ------------------------------------------------------------- lifecycle
 
@@ -245,9 +262,16 @@ class KernelClient:
                 ERROR_CRASH, f"kernel worker unreachable: {exc}", self._crash_details()
             ) from exc
 
-        import time
+        # The supervisor (design spec, Decision 5). It is this loop, not a
+        # thread: the loop already wakes on a timer to enforce the timeout, so
+        # sampling costs one `/proc` read (0.5 us) or one libproc call (1.3 us)
+        # per wake, and a breach can raise straight into the caller.
+        interval, cap = self._supervision()
+        started = time.monotonic()
+        peak = 0
+        self._breach = None
 
-        deadline = time.monotonic() + timeout
+        deadline = started + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -255,17 +279,49 @@ class KernelClient:
                 raise KernelError(
                     ERROR_TIMEOUT,
                     f"kernel request {method!r} exceeded {timeout:.0f}s; worker restarted",
+                    {"usage": self._usage_stub(started, peak)},
                 )
+            if cap is not None:
+                rss = self._sample_rss()
+                if rss:
+                    peak = max(peak, rss)
+                if rss and rss > cap:
+                    limit_mb = self._plan.quotas_obj.memory_mb
+                    # Set BEFORE the kill, so the reason survives whichever of
+                    # the kill and the worker's own EOF wins the race.
+                    self._breach = ("memory_cap", {
+                        "limit_mb": limit_mb,
+                        "observed_rss_mb": round(rss / _MB, 1),
+                        "tier": "supervisor"})
+                    self._kill()
+                    raise KernelError(
+                        ERROR_CRASH,
+                        f"kernel worker exceeded its memory cap "
+                        f"({limit_mb} MB); worker restarted",
+                        {"reason": "memory_cap", **self._breach[1],
+                         "usage": self._usage_stub(started, peak),
+                         **self._crash_details()},
+                    )
             try:
-                line = self._lines.get(timeout=min(remaining, 0.5))
+                line = self._lines.get(timeout=min(remaining, interval))
             except queue.Empty:
                 continue
             if line is None:
+                # EOF. Why the worker died, if anything here can say: the
+                # supervisor's own flag first (it is the only one that knows
+                # its kill from a hang), then the platform backend's reading
+                # of the corpse — a cgroup OOM counter, a CPU signal.
+                why = self._breach_reason() or self._explain_exit()
                 self._kill()
+                details = {**self._crash_details(),
+                           "usage": self._usage_stub(started, peak)}
+                if why:
+                    details.update(why)
                 raise KernelError(
                     ERROR_CRASH,
-                    "kernel worker exited unexpectedly",
-                    self._crash_details(),
+                    "kernel worker exited unexpectedly"
+                    + (f" ({why['reason']})" if why else ""),
+                    details,
                 )
             try:
                 response = json.loads(line)
@@ -274,16 +330,134 @@ class KernelClient:
             if response.get("id") != req_id:
                 continue  # stale response from an earlier request
             usage = response.get("usage")
-            if isinstance(usage, dict):
-                self.last_usage = usage
+            usage = dict(usage) if isinstance(usage, dict) else {}
+            if peak:
+                # The parent's samples belong to THIS request on every
+                # platform, which is what macOS and Windows cannot measure from
+                # inside (`ru_maxrss`/`PeakWorkingSetSize` are lifetime marks,
+                # so a 40 ms build would otherwise report the 500 MB OCCT
+                # import that preceded it). Where the worker's own number is
+                # already per-request (Linux, via `/proc/self/clear_refs`) the
+                # two are combined and the larger wins — the sampler runs every
+                # 0.25 s and can miss a spike the worker saw.
+                parent_mb = round(peak / _MB, 1)
+                worker_mb = usage.get("peak_rss_mb") or 0
+                usage["peak_rss_mb"] = (
+                    parent_mb if usage.get("peak_rss_is_lifetime", True)
+                    else max(worker_mb, parent_mb))
+                usage["peak_rss_is_lifetime"] = False
+            self.last_usage = usage
+            self._emit_usage(method, usage, ok="error" not in response)
             if "error" in response:
                 err = response["error"]
+                # Deliberately NOT `details["usage"] = usage`: the worker
+                # answered, so its usage travels on `last_usage` and through
+                # the hook (with `ok: False` — that is what the meter counts as
+                # an error). Copying it into the error body would put a
+                # per-run `cpu_ms` inside a payload two routes are required to
+                # render identically (`tests/test_configs_drawing.py`), and
+                # `details.usage` is the *kill* paths' contract: a breach, a
+                # timeout and a crash have no worker report to carry it.
                 raise KernelError(
                     err.get("type", "kernel_error"),
                     err.get("message", "unknown kernel error"),
                     err.get("details", {}),
                 )
             return response.get("result", {})
+
+    # ------------------------------------------------------------ supervision
+
+    def _supervision(self) -> tuple[float, int | None]:
+        """``(poll interval, RSS cap in bytes)`` for one request.
+
+        Without a plan this is the historical 0.5 s poll and no cap at all —
+        the client the session fixture builds must behave exactly as it did.
+        """
+        if self._plan is None:
+            return POLL_INTERVAL_S, None
+        quotas = self._plan.quotas_obj
+        interval = max(MIN_SAMPLE_INTERVAL_S,
+                       quotas.sample_interval_s or DEFAULT_SAMPLE_INTERVAL_S)
+        if not quotas.memory_mb or self._plan.backend is None:
+            return interval, None
+        return interval, quotas.memory_mb * 1024 * 1024
+
+    def _sample_rss(self) -> int | None:
+        """One RSS sample, or ``None`` when it could not be taken.
+
+        The supervisor must never fail a build with a bug of its own: a
+        backend that raises is a sample that did not happen, not a breach.
+        """
+        proc = self._proc
+        if proc is None or self._plan is None or self._plan.backend is None:
+            return None
+        try:
+            return self._plan.backend.rss_bytes(proc)
+        except Exception:                      # pragma: no cover - defensive
+            return None
+
+    def _breach_reason(self) -> dict | None:
+        """What the supervisor already decided about this request, if anything."""
+        if self._breach is None:
+            return None
+        reason, details = self._breach
+        return {"reason": reason, **details}
+
+    def _explain_exit(self) -> dict | None:
+        """The backend's reading of why the worker died; ``None`` if it cannot
+        say (and then the crash stays the generic one it has always been).
+
+        Called **before** ``_kill()``: a cgroup's ``memory.events`` has to be
+        read while the directory is still the dead worker's. The short wait is
+        what makes the signal readable at all — EOF on stdout arrives before
+        the process is reaped, and ``poll()`` would answer ``None`` where
+        ``wait()`` answers ``-SIGXCPU``.
+        """
+        if self._plan is None or self._plan.backend is None:
+            return None
+        proc = self._proc
+        try:
+            returncode = None
+            if proc is not None:
+                try:
+                    returncode = proc.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    returncode = proc.poll()
+            return self._plan.backend.explain_exit(proc, returncode)
+        except Exception:                      # pragma: no cover - defensive
+            return None
+
+    def _usage_stub(self, started: float, peak: int) -> dict:
+        """Usage for a request that never answered (a kill, a timeout).
+
+        The worker's own meter died with it, so this is only what the parent
+        saw. ``cpu_ms`` is ``None`` rather than ``0``: "not measurable from
+        here" is not "no CPU was spent", and a meter summing zeros would
+        under-bill exactly the requests that cost the most.
+        """
+        peak_mb = round(peak / _MB, 1) if peak else None
+        return {"cpu_ms": None,
+                "wall_ms": round((time.monotonic() - started) * 1000.0, 3),
+                "peak_rss_mb": peak_mb,
+                "peak_rss_is_lifetime": False}
+
+    def _emit_usage(self, method: str, usage: dict, ok: bool) -> None:
+        """Hand one record to the usage hook (Slice 4's meter installs it).
+
+        Swallowed on purpose, and loudly once: a metering bug must never turn a
+        successful build into a failure, and a silent one would make the meter
+        look merely empty.
+        """
+        if self._on_usage is None:
+            return
+        try:
+            self._on_usage({"method": method, "usage": usage, "ok": ok,
+                            "worker": self.name})
+        except Exception as exc:
+            if not self._usage_hook_broken:
+                self._usage_hook_broken = True
+                print(f"[agentcad-usage] the on_usage hook raised and was "
+                      f"ignored: {exc!r}", file=sys.stderr)
 
     def _crash_details(self) -> dict:
         return {"stderr_tail": list(self._stderr_tail)[-20:]}

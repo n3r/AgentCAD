@@ -48,7 +48,7 @@ def build(p):
 QUOTAS = {"memory_mb": 1024, "pids_headroom": 64}
 
 
-def _client(tmp_path_factory, name, **kwargs):
+def _client(tmp_path_factory, name, quotas=None, **kwargs):
     """A confined client whose project root is a fresh tmp dir.
 
     `pytest.MonkeyPatch` rather than the fixture: these are module-scoped, and
@@ -61,7 +61,7 @@ def _client(tmp_path_factory, name, **kwargs):
     patch.delenv("AGENTCAD_NO_SANDBOX", raising=False)
     try:
         client = KernelClient(writable_dirs=[str(root)],
-                              quotas=resolve(QUOTAS, env={}, config={}),
+                              quotas=resolve(quotas or QUOTAS, env={}, config={}),
                               **kwargs)
     finally:
         patch.undo()
@@ -387,6 +387,190 @@ def test_no_sandbox_env_reports_off(unconfined):
     result = _build(client, _script("import socket\nsocket.socket().close()"),
                     root / ".cache" / "sock.acm")
     assert result["metrics"]["volume_mm3"] == pytest.approx(1000.0, rel=1e-6)
+
+
+# ------------------------------------------------------------ the quota tiers
+
+@pytest.fixture(scope="module")
+def rlimited(tmp_path_factory):
+    """A worker whose address space is capped well below the supervisor's RSS
+    cap, so `RLIMIT_AS` is the tier that answers.
+
+    2048 MiB, not the 1536 the spike measured as the floor: 1.25 GiB failed
+    during `import build123d` and 1.5 GiB passed *by settling* (VmSize adapted
+    to 1 543 272 kB), both on arm64 in this image. A test pinned to a measured
+    floor is a test that flakes on the next architecture, and nothing here
+    needs the tightest possible cap — it needs one below the 4 GiB balloon and
+    above a real build.
+    """
+    client, root = _client(tmp_path_factory, "rlimit-as",
+                           quotas={"address_space_mb": 2048, "memory_mb": 8192,
+                                   "pids_headroom": 64})
+    yield client, root
+    client.stop()
+
+
+@pytest.mark.timeout(300)
+def test_rlimit_as_makes_a_balloon_recoverable(rlimited):
+    """The single best property of the rlimit tier: a memory-hungry script
+    becomes an ordinary `script_error` with a line number, and the warm worker
+    — seven seconds of OCCT import — is not lost. That is why `RLIMIT_AS` is
+    deliberately loose (3x the memory cap by default) rather than being the
+    cap: it exists to turn a runaway *reservation* into a `MemoryError`.
+    """
+    client, root = rlimited
+    err = _denied(client, root, "b = bytearray(4 << 30)", "balloon")
+
+    assert err.type == "script_error"
+    assert err.details["denied"] == "memory"
+    assert "MemoryError" in err.message
+    assert client.alive
+    assert _build(client, BOX, root / ".cache" / "after-balloon.acm")["metrics"]
+
+
+@pytest.fixture(scope="module")
+def fork_limited(tmp_path_factory):
+    client, root = _client(tmp_path_factory, "rlimit-nproc",
+                           quotas={"memory_mb": 1024, "pids_headroom": 32})
+    yield client, root
+    client.stop()
+
+
+@pytest.mark.timeout(600)
+def test_rlimit_nproc_stops_a_fork_loop(fork_limited):
+    """`RLIMIT_NPROC` is per-*uid* and counts threads, so the number is the
+    live uid count measured at spawn plus the headroom — a fixed 32 killed the
+    worker during `import build123d` in the spike. A script that forks past it
+    gets EAGAIN in its own frame and the worker survives.
+    """
+    client, root = fork_limited
+    err = _denied(client, root,
+                  "import os, signal, time\n"
+                  "kids = []\n"
+                  "try:\n"
+                  "    for _ in range(200):\n"
+                  "        pid = os.fork()\n"
+                  "        if pid == 0:\n"
+                  "            time.sleep(30)\n"
+                  "            os._exit(0)\n"
+                  "        kids.append(pid)\n"
+                  "finally:\n"
+                  # The seccomp filter allows a signal at a script's own
+                  # children (a positive pid that is not the server's).
+                  "    for pid in kids:\n"
+                  "        try:\n"
+                  "            os.kill(pid, signal.SIGKILL)\n"
+                  "            os.waitpid(pid, 0)\n"
+                  "        except OSError:\n"
+                  "            pass\n",
+                  "forkloop")
+
+    assert err.type == "script_error"
+    assert err.details["denied"] == "process_count"
+    assert client.alive
+    assert _build(client, BOX, root / ".cache" / "after-forks.acm")["metrics"]
+
+
+def _delegated_cgroup() -> str | None:
+    """The operator-delegated cgroup directory, if there is a usable one."""
+    path = os.environ.get("AGENTCAD_CGROUP_DIR", "").strip()
+    if not path or path.lower() == "off":
+        return None
+    return path if (os.path.isdir(path)
+                    and os.access(path, os.W_OK | os.X_OK)) else None
+
+
+@pytest.mark.timeout(600)
+@pytest.mark.skipif(_delegated_cgroup() is None,
+                    reason="no delegated cgroup v2 subtree "
+                           "(set AGENTCAD_CGROUP_DIR; see the docstring)")
+def test_cgroup_tier_when_delegated(tmp_path_factory):
+    """The one tier that OOM-kills, exercised for real. Needs Decision 4's
+    Model 2 — a host-delegated subtree, no capabilities added to the container:
+
+        # on the host, once
+        sudo mkdir -p /sys/fs/cgroup/agentcad
+        echo "+memory +pids +cpu" | sudo tee /sys/fs/cgroup/cgroup.subtree_control
+        echo "+memory +pids +cpu" | sudo tee /sys/fs/cgroup/agentcad/cgroup.subtree_control
+        sudo chown -R 10001:10001 /sys/fs/cgroup/agentcad
+
+        docker run --rm --cgroup-parent=/agentcad \\
+          -v /sys/fs/cgroup/agentcad:/cg:rw -e AGENTCAD_CGROUP_DIR=/cg \\
+          -e AGENTCAD_EXPECT_SANDBOX=active -v "$PWD":/src:ro -w /tmp \\
+          agentcad:local sh -c '...scripts/linux-test.sh body...'
+
+    It skips in the default container on purpose: `/sys/fs/cgroup` is mounted
+    read-only and root-owned there, and the alternative route to a writable
+    subtree is `--cap-add SYS_ADMIN`, which is a near-root capability this
+    project refuses to ask for. The *detection and fallback* path is covered
+    unconditionally by `test_cgroup_probe_falls_back_honestly` and by
+    `tests/test_sandbox_plan.py`'s cgroup section.
+
+    `memory_mb` is 1024, not the 512 the plan sketched: a warm worker is
+    451-482 MB RSS and 499 MB after a build, so a 512 MB cgroup would OOM-kill
+    it during `import build123d` and prove nothing about a balloon. The
+    address-space tier is switched off so `RLIMIT_AS` cannot answer first.
+    """
+    client, root = _client(tmp_path_factory, "cgroup",
+                           quotas={"memory_mb": 1024, "address_space_mb": "off",
+                                   "pids": 64, "pids_headroom": 64})
+    try:
+        assert client._plan.quotas["mechanism"].startswith("cgroup")
+        cg_dir = Path(client._plan.backend.cg_dir)
+        assert cg_dir.parent == Path(_delegated_cgroup())
+        assert (cg_dir / "memory.max").read_text(
+            encoding="utf-8").strip() == str(1024 * 1024 * 1024)
+        assert (cg_dir / "memory.swap.max").read_text(
+            encoding="utf-8").strip() == "0"
+        assert _build(client, BOX, root / ".cache" / "box.acm")["metrics"]
+
+        # 4 GiB, every page touched: an untouched allocation charges nothing.
+        with pytest.raises(KernelError) as exc_info:
+            _build(client, _script(
+                "b = bytearray(4 << 30)\n"
+                "b[::4096] = b'\\x01' * (len(b) // 4096 + 1)\n"
+            ), root / ".cache" / "balloon.acm")
+        err = exc_info.value
+
+        assert err.type == "kernel_crash"
+        # The kernel kills at the charge, so RSS never reaches the supervisor's
+        # sample — with a cgroup in force it is always the cgroup that answers.
+        assert err.details["reason"] == "memory_cap"
+        assert err.details["tier"] == "cgroup"
+        assert err.details["usage"]["wall_ms"] > 0
+        assert _build(client, BOX, root / ".cache" / "after.acm")["metrics"]
+    finally:
+        client.stop()
+
+
+def test_cgroup_probe_falls_back_honestly(tmp_path):
+    """The operator asked for the tier and did not get it. Falling back is
+    right; falling back quietly is not — the warning names the directory, and
+    `mechanism` never says `cgroup` for a cgroup that was not made.
+    """
+    from agentcad.kernel import sandbox_linux
+
+    refused = tmp_path / "not-a-cgroup"
+    refused.mkdir()
+    refused.chmod(0o500)
+    patch = pytest.MonkeyPatch()
+    patch.setenv("AGENTCAD_CGROUP_DIR", str(refused))
+    try:
+        warnings: list[str] = []
+        assert sandbox_linux.CgroupTier.probe(warnings) is None
+        assert any(str(refused) in warning for warning in warnings), warnings
+
+        client = KernelClient(writable_dirs=[str(tmp_path)],
+                              quotas=resolve(QUOTAS, env={}, config={}))
+    finally:
+        patch.undo()
+        refused.chmod(0o700)
+    try:
+        assert client._plan.quotas["mechanism"] == "rlimit+supervisor"
+        assert client._plan.backend.cg_dir is None
+        assert any(str(refused) in warning for warning in client._plan.warnings)
+    finally:
+        client.stop()
 
 
 # ------------------------------------------------------------- the metering

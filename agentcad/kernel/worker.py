@@ -63,7 +63,11 @@ def _script_error_from_exc(exc: BaseException) -> WorkerError:
     # label an ordinary PermissionError a sandbox denial (Decision 9).
     active = bool(SANDBOX_REPORT.get("landlock_abi")
                   or SANDBOX_REPORT.get("seccomp")
-                  or SANDBOX_REPORT.get("rlimits"))
+                  or SANDBOX_REPORT.get("rlimits")
+                  # A tier the PARENT installed around this process: Windows
+                  # has no rlimits, and its whole memory cap is a job object
+                  # whose breach arrives here as a plain MemoryError.
+                  or SANDBOX_REPORT.get("quotas"))
     denied = classify(type(exc).__name__, str(exc), active=active, traceback=tb)
     if denied is not None:
         details["denied"] = denied

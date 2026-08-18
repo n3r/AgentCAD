@@ -17,7 +17,7 @@ set -eu
 
 IMAGE=${AGENTCAD_LINUX_IMAGE:-agentcad:local}
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-TESTS=${*:-tests/test_sandbox_linux.py tests/test_confine_unit.py tests/test_denials.py tests/test_meter.py tests/test_protocol_ids.py}
+TESTS=${*:-tests/test_sandbox_linux.py tests/test_supervisor.py tests/test_confine_unit.py tests/test_denials.py tests/test_meter.py tests/test_protocol_ids.py}
 WORK=/tmp/agentcad-work
 
 exec docker run --rm -v "$REPO":/src:ro \

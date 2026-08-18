@@ -26,9 +26,10 @@ import sys
 
 #: The environment variable carrying the JSON payload. Keys: ``posture``,
 #: ``rlimits`` (``{"RLIMIT_AS": [soft, hard], ...}``), ``landlock``
-#: (``{"read_roots", "write_roots", "extra_files"}``) and ``seccomp``
-#: (``{"server_pid"}``). macOS emits only ``rlimits`` — the seatbelt is
-#: already in force by the time this runs, applied to the argv.
+#: (``{"read_roots", "write_roots", "extra_files"}``), ``seccomp``
+#: (``{"server_pid"}``) and ``quotas`` (tiers the parent installed *around*
+#: this process, e.g. ``["job_object"]``). macOS emits only ``rlimits`` — the
+#: seatbelt is already in force by the time this runs, applied to the argv.
 ENV = "AGENTCAD_CONFINE"
 
 #: What was actually applied, filled in by :func:`apply_from_env`.
@@ -82,7 +83,13 @@ def apply_from_env() -> dict:
         payload = {}
         failures.append({"stage": "payload", "error": f"{type(exc).__name__}: {exc}"})
 
+    # `quotas` is the one entry nothing here applies: it names tiers the
+    # PARENT installed around this process (a job object on Windows, where
+    # there are no rlimits at all). The worker still has to know a cap is in
+    # force, or `denials.classify` would call a job object's MemoryError an
+    # ordinary out-of-memory and send the reader looking for a leak.
     report: dict = {"posture": payload.get("posture"), "rlimits": [],
+                    "quotas": [str(tier) for tier in payload.get("quotas") or []],
                     "landlock_abi": None, "seccomp": None,
                     "failures": failures}
 
@@ -100,6 +107,7 @@ def apply_from_env() -> dict:
     REPORT.update(report)
     print(f"{LOG_PREFIX} posture={report['posture']} "
           f"rlimits={','.join(report['rlimits']) or '-'} "
+          f"quotas={','.join(report['quotas']) or '-'} "
           f"landlock_abi={report['landlock_abi']} "
           f"seccomp={report['seccomp']} failures={len(failures)}",
           file=sys.stderr, flush=True)

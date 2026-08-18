@@ -48,6 +48,19 @@ class KernelPool:
         # report of its own to give.
         return self._workers[0].sandbox_report
 
+    @property
+    def plan(self):
+        """Worker 0's sandbox plan, for `sandbox.report(kernel)`.
+
+        Named without the underscore on purpose: `report()` reads `_plan` from
+        a client and `plan` from a pool, and a pool's plan is not the pool's
+        own — it is one worker's, standing for all of them because they are
+        constructed identically. The per-worker parts (the private temp dir,
+        the cgroup directory) differ; the confinement, the posture and the
+        caps, which is all health publishes, do not.
+        """
+        return self._workers[0]._plan
+
     # ------------------------------------------------------------- lifecycle
 
     def start(self) -> None:

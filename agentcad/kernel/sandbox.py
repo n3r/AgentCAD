@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import platform
 import shutil
 import sys
 import tempfile
@@ -43,10 +44,11 @@ from .sandbox_macos import SANDBOX_EXEC, build_profile  # noqa: F401 — re-expo
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
-#: ``sys.platform`` -> the module implementing ``build(...)``. Slice 3 adds
-#: ``"win32": "sandbox_windows"``; anything else (and, for now, Windows) falls
-#: to :class:`NullBackend`.
-_BACKENDS = {"darwin": "sandbox_macos", "linux": "sandbox_linux"}
+#: ``sys.platform`` -> the module implementing ``build(...)``. Anything else
+#: falls to :class:`NullBackend`: confinement ``unsupported``, quotas left to
+#: the platform-independent supervisor.
+_BACKENDS = {"darwin": "sandbox_macos", "linux": "sandbox_linux",
+             "win32": "sandbox_windows"}
 
 #: The read postures (design spec, Decision 2). ``local`` is the historical
 #: stance: read anywhere, write only in the roots. ``hosted`` narrows reads to
@@ -231,9 +233,14 @@ def plan(argv: list[str], writable_dirs: list[str], *,
         # it just made.
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
-    if opt_out is not None:
+    if opt_out is not None and confinement.get("status") != "unsupported":
         # The backend was told not to confine; name *why* it is off, because
         # "off" with no reason reads as a bug in the sandbox.
+        #
+        # `unsupported` is left alone deliberately: on a platform with no
+        # confinement to begin with (Windows, an unknown OS) "off" would read
+        # as "there is a switch and it is down", and the operator would go
+        # looking for the switch. Nothing was opted out of.
         confinement = {"status": "off", "mechanism": None,
                        "detail": {"reason": opt_out}}
     env.update(additions)
@@ -271,21 +278,24 @@ def default_posture() -> str:
 
 
 def supported() -> bool:
-    """Platform can confine at all: macOS with the seatbelt CLI present.
+    """Platform can confine at all: macOS with the seatbelt CLI, Linux with a
+    Landlock ABI this build knows how to use on a machine it has a syscall
+    table for. Windows has no confinement (Decision 7: AppContainer is 006b).
 
-    **Deliberately still ``False`` on Linux.** Linux workers ARE confined since
-    PRD-006 slice 2 (``sandbox_linux`` + the worker's own Landlock/seccomp
-    preamble), but this function and :func:`status` are the *legacy* strings
-    that `/api/health` and ``agentcad check`` read today, and the live answer
-    for Linux can only come from the worker's ping report — which is what the
-    health **object** (``sandbox.report(kernel)``, a later slice) is for.
-    Flipping the string here would make health claim `active` from intent, the
-    one thing Decision 8 forbids. Windows has no confinement at all.
+    A *capability*, not a claim: this says a newly spawned worker would be
+    confined, which is what ``status()``/``available()`` have always meant and
+    what ``agentcad check`` records beside a timing. Whether a **running**
+    worker actually is confined is a different question, answered only by that
+    worker's own ping report — :func:`report` is where the two meet.
     """
     if sys.platform == "darwin":
         from . import sandbox_macos
 
         return sandbox_macos.has_seatbelt()
+    if sys.platform == "linux":
+        from ._confine import ARCH, LANDLOCK_MIN_ABI, landlock_abi
+
+        return landlock_abi() >= LANDLOCK_MIN_ABI and platform.machine() in ARCH
     return False
 
 
@@ -326,6 +336,66 @@ def wrap_argv(argv: list[str], writable_dirs: list[str]) -> list[str]:
     if not writable_dirs or not available():
         return list(argv)
     return [SANDBOX_EXEC, "-p", build_profile(writable_dirs), *argv]
+
+
+def report(kernel) -> dict:
+    """The health object for a running kernel: per-facet, measured, honest.
+
+    *kernel* is a :class:`~agentcad.kernel.client.KernelClient`, a
+    :class:`~agentcad.kernel.pool.KernelPool` or anything exposing the same
+    three attributes — everything is read through ``getattr`` with a default,
+    so a bare client with no plan (the test suite's session fixture, a
+    ``KernelClient()`` in a script) answers the object rather than raising.
+
+    ``{"status", "mechanism", "posture", "confinement", "quotas", "warnings"}``,
+    where the top-level ``status``/``mechanism`` are the **confinement**'s —
+    that is what the historical ``sandbox`` field in health has always meant
+    (FR11) and renaming the meaning would silently flip every reader.
+
+    The rule that makes it worth publishing (Decision 8): a plan that intends
+    to confine only stays ``active`` while the worker's own ping report agrees.
+    A preamble that failed is ``off``, with the failure in ``warnings`` and the
+    mechanism dropped — a mechanism named beside ``off`` claims something is in
+    force. A worker that has not been pinged yet has no report to disagree
+    with, so the intent stands until it answers.
+    """
+    from .client import confinement_holds
+
+    plan_obj = getattr(kernel, "_plan", None) or getattr(kernel, "plan", None)
+    live = getattr(kernel, "sandbox_report", None) or {}
+    if plan_obj is None:
+        # No plan: the client was built the historical way (no writable dirs,
+        # no quotas), so there is nothing to confine it with and no cap.
+        conf = {"status": status(getattr(kernel, "sandboxed", False)),
+                "mechanism": None, "detail": {}}
+        return {"status": conf["status"], "mechanism": None, "posture": LOCAL,
+                "confinement": conf,
+                "quotas": {"status": "off", "mechanism": None, "limits": {}},
+                "warnings": []}
+
+    conf = dict(plan_obj.confinement)
+    conf["detail"] = dict(conf.get("detail") or {})
+    warnings = list(plan_obj.warnings)
+    if conf["status"] == "active" and live and not confinement_holds(live):
+        conf["status"] = "off"
+        conf["mechanism"] = None
+    if live:
+        for key in ("landlock_abi", "seccomp", "rlimits"):
+            if key in live:
+                conf["detail"][key] = live[key]
+        for failure in live.get("failures") or []:
+            warnings.append(
+                f"the worker could not apply {failure.get('stage')}: "
+                f"{failure.get('error')}")
+    # A backend can also fail *after* the plan was built (a cgroup that refused
+    # the pid, a job object that refused the assignment), and that warning is
+    # only on the backend.
+    for warning in getattr(plan_obj.backend, "warnings", []) or []:
+        if warning not in warnings:
+            warnings.append(warning)
+    return {"status": conf["status"], "mechanism": conf.get("mechanism"),
+            "posture": plan_obj.posture, "confinement": conf,
+            "quotas": plan_obj.quotas, "warnings": warnings}
 
 
 def status(sandboxed: bool | None = None) -> str:
