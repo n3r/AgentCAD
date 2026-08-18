@@ -80,8 +80,21 @@ The PRD offered two mechanisms and asked for evidence. The spike settles it:
   call). Also `RET_ERRNO(EPERM)` for `kill`/`tkill`/`tgkill`/
   `rt_sigqueueinfo`/`rt_tgsigqueueinfo` when the pid argument is `≤ 0` (a
   broadcast `kill(-1, 9)` would take the whole uid down, server included) or
-  equals `server_pid`; and for `ptrace`, `process_vm_readv/writev`,
-  `pidfd_open` unconditionally. Signals to self and to a script's own
+  equals `server_pid`. **The negative test is an unsigned `JGE 0x80000000` on
+  the LOW word of `args[0]`** — corrected during the build: the high word of an
+  `int` syscall argument is unspecified on both arches (on arm64 `mov w0, #-1`
+  zeroes the top half, so a negative `pid_t` arrives zero-extended and a
+  sign-extension test on the high word never fires — `os.kill(-1, SIGKILL)`
+  escaped the filter in the shipped image, measured `ESRCH` rather than
+  `EPERM`). The low word is exactly what the kernel truncates the argument to
+  (`SYSCALL_DEFINE2(kill, pid_t, ...)`), and `tests/test_confine_unit.py` pins
+  both arches' encodings by interpreting the program's bytes. Also for
+  `ptrace`, `process_vm_readv/writev`,
+  `pidfd_open` and `io_uring_setup`/`io_uring_enter`/`io_uring_register`
+  unconditionally (io_uring was added in the slice-2 review: a ring entry can
+  ask the kernel to open and use a socket, and the only syscall the filter
+  would ever see is `io_uring_enter`, so the AF_UNIX rule is decorative
+  without it). Signals to self and to a script's own
   children stay allowed. Installed via `seccomp(SECCOMP_SET_MODE_FILTER=1,
   TSYNC)` — the operation constant is **1**; passing `2` returns
   `EOPNOTSUPP` (it is `SECCOMP_GET_ACTION_AVAIL`, the spike hit it) — with
@@ -490,3 +503,46 @@ cli.py                   _build_service(..., posture=None): quotas.resolve(), Us
   reports it as a plain crash with usage; still contained.
 - **NPROC is per-uid**: a busy desktop user with many processes gets a
   looser fork cap; documented as headroom, not budget.
+
+## Post-build corrections
+
+What the build changed about this document, so a reader of the spec is not
+reading a plan the code disagrees with. The seccomp signal rule is corrected
+in place above (Decision 1); these four are additions or tightenings that did
+not fit inside a sentence.
+
+1. **The cgroup own-route is opt-in by name, not by discovery** (Decision 4,
+   tightened in the slice-3 review). As written, `cgroup_probe()` would look at
+   the process's own cgroup whenever `AGENTCAD_CGROUP_DIR` was unset. That is
+   activation by capability: `os.access` answers `W_OK` for uid 0 almost
+   everywhere, so a **root** server would "discover" a writable subtree on any
+   machine and start moving its own pids around. As built: unset ⇒ nothing is
+   probed at all; a path ⇒ Model 2; **`auto` ⇒ the own-cgroup route**, which
+   refuses root, refuses a subtree whose `st_uid` is not ours, and refuses the
+   root cgroup, checking all of it *before* it mutates anything; `off` ⇒ not
+   even `auto`. Every failure of a probe that was asked for reaches
+   `plan.warnings`.
+2. **`RLIMIT_NPROC` counts tasks, not processes.** The limit is enforced
+   against the uid's `task_struct` count, and a warm worker runs 15–22 threads
+   (TBB, BLAS), so `live_uid_process_count()` sums `Threads:` from
+   `/proc/*/status` rather than counting pids. Measured: with the per-process
+   count, the second module-scoped worker in `tests/test_sandbox_linux.py`
+   died inside `import build123d` with a `pthread_create` EAGAIN — the same
+   fate a three-worker pool's third worker was one thread away from.
+3. **Random request ids close cross-request forgery only.** "Risks" said the
+   unguessable id fixes the forked-child forgery; it fixes half of it. A
+   *lingering* child (or any stale writer) can no longer compute the ids of
+   requests it never observed — that is a 62-bit guess. The **running** script
+   can still forge the response to its own in-flight request: it holds fd 1 and
+   can reach the id through the interpreter. That is the same trust domain as
+   `build()` returning a fake shape, so it is not worth an fd-passing
+   redesign, and confinement was never the answer to it either (a process may
+   write to its own stdout).
+4. **`details["usage"]` is the kill paths' contract, not every error's.**
+   Kills, timeouts and crashes carry it; a **worker-reported `script_error`
+   deliberately does not**. The worker answered, so its cost travels on
+   `last_usage` and through the `on_usage` hook with `ok: false`, and copying a
+   per-run `cpu_ms` into the error body broke the invariant that both drawing
+   routes render an **identical** error (`tests/test_configs_drawing.py`, the
+   PRD-012 rule). The stub on the kill paths is what the *parent* saw:
+   `cpu_ms` is `None` — "not measurable from here" is not "no CPU was spent".

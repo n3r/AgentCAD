@@ -549,8 +549,12 @@ one `append` to `service.gate_providers`.
 
 **Trust.** A check executes the project's part scripts — inside the same
 confined kernel worker as every other build (see [Trust model](#trust-model)).
-On Linux there is no seatbelt until PRD-006, which is why the GitHub Action
-documents `pull_request` (never `pull_request_target`) and no secrets.
+Since PRD-006 that worker confines itself on Linux too (Landlock + seccomp: no
+network, writes only in the checkout's project roots and a private temp dir),
+but the runner's kernel decides whether it can: an image without Landlock in
+its `lsm=` list confines nothing and says so. So the GitHub Action still
+documents `pull_request` (never `pull_request_target`) and no secrets — the
+confinement is a second line, not the reason the workflow is safe.
 
 ## Review threads, anchors and presence
 
@@ -858,29 +862,50 @@ code an agent writes in your working directory. **Design specs change nothing
 here**: a part's `SPECS`, a project's `specs.py` and every `check_that`
 predicate run in that same confined worker and never in the server process.
 What is new is only that a *project-level* file now executes too, under
-identical confinement. On macOS the worker is
-additionally confined by a seatbelt profile (`agentcad/kernel/sandbox.py`,
-via `/usr/bin/sandbox-exec`): deny-by-default, global read, writes allowed
-only inside the project roots (projects dir, registered examples,
-`~/.agentcad`, the worker's **private** `agentcad-worker-*` temp dir and the
-server's one `agentcad-work-*` root that `agentcad check` and the package gate
-materialize their cells under), and no network. The shared system temp dir is
+identical confinement.
+
+**The per-OS contract** (PRD-006). One promise, three mechanisms, and health
+names which one is in force:
+
+| | confinement | quota tiers |
+|---|---|---|
+| **macOS** | `sandbox-exec` seatbelt profile (`kernel/sandbox_macos.py`): deny-by-default, global read, writes only in the roots below, no network, signals to self only | `rlimit` (`RLIMIT_NPROC` only — `RLIMIT_AS`/`DATA`/`RSS` are `EINVAL` on Darwin) + `supervisor` |
+| **Linux** | Landlock + seccomp applied by the worker **to itself** through `ctypes` before `import build123d` (`kernel/_confine.py`, `kernel/_preamble.py`): writes only in the roots below, no socket family but `AF_UNIX`, no `ptrace`/`process_vm_*`/`pidfd_open`/`io_uring`, no signal at pid ≤ 0 or at the server. Needs Landlock ABI ≥ 3 in the boot `lsm=` list; below that it reports `off` rather than shipping a false-denying profile | `cgroup` (only with an operator-delegated v2 subtree) + `rlimit` (`RLIMIT_AS`, `RLIMIT_NPROC`) + `supervisor` |
+| **Windows** | none — reported `unsupported`. AppContainer is carved out as PRD-006b | `job_object` (commit limit, active processes, CPU rate) + `supervisor` |
+
+The writable roots are the same everywhere: the projects dir, registered
+examples, `~/.agentcad`, the worker's **private** `agentcad-worker-*` temp dir
+and the server's one `agentcad-work-*` root that `agentcad check` and the
+package gate materialize their cells under. The shared system temp dir is
 deliberately **not** granted: it let every worker read and write every other
-worker's scratch. A script can still compute anything and read world-readable
+worker's scratch. Reads follow a *posture*: `local` reads anywhere (the v1
+stance), and `hosted` — Linux only, selected by `AGENTCAD_MODE=hosted` —
+narrows reads to an allow-list that excludes `AGENTCAD_STATE_DIR` and `HOME`,
+so a member's script can no longer read the session signing key. Forks and
+`exec`s inherit the confinement.
+
+A script can still compute anything, and under `local` read world-readable
 files, but it cannot modify files outside its projects and cannot reach the
 network from inside the worker. `/api/health` reports the effective state as
 an object — `sandbox: {status, mechanism, posture, confinement, quotas,
 warnings}`, where the top-level `status` is the confinement's (`active` |
-`off` | `unsupported`) and is set from the worker's own report, never from
-intent; opt out with `AGENTCAD_NO_SANDBOX=1` or `{"sandbox": false}`
-in `~/.agentcad/config.json` (env wins). Per-project disk budgets
+`off` | `unsupported`) and is set from **the worker's own ping report**, never
+from intent: a preamble that failed a stage is `off` with the failure in
+`warnings`. Opt out with `AGENTCAD_NO_SANDBOX=1` or `{"sandbox": false}` in
+`~/.agentcad/config.json` (env wins) — which opts out of *confinement*, not of
+the caps. Per-worker caps (`kernel/quotas.py`, layered defaults < config file <
+`AGENTCAD_QUOTA_*` env < per-caller overrides) bound memory, address space,
+process count and CPU; a breach rides the existing error contract
+(`script_error` + `details.denied`, or `kernel_crash` + `details.reason`), and
+every response carries its `usage` (CPU ms, wall ms, peak RSS) for the meter in
+`core/usage.py`. Per-project disk budgets
 (`.cache/`, `exports/`, `imports/`; `AGENTCAD_QUOTA_DISK_MB`) refuse a build
 or an export before the worker writes, and a cache janitor deletes the oldest
 unreferenced meshes once the cache passes 75 % of the budget. Unchanged mitigations: the server
 binds `127.0.0.1` only; kernel requests time out; the worker is isolated so
 kernel crashes never take down the app; scripts live in the project directory
 where humans review them; the Anthropic API key is read from the environment
-and never persisted. Windows/Linux confinement is on the roadmap.
+and never persisted.
 
 **Installed packages change nothing about that, and the publish gate is not a
 security boundary.** A package is Python; `use_part` copies it into the
@@ -891,26 +916,32 @@ an index declares a content id, the cache verifies every fetched tree against
 that declaration before installing, and `use_part` re-verifies the whole tree
 on every materialisation, so a tampered download, checkout or cache is
 refused. An index that lies about both the tree and the id is a compromised
-index; the `signatures` slot is reserved and empty for that, and PRD-006 is
-the confinement backstop.
+index; the `signatures` slot is reserved and empty for that, and the
+confinement above is the backstop — a package's script gets no network and no
+write outside the project either.
 
 **Hosted mode (PRD-005a) changes who can reach that trust model, and says so
 plainly.** With `AGENTCAD_MODE=hosted` the server binds a public interface and
 every request resolves to an authenticated principal or to *anonymous*. The
 authentication is real — invite-only accounts, server-side sessions, revocable
-bearer tokens, default-deny on every route — but **it is not confinement**. A
-part script is arbitrary Python (`kernel/worker.py`) and the seatbelt profile
-is macOS-only (`kernel/sandbox.py` gates on `sys.platform == "darwin"`), so on
-the Linux host a deployment actually runs on there is none. Therefore:
+bearer tokens, default-deny on every route — but **it is not isolation between
+the people using the instance**. Since PRD-006 the Linux worker *is* confined
+(the table above, `hosted` posture: no network, no writes outside the projects
+tree, no reads of the state dir or `HOME`, capped memory/pids/CPU), which is
+what makes the session key unreachable from a part script. What confinement
+does not do is separate one member from another: the script runs as the server
+user and the **whole projects tree** is readable and writable to it.
+Therefore:
 
-- **An account on a hosted instance is a shell.** Give one only to someone you
-  would give a shell to. Registration is closed by construction — there is no
-  self-registration route; an admin mints a single-use enrolment link.
+- **An account on a hosted instance is still for someone you trust.** Give one
+  only to someone you would give a shell to. Registration is closed by
+  construction — there is no self-registration route; an admin mints a
+  single-use enrolment link.
 - **`member` and `admin` are not a security boundary between each other.**
-  Admins manage users and tokens; both can run code. Authorization is
-  deliberately flat because, with RCE available to every member, a per-project
-  ACL would be a *label* and not a boundary. PRD-005 revisits this once PRD-006
-  makes isolation real.
+  Admins manage users and tokens; both can run code and both can read and
+  write every project. Authorization is deliberately flat because a
+  per-project ACL would be a *label* and not a boundary until per-project
+  isolation exists; PRD-005 is where it does.
 - **The anonymous surface is nine entries and executes nothing**: `/`, the
   static `/js`, `/css`, `/vendor` mounts, a `/api/health` trimmed to
   `{status, mode}`, `POST /api/auth/login`, `GET|POST /api/auth/enrol/{token}`,
@@ -924,8 +955,9 @@ the Linux host a deployment actually runs on there is none. Therefore:
   and the absolute-path form of `import_cad_file` (both are host-filesystem
   reach), a presence beacon naming an identity outside the caller's own
   namespace, and the full health body without a principal.
-- **Residuals it does not close, named in the PRD**: an authenticated DoS
-  (any member can queue an expensive kernel job), no queryable audit log
+- **Residuals it does not close, named in the PRD**: cross-project reach for
+  every member (per-project ACLs are PRD-005), an authenticated DoS — the caps
+  bound each kernel job, not how many a member queues — no queryable audit log
   (history trailers and the proposal/comment `audit.jsonl` carry attribution),
   no envelope encryption of the state files (`0600` in a volume), and an
   unmetered — but cacheable and static — anonymous read.

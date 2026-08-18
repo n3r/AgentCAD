@@ -11,6 +11,8 @@ These are pure unit tests: no kernel, no subprocess, no OS call.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from agentcad.kernel.quotas import DEFAULTS, ENV_PREFIX, resolve
@@ -37,8 +39,10 @@ def test_defaults_are_the_measured_table():
 
 
 def test_the_resolved_object_is_frozen():
+    """`FrozenInstanceError`, not a bare `Exception`: a typo in the attribute
+    name would raise too, and would pass a test that accepts anything."""
     q = _resolve()
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         q.memory_mb = 1  # type: ignore[misc]
 
 

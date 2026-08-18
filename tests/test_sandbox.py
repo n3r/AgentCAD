@@ -36,7 +36,12 @@ def writable(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def sboxed(writable):
-    """A KernelClient confined to ``writable`` (+ system temp dir)."""
+    """A KernelClient confined to ``writable`` (+ its own private temp dir).
+
+    Not the *system* temp dir: since PRD-006 the plan grants only the worker's
+    own ``agentcad-worker-*`` directory, because a shared ``/tmp`` grant let
+    every worker read and overwrite every sibling's scratch.
+    """
     mp = pytest.MonkeyPatch()
     # Isolate from the developer's real ~/.agentcad/config.json and env.
     mp.setenv("AGENTCAD_CONFIG", str(writable / "no-such-config.json"))

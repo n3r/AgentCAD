@@ -772,10 +772,12 @@ def _trust_sentence_capitalized() -> str:
 
 _TRUST_NOTE = (
     f"WARNING: {TRUST_SENTENCE}.\n"
-    "A part script is arbitrary Python (agentcad/kernel/worker.py) and Linux "
-    "has no confinement until PRD-006 lands, so every member can read, write "
-    "and execute as the server user. Registration is therefore closed, and "
-    "roles are not a security boundary between members."
+    "A part script is arbitrary Python (agentcad/kernel/worker.py). Since "
+    "PRD-006 the Linux worker confines itself (no network, writes only under "
+    "the projects tree, no reads of the state dir), but it still runs as the "
+    "server user and every project on this instance is readable and writable "
+    "to it. Registration is therefore closed, and roles are not a security "
+    "boundary between members."
 )
 
 

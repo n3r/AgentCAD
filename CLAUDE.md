@@ -183,9 +183,11 @@ This project is built skill-first. Use the Superpowers process skills:
   SVG only, timeout `120 + 60·rows`), its kernel request is pinned
   `affinity=part_id`, and `render_view` refuses `config` without `part_id`.
 - Hosted core (`server/security.py`, `core/authstore.py`, `core/appmode.py`;
-  changelogs 0188–0197): **an account is a shell** until PRD-006 (a part script
-  is arbitrary Python and Linux has no confinement), so roles are not a
-  boundary and registration is closed — say it, don't soften it · `actor_kind`
+  changelogs 0188–0197): a part script is arbitrary Python and, PRD-006 or
+  not, it runs **as the server user over the whole projects tree** — so roles
+  are not a boundary, per-project ACLs are PRD-005, and registration is closed;
+  say it, don't soften it (but "an account is a shell" is no longer literally
+  true on Linux — see the PRD-006 trap) · `actor_kind`
   must read `user:` as **human** or every hosted person silently loses their
   claims · the anonymous surface is **nine entries in one frozenset** and
   default-deny makes a new pack private with no action by its author; there is
@@ -208,6 +210,42 @@ This project is built skill-first. Use the Superpowers process skills:
   is a **200 with an `{"error": …}` payload**, not a 403 · the `open_project`
   **tool** is a known, deliberate FR19 gap (`core/tools.py` is off-limits, no
   unregister seam; reachable only by a member who already has RCE).
+- Sandboxing & quotas (`kernel/sandbox*.py`, `_confine.py`, `_preamble.py`,
+  `_meter.py`, `quotas.py`, `denials.py`, `core/usage.py`; changelogs
+  0213–0219): Linux confinement is **in-process Landlock + seccomp** applied by
+  the worker to itself before `import build123d` — **no `preexec_fn` anywhere**
+  (the server is threaded; cgroup placement is the parent writing `proc.pid`
+  after `Popen`) · **never grant bare `/tmp`**: every worker gets a private
+  `agentcad-worker-*` dir, and the *server's* one `agentcad-work-*` root is the
+  separate thing `agentcad check` and the package gate materialize cells under
+  · `plan()` must **not** create the roots it is handed (`--work-dir` may still
+  be refused); `cli._writable_roots` creates the two the server owns, because a
+  Landlock rule on a missing path is ENOENT — the grant is lost **and** the
+  worker downgrades to `off` · the `seccomp` op constant is **1** (`2` is
+  `GET_ACTION_AVAIL` → `EOPNOTSUPP`) · the signal rule tests the pid's **low
+  word** unsigned (`JGE 0x80000000`) — a high-word test never fires on arm64 and
+  `os.kill(-1, 9)` escaped it · the handled-access mask comes from the **probed
+  ABI**, and `TRUNCATE` (bit 14, ABI 3) must be in every write root or every
+  truncating `open` is a false denial — hence `LANDLOCK_MIN_ABI = 3` ·
+  `/proc/self/clear_refs` (a **file** rule, `FS_FILE` only) is what makes
+  `peak_rss_mb` per-request on Linux; elsewhere `peak_rss_is_lifetime: true`
+  and `ru_maxrss` is **bytes on macOS, KiB on Linux** · `RLIMIT_NPROC` counts
+  **tasks** (threads) per uid, measured at spawn + headroom ·
+  **`AGENTCAD_NO_SANDBOX=1` opts out of confinement, not the caps** ·
+  `AGENTCAD_CGROUP_DIR`
+  unset probes nothing, a path is Model-2 delegation, **`auto` refuses root**
+  (a root server would "discover" a subtree anywhere = activation by
+  capability), and `memory.swap.max=0` is load-bearing beside `memory.max` ·
+  with a cgroup in force the supervisor never fires, so pin the tier in tests ·
+  `KernelClient()` with **no args is byte-for-byte historical** (the session
+  fixture depends on it) · confinement `active` comes **only** from the worker's
+  ping report, and only a landlock/seccomp stage failure clears it ·
+  `details.usage` is the **kill paths'** contract (a `script_error` carries
+  none — both
+  drawing routes must render an identical error) · the Linux loop is
+  **`make test-linux`**, which **copies** the tree (Docker Desktop's `fakeowner`
+  mounts are not Landlock-coherent) · `AGENTCAD_EXPECT_SANDBOX=active` is the
+  honesty gate CI sets so a degradation is **red, not skipped**.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests

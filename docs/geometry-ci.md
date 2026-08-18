@@ -617,10 +617,14 @@ in the host repository; all three are rebuilt by the check.
 ### Trust model
 
 **A check executes the project's part scripts.** They are arbitrary Python, run
-with the permissions of the workflow. On macOS the kernel worker is confined by
-a deny-by-default `sandbox-exec` profile; **on Linux there is no seatbelt** —
-that is PRD-006 — so Linux CI runs under the same trust model as `pytest` on
-the same repository.
+with the permissions of the workflow. Since PRD-006 the kernel worker confines
+itself on Linux too (Landlock + seccomp: no network, writes only in the
+checkout's project roots and a private temp dir), as it already did on macOS
+through a `sandbox-exec` profile — **but the runner's kernel decides whether it
+can**. A runner image without Landlock in its boot `lsm=` list, or below ABI 3,
+confines nothing and reports `off`; you would not see that in a green check.
+So treat Linux CI as running under the same trust model as `pytest` on the same
+repository, with the confinement as a second line rather than the argument.
 
 Therefore: use **`pull_request`, never `pull_request_target`**, hand the job no
 secrets, and keep `permissions` read-only. A fork's pull request otherwise runs

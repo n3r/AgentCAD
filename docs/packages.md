@@ -12,11 +12,14 @@ copies a package part *into* the project as an ordinary part.
 > at every declared extreme, the specs pass, and the connectors mate**. It
 > proves *nothing about intent*. A package is Python: `use_part` copies it into
 > your project and the next rebuild executes it **in your kernel worker with
-> your privileges** — on macOS inside the deny-by-default seatbelt profile
-> (writes only in project roots, no network), on Linux and Windows unconfined.
-> Install packages from indexes you trust, exactly as you would a pip package.
-> [PRD-006](prd/pending/PRD-006-sandboxing-quotas.md) is the deferred backstop
-> and this sentence is what stands in for it until then.
+> your privileges** — since PRD-006 inside a deny-by-default confinement on
+> macOS (the seatbelt profile) and on Linux (Landlock + seccomp): writes only
+> in your project roots and the worker's private temp dir, no network, capped
+> memory and process count. On Windows the caps apply and the confinement does
+> not (that is [PRD-006b](prd/pending/PRD-006b-windows-appcontainer.md)).
+> Confinement bounds what a package's script may reach; it says nothing about
+> whether the geometry is what you wanted. Install packages from indexes you
+> trust, exactly as you would a pip package.
 >
 > **The trust boundary that does exist** is narrow and worth knowing exactly:
 > the *index declares* a content id for every version, and the *cache verifies*

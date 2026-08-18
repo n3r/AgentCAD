@@ -30,6 +30,25 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
   previous good geometry is kept and the worker stays warm. The key is absent
   when nothing was confining the worker, so its presence means the OS refused,
   not that the script had a permissions bug.
+- **A worker that was *killed* is a different answer from a script that
+  raised.** `kernel_crash` carries `details.reason` ∈ `memory_cap` |
+  `pids_cap` | `cpu_cap` whenever the kill is attributable, with
+  `details.tier` (which quota mechanism answered — `cgroup`, `rlimit`,
+  `supervisor`, `job_object`), `details.limit_mb` and `details.observed_rss_mb`
+  where they are known, plus `stderr_tail`. `timeout` is unchanged in every
+  other respect. **Both carry `details.usage`**, as does every other path that
+  ends without the worker answering. That stub is what the *parent* saw —
+  `{cpu_ms: null, wall_ms, peak_rss_mb, peak_rss_is_lifetime: false}` — and
+  `cpu_ms: null` means "not measurable from here", never "no CPU was spent";
+  the worker's own envelope on a request that did answer is
+  `{cpu_ms, wall_ms, peak_rss_mb, rss_mb, peak_rss_is_lifetime}`. A
+  worker-reported `script_error` deliberately carries no `details.usage`: the
+  worker answered, so its cost is on the usage roll-ups instead
+  ([`get_usage`](#kernel-usage--get_usage)).
+  Read `reason` to decide *what to do*: `memory_cap` and `pids_cap` mean shrink
+  the job or fix the script, a bare `kernel_crash` with no `reason` means the
+  worker died on its own. In every case the previous good geometry is kept and
+  the worker respawns warm.
 - Mutating tools return the post-state you need next (metrics, warnings,
   status), so a create → inspect → fix loop converges in few turns.
 - Rebuild results have `{"ok": true, "metrics", "warnings", "specs", "holes"}`

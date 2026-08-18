@@ -240,8 +240,8 @@ def live_uid_process_count() -> int:
             return written // ctypes.sizeof(ctypes.c_int)
     try:
         done = subprocess.run(["ps", "-u", str(uid), "-o", "pid="],
-                              capture_output=True, text=True, timeout=10,
-                              check=False)
+                              capture_output=True, text=True,
+                              encoding="utf-8", timeout=10, check=False)
         lines = [line for line in done.stdout.splitlines() if line.strip()]
         if lines:
             return len(lines)

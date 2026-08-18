@@ -553,6 +553,14 @@ class ProjectStore:
         and is never touched — which is also why the cache can end up over the
         watermark and stay there: the answer to "every mesh is live" is a
         bigger budget, not a deletion the user would notice.
+
+        It reads :meth:`disk_usage`, which is **memoized for 5 s**, so a build
+        that lands immediately after another one measures the older number and
+        can decline to trim work that has since arrived. That is a bounded
+        under-trigger by design — the memo is what keeps a per-build budget
+        check from walking three directory trees on every request, and the next
+        build past the memo window sees the real size. Nothing over-deletes:
+        the stale read is always *smaller* than the truth.
         """
         budget = self.disk_budget_mb
         if not budget:

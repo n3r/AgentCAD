@@ -1,11 +1,55 @@
 # PRD-006 — Cross-platform sandboxing and resource quotas
 
-- **Status:** pending
+- **Status:** in-progress — the build is complete on branch
+  `prd-006-sandboxing-quotas` (changelogs `0213`–`0219`). Moves to
+  `completed/` in the close-out commit on `main` after the PR merges, per the
+  house rule. AC1–AC8 verified as recorded below, **except AC3's Windows
+  clause** — that clause and G2/FR2's Windows confinement half are carved out
+  as [PRD-006b](../pending/PRD-006b-windows-appcontainer.md), and Windows
+  reports `unsupported` here rather than closing on an unverified claim.
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026) — promoted from v3 residual to cloud prerequisite
 - **Depends on:** — (none hard; must land before PRD-005 hosts untrusted tenants)
-- **Related:** PRD-005 (tenant isolation + metering consumer), PRD-007 (customizer rebuild rate limits), PRD-011 (third-party package scripts run confined), PRD-020 (fleet quotas ride this metering), PRD-004 (headless CI runs sandboxed)
+- **Related:** PRD-005 (tenant isolation + metering consumer), PRD-006b (the Windows confinement carve-out), PRD-007 (customizer rebuild rate limits), PRD-011 (third-party package scripts run confined), PRD-020 (fleet quotas ride this metering), PRD-004 (headless CI runs sandboxed)
+- **Design:** [2026-08-18 sandboxing & quotas](../../superpowers/specs/2026-08-18-sandboxing-quotas-design.md)
+  · **Plan:** [five slices](../../superpowers/plans/2026-08-18-sandboxing-quotas.md)
+
+> **What shipped, and what it is honestly worth.** The Linux worker confines
+> **itself** — a Landlock ruleset and a seccomp filter applied through
+> `ctypes` before `import build123d`, needing no capability, no `bwrap` binary
+> and no `--privileged` (bubblewrap was ruled out with evidence: it is absent
+> from the image and `unshare -Ur` is denied under Docker's default seccomp
+> profile). Two named read postures ship: `local` (global read, the v1 stance)
+> and `hosted` (an allow-list excluding the state dir and `HOME`), so a
+> hosted member's script can no longer read the session signing key. Quotas
+> ship as honest **tiers** — a delegated cgroup v2 subtree, POSIX rlimits
+> where they are real, Windows job objects, and a parent-side RSS supervisor
+> everywhere — with the tier in force named in `/api/health` rather than a
+> mechanism promised. Every response carries its `usage`; a meter rolls it up
+> per project and per identity behind `/api/health` and `get_usage`; disk
+> budgets refuse a write before the worker makes it.
+>
+> **The residual, stated rather than implied:** a member's script still runs
+> as the server user and the **whole projects tree** is readable and writable
+> to it, across every project on the instance. Per-project isolation is
+> PRD-005. So "an account is a shell" is no longer literally true on Linux —
+> no network, no writes outside the projects tree and its private temp dir, no
+> reads of the state dir or `HOME`, capped memory/pids/CPU — but accounts
+> remain for people you trust and registration stays closed.
+>
+> **Acceptance, per platform.** AC1 (the malicious battery contained on Linux)
+> — `tests/test_sandbox_linux.py`, run in `agentcad:local` and on the ubuntu
+> CI job with `AGENTCAD_EXPECT_SANDBOX=active`, so a degradation is red rather
+> than skipped. AC2 (macOS seatbelt regressions still pass) —
+> `tests/test_sandbox.py`. AC3 — `active` on macOS and Linux; **Windows
+> reports `unsupported`**, which is this PRD's honest answer and 006b's
+> subject. AC4/AC5/AC6 — `tests/test_supervisor.py`, real workers and real
+> allocations. AC7 — `tests/test_usage.py`. AC8 — the three-OS matrix, the
+> `AGENTCAD_NO_SANDBOX=1` opt-out and the unconfinable-environment case, in
+> `tests/test_prd006_acceptance.py`. Also deferred and named: the
+> `systemd-run --scope` tier (unverified), the per-principal audit log
+> (PRD-005), a narrowed macOS read posture, and FEM under confinement.
 
 ## Problem & motivation
 
