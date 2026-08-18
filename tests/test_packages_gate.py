@@ -198,6 +198,46 @@ def test_a_run_without_a_work_dir_leaves_no_temp_directory_behind(
     assert list(home.iterdir()) == []
 
 
+def test_the_default_work_root_is_the_one_the_server_granted(service,
+                                                              tmp_path):
+    """PRD-006 Decision 1: the shared temp dir is no longer a writable root,
+    so the gate's default cell goes under the one the server granted."""
+    granted = tmp_path / "granted"
+    granted.mkdir()
+    service.work_root = granted
+
+    root = gate.PackageGate(service)._work_root(None, tmp_path / "src")
+
+    try:
+        assert root.parent == granted.resolve()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_a_run_under_the_work_root_still_deletes_only_what_it_made(
+        service, good, tmp_path):
+    granted = tmp_path / "granted"
+    granted.mkdir()
+    (granted / "someone-elses.txt").write_text("kept", encoding="utf-8")
+    service.work_root = granted
+
+    gate.PackageGate(service).run(good)
+
+    # The run's own root and cell are gone; the granted directory and anything
+    # else in it are untouched — it is a *parent*, never a cell to delete.
+    assert [p.name for p in granted.iterdir()] == ["someone-elses.txt"]
+
+
+def test_the_gate_defaults_to_the_system_temp_dir_without_a_work_root(
+        service, tmp_path):
+    root = gate.PackageGate(service)._work_root(None, tmp_path / "src")
+    try:
+        assert checks.default_work_root(service) is None
+        assert root.is_dir()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 @pytest.mark.parametrize("where", ["is", "holds", "inside"])
 def test_a_work_dir_overlapping_the_projects_root_is_refused(
         service, good, tmp_path, where):

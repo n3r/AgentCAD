@@ -32,6 +32,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -547,12 +548,64 @@ def test_build_service_without_extra_writable_is_unchanged(fake_kernel,
                                                            tmp_path):
     projects = tmp_path / "projects"
     service = cli._build_service(projects)
-    assert service.kernel.writable_dirs == cli._writable_roots(projects)
+    try:
+        assert service.kernel.writable_dirs == (
+            cli._writable_roots(projects) + [str(service.work_root)])
+    finally:
+        cli._release_work_root(service)
 
 
 def test_build_service_appends_extra_writable_roots(fake_kernel, tmp_path):
     projects = tmp_path / "projects"
     work = tmp_path / "work"
     service = cli._build_service(projects, extra_writable=[str(work)])
-    assert service.kernel.writable_dirs == (
-        cli._writable_roots(projects) + [str(work)])
+    try:
+        assert service.kernel.writable_dirs == (
+            cli._writable_roots(projects)
+            + [str(service.work_root), str(work)])
+    finally:
+        cli._release_work_root(service)
+
+
+# ------------------------------------- PRD-006: the work root, not bare temp
+
+
+def test_the_granted_roots_are_the_work_root_and_never_the_shared_temp_dir(
+        fake_kernel, tmp_path):
+    """Decision 1. Granting `tempfile.gettempdir()` gave every worker read and
+    write access to every other worker's scratch — the exact thing the private
+    per-worker dir exists to prevent. The one shared scratch a *run* still
+    needs is this server's own `agentcad-work-*` directory, granted by name.
+    """
+    service = cli._build_service(tmp_path / "projects")
+    try:
+        roots = service.kernel.writable_dirs
+        assert tempfile.gettempdir() not in roots
+        assert str(service.work_root) in roots
+        assert Path(service.work_root).is_dir()
+        assert Path(service.work_root).name.startswith("agentcad-work-")
+    finally:
+        cli._release_work_root(service)
+
+
+def test_the_work_root_is_removed_with_the_service(fake_kernel, tmp_path):
+    service = cli._build_service(tmp_path / "projects")
+    root = Path(service.work_root)
+
+    cli._release_work_root(service)
+
+    assert not root.exists()
+    cli._release_work_root(service)          # idempotent
+    # ...and a service that never had one is not an AttributeError.
+    cli._release_work_root(SimpleNamespace())
+
+
+def test_a_named_work_dir_is_still_the_callers_and_is_granted(wired, tmp_path):
+    """The work root is the *default*, never an override: an explicit
+    `--work-dir` is still resolved, still granted to the sandbox before the
+    workers spawn, and still handed to the runner untouched."""
+    work_dir = tmp_path / "wd"
+    assert cli.cmd_check(_args(work_dir=str(work_dir))) == 0
+
+    assert wired.extra_writable == [str(work_dir.resolve())]
+    assert wired.runner.seen["work_dir"] == str(work_dir.resolve())

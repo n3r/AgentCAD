@@ -171,7 +171,17 @@ bug.
 - **4 vCPU / 8 GB** for `AGENTCAD_KERNEL_POOL_SIZE=3`, which is what a handful
   of concurrent editors wants.
 - Disk is projects plus their `.history` git repos. Mesh caches live under each
-  project's `.cache/` and rebuild on demand, so they are not precious.
+  project's `.cache/` and rebuild on demand, so they are not precious — which
+  is what lets a **per-project disk budget** (`AGENTCAD_QUOTA_DISK_MB`,
+  default 2048) cover `.cache/`, `exports/` and `imports/`: an over-budget
+  project is refused *before* the worker writes (`diskbudget_error`, HTTP 507),
+  and a janitor trims the oldest unreferenced meshes once the cache passes
+  75 % of the budget.
+- `GET /api/health` (with a principal) publishes `usage` — kernel CPU ms, wall
+  ms and peak RSS rolled up per project and per client identity — beside
+  `sandbox`, the measured confinement/quota object. The `get_usage` tool
+  answers the same numbers with a `since` window. Both are in-memory and
+  per-process: a restart starts from zero, and there is still no audit log.
 
 There is no per-account CPU or memory budget. Any member can queue an expensive
 build; the pool has a per-request timeout and nothing more. That is a stated

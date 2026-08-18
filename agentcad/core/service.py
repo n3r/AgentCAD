@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..kernel.client import KernelClient, KernelError
+from . import usage
 from .history import ProjectHistory, UndoCursor
 from .locks import TurnLock, current_client_id
 from .materials import MATERIALS, get_material
@@ -127,6 +128,13 @@ class AgentCADService:
         # a pure-configuration build must publish nothing on a hit (Decision 4).
         self._config_status: dict[tuple[str, str, str], dict] = {}
         self._spec_cache: dict[str, dict] = {}
+        # Kernel usage roll-ups (PRD-006 Decision 6). ``None`` here and
+        # installed by `cli._build_service`, which is the only place that can:
+        # the meter is the KERNEL's `on_usage` hook, so it has to exist before
+        # the kernel this service is handed. Every reader guards for None —
+        # a library caller and every test service has no meter, and "nothing
+        # was metered" is a truthful empty answer, not an error.
+        self.usage = None
         # Seams the v2 feature packs replace; defaults preserve v1 behavior.
         self.materials = _DefaultMaterialResolver()
         # Multi-user turn locking: every persistent store write is checked
@@ -497,18 +505,20 @@ class AgentCADService:
         record = self._record_for(proj, part_id, config)
         script = self.store.read_script(proj, part_id)
         name = part_id if config is None else f"{part_id}_{config}"
+        self.store.assert_disk_budget(proj)   # before the worker writes
         out = self.store.exports_dir(proj) / f"{name}.{format}"
-        result = self.kernel.request(
-            "export",
-            {
-                "script": script,
-                "params": record.effective_params,
-                "format": format,
-                "out_path": str(out),
-                "tolerance": tolerance,
-            },
-            timeout_s=300.0,  # export may rebuild the shape from scratch
-        )
+        with usage.scoped(proj):
+            result = self.kernel.request(
+                "export",
+                {
+                    "script": script,
+                    "params": record.effective_params,
+                    "format": format,
+                    "out_path": str(out),
+                    "tolerance": tolerance,
+                },
+                timeout_s=300.0,  # export may rebuild the shape from scratch
+            )
         if config is not None:
             result["config"] = config
         return result
@@ -619,11 +629,12 @@ class AgentCADService:
             items.append(item)
         if len(items) < 2:
             return {"pairs": [], "checked": len(items)}
-        result = self.kernel.request(
-            "interference", {"items": items, "min_volume": min_volume},
-            # large assemblies: pairs grow quadratically
-            timeout_s=600.0 if timeout_s is None else timeout_s,
-        )
+        with usage.scoped(proj):
+            result = self.kernel.request(
+                "interference", {"items": items, "min_volume": min_volume},
+                # large assemblies: pairs grow quadratically
+                timeout_s=600.0 if timeout_s is None else timeout_s,
+            )
         out = {"pairs": result["pairs"], "checked": len(items)}
         if result.get("skipped_mesh"):
             out["skipped_mesh"] = result["skipped_mesh"]
@@ -638,12 +649,14 @@ class AgentCADService:
             items.append(self._shape_item(proj, record, inst))
         if not items:
             raise ValidationError("assembly has no instances to export")
+        self.store.assert_disk_budget(proj)   # before the worker writes
         out = self.store.exports_dir(proj) / f"assembly.{format}"
-        return self.kernel.request(
-            "export_assembly",
-            {"items": items, "format": format, "out_path": str(out)},
-            timeout_s=300.0,
-        )
+        with usage.scoped(proj):
+            return self.kernel.request(
+                "export_assembly",
+                {"items": items, "format": format, "out_path": str(out)},
+                timeout_s=300.0,
+            )
 
     # ---------------------------------------------------------------- misc
 
@@ -968,10 +981,15 @@ class AgentCADService:
         # full mesh exceeds the threshold (one round-trip, no service state).
         build_params["lod_tolerances"] = {"lod1": MESH_LOD_TOLERANCE}
         build_params["lod_min_triangles"] = LOD_TRIANGLE_THRESHOLD
+        # PRD-006 Decision 10: refuse BEFORE the worker writes. A cache hit
+        # above wrote nothing and is deliberately not checked — a full project
+        # must still be able to answer with geometry it already has.
+        self.store.assert_disk_budget(proj)
         try:
-            result = self.kernel.request(
-                method, build_params, timeout_s=300.0, affinity=affinity
-            )
+            with usage.scoped(proj):
+                result = self.kernel.request(
+                    method, build_params, timeout_s=300.0, affinity=affinity
+                )
         except KernelError as exc:
             payload = exc.to_payload()
             if status_key is not None:
@@ -1011,6 +1029,11 @@ class AgentCADService:
                 "lods": lods,
                 "error": None,
             }
+        # The janitor, after the status write so the key that just landed is
+        # referenced — and unioned in explicitly, because a pure-configuration
+        # build writes no `_status` at all and would otherwise sweep away the
+        # mesh it just made.
+        self.store.trim_cache(proj, self._referenced_cache_keys(proj) | {key})
         self.bus.publish(
             {
                 "type": "rebuild_finished",
@@ -1023,6 +1046,24 @@ class AgentCADService:
         )
         return {"ok": True, "metrics": metrics, "warnings": warnings,
                 "lods": lods, "cache_key": key}
+
+    def _referenced_cache_keys(self, proj: str) -> set[str]:
+        """Cache keys this service still points at for *proj*.
+
+        The badges in `_status` and the per-configuration memos in
+        `_config_status`, for the caller's working tree and for the project
+        name (the default branch's key — see `store.lock_key`). A *third*
+        branch's badge is not consulted: `.cache/` is canonical and shared, so
+        the alternative would be walking every open working tree on every
+        build, and the cost of being wrong is one rebuild of derived data.
+        """
+        keys = {self.store.lock_key(proj), proj}
+        referenced = set()
+        for state in (self._status, self._config_status):
+            for slot, entry in state.items():
+                if slot[0] in keys and entry.get("cache_key"):
+                    referenced.add(entry["cache_key"])
+        return referenced
 
     def _params_spec(self, script: str) -> dict | None:
         key = hashlib.sha256(script.encode()).hexdigest()

@@ -281,4 +281,7 @@ def test_health_reports_active_for_sandboxed_kernel(sboxed, tmp_path):
         service, build_registry(service), extra_allowed_hosts={"testserver"}
     )
     data = TestClient(app, base_url="http://127.0.0.1").get("/api/health").json()
-    assert data["sandbox"] == "active"
+    # Since PRD-006 the field is the honest per-facet object; its top-level
+    # `status` still means the confinement's, which is what it always meant.
+    assert data["sandbox"]["status"] == "active"
+    assert data["sandbox"]["confinement"]["mechanism"] == "seatbelt"

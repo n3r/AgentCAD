@@ -798,6 +798,34 @@ _INTERFERENCE_CEILING_S = 600.0
 _METRIC_KEYS = ("volume_mm3", "mass_g", "area_mm2")
 
 
+def default_work_root(service) -> str | None:
+    """Where a work cell lands when the caller named no ``--work-dir``.
+
+    The server-wide ``agentcad-work-*`` directory `cli._build_service` created
+    and **granted to the workers**, when the runner's service has one;
+    otherwise ``None``, which is `mkdtemp`'s own default (the system temp dir)
+    — the library and test path, where nobody granted anything and nothing is
+    confined.
+
+    It matters because of PRD-006 Decision 1: the shared temp dir is no longer
+    a writable root, so a cell materialized under `tempfile.gettempdir()` is a
+    directory a confined worker cannot write its `.cache/` into, and every
+    part in the run would fail with a PermissionError instead of a verdict.
+    An explicit ``--work-dir`` is granted by the CLI at spawn and is not
+    affected — nor is the "never delete a directory it did not create"
+    contract: this only chooses the *parent* a run's own `mkdtemp` cell is
+    created under.
+    """
+    root = getattr(service, "work_root", None)
+    if root is None:
+        return None
+    try:
+        os.makedirs(root, exist_ok=True)
+    except OSError:
+        return None      # unwritable: fall back to the default temp dir
+    return str(root)
+
+
 def _ephemeral_service(work_dir: Path, tree: Path, kernel):
     """A second ``AgentCADService`` over *tree*, sharing *kernel* — muzzled.
 
@@ -2015,7 +2043,8 @@ class CheckRunner:
         # `_work_dir` has already resolved and vetted a caller's path; without
         # one this is a temp dir we own outright.
         root = Path(work_dir) if work_dir is not None else Path(
-            tempfile.mkdtemp(prefix="agentcad-check-")).resolve()
+            tempfile.mkdtemp(prefix="agentcad-check-",
+                             dir=default_work_root(self.service))).resolve()
         root.mkdir(parents=True, exist_ok=True)
         # The pid names whoever left a cell behind after a kill; `mkdtemp`
         # supplies the uniqueness (and creates it 0700, which is why a
@@ -2299,7 +2328,8 @@ class CheckRunner:
         tree = Path(service.store.path_of(proj))
         root = Path(tempfile.mkdtemp(
             prefix="agentcad-determinism-",
-            dir=str(work_dir) if work_dir is not None else None)).resolve()
+            dir=(str(work_dir) if work_dir is not None
+                 else default_work_root(service)))).resolve()
         try:
             copy = root / tree.name
             shutil.copytree(tree, copy, ignore=shutil.ignore_patterns(

@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -18,6 +20,7 @@ from . import locks
 from .materials import DEFAULT_MATERIAL, get_material
 from .model import (
     ConflictError,
+    DiskBudgetError,
     InstanceSpec,
     NotFoundError,
     PartRecord,
@@ -27,6 +30,23 @@ from .model import (
 )
 
 SCHEMA_VERSION = 2  # v2 adds part kind/source (reference imports) and instance mates
+
+#: How long a `disk_usage` measurement is reused. A build path asks twice in a
+#: second (the budget check, then the janitor) and a project tree can hold
+#: thousands of cache files, so the walk is memoized — but only for as long as
+#: nothing anyone does could plausibly be waiting on a fresh number.
+_DISK_MEMO_S = 5.0
+
+#: What the janitor may delete: a mesh (``<key>.acm``), its LOD sidecar
+#: (``<key>.lod1.acm``) and its face-index sidecar (``<key>.faces.u32``). All
+#: three are content-addressed and rebuildable. The ``<key>.metrics.json``
+#: sidecar is left alone — it is bytes, not megabytes, and a build treats a
+#: sidecar without its mesh as a miss.
+_TRIMMABLE = (".acm", ".faces.u32")
+
+#: The cache is trimmed back to this fraction of the budget, so a janitor pass
+#: buys room for several builds rather than running on every one.
+_TRIM_WATERMARK = 0.75
 
 #: "this keyword was not passed", for a field whose ``None`` is a real value.
 #: ``active_config=None`` MEANS "return to base" (pop the key), so it cannot
@@ -44,11 +64,44 @@ def _empty_manifest(name: str) -> dict:
     }
 
 
+def _dir_bytes(path: Path) -> int:
+    """Bytes under *path*, symlinks not followed, unreadable subtrees skipped.
+
+    ``os.scandir`` rather than ``Path.rglob`` because the entry already carries
+    the stat on every platform that matters, and a `.cache/` with thousands of
+    meshes is walked on the build path.
+    """
+    total = 0
+    stack = [path]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat().st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue  # absent, or not ours to read: it holds nothing we know of
+    return total
+
+
 class ProjectStore:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, disk_budget_mb: int | None = None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._external: dict[str, Path] = {}
+        # Per-project disk budget in MB, covering .cache/, exports/ and
+        # imports/ (PRD-006 Decision 10). ``None`` — the default, and what
+        # every library caller and test gets — means no check at all, so the
+        # store behaves exactly as it did before quotas existed. The server
+        # sets it from `quotas.disk_mb` in `cli._build_service`.
+        self.disk_budget_mb = disk_budget_mb
+        self._disk_memo: dict[tuple[str, str], tuple[float, dict]] = {}
+        self._disk_lock = threading.Lock()
         # Write guard (set post-init, e.g. by AgentCADService): called with
         # the project name before every persistent mutation — save_manifest
         # (which all pack mutations funnel through) and write_script — and may
@@ -421,9 +474,134 @@ class ProjectStore:
         """
         if write and self.write_guard is not None:
             self.write_guard(proj)
+        if write:
+            # After the guard, before the directory: the turn lock's answer is
+            # about *who* may write and the budget's about *whether* there is
+            # room, and a caller who does not hold the turn should be told that
+            # first. Reads are never budget-checked — a rebuild must not fail
+            # because the project is full of exports.
+            self.assert_disk_budget(proj)
         path = self._resolve(proj) / "imports"
         path.mkdir(exist_ok=True)
         return path
+
+    # --------------------------------------------------------- disk budget
+
+    def disk_usage(self, proj: str) -> dict:
+        """Bytes this project occupies, split by directory.
+
+        ``{"used_bytes", "cache_bytes", "exports_bytes", "imports_bytes"}``.
+        A **measurement**: it creates nothing (an `exports/` conjured by a read
+        would show up in every project tree and every git diff) and it never
+        raises for a directory it cannot walk — an unreadable subtree measures
+        as the part of it we could see, which is the honest floor.
+
+        Memoized for five seconds per (project, working tree), because a build
+        asks twice — once for the budget, once for the janitor — and the walk
+        is O(cache files).
+        """
+        dirs = self._budget_dirs(proj)
+        memo_key = (proj, str(dirs["exports"].parent))
+        now = time.monotonic()
+        with self._disk_lock:
+            cached = self._disk_memo.get(memo_key)
+            if cached is not None and now - cached[0] < _DISK_MEMO_S:
+                return dict(cached[1])
+        used = {f"{name}_bytes": _dir_bytes(path) for name, path in dirs.items()}
+        used["used_bytes"] = sum(used.values())
+        with self._disk_lock:
+            self._disk_memo[memo_key] = (now, dict(used))
+        return used
+
+    def invalidate_disk_usage(self, proj: str) -> None:
+        """Forget the memo for *proj* — after anything that frees or fills it."""
+        with self._disk_lock:
+            for key in [k for k in self._disk_memo if k[0] == proj]:
+                self._disk_memo.pop(key, None)
+
+    def assert_disk_budget(self, proj: str) -> None:
+        """Raise :class:`DiskBudgetError` when *proj* is at its budget.
+
+        Called **before** the kernel is asked to write (a build, an export, an
+        assembly export, an import), so a full project fails cleanly instead of
+        leaving a truncated mesh behind. ``disk_budget_mb`` of ``None`` or 0 is
+        no budget and no walk.
+        """
+        budget = self.disk_budget_mb
+        if not budget:
+            return
+        used_mb = self.disk_usage(proj)["used_bytes"] / (1024 * 1024)
+        if used_mb < budget:
+            return
+        raise DiskBudgetError(
+            f"project {proj!r} has used {used_mb:.1f} MB of its {budget} MB "
+            f"disk budget (.cache, exports and imports). Delete exports or "
+            f"imports you no longer need, or raise the budget with "
+            f"AGENTCAD_QUOTA_DISK_MB.",
+            {"project": proj, "used_mb": round(used_mb, 1),
+             "budget_mb": budget},
+        )
+
+    def trim_cache(self, proj: str, keep_keys: set[str]) -> int:
+        """Delete the oldest unreferenced meshes until the cache is under the
+        watermark. Returns the bytes freed.
+
+        A janitor, not a quota: it runs after a *successful* build, and
+        everything it removes is content-addressed derived data that the next
+        read rebuilds. A key in *keep_keys* is one the service still points at
+        (a part's badge, a configuration's memo, the build that just finished)
+        and is never touched — which is also why the cache can end up over the
+        watermark and stay there: the answer to "every mesh is live" is a
+        bigger budget, not a deletion the user would notice.
+        """
+        budget = self.disk_budget_mb
+        if not budget:
+            return 0
+        target = int(budget * 1024 * 1024 * _TRIM_WATERMARK)
+        cache_bytes = self.disk_usage(proj)["cache_bytes"]
+        if cache_bytes <= target:
+            return 0
+        cache = self.canonical_path_of(proj) / ".cache"
+        candidates = []
+        try:
+            with os.scandir(cache) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    if not entry.name.endswith(_TRIMMABLE):
+                        continue
+                    if entry.name.split(".", 1)[0] in keep_keys:
+                        continue
+                    try:
+                        stat = entry.stat()
+                    except OSError:
+                        continue
+                    candidates.append((stat.st_mtime, stat.st_size, entry.path))
+        except OSError:
+            return 0
+        freed = 0
+        for _mtime, size, path in sorted(candidates):
+            if cache_bytes - freed <= target:
+                break
+            try:
+                os.unlink(path)
+            except OSError:
+                continue          # someone else got there first; keep going
+            freed += size
+        if freed:
+            self.invalidate_disk_usage(proj)
+        return freed
+
+    def _budget_dirs(self, proj: str) -> dict[str, Path]:
+        """The three directories the budget covers, as paths — not created.
+
+        ``.cache`` is canonical (content-addressed, shared by every branch);
+        ``exports``/``imports`` are the caller's working tree, exactly as
+        `exports_dir`/`imports_dir` resolve them.
+        """
+        return {"cache": self.canonical_path_of(proj) / ".cache",
+                "exports": self._resolve(proj) / "exports",
+                "imports": self._resolve(proj) / "imports"}
 
     # -------------------------------------------------------------- helpers
 

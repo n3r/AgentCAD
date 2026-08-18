@@ -1033,6 +1033,125 @@ def test_serve_stops_the_kernel_so_the_private_dirs_go(monkeypatch, tmp_path):
     assert stopped == [True, True]
 
 
+def test_serve_stops_the_kernel_when_the_registry_or_the_app_fails(
+        monkeypatch, tmp_path):
+    """`build_registry` and `create_app` used to run OUTSIDE the try, so a
+    broken tool pack or a missing frontend asset leaked one ~0.5 GB worker per
+    pool slot, its private temp dir, and the work root — once per attempt,
+    which in a restart loop is every few seconds."""
+    from agentcad import cli
+
+    stopped: list[bool] = []
+    work_root = tmp_path / "work-root"
+    work_root.mkdir()
+    service = SimpleNamespace(
+        kernel=SimpleNamespace(stop=lambda: stopped.append(True)),
+        work_root=work_root)
+    monkeypatch.setenv("AGENTCAD_CONFIG", str(tmp_path / "cfg.json"))
+    monkeypatch.delenv("AGENTCAD_MODE", raising=False)
+    monkeypatch.setattr(cli, "_build_service", lambda *a, **k: service)
+
+    def _boom(svc):
+        raise RuntimeError("a tool pack raised at registration")
+
+    monkeypatch.setattr("agentcad.core.tools.build_registry", _boom)
+    args = SimpleNamespace(host="127.0.0.1", port=8630,
+                           projects_dir=str(tmp_path / "projects"),
+                           no_open=True)
+
+    with pytest.raises(RuntimeError):
+        cli.cmd_serve(args, open_browser=False)
+
+    assert stopped == [True]
+    assert not work_root.exists(), "the work root outlived the server"
+
+
+def test_serve_maps_a_bad_quota_to_exit_two(monkeypatch, tmp_path, capsys):
+    """`quotas.resolve()` names the key and the layer in a ValueError; the
+    reader is an operator staring at a server that will not start, so it gets
+    the repo's `error: …` + exit 2, not a traceback."""
+    from agentcad import cli
+
+    monkeypatch.setenv("AGENTCAD_CONFIG", str(tmp_path / "cfg.json"))
+    monkeypatch.delenv("AGENTCAD_MODE", raising=False)
+    monkeypatch.setenv("AGENTCAD_QUOTA_MEMORY_MB", "lots")
+    # Nothing with a side effect may run first: a refused start leaves no work
+    # root behind and spawns no worker.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "temp"))
+    (tmp_path / "temp").mkdir()
+    args = SimpleNamespace(host="127.0.0.1", port=8630,
+                           projects_dir=str(tmp_path / "projects"),
+                           no_open=True)
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.cmd_serve(args, open_browser=False)
+
+    assert exit_info.value.code == 2
+    assert "AGENTCAD_QUOTA_MEMORY_MB" in capsys.readouterr().err
+    assert list((tmp_path / "temp").iterdir()) == []
+
+
+def test_serve_warns_loudly_when_a_hosted_kernel_is_not_confined(monkeypatch,
+                                                                  tmp_path,
+                                                                  capsys):
+    """Decision 8: a hosted instance that failed to confine its workers says
+    so at startup — and keeps booting, because the deploy-smoke job must go on
+    proving the compose image starts and the operator reads `/api/health`."""
+    import uvicorn
+
+    from agentcad import cli
+
+    service = SimpleNamespace(kernel=SimpleNamespace(stop=lambda: None),
+                              work_root=None)
+    monkeypatch.setenv("AGENTCAD_CONFIG", str(tmp_path / "cfg.json"))
+    monkeypatch.setenv("AGENTCAD_MODE", "hosted")
+    monkeypatch.setenv("AGENTCAD_PUBLIC_ORIGIN", "https://cad.example.com")
+    monkeypatch.setattr(cli, "_build_service", lambda *a, **k: service)
+    monkeypatch.setattr(cli, "_make_chat_engine", lambda svc, reg: None)
+    monkeypatch.setattr("agentcad.core.tools.build_registry",
+                        lambda svc: object())
+    monkeypatch.setattr("agentcad.server.app.create_app",
+                        lambda *a, **k: object())
+    monkeypatch.setattr(sandbox, "report", lambda kernel: {
+        "status": "off", "warnings": ["the worker could not apply landlock: "
+                                      "EOPNOTSUPP"]})
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: None)
+    args = SimpleNamespace(host="0.0.0.0", port=8630,
+                           projects_dir=str(tmp_path / "projects"),
+                           no_open=True)
+
+    cli.cmd_serve(args, open_browser=False)      # never fatal
+
+    err = capsys.readouterr().err
+    assert err.startswith("WARNING:") or "\nWARNING:" in err
+    assert "confinement is off" in err and "EOPNOTSUPP" in err
+
+
+def test_serve_says_nothing_about_confinement_in_local_mode(monkeypatch,
+                                                             tmp_path, capsys):
+    import uvicorn
+
+    from agentcad import cli
+
+    service = SimpleNamespace(kernel=SimpleNamespace(stop=lambda: None))
+    monkeypatch.setenv("AGENTCAD_CONFIG", str(tmp_path / "cfg.json"))
+    monkeypatch.delenv("AGENTCAD_MODE", raising=False)
+    monkeypatch.setattr(cli, "_build_service", lambda *a, **k: service)
+    monkeypatch.setattr(cli, "_make_chat_engine", lambda svc, reg: None)
+    monkeypatch.setattr("agentcad.core.tools.build_registry",
+                        lambda svc: object())
+    monkeypatch.setattr("agentcad.server.app.create_app",
+                        lambda *a, **k: object())
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: None)
+    args = SimpleNamespace(host="127.0.0.1", port=8630,
+                           projects_dir=str(tmp_path / "projects"),
+                           no_open=True)
+
+    cli.cmd_serve(args, open_browser=False)
+
+    assert "WARNING" not in capsys.readouterr().err
+
+
 def test_serve_survives_the_sigterm_uvicorn_re_raises(monkeypatch, tmp_path):
     """`docker stop` is the case a plain `finally` cannot catch: uvicorn shuts
     down gracefully, restores the **previous** SIGTERM handler and re-raises

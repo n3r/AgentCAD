@@ -60,6 +60,19 @@ class RateLimitedError(AppError):
     """Too many attempts (429). Carries ``details.retry_after_s``."""
 
 
+class DiskBudgetError(AppError):
+    """The project is at its disk budget (PRD-006, Decision 10).
+
+    Carries ``details: {project, used_mb, budget_mb}``. Raised **before** the
+    kernel is asked to write, so the refusal never leaves a half-written mesh
+    or export behind — a budget checked afterwards is a budget that corrupts
+    state on the way to reporting itself.
+
+    An ``AppError`` and not a ``KernelError``: nothing failed in the worker,
+    and the fix is the caller's (delete exports, raise the cap).
+    """
+
+
 def error_type(exc: AppError) -> str:
     """The wire ``type`` of an application error.
 

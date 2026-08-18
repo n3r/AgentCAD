@@ -1235,6 +1235,42 @@ extra, the routes answer 501 with an install hint.
 Routes: `POST /api/projects/{proj}/parts/{id}/fem`, `.../fem/modal`,
 `.../fem/thermal`.
 
+### Kernel usage — `get_usage`
+
+What the geometry kernel has spent, rolled up per project and per client
+identity. Every worker response carries its own `usage` (CPU ms, wall ms,
+per-request peak RSS); the server meters them as they arrive.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `get_usage` | `project?`, `since?` (unix time) | `{project, since, totals, projects[], identities[], window, warnings[]}`. Each row is `{project\|identity, requests, errors, cpu_ms, wall_ms, peak_rss_mb, last_at}`, costliest first, top 20. |
+
+Three things to read it correctly:
+
+- **These are measurements, not limits.** What refuses work is the kernel's
+  quotas (a breach arrives as `kernel_crash` with `details.reason` ∈
+  `memory_cap` / `pids_cap` / `cpu_cap`, and every kernel error carries
+  `details.usage`) and the per-project **disk budget** — an over-budget
+  project answers `diskbudget_error` (HTTP 507) with
+  `details: {project, used_mb, budget_mb}`, raised *before* the worker writes,
+  so nothing is half-written. A rebuild that lands after a write reports it as
+  the build post-state (`ok: false`), not as a 4xx.
+- **Only this server process is counted**, and only in memory: a restart
+  starts from zero. The durable per-principal audit log is PRD-005's, not this.
+- **`since` reaches only as far as the retained window.** The meter keeps a
+  bounded ring of recent records; when a `since` predates it the answer says so
+  in `warnings` rather than under-reporting silently. `window` names what is
+  retained.
+
+`project: null` in a row is real: it is kernel work that belongs to no project
+(a `ping`, an `inspect` of an unsaved script, a package gate's throwaway cell).
+
+The same roll-up is in `GET /api/health` as `usage: {totals, projects}` beside
+`sandbox`, which since PRD-006 is an object —
+`{status, mechanism, posture, confinement, quotas, warnings}` — whose
+top-level `status` is the confinement's, measured from the worker's own
+report and never inferred from intent.
+
 ### Hosted mode — `whoami` and the bearer token
 
 Registered **only** when this process is serving a hosted app — the same

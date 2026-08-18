@@ -59,65 +59,121 @@ def _build_service(projects_dir: Path, extra_writable: list[str] | None = None,
     fixed at construction so every respawn of a killed worker is capped
     identically. *posture* defaults to the deployment mode's — `hosted` on a
     hosted instance, `local` otherwise.
+
+    Two more things are wired here because nowhere else can be:
+
+    * the **work root** — one server-wide `agentcad-work-*` directory, granted
+      to the workers and exposed as ``service.work_root``. Since PRD-006 the
+      shared temp dir is not a writable root (Decision 1: never grant bare
+      temp), so a check run or a package gate that materializes its cell under
+      `tempfile.gettempdir()` would hand the confined worker a directory it
+      cannot write into. This is the one temp root they share, and whoever
+      builds the service owns removing it (`_release_work_root`).
+    * the **usage meter** — it is the kernel's ``on_usage`` hook, so it has to
+      exist before the kernel does; the service gets it afterwards.
     """
+    import tempfile
+
     from .config import get_kernel_pool_size
     from .core.service import AgentCADService, EventBus
+    from .core.usage import UsageMeter
     from .kernel import quotas as quotas_mod
     from .kernel import sandbox
     from .kernel.client import KernelClient
     from .kernel.pool import KernelPool
 
-    size = get_kernel_pool_size()
-    writable = _writable_roots(projects_dir)
-    if extra_writable:
-        writable += [str(root) for root in extra_writable]
+    # Resolved FIRST, before anything with a side effect: a misconfigured quota
+    # is a `ValueError` naming the key and the layer, and a refused start
+    # should leave neither a directory nor a worker behind.
     quotas = quotas_mod.resolve()
     posture = posture or sandbox.default_posture()
-    if size == 1:
-        kernel = KernelClient(writable_dirs=writable, quotas=quotas,
-                              posture=posture)
-    else:
-        kernel = KernelPool(size=size, writable_dirs=writable, quotas=quotas,
-                            posture=posture)
-    kernel.start()
+    size = get_kernel_pool_size()
+    # Created before `kernel.start()`: a Landlock grant on a missing path is
+    # ENOENT, and `mkdtemp` both makes the directory and makes its name
+    # unguessable (0700, so no other user can plant anything in it).
+    work_root = Path(tempfile.mkdtemp(prefix="agentcad-work-"))
+    meter = UsageMeter()
+    try:
+        writable = _writable_roots(projects_dir) + [str(work_root)]
+        if extra_writable:
+            writable += [str(root) for root in extra_writable]
+        if size == 1:
+            kernel = KernelClient(writable_dirs=writable, quotas=quotas,
+                                  posture=posture, on_usage=meter.record)
+        else:
+            kernel = KernelPool(size=size, writable_dirs=writable,
+                                quotas=quotas, posture=posture,
+                                on_usage=meter.record)
+        kernel.start()
+    except BaseException:
+        # Nothing is running yet (or the spawn itself failed and cleaned up
+        # after itself), so the work root is the only thing to take back.
+        _remove_work_root(work_root)
+        raise
     try:
         service = AgentCADService(projects_dir, kernel, EventBus())
+        service.work_root = work_root
+        service.usage = meter
+        service.store.disk_budget_mb = quotas.disk_mb or None
         _register_examples(service)
         _register_catalog(service)
     except BaseException:
         # The workers are already running: anything that raises between here
         # and the return would leave one process per worker (~0.5 GB each)
-        # behind, with nobody holding a reference to stop them.
+        # behind, with nobody holding a reference to stop them — and the work
+        # root would outlive the run that made it.
         try:
             kernel.stop()
         except Exception:  # noqa: BLE001 — the original failure is the answer
             pass
+        _remove_work_root(work_root)
         raise
     return service
 
 
+def _remove_work_root(root) -> None:
+    """Remove a work root this process created. Never raises."""
+    import shutil
+
+    if root is None:
+        return
+    shutil.rmtree(root, ignore_errors=True)
+
+
+def _release_work_root(service) -> None:
+    """Remove the work root `_build_service` gave *service*, if it has one.
+
+    Every command that builds a service calls this in the same ``finally``
+    that stops the kernel: the directory is one this process made with
+    ``mkdtemp``, so removing it breaks nobody's "never delete a directory it
+    did not create" contract — a caller's ``--work-dir`` is a different path
+    and is never touched. Tolerant of a service that has no work root (a stub
+    in a test, a service built by hand).
+    """
+    _remove_work_root(getattr(service, "work_root", None))
+
+
 def _writable_roots(projects_dir: Path) -> list[str]:
     """Directories the sandboxed kernel workers may write to: the projects
-    dir (part .cache meshes, exports/), the user config dir, each registered
-    example project, and the system temp dir.
+    dir (part .cache meshes, exports/), the user config dir, and each
+    registered example project.
 
-    The system temp dir is granted **here**, by name, because `agentcad check`
-    and the package gate materialize their work cells under it when no
-    `--work-dir` is given. Since PRD-006 nothing grants it implicitly: each
-    worker's own scratch is a private `agentcad-worker-*` dir the plan
-    creates, and `build_profile` grants exactly the roots it is handed.
+    The **system temp dir is not among them** (PRD-006 Decision 1): granting
+    it made every worker able to read and write every other worker's scratch,
+    and the whole point of the private per-worker `agentcad-worker-*` dir is
+    that it is the only temp root a script can reach. The one shared scratch a
+    *run* still needs — `agentcad check` and the package gate materialize a
+    work cell when no `--work-dir` is given — is the server-wide work root
+    `_build_service` creates and grants by name.
 
     The projects dir and the config dir are **created here** when they do not
     exist: they are the server's own, and on Linux a Landlock grant on a
     missing path is ENOENT (see the comment below). Everything the CALLER
     supplied — a `--work-dir` that may still be refused — is granted as given
     and left alone."""
-    import tempfile
-
     roots = [
         str(projects_dir),
         str(Path.home() / ".agentcad"),
-        tempfile.gettempdir(),
     ]
     # Both of the first two may be ABSENT on a fresh install — the service
     # creates the projects dir after `kernel.start()`, and `~/.agentcad` only
@@ -301,22 +357,22 @@ def cmd_serve(args, open_browser: bool) -> None:
     # precedent) and `build_registry` runs before `create_app`. Without this
     # line `whoami` would exist in every test and in no real hosted server.
     security_module.install(security)
-    service = _build_service(projects_dir)
-    registry = build_registry(service)
-    chat_engine = _make_chat_engine(service, registry)
-    app = create_app(service, registry, chat_engine, security=security)
+    try:
+        service = _build_service(projects_dir)
+    except ValueError as exc:
+        # `quotas.resolve()` refuses a non-numeric knob with a ValueError that
+        # names both the key and the layer it came from — the reader is an
+        # operator staring at a server that will not start, so it gets the
+        # same `error: …` + exit 2 shape as a bad AGENTCAD_MODE, not a
+        # traceback with the message buried in it.
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
 
-    # What to *open* and what to *print* are the loopback URL; what to bind is
-    # `host`. On a hosted instance the address a person types is the configured
-    # public origin, not the interface.
-    local_url = f"http://127.0.0.1:{port}"
-    url = mode.public_origin or local_url
-    if open_browser and not args.no_open:
-        threading.Timer(1.0, lambda: webbrowser.open(local_url)).start()
-    print(f"AgentCAD {agentcad.__version__} — {url} (listening on {host}:{port})")
-    # Since PRD-006 every worker owns a private temp dir, so a server that
-    # exits without stopping its kernel leaves one `agentcad-worker-*`
-    # directory per pool slot behind on every run.
+    # Everything from here on is inside the cleanup: since PRD-006 the service
+    # owns a work root and one private `agentcad-worker-*` dir per pool slot,
+    # so a failure in `build_registry` or `create_app` — a broken tool pack, a
+    # missing frontend asset — used to leak half a gigabyte of worker and two
+    # directories per attempt.
     #
     # Ctrl-C arrives as a KeyboardInterrupt and takes the `finally` below.
     # `docker stop` does not: uvicorn's `capture_signals` **restores the
@@ -327,16 +383,60 @@ def cmd_serve(args, open_browser: bool) -> None:
     # Ours is the handler it restores, and turning that re-raise into a
     # SystemExit puts both paths through the same cleanup.
     previous_term = None
-    if threading.current_thread() is threading.main_thread():
-        previous_term = signal.signal(
-            signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
     try:
+        registry = build_registry(service)
+        chat_engine = _make_chat_engine(service, registry)
+        app = create_app(service, registry, chat_engine, security=security)
+        _warn_if_unconfined(mode, service.kernel)
+
+        # What to *open* and what to *print* are the loopback URL; what to bind
+        # is `host`. On a hosted instance the address a person types is the
+        # configured public origin, not the interface.
+        local_url = f"http://127.0.0.1:{port}"
+        url = mode.public_origin or local_url
+        if open_browser and not args.no_open:
+            threading.Timer(1.0, lambda: webbrowser.open(local_url)).start()
+        print(f"AgentCAD {agentcad.__version__} — {url} "
+              f"(listening on {host}:{port})")
+        if threading.current_thread() is threading.main_thread():
+            previous_term = signal.signal(
+                signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
         uvicorn.run(app, host=host, port=port, log_level="warning",
                     **_uvicorn_proxy_kwargs(mode))
     finally:
         if previous_term is not None:
             signal.signal(signal.SIGTERM, previous_term)
         service.kernel.stop()
+        _release_work_root(service)
+
+
+def _warn_if_unconfined(mode, kernel) -> None:
+    """One loud line on stderr when a HOSTED instance is not confining workers.
+
+    Never fatal, by design (Decision 8): the deploy-smoke job must keep proving
+    that the compose image boots, and an operator who reads `/api/health` gets
+    the same facts in a structured form. What must not happen is a hosted
+    instance running arbitrary part scripts unconfined **silently**.
+
+    Defensive about the report itself — a startup warning that crashed the
+    server it was warning about would be the worst possible trade.
+    """
+    if not getattr(mode, "hosted", False):
+        return
+    from .kernel import sandbox
+
+    try:
+        report = sandbox.report(kernel)
+    except Exception as exc:  # noqa: BLE001 — a warning must not end the boot
+        print(f"WARNING: could not determine kernel confinement status: "
+              f"{exc!r}", file=sys.stderr)
+        return
+    if report.get("status") == "active":
+        return
+    reasons = "; ".join(report.get("warnings") or []) or "no reason reported"
+    print(f"WARNING: kernel confinement is {report.get('status')} on this "
+          f"hosted instance — a part script is arbitrary Python and is NOT "
+          f"contained: {reasons}", file=sys.stderr)
 
 
 def _uvicorn_proxy_kwargs(mode) -> dict:
@@ -411,6 +511,7 @@ def cmd_export(args) -> None:
         print(f"exported {out} ({result['size_bytes']} bytes)")
     finally:
         service.kernel.stop()
+        _release_work_root(service)
 
 
 def _is_path(project: str) -> bool:
@@ -903,6 +1004,7 @@ def cmd_check(args) -> int:
             except Exception as exc:  # noqa: BLE001
                 print(f"agentcad check: the kernel did not stop cleanly: "
                       f"{exc}", file=sys.stderr)
+            _release_work_root(service)
 
     # Everything after the run is under the SAME exit-code mapping as the run
     # itself: writing the report, posting it and printing it can all fail (an
@@ -1065,6 +1167,7 @@ def cmd_package_validate(args) -> int:
             except Exception as exc:  # noqa: BLE001
                 print(f"agentcad package validate: the kernel did not stop "
                       f"cleanly: {exc}", file=sys.stderr)
+            _release_work_root(service)
 
     try:
         written: list[str] = []
@@ -1194,6 +1297,7 @@ def cmd_publish(args) -> int:
             except Exception as exc:  # noqa: BLE001
                 print(f"agentcad publish: the kernel did not stop cleanly: "
                       f"{exc}", file=sys.stderr)
+            _release_work_root(service)
 
     for line in _package_lines(result["report"], []):
         print(line, file=sys.stderr)

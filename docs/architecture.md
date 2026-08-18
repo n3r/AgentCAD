@@ -862,12 +862,21 @@ identical confinement. On macOS the worker is
 additionally confined by a seatbelt profile (`agentcad/kernel/sandbox.py`,
 via `/usr/bin/sandbox-exec`): deny-by-default, global read, writes allowed
 only inside the project roots (projects dir, registered examples,
-`~/.agentcad`, the system temp dir), and no network. A script can still
-compute anything and read world-readable files, but it cannot modify files
-outside its projects and cannot reach the network from inside the worker.
-`/api/health` reports the effective state (`"sandbox": "active" | "off" |
-"unsupported"`); opt out with `AGENTCAD_NO_SANDBOX=1` or `{"sandbox": false}`
-in `~/.agentcad/config.json` (env wins). Unchanged mitigations: the server
+`~/.agentcad`, the worker's **private** `agentcad-worker-*` temp dir and the
+server's one `agentcad-work-*` root that `agentcad check` and the package gate
+materialize their cells under), and no network. The shared system temp dir is
+deliberately **not** granted: it let every worker read and write every other
+worker's scratch. A script can still compute anything and read world-readable
+files, but it cannot modify files outside its projects and cannot reach the
+network from inside the worker. `/api/health` reports the effective state as
+an object — `sandbox: {status, mechanism, posture, confinement, quotas,
+warnings}`, where the top-level `status` is the confinement's (`active` |
+`off` | `unsupported`) and is set from the worker's own report, never from
+intent; opt out with `AGENTCAD_NO_SANDBOX=1` or `{"sandbox": false}`
+in `~/.agentcad/config.json` (env wins). Per-project disk budgets
+(`.cache/`, `exports/`, `imports/`; `AGENTCAD_QUOTA_DISK_MB`) refuse a build
+or an export before the worker writes, and a cache janitor deletes the oldest
+unreferenced meshes once the cache passes 75 % of the budget. Unchanged mitigations: the server
 binds `127.0.0.1` only; kernel requests time out; the worker is isolated so
 kernel crashes never take down the app; scripts live in the project directory
 where humans review them; the Anthropic API key is read from the environment

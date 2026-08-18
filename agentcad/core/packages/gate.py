@@ -542,7 +542,12 @@ class PackageGate:
         directory behind.
         """
         if work_dir is None:
-            return Path(tempfile.mkdtemp(prefix="agentcad-package-")).resolve()
+            # Under the server's granted work root when there is one: since
+            # PRD-006 the shared temp dir is not writable from a confined
+            # worker (`checks.default_work_root`).
+            return Path(tempfile.mkdtemp(
+                prefix="agentcad-package-",
+                dir=checks.default_work_root(self._service))).resolve()
         root = Path(work_dir).expanduser().resolve()
         self._refuse_overlap(root, source)
         root.mkdir(parents=True, exist_ok=True)
