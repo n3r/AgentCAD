@@ -187,6 +187,16 @@ def plan(argv: list[str], writable_dirs: list[str], *,
     # that directory is shared, so granting it lets one worker's script read
     # and overwrite a sibling's scratch (design spec, Decision 1).
     tmp_dir = tempfile.mkdtemp(prefix=TMP_PREFIX)
+
+    # A write root has to EXIST before Landlock can grant it (`os.open` on a
+    # missing path is ENOENT: the grant is lost AND the failure downgrades the
+    # worker's own report). But creating one here would be wrong: `plan()` is
+    # handed caller-supplied paths whose acceptance is decided elsewhere —
+    # `agentcad check --work-dir <project>/scratch` is REFUSED by
+    # `CheckRunner._work_dir`, and "a refused path leaves nothing behind" is a
+    # promise with a test on it. Creation therefore belongs to whoever owns the
+    # directory: `cli._writable_roots` makes the projects dir and `~/.agentcad`
+    # because those are the server's own.
     write_roots = [os.path.realpath(d) for d in writable_dirs]
     write_roots.append(os.path.realpath(tmp_dir))
 
@@ -263,8 +273,14 @@ def default_posture() -> str:
 def supported() -> bool:
     """Platform can confine at all: macOS with the seatbelt CLI present.
 
-    Linux (Landlock) and Windows arrive in later slices; until then the
-    honest answer for both is ``False``.
+    **Deliberately still ``False`` on Linux.** Linux workers ARE confined since
+    PRD-006 slice 2 (``sandbox_linux`` + the worker's own Landlock/seccomp
+    preamble), but this function and :func:`status` are the *legacy* strings
+    that `/api/health` and ``agentcad check`` read today, and the live answer
+    for Linux can only come from the worker's ping report — which is what the
+    health **object** (``sandbox.report(kernel)``, a later slice) is for.
+    Flipping the string here would make health claim `active` from intent, the
+    one thing Decision 8 forbids. Windows has no confinement at all.
     """
     if sys.platform == "darwin":
         from . import sandbox_macos

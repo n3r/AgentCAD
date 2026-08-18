@@ -29,6 +29,7 @@ make test-fast    # parallel suite (workers auto-scale, cap 8) minus slow tests
 make test-pr      # required PR gate; defers exhaustive bundled-engine coverage
 make test         # full parallel suite; needs the kernel (PYTEST_PARALLEL to override)
 make test-portability  # OS-sensitive filesystem/process/kernel smoke suite
+make test-linux   # Linux worker confinement, inside the agentcad:local image
 make run          # start the server AND open the browser UI (port 8630)
 make serve        # headless server only
 make app          # build dist/AgentCAD.app (macOS launcher)

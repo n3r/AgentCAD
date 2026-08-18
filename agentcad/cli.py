@@ -105,7 +105,13 @@ def _writable_roots(projects_dir: Path) -> list[str]:
     and the package gate materialize their work cells under it when no
     `--work-dir` is given. Since PRD-006 nothing grants it implicitly: each
     worker's own scratch is a private `agentcad-worker-*` dir the plan
-    creates, and `build_profile` grants exactly the roots it is handed."""
+    creates, and `build_profile` grants exactly the roots it is handed.
+
+    The projects dir and the config dir are **created here** when they do not
+    exist: they are the server's own, and on Linux a Landlock grant on a
+    missing path is ENOENT (see the comment below). Everything the CALLER
+    supplied — a `--work-dir` that may still be refused — is granted as given
+    and left alone."""
     import tempfile
 
     roots = [
@@ -113,6 +119,21 @@ def _writable_roots(projects_dir: Path) -> list[str]:
         str(Path.home() / ".agentcad"),
         tempfile.gettempdir(),
     ]
+    # Both of the first two may be ABSENT on a fresh install — the service
+    # creates the projects dir after `kernel.start()`, and `~/.agentcad` only
+    # exists once something has been configured. A Landlock rule on a missing
+    # path is ENOENT (PRD-006): the grant is silently lost, so every write into
+    # the directory fails once it does appear, and the failure downgrades a
+    # genuinely confined worker to `off` in health. They are the server's own
+    # directories, so making them here is safe — unlike doing it in
+    # `sandbox.plan()`, which also receives caller-supplied `--work-dir` paths
+    # that may still be refused ("a refused path leaves nothing behind").
+    for owned in roots[:2]:
+        try:
+            os.makedirs(owned, exist_ok=True)
+        except OSError as exc:
+            print(f"warning: could not create the writable root {owned!r}: "
+                  f"{exc}; kernel writes there will be denied", file=sys.stderr)
     examples = resource_root() / "examples"
     if examples.is_dir():
         for child in sorted(examples.iterdir()):

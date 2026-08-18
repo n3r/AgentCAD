@@ -52,6 +52,8 @@ ARCH: dict[str, dict[str, int]] = {
                "rt_tgsigqueueinfo": 297, "ptrace": 101,
                "process_vm_readv": 310, "process_vm_writev": 311,
                "pidfd_open": 434, "seccomp": 317,
+               "io_uring_setup": 425, "io_uring_enter": 426,
+               "io_uring_register": 427,
                "landlock_create_ruleset": 444, "landlock_add_rule": 445,
                "landlock_restrict_self": 446},
     "aarch64": {"audit": 0xC00000B7, "socket": 198, "socketpair": 199,
@@ -59,6 +61,8 @@ ARCH: dict[str, dict[str, int]] = {
                 "rt_sigqueueinfo": 138, "rt_tgsigqueueinfo": 240,
                 "ptrace": 117, "process_vm_readv": 270,
                 "process_vm_writev": 271, "pidfd_open": 434, "seccomp": 277,
+                "io_uring_setup": 425, "io_uring_enter": 426,
+                "io_uring_register": 427,
                 "landlock_create_ruleset": 444, "landlock_add_rule": 445,
                 "landlock_restrict_self": 446},
 }
@@ -135,18 +139,39 @@ X32_SYSCALL_BIT = 0x40000000
 
 _SIGNAL_SYSCALLS = ("kill", "tkill", "tgkill", "rt_sigqueueinfo",
                     "rt_tgsigqueueinfo")
+
+#: Denied outright, no argument inspection. ``ptrace``/``process_vm_*``/
+#: ``pidfd_open`` are reaching into another process; **io_uring** is here for a
+#: different and sharper reason: it is a *submission queue*, so a script can
+#: ask the kernel to open a socket (or anything else) from a ring entry, and
+#: the syscall the filter would see is ``io_uring_enter``, not ``socket``. A
+#: seccomp filter cannot inspect ring entries at all, so the whole interface
+#: has to go or the socket rule above is decorative. Nothing in CPython, numpy,
+#: OCP or build123d uses it.
 _PEEK_SYSCALLS = ("ptrace", "process_vm_readv", "process_vm_writev",
-                  "pidfd_open")
+                  "pidfd_open", "io_uring_setup", "io_uring_enter",
+                  "io_uring_register")
 
 
 # ------------------------------------------------------------------ plumbing
 
+#: `syscall(2)` takes at most six arguments after the number, so one fixed
+#: signature covers every call this module makes. Binding it **once** matters:
+#: `landlock_abi()` is called from the server, which is threaded, and mutating
+#: `argtypes` on a cached, shared function object per call is a data race.
+#: Unused trailing arguments are passed as zeros — harmless on x86_64 and
+#: aarch64, where syscall arguments are registers the kernel simply ignores.
+_SYSCALL_ARITY = 6
+
+
 @functools.lru_cache(maxsize=1)
 def _libc():
-    """libc with ``syscall``/``prctl`` typed, or ``None`` where there is none."""
+    """libc with ``syscall``/``prctl`` fully typed, or ``None`` where there is
+    none. Both signatures are bound here and never touched again."""
     try:
         lib = ctypes.CDLL(None, use_errno=True)
         lib.syscall.restype = ctypes.c_long
+        lib.syscall.argtypes = [ctypes.c_long] * (1 + _SYSCALL_ARITY)
         lib.prctl.restype = ctypes.c_int
         lib.prctl.argtypes = [ctypes.c_int] + [ctypes.c_ulong] * 4
         return lib
@@ -155,18 +180,15 @@ def _libc():
 
 
 def _syscall(number: int, *args: int) -> tuple[int, int]:
-    """``syscall(number, ...)`` -> ``(result, errno)``. Linux only.
-
-    ``argtypes`` is re-bound per call because ``syscall`` is variadic and the
-    arity differs; the preamble is single-threaded (it runs before the worker
-    reads its first request), so the shared function object is not contended.
-    """
+    """``syscall(number, ...)`` -> ``(result, errno)``. Linux only."""
     lib = _libc()
     if lib is None or sys.platform != "linux":
         return -1, errno.ENOSYS
-    lib.syscall.argtypes = [ctypes.c_long] * (1 + len(args))
+    if len(args) > _SYSCALL_ARITY:
+        raise ValueError(f"syscall takes at most {_SYSCALL_ARITY} arguments")
+    padded = list(args) + [0] * (_SYSCALL_ARITY - len(args))
     ctypes.set_errno(0)
-    result = lib.syscall(number, *[ctypes.c_long(a) for a in args])
+    result = lib.syscall(number, *padded)
     return result, ctypes.get_errno()
 
 

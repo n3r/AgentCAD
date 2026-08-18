@@ -166,6 +166,24 @@ def test_reaching_into_another_process_is_denied_outright(name):
     assert _run(program, nr=nr, arch=AUDIT_X86_64, arg0=1) == ERRNO_EPERM
 
 
+@pytest.mark.parametrize("arch,audit", [("x86_64", AUDIT_X86_64),
+                                        ("aarch64", AUDIT_AARCH64)])
+@pytest.mark.parametrize("name,number", [("io_uring_setup", 425),
+                                         ("io_uring_enter", 426),
+                                         ("io_uring_register", 427)])
+def test_io_uring_is_denied_because_the_socket_rule_cannot_see_through_it(
+        arch, audit, name, number):
+    """The hole a socket-only filter leaves: io_uring is a submission queue, so
+    a script can ask the kernel to open and use a socket from a ring entry and
+    the only syscall the filter ever sees is `io_uring_enter`. seccomp cannot
+    inspect ring entries, so the interface has to be denied outright or the
+    AF_UNIX rule above is decorative. The numbers are the same on both arches.
+    """
+    assert _confine.ARCH[arch][name] == number
+    program = _confine.seccomp_program(arch, SERVER_PID)
+    assert _run(program, nr=number, arch=audit, arg0=8) == ERRNO_EPERM
+
+
 def test_a_foreign_arch_or_an_x32_call_kills_the_process():
     program = _confine.seccomp_program("x86_64", SERVER_PID)
     assert _run(program, nr=1, arch=AUDIT_AARCH64) == KILL_PROCESS

@@ -2,8 +2,13 @@
 
 Framing: one JSON object per line (UTF-8, ``\\n``-delimited) on stdin/stdout.
 Request:  {"id": int, "method": str, "params": {...}}
-Response: {"id": int, "result": {...}}
-       or {"id": int, "error": {"type": str, "message": str, "details": {...}}}
+Response: {"id": int, "result": {...}, "usage": {...}}
+       or {"id": int, "error": {"type": str, "message": str, "details": {...}},
+           "usage": {...}}
+
+``id`` is a random 62-bit token the worker echoes unchanged. ``usage`` rides
+every response line (PRD-006): {"cpu_ms", "wall_ms", "peak_rss_mb", "rss_mb",
+"peak_rss_is_lifetime"} for that one request.
 
 The worker writes nothing but protocol lines to stdout; diagnostics go to
 stderr. Error types: "script_error" (user script raised / bad syntax),

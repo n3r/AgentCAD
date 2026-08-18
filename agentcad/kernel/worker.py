@@ -56,10 +56,15 @@ def _script_error_from_exc(exc: BaseException) -> WorkerError:
                 line = frame.lineno
                 break
     details = {"traceback": tb, "line": line}
-    # Which promise the script walked into, when there is a promise at all —
-    # `SANDBOX_REPORT` is this worker's own preamble, so an unconfined worker
-    # never labels an ordinary PermissionError a sandbox denial (Decision 9).
-    denied = classify(type(exc).__name__, str(exc), active=bool(SANDBOX_REPORT))
+    # Which promise the script walked into, when there is a promise at all.
+    # `active` is what this worker's preamble ACTUALLY applied, not merely that
+    # it was asked to: a payload whose every stage failed leaves a non-empty
+    # REPORT and must still classify nothing, or an unconfined worker would
+    # label an ordinary PermissionError a sandbox denial (Decision 9).
+    active = bool(SANDBOX_REPORT.get("landlock_abi")
+                  or SANDBOX_REPORT.get("seccomp")
+                  or SANDBOX_REPORT.get("rlimits"))
+    denied = classify(type(exc).__name__, str(exc), active=active, traceback=tb)
     if denied is not None:
         details["denied"] = denied
     return WorkerError(ERROR_SCRIPT, f"{type(exc).__name__}: {exc}", details)

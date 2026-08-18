@@ -1,6 +1,6 @@
 # 0215 — PRD-006 slice 2: the worker confines itself (Landlock + seccomp), meters every request, names denials; unguessable request ids; the Linux test loop
 
-- **Commit:** pending
+- **Commit:** de0cfba
 - **Date:** 2026-08-18
 - **Author:** Nikita Fedorov
 
@@ -13,9 +13,9 @@ on macOS, reports what it actually applied back to the client on `ping`, and
 attaches a per-request `usage` object to every response line. A denial inside a
 part script keeps being an ordinary `script_error` and gains one word
 (`details.denied`) plus an Error Doctor hint. Request ids become
-`secrets.randbits(62)`, which closes the forked-child protocol-forgery hole the
-design flagged. `make test-linux` runs the new Linux battery inside
-`agentcad:local`.
+`secrets.randbits(62)`, so a lingering forked child can no longer compute and
+answer requests it never saw. `make test-linux` runs the new Linux battery
+inside `agentcad:local`.
 
 ## Changes
 
@@ -99,11 +99,18 @@ design flagged. `make test-linux` runs the new Linux battery inside
 
 ### Unguessable request ids (design spec, "Risks")
 - `client._request_locked` draws `secrets.randbits(62)` instead of a counter
-  and records it as `_last_req_id`. A part script can `os.fork()` and the child
-  inherits fd 1, so with a predictable id it could write the line the client is
-  waiting for and have it accepted as the worker's answer — confinement cannot
-  close that (a process may write to its own stdout), an unguessable id can.
-  The worker already echoes `id` unchanged.
+  and records it as `_last_req_id`; the worker already echoes `id` unchanged.
+  A part script can `os.fork()` and the child inherits fd 1 — the protocol
+  stream — so with a counter a **lingering child, or any stale writer, could
+  compute the ids of requests it never saw** (a later build, an export, another
+  part's request) and answer them. A random token ends that: an id it did not
+  observe is a 62-bit guess.
+- **What this deliberately does not close**, stated so nobody reads more into
+  it: the running script can still forge the response to its **own in-flight
+  request** — it holds fd 1 and can reach the id through the interpreter
+  (`sys._getframe`). That is the same trust domain as `build()` returning a
+  fake shape, so it is not worth an fd-passing redesign; confinement was never
+  the answer to it either (a process may write to its own stdout).
 
 ### The Linux loop
 - **New `scripts/linux-test.sh`** + `make test-linux`: the tree is **copied**

@@ -28,6 +28,28 @@ from .protocol import ERROR_CRASH, ERROR_TIMEOUT
 
 STARTUP_TIMEOUT_S = 180.0  # first ping pays the build123d import cost
 
+#: The preamble stages whose failure means the worker is NOT confined. A
+#: refused rlimit is a quota that did not apply — it belongs in the report and
+#: in health's warnings, but it says nothing about whether Landlock and seccomp
+#: are in force, and letting it clear `sandboxed` would understate the
+#: confinement as badly as overstating it.
+CONFINEMENT_STAGES = ("landlock", "seccomp")
+
+
+def confinement_holds(report: dict) -> bool:
+    """Whether the worker's own ping report still supports a confinement claim.
+
+    The report is the ONLY thing allowed to make `sandboxed` true (design spec,
+    Decision 8); this is the half of that rule that can be read on its own.
+    """
+    for failure in report.get("failures") or []:
+        if failure.get("stage") in CONFINEMENT_STAGES:
+            return False
+    if sys.platform == "linux" and not report.get("landlock_abi"):
+        # On Linux confinement IS Landlock plus seccomp; no ABI, no claim.
+        return False
+    return True
+
 
 class KernelError(Exception):
     def __init__(self, type: str, message: str, details: dict | None = None):
@@ -144,11 +166,8 @@ class KernelClient:
         # and on Linux a worker with no Landlock ABI is not confined at all
         # however good the intention was.
         self.sandbox_report = result.get("sandbox") or {}
-        self.sandboxed = bool(
-            self.sandboxed
-            and not self.sandbox_report.get("failures")
-            and (sys.platform != "linux"
-                 or self.sandbox_report.get("landlock_abi")))
+        self.sandboxed = bool(self.sandboxed
+                              and confinement_holds(self.sandbox_report))
 
     def _drain_stdout(self, proc: subprocess.Popen, lines: queue.Queue) -> None:
         assert proc.stdout is not None
@@ -201,11 +220,18 @@ class KernelClient:
                 break
 
         # A random 62-bit token, never a counter. A part script may `os.fork()`
-        # and the child inherits fd 1 — the protocol stream — so with a
-        # predictable id it could write the line the client is waiting for and
-        # have it accepted as the worker's answer. Confinement cannot close
-        # that (a process may write to its own stdout); an unguessable id can
-        # (design spec, "Risks"). 62 bits so it stays a JSON-safe integer.
+        # and the child inherits fd 1 — the protocol stream — so with a counter
+        # a LINGERING child (or any stale writer) could compute the ids of
+        # requests it never saw and answer them: a later build, an export, a
+        # request from another part entirely. A random token ends that: an id
+        # it did not observe is a 62-bit guess.
+        #
+        # What this does NOT close, deliberately: the running script can still
+        # forge the response to its OWN in-flight request — it holds fd 1 and
+        # can reach the id through the interpreter. That is the same trust
+        # domain as `build()` simply returning a fake shape, so it is not worth
+        # fd gymnastics (design spec, "Risks"). 62 bits keeps it a JSON-safe
+        # integer.
         req_id = secrets.randbits(62)
         self._last_req_id = req_id
         try:

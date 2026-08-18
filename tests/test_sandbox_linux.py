@@ -115,19 +115,95 @@ def _denied(client, root, body, name):
 # ------------------------------------------------------- what the worker says
 
 def test_ping_reports_landlock_and_seccomp(confined):
+    """What the worker says it applied to itself. These assertions are
+    unconditional on Linux — a kernel that cannot confine must fail here, not
+    quietly skip. Only the *claim* (`sandboxed`) is gated, because Decision 13
+    makes `AGENTCAD_EXPECT_SANDBOX=active` the thing that turns a degradation
+    into a red rather than a shrug."""
     client, _root = confined
     report = client.sandbox_report
-    expect = os.environ.get("AGENTCAD_EXPECT_SANDBOX")
-    if expect != "active":
-        pytest.skip(f"AGENTCAD_EXPECT_SANDBOX={expect!r}; the worker's own "
-                    f"report is {report!r}")
     assert report["landlock_abi"] >= 3
     assert report["seccomp"] in ("seccomp(2)", "prctl")
     assert report["rlimits"] == ["RLIMIT_AS", "RLIMIT_NPROC"]
     assert report["posture"] == "local"
     assert report["failures"] == []
-    # `sandboxed` is now the WORKER's answer, not the plan's intention.
+    expect = os.environ.get("AGENTCAD_EXPECT_SANDBOX")
+    if expect != "active":
+        pytest.skip(f"AGENTCAD_EXPECT_SANDBOX={expect!r}; the live report "
+                    f"above passed and `sandboxed` is {client.sandboxed!r}")
+    # `sandboxed` is the WORKER's answer, not the plan's intention.
     assert client.sandboxed is True
+
+
+def test_a_root_that_does_not_exist_is_a_lost_grant_and_a_reported_failure(
+        tmp_path_factory):
+    """Why `cli._writable_roots` creates the projects dir and `~/.agentcad`
+    before a worker spawns: on Linux a Landlock rule on a missing path is
+    ENOENT, and this is what that costs — the failure lands in the worker's own
+    report (so the client reports `off`) AND the root is never granted, so a
+    write into it is denied the moment the directory does appear.
+
+    Asserted rather than fixed here on purpose: `plan()` must NOT create the
+    roots it is handed, because it also receives `--work-dir` paths that may
+    still be refused (`tests/test_sandbox_plan.py` pins both halves).
+    """
+    root = tmp_path_factory.mktemp("missing-root")
+    # OUTSIDE `root`: a Landlock grant is path-beneath, so a subdirectory of an
+    # existing root would be writable through the parent's rule and prove
+    # nothing about its own.
+    absent = root.parent / "never-created-root"
+    assert not absent.exists()
+    patch = pytest.MonkeyPatch()
+    patch.setenv("AGENTCAD_CONFIG", str(root / "no-such-config.json"))
+    patch.delenv("AGENTCAD_NO_SANDBOX", raising=False)
+    try:
+        client = KernelClient(writable_dirs=[str(root), str(absent)],
+                              quotas=resolve(QUOTAS, env={}, config={}))
+    finally:
+        patch.undo()
+    client.start()
+    try:
+        failures = client.sandbox_report["failures"]
+        assert any(str(absent) in f["error"] and f["stage"] == "landlock"
+                   for f in failures), failures
+        assert client.sandboxed is False       # a landlock-stage failure
+        absent.mkdir()                          # ...and now it exists
+        err = _denied(client, root,
+                      f"open({str(absent / 'x')!r}, 'w', encoding='utf-8').write('x')",
+                      "absent")
+        assert err.details["denied"] == "filesystem"
+    finally:
+        client.stop()
+
+
+def test_io_uring_is_denied(battery):
+    """io_uring would be a way around the socket rule entirely: the ring's
+    entries ask the kernel to open and use a socket, and the only syscall the
+    filter sees is `io_uring_enter`.
+
+    Read this as "the interface is closed in the shipped posture", not as
+    attribution: **Docker's own default profile also denies io_uring here**
+    (measured in `agentcad:local`: EPERM for 425/426/427 with no filter of
+    ours installed). It is not redundant, though — with that profile off the
+    syscall is live in the same kernel (`io_uring_setup(8, NULL)` answers
+    EFAULT, not ENOSYS), so on a host without Docker's profile our filter is
+    the only thing closing it. `tests/test_confine_unit.py` is the proof that
+    OUR program denies it, by interpreting the bytes.
+    """
+    client, root = battery
+    err = _denied(client, root,
+                  "import ctypes\n"
+                  "libc = ctypes.CDLL(None, use_errno=True)\n"
+                  "libc.syscall.restype = ctypes.c_long\n"
+                  "ctypes.set_errno(0)\n"
+                  "rc = libc.syscall(425, 8, 0)   # io_uring_setup(8, NULL)\n"
+                  "raise RuntimeError(f'io_uring rc={rc} errno={ctypes.get_errno()}')",
+                  "iouring")
+    assert err.type == "script_error"
+    # EPERM (1). Unfiltered, `io_uring_setup(8, NULL)` would answer EFAULT (14)
+    # — a ring it could then fill — or hand back a real ring fd (rc >= 0).
+    assert "errno=1" in err.message, err.message
+    assert "rc=-1" in err.message, err.message
 
 
 def test_a_normal_build_still_works_confined(battery):
@@ -196,6 +272,11 @@ def test_kill_broadcast_is_denied(battery):
                   "import os, signal\nos.kill(-1, signal.SIGKILL)", "kill")
     assert err.type == "script_error"
     assert "PermissionError" in err.message
+    # EPERM, but NOT a network denial: the four categories describe what the
+    # script was reaching for, and a refused broadcast signal is none of them.
+    # Labelling it `network` would send an agent to fix a socket that is not
+    # in the script (`denials.classify` requires a socket frame).
+    assert err.details.get("denied") is None
     assert client.request("ping", {})["ok"] is True
 
 

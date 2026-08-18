@@ -127,6 +127,64 @@ def test_the_shared_system_temp_dir_is_never_a_write_root(isolated, backend):
         plan.release()
 
 
+def test_plan_never_creates_a_writable_root_it_was_handed(isolated, backend):
+    """`plan()` receives CALLER-supplied paths whose acceptance is decided
+    elsewhere: `agentcad check --work-dir <project>/scratch` is refused by
+    `CheckRunner._work_dir`, and "a refused path leaves nothing behind" is a
+    promise with a test on it (`test_checks_cli.py`). Creating roots here would
+    resurrect exactly that bug, one layer down — so the directory is granted as
+    given and whoever owns it makes it (see the `_writable_roots` test below).
+    """
+    missing = isolated / "would-be-refused"
+    plan = _plan([missing])
+    try:
+        assert not missing.exists(), "plan() created a caller-supplied root"
+        assert os.path.realpath(str(missing)) in backend.calls[0].write_roots
+    finally:
+        plan.release()
+
+
+def test_the_cli_creates_the_two_writable_roots_the_server_owns(monkeypatch,
+                                                                tmp_path):
+    """The other half: on a fresh install neither the projects dir (the service
+    creates it AFTER `kernel.start()`) nor `~/.agentcad` need exist, and a
+    Landlock rule on a missing path is ENOENT — the grant is lost, every write
+    into it fails once it appears, and the failure downgrades a genuinely
+    confined worker to `off`. `cli._writable_roots` owns both, so it makes both.
+    """
+    from agentcad import cli
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    projects = tmp_path / "projects-not-yet" / "nested"
+    assert not projects.exists() and not (home / ".agentcad").exists()
+
+    roots = cli._writable_roots(projects)
+
+    assert projects.is_dir() and (home / ".agentcad").is_dir()
+    assert str(projects) in roots and str(home / ".agentcad") in roots
+
+
+def test_a_root_the_cli_cannot_create_warns_instead_of_crashing(monkeypatch,
+                                                                 tmp_path,
+                                                                 capsys):
+    """A projects dir under a plain file cannot be made. The server still
+    starts — with the roots that did work — and says why."""
+    from agentcad import cli
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    blocker = tmp_path / "a-file"
+    blocker.write_text("not a directory", encoding="utf-8")
+
+    roots = cli._writable_roots(blocker / "under-a-file")
+
+    assert str(blocker / "under-a-file") in roots      # granted, just absent
+    assert "under-a-file" in capsys.readouterr().err
+
+
 def test_release_removes_the_temp_dir_and_frees_the_backend(isolated, backend):
     plan = _plan([isolated])
     tmp = Path(plan.tmp_dir)
