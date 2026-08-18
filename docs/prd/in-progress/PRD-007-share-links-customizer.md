@@ -10,6 +10,30 @@
   (links pin tags), PRD-011 (registry funnel), PRD-012 (configs in the
   customizer), PRD-017 (glTF exporter)
 
+> **Design note (2026-08-18).** This PRD now rides the shipped hosted core
+> (PRD-005a), not the deferred PRD-005/006, and the design spot-checked its
+> assumptions against the real tree. The
+> [design spec](../../superpowers/specs/2026-08-18-share-links-customizer-design.md)
+> and [plan](../../superpowers/plans/2026-08-18-share-links-customizer.md)
+> record the following divergences to fold in when the feature is picked up
+> (PRD stays `pending` until then): the customizer rebuild is a **`GET`** of a
+> content-addressed variant, not a POST — it is a pure read (owner state never
+> changes), which makes CSRF moot and cross-origin embedding work by
+> construction (settles FR6's guard question); publication/link state lives in
+> the **PRD-005a state dir** (`<state-dir>/publications/`, one shared space),
+> not "PRD-005's storage", with a **store-backed sha256** capability token
+> rather than an HMAC-signed one (immediate revocation, the reason 005a rejected
+> JWTs); the immutable pin is a **copy** of the script bytes at a resolved tag
+> into a **muzzled build service** under the state dir, so the visitor path
+> never touches a user `ProjectStore`; the viewer streams the shipped **ACM**
+> format (reusing `viewport.js::parseACM`) and **`core/gltf.py` is deferred to
+> PRD-017** to avoid build-then-migrate churn (matching this PRD's own risk
+> note); the surface is **two** route packs (`routes_share.py` at `/api`,
+> `routes_share_public.py` at the root) because a pack carries one `PREFIX`; and
+> PRD-006 is **not required for our own content** (005a Decision 2). The one
+> open founder call folded from design: `/embed/` `frame-ancestors` default
+> (open `*` vs a per-publication allowlist) and the default link expiry.
+
 ## Problem & motivation
 
 Nothing made in AgentCAD can be shown to anyone. The server binds
