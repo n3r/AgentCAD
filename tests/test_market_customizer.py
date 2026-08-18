@@ -30,6 +30,7 @@ from .conftest import configure_private_index
 NEMA_VARIANT = ("/api/public/packages/nema17/versions/1.0.0/parts/motor/variant")
 NEMA_DOWNLOAD = ("/api/public/packages/nema17/versions/1.0.0/parts/motor/"
                  "download")
+NEMA_MESH = ("/api/public/packages/nema17/versions/1.0.0/parts/motor/mesh")
 
 
 @pytest.fixture(autouse=True)
@@ -224,3 +225,70 @@ def test_an_undeclared_part_variant_is_a_miss(hosted_with_catalog):
         "/api/public/packages/nema17/versions/1.0.0/parts/nope/variant",
         params={"body_length": 40})
     assert r.status_code == 404
+
+
+# --------------------------------------- slice 4: the market mesh read (gap)
+
+def test_the_mesh_route_serves_a_built_variants_bytes(hosted_with_catalog):
+    """The gap slice 2 flagged: a `/variant` returns a `mesh_key`, and the
+    browser viewport fetches the `.acm` bytes for that key from the mesh route —
+    the exact `/s/{token}/mesh/{key}` shape, scoped to the listing."""
+    client = hosted_with_catalog
+    v = client.get(NEMA_VARIANT, params={"body_length": 40})
+    assert v.status_code == 200, v.text
+    key = v.json()["mesh_key"]
+
+    r = client.get(f"{NEMA_MESH}/{key}")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/octet-stream"
+    assert r.headers.get("x-mesh-key") == key
+    assert r.headers["cache-control"] == "no-store"
+    assert r.content            # non-empty ACM bytes
+
+
+def test_the_mesh_route_never_builds(hosted_with_catalog, kernel_counter):
+    """404-if-absent, NEVER builds — a key not in the cache is a `_miss` with the
+    kernel counter unmoved (the `get_mesh_by_key` discipline)."""
+    client = hosted_with_catalog
+    before = kernel_counter.calls
+    # A well-formed but never-built cache key (hex, no separators): 404, no build.
+    r = client.get(f"{NEMA_MESH}/{'a' * 40}")
+    assert r.status_code == 404, r.text
+    assert kernel_counter.calls == before, kernel_counter.seen
+
+
+def test_the_mesh_route_makes_no_kernel_call_even_for_a_hit(
+        hosted_with_catalog, kernel_counter):
+    """A cache hit is a pure disk read — zero kernel, so it is not the guarded
+    kernel path (it is swept by the kernel-silence positive control)."""
+    client = hosted_with_catalog
+    key = client.get(NEMA_VARIANT, params={"body_length": 35}).json()["mesh_key"]
+    before = kernel_counter.calls
+    r = client.get(f"{NEMA_MESH}/{key}")
+    assert r.status_code == 200
+    assert kernel_counter.calls == before, kernel_counter.seen
+
+
+def test_the_mesh_key_is_hex_gated_against_traversal(hosted_with_catalog):
+    """`_is_cache_key` refuses a key with a path separator or a dot before it is
+    ever joined to a directory — a crafted key cannot escape the cache dir."""
+    client = hosted_with_catalog
+    client.get(NEMA_VARIANT, params={"body_length": 40})       # warm a build
+    for evil in ("..%2f..%2fetc%2fpasswd", "..", "not-hex-zzz"):
+        r = client.get(f"{NEMA_MESH}/{evil}")
+        assert r.status_code == 404, evil
+
+
+def test_a_private_listings_mesh_is_indistinguishable(hosted_with_private):
+    """A private index never surfaces a mesh; its miss is byte-identical to a
+    nonexistent package (no oracle) — the dual-scope filter, on this route too."""
+    client, private_name = hosted_with_private
+    key = "a" * 40
+    mine = client.get(
+        f"/api/public/packages/{private_name}/versions/1.0.0/parts/"
+        f"ball_bearing/mesh/{key}")
+    missing = client.get(
+        f"/api/public/packages/does-not-exist/versions/1.0.0/parts/"
+        f"ball_bearing/mesh/{key}")
+    assert mine.status_code == missing.status_code == 404
+    assert mine.json() == missing.json()

@@ -5,7 +5,7 @@
 - **Created:** 2026-08-09
 - **Origin:** founder idea #1e (Aug 2026), engineering-reviewed; grounded by dedicated research (market_research.md, "Marketplace & community")
 - **Depends on:** PRD-005 (identity/hosting — hard) · PRD-007 (customizer preview — hard) · PRD-011 (package format & validation — hard) · PRD-006 (sandbox — hard, the safety boundary)
-- **Related:** PRD-031a (the seeded read-only catalog, in progress) · PRD-029 (skills as a second content type), PRD-021 (rule packs as a third), PRD-024 (quality scoring), PRD-025 (Market workspace)
+- **Related:** PRD-031a (the seeded read-only catalog, **implemented** — browse/search/listing/customizer + the kernel-free mesh read + add-to-library/`market_install`) · PRD-029 (skills as a second content type), PRD-021 (rule packs as a third), PRD-024 (quality scoring), PRD-025 (Market workspace)
 
 ## Carved out to PRD-031a (18 Aug 2026)
 

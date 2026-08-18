@@ -279,6 +279,19 @@ def _clamp_params(spec: dict, values: dict) -> tuple[dict, list[str]]:
     return clamped, warnings
 
 
+def script_sha_for(script_bytes: bytes) -> str:
+    """The content-address of a script's raw bytes — the pin identity, computed
+    WITHOUT registering a build project.
+
+    A pure read helper for the market mesh route (PRD-031a slice 4): that route
+    must resolve the cached ``.acm`` for a variant *already built*, keyed by the
+    same ``script_sha`` :meth:`ensure_catalog_pin` derives, but it must **never**
+    build or even register a project — so it needs the sha alone, not a pin. The
+    raw bytes are hashed newline-preserving, exactly as :meth:`pin` and
+    :meth:`ensure_catalog_pin` do, so the three agree byte-for-byte."""
+    return "sha256:" + hashlib.sha256(script_bytes).hexdigest()
+
+
 def _proj_name(script_sha: str) -> str:
     """A ``validate_id``-legal project name for a content-addressed build.
 
@@ -746,7 +759,7 @@ class ShareBuilder:
         except UnicodeDecodeError as exc:
             raise ValidationError(
                 "catalog part script is not valid UTF-8", {}) from exc
-        script_sha = "sha256:" + hashlib.sha256(script_bytes).hexdigest()
+        script_sha = script_sha_for(script_bytes)
         script_file = self._store.script_path(script_sha)
         script_file.parent.mkdir(parents=True, exist_ok=True)
         if not script_file.exists():

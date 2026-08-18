@@ -1,6 +1,6 @@
 # PRD-031a — Marketplace catalog: seeded, read-only, add-to-library
 
-- **Status:** in progress — step 4 of the marketplace chain. Design and plan settled; implementation is TDD vertical slices (see the plan).
+- **Status:** implemented — step 4 of the marketplace chain, all six slices landed (TDD, see the plan). The API acceptance criteria (AC1–AC8) are machine-checked in `tests/test_prd031a_acceptance.py`; AC9 (and AC1's visual half) is **graded as evidence** — the pages were **never rendered by a browser** (`list_connected_browsers` → `[]`, the PRD-005a/007 precedent).
 - **Phase:** v6 — moats
 - **Created:** 2026-08-18
 - **Origin:** carved out of [PRD-031](../pending/PRD-031-marketplace.md) by the founder decision recorded in [roadmap.md](../../roadmap.md), "Sequencing decision — the marketplace chain (16 Aug 2026)": *"Public read-only catalog we seed, with add-to-library. Needs 011 + 005a + 007. The browse payload is already pre-generated: 005a serves `catalog/index.json`'s metadata and shipped previews anonymously, filtered to indexes whose `scope` is `public`; add-to-library is the existing authenticated `add_package`/`use_part` path."*
@@ -64,6 +64,7 @@ The shelf is never empty on day one: it is the nine-package COTS catalog. The su
 - **FR4.** `GET .../parts/{part}/variant?<params>` rebuilds a bounded variant of a catalog part and `.../download/{fmt}` exports it, through **PRD-007's containment reused verbatim**: `require_customizer_capacity()` (503 on a single-worker pool), the process-global in-flight `BoundedSemaphore` (the `pool_size − 1` worker reservation), a per-IP `TokenBucket` + hourly login gate **shared with `/s/`** via `service.customizer_guard`, a per-version bucket, `normalize_params` param parity, the server-side `paramclamp` clamp before the cache key, and the content-addressed variant cache.
 - **FR5.** The pin is the catalog version's `content_id` — already content-addressed and immutable. No `Publication`, no share token. The part's script bytes are pinned into `ShareBuilder`'s content-addressed build project (`build_catalog_variant`); the param spec is the **pre-generated index digest** (so browse and the spec read stay zero-kernel; a variant is exactly one kernel call — the build).
 - **FR6.** Downloads are gated by a **fixed** allowed export set `{step, stl, 3mf}`; a format outside it 404s **before** the builder. A part with no declared params has no customizer (a `customizer: false` analogue — 404 before the builder).
+- **FR6a (the mesh read — slice 4).** `GET .../parts/{part}/mesh/{key}` serves the rebuilt **mesh** `.acm` bytes the browser viewport needs after a `/variant` returns a `mesh_key`. It is **kernel-free** — it reads a variant *already in the cache* and 404s an absent one, **never building** (the `/s/{token}/mesh/{key}` / `get_mesh_by_key` discipline), the `key` hex-gated (`_is_cache_key`) against traversal. It closes the one functional gap slices 1–3 flagged (the customizer viewport had no anonymous route to fetch its mesh); it lives beside `/variant` in `routes_market.py` and joins `EXPECTED_PUBLIC` in the same change, `NOT_YET_BUILT` staying `== set()`.
 
 ### Add-to-library (authenticated, PRD-011 verbatim)
 - **FR7.** A signed-in user adds a catalog package into a project via the existing `POST /api/projects/{proj}/packages` (`add_package`, `index` = the public catalog) + `.../use` (`use_part`); the PRD-011 lockfile (`packages_lock[name].{version, content_id}`) pins the version. Session-required; not on the anonymous surface.
@@ -75,7 +76,7 @@ The shelf is never empty on day one: it is the nine-package COTS catalog. The su
 ## Agent surface
 
 - **New tools:** `market_install(project, package, part, part_id, version_req?, preset?, params?)` (`core/tools_market.py`). *(`market_search` is served anonymously by `GET /api/public/packages/search`; authenticated agents keep `search_packages` — no new `market_search` tool.)*
-- **New routes (anonymous, `scope: public`):** `GET /api/public/packages/search`; `.../versions/{version}/script/{part}`; `.../versions/{version}/params/{part}` (kernel-free, in `routes_public.py`); `.../versions/{version}/parts/{part}/variant`; `.../parts/{part}/download/{fmt}` (**K**, in new `routes_market.py`). All join `EXPECTED_PUBLIC`.
+- **New routes (anonymous, `scope: public`):** `GET /api/public/packages/search`; `.../versions/{version}/script/{part}`; `.../versions/{version}/params/{part}` (kernel-free, in `routes_public.py`); `.../versions/{version}/parts/{part}/variant`; `.../parts/{part}/download/{fmt}` (**K**, in new `routes_market.py`); `.../parts/{part}/mesh/{key}` (kernel-free mesh read, in `routes_market.py` — slice 4, FR6a). All six join `EXPECTED_PUBLIC`.
 - **New routes (authenticated):** none — add-to-library reuses the existing package routes.
 - **Changed (additive):** `core/share_build.py` (+`build_catalog_variant`/`export_catalog_variant`, `_variant` core, `ensure_share` installs `customizer_guard`); `server/routes_share_public.py` (throttle/gate → `service.customizer_guard`); `core/packages/search.py` (+`refresh`, +`license` filter).
 - **New error types:** none — misses are `routes_public._miss`; bad params are `validation_error`; a full pool is PRD-007's `service_unavailable`/`rate_limited`.
@@ -105,7 +106,7 @@ The shelf is never empty on day one: it is the nine-package COTS catalog. The su
 - **AC6.** `market_install` installs only from the seeded public catalog; pinning a private index is refused; it returns the lock entry.
 - **AC7.** A listing surfaces `license`, `disclosure`, `standards`, the `gate: green` badge and the empty `signatures` slot read-only; the read-only script carries its provenance header; no remix/economy affordance exists.
 - **AC8 (OCP-free).** The market browse/search/listing/script/params modules import no `OCP`/build123d (fresh interpreter, `OCP` blocked).
-- **AC9 (browser, graded as evidence).** The browse and listing pages render and the customizer drives a rebuild in a real browser — graded on the 005a/007 precedent (Chrome unavailable many sessions); the API ACs are the machine-checked backstop.
+- **AC9 (browser, graded as evidence).** The browse and listing pages render and the customizer drives a rebuild in a real browser — graded on the 005a/007 precedent. The pages were **never rendered by a browser** in this build (`list_connected_browsers` → `[]`); the API ACs (AC1–AC8) are the machine-checked backstop, and the shipped market view (`frontend/js/market.js`, wired into `index.html`/`main.js`, reusing the PRD-007 `share-viewport.js`) is asserted to exist and call the routes it claims to.
 
 ## Verification levels
 

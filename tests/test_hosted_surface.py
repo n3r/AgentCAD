@@ -61,6 +61,12 @@ EXPECTED_PUBLIC = {
     ("GET", "/api/public/packages/{name}/versions/{version}/parts/{part}/variant"),
     ("GET",
      "/api/public/packages/{name}/versions/{version}/parts/{part}/download/{fmt}"),
+    # PRD-031a slice 4 — the market mesh read, KERNEL-FREE (it serves a `.acm`
+    # already in the build cache and 404s an absent one, never building — the
+    # `/s/{token}/mesh/{key}` discipline). Also in `routes_market.py`, beside the
+    # `/variant` route it completes; it closes the browser-viewport mesh-fetch gap
+    # slice 2 flagged. Swept by the kernel-silence positive-control test.
+    ("GET", "/api/public/packages/{name}/versions/{version}/parts/{part}/mesh/{key}"),
     # PRD-007 share links (design Decision 2). These SIX viewer routes make
     # ZERO kernel calls. The two customizer routes that DO reach exec()
     # (/variant, /download) join this set in PRD-007 slice 4, mounted in the

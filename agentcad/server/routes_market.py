@@ -6,6 +6,16 @@ pack (design Decision 4):
 
     GET /api/public/packages/{name}/versions/{version}/parts/{part}/variant
     GET /api/public/packages/{name}/versions/{version}/parts/{part}/download/{fmt}
+    GET /api/public/packages/{name}/versions/{version}/parts/{part}/mesh/{key}
+
+The first two reach the kernel; the third — ``/mesh/{key}`` — is **kernel-free**
+(PRD-031a slice 4). It serves the ``.acm`` bytes for a variant **already in the
+build cache** and 404s an absent one, **never building** — the exact
+``routes_share_public.py`` ``/s/{token}/mesh/{key}`` (and ``routes_configs``
+``get_mesh_by_key``) discipline. It lives here, beside the ``/variant`` route it
+completes, precisely as ``/s/``'s kernel-free mesh read sits beside ``/s/``'s
+customizer routes; it closes the one functional gap slice 2 flagged — the browser
+viewport needs the rebuilt mesh bytes a ``mesh_key`` names.
 
 The whole risk of the slice is here, and it is closed by construction: this pack
 opens **no second set of limits**. It reuses PRD-007's containment *verbatim* —
@@ -37,7 +47,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from ..core import share_build
 from ..core.materials import DEFAULT_MATERIAL
@@ -171,5 +181,32 @@ def build_router(service, registry) -> APIRouter:
         return FileResponse(
             path, filename=filename, media_type="application/octet-stream",
             headers={"Cache-Control": "no-store"})
+
+    @router.get(
+        "/public/packages/{name}/versions/{version}/parts/{part}/mesh/{key}")
+    def market_mesh(name: str, version: str, part: str, key: str):
+        """The rebuilt mesh bytes the browser viewport fetches after a
+        ``/variant`` returns a ``mesh_key`` — **kernel-free**, closing the one
+        functional gap slice 2 flagged.
+
+        It serves the ``.acm`` for a variant **already in the cache** and 404s
+        an absent one; it **never builds** (the ``/s/{token}/mesh/{key}`` /
+        ``get_mesh_by_key`` contract), so it is not guarded or rate-limited — a
+        pure disk read. The listing is resolved by the SAME dual-``scope:
+        public`` ``_resolve_catalog_part`` the variant route uses (so a private
+        or nonexistent listing, or a non-customizable part, is one
+        indistinguishable ``_miss``), and the ``.acm`` is located from the
+        pinned ``script_sha`` alone — computed without registering a build —
+        with ``ShareBuilder.mesh_path`` hex-gating ``key`` (``_is_cache_key``)
+        against any path-traversal before it is joined to a directory."""
+        builder = ensure_share(service)
+        _spec, script_bytes = _resolve_catalog_part(name, version, part)
+        path = builder.mesh_path(share_build.script_sha_for(script_bytes), key)
+        if path is None:
+            raise _miss()                    # absent key: 404, never a build
+        return Response(
+            content=path.read_bytes(),
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "no-store", "X-Mesh-Key": key})
 
     return router

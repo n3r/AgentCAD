@@ -19,6 +19,7 @@ import * as presence from "./presence.js";
 import * as comments from "./comments.js";
 import * as library from "./library.js";
 import * as configs from "./configs.js";
+import * as market from "./market.js";
 import * as auth from "./auth.js";
 import { setupShare } from "./share-links.js";
 
@@ -2232,6 +2233,14 @@ async function boot() {
   } catch {
     identity = { mode: "local", principal: null };   // offline: fall through
   }
+  // The marketplace is entered on the `#market` hash BEFORE the auth gate, so a
+  // logged-out hosted visitor can browse/customize/download the public catalog
+  // (add-to-library still needs a session). It takes over the whole page and
+  // does not init the workbench, so the viewport singleton is its alone.
+  if (window.location.hash.startsWith("#market")) {
+    market.enter(identity, actions);
+    return;
+  }
   if (identity === null) {
     showSignIn();
     return;
@@ -2263,6 +2272,13 @@ async function boot() {
   setupShare(identity);
   setupImport();
   setupLibrary();
+  // The Market button takes over the page via a full reload into `#market`, so
+  // boot() re-enters in market mode with the viewport singleton to itself — the
+  // same "reload rather than re-run boot()" discipline showSignIn() uses.
+  document.getElementById("market-btn")?.addEventListener("click", () => {
+    window.location.hash = "#market";
+    window.location.reload();
+  });
   setupUndo();
   setupKeys();
   onKeys(["rebuilding", "connected"], renderIndicators);
