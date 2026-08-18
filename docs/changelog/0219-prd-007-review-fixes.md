@@ -140,5 +140,12 @@ complexity. Recorded as a known minor edge.
 - Targeted suites green: `test_share_customizer` (26), `test_share_viewer`,
   `test_share_publish`, `test_share_isolation`, `test_publications`,
   `test_ratelimit`, `test_hosted_surface`, `test_prd007_acceptance`, and
-  `test_kernel` (worker clamp) — **140 passed** together. Full suite not run
-  here (contended machine); prior tree measured ~3994 (0218).
+  `test_kernel` (worker clamp) — **140 passed** together.
+- **Full suite on the committed tree: `make test` — 3974 passed, 1 skipped**
+  (`uv run pytest` with the CI serial-tail split, exit 0). This supersedes the
+  ~3994 figure a slice changelog projected before the review-round tests
+  landed; the review round removed no tests and this is the measured total.
+  One deploy-config test moved with a deliberate policy change: the Compose
+  kernel pool is pinned to **2**, not 1, because the customizer reserves a
+  member worker (`pool_size - 1`) and needs ≥2 to run — still a memory-safe
+  pin (~1 GB on the documented 4 GB floor), the value the feature requires.
