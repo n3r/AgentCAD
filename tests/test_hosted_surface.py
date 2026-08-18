@@ -43,16 +43,30 @@ EXPECTED_PUBLIC = {
     ("GET", "/api/public/packages/{name}"),
     ("GET", "/api/public/packages/{name}/versions/{version}"),
     ("GET", "/api/public/packages/{name}/versions/{version}/preview"),
+    # PRD-007 share links (design Decision 2). Six viewer routes make ZERO
+    # kernel calls; two — /variant and /download — are the customizer path and
+    # the only anonymous routes that reach exec(). All eight are enumerated
+    # here so a ninth /s/ route cannot go public unreviewed.
+    ("GET", "/s/{token}"),
+    ("GET", "/embed/{token}"),
+    ("GET", "/s/{token}/model"),
+    ("GET", "/s/{token}/mesh/{key}"),
+    ("GET", "/s/{token}/params"),
+    ("GET", "/s/{token}/script"),
+    ("GET", "/s/{token}/variant"),
+    ("GET", "/s/{token}/download/{fmt}"),
 }
 
 # Routes named in EXPECTED_PUBLIC that a slice has not created yet. Slice 3
-# removed the three /api/auth ones; slice 7 emptied it. The final list is
-# written ONCE, above, so the enumeration cannot drift slice by slice — and
-# the set equality below is what stops a forgotten removal from passing
-# silently. It stays here, empty, because the *next* feature to add a public
-# route (PRD-007's share links) should grow `EXPECTED_PUBLIC` and this
-# subtrahend together rather than editing the enumeration mid-flight.
-NOT_YET_BUILT: set[tuple[str, str]] = set()
+# removed the three /api/auth ones; slice 7 emptied it; PRD-007 slice 3 (the
+# viewer) put the two customizer templates here so PRD-007 slice 4 removes
+# them. The final list is written ONCE, above, so the enumeration cannot drift
+# slice by slice — and the set equality below is what stops a forgotten removal
+# from passing silently.
+NOT_YET_BUILT: set[tuple[str, str]] = {
+    ("GET", "/s/{token}/variant"),
+    ("GET", "/s/{token}/download/{fmt}"),
+}
 
 BUILT_PUBLIC = EXPECTED_PUBLIC - NOT_YET_BUILT
 
@@ -157,6 +171,13 @@ def test_static_mounts_are_public(hosted_client):
     "/jsx/evil.js",
     "/api/projects",
     "/api/packages/search",      # walks EVERY index, including private ones
+    # PRD-007's trailing-slash gotcha: `/s/` and `/embed/` are public, but the
+    # bare stems must not make `/status`, `/svg` or `/embedding` public.
+    "/s",
+    "/status",
+    "/svg",
+    "/embed",
+    "/embedding",
 ])
 def test_paths_that_must_not_be_public(path):
     """`routes_packages.py`'s search and preview iterate every configured

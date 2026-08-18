@@ -272,46 +272,10 @@ def test_an_over_long_identity_is_refused_rather_than_truncated():
     assert reg._clients == {}                            # noqa: SLF001
 
 
-def test_eviction_never_hands_a_drained_bucket_a_fresh_burst():
-    """K-N3: eviction is only free if what it drops carries no information.
-
-    Dropping a bucket that has been refilled to its full burst grants nobody
-    anything — an absent bucket and a full one answer identically. Dropping the
-    *least recently used* one does not have that property: the LRU entry under
-    a rotating flood is a bucket somebody just spent tokens from, and deleting
-    it hands that identity a brand new burst. So a table with no refilled
-    bucket in it has no room, and the beat is throttled instead of being
-    granted at somebody else's expense.
-    """
-    clock = Clock()
-    bucket = presence.TokenBucket(clock=clock, limit=4)
-    for n in range(4):
-        assert bucket.take(f"browser:{n}") is True        # 4 drained-by-one
-
-    # No room, and nothing evictable: the newcomer is throttled...
-    assert bucket.take("browser:new") is False
-    assert len(bucket._buckets) == 4                       # noqa: SLF001
-    # ...and crucially, browser:0 still has its four remaining tokens, rather
-    # than the five a fresh bucket would have handed it.
-    assert [bucket.take("browser:0") for _ in range(5)] == \
-        [True] * 4 + [False]
-
-    # Once a bucket has refilled to the burst it is indistinguishable from an
-    # absent one, so it is what eviction takes.
-    clock.advance(presence.RATE_BURST / presence.RATE_PER_S + 1)
-    assert bucket.take("browser:new") is True
-    assert len(bucket._buckets) <= 4                       # noqa: SLF001
-
-
-def test_the_token_bucket_refills_at_one_per_second():
-    clock = Clock()
-    bucket = presence.TokenBucket(clock=clock)
-    assert [bucket.take("browser:a") for _ in range(7)] == (
-        [True] * 5 + [False, False])
-    # Another identity has its own bucket.
-    assert bucket.take("browser:b") is True
-    clock.advance(2.0)
-    assert [bucket.take("browser:a") for _ in range(3)] == [True, True, False]
+# The `TokenBucket` cases moved to `tests/test_ratelimit.py` when the class was
+# promoted to `core/ratelimit.py` (PRD-007 design Decision 6). The rotating-
+# identity test above stays: it is a *roster* bound that happens to use a
+# bucket, and `presence.TokenBucket` remains a live re-export.
 
 
 # ------------------------------------------------------ 2. the heartbeat route
