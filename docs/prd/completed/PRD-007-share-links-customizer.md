@@ -1,6 +1,6 @@
 # PRD-007 — Share links, embedded viewer, and customizer publishing
 
-- **Status:** implemented — on branch `prd-007-share-links-customizer`, AC1–AC9
+- **Status:** completed — merged to main in PR #20. AC1–AC9
   verified (`tests/test_prd007_acceptance.py`), the two browser ACs (AC1 the
   logged-out page, AC7 the embed) **graded as evidence** rather than driven — no
   Chrome extension was available (`list_connected_browsers` → `[]`), the same
