@@ -7,6 +7,7 @@ built here — the shared session ``kernel`` fixture stays unsandboxed.
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -79,11 +80,15 @@ def test_build_writes_mesh_inside_root(sboxed, writable):
 
 # 3 — a script writing outside the roots gets a script_error, and no file lands
 def test_write_outside_roots_denied(sboxed, writable):
+    """The probe path is spelled out rather than expanded in the worker: since
+    PRD-006 the child's ``HOME`` is its private temp dir, so ``~`` inside a
+    script is *already* somewhere it may write. The developer's real home —
+    the thing confinement is protecting — is this process's ``Path.home()``.
+    """
     script = (
-        "import os\n"
         "PARAMS = {}\n"
         "def build(p):\n"
-        "    open(os.path.expanduser('~/agentcad_sandbox_probe.txt'), 'w').write('x')\n"
+        f"    open({str(PROBE)!r}, 'w', encoding='utf-8').write('x')\n"
         "    return None\n"
     )
     try:
@@ -119,6 +124,80 @@ def test_network_denied_worker_survives(sboxed, writable):
     # the connection (ConnectionRefusedError), so pin the PermissionError
     assert "PermissionError" in err.details.get("traceback", "")
     assert sboxed.request("ping", {})["ok"] is True  # same worker, still alive
+
+
+# 4b — the worker's temp dir is its own, and the shared one is not granted
+#
+# PRD-006, Decision 1: the v3 profile granted `tempfile.gettempdir()`
+# wholesale, so two workers' scripts shared a scratch directory they could
+# both read and overwrite. Each worker now gets a private `agentcad-worker-*`
+# dir, exported as $TMPDIR (so `tempfile` in the script finds it), and that
+# dir — not the shared parent — is what the profile grants.
+
+TEMP_SCRIPT = """\
+import os
+import tempfile
+from build123d import *
+
+PARAMS = {}
+
+def build(p):
+    tmp = tempfile.gettempdir()
+    assert os.path.basename(tmp).startswith("agentcad-worker-"), tmp
+    with open(os.path.join(tmp, "scratch.txt"), "w", encoding="utf-8") as f:
+        f.write(tmp)
+    with BuildPart() as part:
+        Box(10, 10, 10)
+    return part.part
+"""
+
+
+def test_the_scripts_temp_dir_is_the_workers_private_one(sboxed, writable):
+    result = _build(sboxed, TEMP_SCRIPT, writable / "temp.acm")
+    assert result["metrics"]["volume_mm3"] == pytest.approx(1000.0, rel=1e-6)
+
+    private = Path(sboxed._plan.tmp_dir)
+    assert private.name.startswith("agentcad-worker-")
+    scratch = private / "scratch.txt"
+    # The write succeeded *and* it landed in this client's own directory.
+    assert scratch.read_text(encoding="utf-8") == str(private)
+
+
+@pytest.mark.parametrize("where", ["inside", "beside"])
+def test_the_shared_temp_tree_is_not_writable(sboxed, writable, where):
+    """`inside` is the regression this closes: a path in the system temp dir
+    itself, which the v3 profile granted. `beside` is a sibling of it under
+    the same /var/folders tree, which it never did."""
+    shared = Path(tempfile.gettempdir())
+    probe = (shared if where == "inside" else shared.parent) / "agentcad-probe.txt"
+    script = (
+        "PARAMS = {}\n"
+        "def build(p):\n"
+        f"    open({str(probe)!r}, 'w', encoding='utf-8').write('x')\n"
+        "    return None\n"
+    )
+    try:
+        with pytest.raises(KernelError) as exc_info:
+            _build(sboxed, script, writable / "shared.acm")
+        err = exc_info.value
+        assert err.type == "script_error"
+        assert "PermissionError" in err.details.get("traceback", "")
+        assert not probe.exists()
+    finally:
+        if probe.exists():
+            probe.unlink()
+            pytest.fail("the sandboxed worker wrote into the shared temp tree")
+
+
+def test_stop_removes_the_private_temp_dir(writable, monkeypatch):
+    monkeypatch.setenv("AGENTCAD_CONFIG", str(writable / "no-such-config.json"))
+    monkeypatch.delenv("AGENTCAD_NO_SANDBOX", raising=False)
+    client = KernelClient(writable_dirs=[str(writable)])
+    private = Path(client._plan.tmp_dir)
+    client.start()
+    assert private.is_dir()
+    client.stop()
+    assert not private.exists()
 
 
 # 5 — timeout kill + respawn still works under confinement

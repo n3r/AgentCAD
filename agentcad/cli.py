@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sys
 import threading
 import time
@@ -44,7 +45,8 @@ def _projects_dir(args) -> Path:
     return Path(override) if override else DEFAULT_PROJECTS_DIR
 
 
-def _build_service(projects_dir: Path, extra_writable: list[str] | None = None):
+def _build_service(projects_dir: Path, extra_writable: list[str] | None = None,
+                   *, posture: str | None = None):
     """The service every command shares: one warm kernel, no server.
 
     *extra_writable* appends to the sandbox's writable roots and must be known
@@ -52,9 +54,16 @@ def _build_service(projects_dir: Path, extra_writable: list[str] | None = None):
     so a `agentcad check --work-dir` outside the system temp dir cannot be
     granted afterwards. The default leaves the roots byte-identical for every
     other caller.
+
+    Quotas (PRD-006) are resolved here too, for the same reason: they are
+    fixed at construction so every respawn of a killed worker is capped
+    identically. *posture* defaults to the deployment mode's — `hosted` on a
+    hosted instance, `local` otherwise.
     """
     from .config import get_kernel_pool_size
     from .core.service import AgentCADService, EventBus
+    from .kernel import quotas as quotas_mod
+    from .kernel import sandbox
     from .kernel.client import KernelClient
     from .kernel.pool import KernelPool
 
@@ -62,10 +71,14 @@ def _build_service(projects_dir: Path, extra_writable: list[str] | None = None):
     writable = _writable_roots(projects_dir)
     if extra_writable:
         writable += [str(root) for root in extra_writable]
+    quotas = quotas_mod.resolve()
+    posture = posture or sandbox.default_posture()
     if size == 1:
-        kernel = KernelClient(writable_dirs=writable)
+        kernel = KernelClient(writable_dirs=writable, quotas=quotas,
+                              posture=posture)
     else:
-        kernel = KernelPool(size=size, writable_dirs=writable)
+        kernel = KernelPool(size=size, writable_dirs=writable, quotas=quotas,
+                            posture=posture)
     kernel.start()
     try:
         service = AgentCADService(projects_dir, kernel, EventBus())
@@ -86,8 +99,13 @@ def _build_service(projects_dir: Path, extra_writable: list[str] | None = None):
 def _writable_roots(projects_dir: Path) -> list[str]:
     """Directories the sandboxed kernel workers may write to: the projects
     dir (part .cache meshes, exports/), the user config dir, each registered
-    example project, and the system temp dir (added by the profile builder
-    too, listed here for status transparency)."""
+    example project, and the system temp dir.
+
+    The system temp dir is granted **here**, by name, because `agentcad check`
+    and the package gate materialize their work cells under it when no
+    `--work-dir` is given. Since PRD-006 nothing grants it implicitly: each
+    worker's own scratch is a private `agentcad-worker-*` dir the plan
+    creates, and `build_profile` grants exactly the roots it is handed."""
     import tempfile
 
     roots = [
@@ -275,8 +293,29 @@ def cmd_serve(args, open_browser: bool) -> None:
     if open_browser and not args.no_open:
         threading.Timer(1.0, lambda: webbrowser.open(local_url)).start()
     print(f"AgentCAD {agentcad.__version__} — {url} (listening on {host}:{port})")
-    uvicorn.run(app, host=host, port=port, log_level="warning",
-                **_uvicorn_proxy_kwargs(mode))
+    # Since PRD-006 every worker owns a private temp dir, so a server that
+    # exits without stopping its kernel leaves one `agentcad-worker-*`
+    # directory per pool slot behind on every run.
+    #
+    # Ctrl-C arrives as a KeyboardInterrupt and takes the `finally` below.
+    # `docker stop` does not: uvicorn's `capture_signals` **restores the
+    # previous SIGTERM handler and re-raises the signal** once it has shut
+    # down gracefully (uvicorn/server.py, "trigger the expected behaviour
+    # now"), so with the default handler in place the process dies *inside*
+    # `uvicorn.run` with exit 143 and no `finally` ever runs — measured.
+    # Ours is the handler it restores, and turning that re-raise into a
+    # SystemExit puts both paths through the same cleanup.
+    previous_term = None
+    if threading.current_thread() is threading.main_thread():
+        previous_term = signal.signal(
+            signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="warning",
+                    **_uvicorn_proxy_kwargs(mode))
+    finally:
+        if previous_term is not None:
+            signal.signal(signal.SIGTERM, previous_term)
+        service.kernel.stop()
 
 
 def _uvicorn_proxy_kwargs(mode) -> dict:

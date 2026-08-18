@@ -20,12 +20,18 @@ from .client import KernelClient
 class KernelPool:
     def __init__(self, size: int = 3, python_exe: str | None = None,
                  timeout_s: float = 60.0, *,
-                 writable_dirs: list[str] | None = None):
+                 writable_dirs: list[str] | None = None,
+                 quotas=None, posture: str | None = None, on_usage=None):
         self.size = max(1, int(size))
+        # Confinement, quotas and posture are passed through unchanged: each
+        # worker plans its own, so each gets its **own** private temp dir (and,
+        # later, its own cgroup) rather than sharing one.
         self._workers: list[KernelClient] = [
             KernelClient(python_exe=python_exe, timeout_s=timeout_s,
-                         writable_dirs=writable_dirs)
-            for _ in range(self.size)
+                         writable_dirs=writable_dirs, quotas=quotas,
+                         posture=posture, on_usage=on_usage,
+                         name=f"worker-{index}")
+            for index in range(self.size)
         ]
         self._rr = 0
         self._rr_lock = threading.Lock()
@@ -35,6 +41,12 @@ class KernelPool:
         # Every worker is constructed identically, so worker 0 speaks for all
         # (workers spawn lazily; the decision is made at construction).
         return self._workers[0].sandboxed
+
+    @property
+    def sandbox_report(self) -> dict | None:
+        # Worker 0 is the one `start()` warms, so it is the one that has a
+        # report of its own to give.
+        return self._workers[0].sandbox_report
 
     # ------------------------------------------------------------- lifecycle
 
