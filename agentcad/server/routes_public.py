@@ -34,11 +34,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Response
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Query, Response
+from fastapi.responses import FileResponse, PlainTextResponse
 
 from ..core.model import NotFoundError, ValidationError
 from ..core.packages import format as pkgformat
+from ..core.packages import search as pkgsearch
 
 #: Five minutes, on every response including the 404s. Design Decision 9
 #: accepts that the anonymous surface is unmetered in 005-lite precisely
@@ -50,6 +51,11 @@ CACHE_CONTROL = "public, max-age=300"
 #: version directory — the same two-part containment `routes_packages.py`
 #: applies (`_PREVIEW_SUFFIX` there).
 PREVIEW_SUFFIX = ".png"
+
+#: A part's read-only script is one file inside ``parts/`` — the same
+#: two-part containment the preview gets (`content.resolve_within` + a fixed
+#: suffix), so a crafted ``part`` cannot read outside the version directory.
+SCRIPT_SUFFIX = ".py"
 
 #: **One message for every miss**, and deliberately name-free.
 #:
@@ -180,6 +186,40 @@ def build_router(service, registry) -> APIRouter:
                 packages[name] = _document(index, name, version, versions[version])
         return {"packages": [packages[name] for name in sorted(packages)]}
 
+    @router.get("/public/packages/search")
+    def public_search(
+            response: Response,
+            q: str | None = None,
+            keyword: list[str] | None = Query(default=None),
+            standard: list[str] | None = Query(default=None),
+            license: str | None = None,
+            param: str | None = None,
+            param_min: float | None = None,
+            param_max: float | None = None,
+            limit: int | None = None):
+        """Anonymous, public-scoped, **refresh-free** catalog search (PRD-031a
+        FR1).
+
+        Declared **before** ``/{name}`` so Starlette does not bind
+        ``{name} == "search"``. It reuses ``search.search`` — one scoring
+        implementation, one ranking, one ``why`` — but over
+        :func:`_public_indexes` (the dual ``scope: public`` filter, so a private
+        index is never scored) and with ``refresh=False`` (PRD-005a forbids a
+        network fetch on the anonymous path — the M2 discipline). ``keyword``
+        and ``standard`` are repeatable AND filters; ``license`` is a single
+        AND filter; ``param``/``param_min``/``param_max`` is the range-overlap
+        facet. Zero kernel — ``search`` runs entirely over parsed ``index.json``
+        documents.
+        """
+        response.headers["cache-control"] = CACHE_CONTROL
+        facet = ({"name": param, "min": param_min, "max": param_max}
+                 if param else None)
+        return pkgsearch.search(
+            _public_indexes(service), query=q, keywords=keyword,
+            standards=standard, license=license, param=facet,
+            limit=pkgsearch.DEFAULT_LIMIT if limit is None else limit,
+            refresh=False)
+
     @router.get("/public/packages/{name}")
     def public_package(name: str, response: Response):
         response.headers["cache-control"] = CACHE_CONTROL
@@ -237,5 +277,61 @@ def build_router(service, registry) -> APIRouter:
             raise _miss()
         return FileResponse(resolved, media_type="image/png",
                             headers={"cache-control": CACHE_CONTROL})
+
+    def _part_or_miss(name: str, version: str, part: str) -> dict:
+        """The digest of one declared part at a version, or the one name-free
+        404. ``_find`` enforces the dual ``scope: public`` filter, so a private
+        or nonexistent package is one indistinguishable miss (no oracle)."""
+        _index, versions = _find(service, name)
+        entry = versions.get(version)
+        if not isinstance(entry, dict):
+            raise _miss()
+        parts = entry.get("parts")
+        digest = parts.get(part) if isinstance(parts, dict) else None
+        if not isinstance(digest, dict):
+            raise _miss()
+        return digest
+
+    @router.get("/public/packages/{name}/versions/{version}/script/{part}")
+    def public_script(name: str, version: str, part: str):
+        """The read-only ``.py`` text of a declared part (PRD-031a FR2 — "the
+        code, read-only with syntax highlight"), a kernel-free file read.
+
+        ``_part_or_miss`` confirms the part is declared (dual-scope filtered),
+        then the bytes are resolved with the preview route's containment —
+        ``index.fetch`` (a **local** read; the anonymous path never
+        ``refresh()``es) plus ``content.resolve_within`` with a fixed ``.py``
+        suffix — so a crafted ``part`` cannot escape the version directory.
+        The provenance header PRD-011 writes inside each script travels with
+        the text; no separate call.
+        """
+        from ..core.packages import content
+
+        index, _versions = _find(service, name)
+        _part_or_miss(name, version, part)
+        root = index.fetch(name, version)
+        resolved = content.resolve_within(
+            Path(root), f"parts/{part}{SCRIPT_SUFFIX}", what="script")
+        if not resolved.is_file():
+            raise _miss()
+        return PlainTextResponse(
+            resolved.read_text(encoding="utf-8"),
+            media_type="text/plain; charset=utf-8",
+            headers={"cache-control": CACHE_CONTROL})
+
+    @router.get("/public/packages/{name}/versions/{version}/params/{part}")
+    def public_params(name: str, version: str, part: str, response: Response):
+        """The pre-generated param spec for a declared part (PRD-031a FR2 /
+        Decision 3): the ``parts[part].params`` digest list, straight from
+        ``index.json``. **Zero kernel** — no ``inspect`` — which is what keeps
+        the browse surface kernel-free while a variant is exactly one kernel
+        call. The customizer feeds this same list to ``normalize_params`` and
+        ``_clamp_params`` (the market variant route), so param parity holds
+        from pre-generated data.
+        """
+        response.headers["cache-control"] = CACHE_CONTROL
+        digest = _part_or_miss(name, version, part)
+        return {"name": name, "version": version, "part": part,
+                "params": list(digest.get("params") or [])}
 
     return router

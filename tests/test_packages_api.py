@@ -309,8 +309,11 @@ def test_the_gate_is_not_reachable_over_http(rig):
     that exist are the five the design spec lists plus the preview — and, from
     PRD-005a slice 7, the four **read-only** `/api/public/packages…` routes,
     which are a separate scope-filtered pack (`server/routes_public.py`) and
-    carry no write verb either. A new package route landing here is exactly
-    what this test exists to notice."""
+    carry no write verb either. PRD-031a adds five more anonymous GET routes:
+    `search`, `script`, `params` (still kernel-free, in `routes_public.py`) and
+    the two customizer routes `variant`/`download` (in `routes_market.py`, the
+    ONE kernel-reaching market surface) — every one a GET, none a publish/write
+    verb. A new *write* package route landing here is what this test notices."""
     _service, _registry, client = rig
     package_routes = {path for path in client.app.openapi()["paths"]
                       if "package" in path}
@@ -324,6 +327,11 @@ def test_the_gate_is_not_reachable_over_http(rig):
         "/api/public/packages/{name}",
         "/api/public/packages/{name}/versions/{version}",
         "/api/public/packages/{name}/versions/{version}/preview",
+        "/api/public/packages/search",
+        "/api/public/packages/{name}/versions/{version}/script/{part}",
+        "/api/public/packages/{name}/versions/{version}/params/{part}",
+        "/api/public/packages/{name}/versions/{version}/parts/{part}/variant",
+        "/api/public/packages/{name}/versions/{version}/parts/{part}/download/{fmt}",
     }
     for path, operations in client.app.openapi()["paths"].items():
         if path.startswith("/api/public/"):

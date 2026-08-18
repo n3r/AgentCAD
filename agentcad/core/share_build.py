@@ -42,22 +42,26 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
 from ..kernel import paramclamp
 from .materials import DEFAULT_MATERIAL
 from .model import (
+    AuthError,
     NotFoundError,
     RateLimitedError,
     ServiceUnavailableError,
     ValidationError,
 )
 from .publications import PublicationStore
+from .ratelimit import TokenBucket
 
 #: The one part every content-addressed build project holds. The owner's part
 #: id never becomes a build-project name (two parts with identical bytes are one
@@ -284,6 +288,117 @@ def _proj_name(script_sha: str) -> str:
     return "s" + hexpart[:38]
 
 
+# ---------------------------------------------- the shared per-IP customizer guard
+#
+# PRD-031a opens a SECOND anonymous kernel path (the market listing customizer)
+# beside PRD-007's `/s/`. The process-global in-flight semaphore above is the
+# real wall and is shared for free. The two per-*app* token buckets in
+# `routes_share_public.py` were not: if `routes_market.py` minted its own per-IP
+# bucket, one visitor would get DOUBLE the per-address allowance (one bucket per
+# surface). The fix is to move the per-IP bucket + the hourly login gate into one
+# `CustomizerGuard` installed once on `service.customizer_guard` (by
+# `ensure_share`) and read by BOTH surfaces — so a visitor's per-address rate is
+# one shared object, asserted by an identity test (PRD-031a AC4). The per-*link*
+# / per-*listing* bucket stays route-local (keyed differently), because a popular
+# listing and a popular share link are genuinely different subjects.
+
+#: 0.5/s with a burst of 15: the page feels live while a slider is dragged, then a
+#: sustained hammer throttles to one rebuild every two seconds (PRD-007 Decision 4).
+SHARE_RATE_PER_S = 0.5
+SHARE_BURST = 15.0
+SHARE_RETRY_AFTER_S = max(1, math.ceil(1.0 / SHARE_RATE_PER_S))
+
+#: The pre-006 backstop, OFF by default (founder decision): above N anonymous
+#: rebuilds/hour from one address, a customizer rebuild requires a session. The
+#: SAME knob and counter for `/s/` and `/market` (design Decision, founder
+#: recommendation 3) — a visitor cannot get two hourly budgets.
+ENV_REQUIRE_LOGIN_ABOVE = "AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE"
+_GATE_WINDOW_S = 3600
+_GATE_MAX_ADDRS = 8192
+
+
+class _HourlyCounter:
+    """Best-effort per-address hits in a sliding hour, for the login gate.
+
+    Bounded: an address whose window has fully drained carries no information,
+    so it is pruned; a runaway id space is capped at :data:`_GATE_MAX_ADDRS`.
+    Not a correctness invariant — a gate that occasionally under-counts under a
+    process restart is the accepted cost of keeping it in memory, not the store.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._hits: dict[str, list[float]] = {}
+
+    def hit(self, addr: str, *, now: float | None = None) -> int:
+        now = time.time() if now is None else now
+        with self._lock:
+            times = [t for t in self._hits.get(addr, ())
+                     if now - t < _GATE_WINDOW_S]
+            times.append(now)
+            self._hits[addr] = times
+            if len(self._hits) > _GATE_MAX_ADDRS:
+                self._hits = {a: ts for a, ts in self._hits.items()
+                              if ts and now - ts[-1] < _GATE_WINDOW_S}
+            return len(times)
+
+
+class CustomizerGuard:
+    """The per-IP rate bucket + hourly login gate every anonymous customizer
+    surface shares. Installed once on ``service.customizer_guard`` by
+    :func:`ensure_share`; both ``routes_share_public`` (``/s/``) and
+    ``routes_market`` (``/market``) call this ONE object, so a visitor's per-IP
+    allowance and hourly count are not doubled across the two surfaces.
+
+    Only the parts that must not be duplicated per surface live here. The
+    per-*link* / per-*listing* bucket stays route-local (keyed differently:
+    ``share:<pub_id>`` vs ``catalog:<name>@<version>/<part>``), because that
+    bucket shapes ONE subject's rate and there is no double-allowance to close.
+    """
+
+    def __init__(self) -> None:
+        #: The per-ADDRESS bucket, shared across surfaces (the whole point).
+        self.addr_rate = TokenBucket(rate=SHARE_RATE_PER_S, burst=SHARE_BURST)
+        #: The hourly per-address counter behind the login gate, also shared.
+        self.login_gate = _HourlyCounter()
+
+    @staticmethod
+    def client_host(request) -> str:
+        """The address the proxy layer resolved (``request.client.host``), NOT a
+        header the visitor controls — the PRD-005a M3 discipline (a forged
+        ``X-Forwarded-For`` must not mint a fresh bucket per request)."""
+        return (request.client.host if request.client else "?") or "?"
+
+    def throttle(self, addr: str) -> None:
+        """Take the shared per-IP bucket; over-limit is a ``quota_exceeded`` the
+        page degrades to view-only on — never a red error."""
+        if not self.addr_rate.take(f"addr:{addr}"):
+            raise RateLimitedError(
+                "too many customizer rebuilds; the page will retry shortly",
+                {"retry_after_s": SHARE_RETRY_AFTER_S})
+
+    def gate(self, addr: str, *, authenticated: bool) -> None:
+        """The optional login-above-N backstop. Off unless
+        ``AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE`` is set; then an anonymous address
+        past the hourly threshold must sign in (401). A signed-in member is
+        never gated. ``authenticated`` is the caller's principal check, passed in
+        so this stays server-import-free (core does not read the request
+        principal itself)."""
+        raw = os.environ.get(ENV_REQUIRE_LOGIN_ABOVE)
+        if not raw:
+            return
+        try:
+            threshold = int(raw)
+        except (TypeError, ValueError):
+            return                              # a nonsense knob is no gate
+        if authenticated:
+            return
+        if self.login_gate.hit(addr) > threshold:
+            raise AuthError(
+                "sign in to keep customizing this link (this link is under a "
+                "high rebuild rate from your network)")
+
+
 class ShareBuilder:
     """Pins parts into the publication store and builds variants against a
     muzzled service rooted there. Constructed once per process, lazily."""
@@ -497,48 +612,50 @@ class ShareBuilder:
                                       material=material)
         return svc._cache_key_for(proj, derived)
 
-    def _validated_params(self, record: dict,
-                          raw: dict) -> tuple[str, str, dict, list[str]]:
+    def _validate(self, script_sha: str, material: str | None, spec: dict | None,
+                  raw: dict) -> tuple[str, str, dict, list[str]]:
         """``(proj, material, clamped, warnings)`` for a variant request, or raise.
 
-        Validation is the AUTHORING path's own logic, reused not forked:
+        The spec-taking core shared by the share-link path (spec from the pin's
+        cached sidecar) and the catalog path (spec from the pre-generated index
+        digest). Validation is the AUTHORING path's own logic, reused not forked:
         ``normalize_params`` rejects wrong types, non-member enum choices and
         unknown names BEFORE any build. The out-of-range clamp is then applied
         **here, server-side**, using the SAME pure ``paramclamp`` helper the
         worker uses — so two out-of-range values that clamp to identical
         geometry produce identical params, one cache key and one build (PRD-007
-        review finding M-2). The clamp warnings ride back so a clamped request
-        still warns, exactly as before. The visitor supplies DATA, never code
+        review finding M-2). The visitor supplies DATA, never code
         (PRD-005a Decision 2)."""
-        script_sha = record["script_sha"]
-        material = record.get("material") or DEFAULT_MATERIAL
-        spec = self.params_spec(script_sha) or {}
+        spec = spec or {}
         coerced = _coerce_query_params(spec, raw)
         normalized = self._svc().normalize_params(spec, coerced)
         clamped, warnings = _clamp_params(spec, normalized)
-        return _proj_name(script_sha), material, clamped, warnings
+        return (_proj_name(script_sha), material or DEFAULT_MATERIAL,
+                clamped, warnings)
 
-    # --------------------------------------------------------- public builds
-
-    def build_variant(self, pub_id: str, params: dict) -> dict:
-        """Build one visitor variant, bounded. Returns ``{mesh_key, metrics,
-        warnings, lods, ok, cached}``.
-
-        The order is the containment: **refuse if no worker can be spared**
-        (single-worker pool → 503, finding M-1), **validate + range-clamp**
-        (reject out-of-spec, coalesce clamp-equal before a build), **probe the
-        cache** (a repeat is a free disk read — no slot, no kernel), then take a
-        **global in-flight slot** around the build only. A failed build is a
-        ``validation_error`` — a param set the author's script cannot realise,
-        not a server fault. Server-side clamp warnings ride back on both the
-        cached and the fresh path, so a clamped request still warns."""
-        require_customizer_capacity()
-        record = self._store.get(pub_id)
-        if record is None:
-            raise NotFoundError("no such share link")
-        proj, material, clamped, warnings = self._validated_params(record, params)
+    def _validated_params(self, record: dict,
+                          raw: dict) -> tuple[str, str, dict, list[str]]:
+        """The share-link adaptor over :meth:`_validate`: the pin's cached spec
+        sidecar supplies the spec. Behaviour-preserving for PRD-007."""
         script_sha = record["script_sha"]
+        return self._validate(script_sha, record.get("material"),
+                              self.params_spec(script_sha), raw)
 
+    # ----------------------------------------------------- the shared build core
+
+    def _variant(self, script_sha: str, material: str | None, spec: dict | None,
+                 raw: dict) -> dict:
+        """Validate → clamp → cache-probe → in-flight build, for ANY pinned
+        script. The single containment tail both :meth:`build_variant` (share
+        links) and :meth:`build_catalog_variant` (the market listing customizer)
+        run through — one wall, not two.
+
+        **Probe the cache** (a repeat is a free disk read — no slot, no kernel),
+        then take a **global in-flight slot** around the build only. A failed
+        build is a ``validation_error`` — a param set the author's script cannot
+        realise. Server-side clamp warnings ride back on both paths."""
+        proj, material, clamped, warnings = self._validate(
+            script_sha, material, spec, raw)
         key = self._variant_cache_key(proj, material, clamped)
         if self.mesh_path(script_sha, key) is not None:
             sidecar = self.metrics_for(script_sha, key) or {}
@@ -557,19 +674,15 @@ class ShareBuilder:
                 "warnings": warnings + list(result.get("warnings", [])),
                 "lods": result.get("lods", []), "ok": True, "cached": False}
 
-    def export_variant(self, pub_id: str, params: dict, fmt: str) -> Path:
-        """Export one visitor variant to a **content-addressed** file, so a
-        repeat download is a disk read (no kernel). Same param parity and the
-        same in-flight cap as :meth:`build_variant`; the caller checks the
-        export mask before this runs."""
+    def _export(self, script_sha: str, material: str | None, spec: dict | None,
+                raw: dict, fmt: str) -> Path:
+        """The shared export tail: same param parity and in-flight cap as
+        :meth:`_variant`, content-addressed so a repeat is a disk read. The
+        caller checks the export mask before this runs."""
         from .service import EXPORT_TOLERANCE
 
-        require_customizer_capacity()
-        record = self._store.get(pub_id)
-        if record is None:
-            raise NotFoundError("no such share link")
-        proj, material, clamped, _warnings = self._validated_params(record, params)
-
+        proj, material, clamped, _warnings = self._validate(
+            script_sha, material, spec, raw)
         svc = self._svc()
         key = self._variant_cache_key(proj, material, clamped)
         out = svc.store.exports_dir(proj) / f"{key}.{fmt}"
@@ -587,6 +700,79 @@ class ShareBuilder:
         if not result.get("ok", True):
             raise ValidationError("variant export failed", {"format": fmt})
         return out
+
+    # --------------------------------------------------- public builds (/s/)
+
+    def build_variant(self, pub_id: str, params: dict) -> dict:
+        """Build one share-link visitor variant, bounded. Returns ``{mesh_key,
+        metrics, warnings, lods, ok, cached}``.
+
+        The order is the containment: **refuse if no worker can be spared**
+        (single-worker pool → 503, finding M-1), then the shared
+        :meth:`_variant` tail (validate + clamp + cache + global in-flight slot).
+        """
+        require_customizer_capacity()
+        record = self._store.get(pub_id)
+        if record is None:
+            raise NotFoundError("no such share link")
+        return self._variant(record["script_sha"], record.get("material"),
+                             self.params_spec(record["script_sha"]), params)
+
+    def export_variant(self, pub_id: str, params: dict, fmt: str) -> Path:
+        """Export one share-link visitor variant. Same containment as
+        :meth:`build_variant`; the caller checks the export mask first."""
+        require_customizer_capacity()
+        record = self._store.get(pub_id)
+        if record is None:
+            raise NotFoundError("no such share link")
+        return self._export(record["script_sha"], record.get("material"),
+                            self.params_spec(record["script_sha"]), params, fmt)
+
+    # ------------------------------------- catalog builds (/market, PRD-031a)
+
+    def ensure_catalog_pin(self, script_bytes: bytes,
+                           material: str | None) -> dict:
+        """Pin a catalog part's script bytes into the content-addressed build
+        project, idempotently. Returns ``{script_sha}``.
+
+        The catalog version's ``content_id`` (in ``index.json``) is already the
+        immutable pin, so — unlike :meth:`pin` — this mints **no** ``Publication``
+        and makes **no** ``_params_spec`` kernel call: the param spec comes from
+        the pre-generated index digest, supplied to :meth:`build_catalog_variant`
+        by the route. Two listings with byte-identical scripts share one build.
+        """
+        try:
+            script_text = script_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValidationError(
+                "catalog part script is not valid UTF-8", {}) from exc
+        script_sha = "sha256:" + hashlib.sha256(script_bytes).hexdigest()
+        script_file = self._store.script_path(script_sha)
+        script_file.parent.mkdir(parents=True, exist_ok=True)
+        if not script_file.exists():
+            script_file.write_bytes(script_bytes)
+        self._ensure_project(script_sha, script_text,
+                             material or DEFAULT_MATERIAL)
+        return {"script_sha": script_sha}
+
+    def build_catalog_variant(self, script_sha: str, material: str | None,
+                              spec: dict | None, params: dict) -> dict:
+        """The market listing customizer's ONE kernel path. Same containment as
+        :meth:`build_variant` — the pool-reservation 503, the shared in-flight
+        semaphore, param parity, the clamp-before-cache and the content-addressed
+        variant cache — reached through the SAME :meth:`_variant` tail. The
+        caller must :meth:`ensure_catalog_pin` first; ``spec`` is the index
+        digest's param list keyed by name."""
+        require_customizer_capacity()
+        return self._variant(script_sha, material, spec, params)
+
+    def export_catalog_variant(self, script_sha: str, material: str | None,
+                               spec: dict | None, params: dict,
+                               fmt: str) -> Path:
+        """A market variant export. Same caps as :meth:`build_catalog_variant`;
+        the caller checks the fixed export mask before this runs."""
+        require_customizer_capacity()
+        return self._export(script_sha, material, spec, params, fmt)
 
     # ------------------------------------------------- kernel-free read helpers
 
@@ -650,14 +836,26 @@ def _is_cache_key(value: object) -> bool:
 
 
 def ensure_share(service):
-    """Install ``service.publications`` + ``service.share_builder`` once.
+    """Install ``service.publications`` + ``service.share_builder`` +
+    ``service.customizer_guard`` once.
 
-    Called from ``routes_share*.build_router`` — never from
-    ``AgentCADService.__init__`` — so the store is constructed only in a server
-    process and PRD-004/011 ephemeral services stay unaffected by construction.
-    The store lives under ``appmode.state_dir()``, never ``--projects-dir``."""
+    Called from ``routes_share*.build_router`` and ``routes_market`` — never
+    from ``AgentCADService.__init__`` — so the store is constructed only in a
+    server process and PRD-004/011 ephemeral services stay unaffected by
+    construction. The store lives under ``appmode.state_dir()``, never
+    ``--projects-dir``.
+
+    ``customizer_guard`` is the ONE per-IP bucket + hourly login gate every
+    anonymous customizer surface shares (PRD-031a AC4): both ``/s/`` and
+    ``/market`` read ``service.customizer_guard``, so a visitor cannot double
+    their per-address allowance by hitting both. Installed independently of the
+    builder's early-return so a service that somehow has one but not the other
+    still gets the guard."""
     from .appmode import state_dir
 
+    if not isinstance(getattr(service, "customizer_guard", None),
+                      CustomizerGuard):
+        service.customizer_guard = CustomizerGuard()
     found = getattr(service, "share_builder", None)
     if isinstance(found, ShareBuilder):
         return found

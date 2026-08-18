@@ -29,16 +29,12 @@ they are enumerated in ``test_hosted_surface.py`` but not mounted here yet.
 
 from __future__ import annotations
 
-import math
-import os
-import threading
-import time
-
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from .._resources import resource_root
-from ..core.model import AuthError, NotFoundError, RateLimitedError
+from ..core import share_build
+from ..core.model import NotFoundError, RateLimitedError
 from ..core.ratelimit import TokenBucket
 from ..core.share_build import ensure_share
 from . import security as sec
@@ -59,56 +55,21 @@ _SHARE_HTML = resource_root() / "frontend" / "share.html"
 #
 # Two token buckets guard ``/variant`` and ``/download`` (design Decision 4):
 # one keyed per LINK (``share:<pub_id>``) so a single popular link cannot flood
-# the kernel, one keyed per ADDRESS (``addr:<client_host>``) so one visitor
-# cannot. ``0.5/s`` with a burst of ``15`` lets the page feel live while a slider
-# is dragged, then throttles a sustained hammer to one rebuild every two
-# seconds. Over-limit is a ``quota_exceeded`` the page degrades to view-only on
-# — never a red error.
+# the kernel — that one is ROUTE-LOCAL below — and one keyed per ADDRESS so one
+# visitor cannot. The per-ADDRESS bucket AND the hourly login gate now live in
+# ``share_build.CustomizerGuard`` (``service.customizer_guard``), SHARED with
+# PRD-031a's ``/market`` customizer so a visitor cannot double their per-address
+# allowance across the two anonymous kernel paths (PRD-031a AC4). The rate
+# (``0.5/s`` burst ``15``), the login-gate knob
+# (``AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE``) and the ``request.client.host`` M3
+# discipline are all defined once in ``share_build``.
 #
 # **The address is only honest behind the documented reverse proxy.** It is
 # ``request.client.host``, which uvicorn resolves from a BOUNDED
 # ``X-Forwarded-For`` when ``forwarded_allow_ips`` names the trusted proxy
-# (``appmode.trusted_proxy``, ``docs/deployment.md``). We never parse the header
-# ourselves: a visitor who could forge ``X-Forwarded-For`` would mint a fresh
-# bucket per request and the per-IP cap would be a fiction — the PRD-005a review
-# finding M3, kept from being repeated.
-SHARE_RATE_PER_S = 0.5
-SHARE_BURST = 15.0
-_RETRY_AFTER_S = max(1, math.ceil(1.0 / SHARE_RATE_PER_S))
-
-#: The pre-006 backstop (design Decision 4), OFF by default (founder decision):
-#: above N anonymous rebuilds/hour from one address, ``/variant`` requires a
-#: session — a login wall on a link under a distinct-param flood, without taking
-#: the viewer offline. Named here; documented in ``docs/deployment.md``.
-ENV_REQUIRE_LOGIN_ABOVE = "AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE"
-_GATE_WINDOW_S = 3600
-_GATE_MAX_ADDRS = 8192
-
-
-class _HourlyCounter:
-    """Best-effort per-address hits in a sliding hour, for the login gate.
-
-    Bounded: an address whose window has fully drained carries no information,
-    so it is pruned; a runaway id space is capped at :data:`_GATE_MAX_ADDRS`.
-    Not a correctness invariant — a gate that occasionally under-counts under a
-    process restart is the accepted cost of keeping it in memory, not the store.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._hits: dict[str, list[float]] = {}
-
-    def hit(self, addr: str, *, now: float | None = None) -> int:
-        now = time.time() if now is None else now
-        with self._lock:
-            times = [t for t in self._hits.get(addr, ())
-                     if now - t < _GATE_WINDOW_S]
-            times.append(now)
-            self._hits[addr] = times
-            if len(self._hits) > _GATE_MAX_ADDRS:
-                self._hits = {a: ts for a, ts in self._hits.items()
-                              if ts and now - ts[-1] < _GATE_WINDOW_S}
-            return len(times)
+# (``appmode.trusted_proxy``, ``docs/deployment.md``). A visitor who could forge
+# ``X-Forwarded-For`` would mint a fresh bucket per request and the per-IP cap
+# would be a fiction — the PRD-005a review finding M3, kept from being repeated.
 
 
 def _miss() -> NotFoundError:
@@ -137,14 +98,14 @@ def _shell(*, embed: bool) -> HTMLResponse:
 def build_router(service, registry) -> APIRouter:
     router = APIRouter()
 
-    # Per-APP limiter state (never module-level): a second app built later in
-    # the same process — or the next test in a worker — must not inherit a
-    # bucket a prior one drained. The GLOBAL cap that actually bounds kernel
-    # concurrency lives in `share_build.inflight_semaphore`; these two only
-    # shape one link's / one address's request rate.
-    link_rate = TokenBucket(rate=SHARE_RATE_PER_S, burst=SHARE_BURST)
-    addr_rate = TokenBucket(rate=SHARE_RATE_PER_S, burst=SHARE_BURST)
-    login_gate = _HourlyCounter()
+    # The per-LINK bucket is ROUTE-LOCAL (never module-level): a second app
+    # built later in the same process — or the next test in a worker — must not
+    # inherit a bucket a prior one drained. The per-ADDRESS bucket and the login
+    # gate live in `service.customizer_guard` (installed by `ensure_share`),
+    # SHARED with `/market`. The GLOBAL cap that actually bounds kernel
+    # concurrency is `share_build.inflight_semaphore`; these only shape rate.
+    link_rate = TokenBucket(rate=share_build.SHARE_RATE_PER_S,
+                            burst=share_build.SHARE_BURST)
 
     def _live(token: str):
         """The live record for a token, or a 404. Also the seam that lazily
@@ -157,38 +118,29 @@ def build_router(service, registry) -> APIRouter:
         return record, builder
 
     def _client_host(request: Request) -> str:
-        """The address the proxy layer resolved (``request.client.host``), NOT a
-        header the visitor controls — the M3 discipline (see the module note on
-        `SHARE_RATE_PER_S`)."""
-        return (request.client.host if request.client else "?") or "?"
+        """The resolved address, via the shared guard (the M3 discipline)."""
+        ensure_share(service)
+        return service.customizer_guard.client_host(request)
 
     def _gate(request: Request, addr: str) -> None:
-        """The optional login-above-N backstop. Off unless the knob is set; then
-        an anonymous address past the hourly threshold must sign in (401). A
+        """The optional login-above-N backstop, via the SHARED guard so ``/s/``
+        and ``/market`` share one hourly counter. Off unless the knob is set; a
         signed-in member is never gated."""
-        raw = os.environ.get(ENV_REQUIRE_LOGIN_ABOVE)
-        if not raw:
-            return
-        try:
-            threshold = int(raw)
-        except (TypeError, ValueError):
-            return                              # a nonsense knob is no gate
-        if sec.current_principal() is not None:
-            return
-        if login_gate.hit(addr) > threshold:
-            raise AuthError(
-                "sign in to keep customizing this link (this link is under a "
-                "high rebuild rate from your network)")
+        ensure_share(service)
+        service.customizer_guard.gate(
+            addr, authenticated=sec.current_principal() is not None)
 
     def _throttle(pub_id: str, addr: str) -> None:
-        """Per-link AND per-IP token buckets; either over-limit is a
-        ``quota_exceeded`` the page degrades to view-only on."""
-        for bucket, who in ((link_rate, f"share:{pub_id}"),
-                            (addr_rate, f"addr:{addr}")):
-            if not bucket.take(who):
-                raise RateLimitedError(
-                    "too many customizer rebuilds; the page will retry shortly",
-                    {"retry_after_s": _RETRY_AFTER_S})
+        """The per-LINK bucket (route-local) AND the SHARED per-IP bucket; either
+        over-limit is a ``quota_exceeded`` the page degrades to view-only on. The
+        per-link check runs first, unchanged, so ``/s/`` behaviour is preserved;
+        the per-IP check is now the same object ``/market`` uses."""
+        if not link_rate.take(f"share:{pub_id}"):
+            raise RateLimitedError(
+                "too many customizer rebuilds; the page will retry shortly",
+                {"retry_after_s": share_build.SHARE_RETRY_AFTER_S})
+        ensure_share(service)
+        service.customizer_guard.throttle(addr)
 
     @router.get("/s/{token}")
     def share_page(token: str):
