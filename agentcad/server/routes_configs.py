@@ -34,6 +34,25 @@ the identical failure. Answering 422 there threw away a post-state the manifest
 had already committed, which is a client model no retry fixes. A red matrix row
 is payload the same way (``build_configs`` returns ``ok: false`` per row and
 never raises), so a project whose members fail to build is an ordinary 200.
+
+**On a write path, a pre-build refusal is a build post-state too**, and that
+qualifier is what makes the ``PATCH …/params`` precedent above true for *every*
+failure class rather than only for a kernel one. The five tools that write and
+then rebuild call ``service.rebuild_after_write``, which converts an
+``AppError`` raised before the kernel is reached — the script file is gone, the
+entry is gone, the material is unknown, a resolver refused — into the same
+``{ok: false, error}`` post-state ``_build_with`` produces for a
+``KernelError``, plus its own ``hint`` (which is what stops ``with_hint`` from
+decorating it with the script-failure one). It had to: those refusals fire
+*after* the manifest write, so leaving them to propagate answered 4xx for a
+change ``project.json`` already held.
+
+``service._rebuild`` itself is **not** total and must not be made so: it is
+also the build every READ path runs (``_ensure_built`` ← ``get_metrics`` /
+``mesh_info`` / ``ensure_mesh`` / ``mesh_summary`` / ``get_assembly``, plus
+``packet``, ``checks`` and ``merge``), and those callers re-raise an
+``ok: false`` as a ``KernelError`` — a 502. A missing script file is permanent
+and client-side; it stays a 404 there.
 """
 
 from __future__ import annotations

@@ -116,17 +116,14 @@ export async function previewSvg(project, partId) {
 
   try {
     // POST regenerates the file server-side; the GET streams the SVG bytes.
-    // The tool route returns {error:...} at HTTP 200 on failure.
-    const gen = await api.generateDrawing(project, partId, {
+    // The POST raises like every other pack route (a refusal is a 4xx, a
+    // kernel failure a 502); the `catch` below is the error path.
+    await api.generateDrawing(project, partId, {
       format: "svg",
       config: active || undefined,
       dim_table: wantTable,
     });
     if (stale()) return;
-    if (gen && gen.error) {
-      showError(gen.error.message || "drawing failed");
-      return;
-    }
     // The GET regenerates too, so it carries the same two arguments — asking
     // for the suffixed file without them would answer a sheet the POST did
     // not write.
@@ -182,14 +179,12 @@ export async function saveDxf(project, partId) {
   try {
     // No `dim_table` here: DXF is a geometry exchange format and the server
     // ignores the flag for it, so sending it would only imply otherwise.
+    // The POST raises like every other pack route; the `catch` is the error
+    // path (an `ApiError` for a 4xx refusal or a 502 kernel failure alike).
     const result = await api.generateDrawing(project, partId, {
       format: "dxf",
       config: active || undefined,
     });
-    if (result && result.error) {
-      actions.toast(`Drawing failed: ${result.error.message || "error"}`, "error");
-      return;
-    }
     const kb = ((result.size_bytes || 0) / 1024).toFixed(1);
     actions.toast(`Wrote ${result.path} (${kb} KB)`);
   } catch (err) {

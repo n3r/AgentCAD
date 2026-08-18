@@ -162,7 +162,8 @@ def register(registry, service) -> None:
                 normalized[active]["params"] != before:
             # The visible geometry moved, so the post-state a caller needs next
             # is the build. Editing a member nobody activated costs nothing.
-            out["rebuild"] = with_hint(service._rebuild(project, part_id))
+            out["rebuild"] = with_hint(
+                service.rebuild_after_write(project, part_id))
         return out
 
     # ---------------------------------------------------------- list_configs
@@ -399,11 +400,20 @@ def register(registry, service) -> None:
                     active_config=config or None,
                     params={} if clearing else None,
                 )
+            # The post-state is read HERE, inside the lock, where the write
+            # just landed — not after the rebuild. A tail read outside the
+            # lock can raise `NotFoundError` (the entry vanished under us)
+            # AFTER the manifest was saved, handing the caller a refusal for a
+            # change that IS committed — the very defect
+            # `rebuild_after_write` exists to close, reintroduced ten lines
+            # down (plan review P1).
+            after = service.store.get_part(project, part_id)
+        diverged, diverged_params = _divergence(after)
         service.bus.publish({"type": "project_changed", "project": project,
                              "part": part_id, "reason": "active_config"})
-        result = with_hint(service._rebuild(project, part_id))
-        after = service.store.get_part(project, part_id)
-        diverged, diverged_params = _divergence(after)
+        # `with_hint` leaves a refused build's own hint alone and still
+        # decorates a kernel failure exactly as before.
+        result = with_hint(service.rebuild_after_write(project, part_id))
         return {**result,
                 "part_id": part_id,
                 "active_config": after.active_config,

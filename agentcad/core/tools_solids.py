@@ -40,14 +40,17 @@ def register(registry, service) -> None:
                     entry.pop("solid_materials", None)  # empty dict clears
                 break
         service.store.save_manifest(project, manifest)
+        # The post-state is read HERE, right after the write, and never after
+        # the rebuild: a tail `get_part` can raise `NotFoundError` if the entry
+        # vanishes under us, and it would do so AFTER the manifest was saved —
+        # handing the caller a refusal for a change that is committed. Same
+        # move `set_active_config` makes inside its lock.
+        after = service.store.get_part(project, part_id).solid_materials
         service.bus.publish({"type": "project_changed", "project": project})
-        result = service._rebuild(project, part_id)
-        return {
-            **result,
-            "solid_materials": service.store.get_part(
-                project, part_id
-            ).solid_materials,
-        }
+        # The write landed, so a pre-build refusal is a post-state (`ok:
+        # false`), not a 4xx — `_rebuild` itself still raises for read paths.
+        result = service.rebuild_after_write(project, part_id)
+        return {**result, "solid_materials": after}
 
     registry.register(Tool(
         "set_solid_materials",

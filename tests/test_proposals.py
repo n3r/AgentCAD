@@ -1393,3 +1393,17 @@ def test_a_conflicting_merge_passes_through_verbatim(parts):
     assert "error" not in done, done
     assert done["proposal"]["state"] == "merged"
     assert done["proposal"]["merge"]["commit"]
+
+
+def test_the_two_summary_producers_agree_on_the_key_set():
+    """PRD-012 follow-up 3 (P10): `proposals._absent_packet` hand-writes a
+    packet stub for a proposal closed out before a packet existed. Two shapes
+    of `summary` in one API is a browser reading `undefined` from one of
+    them."""
+    from agentcad.core.packet import _summary
+    from agentcad.core.proposals import _absent_packet
+
+    stub = _absent_packet({"id": "p1", "source": "a", "target": "b"})
+    assert set(stub["summary"]) == set(_summary([], None))
+    assert stub["summary"]["mates_changed"] == 0
+    assert stub["summary"]["configs_changed"] == 0

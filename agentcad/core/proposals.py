@@ -1404,8 +1404,12 @@ def _absent_packet(proposal: dict) -> dict:
         "source_head": None,
         "target_head": None,
         "base": None,
+        # The key set is `packet._summary`'s — two shapes of `summary` in one
+        # API is a client reading `undefined` from whichever it happened to
+        # get (a test pins the two producers against each other).
         "summary": {"parts_changed": 0, "parts_added": 0, "parts_removed": 0,
-                    "instances_changed": 0, "mass_delta_g": None},
+                    "instances_changed": 0, "mates_changed": 0,
+                    "configs_changed": 0, "mass_delta_g": None},
         "parts": [],
         "assembly": None,
         "manifest": {"scalars_changed": [], "materials_changed": []},

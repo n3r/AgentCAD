@@ -1034,3 +1034,38 @@ def test_the_pipeline_module_is_still_free_of_the_geometry_kernel():
 
     assert checks_module.KernelError is client.KernelError
     assert checks_module.CheckRunner.__module__ == "agentcad.core.checks"
+
+
+def test_a_missing_script_file_is_an_error_row_with_a_harness_entry(stack):
+    """PRD-012 follow-ups, review R4: a build whose script FILE is gone stays
+    an `error` row (the check itself could not run) plus a harness `errors[]`
+    entry — not a `fail` row (the model is wrong).
+
+    The two are different reports: `error` and `fail` both block the verdict,
+    but `summary.errors` / `summary.failed`, `report.md`'s `## Harness errors`
+    section and the CLI's one-line verdict all move with the choice. The first
+    cut of `rebuild_after_write` converted the refusal inside `_rebuild`, so
+    `_ensure_built` returned `ok: false` instead of raising and this row
+    silently became a `fail` — which is why the conversion lives on the write
+    seam and `_build_item`'s `except` is still reachable.
+    """
+    service, _registry, runner = stack
+    service.create_project("demo")
+    service.create_part("demo", "box", script=BOX_SCRIPT)
+    service.store.script_path("demo", "box").unlink()
+    # `agentcad check` runs in a fresh process against an existing project, so
+    # the in-memory build state is empty — which is the branch of
+    # `_ensure_built` that reaches `_rebuild` at all.
+    service._status.clear()
+
+    warnings: list[str] = []
+    errors: list[dict] = []
+    item = runner._build_item("demo", "box", set(), warnings, errors)
+
+    assert item["status"] == "error"
+    assert "the build did not complete" in item["message"]
+    assert item["error"]["type"] == "notfound_error"
+    assert "script file missing" in item["error"]["message"]
+    assert errors == [{"type": "notfound_error",
+                       "message": "script file missing for part 'box'",
+                       "details": {}, "stage": "build", "part": "box"}]

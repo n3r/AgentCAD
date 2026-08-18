@@ -987,6 +987,14 @@ function assemblyBlock(assembly) {
   for (const row of assembly.mates_changed || []) {
     list.appendChild(li(`mate ${row.id}: ${json(row.old)} → ${json(row.new)}`));
   }
+  // The packet has carried `configs_changed` since PRD-012 and this block
+  // never showed it: a rebinding-only proposal rendered an Assembly section
+  // with nothing in it. "base" is the unbound state (`config` absent).
+  for (const row of assembly.configs_changed || []) {
+    list.appendChild(
+      li(`config ${row.id}: ${row.old || "base"} → ${row.new || "base"}`)
+    );
+  }
   const mass = assembly.total_mass_g || {};
   if (mass.delta != null) {
     list.appendChild(
