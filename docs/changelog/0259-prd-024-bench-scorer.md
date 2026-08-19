@@ -44,42 +44,56 @@ event, no manifest key.
   skipped, not an error: a missing part is already a `built` zero.
 - **The six subscores** (`{"value", "weight", "status", "detail"}`, status in
   `("ok", "skipped_mesh", "error", "not_applicable")`):
-  - `built` — `passed / len(target.parts)` over `service._ensure_built`;
-    `error` only when it **raises** (`CheckRunner._build_item`'s defensive
-    edge). A part absent from the copy's manifest is a **failure**, not an
-    error, and is detected from `store.part_ids` before the call.
+  - `built` — `passed / len(target.parts)` over `service._ensure_built`. A
+    part absent from the copy's manifest is a **failure**, detected from
+    `store.part_ids` before the call; so is every exception
+    `_blames_harness` blames on the candidate, `detail.reasons` naming which.
   - `valid` — `metrics["is_valid"] is True` per part, with `_build_item`'s
     imported-geometry escape **deliberately absent**: a bench candidate that
     imports a mesh is measured, not forgiven.
   - `specs` — one `service.specs.run(proj, deadline=…)`, the runner read
     **inside** the method (the `CheckRunner._stage_specs` rule).
-    `passed / (passed + failed + errors)`, **`skip` rows out of the
-    denominator** — a skip is "we did not measure". The report is **never
-    embedded**: `specs._report` stamps a `generated` timestamp and one
+    `passed / (passed + failed + errors)` over **the injected rubric's rows
+    only**, **`skip` rows out of the denominator** — a skip is "we did not
+    measure". Ownership is read off `report["parts"][pid]["checks"]` for the
+    parts `inject_rubric` returned and `report["project_checks"]["checks"]`
+    only when the task ships `specs/project.py`, never parsed out of an id
+    prefix (a part legitimately named `project` would collide). The report is
+    **never embedded**: `specs._report` stamps a `generated` timestamp and one
     timestamp anywhere in the body would end AC3.
-  - `geometry` — one `iou` kernel call per part with a `reference.steps`
-    entry, `timeout_s=IOU_TIMEOUT_S` (300 s; **explicitly**, because the
-    client's own default is a 60 s build timeout) and `affinity=task.id` so the
-    reference STEP stays in `refload`'s LRU and the candidate script in
-    `worker._SHAPE_CACHE`. `value = mean(iou)`.
+  - `geometry` — **per part**, `value = mean` over every `target.parts` entry,
+    one `iou` kernel call each with `timeout_s=IOU_TIMEOUT_S` (300 s;
+    **explicitly**, because the client's own default is a 60 s build timeout)
+    and `affinity=task.id` so the reference STEP stays in `refload`'s LRU and
+    the candidate script in `worker._SHAPE_CACHE`. A mesh-only part
+    contributes 0.0 like any other unmeasurable part and is named in
+    `detail.skipped_mesh`; `status` is `skipped_mesh` only when **every**
+    target part is mesh-only. `detail` is `{"parts": {...}, "error": {...}}`,
+    nested so a part named `error` cannot collide with the error key.
   - `interference` — `check_interference(min_volume=0.001)`;
-    `clean / C(n, 2)`. Every pair touching a `skipped_mesh` instance counts as
-    **un-clean**: an unmeasurable pair is not a clean pair. Fewer than two
-    instances under a non-zero weight is a **zero** (the task asked for an
-    assembly and got none), never `not_applicable`.
+    `interference_fraction(checked, pairs, skipped)` = `clean / C(n, 2)` with
+    `C(n,2)` computed as `n*(n-1)//2`. Every pair touching a `skipped_mesh`
+    instance counts as **un-clean**: an unmeasurable pair is not a clean pair.
+    Fewer than two instances under a non-zero weight is a **zero** (the task
+    asked for an assembly and got none), never `not_applicable`. An exception
+    resolving the candidate's own assembly is `value 0.0, status "ok",
+    reason "assembly_unresolved"`.
   - `metrics` — `satisfied / len(windows)` over `reference/metrics.json`,
     inclusive on both bounds with `specs._slack`'s tolerance. `bbox_*_mm` and
     `com_*_mm` are derived from `metrics["bbox"]`/`["center_of_mass"]`; no new
     kernel call exists for them.
-- **`error` is the harness failing to measure; `not_applicable` comes only from
-  a zero weight in `task.json`.** A candidate that is absent, broken, mesh-only
-  or simply wrong is measured and measures **zero**. Nothing at run time may
-  promote a subscore to `not_applicable`, because excluded subscores are
-  renormalised away and a run-decided exclusion would let a candidate raise its
-  total by destroying evidence (delete the part, break the build, export an
-  STL). A mesh-only candidate is therefore `skipped_mesh` at **value 0.0 and
-  included at its full weight**, and a submission that is not a readable
-  AgentCAD project at all scores zero everywhere rather than raising.
+- **`error` is the harness failing to measure; everything the candidate caused
+  is a measured zero (`status: "ok"`, a `reason` in `detail`).**
+  `not_applicable` comes only from a zero weight in `task.json`. Excluded
+  subscores are renormalised away, so a run-decided exclusion lets a candidate
+  **raise its total by destroying evidence** — delete the part script, break
+  the assembly, export an STL. Every `error` arm is therefore guarded by
+  `_blames_harness(exc)`: a `KernelError` is ours only when it is `timeout` or
+  `kernel_crash`; a script error, a contract error and an OCCT failure over the
+  candidate's own geometry are the candidate's, as is every `AppError`
+  (`NotFoundError` for a deleted script, `ValidationError` for a manifest that
+  does not agree with itself); an unanticipated exception class is ours. See
+  the orchestrator rulings below.
 - **A zero weight short-circuits before any measurement.** No kernel call, no
   `check_interference`, no spec run — and no *build* either: `_measure` builds
   a part only when one of `built`/`valid`/`geometry`/`metrics` is actually
@@ -96,29 +110,33 @@ event, no manifest key.
   - error details are `{"type", "message"}` and never `_payload`'s `details`,
     which is where a `KernelError` keeps its **traceback** — and a traceback
     names files;
-  - the finished payload is **scrubbed** of this run's cell path (both the
-    `mkdtemp` and the resolved spelling, which differ on macOS), replaced by
-    `<cell>`. `ProjectStore._read_manifest`'s refusal is literally
-    `f"{path} is not a project"`, so an unreadable submission embedded a
-    randomly-named temp path and two runs of the same submission differed.
+  - the finished payload is **scrubbed** of four roots — the cell (both the
+    `mkdtemp` and the resolved spelling, which differ on macOS), the task
+    tree, the submission and the projects root — replaced by `<cell>`,
+    `<task>`, `<submission>`, `<projects>`, longest needle first so a
+    submission nested inside the projects root is labelled as the submission.
+    `ProjectStore._read_manifest`'s refusal is literally
+    `f"{path} is not a project"`, `load_windows` names the task tree in an
+    `OSError`, and the `iou` handler's `iou unavailable: …` can wrap a
+    `refload` failure naming the reference STEP.
   `round_floats` is applied to the whole payload before it is returned, so the
   dict a caller reads is the document `write_json` emits.
 
 ## Files
 - `agentcad/bench/scoring.py` — new (the whole scorer).
-- `tests/test_bench_scoring.py` — new, 12 tests.
+- `tests/test_bench_scoring.py` — new, 30 tests.
 - `docs/changelog/0259-prd-024-bench-scorer.md` — this entry.
 
 ## Tests
 ```
-$ uv run pytest tests/test_bench_scoring.py -q
-............                                                             [100%]
-12 passed
+$ uv run pytest -q tests/test_bench_scoring.py tests/test_bench_tasks.py \
+      tests/test_bench_kernel_iou.py
+..................................................................       [100%]
+66 passed in 4.52s
 ```
 ```
-$ uv run pytest -q tests/test_bench_tasks.py tests/test_bench_kernel_iou.py \
-      tests/test_bench_scoring.py tests/test_checks.py -x
-99 passed in 7.54s
+$ uv run ruff check agentcad/bench/scoring.py tests/test_bench_scoring.py
+All checks passed!
 ```
 `make test` — <orchestrator fills>
 
@@ -141,13 +159,24 @@ part is zero everywhere and never `not_applicable`.
   two-position `Locations(…)` at two of the four grid points, which removes
   exactly two holes and adds none; the candidate then strictly contains the
   reference and the plan's arithmetic is correct as written.
-- **A known tension, followed as specified.** Design §4.3 makes a `specs`
-  denominator of zero an `error` under a non-zero weight, which reads against
-  D5 ("a candidate that is absent measures zero"): a candidate that deletes
-  every part gets `specs` *excluded* rather than zeroed. It is not exploitable
-  — every other subscore is zero, so the renormalised total is still 0.0 — and
-  it is what the spec says, so it is implemented literally and flagged here
-  rather than quietly changed.
+- **Orchestrator rulings of record (review round 1), applied throughout.**
+  - **R1 — §4.7/D5 governs over a literal reading of §4.1/§4.3.** *Any* failure
+    the candidate caused is a measured zero (`status: "ok"`, `value 0.0`, a
+    `reason` in `detail`); `error` is reserved for harness failures — budget
+    truncation, a kernel that is gone, an unexpected exception class. This is
+    `_blames_harness` and it now guards `_build_all`, `_specs`, `_geometry`
+    and `_interference`. The first draft's literal reading of §4.3 (a
+    zero-denominator `specs` is `error`) was *candidate-reachable* and is
+    reversed.
+  - **R2 — `geometry` is per-part.** Value is the mean over `target.parts`
+    with a mesh-only part contributing 0.0; `status: "skipped_mesh"` only when
+    every target part is mesh-only, otherwise `"ok"` with the skipped parts
+    named. `detail` is split into `{"parts": {...}, "error": {...}}` so a part
+    named `error` cannot collide.
+  - **R3 — the `specs` denominator is rubric-owned rows only**: `<part>:*` for
+    the parts `inject_rubric` returned, `project:*` only when the task ships
+    `specs/project.py`. `<copy>/specs.py` is replaced *or deleted*
+    unconditionally, so a candidate-authored one never scores.
 - The honest limitation from design §3.1 stands and belongs in `docs/bench.md`
   (Task 11): a candidate script could monkeypatch `agentcad.toolkit.specs` in
   `sys.modules` before the injected import line runs and fake the `specs`
@@ -161,3 +190,31 @@ part is zero everywhere and never `not_applicable`.
   fresh interpreter importing `agentcad.bench.scoring` loads neither `OCP` nor
   `build123d`.
 - No edits to `worker.py` / `tools.py` / `app.py` / `service.py` / `cli.py`.
+
+## Review round 1 (fixes in this same entry)
+
+Reviewed against the seed task; every finding was *measured*, not argued. Six
+of the seven were the same bug wearing different hats — a candidate-caused
+failure classified as `error`, therefore **excluded**, therefore
+**renormalised away**, therefore a higher total for a worse submission.
+
+| # | Finding (measured) | Fix |
+|---|---|---|
+| C1 | a broken candidate assembly excluded `interference`; total 0.8 → 1.0 | `_interference` classifies with `_blames_harness`; the candidate's own unresolvable assembly is `0.0 / "ok" / "assembly_unresolved"` |
+| C2 | a **deleted part script** made `built`/`valid`/`specs`/`metrics` `error` and left `weights_effective == {"geometry": 1.0}` | `_build_all` maps `AppError` (and every non-harness `KernelError`) to `state: "failed"` with a reason; only a timeout, a dead worker or an unanticipated class is `error` |
+| C3 | a mesh-only candidate attached no rubric → zero rows → `specs` excluded; total 0.1875 → 0.2083 | `_specs` uses `inject_rubric`'s returned list: nothing attached, or nothing measured, is `0.0 / "ok"` with `reason` `no_rubric_attached` / `nothing_measured` / `spec_run_refused` |
+| C4 | the `specs` denominator counted every check in the project — nine filler parts moved 0.667 → 0.917 — and a candidate's own `specs.py` scored | R3: rubric-owned rows only, and `<copy>/specs.py` is deleted when the task ships none |
+| I5 | a non-UTF-8 byte in a part script (or a `parts/<id>.py` that is a directory) crashed `score()` | the copy **and** the injection moved inside the guard; `_PREPARE_FAILURES` adds `UnicodeDecodeError` (a `ValueError`, not an `OSError`) and `shutil.Error` |
+| I6 | only the cell path was scrubbed; the task tree, submission and projects root could still reach `detail.error.message` | four labelled needles, longest first |
+| I7 | no tests for arithmetic with no reference task yet | 14 kernel-free unit tests over `interference_fraction`, `metric_of`, `window_satisfied`, `_metrics`, `_timeout`/`_budget_broke`, `_scrub`, and the zero-weight/zero-build short-circuits |
+
+Also taken: `C(n,2)` is `n*(n-1)//2` rather than `len(list(combinations(…)))`,
+and `_assert_statuses` checks every emitted status against
+`SUBSCORE_STATUSES` (and every value into `[0, 1]`) in five tests.
+
+**One expectation the fixes changed.** `SpecRunner.run` refuses over the
+*whole* project when one part's script file is missing, so the two-part
+deleted-script test measures `specs` at `0.0 / "ok" / "spec_run_refused"`
+rather than 1.0 for the intact part's rubric. That is the candidate's doing
+and it costs them the subscore at **full weight** — no exclusion, no
+renormalisation — which is exactly R1's point.
