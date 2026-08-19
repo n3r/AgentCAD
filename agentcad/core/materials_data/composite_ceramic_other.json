@@ -2348,7 +2348,7 @@
           "value": 1000.0,
           "unit": "C",
           "basis": "typical",
-          "source": "editorial estimate: continuous service limit, not a datasheet value"
+          "source": "editorial estimate: continuous limit in vacuum or inert gas; in air, oxidation above about 600 C governs (see notes)"
         },
         "poisson_ratio": {
           "value": 0.17,

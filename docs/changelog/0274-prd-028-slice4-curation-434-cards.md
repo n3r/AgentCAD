@@ -68,9 +68,8 @@ anywhere — the lint's `disallowed_source` rule is clean over the whole tree.
   tests/test_materials_lint.py tests/test_materials_query.py
   tests/test_materials_tools.py tests/test_fem_material_resolution.py
   tests/test_analysis.py` → 139 passed, 7 skipped.
-- The last full `make test`-equivalent run on this branch (slice 1, entry 0271)
-  was 4565 passed, 44 skipped; the controller's full-suite run over the
-  finished branch is cited in the close-out entry.
+- Controller's full `make test` over the committed slices 1–4 (this entry's
+  state): **4670 passed, 46 skipped, 0 failed in 921 s**.
 
 ## Notes
 The QA pass (20-record spot check against named sources), the per-file

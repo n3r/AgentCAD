@@ -293,8 +293,8 @@
         "ultimate_mpa": {
           "value": 450.0,
           "unit": "MPa",
-          "basis": "minimum",
-          "source": "ASTM A36/A36M specified minimum tensile properties"
+          "basis": "typical",
+          "source": "ASTM A36/A36M specifies a tensile strength RANGE of 400-550 MPa; this 450 MPa point is the mid-band figure the v1 library carried and is frozen by the editorial-immutability rule - the specified MINIMUM is 400 MPa, so the basis is typical (mid-band), not minimum (see materials_data/PROVENANCE.md)"
         },
         "elongation_pct": {
           "value": 20.0,
@@ -333,7 +333,7 @@
         "weldability": "excellent",
         "source": "editorial classification (Machining Data Handbook; AWS D1.1 prequalified practice)"
       },
-      "notes": "ys/uts are ASTM spec minimums (uts range 400-550)."
+      "notes": "Yield 250 MPa and elongation 20 % are ASTM A36 specified minima. The 450 MPa ultimate is NOT the specified minimum: A36 specifies a 400-550 MPa tensile RANGE and 450 MPa is its mid-band value, kept byte-identical from the v1 library under the editorial-immutability rule. Design to 400 MPa."
     },
     "steel_a992": {
       "label": "Steel A992 (W-shapes)",
@@ -5188,7 +5188,7 @@
           ],
           "unit": "MPa",
           "basis": "typical",
-          "source": "ASTM A228/A228M specified minimum tensile strength; the value is strongly diameter-dependent (about 2500 MPa at 0.5 mm falling to about 1750 MPa at 6 mm)"
+          "source": "ASTM A228/A228M tensile strength requirements, which are set per wire diameter (about 2500 MPa at 0.5 mm falling to about 1750 MPa at 6 mm); this row spans the common size band rather than naming one diameter, so its basis is typical and not a single specified minimum"
         },
         "poisson_ratio": {
           "value": 0.29,

@@ -56,7 +56,7 @@
           "value": 80.0,
           "unit": "C",
           "basis": "typical",
-          "source": "SABIC Cycolac ABS datasheet, typical (heat deflection basis)"
+          "source": "editorial estimate: continuous service limit set below the datasheet heat-deflection temperature (ISO 75), not a rated datasheet value"
         },
         "cost_usd_kg": {
           "value": 2.5,
@@ -232,7 +232,7 @@
           "value": 1.01,
           "unit": "g/cm3",
           "basis": "typical",
-          "source": "EOS PA 2200 (PA 12) datasheet, typical"
+          "source": "ISO 1183 bulk (unfilled, moulded) PA 12 density; the named EOS PA 2200 datasheet publishes the LASER-SINTERED PART density, which is lower (about 0.93 g/cm3) because a powder-bed part keeps some porosity"
         },
         "E_gpa": {
           "value": 1.7,
@@ -291,7 +291,7 @@
         },
         "source": "editorial classification (EOS and HP powder-bed process guides)"
       },
-      "notes": "Powder-bed printed typical; molded PA12 elongates far more."
+      "notes": "Powder-bed printed typical; molded PA12 elongates far more. QA (PRD-028): the 1.01 g/cm3 density is the bulk/moulded PA 12 figure, not the ~0.93 g/cm3 laser-sintered part density the EOS PA 2200 datasheet publishes - it is frozen by the editorial-immutability rule, so mass from this card is optimistic for an SLS/MJF part by about 8 %. The 45 MPa yield is likewise a moulded-PA12 figure: powder-bed datasheets quote a strength at break (48 MPa here), not a yield point."
     },
     "pc": {
       "label": "Polycarbonate",
