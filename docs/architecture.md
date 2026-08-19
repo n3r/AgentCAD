@@ -88,7 +88,7 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/kernel/acm.py` | ACM1 binary mesh codec (no OCP dependency; the frontend has a JS parser). |
 | `agentcad/kernel/client.py` | Worker lifecycle: spawn, one-request-at-a-time, per-request timeout, kill-and-respawn, stderr tail capture for crash reports. |
 | `agentcad/kernel/pool.py` | `KernelPool`: N `KernelClient`s behind the same `request()` surface; affinity routing + round-robin, lazy spawn. Size 1 ≡ single client. |
-| `agentcad/kernel/handlers/` | Worker handler packs (reference, drawing, analysis, fem, connectors, diff, specs, sketchplane) merged into the worker at startup — see [extension points](#v2-extension-points). |
+| `agentcad/kernel/handlers/` | Worker handler packs (reference, drawing, analysis, fem, connectors, diff, specs, sketchplane, bench) merged into the worker at startup — see [extension points](#v2-extension-points). |
 | `agentcad/kernel/refload.py` | Reference-CAD loader (STEP/BREP → solid, STL → mesh-only Face) with an LRU keyed by (realpath, mtime, size). Kernel-side only (imports OCP). |
 | `agentcad/kernel/error_doctor.py` | Catalog of real OCCT/build123d failure signatures → plain-language diagnosis + fix; enriches every worker error's `details.hint`. |
 | `agentcad/kernel/_mates_resolver.py` | Connector evaluation + mate-graph ordering (cycle rejection) + Joint-based resolution to concrete transforms. |
@@ -116,6 +116,7 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals, specs, run_checks, comments, packages, configs), each exporting `register(registry, service)`. `tools_specs` additionally *wraps* `service._rebuild` and `service.get_part` (the `install_write_guard` precedent) and appends the `specs` gate provider; `tools_run_checks` installs `service.checks` and appends the `checks` gate — and is named for **load order**, since packs load alphabetically and `tools_proposals` resets `gate_providers`. |
 | `agentcad/server/app.py` | Core REST routes (thin), `/api/tools` passthrough, WebSocket channel, static hosting; mounts `routes_*.py` packs under `/api`. |
 | `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve + sketch blocks, history, branches/versions/merge, proposals, specs, checks, comments, presence, packages, configs + the content-addressed mesh route). |
+| `agentcad/bench/` | AgentCAD-Bench (PRD-024): the task-bundle loader, the six-subscore kernel scorer over a muzzled copy, the budgeted runner, the report/baseline gate, the leaderboard and the authoring helper. CLI-only — no tool, route or event. OCP-free, asserted by a test. |
 | `agentcad/agent/mcp_server.py` | MCP stdio server proxying `/api/tools`; auto-starts the HTTP server when unreachable. |
 | `agentcad/agent/chat.py` | Server-side Anthropic tool-use loop streaming to the UI over the WebSocket. |
 | `frontend/` | Static ES modules (no bundler): Three.js viewport, tree, parameter inspector, CodeMirror editor, chat panel. |
@@ -555,6 +556,31 @@ but the runner's kernel decides whether it can: an image without Landlock in
 its `lsm=` list confines nothing and says so. So the GitHub Action still
 documents `pull_request` (never `pull_request_target`) and no secrets — the
 confinement is a second line, not the reason the workflow is safe.
+
+## AgentCAD-Bench
+
+`agentcad check` certifies a *project*; **`agentcad bench` scores an *agent***
+(PRD-024, [`docs/bench.md`](bench.md)). One OCP-free package, `agentcad/bench/`
+(`tasks.py` the bundle loader, `scoring.py` the six subscores, `runner.py` the
+budgeted `ChatEngine` client, `report.py` the aggregation and the baseline gate,
+`publish.py` the leaderboard, `cli.py` the four subcommands, `author.py` the
+task-authoring helper), plus one kernel handler pack —
+`agentcad/kernel/handlers/bench.py`, exposing a single `iou` method that is
+**never registered as a model-facing tool**, because a bench-only tool would
+contaminate the measurement it exists to take. Tasks are data under
+`benchmarks/tasks/<category>/<id>/`, resolved through `resource_root()` like
+`examples/` and `catalog/`.
+
+The scorer is `checks._ephemeral_service`'s **muzzled copy**, reused rather than
+re-derived: a submission is copied into a throwaway cell, the task's rubric is
+appended to the copy's part scripts (re-binding `SPECS`, discarding whatever the
+candidate declared), and a service with `bus.on_publish`, `branch_resolver` and
+`write_guard` all `None` measures it — so scoring writes no history snapshot, no
+branch sidecar and nothing at all into the submission. `cli._build_service`
+gained exactly one keyword-only parameter for it (`examples=False`): a task
+derived from a bundled example must not be solvable by opening that example,
+and an env var would be process-global under xdist. No route pack, no tool
+pack, no new event type and no manifest key.
 
 ## Review threads, anchors and presence
 
