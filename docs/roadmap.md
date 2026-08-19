@@ -105,8 +105,9 @@ format's proving ground.
 | 5 | **[006](prd/completed/PRD-006-sandboxing-quotas.md)** — **DONE (PR #22)** | Sandboxing becomes *blocking* only when third-party code runs on our servers — which is 031b, not 031a. It was built in parallel with steps 3 and 4 (PR #22), because 005a shipped with "an account is a shell" as its stated price and that price was cheaper to remove than to keep explaining. Windows AppContainer is carved out as 006b. |
 | 6 | **031b** | Open publishing, verified tiers, moderation, economy. |
 
-Demoted behind that chain: **013, 014, 015, 017** (daily-driver depth —
-they buy credibility but do not compound). **026/027** stay early-v5 movable:
+Demoted behind that chain: **014, 015, 017** (daily-driver depth —
+they buy credibility but do not compound); **013 is now DONE (PR #23)** — the
+first of that depth tier to ship, ahead of the rest. **026/027** stay early-v5 movable:
 if we are inviting an audience, the shell is the shop window.
 
 Success metric for the catalog is **usefulness, not contributors**. We will
@@ -145,7 +146,7 @@ commit. The 031a licensing precondition is closed.
 | [010](prd/completed/PRD-010-feature-toolkit-ii.md) | Feature toolkit II — patterns, ISO/ANSI hole wizard with flowing metadata, ribs/draft, sheet-metal v2 (relief, partial flanges) | completed (PR #14, AC1–AC8 + AC7b verified) | analysis + residual | — |
 | [011](prd/completed/PRD-011-parts-library-registry.md) | Parts library & package registry — "pip for parts": versioned, kernel-validated packages; git-hosted indexes; a seeded COTS catalog; McMaster ingestion | completed (PR #15, AC1–AC9 verified) | analysis + idea 1d | 003 |
 | [012](prd/completed/PRD-012-configurations.md) | Configurations — named parameter sets with per-config metrics/BOM/drawings; matrix builds | completed (PR #18, AC1–AC9 verified) ([design](superpowers/specs/2026-08-17-configurations-design.md) · [plan](superpowers/plans/2026-08-17-configurations.md)) | analysis | — |
-| [013](prd/pending/PRD-013-assembly-v2.md) | Assembly v2 — sub-assemblies, instance patterns, simplified reps for 1k+ instances, richer joints, exploded views, URDF export | pending | analysis + idea 6 | — |
+| [013](prd/completed/PRD-013-assembly-v2.md) | Assembly v2 — sub-assemblies, instance patterns, simplified reps for 1k+ instances, richer joints, exploded views, URDF export | completed (PR #23, MVP: patterns + cross-project sub-assemblies + slider/planar joints + simplified reps + URDF; ball/gear couplings, exploded views, interference broad-phase → Phase 2) | analysis + idea 6 | — |
 | [014](prd/pending/PRD-014-drawings-v2.md) | Drawings v2 — ASME/ISO sheets, title/revision blocks, assembly drawings with BOM+balloons, sections, PDF, deterministic regen | pending | analysis | 010 · 012 · 015 (soft) |
 | [015](prd/pending/PRD-015-bom-release-management.md) | BOM & release management — structured BOMs, Rev approval on proposals, immutable release bundles | pending | analysis | 001 · 002 · 003 |
 | [016](prd/pending/PRD-016-direct-modeling-ux.md) | Direct modeling & measurement UX — measure/sections/overlays, direct ops emitting code, selection-aware chat | pending | analysis + idea 3 | 026 (soft) |

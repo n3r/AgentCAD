@@ -1,6 +1,6 @@
 # PRD-013 — Assembly v2: structure, scale, richer joints, URDF
 
-- **Status:** pending
+- **Status:** completed — merged to main in PR #23 (MVP; ball/gear couplings, exploded views, and interference broad-phase deferred to Phase 2)
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026) · founder idea #6 in part (robotics/URDF)
