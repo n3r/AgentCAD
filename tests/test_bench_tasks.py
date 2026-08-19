@@ -76,6 +76,33 @@ def test_specs_block_must_bind_SPECS_and_may_not_use_fem(tmp_path):
     assert any("check_fem_static" in p for p in bench_tasks.task_problems(raw, base))
 
 
+def test_a_scored_metrics_weight_needs_at_least_one_window(tmp_path):
+    """Design §2 rule 8: the weight and the windows are two halves of one claim.
+
+    The document parses, the schema is right and every declared window is
+    well-formed -- there are just none of them. Before this was checked the
+    task validated clean while carrying a 0.15 `metrics` weight.
+    """
+    raw, base = _seed_raw(tmp_path)
+    metrics = base / "reference" / "metrics.json"
+    metrics.write_text(json.dumps({"schema": 1, "windows": []}))
+    problems = bench_tasks.task_problems(raw, base)
+    assert any("declares zero windows" in p for p in problems), problems
+    # ... and it is only a defect while the subscore is actually weighted.
+    raw["weights"]["metrics"] = 0.0
+    raw["weights"]["geometry"] = 0.65
+    assert bench_tasks.task_problems(raw, base) == []
+
+
+def test_specs_block_may_not_augment_SPECS(tmp_path):
+    """`SPECS +=` extends the candidate's own list instead of replacing it."""
+    raw, base = _seed_raw(tmp_path)
+    block = base / "specs" / "parts" / "spacer_plate.py"
+    block.write_text(block.read_text().replace("SPECS = [", "SPECS += ["))
+    problems = bench_tasks.task_problems(raw, base)
+    assert any("SPECS +=" in p for p in problems), problems
+
+
 def test_load_task_raises_with_the_problem_list():
     with pytest.raises(ValidationError) as exc:
         bench_tasks.load_task("model_from_drawing/does_not_exist")
@@ -83,7 +110,12 @@ def test_load_task_raises_with_the_problem_list():
 
 
 def test_load_tasks_filters_by_glob_and_set():
-    assert [t.id for t in bench_tasks.load_tasks(glob="model_from_drawing/*")] == [SEED]
+    # Membership, not equality: mfd_002..005 land in a later slice and must not
+    # turn this into a failing test about how many tasks are shipped.
+    found = [t.id for t in bench_tasks.load_tasks(glob="model_from_drawing/*")]
+    assert SEED in found and len(found) >= 1
+    assert all(t.startswith("model_from_drawing/") for t in found)
+    assert SEED not in [t.id for t in bench_tasks.load_tasks(glob="fix_*/*")]
     assert bench_tasks.load_tasks(set_name="core")
     assert bench_tasks.load_tasks(set_name="no-such-set") == []
 
@@ -103,3 +135,33 @@ def test_canonical_json_is_byte_identical_and_refuses_nan():
     assert b'"b": 0.333333' in canonical_json(payload)
     with pytest.raises(ValueError):
         canonical_json({"x": float("nan")})
+
+
+def test_round_floats_leaves_bools_alone():
+    from agentcad.bench._json import round_floats
+    out = round_floats({"flag": True, "count": 3, "ratio": 1 / 3})
+    assert out["flag"] is True and isinstance(out["flag"], bool)
+    assert out["count"] == 3 and isinstance(out["count"], int)
+    assert out["ratio"] == 0.333333
+
+
+def test_read_json_refuses_by_size_before_parsing(tmp_path):
+    from agentcad.bench._json import read_json
+    path = tmp_path / "big.json"
+    path.write_text(json.dumps({"pad": "x" * 4096}))
+    with pytest.raises(ValidationError) as exc:
+        read_json(path, max_bytes=64)
+    assert "refused before parsing" in exc.value.message
+
+
+def test_read_json_catches_recursion_error(tmp_path):
+    """`json.loads` raises RecursionError, which is NOT a ValueError."""
+    from agentcad.bench._json import read_json
+    path = tmp_path / "deep.json"
+    path.write_text("[" * 100_000 + "]" * 100_000)
+    with pytest.raises(ValidationError) as exc:
+        read_json(path)
+    # Pinned to the recursion path: the document is 200 kB, far under the size
+    # ceiling, so a pass here cannot come from the cheaper refusal.
+    assert "not readable JSON" in exc.value.message
+    assert "recursion" in exc.value.message

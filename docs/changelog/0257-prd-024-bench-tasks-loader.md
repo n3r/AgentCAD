@@ -49,7 +49,20 @@ manifest key, and no edit to `worker.py` / `tools.py` / `app.py` / `service.py`.
     so a `..`-escape is refused by where it lands rather than by how it is
     spelled.
   - `check_fem_static` is refused **by name** in a rubric block: the core suite
-    stays green without the `[fem]` extra (FR3).
+    stays green without the `[fem]` extra (FR3). So is `SPECS +=`
+    (`SPECS_AUGMENTED_RE`, line-anchored): `specs.declares_specs` accepts `+=`
+    because it is a legitimate binding for a *part script*, but a rubric block
+    is appended to the **candidate's** script, so `+=` extends whatever the
+    candidate declared instead of replacing it — which is exactly the hole the
+    "re-bind, never append" rule exists to close, and the loader's own message
+    already claimed to enforce it.
+  - A `metrics` weight above zero is refused **by window count**, not only by
+    the presence of `reference.metrics` (design §2 rule 8). A document that
+    parses with `"windows": []` is the same defect as no document at all — a
+    scored subscore with nothing to measure — and it is the shape an author
+    reaches by deleting a window rather than by forgetting a file.
+    `_metrics_problems` returns `(problems, window_count)` so the caller, which
+    is the only place that knows the weight, decides whether zero is a defect.
   - A reference datum must be a **STEP** (`.step`/`.stp`), never a mesh — the
     IoU side has to be boolean-capable and a mesh side segfaults OCCT, so the
     loader refuses it before anything spawns.
@@ -65,19 +78,25 @@ manifest key, and no edit to `worker.py` / `tools.py` / `app.py` / `service.py`.
   volume, ±0.05 mm per bbox extent, `n_solids` pinned) the author then
   hand-edits and argues in the PR, never a generated rubric nobody read.
 - **`benchmarks/tasks/model_from_drawing/mfd_001_spacer_plate/`** — the seed
-  bundle: `task.json`, `prompt.md`, a hand-authored three-view `assets/
-  drawing.svg` (plain `<svg>`/`<rect>`/`<line>`/`<circle>`/`<text>`, no external
+  bundle: `task.json`, `prompt.md` (which names the material — aluminium 6061 —
+  so the `mass_g` window is fair to an agent that would otherwise have to guess),
+  a hand-authored three-view `assets/drawing.svg` (plain `<svg>`/`<rect>`/`<line>`/`<circle>`/`<text>`, no external
   font, no script), `reference/project/` (manifest + build123d script),
   `reference/steps/spacer_plate.step` (54 439 B, `ISO-10303-21;`),
   `reference/metrics.json` (four hand-edited windows) and
   `specs/parts/spacer_plate.py`.
-- **`tests/test_bench_tasks.py`** — 14 tests over the loader: the seed resolves
+- **`tests/test_bench_tasks.py`** — 19 tests over the loader: the seed resolves
   fully, every shipped task has zero problems, each of seven mutations is named
-  by its own sentence, the rubric must bind `SPECS` and may not use
-  `check_fem_static`, `load_task` carries the problem list, `load_tasks`
-  filters, `prompt_text` inlines the SVG, and `canonical_json` is stable and
-  refuses NaN. Nothing here starts a kernel; every mutation runs on a
-  `tmp_path` copy, so `benchmarks/` stays a read-only input.
+  by its own sentence, the rubric must bind `SPECS`, may not augment it with
+  `+=` and may not use `check_fem_static`, a weighted `metrics` subscore needs
+  at least one window, `load_task` carries the problem list, `load_tasks`
+  filters (by *membership*, so mfd_002..005 landing later does not break it),
+  `prompt_text` inlines the SVG, `canonical_json` is stable and refuses NaN,
+  `round_floats` leaves bools alone, and `read_json` refuses by size before
+  parsing and catches `RecursionError` (pinned to the recursion path: the
+  fixture is 200 kB, far under the size ceiling). Nothing here starts a kernel;
+  every mutation runs on a `tmp_path` copy, so `benchmarks/` stays a read-only
+  input.
 
 ## Files
 - `agentcad/bench/__init__.py` — new; `HARNESS_VERSION`.
@@ -88,6 +107,22 @@ manifest key, and no edit to `worker.py` / `tools.py` / `app.py` / `service.py`.
   task bundle (8 files).
 - `tests/test_bench_tasks.py` — new; 14 tests.
 - `docs/changelog/0257-prd-024-bench-tasks-loader.md` — this entry.
+
+## Review fixes folded in (round 1, on top of 19388a7)
+- **`assets/drawing.svg`: the right view drew a 20 mm hole pitch, not 30 mm.**
+  The view is 50 mm wide centred on x = 320 px, so the hole centres belong at
+  290 and 350 (±15 mm at 2 px/mm); they were at 300 and 340. The four hidden
+  lines move 294/306/334/346 → 284/296/344/356, and both edge-on hole groups
+  now carry a comment stating the pitch they encode so the next reader can
+  check the arithmetic without deriving it. Every other primitive was
+  re-derived from the file and agrees with `prompt.md` and the reference
+  script: top view 80 × 50 with rx = 5 mm and four Ø6 holes at (±30, ±15),
+  front view 80 × 6, right view 50 × 6, and the 80 / 50 / 60 / 30 / 6
+  dimension lines span exactly those distances.
+- **The `metrics`-weight rule and the `SPECS +=` refusal**, both described in
+  the Changes section above.
+- The three minors: the material sentence in `prompt.md`, `load_tasks`'
+  membership assertion, and the `_json` asserts.
 
 ## Notes
 - **Why the rubric is separate from the reference.** The reference part script
@@ -108,9 +143,10 @@ manifest key, and no edit to `worker.py` / `tools.py` / `app.py` / `service.py`.
   out to be too tight, that is a **product** finding raised in `chat.py`, and
   the bench then measures the change.
 - **The metric windows are hand-edited, and the numbers are argued.** Measured
-  reference: volume 23 192.65 mm³, mass 62.62 g (al6061, the product's
-  `DEFAULT_MATERIAL` — which is why a mass window is fair even though the
-  prompt does not name a material: an agent that chooses nothing gets al6061).
+  reference: volume 23 192.65 mm³, mass 62.62 g (al6061, which the prompt now
+  names outright — it is also the product's `DEFAULT_MATERIAL`, so an agent that
+  chooses nothing lands on it anyway, but a scored mass window should not depend
+  on that coincidence).
   `material` is a volume **ceiling** of 23 250 mm³, chosen deliberately below
   the 23 321 mm³ a plate with **square** corners would measure, so a missing R5
   is caught by the window rather than only by IoU. `height` is 5.95–6.05,
@@ -133,11 +169,17 @@ manifest key, and no edit to `worker.py` / `tools.py` / `app.py` / `service.py`.
 
 ## Verification
 ```
-$ uv run pytest tests/test_bench_tasks.py -q
-..............                                                           [100%]
-14 passed in 0.51s
+$ uv run pytest -q tests/test_bench_tasks.py
+...................                                                      [100%]
+19 passed in 1.12s
 
 $ uv run pytest -q tests/test_bench_tasks.py tests/test_checks.py tests/test_specs.py
-129 passed, 2 skipped in 30.21s
+134 passed, 2 skipped in 34.50s
+
+$ uv run ruff check agentcad/bench tests/test_bench_tasks.py
+All checks passed!
 ```
+(`ruff format` is not this project's style — it would reformat
+`core/checks.py` and `core/specs.py` too, and the repo ships no ruff config.)
+
 `make test` — <orchestrator fills>

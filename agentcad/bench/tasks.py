@@ -74,6 +74,15 @@ TASK_ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,47}$")
 #: refused **by name**, in the loader, before anything spawns.
 FORBIDDEN_SPEC_CALL = "check_fem_static"
 
+#: `SPECS +=` in a rubric block. `specs.declares_specs` accepts it -- it is a
+#: legitimate binding for a part script -- but it is exactly wrong here: the
+#: block is appended to the CANDIDATE's script, so `+=` **extends** whatever
+#: the candidate declared for itself instead of replacing it, and an agent can
+#: then inflate the `specs` subscore with trivially-true checks of its own.
+#: Line-anchored for `_SPECS_TEXT_RE`'s reasons: a comment or a string literal
+#: mentioning it is not a binding.
+SPECS_AUGMENTED_RE = re.compile(r"^[ \t]*SPECS[ \t]*\+=", re.MULTILINE)
+
 
 @dataclass(frozen=True)
 class Frame:
@@ -384,14 +393,28 @@ def task_problems(raw, base) -> list[str]:
 
     # 9. metric windows ---------------------------------------------------
     metrics_rel = reference.get("metrics")
-    metrics_path = None
+    metrics_path, window_count = None, 0
     if metrics_rel is not None:
         metrics_path = _resolved(base, metrics_rel, "reference.metrics", out)
     if metrics_path is not None:
-        out.extend(_metrics_problems(metrics_path, metrics_rel, parts))
-    if weights.get("metrics", 0.0) and metrics_path is None:
-        out.append("the metrics weight is above zero but reference.metrics "
-                   "names no window document")
+        problems, window_count = _metrics_problems(metrics_path, metrics_rel,
+                                                   parts)
+        out.extend(problems)
+    if weights.get("metrics", 0.0):
+        # Design §2 rule 8: the weight and the windows are two halves of one
+        # claim. A document that parses but declares nothing is the same defect
+        # as no document at all -- a scored subscore with nothing to measure --
+        # and it is the shape an author reaches by deleting a window rather
+        # than by forgetting a file, so it has to be refused by count and not
+        # only by presence.
+        if metrics_path is None:
+            out.append("the metrics weight is above zero but reference.metrics "
+                       "names no window document")
+        elif window_count == 0:
+            out.append(f"the metrics weight is above zero but "
+                       f"reference.metrics {metrics_rel!r} declares zero "
+                       f"windows; a scored subscore must have something to "
+                       f"measure")
 
     # 10. the specs rubric ------------------------------------------------
     specs = raw.get("specs")
@@ -425,6 +448,11 @@ def task_problems(raw, base) -> list[str]:
             out.append(f"specs block {rel!r} must bind SPECS at module level "
                        f"(re-bind, never '+='): the block is appended to the "
                        f"candidate's script and the last binding wins")
+        elif SPECS_AUGMENTED_RE.search(text):
+            out.append(f"specs block {rel!r} uses 'SPECS +=', which extends "
+                       f"the candidate's own SPECS instead of replacing it: "
+                       f"the block must RE-BIND SPECS, or an agent can inflate "
+                       f"the specs subscore with checks it wrote itself")
         if FORBIDDEN_SPEC_CALL in text:
             out.append(f"specs block {rel!r} uses {FORBIDDEN_SPEC_CALL}, which "
                        f"is not allowed: a bench task must score without the "
@@ -435,19 +463,24 @@ def task_problems(raw, base) -> list[str]:
     return out
 
 
-def _metrics_problems(path: Path, rel, parts) -> list[str]:
-    """Defects of one `reference/metrics.json`. Never raises."""
+def _metrics_problems(path: Path, rel, parts) -> tuple[list[str], int]:
+    """Defects of one `reference/metrics.json`, and how many windows it holds.
+
+    Never raises. The count comes back with the problems because the *caller*
+    is the only place that knows whether zero windows is a defect: it is,
+    exactly when the task also weights the `metrics` subscore above zero.
+    """
     out: list[str] = []
     try:
         doc = read_json(path)
     except ValidationError as exc:
-        return [f"reference.metrics {rel!r}: {exc.message}"]
+        return [f"reference.metrics {rel!r}: {exc.message}"], 0
     if doc.get("schema") != METRICS_SCHEMA:
         out.append(f"reference.metrics schema must be {METRICS_SCHEMA}, got "
                    f"{doc.get('schema')!r}")
     windows = doc.get("windows")
     if not isinstance(windows, list):
-        return out + ["reference.metrics windows must be a list"]
+        return out + ["reference.metrics windows must be a list"], 0
     seen: set = set()
     for index, window in enumerate(windows):
         where = f"reference.metrics windows[{index}]"
@@ -479,7 +512,7 @@ def _metrics_problems(path: Path, rel, parts) -> list[str]:
                            f"is no bound")
         if _is_number(low) and _is_number(high) and low > high:
             out.append(f"{where} has min {low} above max {high}")
-    return out
+    return out, len(windows)
 
 
 # ------------------------------------------------------------------ loading
