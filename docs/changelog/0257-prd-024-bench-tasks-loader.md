@@ -105,7 +105,7 @@ manifest key, and no edit to `worker.py` / `tools.py` / `app.py` / `service.py`.
 - `agentcad/bench/author.py` — new; the authoring helper.
 - `benchmarks/tasks/model_from_drawing/mfd_001_spacer_plate/**` — new; the seed
   task bundle (8 files).
-- `tests/test_bench_tasks.py` — new; 14 tests.
+- `tests/test_bench_tasks.py` — new; 19 tests.
 - `docs/changelog/0257-prd-024-bench-tasks-loader.md` — this entry.
 
 ## Review fixes folded in (round 1, on top of 19388a7)
