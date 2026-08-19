@@ -178,6 +178,41 @@ The binding is per instance, so two instances of one part can be two sizes on
 stage at once. Leave it on the part's live state to keep today's behaviour —
 that instance then follows whatever the part is currently showing.
 
+### Patterns, sub-assemblies, joints and URDF (v2 structure)
+
+The sidebar groups structure so a big assembly stays legible:
+
+- **Patterns.** A repeat pattern — a bolt circle, a row of standoffs — is one
+  sidebar row with a `×N` badge; click the disclosure triangle to expand its
+  members. Declare one on the placement card's **Pattern** section (linear or
+  polar, a count, and a spacing in mm or an angle in degrees) or with the
+  `set_pattern` agent verb. The pattern is a single manifest change, but mass,
+  interference and the geometry all recount to N members from it.
+- **Sub-assemblies (assemblies of assemblies).** Instance one project inside
+  another: it appears as one read-only row naming its source (with an **open**
+  affordance to jump to the source project), and its parts flatten into the
+  parent under `<unit>/<member>` ids. The source is resolved **read-only** —
+  opening a parent never edits or rebuilds the child's authored state. A source
+  chooses which of its connectors are matable from outside via its **interface**
+  (`set_assembly_interface`); only exported connectors are reachable, and a
+  cross-project cycle is refused with the offending path.
+- **Slider and planar joints.** Beside rigid/revolute/cylindrical mates, a part
+  can declare `slider` (one linear DOF) and `planar` (u/v slide + spin)
+  connectors. A mated slider/planar instance shows editable **DOF fields** on the
+  placement card. Drive a value past the connector's declared range and it is
+  **clamped** to the limit with a warning — the DOF never throws.
+- **Scale rendering.** In assembly mode a **Full / Simplified** toggle (bottom
+  right) switches between exact per-instance meshes and one convex-hull proxy per
+  part, instanced for thousands of bodies; a HUD shows instance and geometry
+  counts. The proxy is display-only — mass and interference always measure the
+  real solid. (An **Explode** slider sits beside the toggle but is a disabled
+  preview of a later phase.)
+- **URDF export.** `export_urdf` writes a robot description plus one mesh per
+  link under `exports/urdf/<name>/`: rigid mates become `fixed` joints, revolute
+  `revolute` (with limits), slider `prismatic`; link inertia is shifted to each
+  part's centre of mass. Planar/cylindrical/ball joints and couplings degrade to
+  `fixed` with a named warning in the result — nothing is dropped silently.
+
 ## Viewport
 
 CAD orientation: **Z up**, millimeters, a ground grid in the XY plane that

@@ -381,6 +381,33 @@ input, textarea { font: inherit; color: inherit; }
 
 .side-empty { padding: 4px 13px 10px; color: var(--dim); font-size: 12px; }
 
+/* Grouped assembly rows (PRD-013): a pattern / sub-assembly is one row with a
+   disclosure twist; expanded members are indented and read-only-ish. */
+.row-twist {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  color: var(--dim);
+  font-size: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.row-twist:hover { color: var(--text); }
+.row-member { padding-left: 22px; }
+.row-member .row-label { font-family: var(--mono); font-size: 11px; }
+.row-open-src {
+  flex: none;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--dim);
+  background: var(--raised);
+  opacity: 0;
+}
+.row-group:hover .row-open-src,
+.row-group:focus-within .row-open-src { opacity: 1; }
+.row-open-src:hover { color: var(--accent-bright); }
+
 /* ------------------------------------------------------------ viewport */
 
 #viewport {
@@ -411,6 +438,54 @@ input, textarea { font: inherit; color: inherit; }
 #hud .hud-name { color: var(--text); }
 #hud .hud-state.error { color: var(--err); }
 #hud .hud-state.building { color: var(--accent); }
+
+/* Rep-mode toggle (PRD-013 FR8): bottom-right, mirroring #hud. */
+#repmode {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 6px;
+  background: var(--overlay);
+  border: 1px solid var(--hairline-soft);
+  user-select: none;
+  z-index: 6;
+}
+#repmode.hidden { display: none; }
+#repmode .repmode-btn {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+#repmode .repmode-btn:hover { color: var(--text); }
+#repmode .repmode-btn.active {
+  color: var(--text);
+  background: var(--hairline-soft);
+}
+
+/* Explode slider — a disabled Phase-2 stub (PRD-013 FR13). */
+.explode-stub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 8px;
+  border-left: 1px solid var(--hairline-soft);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.explode-stub .explode-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+.explode-stub input[type="range"] { width: 60px; cursor: not-allowed; }
 
 #viewport-empty {
   position: absolute;
@@ -1004,6 +1079,47 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
 }
 .placement-sweep-btn:hover { background: var(--raised-2); }
 .placement-sweep-btn:disabled { opacity: 0.55; }
+
+/* Pattern editor + DOF fields (PRD-013). */
+.placement-pattern,
+.placement-dof {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--hairline-soft);
+}
+.placement-pattern-row,
+.placement-dof-row {
+  margin-top: 5px;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.placement-pattern-row .placement-num { width: 0; flex: 1; }
+.placement-pattern-row .cfg-select { flex: none; }
+.placement-pattern-btns {
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
+}
+.placement-pattern-clear {
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--dim);
+  font-size: 11.5px;
+}
+.placement-pattern-clear:hover { color: var(--err); background: var(--err-soft); }
+.placement-dof-cell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.placement-dof-label { font-size: 10px; color: var(--dim); }
+.placement-dof-cell .placement-num { width: 100%; }
 
 /* --------------------------------------------------- reference pane */
 

@@ -282,25 +282,87 @@ function geomKey(entry) {
   return `${entry.key}:${entry.lod || "full"}`;
 }
 
-function renderAssemblyFromCache() {
-  if (state.mode !== "assembly" || !state.assembly) return;
+// Simplified proxy meshes, keyed by partId (one convex hull per part, config-
+// agnostic — a display proxy). Lazily fetched through the per-part route, which
+// produces the tier on a miss (PRD-013 FR7).
+const simplifiedMeshes = new Map(); // partId -> {buffer, key}
+
+function assemblyItems(useSimplified) {
   const items = [];
   state.assembly.instances.forEach((inst, i) => {
-    const entry = inst.mesh_key ? instanceMeshes.get(inst.mesh_key) : null;
+    const proxy = useSimplified ? simplifiedMeshes.get(inst.part) : null;
+    const entry = proxy || (inst.mesh_key ? instanceMeshes.get(inst.mesh_key) : null);
     if (!entry) return;
     items.push({
       instanceId: inst.id,
       partId: inst.part,
       buffer: entry.buffer,
-      key: geomKey(entry),
+      key: proxy ? `${inst.part}:simplified` : geomKey(entry),
       position: inst.position,
       rotationDeg: inst.rotation_deg,
       color: tree.instanceColor(inst, i),
     });
   });
+  return items;
+}
+
+function renderAssemblyFromCache() {
+  if (state.mode !== "assembly" || !state.assembly) return;
+  if (state.repMode === "simplified") {
+    // Instanced proxy render: one geometry per part, N transforms. Selection
+    // still resolves (pick maps instanceId back), but per-instance gizmo
+    // editing lives in Full mode.
+    const items = assemblyItems(true);
+    viewport.showAssemblyInstanced(items);
+    viewport.setSelectedInstance(state.selectedInstance);
+    updateHUD();
+    return;
+  }
+  const items = assemblyItems(false);
   viewport.showAssembly(items);
   viewport.setSelectedInstance(state.selectedInstance);
   updateGizmo();
+}
+
+/** Fetch the simplified proxy for every distinct part in the current assembly,
+ *  producing the tier lazily via the per-part route, then re-render. */
+async function loadSimplifiedProxies() {
+  const proj = state.projectName;
+  if (!proj || !state.assembly) return;
+  const parts = [...new Set(state.assembly.instances.map((i) => i.part).filter(Boolean))];
+  await Promise.all(
+    parts
+      .filter((p) => !simplifiedMeshes.has(p))
+      .map(async (part) => {
+        try {
+          simplifiedMeshes.set(part, await api.getMesh(proj, part, "simplified"));
+        } catch {
+          /* no proxy (reference part / broken): that instance is skipped */
+        }
+      })
+  );
+  if (proj !== state.projectName) return;
+  renderAssemblyFromCache();
+}
+
+async function setRepMode(mode) {
+  if (mode !== "full" && mode !== "simplified") return;
+  setState({ repMode: mode });
+  updateRepModeToggle();
+  if (mode === "simplified") {
+    await loadSimplifiedProxies();
+  } else {
+    renderAssemblyFromCache();
+  }
+}
+
+function updateRepModeToggle() {
+  const box = document.getElementById("repmode");
+  if (!box) return;
+  box.classList.toggle("hidden", state.mode !== "assembly");
+  for (const btn of box.querySelectorAll(".repmode-btn")) {
+    btn.classList.toggle("active", btn.dataset.rep === state.repMode);
+  }
 }
 
 function scheduleAssemblyRefresh() {
@@ -917,11 +979,18 @@ function updateHUD() {
     return;
   }
   hud.classList.remove("hidden");
+  updateRepModeToggle();
   const tris = viewport.triangleCount().toLocaleString("en-US");
   let name, mode;
   if (state.mode === "assembly") {
     mode = "assembly";
     name = state.selectedInstance || state.projectName;
+    const n = state.assembly ? state.assembly.instances.length : 0;
+    const counts = viewport.assemblyCounts();
+    mode = `assembly · ${n.toLocaleString("en-US")} instances`;
+    if (state.repMode === "simplified") {
+      mode += ` · ${counts.geometries.toLocaleString("en-US")} geom`;
+    }
   } else {
     mode = "part";
     name = state.selectedPart || "";
@@ -1429,6 +1498,15 @@ function undoLastChange() {
 
 function redoLastChange() {
   return stepHistory("redo");
+}
+
+function setupRepMode() {
+  const box = document.getElementById("repmode");
+  if (!box) return;
+  for (const btn of box.querySelectorAll(".repmode-btn")) {
+    btn.addEventListener("click", () => setRepMode(btn.dataset.rep));
+  }
+  updateRepModeToggle();
 }
 
 function setupUndo() {
@@ -2281,8 +2359,10 @@ async function boot() {
   });
   setupUndo();
   setupKeys();
+  setupRepMode();
   onKeys(["rebuilding", "connected"], renderIndicators);
   onKeys(["rebuilding", "part", "mode", "selectedPart", "selectedInstance"], updateHUD);
+  onKeys(["mode"], updateRepModeToggle);
   onKeys(["selectedPart", "projectName"], syncHoleFormPart);
   onKeys(["gizmoMode"], () => viewport.setGizmoMode(state.gizmoMode));
   connectWS();

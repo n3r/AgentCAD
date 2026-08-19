@@ -144,6 +144,21 @@
            vendored. comments.js projects each open face thread's world point
            with camera.project() inside the existing render loop. -->
       <div id="pins"></div>
+      <!-- Rep-mode toggle (PRD-013 FR8): Full = exact per-instance meshes;
+           Simplified = one convex-hull proxy per part, instanced for scale. -->
+      <div id="repmode" class="hidden">
+        <button id="repmode-full" class="repmode-btn" data-rep="full">Full</button>
+        <button id="repmode-simplified" class="repmode-btn" data-rep="simplified">Simplified</button>
+        <!-- Explode slider (PRD-013 FR13): a Phase-2 seam. The
+             explode_assembly tool is not built in the MVP, so the control is
+             present but DISABLED with a tooltip — the toolbar seam exists
+             without shipping the animation. -->
+        <label id="explode" class="explode-stub" title="Exploded views are coming in a later phase.">
+          <span class="explode-label">Explode</span>
+          <input id="explode-range" type="range" min="0" max="100" value="0"
+                 disabled aria-label="Explode (coming soon)">
+        </label>
+      </div>
       <div id="hud" class="hidden"></div>
       <div id="viewport-empty" class="hidden"></div>
       <div id="placement" class="hidden">

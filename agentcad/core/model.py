@@ -205,7 +205,9 @@ class PartRecord:
 @dataclass
 class InstanceSpec:
     id: str
-    part: str
+    # "" for a sub-assembly reference (PRD-013), which names a source project
+    # via `assembly` instead of a part; a plain part instance always sets it.
+    part: str = ""
     position: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     rotation_deg: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     color: str | None = None
@@ -213,20 +215,42 @@ class InstanceSpec:
     # A declared configuration of `part` (PRD-012), resolved purely; None means
     # the part's live working state.
     config: str | None = None
+    # PRD-013 assembly v2 (additive, old files load): `pattern` repeats a part
+    # (or a sub-assembly) N times from ONE authored instance; `assembly` makes
+    # the instance a cross-project sub-assembly reference (no `part`). At most
+    # one of {part-only, pattern+part, assembly} — validated in set_instances.
+    pattern: dict | None = None
+    assembly: dict | None = None
+    # Transient (never persisted): the project a sub-assembly member is BUILT
+    # from. Set only on flattened members produced by cross-project resolution
+    # so a consumer builds its geometry against the source, not the parent.
+    # `to_manifest` omits it — an authored instance never carries it.
+    origin_project: str | None = None
 
     def to_manifest(self) -> dict:
+        # An assembly (sub-assembly) instance carries no part; a part instance
+        # always writes its part id. Emitting `"part": ""` for a sub-assembly
+        # would fail the store's unknown-part check on the next read.
         data = {
             "id": self.id,
             "part": self.part,
             "position": self.position,
             "rotation_deg": self.rotation_deg,
         }
+        if self.assembly:
+            # A sub-assembly reference has no part of its own; drop the empty
+            # placeholder so the on-disk entry is honest (and byte-clean).
+            data.pop("part")
         if self.color:
             data["color"] = self.color
         if self.mate:
             data["mate"] = self.mate
         if self.config:
             data["config"] = self.config
+        if self.pattern:
+            data["pattern"] = self.pattern
+        if self.assembly:
+            data["assembly"] = self.assembly
         return data
 
 

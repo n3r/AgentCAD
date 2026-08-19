@@ -207,14 +207,28 @@ runs:
         cache-dependency-glob: uv.lock
 
     # OCCT needs an X/GL stack even headless on Linux. This list is the exact
-    # one .github/workflows/ci.yml installs; it is hard-won, keep them in sync.
+    # one .github/workflows/ci.yml installs; it is hard-won, keep them in sync
+    # (and keep the apt hardening below in sync too).
     - name: Install OCCT system libraries (Linux)
       if: runner.os == 'Linux'
       shell: bash
       run: |
         set -euo pipefail
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends \
+        # A stalled Ubuntu mirror (observed hanging on
+        # `archive.ubuntu.com noble-security InRelease`) can wedge apt with no
+        # client-side timeout, so the job burns its whole 30-minute budget and
+        # is cancelled with no output — a Linux-only, intermittent CI flake with
+        # nothing to do with the geometry (see docs/changelog/0253). Bound every
+        # fetch and retry the whole update so one bad connection fails fast
+        # instead of hanging.
+        apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+                  -o Acquire::https::Timeout=30)
+        for attempt in 1 2 3; do
+          if sudo apt-get "${apt_opts[@]}" update; then break; fi
+          echo "::warning::apt-get update failed (attempt $attempt/3); retrying"
+          sleep 5
+        done
+        sudo apt-get install -y --no-install-recommends "${apt_opts[@]}" \
           libgl1 libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1
 
     - name: Install agentcad

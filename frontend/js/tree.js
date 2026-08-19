@@ -3,10 +3,13 @@
 
 import { state, onKeys } from "./state.js";
 import { clientId } from "./api.js";
+import { instanceRows, memberIdsOf } from "./tree_model.js";
 
 let actions = null;
 let partsList = null;
 let instancesList = null;
+// Which grouped rows (patterns / sub-assemblies) are expanded to their members.
+const expanded = new Set();
 
 export const INSTANCE_PALETTE = [
   "#8f9aa6", "#a68d6e", "#7d9b8a", "#9184a1", "#a1786e",
@@ -160,42 +163,143 @@ function renderInstances() {
     instancesList.appendChild(li);
     return;
   }
-  instances.forEach((inst, i) => {
-    const li = document.createElement("li");
-    li.className = "row";
-    if (state.mode === "assembly" && inst.id === state.selectedInstance) {
-      li.classList.add("selected");
+  // The flattened (expanded) view, for member rows when a group is expanded.
+  const flattened =
+    (state.assembly && state.assembly.instances) || [];
+  // Grouped rows: a pattern / sub-assembly is ONE row (tree_model), a plain
+  // part a plain row. Keep the raw instance beside each row for its colour.
+  const rows = instanceRows(instances);
+  rows.forEach((row, i) => {
+    const inst = instances[i];
+    if (row.expandable) {
+      renderGroupRow(row, inst, i, flattened);
+    } else {
+      instancesList.appendChild(instanceRow(inst, i));
     }
-    li.tabIndex = 0;
+  });
+}
 
-    const swatch = document.createElement("span");
-    swatch.className = "row-swatch";
-    swatch.style.background = instanceColor(inst, i);
-    li.appendChild(swatch);
+// A single leaf instance row (a plain part, or one expanded member).
+function instanceRow(inst, colorIndex, opts = {}) {
+  const li = document.createElement("li");
+  li.className = "row";
+  if (opts.member) li.classList.add("row-member");
+  if (state.mode === "assembly" && inst.id === state.selectedInstance) {
+    li.classList.add("selected");
+  }
+  li.tabIndex = 0;
 
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = inst.id;
-    li.appendChild(label);
+  const swatch = document.createElement("span");
+  swatch.className = "row-swatch";
+  swatch.style.background = instanceColor(inst, colorIndex);
+  li.appendChild(swatch);
 
+  const label = document.createElement("span");
+  label.className = "row-label";
+  label.textContent = inst.id;
+  li.appendChild(label);
+
+  if (inst.part) {
     const ref = document.createElement("span");
     ref.className = "row-id";
     // `part@config` for a bound instance: two instances of one part showing
     // different geometry is the whole point of a binding, and the part id
     // alone cannot say which is which.
     ref.textContent = inst.config ? `${inst.part}@${inst.config}` : inst.part;
-    if (inst.config) {
-      ref.title = `${inst.part}, configuration ${inst.config}`;
-    }
+    if (inst.config) ref.title = `${inst.part}, configuration ${inst.config}`;
     li.appendChild(ref);
+  }
 
-    li.addEventListener("click", () => actions.selectAssembly(inst.id));
-    li.addEventListener("keydown", (e) => {
-      if (e.target !== li) return;
-      if (e.key === "Enter") actions.selectAssembly(inst.id);
-    });
-    instancesList.appendChild(li);
+  li.addEventListener("click", () => actions.selectAssembly(inst.id));
+  li.addEventListener("keydown", (e) => {
+    if (e.target !== li) return;
+    if (e.key === "Enter") actions.selectAssembly(inst.id);
   });
+  return li;
+}
+
+// A grouped row: a pattern (×N badge) or a sub-assembly (read-only), with a
+// disclosure triangle that reveals its expanded members from the flattened
+// view. Selecting the group selects its first member on stage.
+function renderGroupRow(row, inst, colorIndex, flattened) {
+  const li = document.createElement("li");
+  li.className = "row row-group";
+  li.tabIndex = 0;
+  const isOpen = expanded.has(row.id);
+
+  const twist = document.createElement("span");
+  twist.className = "row-twist";
+  twist.textContent = isOpen ? "▾" : "▸";
+  twist.setAttribute("aria-label", isOpen ? "collapse" : "expand");
+  twist.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (isOpen) expanded.delete(row.id);
+    else expanded.add(row.id);
+    renderInstances();
+  });
+  li.appendChild(twist);
+
+  const swatch = document.createElement("span");
+  swatch.className = "row-swatch";
+  swatch.style.background = instanceColor(inst, colorIndex);
+  li.appendChild(swatch);
+
+  const label = document.createElement("span");
+  label.className = "row-label";
+  label.textContent = row.id;
+  li.appendChild(label);
+
+  if (row.count != null) {
+    const badge = document.createElement("span");
+    badge.className = "row-badge";
+    badge.textContent = row.badge;              // "×N"
+    badge.title = `${row.kind} pattern · ${row.count} members`;
+    li.appendChild(badge);
+  }
+  if (row.kind === "assembly") {
+    const badge = document.createElement("span");
+    badge.className = "row-badge";
+    badge.textContent = "sub";
+    badge.title = row.source
+      ? `sub-assembly · source ${row.source} (read-only)`
+      : "sub-assembly (read-only)";
+    li.appendChild(badge);
+    if (row.source) {
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "row-open-src";
+      open.textContent = "open";
+      open.title = `Open source project ${row.source}`;
+      open.setAttribute("aria-label", `Open source project ${row.source}`);
+      open.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (actions.loadProject) actions.loadProject(row.source);
+      });
+      li.appendChild(open);
+    }
+  }
+
+  // Selecting the group highlights its first member (a group is not itself a
+  // pickable body).
+  const members = memberIdsOf(row.id, flattened);
+  li.addEventListener("click", () => {
+    if (members.length) actions.selectAssembly(members[0]);
+  });
+  li.addEventListener("keydown", (e) => {
+    if (e.target !== li) return;
+    if (e.key === "Enter" && members.length) actions.selectAssembly(members[0]);
+  });
+  instancesList.appendChild(li);
+
+  if (isOpen) {
+    const byId = new Map(flattened.map((m) => [m.id, m]));
+    members.forEach((mid, k) => {
+      const member = byId.get(mid) || { id: mid };
+      // Read-only for a sub-assembly's internals; patterns select their member.
+      instancesList.appendChild(
+        instanceRow(member, colorIndex + k, { member: true }));
+    });
+  }
 }
 
 function dot(kind) {

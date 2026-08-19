@@ -25,12 +25,28 @@ def register(registry, service) -> None:
     def set_mate(project: str, instance: str, connector: str,
                  to_instance: str, to_connector: str,
                  angle_deg: float | None = None,
-                 offset_mm: float | None = None) -> dict:
+                 offset_mm: float | None = None,
+                 dof: dict | None = None) -> dict:
         params = {}
+        # Shorthand (unchanged): a single-DOF revolute/cylindrical driver.
         if angle_deg is not None:
             params["angle"] = float(angle_deg)
         if offset_mm is not None:
             params["position"] = float(offset_mm)
+        # PRD-013 `dof` object — the general driver. `offset_mm` maps to the
+        # slider/cylindrical `position`; `u_mm`/`v_mm`/`spin_deg` drive a planar
+        # DOF. The stored `mate.params` vocabulary grows; its shape is unchanged.
+        if dof is not None:
+            if not isinstance(dof, dict):
+                raise ValidationError("dof must be an object")
+            _mapping = {"angle_deg": "angle", "offset_mm": "position",
+                        "u_mm": "u", "v_mm": "v", "spin_deg": "spin"}
+            for key, value in dof.items():
+                if key not in _mapping:
+                    raise ValidationError(
+                        f"unknown dof {key!r} (expected one of "
+                        f"{sorted(_mapping)})")
+                params[_mapping[key]] = float(value)
         mate = {
             "connector": connector,
             "to_instance": to_instance,
@@ -58,7 +74,11 @@ def register(registry, service) -> None:
                 "to_instance": {"type": "string", "description": "anchor instance"},
                 "to_connector": {"type": "string", "description": "connector on the anchor"},
                 "angle_deg": {"type": "number", "description": "revolute/cylindrical angle"},
-                "offset_mm": {"type": "number", "description": "cylindrical slide"},
+                "offset_mm": {"type": "number", "description": "cylindrical/slider slide"},
+                "dof": {"type": "object",
+                        "description": "general DOF driver: {offset_mm} (slider), "
+                                       "{u_mm, v_mm, spin_deg} (planar), {angle_deg}. "
+                                       "Out-of-range values are clamped with a warning."},
             },
             ["project", "instance", "connector", "to_instance", "to_connector"],
         ),
