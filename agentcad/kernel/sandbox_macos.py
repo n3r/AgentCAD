@@ -13,7 +13,9 @@ The backend half of :mod:`agentcad.kernel.sandbox` for ``sys.platform ==
   spike), so the memory cap is the supervisor's and the only rlimit worth
   emitting is ``RLIMIT_NPROC``. It is per-*uid*, not per-process: a fixed 32
   killed the worker during ``import build123d``, so the payload is the live
-  uid process count measured at spawn plus the configured headroom.
+  uid process count — measured afresh at **every** spawn (``MacBackend.
+  refresh``) — plus the configured headroom **times the pool size**, which is
+  what stops one pool slot spending the budget the next one needs.
 
 The rlimits travel to the child as ``AGENTCAD_CONFINE`` (JSON) and are applied
 by the worker's own preamble — no ``preexec_fn`` anywhere, because CPython
@@ -123,7 +125,8 @@ def _escape(path: str) -> str:
 # ----------------------------------------------------------------- the build
 
 def build(argv: list[str], write_roots: list[str], quotas: Quotas,
-          posture: str, server_pid: int | None, *, confine: bool = True):
+          posture: str, server_pid: int | None, *, confine: bool = True,
+          pool_size: int = 1):
     """Plan a macOS worker: ``(argv, env, confinement, quotas, backend)``.
 
     *confine* is ``False`` when the operator opted out (``AGENTCAD_NO_SANDBOX``
@@ -131,8 +134,13 @@ def build(argv: list[str], write_roots: list[str], quotas: Quotas,
     reported ``off``, but the **quotas are still applied** — opting out of the
     sandbox is not opting out of the caps, and the rlimit payload is emitted
     either way.
+
+    *pool_size* scales the ``RLIMIT_NPROC`` headroom, for the same reason as on
+    Linux: the limit is per-uid, so one number shared by every pool slot
+    starves the later ones (review C2). ``live_uid_process_count`` counts
+    *processes* here rather than tasks, which is the right measure on Darwin.
     """
-    backend = MacBackend()
+    backend = MacBackend(quotas, pool_size)
     if posture != "local":
         # macOS has one posture. Saying so out loud beats reporting `hosted`
         # over a profile that grants global read (design spec, Decision 8).
@@ -141,14 +149,11 @@ def build(argv: list[str], write_roots: list[str], quotas: Quotas,
             f"seatbelt profile grants global read, and the hosted allow-list "
             f"is Linux-only")
 
-    env: dict[str, str] = {}
     tiers: list[str] = []
-    rlimits: dict[str, list[int]] = {}
-    if quotas.pids_headroom > 0:
-        nproc = live_uid_process_count() + quotas.pids_headroom
-        rlimits["RLIMIT_NPROC"] = [nproc, nproc]  # hard == soft: no raising it back
+    payload: dict = {}
+    rlimits = _rlimits(quotas, pool_size)
     if rlimits:
-        env["AGENTCAD_CONFINE"] = json.dumps({"rlimits": rlimits}, sort_keys=True)
+        payload["rlimits"] = rlimits
         tiers.append("rlimit")
     if quotas.memory_mb > 0:
         tiers.append("supervisor")
@@ -162,7 +167,36 @@ def build(argv: list[str], write_roots: list[str], quotas: Quotas,
         argv = [SANDBOX_EXEC, "-p", build_profile(write_roots), *argv]
         confinement = {"status": "active", "mechanism": "seatbelt",
                        "detail": {"posture": "local"}}
+        # The seatbelt is applied to THIS argv, by THIS process, before the
+        # worker ever runs — so the worker's own preamble report has no
+        # `landlock_abi`/`seccomp` to point at, and a seatbelt EACCES/EPERM
+        # used to lose `details.denied` entirely. Declare the two facets the
+        # profile genuinely enforces (writes outside the granted roots, all
+        # network) so `denials.active_facets` has a parent-declared claim to
+        # read, the same way `sandbox_linux` lets the worker self-report.
+        payload["confinement"] = ["filesystem", "network"]
+        backend.remember(payload["confinement"])
+
+    env: dict[str, str] = {}
+    if payload:
+        env["AGENTCAD_CONFINE"] = json.dumps(payload, sort_keys=True)
     return list(argv), env, confinement, enforcement(quotas, tiers), backend
+
+
+def _rlimits(quotas: Quotas, pool_size: int = 1) -> dict[str, list[int]]:
+    """The one cap Darwin can express: the fork budget.
+
+    ``RLIMIT_AS``/``DATA``/``RSS`` are ``EINVAL`` here and ``RLIMIT_CPU`` is
+    lifetime-cumulative, so ``RLIMIT_NPROC`` is the whole rlimit tier. It is
+    per-*uid* and measured against everything the user is already running, so
+    it is re-measured at every spawn and scaled by the pool size — one number
+    shared by three slots starves the later ones (review C2).
+    """
+    if quotas.pids_headroom <= 0:
+        return {}
+    nproc = (live_uid_process_count()
+             + quotas.pids_headroom * max(1, int(pool_size)))
+    return {"RLIMIT_NPROC": [nproc, nproc]}  # hard == soft: no raising it back
 
 
 def has_seatbelt() -> bool:
@@ -174,8 +208,41 @@ def has_seatbelt() -> bool:
 class MacBackend:
     """The live half: what the client asks after the worker is running."""
 
-    def __init__(self) -> None:
+    def __init__(self, quotas: Quotas | None = None,
+                 pool_size: int = 1) -> None:
         self.warnings: list[str] = []
+        self._quotas = quotas
+        self._pool_size = max(1, int(pool_size))
+        #: Facets the seatbelt enforces, set by :func:`build` via
+        #: :meth:`remember` when the seatbelt is genuinely wrapped around the
+        #: argv. Carried across every respawn (:meth:`refresh`): the wrap does
+        #: not change on a respawn (only the measured rlimits do), so dropping
+        #: the declaration here would silently un-attest a confinement that is
+        #: still literally in force around the new process.
+        self._confinement: list[str] = []
+
+    def remember(self, confinement: list[str]) -> None:
+        """Keep the facets :func:`build` declared, for every :meth:`refresh`
+        after the first spawn."""
+        self._confinement = list(confinement)
+
+    def refresh(self) -> dict:
+        """The payload with a freshly re-measured fork budget.
+
+        ``{}`` only when there is truly nothing to say — no fork budget and no
+        confinement declared — and then ``SandboxPlan.spawn_env()`` leaves the
+        construction-time environment exactly as it was.
+        """
+        rlimits = (_rlimits(self._quotas, self._pool_size)
+                  if self._quotas is not None else {})
+        if not rlimits and not self._confinement:
+            return {}
+        payload: dict = {}
+        if rlimits:
+            payload["rlimits"] = rlimits
+        if self._confinement:
+            payload["confinement"] = list(self._confinement)
+        return {"AGENTCAD_CONFINE": json.dumps(payload, sort_keys=True)}
 
     def attach(self, proc) -> None:
         """Nothing to place: macOS has no cgroup, and the rlimits are applied

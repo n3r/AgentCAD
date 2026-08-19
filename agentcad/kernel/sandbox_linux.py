@@ -104,7 +104,8 @@ _OFF = {"off", "0", "false", "no", "none"}
 
 
 def build(argv: list[str], write_roots: list[str], quotas: Quotas,
-          posture: str, server_pid: int | None, *, confine: bool = True):
+          posture: str, server_pid: int | None, *, confine: bool = True,
+          pool_size: int = 1):
     """Plan a Linux worker: ``(argv, env, confinement, quotas, backend)``.
 
     The argv is returned **unchanged**: there is no wrapper binary. Everything
@@ -116,9 +117,12 @@ def build(argv: list[str], write_roots: list[str], quotas: Quotas,
     ``seccomp`` keys are omitted and confinement reports ``off``, but the
     **rlimits are still emitted** — opting out of the sandbox is not opting
     out of the caps.
+
+    *pool_size* scales the ``RLIMIT_NPROC`` headroom; see :func:`_rlimits`.
     """
     backend = LinuxBackend()
-    payload: dict = {"posture": posture, "rlimits": _rlimits(quotas)}
+    payload: dict = {"posture": posture,
+                     "rlimits": _rlimits(quotas, pool_size)}
 
     # Tier order, and every entry is something this client actually installed:
     # a cgroup directory that exists and carries the limits, an rlimit payload
@@ -156,6 +160,12 @@ def build(argv: list[str], write_roots: list[str], quotas: Quotas,
         if reason is None:
             confinement = {"status": "active", "mechanism": "landlock+seccomp",
                            "detail": detail}
+            # Declared here only when Landlock+seccomp are genuinely emitted
+            # below, for symmetry with `sandbox_macos` (whose worker cannot
+            # self-report the seatbelt at all). Harmless on Linux, since the
+            # worker's own preamble also fills `landlock_abi`/`seccomp` from
+            # this same payload — this is belt and braces, not load-bearing.
+            payload["confinement"] = ["filesystem", "network"]
         else:
             # The payload still goes: `landlock_apply` refuses below the ABI
             # floor by itself, and seccomp is worth having even where Landlock
@@ -165,6 +175,11 @@ def build(argv: list[str], write_roots: list[str], quotas: Quotas,
                            "detail": {**detail, "reason": reason}}
             backend.warnings.append(f"Linux confinement is unsupported: {reason}")
 
+    # The backend keeps the payload so it can re-measure the fork budget at
+    # every spawn (`refresh`): everything else in it is fixed, which is what
+    # makes a respawn identical, but `RLIMIT_NPROC` is per-uid and stale the
+    # moment a sibling worker starts its threads.
+    backend.remember(payload, quotas, pool_size)
     env = {"AGENTCAD_CONFINE": json.dumps(payload, sort_keys=True)}
     return list(argv), env, confinement, enforcement(quotas, tiers), backend
 
@@ -183,9 +198,20 @@ def _unsupported_reason(abi: int, machine: str) -> str | None:
     return None
 
 
-def _rlimits(quotas: Quotas) -> dict[str, list[int]]:
+def _rlimits(quotas: Quotas, pool_size: int = 1) -> dict[str, list[int]]:
     """The caps the worker applies to itself. Hard equals soft, so a script
-    cannot raise one back after the preamble lowered it."""
+    cannot raise one back after the preamble lowered it.
+
+    ``RLIMIT_NPROC`` is the one that has to be **re-measured at every spawn**
+    (`LinuxBackend.refresh`) and **scaled by the pool size**. It is a per-uid
+    ceiling that the kernel checks against the *calling* process's own limit,
+    and a warm worker runs 15-22 threads: computed once per client and applied
+    identically to three slots, worker 3 forked into a budget worker 2 had
+    already spent and died inside ``import build123d`` (measured, review C2).
+    ``live task count + headroom x pool_size`` gives every sibling its own
+    headroom and still bounds a fork bomb at ``headroom x pool_size`` extra
+    tasks.
+    """
     rlimits: dict[str, list[int]] = {}
     if quotas.address_space_mb > 0:
         # Deliberately loose (3x the memory cap by default): RLIMIT_AS exists
@@ -196,7 +222,8 @@ def _rlimits(quotas: Quotas) -> dict[str, list[int]]:
     if quotas.pids_headroom > 0:
         # Per-uid, and it counts threads on Linux: a fixed 32 killed the
         # worker during `import build123d` in the spike.
-        nproc = live_uid_process_count() + quotas.pids_headroom
+        nproc = (live_uid_process_count()
+                 + quotas.pids_headroom * max(1, int(pool_size)))
         rlimits["RLIMIT_NPROC"] = [nproc, nproc]
     return rlimits
 
@@ -626,6 +653,33 @@ class LinuxBackend:
         self.cgroup: CgroupTier | None = None
         self.cg_dir: str | None = None
         self._oom0 = 0
+        #: What `refresh` needs to rebuild the payload; set by `build`.
+        self._payload: dict | None = None
+        self._quotas: Quotas | None = None
+        self._pool_size = 1
+
+    def remember(self, payload: dict, quotas: Quotas, pool_size: int) -> None:
+        """Keep what `refresh` needs. Called once, by :func:`build`."""
+        self._payload = payload
+        self._quotas = quotas
+        self._pool_size = max(1, int(pool_size))
+
+    def refresh(self) -> dict:
+        """The payload with a **freshly measured** fork budget.
+
+        Called by ``SandboxPlan.spawn_env()`` before every spawn and every
+        respawn. Only ``rlimits`` moves: the roots, the posture and the seccomp
+        target are fixed at plan time, because a respawned worker must come
+        back under identical terms. ``RLIMIT_NPROC`` cannot be — it is measured
+        against everything the uid is running *right now*, and by the time the
+        third pool worker forks, the first two have started their own threads
+        (review C2).
+        """
+        if self._payload is None or self._quotas is None:
+            return {}
+        payload = {**self._payload,
+                   "rlimits": _rlimits(self._quotas, self._pool_size)}
+        return {"AGENTCAD_CONFINE": json.dumps(payload, sort_keys=True)}
 
     def place_in(self, cgroup: CgroupTier, quotas: Quotas) -> bool:
         """Create this worker's cgroup under *cgroup*. ``False`` (with a

@@ -62,10 +62,11 @@ class _Backend:
         self.released = 0
 
     def build(self, argv, write_roots, quotas, posture, server_pid, *,
-              confine=True):
+              confine=True, pool_size=1):
         self.calls.append(SimpleNamespace(
             argv=list(argv), write_roots=list(write_roots), quotas=quotas,
-            posture=posture, server_pid=server_pid, confine=confine))
+            posture=posture, server_pid=server_pid, confine=confine,
+            pool_size=pool_size))
         wrapped = ["/fake/confine", *argv] if confine else list(argv)
         confinement = (
             {"status": "active", "mechanism": "fake",
@@ -145,13 +146,20 @@ def test_plan_never_creates_a_writable_root_it_was_handed(isolated, backend):
         plan.release()
 
 
-def test_the_cli_creates_the_two_writable_roots_the_server_owns(monkeypatch,
-                                                                tmp_path):
-    """The other half: on a fresh install neither the projects dir (the service
-    creates it AFTER `kernel.start()`) nor `~/.agentcad` need exist, and a
-    Landlock rule on a missing path is ENOENT — the grant is lost, every write
-    into it fails once it appears, and the failure downgrades a genuinely
-    confined worker to `off`. `cli._writable_roots` owns both, so it makes both.
+def test_the_cli_creates_the_projects_root_it_owns_and_grants_no_home(
+        monkeypatch, tmp_path):
+    """The other half: on a fresh install the projects dir need not exist (the
+    service creates it AFTER `kernel.start()`), and a Landlock rule on a
+    missing path is ENOENT — the grant is lost and every write into it fails
+    once it appears. `cli._writable_roots` owns that directory, so it makes it.
+
+    `~/.agentcad` is **not** a write root (review I5). Nothing in
+    `agentcad/kernel/` or `agentcad/toolkit/` reads or writes the config dir,
+    every `load_config()` caller is server-side, and the worker's HOME is its
+    private temp dir — so the grant bought nothing and cost the sentence the
+    docs want to be able to say: a part script can write nothing under the
+    server user's home. The config file carries index definitions and the
+    quota knobs; a script that could rewrite it could raise its own caps.
     """
     from agentcad import cli
 
@@ -159,12 +167,17 @@ def test_the_cli_creates_the_two_writable_roots_the_server_owns(monkeypatch,
     home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     projects = tmp_path / "projects-not-yet" / "nested"
-    assert not projects.exists() and not (home / ".agentcad").exists()
+    assert not projects.exists()
 
     roots = cli._writable_roots(projects)
 
-    assert projects.is_dir() and (home / ".agentcad").is_dir()
-    assert str(projects) in roots and str(home / ".agentcad") in roots
+    assert projects.is_dir()
+    assert str(projects) in roots
+    assert str(home / ".agentcad") not in roots
+    assert not any(str(home) == root or root.startswith(f"{home}{os.sep}")
+                   for root in roots), roots
+    # ...and it is not created behind the operator's back either.
+    assert not (home / ".agentcad").exists()
 
 
 def test_a_root_the_cli_cannot_create_warns_instead_of_crashing(monkeypatch,
@@ -478,7 +491,12 @@ def test_the_linux_plan_confines_in_process_and_leaves_the_argv_alone(isolated,
             "status": "active", "mechanism": "landlock+seccomp",
             "detail": {"landlock_abi": 6, "posture": "local"}}
         payload = json.loads(plan.env["AGENTCAD_CONFINE"])
-        assert set(payload) == {"posture", "rlimits", "landlock", "seccomp"}
+        assert set(payload) == {"posture", "rlimits", "landlock", "seccomp",
+                                "confinement"}
+        # Belt and braces alongside the worker's own self-report (Linux
+        # applies landlock+seccomp to itself, unlike macOS's parent-applied
+        # seatbelt) — declared only when confinement is genuinely active.
+        assert payload["confinement"] == ["filesystem", "network"]
         assert payload["posture"] == "local"
         assert payload["landlock"]["read_roots"] == ["/"]   # the local posture
         assert payload["landlock"]["write_roots"] == [
@@ -507,6 +525,63 @@ def test_the_linux_rlimits_are_the_address_space_and_the_fork_budget(isolated,
     try:
         assert json.loads(plan.env["AGENTCAD_CONFINE"])["rlimits"] == {}
         assert plan.quotas["mechanism"] == "supervisor"  # no rlimit tier left
+    finally:
+        plan.release()
+
+
+def test_the_fork_budget_scales_with_the_pool_and_is_remeasured_each_spawn(
+        isolated, linux, monkeypatch):
+    """Review C2. ``RLIMIT_NPROC`` is a **per-uid** ceiling that the kernel
+    checks against the *calling* process's own limit, so one number computed
+    once in ``KernelClient.__init__`` and handed to every pool slot is wrong
+    for all but the first: a warm worker runs 15-22 threads, and the third
+    worker of a three-worker pool died inside ``import build123d``.
+
+    The cap is therefore the live task count **measured at each spawn** plus
+    ``pids_headroom x pool_size`` — which still bounds a fork bomb, at
+    ``headroom x pool_size`` extra tasks across the pool.
+    """
+    live = [40]
+    monkeypatch.setattr(linux, "live_uid_process_count", lambda: live[0])
+
+    plan = _plan([isolated], quotas={"pids_headroom": 7}, pool_size=3)
+    try:
+        assert plan.pool_size == 3
+        snapshot = json.loads(plan.env["AGENTCAD_CONFINE"])
+        assert snapshot["rlimits"]["RLIMIT_NPROC"] == [61, 61]   # 40 + 7 x 3
+
+        # Two consecutive spawns with the uid busier in between: the second
+        # measures the machine as it is, not as it was at construction.
+        first = json.loads(plan.spawn_env()["AGENTCAD_CONFINE"])
+        live[0] = 95
+        second = json.loads(plan.spawn_env()["AGENTCAD_CONFINE"])
+        assert first["rlimits"]["RLIMIT_NPROC"] == [61, 61]
+        assert second["rlimits"]["RLIMIT_NPROC"] == [116, 116]   # 95 + 7 x 3
+
+        # `plan.env` is the construction-time snapshot and stays one — health
+        # and every other test read it as such.
+        assert json.loads(plan.env["AGENTCAD_CONFINE"]) == snapshot
+        # ...and nothing ELSE in the payload moves: a respawn has to come back
+        # under identical roots, posture and seccomp target.
+        assert ({k: v for k, v in second.items() if k != "rlimits"}
+                == {k: v for k, v in snapshot.items() if k != "rlimits"})
+        # The address-space cap is not a live measurement, so it does not drift.
+        assert second["rlimits"]["RLIMIT_AS"] == snapshot["rlimits"]["RLIMIT_AS"]
+    finally:
+        plan.release()
+
+
+def test_a_lone_client_is_one_pool_slot_and_a_backend_may_refresh_nothing(
+        isolated, backend):
+    """The default is `pool_size=1` — a lone `KernelClient` is unchanged — and
+    a backend with nothing to re-measure (the Windows one, a test double) makes
+    `spawn_env()` exactly the construction-time environment."""
+    plan = _plan([isolated])
+    try:
+        assert plan.pool_size == 1
+        assert backend.calls[0].pool_size == 1
+        assert plan.spawn_env() == plan.env
+        assert plan.spawn_env() is not plan.env      # a copy, never the object
     finally:
         plan.release()
 
@@ -915,6 +990,102 @@ def test_report_keeps_active_when_only_a_quota_stage_failed(isolated, backend):
         plan.release()
 
 
+def test_a_lost_root_grant_does_not_clear_the_confinement_claim(isolated,
+                                                                 backend):
+    """Review I2. A Landlock rule on a path that does not exist is ENOENT: the
+    grant is lost, but the **ruleset landed** and the process is confined —
+    more narrowly than intended, not less. Filing that under `landlock` told
+    health the worker was unconfined, and under `AGENTCAD_EXPECT_SANDBOX=active`
+    it turned one missing directory into a red CI job.
+
+    It is still a failure: it stays in `failures` and it reaches `warnings`,
+    because the write it was meant to permit really will be denied.
+    """
+    from agentcad.kernel.client import confinement_holds
+
+    live = {"landlock_abi": 6, "seccomp": "seccomp(2)",
+            "rlimits": ["RLIMIT_AS"],
+            "failures": [{"stage": "landlock_root",
+                          "error": "/srv/absent: ENOENT"}]}
+    assert confinement_holds(live) is True
+    # ...while a ruleset-level failure still clears it, on every platform.
+    assert confinement_holds(
+        {**live, "failures": [{"stage": "landlock", "error": "EOPNOTSUPP"}]}
+    ) is False
+
+    plan = _plan([isolated])
+    try:
+        body = sandbox.report(SimpleNamespace(_plan=plan, sandbox_report=live,
+                                              sandboxed=True))
+        assert body["status"] == "active"
+        assert body["mechanism"] == "fake"
+        warning = next(w for w in body["warnings"] if "/srv/absent" in w)
+        # Named as what it is: a lost grant, not a sandbox that failed.
+        assert "lost a Landlock grant" in warning
+        assert "could not apply" not in warning
+    finally:
+        plan.release()
+
+
+def test_report_never_disagrees_with_the_kernels_own_sandboxed_flag(isolated,
+                                                                     backend):
+    """Review M1. `client.sandboxed` is this same rule applied at ping time,
+    and it is what every other reader consults. The gap it closes: a worker
+    that answered `ping` with **no `sandbox` object at all** leaves the live
+    report empty, so the plan's `active` stood here while `client.sandboxed`
+    was already False — two health facts contradicting each other.
+    """
+    plan = _plan([isolated])
+    try:
+        body = sandbox.report(SimpleNamespace(_plan=plan, sandbox_report={},
+                                              sandboxed=False))
+        assert body["status"] == "off"
+        assert body["mechanism"] is None      # never named beside `off`
+        assert any("did not report" in w for w in body["warnings"]), \
+            body["warnings"]
+        # An object with no such attribute is not a denial: the intent stands.
+        assert sandbox.report(
+            SimpleNamespace(_plan=plan, sandbox_report={}))["status"] == "active"
+    finally:
+        plan.release()
+
+
+def test_report_drops_the_rlimit_tier_when_the_worker_applied_none(isolated,
+                                                                    backend):
+    """Review M2. `mechanism` is read as a promise, so a tier is dropped the
+    moment the worker says it did not apply it — `setrlimit` can be refused (a
+    lower hard limit already in force, Darwin's EINVAL) and naming `rlimit`
+    over an empty `rlimits` list claims a cap nothing is enforcing."""
+    plan = _plan([isolated])
+    try:
+        plan.quotas["mechanism"] = "cgroup+rlimit+supervisor"
+        live = {"landlock_abi": 6, "seccomp": "seccomp(2)", "rlimits": [],
+                "failures": []}
+        body = sandbox.report(SimpleNamespace(_plan=plan, sandbox_report=live,
+                                              sandboxed=True))
+        assert body["quotas"]["mechanism"] == "cgroup+supervisor"
+        assert body["quotas"]["status"] == "active"
+        assert any("no rlimits" in w for w in body["warnings"])
+        # The plan itself is not rewritten — this is a *report*.
+        assert plan.quotas["mechanism"] == "cgroup+rlimit+supervisor"
+
+        # The last tier going leaves the quotas honestly off.
+        plan.quotas["mechanism"] = "rlimit"
+        body = sandbox.report(SimpleNamespace(_plan=plan, sandbox_report=live,
+                                              sandboxed=True))
+        assert body["quotas"] == {**plan.quotas, "mechanism": None,
+                                  "status": "off"}
+
+        # A worker that DID apply them keeps the tier.
+        plan.quotas["mechanism"] = "rlimit+supervisor"
+        body = sandbox.report(SimpleNamespace(
+            _plan=plan, sandboxed=True,
+            sandbox_report={**live, "rlimits": ["RLIMIT_AS"]}))
+        assert body["quotas"]["mechanism"] == "rlimit+supervisor"
+    finally:
+        plan.release()
+
+
 def test_report_reads_a_pool_through_its_plan_property(isolated, backend):
     """A pool has no `_plan` of its own; worker 0 speaks for all of them,
     because they are constructed identically."""
@@ -1310,9 +1481,45 @@ def test_the_macos_plan_emits_the_rlimit_payload_for_the_preamble(isolated):
         payload = json.loads(plan.env["AGENTCAD_CONFINE"])
         soft, hard = payload["rlimits"]["RLIMIT_NPROC"]
         assert soft == hard and soft >= live  # live count + 7, live may drift
-        assert set(payload) == {"rlimits"}    # no confinement keys on macOS
+        # macOS has no landlock/seccomp keys (the worker applies neither
+        # itself), but it DOES declare the facets the seatbelt — wrapped
+        # around the argv by the parent — genuinely enforces, so a seatbelt
+        # denial can still answer `details.denied`.
+        assert set(payload) == {"rlimits", "confinement"}
+        assert payload["confinement"] == ["filesystem", "network"]
     finally:
         plan.release()
+
+
+def test_the_macos_fork_budget_scales_with_the_pool_and_is_remeasured(
+        isolated, monkeypatch):
+    """macOS runs review C2's formula too: the live uid count, measured at
+    every spawn, plus ``pids_headroom x pool_size``. It counts *processes*
+    rather than tasks here — the right measure on Darwin — and the scaling is
+    what stops one pool slot spending the budget the next one needs.
+
+    Pure, and so all-OS: the libproc walk is stubbed out.
+    """
+    live = [200]
+    monkeypatch.setattr(sandbox_macos, "live_uid_process_count",
+                        lambda: live[0])
+    quotas = resolve({"pids_headroom": 9})
+    assert sandbox_macos._rlimits(quotas, 1) == {"RLIMIT_NPROC": [209, 209]}
+    assert sandbox_macos._rlimits(quotas, 3) == {"RLIMIT_NPROC": [227, 227]}
+
+    mac = sandbox_macos.MacBackend(quotas, 3)
+    assert json.loads(mac.refresh()["AGENTCAD_CONFINE"]) == {
+        "rlimits": {"RLIMIT_NPROC": [227, 227]}}
+    live[0] = 260
+    assert json.loads(mac.refresh()["AGENTCAD_CONFINE"]) == {
+        "rlimits": {"RLIMIT_NPROC": [287, 287]}}
+
+    # No fork budget at all: nothing to re-measure, so `spawn_env()` leaves the
+    # construction-time environment exactly as it was.
+    off = resolve({"pids_headroom": 0})
+    assert sandbox_macos._rlimits(off, 3) == {}
+    assert sandbox_macos.MacBackend(off, 3).refresh() == {}
+    assert sandbox_macos.MacBackend().refresh() == {}
 
 
 @darwin_only

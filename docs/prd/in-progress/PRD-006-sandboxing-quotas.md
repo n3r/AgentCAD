@@ -24,9 +24,9 @@
 > and no `--privileged` (bubblewrap was ruled out with evidence: it is absent
 > from the image and `unshare -Ur` is denied under Docker's default seccomp
 > profile). Two named read postures ship: `local` (global read, the v1 stance)
-> and `hosted` (an allow-list excluding the state dir and leaving nothing
-> under the server user's home reachable but the config dir `~/.agentcad`,
-> which is a write root), so a
+> and `hosted` (an allow-list excluding the state dir and leaving **nothing**
+> under the server user's home reachable — the config dir was dropped from the
+> write roots, and a write root is readable by construction), so a
 > hosted member's script can no longer read the session signing key. Quotas
 > ship as honest **tiers** — a delegated cgroup v2 subtree, POSIX rlimits
 > where they are real, Windows job objects, and a parent-side RSS supervisor
@@ -54,7 +54,7 @@
 > to it, across every project on the instance. Per-project isolation is
 > PRD-005. So "an account is a shell" is no longer literally true on Linux —
 > no network, no writes outside the granted roots, no reads of the state dir
-> and nothing under the server user's home but the config dir, capped
+> and nothing under the server user's home at all, capped
 > memory/pids/CPU — but accounts
 > remain for people you trust and registration stays closed.
 >

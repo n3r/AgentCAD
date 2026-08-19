@@ -167,6 +167,41 @@ def _within(inner: Path, outer: Path) -> bool:
         return False
 
 
+def refuse_work_dir_overlap(root, canonical, projects_root) -> None:
+    """Refuse a work dir that is, holds, or lives inside the project — or the
+    projects root.
+
+    This is the guard behind the one catastrophic bug this feature could have:
+    the throwaway tree is named after the project, so from the projects root
+    ``<work-dir>/<project>`` **is** the live project directory. A check that
+    materializes there is a check that deletes the user's work. Refusing beats
+    every cleverer answer, and the message names both paths because a refusal a
+    user cannot act on is not one.
+
+    Module-level, taking its three paths explicitly, because the CLI has to ask
+    the same question **before** it builds a service (review I1): a
+    ``--work-dir`` is added to the sandbox's writable roots, and a Landlock
+    grant on a path that does not exist is ENOENT — so the CLI has to *create*
+    an accepted one before the workers spawn, and it may only create one it has
+    already accepted. :meth:`CheckRunner._refuse_overlap` asks it again inside
+    the run, which is where the authoritative canonical path is known.
+    """
+    root = Path(root).resolve()
+    canonical = Path(canonical).resolve()
+    projects = Path(projects_root).resolve()
+    for label, path in (("the project directory", canonical),
+                        ("the projects root", projects)):
+        if root == path or _within(path, root) or _within(root, path):
+            raise ValidationError(
+                f"--work-dir {root} overlaps {label} {path}: a check "
+                f"materializes a throwaway worktree under the work dir and "
+                f"deletes it afterwards, so it must not be, contain or sit "
+                f"inside the project it is measuring — pass a directory "
+                f"elsewhere, or omit --work-dir for a temp dir",
+                {"work_dir": str(root), "project_dir": str(canonical),
+                 "projects_root": str(projects)})
+
+
 def _finite(value, label: str, flag: str) -> float:
     """*value* as a float that a comparison can actually be made against.
 
@@ -1992,30 +2027,8 @@ class CheckRunner:
         return root
 
     def _refuse_overlap(self, root: Path, canonical: Path) -> None:
-        """Refuse a work dir that is, holds, or lives inside the project — or
-        the projects root.
-
-        This is the guard behind the one catastrophic bug this feature could
-        have: the throwaway tree is named after the project, so from the
-        projects root ``<work-dir>/<project>`` **is** the live project
-        directory. A check that materializes there is a check that deletes the
-        user's work. Refusing beats every cleverer answer, and the message
-        names both paths because a refusal a user cannot act on is not one.
-        """
-        root = Path(root).resolve()
-        canonical = Path(canonical).resolve()
-        projects = Path(self.service.store.root).resolve()
-        for label, path in (("the project directory", canonical),
-                            ("the projects root", projects)):
-            if root == path or _within(path, root) or _within(root, path):
-                raise ValidationError(
-                    f"--work-dir {root} overlaps {label} {path}: a check "
-                    f"materializes a throwaway worktree under the work dir and "
-                    f"deletes it afterwards, so it must not be, contain or sit "
-                    f"inside the project it is measuring — pass a directory "
-                    f"elsewhere, or omit --work-dir for a temp dir",
-                    {"work_dir": str(root), "project_dir": str(canonical),
-                     "projects_root": str(projects)})
+        """:func:`refuse_work_dir_overlap` against this runner's projects root."""
+        refuse_work_dir_overlap(root, canonical, self.service.store.root)
 
     def _run_ref(self, proj: str, ref: str, selected: set[str], seen: set,
                  warnings: list[str], errors: list[dict], *, sha: str | None,

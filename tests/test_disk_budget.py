@@ -235,6 +235,41 @@ def test_trim_cache_removes_the_oldest_unreferenced_mesh_first(store):
     assert newest.exists(), "a referenced key is never deleted"
 
 
+def test_a_freshly_written_mesh_is_never_trimmed_even_when_unreferenced(store):
+    """Review M4. The keep-set is the **service's** memory
+    (`_status`/`_config_status`), and that is empty after a restart — so a cold
+    assembly read that goes over the watermark could delete a sibling part's
+    mesh that another request built seconds ago and whose browser fetch had not
+    arrived. Nothing is lost for good (the next read rebuilds it), but the user
+    pays a rebuild for a file that was sitting on disk.
+
+    A file younger than the floor is somebody's, whether or not this process
+    remembers whose. It is a *second* protection, not a replacement: an old
+    unreferenced mesh is still swept in the same pass.
+    """
+    store.disk_budget_mb = 4      # watermark: 3 MB
+    now = time.time()
+    old = _cache_file(store, "aaa", ".acm", 1.5, now - 3000)
+    just_built = _cache_file(store, "bbb", ".acm", 1.5, now - 5)
+    also_recent = _cache_file(store, "ccc", ".acm", 1.5, now - 599)
+
+    # Nothing is referenced at all — the restart case, exactly.
+    freed = store.trim_cache("demo", set())
+
+    assert freed == int(1.5 * MB)
+    assert not old.exists(), "an old unreferenced mesh is still swept"
+    assert just_built.exists(), "the janitor deleted a mesh built seconds ago"
+    assert also_recent.exists()
+
+    # The floor is a parameter, so a caller that genuinely wants everything
+    # swept (a test, a maintenance path) can still say so.
+    store.disk_budget_mb = 2      # watermark: 1.5 MB, against 3 MB on disk
+    store.invalidate_disk_usage("demo")
+    assert store.trim_cache("demo", set(), min_age_s=0) == int(1.5 * MB)
+    assert not also_recent.exists(), "the older of the two young files goes"
+    assert just_built.exists(), "trimming still stops at the watermark"
+
+
 def test_trim_cache_keeps_referenced_keys_even_when_it_cannot_get_under(store):
     store.disk_budget_mb = 1      # watermark: 0.75 MB, and everything is live
     live = _cache_file(store, "aaa", ".acm", 1.0, time.time() - 3000)

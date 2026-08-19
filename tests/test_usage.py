@@ -113,6 +113,37 @@ def test_an_unmeasurable_cpu_is_skipped_not_counted_as_zero():
     assert row["peak_rss_mb"] == 100.0  # the one sample that existed
 
 
+def test_a_killed_request_counts_as_an_error_and_bills_its_wall_clock():
+    """Review I3. The paths that never answer — a kill, a timeout, a crash —
+    now reach the hook, and this is what they look like when they land: one
+    more request, one more error, no CPU, and the wall clock they really
+    burned.
+
+    The stub is built by the client itself rather than written out here, so
+    this also pins the two shapes together: a field renamed there fails here.
+    """
+    from agentcad.kernel.client import KernelClient
+
+    stub = KernelClient()._usage_stub(time.monotonic() - 1.5, 512 * 1024 * 1024)
+    assert stub["cpu_ms"] is None          # the worker's own meter died with it
+
+    meter = usage.UsageMeter()
+    with usage.scoped("p1"):
+        meter.record({"method": "build", "ok": False, "worker": "worker-0",
+                      "usage": stub})
+        meter.record(_event(cpu_ms=4.0, wall_ms=1.0))
+
+    row = _row(meter.by_project(), "project", "p1")
+    assert row["requests"] == 2 and row["errors"] == 1
+    assert row["cpu_ms"] == pytest.approx(4.0)   # None is skipped, never zero
+    # The meter's published view rounds to one decimal place (`_rounded`),
+    # while `stub["wall_ms"]` carries three (`_usage_stub`'s own rounding) —
+    # compare against the meter's actual rounding rule, not raw equality.
+    assert row["wall_ms"] == pytest.approx(stub["wall_ms"] + 1.0, abs=0.1)
+    assert row["peak_rss_mb"] == 512.0
+    assert meter.totals()["errors"] == 1
+
+
 def test_a_junk_event_is_ignored_rather_than_raised():
     """The hook runs inside the kernel client's request loop. A meter that
     raised on a shape it did not expect would turn a green build red."""

@@ -108,7 +108,8 @@ class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
 # ----------------------------------------------------------------- the build
 
 def build(argv: list[str], write_roots: list[str], quotas: Quotas,
-          posture: str, server_pid: int | None, *, confine: bool = True):
+          posture: str, server_pid: int | None, *, confine: bool = True,
+          pool_size: int = 1):
     """Plan a Windows worker: ``(argv, env, confinement, quotas, backend)``.
 
     The argv comes back unchanged: there is nothing to wrap it in. The one
@@ -120,6 +121,8 @@ def build(argv: list[str], write_roots: list[str], quotas: Quotas,
     what it is: the machine running out of memory.
 
     *confine* is ignored, honestly: there is no confinement here to opt out of.
+    *pool_size* likewise — Windows has no ``RLIMIT_NPROC`` for it to scale; the
+    process cap is the job object's, and each worker gets its own job.
     """
     backend = WindowsBackend(quotas)
     if posture != "local":

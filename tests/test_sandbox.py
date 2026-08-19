@@ -88,6 +88,13 @@ def test_the_preamble_applied_the_rlimits_inside_the_seatbelt(sboxed):
     assert report["rlimits"] == ["RLIMIT_NPROC"]
     assert report["failures"] == []
     assert report["landlock_abi"] is None and report["seccomp"] is None
+    # The seatbelt is applied by the PARENT, before this process ever runs, so
+    # it leaves nothing for the worker's own Landlock/seccomp fields to show —
+    # `confinement` is the parent's declaration of the two facets it really
+    # enforces, carried through by `_preamble.apply_from_env` (the
+    # `details.denied` regression: without it a real seatbelt denial has no
+    # evidence to point `denials.active_facets` at).
+    assert report["confinement"] == ["filesystem", "network"]
     assert sboxed.sandbox_report == report
 
 
@@ -121,6 +128,11 @@ def test_write_outside_roots_denied(sboxed, writable):
         assert "PermissionError" in err.details.get("traceback", "") or (
             "Operation not permitted" in err.message
         )
+        # The `details.denied` regression: the seatbelt's EACCES/EPERM must
+        # still be labelled `filesystem`, even though the worker's own
+        # preamble has no landlock_abi to point at (the seatbelt was applied
+        # by the parent, not by this process).
+        assert err.details.get("denied") == "filesystem"
         assert not PROBE.exists()
     finally:
         if PROBE.exists():  # belt and braces: never leave an escape artifact
@@ -144,6 +156,9 @@ def test_network_denied_worker_survives(sboxed, writable):
     # seatbelt denies with EPERM; without the sandbox this port would refuse
     # the connection (ConnectionRefusedError), so pin the PermissionError
     assert "PermissionError" in err.details.get("traceback", "")
+    # The `details.denied` regression: same parent-declared `network` facet as
+    # the write-outside-roots case above.
+    assert err.details.get("denied") == "network"
     assert sboxed.request("ping", {})["ok"] is True  # same worker, still alive
 
 

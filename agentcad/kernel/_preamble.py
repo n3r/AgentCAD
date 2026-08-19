@@ -27,9 +27,13 @@ import sys
 #: The environment variable carrying the JSON payload. Keys: ``posture``,
 #: ``rlimits`` (``{"RLIMIT_AS": [soft, hard], ...}``), ``landlock``
 #: (``{"read_roots", "write_roots", "extra_files"}``), ``seccomp``
-#: (``{"server_pid"}``) and ``quotas`` (tiers the parent installed *around*
-#: this process, e.g. ``["job_object"]``). macOS emits only ``rlimits`` — the
-#: seatbelt is already in force by the time this runs, applied to the argv.
+#: (``{"server_pid"}``), ``quotas`` (tiers the parent installed *around* this
+#: process, e.g. ``["job_object"]``) and ``confinement`` (facets the *parent*
+#: already applied before this process ran, e.g. macOS's
+#: ``["filesystem", "network"]`` for the seatbelt wrapped around the argv —
+#: this process never touches Landlock/seccomp itself, so those two keys stay
+#: unset, and without ``confinement`` a seatbelt denial would have nothing to
+#: point ``denials.active_facets`` at).
 ENV = "AGENTCAD_CONFINE"
 
 #: What was actually applied, filled in by :func:`apply_from_env`.
@@ -62,6 +66,12 @@ def apply_from_env() -> dict:
     Every stage failure lands in ``REPORT["failures"]`` as
     ``{"stage", "error"}`` and the next stage still runs: a kernel too old for
     Landlock can still have its network filtered.
+
+    The stage names are read, not decorative: ``landlock`` and ``seccomp`` are
+    the two whose failure means *this process is not confined*
+    (``client.CONFINEMENT_STAGES``). ``rlimits`` is a cap that did not apply
+    and ``landlock_root`` is one grant that was lost from a ruleset that did —
+    both belong in health's warnings, neither says anything about confinement.
     """
     global _APPLIED
 
@@ -88,8 +98,16 @@ def apply_from_env() -> dict:
     # there are no rlimits at all). The worker still has to know a cap is in
     # force, or `denials.classify` would call a job object's MemoryError an
     # ordinary out-of-memory and send the reader looking for a leak.
+    # `confinement` names facets the PARENT already applied before this
+    # process ran (macOS's seatbelt, wrapped around the argv) — copied
+    # through verbatim, never computed here, because this process has no way
+    # to verify a seatbelt it did not apply to itself. `denials.active_facets`
+    # trusts it exactly as it trusts `landlock_abi`/`seccomp`: as a claim from
+    # whichever process actually did the confining.
     report: dict = {"posture": payload.get("posture"), "rlimits": [],
                     "quotas": [str(tier) for tier in payload.get("quotas") or []],
+                    "confinement": [str(facet) for facet
+                                    in payload.get("confinement") or []],
                     "landlock_abi": None, "seccomp": None,
                     "failures": failures}
 
@@ -151,8 +169,18 @@ def _landlock(landlock: dict, failures: list[dict]) -> int | None:
         return None
     for path, reason in report.get("failed", []):
         # A root that does not exist costs a grant, not the ruleset: the rest
-        # of it is in force and must not read as absent.
-        failures.append({"stage": "landlock", "error": f"{path}: {reason}"})
+        # of it is in force and must not read as absent. Hence its OWN stage
+        # (review I2) — `client.CONFINEMENT_STAGES` is `("landlock",
+        # "seccomp")`, so a `landlock` entry clears the confinement claim and
+        # this one does not. Filing a lost grant under `landlock` said "this
+        # worker is not confined" about a worker that demonstrably was, and on
+        # a CI job running under `AGENTCAD_EXPECT_SANDBOX=active` that turned
+        # one missing directory into a red build.
+        #
+        # It is still a failure and still travels: it is in `failures`, health
+        # shows it in `warnings`, and the write it was meant to permit really
+        # will be denied.
+        failures.append({"stage": "landlock_root", "error": f"{path}: {reason}"})
     return report.get("abi")
 
 

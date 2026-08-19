@@ -24,6 +24,17 @@ call — this is a dict, a dataclass and a parser.
 4. the ``overrides`` argument — the slot PRD-005's per-tenant limits plug into
    without a signature change.
 
+**``pids_headroom`` is not a process cap** — it is the *slack* above what the
+uid is already running. ``RLIMIT_NPROC`` is a per-uid ceiling that the kernel
+checks against the calling process's own limit, so the backends compute it as
+``live uid task count, measured at each spawn + pids_headroom x pool_size``.
+What that bounds is the *extra* tasks a fork bomb can create: at most
+``pids_headroom x pool_size`` of them across the whole pool. Scaling by the
+pool size is not generosity — without it the third worker of a three-worker
+pool forks into a budget its siblings have already spent and dies inside
+``import build123d`` (measured, review C2). The hard per-worker process cap is
+``pids``, and that one is the cgroup's.
+
 **Values** are numbers, or ``"off"``/``0`` to switch a knob off (``0`` on
 ``address_space_mb`` means *auto*, not off — see :func:`resolve`). An unknown
 key is ignored at every layer; a value that is not a number is a
@@ -44,7 +55,7 @@ DEFAULTS: dict[str, Any] = {
     "memory_mb": 2048,          # cgroup memory.max / supervisor cap / job-object commit
     "address_space_mb": 0,      # 0 = auto (3 x memory_mb); Linux RLIMIT_AS only
     "pids": 128,                # cgroup pids.max / job-object active processes
-    "pids_headroom": 64,        # RLIMIT_NPROC = live uid count at spawn + headroom
+    "pids_headroom": 64,        # RLIMIT_NPROC = live uid count at spawn + headroom x pool size
     "cpu_percent": 400,         # cgroup cpu.max / job-object rate; None -> no CPU quota
     "sample_interval_s": 0.25,  # supervisor
     "disk_mb": 2048,            # per-project budget (.cache + exports + imports)

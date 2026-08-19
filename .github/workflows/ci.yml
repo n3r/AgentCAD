@@ -34,9 +34,13 @@ jobs:
         # quotas (job objects + the supervisor) are still expected on all three.
         include:
           # macOS runs every PR-required test; exhaustive examples run nightly.
+          # 30 minutes, not 20: PRD-006 put `test_supervisor.py`'s real 1.5 GB
+          # balloons, `test_sandbox_plan.py` and the acceptance battery on the
+          # PR path, and a suite that times out is indistinguishable from a
+          # suite that failed.
           - os: macos-latest
             suite: pr
-            timeout: 20
+            timeout: 30
             expect_sandbox: active
           # Other platforms exercise only boundaries whose behavior can vary by OS.
           - os: ubuntu-latest

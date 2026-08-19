@@ -1681,8 +1681,10 @@ instance is for someone you trust.** A part script is arbitrary Python
 (`kernel/worker.py`). PRD-006 changed *half* of what that used to mean — the
 Linux worker now confines itself (Landlock + seccomp, `hosted` read posture:
 no network, no writes outside the granted roots, no reads of the state dir and
-nothing under the server user's home but the config dir — a write root is
-always readable, because `_read_roots` appends the write roots), so "an account
+nothing under the server user's home at all — remember that a write root is
+always readable, because `_read_roots` appends the write roots, which is why
+the config dir stopped being one and why a hosted start refuses a state dir
+inside one), so "an account
 is a shell" is no longer literally true and the docs
 no longer say it that way. What it did **not** change: the script still runs
 as the server user and the **whole projects tree** is readable and writable to
@@ -1932,14 +1934,35 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
   which is granted by name. Two different directories; do not merge them.
 
 - **`plan()` must NOT create the roots it is handed.** It also receives
-  caller-supplied `--work-dir` paths whose acceptance is decided later by
-  `CheckRunner._work_dir`, and creating them there resurrects
-  `test_a_refused_work_dir_is_never_created` ("a refused path leaves nothing
-  behind"). The two roots the server *owns* are created in
-  `cli._writable_roots`. Both halves are pinned in `tests/test_sandbox_plan.py`.
-  Why it matters at all: on Linux a Landlock rule on a missing path is ENOENT,
-  which costs twice — the grant is lost **and** the failure downgrades a
-  genuinely confined worker to `off`.
+  caller-supplied `--work-dir` paths whose acceptance is decided elsewhere, and
+  creating them there resurrects `test_a_refused_work_dir_is_never_created`
+  ("a refused path leaves nothing behind"). Creation belongs to whoever *owns*
+  the directory: `cli._writable_roots` makes the projects dir, and
+  `cli._accept_work_dir` makes an accepted `--work-dir` — accept first
+  (`checks.refuse_work_dir_overlap` / `gate.refuse_work_dir_overlap`, hoisted
+  to module level for exactly this), create second, **both before
+  `_build_service`**. Why it matters at all: on Linux a Landlock rule on a
+  missing path is ENOENT, and the grant is lost with it, so every part then
+  fails with a `PermissionError` instead of producing a verdict. Pinned in
+  `tests/test_sandbox_plan.py` and `tests/test_checks_cli.py`.
+
+- **`~/.agentcad` is NOT a writable root.** Nothing in `agentcad/kernel/` or
+  `agentcad/toolkit/` reads or writes the config dir, every `load_config()`
+  caller is server-side, and the worker's `HOME` is its private temp dir — so
+  granting it bought nothing and cost the sentence the docs most want to be
+  able to say: a part script can write **nothing under the server user's
+  home**. It also carries the index definitions and the quota knobs, so a
+  script that could rewrite it could raise its own caps.
+
+- **A hosted `agentcad serve` refuses to start when `AGENTCAD_STATE_DIR` lies
+  inside a kernel-writable root** (`cli._refuse_state_dir_in_a_write_root`,
+  exit 2 naming both paths). The hosted read allow-list is the read roots
+  **plus the write roots**, so a state dir inside one is readable *and*
+  writable however narrow the allow-list is, and whoever reads `secret.key`
+  forges any session. Fatal rather than a warning — unlike
+  `_warn_if_unconfined`, which reports a platform that cannot confine, this is
+  one misplaced path with an exact remedy. `_build_service` records
+  `service.writable_roots` for it; nothing else reads that.
 
 - **The `seccomp(2)` operation constant is `1`** (`SECCOMP_SET_MODE_FILTER`).
   `2` is `SECCOMP_GET_ACTION_AVAIL` and answers `EOPNOTSUPP`; the spike lost
@@ -1981,9 +2004,22 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
   worker runs 15–22 threads, so `live_uid_process_count()` sums `Threads:`
   from `/proc/*/status`; a per-process count under-measured a multi-worker
   pool by ~20 tasks per live worker and killed the second module-scoped worker
-  inside `import build123d` with a `pthread_create` EAGAIN. And it is measured
-  **at spawn** plus `pids_headroom` — a fixed number kills the worker at
-  import on a busy machine.
+  inside `import build123d` with a `pthread_create` EAGAIN.
+
+- **The fork budget is `live task count (measured at EVERY spawn) +
+  pids_headroom × pool_size`.** Both halves are load-bearing, because the limit
+  is per-*uid* but the kernel checks it against the **calling** process's own
+  ceiling. Computed once in `KernelClient.__init__` and handed identically to
+  three pool slots, the third worker forked into a budget its siblings had
+  already spent and died inside `import build123d` (verified). So:
+  `sandbox.plan(..., pool_size=)` (`KernelPool` passes its `size`), and
+  `client._ensure_started` merges **`plan.spawn_env()`**, not `plan.env` —
+  `plan.env` stays the construction-time snapshot that health and the tests
+  read, while `Backend.refresh()` re-measures the rlimit payload at every spawn
+  and every respawn. What the cap bounds is at most `headroom × pool_size`
+  *extra* tasks across the pool; the hard per-worker process cap is `pids`,
+  and that one is the cgroup's. macOS runs the same formula (its count is
+  processes, which is the right measure there).
 
 - **`AGENTCAD_NO_SANDBOX=1` (and `{"sandbox": false}`) opts out of
   confinement, not of the caps.** The argv is unwrapped, the preamble applies
@@ -2023,14 +2059,43 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
   `landlock`/`seccomp` stage failure clears the claim (`client.
   confinement_holds`) — a refused *rlimit* is a quota that did not apply, and
   saying `off` for it understates the confinement as badly as claiming
-  `active` on intent overstates it.
+  `active` on intent overstates it. A **lost root grant** is the same kind of
+  thing and has its own stage, **`landlock_root`** (`_preamble._landlock`): the
+  ruleset landed and the process is confined, one path out of it was not
+  granted. Filing that under `landlock` made one missing directory a red
+  ubuntu CI job under `AGENTCAD_EXPECT_SANDBOX=active`. It is still a failure —
+  it is in `failures` and health shows it in `warnings` — and
+  `CONFINEMENT_STAGES` stays `("landlock", "seccomp")`.
+
+- **`sandbox.report()` never contradicts `client.sandboxed`,** and it drops a
+  quota tier the worker did not apply. Two corollaries of the same honesty
+  rule: the kernel's own flag wins wherever it is present (a worker that
+  answered `ping` with no `sandbox` object left `live` empty, so the plan's
+  `active` used to stand while `sandboxed` was already False), and an empty
+  `rlimits` list removes `rlimit` from `quotas.mechanism` — `mechanism` is read
+  as a promise.
 
 - **`denials.classify` needs the traceback, and an unattributed EPERM is
   `None`.** The seccomp filter answers EPERM for a refused `kill` too, and
   labelling that `network` sends an agent to fix a socket that is not in the
   script. A `network` answer requires a frame naming `socket`/`urlopen`/
-  `connect`/`getaddrinfo`. Nothing is classified at all unless the worker
-  reported a live cap or ruleset.
+  `connect`/`getaddrinfo`.
+
+- **What may be classified is per FACET, not one boolean** — `denials.
+  active_facets(_preamble.REPORT)`: `filesystem` needs `landlock_abi`,
+  `network` needs `seccomp`, `process_count`/`memory` need an applied rlimit or
+  a parent-installed `quotas` tier. "Something is in force" is not evidence for
+  all four: an `AGENTCAD_NO_SANDBOX` worker still gets its caps, and used to
+  label an ordinary DAC `EACCES` a sandbox denial. The consequence to know:
+  **on macOS the seatbelt leaves no trace in the worker's report**, so a
+  seatbelt `EACCES`/`EPERM` carries no `details.denied` — the traceback and the
+  Error Doctor's message-matched hints are unchanged.
+
+- **Every kill, timeout and crash reaches the `on_usage` hook** (`ok: False`,
+  `cpu_ms: None`), not just answered requests. The requests that cost the most
+  are exactly the ones that never answer; emitting only on the success path
+  left `core/usage.py`'s `errors` at zero and a 60 s timeout out of the wall
+  clock entirely.
 
 - **`details.usage` is the kill paths' contract, not every error's.** A
   worker-reported `script_error` deliberately carries none: its usage travels

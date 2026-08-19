@@ -870,23 +870,27 @@ names which one is in force:
 | | confinement | quota tiers |
 |---|---|---|
 | **macOS** | `sandbox-exec` seatbelt profile (`kernel/sandbox_macos.py`): deny-by-default, global read, writes only in the roots below, no network, signals to self only | `rlimit` (`RLIMIT_NPROC` only — `RLIMIT_AS`/`DATA`/`RSS` are `EINVAL` on Darwin) + `supervisor` |
-| **Linux** | Landlock + seccomp applied by the worker **to itself** through `ctypes` before `import build123d` (`kernel/_confine.py`, `kernel/_preamble.py`): writes only in the roots below, no socket family but `AF_UNIX`, no `ptrace`/`process_vm_*`/`pidfd_open`/`io_uring`, no signal at pid ≤ 0 or at the server. Needs Landlock ABI ≥ 3 in the boot `lsm=` list; below that it reports `off` rather than shipping a false-denying profile | `cgroup` (only with an operator-delegated v2 subtree) + `rlimit` (`RLIMIT_AS`, `RLIMIT_NPROC`) + `supervisor` |
+| **Linux** | Landlock + seccomp applied by the worker **to itself** through `ctypes` before `import build123d` (`kernel/_confine.py`, `kernel/_preamble.py`): writes only in the roots below, no socket family but `AF_UNIX`, no `ptrace`/`process_vm_*`/`io_uring`, no `pidfd_*` at all (a `/proc/<pid>` directory fd is a valid pidfd, so `pidfd_send_signal` would route around the pid-argument signal rules) and no `process_madvise`, no signal at pid ≤ 0 or at the server. Needs Landlock ABI ≥ 3 in the boot `lsm=` list; below that it reports `off` rather than shipping a false-denying profile | `cgroup` (only with an operator-delegated v2 subtree) + `rlimit` (`RLIMIT_AS`, `RLIMIT_NPROC`) + `supervisor` |
 | **Windows** | none — reported `unsupported`. AppContainer is carved out as PRD-006b | `job_object` (commit limit, active processes, CPU rate) + `supervisor` |
 
 The writable roots are the same everywhere: the projects dir, registered
-examples, `~/.agentcad`, the worker's **private** `agentcad-worker-*` temp dir
-and the server's one `agentcad-work-*` root that `agentcad check` and the
-package gate materialize their cells under. The shared system temp dir is
-deliberately **not** granted: it let every worker read and write every other
-worker's scratch. Reads follow a *posture*: `local` reads anywhere (the v1
+examples, an accepted `--work-dir`, the worker's **private**
+`agentcad-worker-*` temp dir and the server's one `agentcad-work-*` root that
+`agentcad check` and the package gate materialize their cells under. The
+shared system temp dir is deliberately **not** granted: it let every worker
+read and write every other worker's scratch. Neither is `~/.agentcad` —
+nothing in `kernel/` or `toolkit/` reads or writes the config dir, every
+`load_config()` caller is server-side, and the worker's `HOME` is its own
+private temp dir, so the grant bought nothing and cost the sentence below.
+Reads follow a *posture*: `local` reads anywhere (the v1
 stance), and `hosted` — Linux only, selected by `AGENTCAD_MODE=hosted` —
 narrows reads to an allow-list that excludes `AGENTCAD_STATE_DIR` and leaves
-nothing under the server user's home reachable except the config dir
-(`~/.agentcad`, which is a write root and so readable by construction), so a
+**nothing under the server user's home** reachable, so a
 member's script can no longer read the session signing key. Note that the
 allow-list is the read roots **plus the write roots**, which is why a write
-root is always readable — and why `AGENTCAD_STATE_DIR` must not be left at its
-`<config-dir>/state` default in hosted mode (compose sets `/data/state`).
+root is always readable — and why a hosted `agentcad serve` **refuses to
+start** when `AGENTCAD_STATE_DIR` lies inside one (exit 2, naming both paths;
+compose's `/data/state` is a sibling of `/data/projects`, not a child).
 The worker's own `HOME` is its private temp dir, so `~` inside a part script
 is never the server user's home. Forks and
 `exec`s inherit the confinement.
@@ -908,7 +912,9 @@ every response carries its `usage` (CPU ms, wall ms, peak RSS) for the meter in
 `core/usage.py`. Per-project disk budgets
 (`.cache/`, `exports/`, `imports/`; `AGENTCAD_QUOTA_DISK_MB`) refuse a build
 or an export before the worker writes, and a cache janitor deletes the oldest
-unreferenced meshes once the cache passes 75 % of the budget. Unchanged mitigations: the server
+unreferenced meshes once the cache passes 75 % of the budget — never one
+younger than ten minutes, because the keep-set is this *process's* memory and
+that is empty after a restart. Unchanged mitigations: the server
 binds `127.0.0.1` only; kernel requests time out; the worker is isolated so
 kernel crashes never take down the app; scripts live in the project directory
 where humans review them; the Anthropic API key is read from the environment

@@ -33,7 +33,7 @@ from pathlib import Path
 import build123d as b3d
 
 from ._meter import Meter
-from .denials import classify
+from .denials import active_facets, classify
 from .mesh import tessellate, tessellate_with_faces
 from .protocol import ERROR_CONTRACT, ERROR_KERNEL, ERROR_SCRIPT, WorkerError
 
@@ -61,13 +61,14 @@ def _script_error_from_exc(exc: BaseException) -> WorkerError:
     # it was asked to: a payload whose every stage failed leaves a non-empty
     # REPORT and must still classify nothing, or an unconfined worker would
     # label an ordinary PermissionError a sandbox denial (Decision 9).
-    active = bool(SANDBOX_REPORT.get("landlock_abi")
-                  or SANDBOX_REPORT.get("seccomp")
-                  or SANDBOX_REPORT.get("rlimits")
-                  # A tier the PARENT installed around this process: Windows
-                  # has no rlimits, and its whole memory cap is a job object
-                  # whose breach arrives here as a plain MemoryError.
-                  or SANDBOX_REPORT.get("quotas"))
+    #
+    # Per **facet**, not one blanket boolean (review M3): an applied fork
+    # budget is evidence for `process_count`, and none at all for
+    # `filesystem` — so a NO_SANDBOX worker that still has its rlimits no
+    # longer calls a plain DAC EACCES a sandbox denial. `active_facets` owns
+    # the mapping, including the parent-installed `quotas` tiers (a Windows job
+    # object's breach arrives here as an ordinary MemoryError).
+    active = active_facets(SANDBOX_REPORT)
     denied = classify(type(exc).__name__, str(exc), active=active, traceback=tb)
     if denied is not None:
         details["denied"] = denied

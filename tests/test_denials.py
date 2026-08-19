@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from agentcad.kernel.denials import classify
+from agentcad.kernel.denials import active_facets, classify
 
 
 #: A frame that names the call, as `traceback.format_exc()` renders it.
@@ -82,6 +82,92 @@ def test_nothing_is_a_denial_when_nothing_is_confining():
     assert classify("PermissionError", "[Errno 13] Permission denied",
                     active=False) is None
     assert classify("MemoryError", "", active=False) is None
+
+
+def test_the_facets_are_claimed_one_by_one_from_the_workers_own_report():
+    """Review M3. "Something is confining this process" is not evidence for all
+    four answers. A worker whose rlimits applied and whose Landlock did not —
+    an `AGENTCAD_NO_SANDBOX` Linux worker, which still gets its caps — has real
+    evidence for `process_count` and `memory` and none at all for the
+    filesystem, and the blanket boolean made it label an ordinary DAC `EACCES`
+    a sandbox denial.
+    """
+    no_sandbox = {"posture": "local", "rlimits": ["RLIMIT_AS", "RLIMIT_NPROC"],
+                  "quotas": [], "landlock_abi": None, "seccomp": None,
+                  "failures": []}
+    assert active_facets(no_sandbox) == {"process_count", "memory"}
+
+    confined = {"posture": "local", "rlimits": ["RLIMIT_AS"], "quotas": [],
+                "landlock_abi": 6, "seccomp": "seccomp(2)", "failures": []}
+    assert active_facets(confined) == {"filesystem", "network",
+                                       "process_count", "memory"}
+
+    # A tier the PARENT installed around the worker (a Windows job object, a
+    # cgroup's pids.max): no rlimit of its own, and still a real cap.
+    job = {"posture": "local", "rlimits": [], "quotas": ["job_object"],
+           "landlock_abi": None, "seccomp": None, "failures": []}
+    assert active_facets(job) == {"process_count", "memory"}
+
+    # Nothing applied at all — and a report that is not a dict.
+    assert active_facets({"rlimits": [], "quotas": [], "landlock_abi": None,
+                          "seccomp": None}) == frozenset()
+    assert active_facets(None) == frozenset()
+
+    # ...and that is what `classify` then honours, facet by facet.
+    assert classify("PermissionError", "[Errno 13] Permission denied: '/x'",
+                    active=active_facets(no_sandbox)) is None
+    assert classify("PermissionError", "[Errno 13] Permission denied: '/x'",
+                    active=active_facets(confined)) == "filesystem"
+    assert classify("PermissionError", "[Errno 1] Operation not permitted",
+                    active=active_facets(no_sandbox),
+                    traceback=NET_FRAME) is None
+    assert classify("PermissionError", "[Errno 1] Operation not permitted",
+                    active=active_facets(confined),
+                    traceback=NET_FRAME) == "network"
+    assert classify("MemoryError", "", active=active_facets(no_sandbox)) \
+        == "memory"
+    assert classify("BlockingIOError", "[Errno 11] Resource temporarily "
+                    "unavailable", active=active_facets(job)) == "process_count"
+
+
+def test_a_parent_declared_facet_is_active_even_with_no_worker_evidence():
+    """The macOS `details.denied` regression. The seatbelt wraps the argv in
+    the PARENT process, before the worker ever runs — so a seatbelt
+    EACCES/EPERM leaves `landlock_abi: None` and `seccomp: None` in the
+    worker's own preamble report, exactly like an unconfined worker's. Without
+    the parent's declaration a real denial would go unlabelled; with it
+    (`sandbox_macos.build`'s `confinement: ["filesystem", "network"]`, copied
+    through by `_preamble.apply_from_env`) the two facets it genuinely
+    enforces are still claimable.
+    """
+    macos_confined = {"posture": "local", "rlimits": ["RLIMIT_NPROC"],
+                      "quotas": [], "landlock_abi": None, "seccomp": None,
+                      "confinement": ["filesystem", "network"], "failures": []}
+    assert active_facets(macos_confined) == {"filesystem", "network",
+                                              "process_count", "memory"}
+    assert classify("PermissionError", "[Errno 13] Permission denied: '/x'",
+                    active=active_facets(macos_confined)) == "filesystem"
+    assert classify("PermissionError", "[Errno 1] Operation not permitted",
+                    active=active_facets(macos_confined),
+                    traceback=NET_FRAME) == "network"
+
+    # A report with neither the worker's own evidence NOR a parent
+    # declaration still claims nothing — `confinement` is additive, not a
+    # blanket override.
+    undeclared = {"posture": "local", "rlimits": [], "quotas": [],
+                 "landlock_abi": None, "seccomp": None, "confinement": [],
+                 "failures": []}
+    assert active_facets(undeclared) == frozenset()
+
+
+def test_a_bare_boolean_still_means_all_four_or_none():
+    """The parameter kept its old shape so a caller with one honest answer for
+    the whole worker (and every existing test above) needs no change."""
+    assert classify("MemoryError", "", active=True) == "memory"
+    assert classify("MemoryError", "", active=False) is None
+    assert classify("PermissionError", "Permission denied", active=True) \
+        == "filesystem"
+    assert classify("PermissionError", "Permission denied", active=False) is None
 
 
 def test_network_wins_over_filesystem_when_both_read():

@@ -451,9 +451,13 @@ def test_an_unwritable_work_dir_is_exit_two_not_a_traceback(wired, tmp_path,
     code reserved for "the model is wrong", which automation reads as red
     geometry.
 
-    Since F3 the ``mkdir`` is the runner's, inside ``run()`` — later, but under
-    the same mapping, so the contract is unchanged: exit 2 and a named message.
-    The kernel is up by then, and the ``finally`` stops it.
+    The ``mkdir`` is back before ``_build_service`` since review I1 — an
+    accepted work dir must EXIST before the confined workers spawn, or the
+    Landlock grant is ENOENT and every part fails with a ``PermissionError``
+    instead of producing a verdict. C8's contract is unchanged, because the
+    move was *into* the try/except, not out of it: exit 2 and a named message.
+    What differs is that the kernel was never started, so there is none to
+    stop.
     """
     blocked = tmp_path / "blocked"
     blocked.mkdir()
@@ -465,8 +469,9 @@ def test_an_unwritable_work_dir_is_exit_two_not_a_traceback(wired, tmp_path,
 
     err = capsys.readouterr().err
     assert "agentcad check" in err and "PermissionError" in err
-    # The failure is now inside the run, so the kernel was up — and stopped.
-    assert wired.stopped is True
+    # It failed before the workers spawned, so nothing was left running.
+    assert wired.stopped is False
+    assert wired.projects_dir is None, "the service was built anyway"
 
 
 def test_a_failure_after_the_kernel_starts_does_not_leak_workers(fake_kernel,
@@ -609,3 +614,54 @@ def test_a_named_work_dir_is_still_the_callers_and_is_granted(wired, tmp_path):
 
     assert wired.extra_writable == [str(work_dir.resolve())]
     assert wired.runner.seen["work_dir"] == str(work_dir.resolve())
+
+
+def test_an_accepted_work_dir_exists_before_the_workers_spawn(wired, tmp_path,
+                                                              monkeypatch):
+    """Review I1. A `--work-dir` is a **writable root**, and on Linux a
+    Landlock rule on a path that does not exist is ENOENT: the grant is
+    silently lost, the worker reports the failure, and every part then fails
+    with a `PermissionError` instead of producing a verdict. So an accepted
+    work dir has to be a directory by the time `_build_service` spawns them —
+    and it may only be created once it has been accepted, which is why the
+    overlap guard moved here too.
+    """
+    work_dir = tmp_path / "nested" / "wd"
+    seen: dict = {}
+
+    # The `wired` fixture already stubbed `_build_service`; this wraps that
+    # stub, so the observation costs no kernel.
+    wired_build = cli._build_service
+
+    def _build(projects_dir, extra_writable=None):
+        seen["existed"] = work_dir.is_dir()
+        seen["granted"] = list(extra_writable or [])
+        return wired_build(projects_dir, extra_writable)
+
+    monkeypatch.setattr(cli, "_build_service", _build)
+
+    assert cli.cmd_check(_args(work_dir=str(work_dir))) == 0
+    assert seen["existed"] is True, "the grant would have been ENOENT"
+    assert seen["granted"] == [str(work_dir.resolve())]
+
+
+def test_a_work_dir_inside_the_project_is_refused_before_any_worker(wired,
+                                                                     tmp_path,
+                                                                     capsys):
+    """The other half of I1: creating it early is only safe because it is
+    accepted early. A refused path still leaves nothing behind — and now costs
+    no worker spawn at all.
+    """
+    project = tmp_path / "projects" / "widget"
+    project.mkdir(parents=True)
+    inside = project / "scratch"
+
+    code = cli.cmd_check(_args(project=str(project),
+                               projects_dir=str(tmp_path / "projects"),
+                               work_dir=str(inside)))
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "overlaps" in err and str(inside.resolve()) in err
+    assert not inside.exists(), "the refused work dir was created anyway"
+    assert wired.projects_dir is None, "a refused run still spawned workers"

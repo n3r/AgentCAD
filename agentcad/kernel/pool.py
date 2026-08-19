@@ -26,11 +26,16 @@ class KernelPool:
         # Confinement, quotas and posture are passed through unchanged: each
         # worker plans its own, so each gets its **own** private temp dir (and,
         # later, its own cgroup) rather than sharing one.
+        #
+        # `pool_size` is the exception, and it is not a per-worker fact: it is
+        # how many of us share this uid's RLIMIT_NPROC budget. Without it every
+        # slot claimed the same "live count + headroom" and the third worker
+        # forked into a budget the first two had already spent (review C2).
         self._workers: list[KernelClient] = [
             KernelClient(python_exe=python_exe, timeout_s=timeout_s,
                          writable_dirs=writable_dirs, quotas=quotas,
                          posture=posture, on_usage=on_usage,
-                         name=f"worker-{index}")
+                         name=f"worker-{index}", pool_size=self.size)
             for index in range(self.size)
         ]
         self._rr = 0

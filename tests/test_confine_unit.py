@@ -168,6 +168,32 @@ def test_reaching_into_another_process_is_denied_outright(name):
 
 @pytest.mark.parametrize("arch,audit", [("x86_64", AUDIT_X86_64),
                                         ("aarch64", AUDIT_AARCH64)])
+@pytest.mark.parametrize("name,number", [("pidfd_send_signal", 424),
+                                         ("pidfd_getfd", 438),
+                                         ("process_madvise", 440)])
+def test_the_pidfd_family_is_denied_because_it_names_targets_by_fd(
+        arch, audit, name, number):
+    """The hole the pid-argument signal rules leave (review C1).
+
+    `pidfd_send_signal(pidfd, sig, ...)` names its target by a **file
+    descriptor**, so `args[0]` is not a `pid_t` and the negative-pid /
+    server-pid analysis never runs on it. Denying `pidfd_open` is not enough:
+    a `/proc/<pid>` directory fd is a valid pidfd and `/proc` is readable in
+    both postures, so a script could open `/proc/<server pid>` and SIGKILL the
+    server through it — verified live in the shipped image before this rule.
+    `pidfd_getfd` (steal a descriptor) and `process_madvise` (reach into
+    another address space) travel the same handle. The numbers are the same on
+    x86_64 and aarch64.
+    """
+    assert _confine.ARCH[arch][name] == number
+    program = _confine.seccomp_program(arch, SERVER_PID)
+    # Every argument shape: an fd, fd 0, and a large one. None of them is a pid.
+    for arg0 in (0, 3, 99_999):
+        assert _run(program, nr=number, arch=audit, arg0=arg0) == ERRNO_EPERM
+
+
+@pytest.mark.parametrize("arch,audit", [("x86_64", AUDIT_X86_64),
+                                        ("aarch64", AUDIT_AARCH64)])
 @pytest.mark.parametrize("name,number", [("io_uring_setup", 425),
                                          ("io_uring_enter", 426),
                                          ("io_uring_register", 427)])

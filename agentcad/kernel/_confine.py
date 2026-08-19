@@ -51,7 +51,8 @@ ARCH: dict[str, dict[str, int]] = {
                "tkill": 200, "tgkill": 234, "rt_sigqueueinfo": 129,
                "rt_tgsigqueueinfo": 297, "ptrace": 101,
                "process_vm_readv": 310, "process_vm_writev": 311,
-               "pidfd_open": 434, "seccomp": 317,
+               "pidfd_open": 434, "pidfd_send_signal": 424,
+               "pidfd_getfd": 438, "process_madvise": 440, "seccomp": 317,
                "io_uring_setup": 425, "io_uring_enter": 426,
                "io_uring_register": 427,
                "landlock_create_ruleset": 444, "landlock_add_rule": 445,
@@ -60,7 +61,9 @@ ARCH: dict[str, dict[str, int]] = {
                 "kill": 129, "tkill": 130, "tgkill": 131,
                 "rt_sigqueueinfo": 138, "rt_tgsigqueueinfo": 240,
                 "ptrace": 117, "process_vm_readv": 270,
-                "process_vm_writev": 271, "pidfd_open": 434, "seccomp": 277,
+                "process_vm_writev": 271, "pidfd_open": 434,
+                "pidfd_send_signal": 424, "pidfd_getfd": 438,
+                "process_madvise": 440, "seccomp": 277,
                 "io_uring_setup": 425, "io_uring_enter": 426,
                 "io_uring_register": 427,
                 "landlock_create_ruleset": 444, "landlock_add_rule": 445,
@@ -148,8 +151,23 @@ _SIGNAL_SYSCALLS = ("kill", "tkill", "tgkill", "rt_sigqueueinfo",
 #: seccomp filter cannot inspect ring entries at all, so the whole interface
 #: has to go or the socket rule above is decorative. Nothing in CPython, numpy,
 #: OCP or build123d uses it.
+#:
+#: The **pidfd family** is here for the same reason as io_uring, and it is the
+#: sharper hole of the two: ``pidfd_send_signal(pidfd, sig, ...)`` names its
+#: target by a *file descriptor*, so the argument the signal rules inspect
+#: (``args[0]``, a ``pid_t``) is not a pid at all and the whole
+#: negative-pid/server-pid analysis below never applies. Denying ``pidfd_open``
+#: alone is not enough: **a ``/proc/<pid>`` directory fd is a valid pidfd**, and
+#: ``/proc`` is readable in both postures — so a part script could
+#: ``os.open("/proc/<server pid>", O_RDONLY|O_DIRECTORY)`` and SIGKILL the
+#: server through it (verified live in the shipped image). ``pidfd_getfd``
+#: steals another process's descriptors and ``process_madvise`` reaches into
+#: another process's address space through the same handle. Nothing in CPython,
+#: OCP or build123d calls any of the three (``os.pidfd_open`` is the only
+#: exposed one, and it is already denied).
 _PEEK_SYSCALLS = ("ptrace", "process_vm_readv", "process_vm_writev",
-                  "pidfd_open", "io_uring_setup", "io_uring_enter",
+                  "pidfd_open", "pidfd_send_signal", "pidfd_getfd",
+                  "process_madvise", "io_uring_setup", "io_uring_enter",
                   "io_uring_register")
 
 
@@ -422,6 +440,10 @@ def seccomp_program(arch: str, server_pid: int) -> bytes:
     # broadcast or a process group (`kill(-1, 9)` takes the whole uid down,
     # server included), 0 is this process's own group, and server_pid is the
     # server. Signals at self and at a script's own children stay allowed.
+    #
+    # Every signal syscall that names its target by a *pid* is here; the ones
+    # that name it by a **descriptor** (`pidfd_send_signal`) cannot be filtered
+    # this way at all and are denied outright above — see `_PEEK_SYSCALLS`.
     label("signal_target")
     emit(BPF_LD_W_ABS, OFF_ARG0_LOW)
     emit(BPF_JGE_K, INT_SIGN_BIT, jt="deny", jf="next")   # a negative pid_t

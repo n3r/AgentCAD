@@ -122,6 +122,52 @@ def test_on_linux_a_missing_landlock_abi_clears_the_claim():
                               "failures": []}) is True
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX rlimits; Windows has none to apply")
+def test_a_cap_that_applied_is_no_evidence_about_the_filesystem(monkeypatch,
+                                                                 tmp_path):
+    """Review M3, end to end. `AGENTCAD_NO_SANDBOX` opts out of the **sandbox**
+    and not out of the **caps**, so such a worker really does apply its
+    rlimits — and one blanket `active` then labelled an ordinary DAC `EACCES` a
+    `filesystem` denial, sending the reader after a confinement that is not
+    there. Evidence is per facet: an applied rlimit attests `process_count` and
+    `memory`, and nothing whatsoever about paths.
+
+    `RLIMIT_CORE` is the probe because switching core dumps off is the one cap
+    that cannot hurt the worker applying it.
+    """
+    from agentcad.kernel.client import KernelClient
+
+    monkeypatch.setenv("AGENTCAD_CONFINE",
+                       '{"posture": "local", "rlimits": {"RLIMIT_CORE": [0, 0]}}')
+    client = KernelClient()          # no plan: the env is inherited as-is
+    client.start()
+    try:
+        report = client.sandbox_report
+        assert report["rlimits"] == ["RLIMIT_CORE"]      # a cap really applied
+        assert report["landlock_abi"] is None and report["seccomp"] is None
+
+        def _raise(body: str, mesh: str) -> KernelError:
+            script = ("PARAMS = {}\n"
+                      "def build(p):\n"
+                      f"    raise {body}\n")
+            with pytest.raises(KernelError) as exc_info:
+                client.request("build", {"script": script, "params": {},
+                                         "mesh_path": str(tmp_path / mesh)})
+            return exc_info.value
+
+        err = _raise("PermissionError('[Errno 13] Permission denied')", "x.acm")
+        assert err.type == "script_error"
+        assert "denied" not in err.details
+
+        # ...while the cap it DID apply is still named.
+        err = _raise("BlockingIOError(11, 'Resource temporarily unavailable')",
+                     "y.acm")
+        assert err.details["denied"] == "process_count"
+    finally:
+        client.stop()
+
+
 def test_a_preamble_that_applied_nothing_classifies_no_denials(monkeypatch,
                                                                 tmp_path):
     """`details.denied` keys on what the preamble ACTUALLY applied, not on the
@@ -135,7 +181,8 @@ def test_a_preamble_that_applied_nothing_classifies_no_denials(monkeypatch,
     client.start()
     try:
         assert client.sandbox_report == {"posture": "local", "rlimits": [],
-                                         "quotas": [], "landlock_abi": None,
+                                         "quotas": [], "confinement": [],
+                                         "landlock_abi": None,
                                          "seccomp": None, "failures": []}
         script = ("PARAMS = {}\n"
                   "def build(p):\n"

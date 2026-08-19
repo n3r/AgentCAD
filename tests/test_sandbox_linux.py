@@ -14,13 +14,16 @@ degradation to `off` is red rather than quietly green.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
 
 import pytest
 
+from agentcad.kernel import sandbox
 from agentcad.kernel.client import KernelClient, KernelError
+from agentcad.kernel.pool import KernelPool
 from agentcad.kernel.quotas import resolve
 
 pytestmark = [
@@ -135,13 +138,21 @@ def test_ping_reports_landlock_and_seccomp(confined):
     assert client.sandboxed is True
 
 
-def test_a_root_that_does_not_exist_is_a_lost_grant_and_a_reported_failure(
+def test_a_root_that_does_not_exist_is_a_lost_grant_but_still_confined(
         tmp_path_factory):
-    """Why `cli._writable_roots` creates the projects dir and `~/.agentcad`
-    before a worker spawns: on Linux a Landlock rule on a missing path is
-    ENOENT, and this is what that costs — the failure lands in the worker's own
-    report (so the client reports `off`) AND the root is never granted, so a
-    write into it is denied the moment the directory does appear.
+    """Why the CLI creates the roots it owns — the projects dir, and an
+    **accepted** `--work-dir` — before a worker spawns: on Linux a Landlock
+    rule on a missing path is ENOENT, and this is what that costs. The root is
+    never granted, so a write into it is denied the moment the directory does
+    appear, and every part under it fails with a `PermissionError` instead of
+    producing a verdict.
+
+    What it does **not** cost, since review I2: the confinement claim. The
+    ruleset landed; one path out of it did not. So the failure is reported
+    under its own stage, `landlock_root`, and `sandboxed` stays True — filing
+    it under `landlock` said "this worker is unconfined" about a worker that
+    demonstrably was, and turned one missing directory into a red CI job under
+    `AGENTCAD_EXPECT_SANDBOX=active`.
 
     Asserted rather than fixed here on purpose: `plan()` must NOT create the
     roots it is handed, because it also receives `--work-dir` paths that may
@@ -164,14 +175,56 @@ def test_a_root_that_does_not_exist_is_a_lost_grant_and_a_reported_failure(
     client.start()
     try:
         failures = client.sandbox_report["failures"]
-        assert any(str(absent) in f["error"] and f["stage"] == "landlock"
+        assert any(str(absent) in f["error"] and f["stage"] == "landlock_root"
                    for f in failures), failures
-        assert client.sandboxed is False       # a landlock-stage failure
+        # The ruleset is in force, so the claim holds — and health shows the
+        # lost grant as a warning rather than as a failed sandbox.
+        assert client.sandboxed is True
+        warnings = sandbox.report(client)["warnings"]
+        assert any("lost a Landlock grant" in w and str(absent) in w
+                   for w in warnings), warnings
+
         absent.mkdir()                          # ...and now it exists
         err = _denied(client, root,
                       f"open({str(absent / 'x')!r}, 'w', encoding='utf-8').write('x')",
                       "absent")
         assert err.details["denied"] == "filesystem"
+
+        # The other half (review I1): a root that DOES exist when the worker
+        # spawns keeps its grant, which is the state the CLI now guarantees for
+        # an accepted `--work-dir`.
+        assert _build(client, BOX, root / ".cache" / "granted.acm")["metrics"]
+    finally:
+        client.stop()
+
+
+def test_a_work_dir_that_exists_at_spawn_is_writable(tmp_path_factory):
+    """Review I1, from the worker's side. The CLI accepts a `--work-dir`,
+    creates it, and only then spawns — so the grant lands and the run can
+    write its cell. This is the same shape with the directory made first.
+    """
+    root = tmp_path_factory.mktemp("granted-work-dir")
+    work = root.parent / "accepted-work-dir"
+    work.mkdir(exist_ok=True)          # what `cli._accept_work_dir` does
+    patch = pytest.MonkeyPatch()
+    patch.setenv("AGENTCAD_CONFIG", str(root / "no-such-config.json"))
+    patch.delenv("AGENTCAD_NO_SANDBOX", raising=False)
+    try:
+        client = KernelClient(writable_dirs=[str(root), str(work)],
+                              quotas=resolve(QUOTAS, env={}, config={}))
+    finally:
+        patch.undo()
+    client.start()
+    try:
+        assert client.sandbox_report["failures"] == []
+        assert client.sandboxed is True
+        target = work / "cell.txt"
+        result = _build(client, _script(
+            f"open({str(target)!r}, 'w', encoding='utf-8').write('ok')"
+        ), root / ".cache" / "workdir.acm")
+        assert result["metrics"]["volume_mm3"] == pytest.approx(1000.0,
+                                                                rel=1e-6)
+        assert target.read_text(encoding="utf-8") == "ok"
     finally:
         client.stop()
 
@@ -212,6 +265,62 @@ def test_a_normal_build_still_works_confined(battery):
     result = _build(client, BOX, root / ".cache" / "box.acm")
     assert result["metrics"]["volume_mm3"] == pytest.approx(1000.0, rel=1e-6)
     assert (root / ".cache" / "box.acm").read_bytes()[:4] == b"ACM1"
+
+
+@pytest.mark.timeout(600)
+def test_a_three_worker_pool_all_start_under_their_fork_budget(
+        tmp_path_factory):
+    """Review C2, the regression that motivated the whole fix.
+
+    `RLIMIT_NPROC` is a **per-uid** ceiling that the kernel checks against the
+    *calling* process's own limit, and a warm worker runs 15-22 threads. With
+    the budget computed once — `live count + pids_headroom` — and handed
+    identically to every pool slot, worker 0 and worker 1 spent the headroom
+    just by existing and worker 2 died inside `import build123d` with a
+    `pthread_create` EAGAIN. Measured, in this image.
+
+    The fix is two things at once, and this needs both: the headroom is scaled
+    by the pool size, and it is **re-measured at every spawn** rather than once
+    at construction. So: three workers, each reached by its own affinity key
+    (`hash()` is salted per process, so the keys are found at run time), each
+    answering `ping`.
+    """
+    root = tmp_path_factory.mktemp("pool-of-three")
+    patch = pytest.MonkeyPatch()
+    patch.setenv("AGENTCAD_CONFIG", str(root / "no-such-config.json"))
+    patch.delenv("AGENTCAD_NO_SANDBOX", raising=False)
+    try:
+        pool = KernelPool(size=3, writable_dirs=[str(root)],
+                          quotas=resolve(QUOTAS, env={}, config={}),
+                          timeout_s=300)
+    finally:
+        patch.undo()
+
+    keys = [f"part-{index}" for index in range(64)]
+    routed = {slot: next(k for k in keys if hash(k) % 3 == slot)
+              for slot in range(3)}
+    assert len(set(routed.values())) == 3
+
+    try:
+        for slot, key in sorted(routed.items()):
+            result = pool.request("ping", {}, affinity=key)
+            assert result["ok"] is True, (slot, key, result)
+        # Every slot really did spawn — the failure this guards against was a
+        # worker that never came up, not one that answered wrongly.
+        assert all(worker.alive for worker in pool._workers)
+        # ...and each got its OWN fork budget, measured when it spawned.
+        caps = {json.loads(worker._plan.spawn_env()["AGENTCAD_CONFINE"])
+                ["rlimits"]["RLIMIT_NPROC"][0] for worker in pool._workers}
+        assert all(cap > 3 * QUOTAS["pids_headroom"] for cap in caps), caps
+        # A real build still lands, on the worker the affinity key names.
+        built = pool.request(
+            "build", {"script": BOX, "params": {},
+                      "mesh_path": str(root / ".cache" / "pool.acm")},
+            affinity=routed[0])
+        assert built["metrics"]["volume_mm3"] == pytest.approx(1000.0,
+                                                               rel=1e-6)
+    finally:
+        pool.stop()
 
 
 # --------------------------------------------------------------- the battery
@@ -287,6 +396,40 @@ def test_signals_to_the_server_are_denied(battery):
                   f"os.kill({os.getpid()}, signal.SIGTERM)", "kill-server")
     assert err.type == "script_error"
     assert "PermissionError" in err.message
+
+
+def test_pidfd_send_signal_at_the_server_is_denied(battery):
+    """Review C1, live. `pidfd_send_signal(pidfd, sig, ...)` names its target
+    by a **file descriptor**, so `args[0]` is not a `pid_t` and the filter's
+    negative-pid / server-pid analysis never runs on it. Denying `pidfd_open`
+    was not enough: **a `/proc/<pid>` directory fd is a valid pidfd**, and
+    `/proc` is readable in both postures — so before this rule a part script
+    could open `/proc/<server pid>` and SIGKILL the server through it
+    (verified in the image: the victim died with -9).
+
+    The syscall number is 424 on x86_64 and on aarch64 alike.
+    """
+    client, root = battery
+    err = _denied(client, root,
+                  "import ctypes, os, signal\n"
+                  f"fd = os.open('/proc/{os.getpid()}', "
+                  "os.O_RDONLY | os.O_DIRECTORY)\n"
+                  "libc = ctypes.CDLL(None, use_errno=True)\n"
+                  "libc.syscall.restype = ctypes.c_long\n"
+                  "ctypes.set_errno(0)\n"
+                  "rc = libc.syscall(424, fd, signal.SIGKILL, 0, 0)\n"
+                  "err = ctypes.get_errno()\n"
+                  "os.close(fd)\n"
+                  "raise RuntimeError(f'pidfd rc={rc} errno={err}')",
+                  "pidfd")
+
+    assert err.type == "script_error"
+    # EPERM (1) from the filter. Unfiltered this returns 0 and the test
+    # process — which IS the server here — is gone.
+    assert "rc=-1" in err.message, err.message
+    assert "errno=1" in err.message, err.message
+    # The clinching assertion: this process is still running and answering.
+    assert client.request("ping", {})["ok"] is True
 
 
 def test_fork_child_inherits(battery):

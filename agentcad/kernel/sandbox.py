@@ -5,8 +5,11 @@ worker is spawned under two separate promises:
 
 * **confinement** — what the process may reach: writes only inside the roots
   the client granted, no network, no signals at anything but itself. On macOS
-  that is the seatbelt profile (``sandbox_macos``); Linux and Windows arrive
-  in later slices and report ``unsupported`` until they do.
+  that is the seatbelt profile (``sandbox_macos``); on Linux it is the worker
+  confining *itself* with Landlock and seccomp before it imports build123d
+  (``sandbox_linux`` -> ``_preamble`` -> ``_confine``). Windows reports
+  ``unsupported`` — AppContainer is carved out as PRD-006b (Decision 7) — and
+  gets the job-object quota tier instead (``sandbox_windows``).
 * **quotas** — how much of the machine it may take (``quotas.py``). These are
   *tiers*: a knob may be enforced by a cgroup, an rlimit, a job object or the
   parent's supervisor loop, and health names the tier in effect rather than
@@ -66,13 +69,32 @@ class Backend:
     are independent — but the protocol the client and the supervisor code
     against, so neither needs a platform branch of its own.
 
-    ``build(argv, write_roots, quotas, posture, server_pid, *, confine=True)``
-    is the module-level factory; it returns
+    ``build(argv, write_roots, quotas, posture, server_pid, *, confine=True,
+    pool_size=1)`` is the module-level factory; it returns
     ``(argv, env_additions, confinement, quotas_report, backend)``.
     """
 
     #: Everything the backend could not do as asked, in plain language.
     warnings: list[str] = []
+
+    def refresh(self) -> dict:
+        """Environment additions recomputed for the spawn about to happen.
+
+        Almost everything a backend decides is fixed at plan time and must
+        stay fixed (that is what makes a respawn identical). ``RLIMIT_NPROC``
+        is the exception, and it has to be: it is a **per-uid** ceiling that
+        the kernel checks against the *calling* process's own limit, so a
+        number measured once at ``KernelClient.__init__`` is wrong for every
+        worker but the first — worker 2's own threads have already moved the
+        live count by the time worker 3 forks, and worker 3 died inside
+        ``import build123d`` (measured, review C2). Recomputing here, at each
+        spawn and each respawn, is what keeps the cap a *headroom* rather than
+        a race.
+
+        ``{}`` means "nothing to recompute", which is the honest answer for a
+        backend with no rlimits at all.
+        """
+        return {}
 
     def attach(self, proc) -> None:
         """Called right after ``Popen``: cgroup placement, job-object
@@ -128,7 +150,10 @@ class SandboxPlan:
 
     #: What to ``Popen`` (on macOS, sandbox-exec-wrapped).
     argv: list[str]
-    #: Child env *overrides*, merged over ``os.environ`` by the client.
+    #: Child env *overrides* **as they were at construction**, merged over
+    #: ``os.environ`` by the client. This is the snapshot health and the tests
+    #: read; what a *spawn* uses is :meth:`spawn_env`, which is this plus the
+    #: backend's freshly measured ``RLIMIT_NPROC``.
     env: dict[str, str]
     #: The private per-worker temp dir, already created.
     tmp_dir: str
@@ -145,6 +170,30 @@ class SandboxPlan:
     quotas_obj: Quotas
     warnings: list[str] = field(default_factory=list)
     backend: Backend | None = None
+    #: How many workers share this uid's ``RLIMIT_NPROC`` budget — the pool
+    #: size, or 1 for a lone client. It scales the fork headroom (see
+    #: :func:`plan`), so the cap a fork bomb hits is at most
+    #: ``pids_headroom x pool_size`` extra tasks rather than a number that
+    #: starves the siblings.
+    pool_size: int = 1
+
+    def spawn_env(self) -> dict[str, str]:
+        """The child's environment overrides for the spawn about to happen.
+
+        :attr:`env` plus whatever the backend recomputes (:meth:`Backend.
+        refresh`) — today only the ``RLIMIT_NPROC`` half of the payload, which
+        is measured against the uid's *live* task count and is therefore stale
+        the moment a sibling worker starts its own threads. ``env`` itself is
+        left alone: it is the construction-time snapshot, and health and the
+        tests read it as such.
+        """
+        env = dict(self.env)
+        # `getattr`, because `Backend` is a protocol and not a base class: the
+        # Windows backend and a test double implement only what they need.
+        refresh = getattr(self.backend, "refresh", None)
+        if refresh is not None:
+            env.update(refresh() or {})
+        return env
 
     def prepare_tmp(self) -> str:
         """Make sure the private temp dir exists (0700), and return it.
@@ -184,7 +233,7 @@ class SandboxPlan:
 
 def plan(argv: list[str], writable_dirs: list[str], *,
          quotas: Quotas | dict | None = None, posture: str | None = None,
-         server_pid: int | None = None) -> SandboxPlan:
+         server_pid: int | None = None, pool_size: int = 1) -> SandboxPlan:
     """Plan one worker: private temp dir, environment, confinement, quotas.
 
     *quotas* may be a resolved :class:`~agentcad.kernel.quotas.Quotas`, a dict
@@ -192,12 +241,22 @@ def plan(argv: list[str], writable_dirs: list[str], *,
     *posture* defaults to :func:`default_posture`. *server_pid* is passed to
     the backend so a seccomp filter can refuse signals at the server.
 
+    *pool_size* is how many workers will share this uid's ``RLIMIT_NPROC``
+    budget. It exists because that limit is **per uid** but is checked against
+    the *calling* process's own ceiling: a three-worker pool whose every slot
+    was capped at "the live count when the client was constructed + headroom"
+    starved itself — the third worker died inside ``import build123d``
+    (measured, review C2). The cap is therefore ``live task count, measured at
+    each spawn + pids_headroom x pool_size``, which bounds a fork bomb at
+    ``headroom x pool_size`` extra tasks and leaves every sibling room to run.
+
     The plan owns a directory: call :meth:`SandboxPlan.release` when the
     worker is gone for good.
     """
     if not isinstance(quotas, Quotas):
         quotas = resolve_quotas(quotas)
     posture = posture or default_posture()
+    pool_size = max(1, int(pool_size))
     # The process planning the worker IS the server, so a caller that leaves
     # this out still gets a filter that protects the right pid — a `None` here
     # would silently reduce the seccomp rule to "no signals at pid 0".
@@ -212,11 +271,13 @@ def plan(argv: list[str], writable_dirs: list[str], *,
     # missing path is ENOENT: the grant is lost AND the failure downgrades the
     # worker's own report). But creating one here would be wrong: `plan()` is
     # handed caller-supplied paths whose acceptance is decided elsewhere —
-    # `agentcad check --work-dir <project>/scratch` is REFUSED by
-    # `CheckRunner._work_dir`, and "a refused path leaves nothing behind" is a
-    # promise with a test on it. Creation therefore belongs to whoever owns the
-    # directory: `cli._writable_roots` makes the projects dir and `~/.agentcad`
-    # because those are the server's own.
+    # `agentcad check --work-dir <project>/scratch` is REFUSED (by the CLI
+    # before the service is built, and by `CheckRunner._work_dir` again), and
+    # "a refused path leaves nothing behind" is a promise with a test on it.
+    # Creation therefore belongs to whoever owns the directory:
+    # `cli._writable_roots` makes the projects dir because that one is the
+    # server's own, and the CLI makes an ACCEPTED `--work-dir` because by then
+    # it has been accepted.
     write_roots = [os.path.realpath(d) for d in writable_dirs]
     write_roots.append(os.path.realpath(tmp_dir))
 
@@ -250,7 +311,7 @@ def plan(argv: list[str], writable_dirs: list[str], *,
         else:
             argv, additions, confinement, report, backend = build(
                 argv, write_roots, quotas, posture, server_pid,
-                confine=opt_out is None)
+                confine=opt_out is None, pool_size=pool_size)
         if opt_out is not None and confinement.get("status") != "unsupported":
             # The backend was told not to confine; name *why* it is off,
             # because "off" with no reason reads as a bug in the sandbox.
@@ -267,7 +328,8 @@ def plan(argv: list[str], writable_dirs: list[str], *,
             argv=list(argv), env=env, tmp_dir=tmp_dir,
             posture=confinement.get("detail", {}).get("posture") or posture,
             confinement=confinement, quotas=report, quotas_obj=quotas,
-            warnings=list(getattr(backend, "warnings", [])), backend=backend)
+            warnings=list(getattr(backend, "warnings", [])), backend=backend,
+            pool_size=pool_size)
     except BaseException:
         # Everything from the temp dir onwards is inside the try, because until
         # a SandboxPlan exists nobody holds any of it: nobody would remove the
@@ -386,6 +448,13 @@ def report(kernel) -> dict:
     mechanism dropped — a mechanism named beside ``off`` claims something is in
     force. A worker that has not been pinged yet has no report to disagree
     with, so the intent stands until it answers.
+
+    Two corollaries of the same rule (review M1/M2): the kernel's own
+    ``sandboxed`` flag wins wherever it is present, so this function and
+    ``client.sandboxed`` can never say different things; and a quota **tier**
+    is dropped from ``quotas.mechanism`` the moment the worker reports it did
+    not apply — an empty ``rlimits`` list under a mechanism naming ``rlimit``
+    is a cap nothing is enforcing.
     """
     from .client import confinement_holds
 
@@ -404,17 +473,56 @@ def report(kernel) -> dict:
     conf = dict(plan_obj.confinement)
     conf["detail"] = dict(conf.get("detail") or {})
     warnings = list(plan_obj.warnings)
+    quotas_report = dict(plan_obj.quotas)
     if conf["status"] == "active" and live and not confinement_holds(live):
         conf["status"] = "off"
         conf["mechanism"] = None
+    # `client.sandboxed` is this same rule applied at ping time, and it is what
+    # every other reader in the system consults. Preferring it here (review M1)
+    # closes the one gap where the two could disagree: a worker that answered
+    # `ping` with no `sandbox` object at all leaves `live` empty, so the plan's
+    # `active` stood while `client.sandboxed` was already False. `None` means
+    # the object has no such attribute, which is not a denial.
+    if conf["status"] == "active" and getattr(kernel, "sandboxed", None) is False:
+        conf["status"] = "off"
+        conf["mechanism"] = None
+        if not live:
+            warnings.append(
+                "the worker did not report what it applied, so the "
+                "confinement this plan intended cannot be claimed")
     if live:
         for key in ("landlock_abi", "seccomp", "rlimits"):
             if key in live:
                 conf["detail"][key] = live[key]
         for failure in live.get("failures") or []:
-            warnings.append(
-                f"the worker could not apply {failure.get('stage')}: "
-                f"{failure.get('error')}")
+            stage = failure.get("stage")
+            if stage == "landlock_root":
+                # Not "could not apply landlock": the ruleset landed and the
+                # process IS confined — one root out of it was not granted
+                # (review I2). Saying it the other way sent operators looking
+                # for a broken sandbox instead of a missing directory.
+                warnings.append(
+                    f"the worker lost a Landlock grant (the ruleset is in "
+                    f"force; writes there will be denied): "
+                    f"{failure.get('error')}")
+            else:
+                warnings.append(
+                    f"the worker could not apply {stage}: "
+                    f"{failure.get('error')}")
+        # A tier is a promise, so it is dropped the moment the worker says it
+        # did not apply it (review M2). `setrlimit` can be refused — an
+        # existing hard limit below ours, a Darwin `EINVAL` — and `mechanism`
+        # naming `rlimit` over an empty `rlimits` list claimed a cap that is
+        # not in force.
+        if "rlimits" in live and not live["rlimits"]:
+            tiers = (quotas_report.get("mechanism") or "").split("+")
+            if "rlimit" in tiers:
+                tiers = [tier for tier in tiers if tier != "rlimit"]
+                quotas_report["mechanism"] = "+".join(tiers) or None
+                quotas_report["status"] = "active" if tiers else "off"
+                warnings.append(
+                    "the worker applied no rlimits, so the rlimit quota tier "
+                    "is not in force")
     # A backend can also fail *after* the plan was built (a cgroup that refused
     # the pid, a job object that refused the assignment), and that warning is
     # only on the backend.
@@ -423,7 +531,7 @@ def report(kernel) -> dict:
             warnings.append(warning)
     return {"status": conf["status"], "mechanism": conf.get("mechanism"),
             "posture": plan_obj.posture, "confinement": conf,
-            "quotas": plan_obj.quotas, "warnings": warnings}
+            "quotas": quotas_report, "warnings": warnings}
 
 
 def status(sandboxed: bool | None = None) -> str:

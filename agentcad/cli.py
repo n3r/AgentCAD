@@ -113,6 +113,11 @@ def _build_service(projects_dir: Path, extra_writable: list[str] | None = None,
     try:
         service = AgentCADService(projects_dir, kernel, EventBus())
         service.work_root = work_root
+        # What the confined workers may write to, kept so a caller can *check*
+        # it: `cmd_serve` refuses a hosted state dir that lies inside one
+        # (PRD-006 FR5 — a part script that can read `secret.key` can forge a
+        # session). Nothing else reads it; the kernel already has it.
+        service.writable_roots = list(writable)
         service.usage = meter
         service.store.disk_budget_mb = quotas.disk_mb or None
         _register_examples(service)
@@ -153,10 +158,42 @@ def _release_work_root(service) -> None:
     _remove_work_root(getattr(service, "work_root", None))
 
 
+def _accept_work_dir(raw, refuse) -> str | None:
+    """Resolve a caller's ``--work-dir``, accept or refuse it, then create it.
+
+    All three, **before** ``_build_service`` (review I1). The work dir is added
+    to the sandbox's writable roots, and on Linux a Landlock rule on a path
+    that does not exist is ENOENT: the grant is silently lost, the worker
+    reports the failure, and every part then fails with a ``PermissionError``
+    instead of producing a verdict. So an accepted work dir has to exist before
+    the workers spawn — and the only way to create one honestly is to have
+    accepted it first, because "a refused path leaves nothing behind" is a
+    promise with a test on it (`test_checks_cli.py`,
+    `test_packages_cli.py`).
+
+    *refuse* is the overlap guard, already bound to whatever this command must
+    not overlap. It raises ``ValidationError`` — an ``AppError``, which every
+    caller already maps to its own exit code.
+
+    The runner's contract is untouched: an accepted directory created here is
+    still never *deleted* by the run. Everything a run writes goes into one
+    subdirectory it made itself, and the caller's directory is left as it was.
+
+    Absolute, always: ``history._run`` runs git with ``cwd`` set to the
+    project, so a relative work dir would materialize a ``--ref`` worktree
+    inside the user's project.
+    """
+    if not raw:
+        return None
+    root = Path(raw).expanduser().resolve()
+    refuse(root)
+    root.mkdir(parents=True, exist_ok=True)
+    return str(root)
+
+
 def _writable_roots(projects_dir: Path) -> list[str]:
     """Directories the sandboxed kernel workers may write to: the projects
-    dir (part .cache meshes, exports/), the user config dir, and each
-    registered example project.
+    dir (part .cache meshes, exports/) and each registered example project.
 
     The **system temp dir is not among them** (PRD-006 Decision 1): granting
     it made every worker able to read and write every other worker's scratch,
@@ -166,25 +203,28 @@ def _writable_roots(projects_dir: Path) -> list[str]:
     work cell when no `--work-dir` is given — is the server-wide work root
     `_build_service` creates and grants by name.
 
-    The projects dir and the config dir are **created here** when they do not
-    exist: they are the server's own, and on Linux a Landlock grant on a
-    missing path is ENOENT (see the comment below). Everything the CALLER
-    supplied — a `--work-dir` that may still be refused — is granted as given
-    and left alone."""
-    roots = [
-        str(projects_dir),
-        str(Path.home() / ".agentcad"),
-    ]
-    # Both of the first two may be ABSENT on a fresh install — the service
-    # creates the projects dir after `kernel.start()`, and `~/.agentcad` only
-    # exists once something has been configured. A Landlock rule on a missing
-    # path is ENOENT (PRD-006): the grant is silently lost, so every write into
-    # the directory fails once it does appear, and the failure downgrades a
-    # genuinely confined worker to `off` in health. They are the server's own
-    # directories, so making them here is safe — unlike doing it in
-    # `sandbox.plan()`, which also receives caller-supplied `--work-dir` paths
-    # that may still be refused ("a refused path leaves nothing behind").
-    for owned in roots[:2]:
+    **`~/.agentcad` is not among them either** (review I5). It was, and nothing
+    justified it: no module under `agentcad/kernel/` or `agentcad/toolkit/`
+    reads or writes the config dir, every `load_config()` caller is
+    server-side, and the worker's `HOME` is its own private temp dir — so the
+    grant bought nothing and cost the one sentence the docs most want to be
+    able to say, that a part script can write **nothing under the server user's
+    home**. The config file holds index definitions and quota knobs, and a
+    script that could rewrite them could raise its own caps.
+
+    The projects dir is **created here** when it does not exist: it is the
+    server's own, and on Linux a Landlock grant on a missing path is ENOENT
+    (see the comment below). Everything the CALLER supplied — a `--work-dir`
+    that may still be refused — is granted as given and left alone."""
+    roots = [str(projects_dir)]
+    # It may be ABSENT on a fresh install — the service creates the projects
+    # dir after `kernel.start()`. A Landlock rule on a missing path is ENOENT
+    # (PRD-006): the grant is silently lost, so every write into the directory
+    # fails once it does appear. It is the server's own directory, so making it
+    # here is safe — unlike doing it in `sandbox.plan()`, which also receives
+    # caller-supplied `--work-dir` paths that may still be refused ("a refused
+    # path leaves nothing behind").
+    for owned in roots:
         try:
             os.makedirs(owned, exist_ok=True)
         except OSError as exc:
@@ -384,6 +424,7 @@ def cmd_serve(args, open_browser: bool) -> None:
     # SystemExit puts both paths through the same cleanup.
     previous_term = None
     try:
+        _refuse_state_dir_in_a_write_root(mode, service)
         registry = build_registry(service)
         chat_engine = _make_chat_engine(service, registry)
         app = create_app(service, registry, chat_engine, security=security)
@@ -408,6 +449,56 @@ def cmd_serve(args, open_browser: bool) -> None:
             signal.signal(signal.SIGTERM, previous_term)
         service.kernel.stop()
         _release_work_root(service)
+
+
+def _within(inner: Path, outer: Path) -> bool:
+    """Whether *inner* is *outer* itself or somewhere beneath it. Lexical, on
+    already-resolved paths — the same idiom as `core/checks.py`."""
+    try:
+        return Path(inner).is_relative_to(Path(outer))
+    except (TypeError, ValueError):     # pragma: no cover - defensive
+        return False
+
+
+def _refuse_state_dir_in_a_write_root(mode, service) -> None:
+    """Refuse to serve a hosted instance whose state dir a part script can write.
+
+    The hosted read posture (FR5) exists to keep ``<state-dir>/secret.key``
+    out of a member's reach: the same uid runs the server and the workers, so
+    DAC cannot express it and Landlock is what does. A state dir placed
+    **inside a writable root** defeats that from the other side — the root is
+    granted write access explicitly, so the file is readable and rewritable
+    however narrow the read allow-list is, and whoever can read the session
+    secret can forge any session.
+
+    Fatal rather than a warning, and unlike `_warn_if_unconfined`: that one
+    reports a platform that cannot confine (nothing the operator can fix by
+    editing a variable), while this is one misplaced path with an exact
+    remedy, and serving anyway would be serving a hosted instance whose
+    accounts are already forgeable. Exit 2, the repo's "your configuration is
+    wrong" code.
+
+    Local mode is not checked: it is one trusted user on loopback, and there
+    is no session to forge from another account. A service with no
+    ``writable_roots`` (a stub in a test, a service built by hand) is left
+    alone rather than guessed at.
+    """
+    if not getattr(mode, "hosted", False):
+        return
+    roots = getattr(service, "writable_roots", None)
+    if not roots:
+        return
+    from .core.appmode import ensure_state_dir
+
+    state = Path(ensure_state_dir()).resolve()
+    for root in roots:
+        resolved = Path(root).resolve()
+        if _within(state, resolved):
+            print(f"error: AGENTCAD_STATE_DIR ({state}) lies inside a "
+                  f"kernel-writable root ({resolved}); part scripts could "
+                  f"read secret.key — set AGENTCAD_STATE_DIR outside the "
+                  f"projects tree", file=sys.stderr)
+            raise SystemExit(2)
 
 
 def _warn_if_unconfined(mode, kernel) -> None:
@@ -923,7 +1014,7 @@ def cmd_check(args) -> int:
     proposals at all (no git), which is a warning: the check itself still ran.
     """
     from .core import locks
-    from .core.checks import CheckRunner
+    from .core.checks import CheckRunner, refuse_work_dir_overlap
     from .core.model import AppError
     from .core.tools import build_registry
 
@@ -940,18 +1031,25 @@ def cmd_check(args) -> int:
     service = None
     post_to = args.proposal
     try:
-        # Absolute, and known before the kernel spawns: `history._run` runs git
-        # with cwd set to the project, so a relative work dir would materialize
-        # a `--ref` worktree *inside* the project — and the seatbelt profile is
-        # fixed at spawn. Resolved here, but NOT created here: `CheckRunner`
-        # creates it after `_refuse_overlap` has accepted it, so a work dir
-        # inside the project no longer gets made on the way to exit 2. The
-        # sandbox grant is a path, not a directory, and does not need it to
-        # exist yet.
-        work_dir = None
+        # Accepted, created and granted before the kernel spawns — in that
+        # order (review I1). The overlap refusal has to run here, not only
+        # inside the run: a `--work-dir` is a writable root, a Landlock rule on
+        # a path that does not exist is ENOENT, and the grant is lost with it.
+        # So the CLI creates an accepted one, and creating it is safe precisely
+        # because it has been accepted first ("a refused path leaves nothing
+        # behind"). `CheckRunner._work_dir` asks the same question again with
+        # the authoritative canonical path, and the runner still never deletes
+        # a directory it did not make.
+        projects_root = _projects_dir(args)
+        canonical = (Path(args.project).expanduser().resolve()
+                     if _is_path(args.project)
+                     else Path(projects_root).expanduser() / args.project)
         extra_writable: list[str] = []
-        if args.work_dir:
-            work_dir = str(Path(args.work_dir).expanduser().resolve())
+        work_dir = _accept_work_dir(
+            args.work_dir,
+            lambda root: refuse_work_dir_overlap(root, canonical,
+                                                 projects_root))
+        if work_dir:
             extra_writable.append(work_dir)
         # A project given as a path is the CI case (`--project .` on a checkout)
         # and it lives nowhere `_writable_roots` guessed, so the kernel could not
@@ -960,10 +1058,10 @@ def cmd_check(args) -> int:
         # workers spawn, which is the only moment the seatbelt profile can still
         # be widened.
         if _is_path(args.project):
-            extra_writable.append(str(Path(args.project).expanduser().resolve()))
+            extra_writable.append(str(canonical))
 
         service = _build_service(
-            _projects_dir(args),
+            projects_root,
             extra_writable=extra_writable or None)
         locks.set_client_id("ci")
         registry = build_registry(service)
@@ -1134,22 +1232,27 @@ def cmd_package_validate(args) -> int:
 
     from .core import locks
     from .core.model import AppError
-    from .core.packages.gate import SECURITY_NOTE, PackageGate
+    from .core.packages.gate import (SECURITY_NOTE, PackageGate,
+                                     refuse_work_dir_overlap)
 
     service = None
     try:
-        work_dir = None
+        # Accepted, created and granted before the workers spawn (review I1):
+        # a `--work-dir` is a writable root, and a Landlock grant on a path
+        # that does not exist is ENOENT — the grant is lost and every part
+        # fails with a PermissionError instead of producing a verdict.
+        # Creating it is safe only after the overlap guard has accepted it, so
+        # both happen here; `PackageGate._work_root` asks again inside the run.
+        projects_root = _projects_dir(args)
+        source = Path(args.path).expanduser().resolve()
         extra_writable: list[str] = []
-        if args.work_dir:
-            # Absolute and known before the workers spawn: the seatbelt profile
-            # is fixed at spawn, so a work dir outside the system temp dir can
-            # never be granted afterwards. Resolved here, but NOT created here —
-            # `PackageGate._work_root` creates it only after `_refuse_overlap`
-            # has accepted it.
-            work_dir = str(Path(args.work_dir).expanduser().resolve())
+        work_dir = _accept_work_dir(
+            args.work_dir,
+            lambda root: refuse_work_dir_overlap(root, projects_root, source))
+        if work_dir:
             extra_writable.append(work_dir)
         service = _build_service(
-            _projects_dir(args),
+            projects_root,
             extra_writable=extra_writable or None)
         locks.set_client_id("ci")
         report = PackageGate(service).run(
@@ -1216,7 +1319,7 @@ def cmd_publish(args) -> int:
     from .core import locks
     from .core.model import AppError
     from .core.packages import indexes as index_module
-    from .core.packages.gate import SECURITY_NOTE
+    from .core.packages.gate import SECURITY_NOTE, refuse_work_dir_overlap
 
     service = None
     try:
@@ -1257,15 +1360,18 @@ def cmd_publish(args) -> int:
                   "--yank name@version)", file=sys.stderr)
             return 2
 
-        work_dir = None
+        # Accepted, created and granted before the workers spawn — see
+        # `cmd_package_validate` and `_accept_work_dir` (review I1).
+        projects_root = _projects_dir(args)
+        source = Path(args.path).expanduser().resolve()
         extra_writable: list[str] = []
-        if args.work_dir:
-            # Absolute and known before the workers spawn: the seatbelt
-            # profile is fixed at spawn (see `cmd_package_validate`).
-            work_dir = str(Path(args.work_dir).expanduser().resolve())
+        work_dir = _accept_work_dir(
+            args.work_dir,
+            lambda root: refuse_work_dir_overlap(root, projects_root, source))
+        if work_dir:
             extra_writable.append(work_dir)
         service = _build_service(
-            _projects_dir(args),
+            projects_root,
             extra_writable=extra_writable or None)
         locks.set_client_id("ci")
         result = index_module.publish(index, args.path, service,

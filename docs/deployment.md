@@ -8,11 +8,10 @@
 > (`agentcad/kernel/worker.py`). Since PRD-006 that Python runs **confined**
 > on Linux: the worker applies a Landlock ruleset and a seccomp filter to
 > itself before it imports any geometry, so a script gets **no network**,
-> writes only inside the granted roots (the projects tree, the config dir,
-> the server's work root and its own private temp dir), and —
+> writes only inside the granted roots (the projects tree, the server's work
+> root and its own private temp dir), and —
 > under `AGENTCAD_MODE=hosted` — cannot read the state directory, nor
-> anything under the server user's home except the config dir (`~/.agentcad`,
-> which is a write root and so is readable by construction). Memory, process
+> **anything under the server user's home**. Memory, process
 > count and CPU are capped
 > ([below](#confinement-and-quotas)); a breach kills that one worker and
 > comes back as an ordinary build error.
@@ -72,7 +71,7 @@ container ships.
 | `AGENTCAD_MODE` | `local` | `local` or `hosted`. **Never inferred** — an unrecognised value refuses to start, because defaulting would fail open. |
 | `AGENTCAD_PUBLIC_ORIGIN` | — | Required in hosted mode. Scheme + host (+ port), no path, no trailing slash. Host and Origin checks compare against it; enrolment URLs are built from it. |
 | `AGENTCAD_SECRET_KEY` | generated | ≥32 characters. **Leave it unset — that is the recommended path**: one is generated and persisted `0600` at `$AGENTCAD_STATE_DIR/secret.key`, where it is readable only by the server's own user. An explicit value is process environment, so it is visible to `docker inspect`, to anything that can read `/proc/<pid>/environ`, and to whatever shell history or CI log the value passed through. Set it only when you have a reason the file cannot serve (several instances sharing one key), and then treat it as a secret in the orchestrator rather than in `.env`. |
-| `AGENTCAD_STATE_DIR` | `<config-dir>/state` | Identity state (`auth/`, `secret.key`). Created `0700` and repaired to `0700` at startup — it holds the session secret and the password hashes. Compose sets `/data/state`, and **keeping it out of the config dir is load-bearing**: the hosted read allow-list is the read roots plus the *write* roots, and `~/.agentcad` is a write root — so a state dir left at the `<config-dir>/state` default sits inside one and is readable by a part script. Set it explicitly on any hosted instance. |
+| `AGENTCAD_STATE_DIR` | `<config-dir>/state` | Identity state (`auth/`, `secret.key`). Created `0700` and repaired to `0700` at startup — it holds the session secret and the password hashes. Compose sets `/data/state`. **Keep it outside every kernel-writable root**: the hosted read allow-list is the read roots plus the *write* roots, so a state dir inside one is readable (and writable) by a part script, and whoever reads `secret.key` can forge any session. A hosted `agentcad serve` **refuses to start** if it is, naming both paths and exiting 2. Since the config dir is no longer a write root the `<config-dir>/state` default is safe again, but set it explicitly on any hosted instance anyway. |
 | `AGENTCAD_PROJECTS_DIR` | `~/AgentCAD/projects` | Where projects and their `.history` git repos live. Compose sets `/data/projects`. |
 | `AGENTCAD_HOST` | `127.0.0.1` | Listen address. A non-loopback bind **requires** `AGENTCAD_MODE=hosted`. |
 | `AGENTCAD_TRUSTED_PROXY` | `127.0.0.1` | Hosted mode only. The immediate peer(s) allowed to set `X-Forwarded-For`, passed to uvicorn's `forwarded_allow_ips` (IPs or CIDRs, comma-separated). Default matches the local proxy above. **`*` is refused** — it would let any client forge the address the login limiter keys on. |
@@ -209,7 +208,7 @@ bug.
 | `AGENTCAD_QUOTA_MEMORY_MB` | `2048` | RSS per worker — the cgroup's `memory.max` where one is delegated, otherwise the supervisor's kill threshold (and the job-object commit limit on Windows). |
 | `AGENTCAD_QUOTA_ADDRESS_SPACE_MB` | `3 × memory_mb` (6144) | Linux `RLIMIT_AS` only. Deliberately loose: it exists to turn a runaway *reservation* into a recoverable `MemoryError` with a line number, not to be the cap. |
 | `AGENTCAD_QUOTA_PIDS` | `128` | cgroup `pids.max` / job-object active processes — the fork-bomb stop. |
-| `AGENTCAD_QUOTA_PIDS_HEADROOM` | `64` | `RLIMIT_NPROC` = the live uid **task** count measured at spawn + this. Per-uid and counting threads, so it is headroom, not a budget. |
+| `AGENTCAD_QUOTA_PIDS_HEADROOM` | `64` | `RLIMIT_NPROC` = the live uid **task** count, re-measured **at every spawn** (respawns included), plus this **× the pool size**. Per-uid and counting threads, so it is headroom, not a budget: what it bounds is at most `headroom × pool size` *extra* tasks across the whole pool. It is scaled and re-measured because the limit is per-uid but is checked against the calling process's own ceiling — one number computed once starved the third worker of a three-worker pool, which died inside `import build123d`. The hard per-worker process cap is `AGENTCAD_QUOTA_PIDS`. |
 | `AGENTCAD_QUOTA_CPU_PERCENT` | `400` | cgroup `cpu.max` / job-object rate cap, as a share of one core (`400` = 4 cores). Throttles; it never kills. `off` for no CPU quota (macOS always). |
 | `AGENTCAD_QUOTA_SAMPLE_INTERVAL_S` | `0.25` | How often the parent samples a worker's RSS. Not a limit — see the overshoot note below. |
 | `AGENTCAD_QUOTA_DISK_MB` | `2048` | **Per project**, not per worker. |
@@ -415,7 +414,7 @@ one is not opting out of the other.
 
 | | mechanism | reads | writes | network | other processes |
 |---|---|---|---|---|---|
-| **Linux** | Landlock + seccomp, applied by the worker to itself before `import build123d` | `local` posture: anywhere. `hosted` posture (this deployment): an allow-list — `/usr`, `/lib*`, `/bin`, `/sbin`, `/etc`, `/opt`, `/proc`, `/dev`, `/sys`, the interpreter, the app tree, and everything it may write to (the roots in the next column — a write root is readable by construction). **Not** `AGENTCAD_STATE_DIR`, and **nothing else under the server user's home**: of `$HOME` only `~/.agentcad` is reachable, because it is a write root. The worker's own `HOME` env var points at its private temp dir, so `~` inside a script is not the server user's home at all | the granted roots only — the projects dir, each registered example, the config dir (`~/.agentcad`, `/data/home/.agentcad` in the image), the server's one `agentcad-work-*` root, and the worker's own private temp dir. Nothing else, root included (Landlock beats DAC) | denied: every socket family but `AF_UNIX` | no `ptrace`, no `process_vm_readv/writev`, no `pidfd_open`, no `io_uring`, and no signal to pid ≤ 0 or to the server |
+| **Linux** | Landlock + seccomp, applied by the worker to itself before `import build123d` | `local` posture: anywhere. `hosted` posture (this deployment): an allow-list — `/usr`, `/lib*`, `/bin`, `/sbin`, `/etc`, `/opt`, `/proc`, `/dev`, `/sys`, the interpreter, the app tree, and everything it may write to (the roots in the next column — a write root is readable by construction). **Not** `AGENTCAD_STATE_DIR`, and **nothing under the server user's home** — the config dir stopped being a write root, so there is no exception left to state. The worker's own `HOME` env var points at its private temp dir, so `~` inside a script is not the server user's home at all | the granted roots only — the projects dir, each registered example, the server's one `agentcad-work-*` root, and the worker's own private temp dir. Nothing else, root included (Landlock beats DAC) | denied: every socket family but `AF_UNIX` | no `ptrace`, no `process_vm_readv/writev`, no `pidfd_open`/`pidfd_send_signal`/`pidfd_getfd`, no `process_madvise`, no `io_uring`, and no signal to pid ≤ 0 or to the server |
 | **macOS** | `sandbox-exec` seatbelt profile (the v3 profile, unchanged) | anywhere (`local` posture only — the narrowed profile is Linux) | the same roots | denied | signals to self only |
 | **Windows** | **none.** Reported `unsupported`, honestly, in health and here — AppContainer is carved out as [PRD-006b](prd/pending/PRD-006b-windows-appcontainer.md) | — | — | — | — |
 
@@ -436,9 +435,9 @@ either alone can be the reason confinement is `off`:
 (`python -c "from agentcad.kernel import _confine; print(_confine.landlock_abi())"`,
 which is the CI step's third line) for the version.
 
-No capability, no `bwrap` binary and no `--privileged` are needed — the ruleset is applied through `ctypes` inside the
-worker, verified in this image as uid 10001 under Docker's default seccomp
-profile, at 0.3 ms.
+No capability, no `bwrap` binary and no `--privileged` are needed — the
+ruleset is applied through `ctypes` inside the worker, verified in this image
+as uid 10001 under Docker's default seccomp profile, at 0.3 ms.
 
 ### What caps a worker
 
@@ -511,7 +510,8 @@ curl -s -b jar localhost:8630/api/health | jq .sandbox
  "mechanism": "landlock+seccomp",
  "posture": "hosted",
  "confinement": {"status": "active", "mechanism": "landlock+seccomp",
-                 "detail": {"landlock_abi": 6, "seccomp": "seccomp(2)",
+                 "detail": {"landlock_abi": 6, "posture": "hosted",
+                            "seccomp": "seccomp(2)",
                             "rlimits": ["RLIMIT_AS", "RLIMIT_NPROC"]}},
  "quotas": {"status": "active", "mechanism": "rlimit+supervisor",
             "limits": {"memory_mb": 2048, "address_space_mb": 6144,
@@ -527,7 +527,12 @@ hosted instance whose confinement is not active also prints one `WARNING:` line
 to stderr at startup; it is not fatal, because a container that refuses to boot
 teaches an operator less than one that says what it is doing. `mechanism` is
 `null` beside `off` on purpose: naming a mechanism next to `off` would claim
-something is in force.
+something is in force. The same rule governs the quota **tiers**: a worker that
+reports no applied rlimits drops `rlimit` from `quotas.mechanism`, with the
+reason in `warnings`. A `warnings` entry that begins "the worker lost a
+Landlock grant" is a *narrower* confinement, not a failed one — one root (a
+directory that did not exist when the worker spawned) was not granted, and
+writes there will be denied while everything else stays in force.
 
 ### What a breach looks like to a user or an agent
 

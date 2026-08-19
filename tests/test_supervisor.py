@@ -134,7 +134,8 @@ def test_a_ballooning_script_is_killed_named_and_the_worker_comes_back(
     `details.usage` gives them the request that did it.
     """
     cap = int(baseline_mb) + 300
-    client = _client(tmp_path, memory_mb=cap)
+    records: list[dict] = []
+    client = _client(tmp_path, memory_mb=cap, on_usage=records.append)
     client.start()
     try:
         good = tmp_path / "box.acm"
@@ -144,6 +145,15 @@ def test_a_ballooning_script_is_killed_named_and_the_worker_comes_back(
         with pytest.raises(KernelError) as exc_info:
             _build(client, BALLOON, tmp_path / "balloon.acm", timeout_s=300)
         err = exc_info.value
+
+        # The breach reaches the meter too (review I3): the request that cost
+        # the most is exactly the one that never answered, and emitting only on
+        # the success path left it out of every roll-up.
+        breach = records[-1]
+        assert breach["method"] == "build" and breach["ok"] is False
+        assert breach["usage"]["cpu_ms"] is None
+        assert breach["usage"]["wall_ms"] > 0
+        assert breach["usage"]["peak_rss_mb"] > cap
 
         assert err.type == "kernel_crash"
         assert err.details["reason"] == "memory_cap"
@@ -300,6 +310,64 @@ def test_a_worker_that_dies_reports_the_crash_with_what_it_cost(tmp_path):
         assert client.request("ping", {})["ok"] is True
     finally:
         client.stop()
+
+
+@pytest.mark.timeout(300)
+def test_a_timeout_and_a_crash_both_reach_the_usage_hook(tmp_path):
+    """Review I3. `core/usage.py` documents ``cpu_ms: None`` records for
+    exactly these paths — a kill, a timeout, a crash — yet the hook only ever
+    fired on the success path, so the meter's ``errors`` counter could not rise
+    and a 60 s timeout contributed nothing at all to the wall clock it burned.
+
+    The record is the parent's own measurement: the worker took its meter down
+    with it, so ``cpu_ms`` is ``None`` rather than 0.
+    """
+    records: list[dict] = []
+    client = _client(tmp_path, memory_mb=4096, on_usage=records.append,
+                     name="worker-3")
+    client.start()
+    try:
+        with pytest.raises(KernelError):
+            _build(client, HANG, tmp_path / "hang.acm", timeout_s=1)
+        timed_out = records[-1]
+        assert timed_out["method"] == "build" and timed_out["ok"] is False
+        assert timed_out["worker"] == "worker-3"
+        assert timed_out["usage"]["cpu_ms"] is None
+        assert 1000 <= timed_out["usage"]["wall_ms"] < 3000
+
+        with pytest.raises(KernelError):
+            _build(client, _script("import os\nos._exit(9)"),
+                   tmp_path / "gone.acm")
+        crashed = records[-1]
+        assert crashed["method"] == "build" and crashed["ok"] is False
+        assert crashed["usage"]["cpu_ms"] is None
+        assert crashed["usage"]["wall_ms"] > 0
+    finally:
+        client.stop()
+
+
+def test_an_unreachable_worker_is_metered_before_it_is_mourned():
+    """The fourth kill path (review I3): the write itself failed, so nothing
+    was ever asked. No worker — the broken pipe is driven directly."""
+    client = KernelClient()
+    records: list[dict] = []
+    client._on_usage = records.append
+
+    def _broken(line):
+        raise BrokenPipeError(32, "Broken pipe")
+
+    client._proc = SimpleNamespace(
+        stdin=SimpleNamespace(write=_broken, flush=lambda: None),
+        poll=lambda: 1)
+
+    with pytest.raises(KernelError) as exc_info:
+        client._request_locked("build", {}, 5.0)
+
+    assert exc_info.value.type == "kernel_crash"
+    assert len(records) == 1
+    assert records[0]["method"] == "build" and records[0]["ok"] is False
+    assert records[0]["usage"]["cpu_ms"] is None
+    assert records[0]["usage"] == exc_info.value.details["usage"]
 
 
 def test_a_response_with_no_usage_leaves_the_last_one_standing():

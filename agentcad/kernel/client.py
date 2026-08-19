@@ -46,7 +46,8 @@ _MB = 1024.0 * 1024.0
 #: refused rlimit is a quota that did not apply — it belongs in the report and
 #: in health's warnings, but it says nothing about whether Landlock and seccomp
 #: are in force, and letting it clear `sandboxed` would understate the
-#: confinement as badly as overstating it.
+#: confinement as badly as overstating it. The same is true of
+#: `landlock_root`: one *lost grant* out of a ruleset that landed (review I2).
 CONFINEMENT_STAGES = ("landlock", "seccomp")
 
 
@@ -55,6 +56,13 @@ def confinement_holds(report: dict) -> bool:
 
     The report is the ONLY thing allowed to make `sandboxed` true (design spec,
     Decision 8); this is the half of that rule that can be read on its own.
+
+    Only **ruleset-level** failures clear the claim. A `landlock_root` entry is
+    a single path the kernel would not grant (a root that does not exist yet):
+    the ruleset is in force, the process is confined — *more* narrowly than
+    intended, not less — so calling it `off` would be exactly the overstatement
+    in reverse, and under `AGENTCAD_EXPECT_SANDBOX=active` it turned one
+    missing directory into a red CI job.
     """
     for failure in report.get("failures") or []:
         if failure.get("stage") in CONFINEMENT_STAGES:
@@ -87,6 +95,7 @@ class KernelClient:
         posture: str | None = None,
         on_usage=None,
         name: str | None = None,
+        pool_size: int = 1,
     ):
         self._python = python_exe or sys.executable
         self._timeout = timeout_s
@@ -108,9 +117,12 @@ class KernelClient:
         base = worker_argv(self._python)
         self._plan: sandbox.SandboxPlan | None = None
         if writable_dirs is not None or quotas is not None:
+            # `pool_size` is how many workers share this uid's RLIMIT_NPROC
+            # budget; a lone client is 1, and `KernelPool` passes its size.
             self._plan = sandbox.plan(base, list(writable_dirs or []),
                                       quotas=quotas, posture=posture,
-                                      server_pid=os.getpid())
+                                      server_pid=os.getpid(),
+                                      pool_size=pool_size)
         self._argv = self._plan.argv if self._plan else base
         #: Intended confinement. Slice 2 refines it from the worker's own ping
         #: report — a preamble that failed must never read as `active` here.
@@ -152,8 +164,14 @@ class KernelClient:
             # (which must exist before the child looks at $TMPDIR), the
             # bytecode opt-out, and the rlimit payload the worker applies to
             # itself. Everything else is inherited.
+            #
+            # `spawn_env()`, not `plan.env`: the fork budget is a **per-uid**
+            # ceiling measured against the live task count, so it is recomputed
+            # here — at every spawn, respawns included. A number measured once
+            # in `__init__` and reused for three pool slots killed worker 3 at
+            # `import build123d` (review C2).
             self._plan.prepare_tmp()
-            env = {**os.environ, **self._plan.env}
+            env = {**os.environ, **self._plan.spawn_env()}
         self._proc = subprocess.Popen(
             self._argv,
             stdin=subprocess.PIPE,
@@ -266,6 +284,12 @@ class KernelClient:
         except (BrokenPipeError, OSError) as exc:
             usage = self._usage_stub(started, peak)
             self._kill()
+            # The meter's contract (`core/usage.py`) is that EVERY request is
+            # one record, and the ones that cost the most are exactly the ones
+            # that never answer: a kill, a timeout, a crash. Emitting only on
+            # the success path made `errors` permanently 0 and left the wall
+            # clock of a 60 s timeout out of the totals (review I3).
+            self._emit_usage(method, usage, ok=False)
             raise KernelError(
                 ERROR_CRASH, f"kernel worker unreachable: {exc}",
                 {**self._crash_details(), "usage": usage}
@@ -285,6 +309,7 @@ class KernelClient:
                 # would be the first thing a reader distrusted.
                 usage = self._usage_stub(started, peak)
                 self._kill()
+                self._emit_usage(method, usage, ok=False)
                 raise KernelError(
                     ERROR_TIMEOUT,
                     f"kernel request {method!r} exceeded {timeout:.0f}s; worker restarted",
@@ -304,6 +329,7 @@ class KernelClient:
                         "tier": "supervisor"})
                     usage = self._usage_stub(started, peak)
                     self._kill()
+                    self._emit_usage(method, usage, ok=False)
                     raise KernelError(
                         ERROR_CRASH,
                         f"kernel worker exceeded its memory cap "
@@ -328,6 +354,7 @@ class KernelClient:
                 details = {**self._crash_details(), "usage": usage}
                 if why:
                     details.update(why)
+                self._emit_usage(method, usage, ok=False)
                 raise KernelError(
                     ERROR_CRASH,
                     "kernel worker exited unexpectedly"

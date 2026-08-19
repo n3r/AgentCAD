@@ -48,6 +48,15 @@ _TRIMMABLE = (".acm", ".faces.u32")
 #: buys room for several builds rather than running on every one.
 _TRIM_WATERMARK = 0.75
 
+#: A cache file younger than this is never trimmed, whatever the keep-set says.
+#: The keep-set is the SERVICE's memory (`_status`/`_config_status`), and that
+#: is empty after a restart — so a cold assembly read over the watermark could
+#: sweep away a sibling part's mesh that another request had just built and the
+#: browser had not fetched yet. Ten minutes is far longer than any build →
+#: fetch round trip and far shorter than anything a janitor needs to reclaim
+#: (review M4).
+_TRIM_MIN_AGE_S = 600.0
+
 #: "this keyword was not passed", for a field whose ``None`` is a real value.
 #: ``active_config=None`` MEANS "return to base" (pop the key), so it cannot
 #: double as "leave it alone" the way ``label=None`` does.
@@ -542,7 +551,8 @@ class ProjectStore:
              "budget_mb": budget},
         )
 
-    def trim_cache(self, proj: str, keep_keys: set[str]) -> int:
+    def trim_cache(self, proj: str, keep_keys: set[str], *,
+                   min_age_s: float = _TRIM_MIN_AGE_S) -> int:
         """Delete the oldest unreferenced meshes until the cache is under the
         watermark. Returns the bytes freed.
 
@@ -553,6 +563,16 @@ class ProjectStore:
         and is never touched — which is also why the cache can end up over the
         watermark and stay there: the answer to "every mesh is live" is a
         bigger budget, not a deletion the user would notice.
+
+        *min_age_s* is the **second** protection, and it exists because the
+        first one is not enough (review M4): *keep_keys* is built from the
+        service's in-memory ``_status``/``_config_status``, which are empty
+        after a restart. A cold assembly read that goes over the watermark
+        could therefore delete a sibling part's mesh that another request built
+        seconds earlier and whose browser fetch had not arrived yet — nothing
+        is lost for good (the next read rebuilds it), but the user pays a
+        rebuild for a file that was on disk. A file younger than this is
+        somebody's, whether or not this process remembers whose.
 
         It reads :meth:`disk_usage`, which is **memoized for 5 s**, so a build
         that lands immediately after another one measures the older number and
@@ -570,6 +590,9 @@ class ProjectStore:
         if cache_bytes <= target:
             return 0
         cache = self.canonical_path_of(proj) / ".cache"
+        # One clock reading for the whole sweep: a per-entry `time.time()`
+        # would make the cut-off drift across a large directory.
+        floor = time.time() - max(0.0, min_age_s)
         candidates = []
         try:
             with os.scandir(cache) as entries:
@@ -584,6 +607,8 @@ class ProjectStore:
                         stat = entry.stat()
                     except OSError:
                         continue
+                    if stat.st_mtime > floor:
+                        continue   # too young to be nobody's
                     candidates.append((stat.st_mtime, stat.st_size, entry.path))
         except OSError:
             return 0
