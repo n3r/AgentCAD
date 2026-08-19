@@ -1,8 +1,8 @@
-# 0260 — PRD-024: `agentcad bench` — the CLI, `score`, `report`, and the two `cli.py` edits
+# 0260 — PRD-024: `agentcad bench` — the CLI, `score`, `report`, `publish`, and the two `cli.py` edits
 
 - **Commit:** pending
 - **Date:** 2026-08-19
-- **Author:** Claude (PRD-024 Task 4, with Task 6's `_cmd_report` folded in)
+- **Author:** Claude (PRD-024 Task 4, with Task 6's `_cmd_report` and Task 7's `_cmd_publish` folded in)
 
 ## Summary
 
@@ -10,7 +10,8 @@
 module: `add_bench_parser` (all four sub-subcommands, so `--help` is honest from
 this slice on), `cmd_bench`, `bench_service`, a working `bench score` over the
 Task-3 `Scorer`, and a working `bench report` over the already-landed
-`agentcad/bench/report.py`. `agentcad/cli.py` takes **exactly two** edits, both
+`agentcad/bench/report.py`, and a working `bench publish` over Task 7's
+`agentcad/bench/publish.py`. `agentcad/cli.py` takes **exactly two** edits, both
 specified in the design (§9.1): `_build_service` gains the keyword-only
 `examples: bool = True`, and `main()` gains the lazy parser registration plus one
 dispatch arm and the `bench` metavar entry.
@@ -51,11 +52,24 @@ dispatch arm and the `bench` metavar entry.
   incomparable baseline or an unreadable results directory. **No service and no
   kernel**: the command is pure, so a CI job can run it on a machine that has
   never built a solid. A test asserts it never constructs one.
-- **`bench run` and `bench publish` are registered but refuse**, printing
-  `not implemented in this slice` and exiting 2 (Tasks 5 and 7 wire them). They
-  are in the parser from this slice on because `agentcad bench --help` is a
-  promise about the surface, and a stub that exited 0 would read to CI as "the
-  suite ran".
+- **`bench publish LEADERBOARD [-o PATH] [--title TEXT]`** validates every row
+  against the five disclosure rules and renders the static page. `0` the page was
+  written · **`1` a row was rejected for incomplete disclosure and NOTHING was
+  written** · `2` harness (an absent board, an unwritable output). The exit-1 lane
+  is the one place in this module where `1` is not about a model: a leaderboard is
+  a claim about other people's work, so a row that does not disclose everything
+  the rules require refuses the **whole** board rather than being dropped from it.
+  The handler calls `load_rows` and then `publish` rather than `publish` alone —
+  `load_rows` never raises for a bad row, so the exit-1 lane is separated from the
+  harness lane before anything can be written, and every problem of every row is
+  printed at once. The roster it measures a row against is `load_tasks()`'s ids:
+  rule 5 (`publish._coverage_problems`) is what stops a row buying a place by
+  running the easy half. `-o` defaults to `docs/bench/index.html` (design §12).
+  **No service and no kernel** — a test asserts it.
+- **`bench run` is registered but refuses**, printing `not implemented in this
+  slice` and exiting 2 (Task 5 wires it). It is in the parser from this slice on
+  because `agentcad bench --help` is a promise about the surface, and a stub that
+  exited 0 would read to CI as "the suite ran".
 - **Output conventions are `check`'s, not new ones**: `--quiet`/`--json` are the
   same mutually exclusive pair; `--quiet` prints nothing anywhere and the exit
   code is the whole answer; `--json` **replaces** the stderr table with the
@@ -92,14 +106,14 @@ dispatch arm and the `bench` metavar entry.
 ## Files
 
 - `agentcad/bench/cli.py` — **new**. `add_bench_parser`, `cmd_bench`,
-  `bench_service`, `_cmd_score`, `_cmd_report`, the `run`/`publish` refusals, and
-  the two printers.
+  `bench_service`, `_cmd_score`, `_cmd_report`, `_cmd_publish`, the `run`
+  refusal, `DEFAULT_PAGE`, `_print_problems` and the two printers.
 - `agentcad/cli.py` — the two edits: `_build_service`'s `examples` parameter (plus
   one docstring paragraph) and `main()`'s metavar / parser registration /
   dispatch arm.
 - `agentcad/bench/author.py` — `main()` builds its scratch service with
   `examples=False`.
-- `tests/test_bench_cli.py` — **new**, 20 tests.
+- `tests/test_bench_cli.py` — **new**, 26 tests.
 - `tests/test_packages_cli.py` — `test_help_lists_package_beside_the_other_commands`
   now expects `bench` in the metavar (the test is per-command *and* pins the
   literal string, so a new command has to update it — by design).
@@ -109,15 +123,17 @@ dispatch arm and the `bench` metavar entry.
 
 ```
 $ uv run pytest -q tests/test_bench_cli.py
-....................                                                     [100%]
-20 passed in 14.87s
+..........................                                               [100%]
+26 passed in 26.31s
 
-$ uv run pytest -q tests/test_bench_cli.py tests/test_bench_scoring.py \
-      tests/test_bench_report.py tests/test_bench_tasks.py tests/test_cli_admin.py
-103 passed in 16.94s
+$ uv run pytest -q tests/test_bench_cli.py tests/test_bench_publish.py \
+      tests/test_bench_report.py
+85 passed, 1 deselected in 18.24s
+      # the deselected row loads the shipped benchmarks/tasks tree, which is
+      # mid-authoring; nothing in this change touches it
 
-$ uv run pytest -q tests/test_checks_cli.py tests/test_packages_cli.py
-61 passed
+$ uv run ruff check agentcad/bench/cli.py agentcad/cli.py tests/test_bench_cli.py
+All checks passed!
 ```
 
 Smoke, the real CLI (AC1 through the process boundary):
@@ -146,8 +162,21 @@ bench report: 1.0000 over 1 task(s) — baseline unrecorded (the baseline record
 no total yet; the gate is a no-op until a run records one)
 exit=0
 
-$ uv run agentcad bench run --report /dev/null   →  exit 2, "not implemented in this slice"
-$ uv run agentcad bench                          →  exit 2, "pick a subcommand: run, score, report, publish"
+$ uv run agentcad bench publish <board> -o <page> --title AgentCAD-Bench
+bench publish: 2 row(s) over 1 category(ies) → <page>
+exit=0
+
+$ uv run agentcad bench publish <board-with-one-undisclosed-row> -o <page>
+agentcad bench publish: the leaderboard was not written; 3 disclosure problems:
+  - kcl: config is missing; the full-disclosure rule is fail-closed and has no override
+  - kcl: submission must be a non-empty string
+  - kcl: submission is empty; a leaderboard row must name the artefact that reproduces it
+exit=1
+                                     # and <page> does not exist
+
+$ uv run agentcad bench publish <absent>          →  exit 2, "is not a leaderboard directory"
+$ uv run agentcad bench run --report /dev/null    →  exit 2, "not implemented in this slice"
+$ uv run agentcad bench                           →  exit 2, "pick a subcommand: run, score, report, publish"
 ```
 
 `make test` — <orchestrator fills>
@@ -178,3 +207,18 @@ $ uv run agentcad bench                          →  exit 2, "pick a subcommand
 - `agentcad/bench/cli.py` imports neither OCP nor build123d, and every bench
   module it needs is imported inside a handler, so `add_bench_parser` costs one
   `argparse` call at parse time and nothing else.
+- **Fix round 1** (review of `da081d5`): the §4.8 "every subscore excluded" exit-2
+  lane now has a test — both other exit-2 tests short-circuit before a service
+  exists, so the lane was reachable only in production. It stubs `bench_service`
+  and `scoring.Scorer` and asserts the code is `2`, that `score.json` is still
+  written (evidence beats silence — the exclusion moves the exit code and nothing
+  else) and that the kernel is still stopped.
+- **Fix round 1, minors:** `test_bench_report_needs_no_kernel` patches
+  `agentcad.cli._build_service` rather than the `bench_service` wrapper, so it
+  still fails if a handler reaches past the wrapper; the two real-kernel
+  `_build_service` tests carry `@pytest.mark.timeout(300)`; an autouse fixture
+  restores `locks.current_client_id()`, because `set_client_id` writes a
+  **ContextVar** and these tests drive `main()` in-process — without it every test
+  after the first `bench score` would run as `"bench"`; `_print_problems` lost its
+  dead `command` parameter; and `_cmd_report`'s `AppError` handler prints the
+  `details["problems"]` list the way `_cmd_score`'s does.

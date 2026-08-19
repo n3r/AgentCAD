@@ -32,6 +32,21 @@ from agentcad import cli as agentcad_cli
 SEED = "model_from_drawing/mfd_001_spacer_plate"
 
 
+@pytest.fixture(autouse=True)
+def _restore_client_id():
+    """`locks.set_client_id` writes a **ContextVar**, and these tests drive
+    `main()` in-process: without this every test after the first `bench score`
+    would run as `"bench"` and a neighbour asserting on lock ownership would
+    fail for a reason nothing in its own body explains."""
+    from agentcad.core import locks
+
+    before = locks.current_client_id()
+    try:
+        yield
+    finally:
+        locks.set_client_id(before)
+
+
 def _run(argv):
     """Drive main() the way a shell would; returns the SystemExit code."""
     with patch.object(sys, "argv", ["agentcad", *argv]):
@@ -42,6 +57,7 @@ def _run(argv):
 
 # ------------------------------------------------- edit 1: examples=False
 
+@pytest.mark.timeout(300)
 def test_build_service_examples_flag_defaults_to_registering_them(tmp_path):
     service = agentcad_cli._build_service(tmp_path / "projects")
     try:
@@ -51,6 +67,7 @@ def test_build_service_examples_flag_defaults_to_registering_them(tmp_path):
         agentcad_cli._release_work_root(service)
 
 
+@pytest.mark.timeout(300)
 def test_build_service_examples_false_registers_none(tmp_path):
     service = agentcad_cli._build_service(tmp_path / "projects", examples=False)
     try:
@@ -147,6 +164,59 @@ def test_bench_score_json_and_quiet_are_the_check_conventions(capsys):
     assert captured.out.startswith("bench score: model_from_drawing/a — 0.5000")
 
 
+def test_bench_score_with_every_subscore_excluded_is_exit_two(tmp_path, capsys,
+                                                              monkeypatch):
+    """Design §4.8, the lane both other exit-2 tests short-circuit past.
+
+    An empty `weights_effective` means there is no arithmetic left to report —
+    "we could not produce a verdict", the harness lane. It is emphatically NOT
+    a zero: a zero is a measurement, and answering 0.0 here would let a
+    submission that made every subscore unmeasurable rank above one that was
+    merely wrong.
+
+    No kernel: the service is stubbed at `bench_service`, which is the seam
+    `_cmd_score` builds through, and `Scorer` is stubbed at the name the
+    handler binds.
+    """
+    from types import SimpleNamespace
+
+    from agentcad.bench import cli as bench_cli
+
+    stopped = []
+    service = SimpleNamespace(
+        kernel=SimpleNamespace(stop=lambda: stopped.append(True)),
+        work_root=None)
+    monkeypatch.setattr(bench_cli, "bench_service",
+                        lambda *a, **k: service)
+    monkeypatch.setattr("agentcad.core.tools.build_registry",
+                        lambda *a, **k: None)
+
+    class _Scorer:
+        def __init__(self, service, registry=None):
+            pass
+
+        def score(self, task, submission, **kwargs):
+            return {"schema": 1, "task": task.id, "category": task.category,
+                    "task_set": task.task_set, "task_version": task.version,
+                    "harness": 1, "agentcad": "0.1.0", "total": 0.0,
+                    "weights_effective": {},
+                    "subscores": {"built": {"value": 0.0, "weight": 0.0,
+                                            "status": "error", "detail": {}}},
+                    "notes": ["every subscore was excluded from the total, so "
+                              "no verdict could be produced"]}
+
+    monkeypatch.setattr("agentcad.bench.scoring.Scorer", _Scorer)
+
+    out = tmp_path / "out"
+    assert _run(["bench", "score", str(tmp_path), "--task", SEED,
+                 "--out", str(out)]) == 2
+    # The score is still written and still printed: evidence beats silence, and
+    # the exit code is the only thing the exclusion moves.
+    assert json.loads((out / "score.json").read_text())["weights_effective"] == {}
+    assert "no verdict could be produced" in capsys.readouterr().err
+    assert stopped == [True]          # the kernel is stopped on this path too
+
+
 def test_bench_score_refuses_a_non_finite_budget(capsys):
     assert _run(["bench", "score", ".", "--task", SEED, "--budget", "nan"]) == 2
     assert "--budget" in capsys.readouterr().err
@@ -185,12 +255,13 @@ def test_bench_with_no_subcommand_is_exit_two(capsys):
     assert "pick a subcommand" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("command", ["run", "publish"])
-def test_run_and_publish_refuse_honestly_for_now(tmp_path, capsys, command):
-    """A stub that exited 0 would read to CI as 'the suite ran'."""
-    argv = {"run": ["bench", "run", "--report", str(tmp_path / "out")],
-            "publish": ["bench", "publish", str(tmp_path / "l.json")]}[command]
-    assert _run(argv) == 2
+def test_run_refuses_honestly_for_now(tmp_path, capsys):
+    """A stub that exited 0 would read to CI as 'the suite ran'.
+
+    `publish` was wired by Task 7 and has its own exit-code tests below; `run`
+    is Task 5's.
+    """
+    assert _run(["bench", "run", "--report", str(tmp_path / "out")]) == 2
     assert "not implemented in this slice" in capsys.readouterr().err
 
 
@@ -244,10 +315,12 @@ def test_bench_report_writes_both_outputs_and_exits_zero(tmp_path, capsys):
 def test_bench_report_needs_no_kernel(tmp_path, monkeypatch):
     """`bench report` is pure: a CI job runs it on a machine that has never
     built a solid, so the command may not construct a service."""
-    from agentcad.bench import cli as bench_cli
+    def _explode(*args, **kwargs):
+        raise AssertionError("bench report built a service")
 
-    monkeypatch.setattr(bench_cli, "bench_service", lambda *a, **k: (_ for _ in ()).throw(
-        AssertionError("bench report built a service")))
+    # `agentcad.cli._build_service`, not `bench_cli.bench_service`: patching the
+    # wrapper would still pass if `_cmd_report` reached past it.
+    monkeypatch.setattr("agentcad.cli._build_service", _explode)
     results = _results(tmp_path / "results", [("model_from_drawing/a", 1.0)])
     assert _run(["bench", "report", str(results), "--quiet"]) == 0
 
@@ -304,3 +377,133 @@ def test_bench_report_json_is_the_document_on_stdout(tmp_path, capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == canonical_json(json.loads(captured.out)).decode()
+
+
+# ---------------------------------------------------------- bench publish
+
+#: The roster the publish tests pin. `_cmd_publish` reads `load_tasks()`, and
+#: `PUBLISH_ROSTER` is what the fixture below makes it answer: a CLI test must
+#: measure the handler, not the state of `benchmarks/tasks/` on the day it runs
+#: — the shipped roster grows to 25, and half of a task being on disk mid-commit
+#: would fail these tests for a reason nothing in their bodies explains.
+PUBLISH_ROSTER = ["model_from_drawing/a", "modify_to_spec/b"]
+
+
+@pytest.fixture
+def roster(monkeypatch):
+    """Make `load_tasks()` answer `PUBLISH_ROSTER`, whatever is on disk."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "agentcad.bench.tasks.load_tasks",
+        lambda *a, **k: [SimpleNamespace(id=task_id)
+                         for task_id in PUBLISH_ROSTER])
+    return PUBLISH_ROSTER
+
+
+def _publish_report(total=0.6) -> dict:
+    tasks = PUBLISH_ROSTER
+    categories = sorted({task_id.split("/")[0] for task_id in tasks})
+    return {"schema": 1, "task_set": "bench-v1", "harness": 1,
+            "agentcad": "0.1.0", "agent": "builtin", "model": "m",
+            "n": len(tasks), "total": total,
+            "categories": {name: {"total": total, "n": 1, "missing": 0}
+                           for name in categories},
+            "tasks": {task_id: {"total": total, "over_budget": False,
+                                "missing": False, "subscores": {}}
+                      for task_id in tasks},
+            "warnings": []}
+
+
+def _publish_row(row_id, **over) -> dict:
+    row = {"schema": 1, "id": row_id, "agent": "AgentCAD built-in chat agent",
+           "harness_command": "agentcad bench run --set core",
+           "model": "claude-sonnet-5", "agentcad": "0.1.0", "harness": 1,
+           "task_set": "bench-v1", "date": "2026-08-19",
+           "config": {"kernel_pool_size": 1},
+           "submission": "https://example.invalid/s.tar.gz",
+           "transcript": "https://example.invalid/t.tar.gz", "notes": ""}
+    row.update(over)
+    return row
+
+
+def _board(root: Path, rows) -> Path:
+    from agentcad.bench._json import write_json
+
+    for row in rows:
+        out = root / "rows" / row["id"]
+        write_json(out / "row.json", row)
+        write_json(out / "report.json", _publish_report())
+    return root
+
+
+def test_bench_publish_writes_the_page_and_exits_zero(tmp_path, capsys, roster):
+    board = _board(tmp_path / "board", [_publish_row("builtin"),
+                                        _publish_row("kcl")])
+    page = tmp_path / "index.html"
+    assert _run(["bench", "publish", str(board), "-o", str(page),
+                 "--title", "AgentCAD-Bench"]) == 0
+    html = page.read_text()
+    assert "<script" not in html            # self-contained, no remote asset
+    assert "builtin" in html and "kcl" in html
+    assert capsys.readouterr().out.startswith("bench publish: 2 row(s)")
+
+
+def test_bench_publish_incomplete_disclosure_is_exit_one_and_writes_nothing(
+        tmp_path, capsys, roster):
+    """The exit-1 lane: a rejected row refuses the WHOLE board.
+
+    A board that published the disclosed rows and quietly dropped the rest
+    would make the disclosure rule decorative.
+    """
+    board = _board(tmp_path / "board",
+                   [_publish_row("builtin"),
+                    _publish_row("mystery", submission="", config=None)])
+    page = tmp_path / "index.html"
+    assert _run(["bench", "publish", str(board), "-o", str(page)]) == 1
+    captured = capsys.readouterr()
+    assert "mystery" in captured.err and "submission" in captured.err
+    assert "disclosure problem" in captured.err
+    assert not page.exists()                # nothing partial ever lands
+
+
+def test_bench_publish_a_partial_run_is_not_a_row(tmp_path, capsys, roster):
+    """Rule 5: a report that does not cover the roster is rejected, so a row
+    cannot buy a place by running the easy half."""
+    from agentcad.bench._json import write_json
+
+    board = tmp_path / "board"
+    row = _publish_row("builtin")
+    write_json(board / "rows" / "builtin" / "row.json", row)
+    report = _publish_report()
+    report["tasks"] = {}
+    write_json(board / "rows" / "builtin" / "report.json", report)
+    assert _run(["bench", "publish", str(board),
+                 "-o", str(tmp_path / "index.html")]) == 1
+    assert "does not cover" in capsys.readouterr().err
+
+
+def test_bench_publish_an_absent_board_is_exit_two(tmp_path, capsys, roster):
+    assert _run(["bench", "publish", str(tmp_path / "nope"),
+                 "-o", str(tmp_path / "index.html")]) == 2
+    assert "agentcad bench publish" in capsys.readouterr().err
+
+
+def test_bench_publish_an_unwritable_output_is_exit_two(tmp_path, capsys, roster):
+    board = _board(tmp_path / "board", [_publish_row("builtin")])
+    # A directory where the page should go: the write fails, and a failure to
+    # write is the harness lane, never a rejected row.
+    blocked = tmp_path / "index.html"
+    blocked.mkdir()
+    assert _run(["bench", "publish", str(board), "-o", str(blocked)]) == 2
+    assert "agentcad bench publish" in capsys.readouterr().err
+
+
+def test_bench_publish_needs_no_kernel(tmp_path, monkeypatch, roster):
+    def _explode(*args, **kwargs):
+        raise AssertionError("bench publish built a service")
+
+    monkeypatch.setattr("agentcad.cli._build_service", _explode)
+    board = _board(tmp_path / "board", [_publish_row("builtin")])
+    assert _run(["bench", "publish", str(board),
+                 "-o", str(tmp_path / "index.html")]) == 0

@@ -14,12 +14,15 @@ dispatches them, and both are imported *lazily* from `main()` so
 | `bench run` | every selected task ran and was scored | — | harness |
 | `bench score` | a score was produced | — | harness |
 | `bench report` | no baseline, or the baseline is met | a regression | harness |
-| `bench publish` | the page was written | a row was rejected | harness |
+| `bench publish` | the page was written | a row was rejected, and NOTHING was written | harness |
 
 `bench run` and `bench score` are deliberately never `1`: a low score or an
 over-budget task is a **measurement**, and turning it into a failing exit would
 make the runner and the release gate the same thing. FR11's gate is
-`bench report --baseline`, and only there.
+`bench report --baseline`, and only there. `bench publish`'s `1` is the one
+exception in this module, and it is not about a model: a leaderboard is a claim
+about other people's work, so a row that does not disclose everything the rules
+require refuses the **whole** board rather than being dropped from it.
 
 Everything *after* the measurement — writing the score, printing the table — is
 inside the same exit-code mapping as the measurement itself, because a
@@ -28,7 +31,6 @@ wrong" (`cmd_check`'s note, `cli.py:1132-1137`).
 """
 from __future__ import annotations
 
-import argparse
 import shutil
 import sys
 import tempfile
@@ -39,9 +41,9 @@ from pathlib import Path
 #: claims a lock a person is holding.
 CLIENT_ID = "bench"
 
-#: What `run`/`publish` answer until Tasks 5 and 7 wire them. A stub that
-#: printed nothing and exited 0 would be worse than absent: a CI job would read
-#: it as "the suite ran".
+#: What `run` answers until Task 5 wires it. A stub that printed nothing and
+#: exited 0 would be worse than absent: a CI job would read it as "the suite
+#: ran".
 _NOT_IMPLEMENTED = "not implemented in this slice"
 
 _SCORE_ROW = "  {:<13} {:<16} {:>7} {:>7} {:>9}"
@@ -79,7 +81,7 @@ def add_bench_parser(sub) -> None:
     All four are registered from this slice on, `run` and `publish` included:
     `agentcad bench --help` is a promise about the surface, and a help text that
     grows a subcommand per merge teaches a reader to re-read it every week.
-    Their handlers refuse honestly (exit 2) until Tasks 5 and 7 land.
+    `run`'s handler refuses honestly (exit 2) until Task 5 lands.
     """
     from ..cli import _finite_arg
 
@@ -193,10 +195,14 @@ def add_bench_parser(sub) -> None:
         "publish", help="render the static leaderboard page",
         description="Render a leaderboard from submitted rows. A row that does "
                     "not disclose everything the rules require is rejected, "
-                    "and a rejected row is exit 1.")
-    pub.add_argument("leaderboard", help="the leaderboard JSON to render")
+                    "and a rejected row refuses the WHOLE board (exit 1) with "
+                    "nothing written. The page is self-contained: no script, "
+                    "no remote asset, no clock reading and no filesystem path.")
+    pub.add_argument("leaderboard",
+                     help="the leaderboard directory (holding "
+                          "rows/<row-id>/row.json + report.json)")
     pub.add_argument("-o", "--out", default=None, metavar="PATH",
-                     help="write the page here (default: stdout)")
+                     help="write the page here (default: docs/bench/index.html)")
     pub.add_argument("--title", default=None, metavar="TEXT",
                      help="page title")
 
@@ -229,9 +235,62 @@ def _cmd_run(args) -> int:
     return 2
 
 
+#: Where the leaderboard lands when `-o` is not given (design §12). Relative,
+#: so it is the repo's published page when the command is run from a checkout
+#: and never an absolute path baked into a shipped binary.
+DEFAULT_PAGE = "docs/bench/index.html"
+
+
 def _cmd_publish(args) -> int:
-    print(f"agentcad bench publish: {_NOT_IMPLEMENTED}", file=sys.stderr)
-    return 2
+    """`agentcad bench publish` — render the board, or refuse it whole.
+
+    Three exit codes and the middle one is the point: **1 is a row rejected for
+    incomplete disclosure, and nothing was written**. It is the one command in
+    the bench where 1 means "the input is wrong" rather than "the model is
+    wrong", because a leaderboard is a claim about other people's work and a
+    board that published the disclosed rows and quietly dropped the rest would
+    make the disclosure rule decorative.
+
+    The two steps are deliberate rather than one `publish()` call: `load_rows`
+    never raises for a bad row, so the exit-1 lane is separated from the
+    harness lane *before* anything can be written, and every problem of every
+    row is printed at once — an author fixing one per run is a bad afternoon.
+
+    **No service and no kernel**: this command is pure over a directory.
+    """
+    from ..core.model import AppError
+    from . import publish as bench_publish
+    from .tasks import load_tasks
+
+    try:
+        # The roster is the shipped task set: rule 5 (`_coverage_problems`) is
+        # what stops a row buying a place by running the easy half, and it can
+        # only ask that question against the tasks this harness ships.
+        expected = [task.id for task in load_tasks()]
+        board = Path(args.leaderboard).expanduser()
+        rows, problems = bench_publish.load_rows(board, expected)
+        if problems:
+            print(f"agentcad bench publish: the leaderboard was not written; "
+                  f"{len(problems)} disclosure problem"
+                  f"{'' if len(problems) == 1 else 's'}:", file=sys.stderr)
+            for problem in problems:
+                print(f"  - {problem}", file=sys.stderr)
+            return 1
+        out = Path(args.out or DEFAULT_PAGE).expanduser()
+        result = bench_publish.publish(
+            board, out, title=args.title or "AgentCAD-Bench",
+            expected_tasks=expected)
+    except AppError as exc:
+        print(f"agentcad bench publish: {exc.message}", file=sys.stderr)
+        _print_problems(exc)
+        return 2
+    except Exception as exc:  # noqa: BLE001 — any harness failure is exit 2
+        print(f"agentcad bench publish: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return 2
+    print(f"bench publish: {result['rows']} row(s) over "
+          f"{len(result['categories'])} category(ies) → {result['path']}")
+    return 0
 
 
 # ---------------------------------------------------------------- score
@@ -284,7 +343,7 @@ def _cmd_score(args) -> int:
                              work_dir=work_dir)
     except AppError as exc:
         print(f"agentcad bench score: {exc.message}", file=sys.stderr)
-        _print_problems("score", exc)
+        _print_problems(exc)
         return 2
     except Exception as exc:  # noqa: BLE001 — any harness failure is exit 2
         print(f"agentcad bench score: {type(exc).__name__}: {exc}",
@@ -325,11 +384,11 @@ def _cmd_score(args) -> int:
     return 0 if score.get("weights_effective") else 2
 
 
-def _print_problems(command: str, exc) -> None:
+def _print_problems(exc) -> None:
     """An `AppError`'s `details["problems"]`, capped.
 
-    The task loader collects **every** defect before it raises: an author
-    fixing one per run is a bad afternoon.
+    The task loader and the publish gate both collect **every** defect before
+    they raise: an author fixing one per run is a bad afternoon.
     """
     problems = (getattr(exc, "details", None) or {}).get("problems") or []
     for line in problems[:20]:
@@ -425,6 +484,7 @@ def _cmd_report(args) -> int:
         _print_report(args, report, written)
     except AppError as exc:
         print(f"agentcad bench report: {exc.message}", file=sys.stderr)
+        _print_problems(exc)
         return 2
     except Exception as exc:  # noqa: BLE001 — any harness failure is exit 2
         print(f"agentcad bench report: {type(exc).__name__}: {exc}",
