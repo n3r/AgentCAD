@@ -27,18 +27,30 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `expect_sandbox` is PRD-006's honesty gate (Decision 13): where it is
+        # `active`, a worker that failed to confine itself is a RED test rather
+        # than a skipped one. It is empty on Windows because AppContainer is
+        # carved out as PRD-006b and `unsupported` is the honest answer there —
+        # quotas (job objects + the supervisor) are still expected on all three.
         include:
           # macOS runs every PR-required test; exhaustive examples run nightly.
+          # 30 minutes, not 20: PRD-006 put `test_supervisor.py`'s real 1.5 GB
+          # balloons, `test_sandbox_plan.py` and the acceptance battery on the
+          # PR path, and a suite that times out is indistinguishable from a
+          # suite that failed.
           - os: macos-latest
             suite: pr
-            timeout: 20
+            timeout: 30
+            expect_sandbox: active
           # Other platforms exercise only boundaries whose behavior can vary by OS.
           - os: ubuntu-latest
             suite: portability
             timeout: 20
+            expect_sandbox: active
           - os: windows-latest
             suite: portability
             timeout: 20
+            expect_sandbox: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -59,6 +71,20 @@ jobs:
       - name: Sync dependencies (locked)
         run: uv sync --locked
 
+      # PRD-006 Decision 13. Landlock is a boot-time LSM: compiled into the
+      # kernel is not enough, it must be in the `lsm=` list, and the ABI
+      # decides whether the worker confines itself at all (ABI >= 3 is the
+      # floor — TRUNCATE is bit 14 and without it every truncating open is a
+      # false denial). Printing all three makes a runner-image change
+      # diagnosable in ONE red run instead of a bisect: `expect_sandbox:
+      # active` below turns a degradation red, and this step says why.
+      - name: Sandbox probe (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          uname -r
+          cat /sys/kernel/security/lsm || true
+          uv run python -c "from agentcad.kernel import _confine; print('landlock abi', _confine.landlock_abi())"
+
       # Two workers cap OCCT memory while parallelizing module scopes. PRs keep
       # broad boundary coverage but defer the bundled engine stress test.
       # test_sketch_bench runs as a serial tail: its FR6 assertions measure
@@ -72,12 +98,16 @@ jobs:
           uv run pytest -q tests/test_sketch_bench.py tests/test_sketch_drag.py
         env:
           AGENTCAD_KERNEL_POOL_SIZE: "1"
+          AGENTCAD_EXPECT_SANDBOX: ${{ matrix.expect_sandbox }}
+          AGENTCAD_EXPECT_QUOTAS: active
 
       - name: Run portability test suite
         if: matrix.suite == 'portability'
         run: uv run pytest -q -n 2 --dist loadscope -m portability
         env:
           AGENTCAD_KERNEL_POOL_SIZE: "1"
+          AGENTCAD_EXPECT_SANDBOX: ${{ matrix.expect_sandbox }}
+          AGENTCAD_EXPECT_QUOTAS: active
 
       # Seconds, no image build: catches a malformed compose file on every PR.
       # The full `docker compose up` smoke lives in deploy-smoke.yml, off the

@@ -20,12 +20,23 @@ from .client import KernelClient
 class KernelPool:
     def __init__(self, size: int = 3, python_exe: str | None = None,
                  timeout_s: float = 60.0, *,
-                 writable_dirs: list[str] | None = None):
+                 writable_dirs: list[str] | None = None,
+                 quotas=None, posture: str | None = None, on_usage=None):
         self.size = max(1, int(size))
+        # Confinement, quotas and posture are passed through unchanged: each
+        # worker plans its own, so each gets its **own** private temp dir (and,
+        # later, its own cgroup) rather than sharing one.
+        #
+        # `pool_size` is the exception, and it is not a per-worker fact: it is
+        # how many of us share this uid's RLIMIT_NPROC budget. Without it every
+        # slot claimed the same "live count + headroom" and the third worker
+        # forked into a budget the first two had already spent (review C2).
         self._workers: list[KernelClient] = [
             KernelClient(python_exe=python_exe, timeout_s=timeout_s,
-                         writable_dirs=writable_dirs)
-            for _ in range(self.size)
+                         writable_dirs=writable_dirs, quotas=quotas,
+                         posture=posture, on_usage=on_usage,
+                         name=f"worker-{index}", pool_size=self.size)
+            for index in range(self.size)
         ]
         self._rr = 0
         self._rr_lock = threading.Lock()
@@ -35,6 +46,25 @@ class KernelPool:
         # Every worker is constructed identically, so worker 0 speaks for all
         # (workers spawn lazily; the decision is made at construction).
         return self._workers[0].sandboxed
+
+    @property
+    def sandbox_report(self) -> dict | None:
+        # Worker 0 is the one `start()` warms, so it is the one that has a
+        # report of its own to give.
+        return self._workers[0].sandbox_report
+
+    @property
+    def plan(self):
+        """Worker 0's sandbox plan, for `sandbox.report(kernel)`.
+
+        Named without the underscore on purpose: `report()` reads `_plan` from
+        a client and `plan` from a pool, and a pool's plan is not the pool's
+        own — it is one worker's, standing for all of them because they are
+        constructed identically. The per-worker parts (the private temp dir,
+        the cgroup directory) differ; the confinement, the posture and the
+        caps, which is all health publishes, do not.
+        """
+        return self._workers[0]._plan
 
     # ------------------------------------------------------------- lifecycle
 

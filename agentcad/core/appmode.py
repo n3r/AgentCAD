@@ -26,7 +26,9 @@ You cannot expose an interface without turning authentication on.
 
 A "trusted LAN" mode was considered and rejected: a LAN is a network, not a
 trust boundary, and this feature's whole thesis is that an account on a
-005-lite instance is a shell (design spec, Decision 1).
+005-lite instance reaches every project on it (005a design spec, Decision 1 —
+PRD-006 confined the worker, and confinement is a process boundary, not a
+tenancy one).
 """
 
 from __future__ import annotations

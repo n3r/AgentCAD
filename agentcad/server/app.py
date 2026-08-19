@@ -23,6 +23,7 @@ from ..core.model import (
     AuthError,
     AuthzError,
     ConflictError,
+    DiskBudgetError,
     NotFoundError,
     RateLimitedError,
     ServiceUnavailableError,
@@ -30,6 +31,7 @@ from ..core.model import (
 )
 from ..core.service import AgentCADService
 from ..core.tools import ToolRegistry
+from ..core import usage
 # The strict body reader the configuration routes already use: it reads the
 # BYTES (not `content-length`) and refuses a non-object body, which every route
 # below used to dereference with `.get(...)` and turn into a 500.
@@ -47,6 +49,11 @@ _ERROR_STATUS = {
     AuthError: 401,
     AuthzError: 403,
     RateLimitedError: 429,
+    # 507, not the default 400: the request is well-formed and the caller is
+    # allowed — there is no room. RFC 4918's "unable to store the
+    # representation needed to complete the request" is exactly this, and the
+    # message names the fix (delete exports, or raise AGENTCAD_QUOTA_DISK_MB).
+    DiskBudgetError: 507,
     ServiceUnavailableError: 503,
 }
 
@@ -150,6 +157,11 @@ def create_app(
 
     @app.middleware("http")
     async def local_origin_guard(request: Request, call_next):
+        # The usage scope, from the path, for BOTH modes — set before the
+        # hosted guard, which returns early. It is a tag on kernel usage
+        # records and nothing else: no authorization decision reads it, so a
+        # crafted path can misattribute a row and can do nothing more.
+        usage.scope_var.set(usage.project_from_path(request.url.path))
         if security is not None:
             denied = security_module.guard(security, request)
             response = denied if denied is not None else await call_next(request)
@@ -206,17 +218,21 @@ def create_app(
             # and whether the worker is confined — a reconnaissance packet for
             # a stranger. The trimmed body is what "ok" needs to mean.
             return {"status": "ok", "mode": security.mode.name}
+        meter = getattr(service, "usage", None)
         return {
             **({"mode": security.mode.name} if security is not None else {}),
             "status": "ok",
             "version": agentcad.__version__,
             "kernel": "ready" if service.kernel.alive else "starting",
             "chat_available": bool(chat_engine and chat_engine.available),
-            # Reflects the ACTUAL kernel the service runs (the client decides
-            # at construction and exposes .sandboxed), not a config recompute.
-            "sandbox": sandbox.status(
-                getattr(service.kernel, "sandboxed", False)
-            ),
+            # Reflects the ACTUAL kernel the service runs, measured: since
+            # PRD-006 this is the honest per-facet object (confinement, quotas,
+            # warnings) and `status` is still the confinement's, which is what
+            # the field has always meant (design Decision 8).
+            "sandbox": sandbox.report(service.kernel),
+            # Absent — not empty — when nothing installed a meter, so a reader
+            # can tell "no metering here" from "nothing has run yet".
+            **({"usage": meter.health()} if meter is not None else {}),
         }
 
     # ------------------------------------------------------------ projects

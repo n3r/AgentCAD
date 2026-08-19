@@ -255,10 +255,14 @@ def _measure(service, src: Path, ephemeral, work_dir):
     service rooted under a temp directory with all three seams nulled, sharing
     the caller's warm kernel. Nothing here touches a user project.
     """
+    from ..checks import default_work_root
     from .gate import GATE_PROJECT
 
+    # The server's granted work root when there is one, and only then the
+    # shared temp dir: since PRD-006 a confined worker cannot write into
+    # `gettempdir()` (`checks.default_work_root`).
     root = Path(work_dir).expanduser().resolve() if work_dir else \
-        Path(tempfile.gettempdir())
+        Path(default_work_root(service) or tempfile.gettempdir())
     root.mkdir(parents=True, exist_ok=True)
     cell = Path(tempfile.mkdtemp(
         prefix=f"agentcad-from-step-{os.getpid()}-", dir=str(root))).resolve()

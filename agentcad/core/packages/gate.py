@@ -241,6 +241,36 @@ def _within(inner: Path, outer: Path) -> bool:
         return False
 
 
+def refuse_work_dir_overlap(root, projects_root, source) -> None:
+    """Refuse a work dir that is, holds or lives inside the projects root or
+    the package source directory.
+
+    `checks.refuse_work_dir_overlap` plus one path. The projects root is the
+    catastrophic case (a gate that writes there writes into the user's work);
+    the package directory is the one PRD-004 did not have — a cell inside it
+    would change the very content id the gate is attesting to, and the teardown
+    would delete part of the package.
+
+    Module-level and explicit about its paths for the same reason as the
+    checks' one (review I1): `agentcad package validate` / `agentcad publish`
+    must accept or refuse a ``--work-dir`` **before** they build a service,
+    because an accepted one has to exist before the confined workers spawn.
+    """
+    root = Path(root).resolve()
+    projects = Path(projects_root).resolve()
+    for label, path in (("the projects root", projects),
+                        ("the package directory", Path(source).resolve())):
+        if root == path or _within(path, root) or _within(root, path):
+            raise ValidationError(
+                f"--work-dir {root} overlaps {label} {path}: the gate "
+                f"materialises a throwaway cell under the work dir and "
+                f"deletes it afterwards, so it must not be, contain or "
+                f"sit inside either — pass a directory elsewhere, or omit "
+                f"--work-dir for a temp dir",
+                {"work_dir": str(root), "projects_root": str(projects),
+                 "package_dir": str(Path(source))})
+
+
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -542,35 +572,20 @@ class PackageGate:
         directory behind.
         """
         if work_dir is None:
-            return Path(tempfile.mkdtemp(prefix="agentcad-package-")).resolve()
+            # Under the server's granted work root when there is one: since
+            # PRD-006 the shared temp dir is not writable from a confined
+            # worker (`checks.default_work_root`).
+            return Path(tempfile.mkdtemp(
+                prefix="agentcad-package-",
+                dir=checks.default_work_root(self._service))).resolve()
         root = Path(work_dir).expanduser().resolve()
         self._refuse_overlap(root, source)
         root.mkdir(parents=True, exist_ok=True)
         return root
 
     def _refuse_overlap(self, root: Path, source: Path) -> None:
-        """Refuse a work dir that is, holds or lives inside the projects root
-        or the package source directory.
-
-        `checks._refuse_overlap` plus one path. The projects root is the
-        catastrophic case (a gate that writes there writes into the user's
-        work); the package directory is the one PRD-004 did not have — a cell
-        inside it would change the very content id the gate is attesting to,
-        and the teardown would delete part of the package.
-        """
-        root = Path(root).resolve()
-        projects = Path(self._service.store.root).resolve()
-        for label, path in (("the projects root", projects),
-                            ("the package directory", source.resolve())):
-            if root == path or _within(path, root) or _within(root, path):
-                raise ValidationError(
-                    f"--work-dir {root} overlaps {label} {path}: the gate "
-                    f"materialises a throwaway cell under the work dir and "
-                    f"deletes it afterwards, so it must not be, contain or "
-                    f"sit inside either — pass a directory elsewhere, or omit "
-                    f"--work-dir for a temp dir",
-                    {"work_dir": str(root), "projects_root": str(projects),
-                     "package_dir": str(source)})
+        """:func:`refuse_work_dir_overlap` against this gate's projects root."""
+        refuse_work_dir_overlap(root, self._service.store.root, source)
 
 
 def _selected(stages) -> set[str]:

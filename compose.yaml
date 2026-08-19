@@ -1,10 +1,21 @@
-# AgentCAD — one hosted instance, one volume (PRD-005a).
+# AgentCAD — one hosted instance, one volume (PRD-005a, PRD-006).
 #
 # TRUST: an account on this instance can execute arbitrary Python on the host;
-# give one only to someone you would give a shell to. A part script is
-# arbitrary Python and Linux has no worker confinement until PRD-006, so
-# registration is closed, `member` and `admin` are not a security boundary
-# between each other, and this belongs on a single-purpose VM.
+# give one only to someone you would give a shell to. A part script IS
+# arbitrary Python, and since PRD-006 the Linux worker confines itself before
+# it imports any geometry: Landlock + seccomp — no network, writes only under
+# /data/projects, /data/home/.agentcad, the server's work root and its own
+# private temp dir, and in hosted mode no reads of /data/state and nothing
+# under /data/home except /data/home/.agentcad (a write root, so readable by
+# construction) — with memory, process-count and CPU caps around it.
+#
+# What that does NOT change, and is why the sentence above still stands: the
+# script runs as the server user, and the WHOLE projects tree is readable and
+# writable to it, across every project on the instance (per-project ACLs are
+# PRD-005). So registration stays closed, `member` and `admin` are not a
+# security boundary between each other, and this belongs on a single-purpose
+# VM. `GET /api/health` (with a principal) reports the live state under
+# `sandbox` — measured from the worker's own report, never from intent.
 #
 # Quick start:
 #   cp .env.example .env      # then set AGENTCAD_PUBLIC_ORIGIN
@@ -38,9 +49,47 @@ services:
       # needs a pool of >=2 to run at all (on a 1-worker pool /variant returns
       # 503). 2 lets the customizer work out of the box AND keeps a member
       # worker free. Raise it (and the RAM, ~0.5 GB/worker) for more concurrency.
+      # PRD-006: RLIMIT_NPROC headroom is scaled by this pool size at each spawn.
       AGENTCAD_KERNEL_POOL_SIZE: "2"
+      # Per-worker caps. The defaults (docs/deployment.md, "Confinement and
+      # quotas") apply with nothing set here; uncomment to size them to the
+      # host. AGENTCAD_QUOTA_DISK_MB is per project, not per worker.
+      # AGENTCAD_QUOTA_MEMORY_MB: "2048"
+      # AGENTCAD_QUOTA_CPU_PERCENT: "400"
+      # AGENTCAD_QUOTA_DISK_MB: "2048"
+      # The third line of the delegated-cgroup recipe below.
+      # AGENTCAD_CGROUP_DIR: /cg
     volumes:
       - agentcad-data:/data
+      # The second line of the delegated-cgroup recipe below.
+      # - /sys/fs/cgroup/agentcad:/cg:rw
+    # Blast radius that costs the operator nothing to set. The kernel's own
+    # per-worker caps (AGENTCAD_QUOTA_*) are the first line; this is the
+    # container-wide backstop for anything they miss. 512 is generous: one
+    # warm worker runs 15-22 threads and RLIMIT_NPROC is sized from the live
+    # uid task count at spawn, so a low number here would kill a worker
+    # mid-`import build123d` rather than stop a fork bomb.
+    pids_limit: 512
+    # Uncomment and size to the host: the supervisor kills one interval late
+    # (0.25 s at ~4 GB/s measured = 380-620 MB of overshoot), so the container
+    # limit wants headroom over AGENTCAD_QUOTA_MEMORY_MB (default 2048) times
+    # AGENTCAD_KERNEL_POOL_SIZE, plus ~0.5 GB for the server process.
+    # mem_limit: 4g
+    #
+    # cgroup v2, the one tier that OOM-kills instead of sampling (PRD-006
+    # Decision 4). It is opt-in by DELEGATION — never by capability; this
+    # project refuses to ask for `--cap-add SYS_ADMIN`. On the host, once:
+    #
+    #   sudo mkdir -p /sys/fs/cgroup/agentcad
+    #   echo "+memory +pids +cpu" | sudo tee /sys/fs/cgroup/cgroup.subtree_control
+    #   echo "+memory +pids +cpu" | sudo tee /sys/fs/cgroup/agentcad/cgroup.subtree_control
+    #   sudo chown -R 10001:10001 /sys/fs/cgroup/agentcad
+    #
+    # then uncomment three lines: `cgroup_parent` here, the `/cg` bind mount
+    # under `volumes`, and `AGENTCAD_CGROUP_DIR` under `environment`. Without
+    # them the caps still apply through the rlimit + supervisor tier, and
+    # `/api/health` names which tier is actually in force.
+    # cgroup_parent: /agentcad
     healthcheck:
       test: ["CMD", "python", "-c", "import os,urllib.request as u;from urllib.parse import urlsplit;p=os.environ.get('AGENTCAD_PORT','8630');h=urlsplit(os.environ['AGENTCAD_PUBLIC_ORIGIN']).netloc;u.urlopen(u.Request('http://127.0.0.1:'+p+'/api/health',headers={'Host':h}),timeout=5)"]
       interval: 30s

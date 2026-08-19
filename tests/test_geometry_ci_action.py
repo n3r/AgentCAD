@@ -118,8 +118,12 @@ def test_workflow_parses_and_dogfoods_the_local_action():
     # PyYAML resolves the bare `on:` key to True (the Norway problem's cousin).
     triggers = workflow.get("on") or workflow.get(True)
     assert set(triggers) == {"push", "pull_request", "schedule", "workflow_dispatch"}
-    # A fork's part scripts are arbitrary Python on an unconfined Linux runner:
-    # no elevated trigger and no secret may reach them.
+    # A fork's part scripts are arbitrary Python. Since PRD-006 the worker
+    # confines itself on Linux too, but the RUNNER's kernel decides whether it
+    # can (Landlock ABI >= 3, in the boot `lsm=` list) and a runner that cannot
+    # reports `off` without failing the check — so confinement is a second
+    # line here, never the argument. No elevated trigger and no secret may
+    # reach them. (docs/geometry-ci.md, "Trust model")
     code = "\n".join(line for line in WORKFLOW.read_text(encoding="utf-8").splitlines()
                      if not line.lstrip().startswith("#"))
     assert "pull_request_target" not in code

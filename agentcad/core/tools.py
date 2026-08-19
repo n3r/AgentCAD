@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from ..kernel.client import KernelError
+from . import usage
 from .model import AppError
 from .service import AgentCADService
 
@@ -55,8 +56,16 @@ class ToolRegistry:
         problem = self._validate(tool.input_schema, args or {})
         if problem:
             return {"error": {"type": "invalid_arguments", "message": problem}}
+        # The usage scope for everything this tool does (PRD-006). Nearly every
+        # tool names its project in `args`, and the ones that reach the kernel
+        # through the service's own build/export paths get a more
+        # authoritative scope set there — this is what catches the rest (an
+        # analysis tool, a check run, a package gate) so their cost is billed
+        # to a project rather than to nobody.
+        project = args.get("project") if isinstance(args, dict) else None
         try:
-            return tool.handler(**(args or {}))
+            with usage.scoped(project if isinstance(project, str) else None):
+                return tool.handler(**(args or {}))
         except AppError as exc:
             return {
                 "error": {

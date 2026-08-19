@@ -27,6 +27,67 @@ import re
 import traceback as _traceback
 
 ERROR_DOCTOR: list[dict[str, str]] = [
+    # ---- PRD-006: the kernel sandbox and the quota tiers refusing something.
+    #      First in the list because these are OS denials, not geometry: an
+    #      EPERM traceback that happens to mention "cut" or "empty" must not
+    #      be diagnosed as a boolean failure. The ids double as telemetry.
+    {
+        "id": "sandbox_network_denied",
+        # `(?s)` has to lead: since Python 3.11 a global inline flag anywhere
+        # else in the pattern is a re.error.
+        "regex": (r"(?s)PermissionError: \[Errno 1\] Operation not permitted"
+                  r".*(socket|urlopen|connect|getaddrinfo)"),
+        "diagnosis": (
+            "Network access is blocked in the kernel sandbox: part scripts run "
+            "confined, and every socket family except AF_UNIX is refused, so "
+            "the call failed at the socket rather than timing out."
+        ),
+        "fix": (
+            "The kernel sandbox blocks network access; fetch data on the agent "
+            "side and pass it as a parameter (or bake it into the script)."
+        ),
+    },
+    {
+        "id": "sandbox_write_denied",
+        "regex": r"PermissionError: \[Errno 13\] Permission denied",
+        "diagnosis": (
+            "The kernel sandbox refused this path: the script tried to write "
+            "(or, in the hosted posture, read) outside what the worker was "
+            "granted. Writes are limited to the project roots and the "
+            "worker's own private temp dir."
+        ),
+        "fix": (
+            "Write only under the project or the temp dir "
+            "(`tempfile.gettempdir()`), which is already this worker's own "
+            "private directory."
+        ),
+    },
+    {
+        "id": "sandbox_process_cap",
+        "regex": r"\[Errno (11|35)\] Resource temporarily unavailable",
+        "diagnosis": (
+            "The worker's process cap stopped the script from creating "
+            "another process — the symptom of a fork loop, or of a library "
+            "spawning far more workers than the part needs."
+        ),
+        "fix": (
+            "The worker's process cap stopped a fork loop; do not fork inside "
+            "a part script (and cap any pool the script creates)."
+        ),
+    },
+    {
+        "id": "sandbox_memory_cap",
+        "regex": r"^MemoryError",
+        "diagnosis": (
+            "The script asked for more memory than the worker's quota allows. "
+            "The allocation failed rather than the machine swapping, and the "
+            "warm worker survived — the exception carries the line."
+        ),
+        "fix": (
+            "The script exceeded the worker's memory cap; reduce mesh "
+            "resolution / split the part / raise `AGENTCAD_QUOTA_MEMORY_MB`."
+        ),
+    },
     {
         "id": "fillet_edges_not_on_part",
         "regex": r"no suitable edges for chamfer or fillet",

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -253,6 +254,156 @@ def test_the_state_and_projects_dirs_are_on_the_volume():
     for var in ("HOME=/data/home", "AGENTCAD_PROJECTS_DIR=/data/projects",
                 "AGENTCAD_STATE_DIR=/data/state"):
         assert var in text, var
+
+
+# ------------------------------------ the state dir may not be kernel-writable
+
+
+@pytest.fixture
+def security_slot_cleared():
+    """`cmd_serve` installs a real `SecurityConfig` in a process-global slot
+    (it has to: tool registration is not inside a request). Clear it after,
+    or the next test in this worker builds a LOCAL app that believes it is
+    hosted — the same cleanup `conftest.hosted` does."""
+    yield
+    from agentcad.server import security as security_module
+
+    security_module.install(None)
+
+
+def _serve_with(monkeypatch, tmp_path, projects, state):
+    """`cmd_serve` up to the point of serving, with the kernel stubbed out.
+
+    Returns the recorded stderr through capsys at the call site; the service is
+    a stand-in carrying only what the guard reads (`writable_roots`) plus the
+    two attributes the `finally` touches.
+    """
+    import uvicorn
+
+    from agentcad import cli
+
+    monkeypatch.setenv("AGENTCAD_CONFIG", str(tmp_path / "cfg.json"))
+    monkeypatch.setenv("AGENTCAD_MODE", "hosted")
+    monkeypatch.setenv("AGENTCAD_PUBLIC_ORIGIN", "https://cad.example.com")
+    monkeypatch.setenv("AGENTCAD_STATE_DIR", str(state))
+    service = SimpleNamespace(
+        kernel=SimpleNamespace(stop=lambda: None), work_root=None,
+        writable_roots=[str(projects)])
+    monkeypatch.setattr(cli, "_build_service", lambda *a, **k: service)
+    monkeypatch.setattr(cli, "_make_chat_engine", lambda svc, reg: None)
+    monkeypatch.setattr("agentcad.core.tools.build_registry",
+                        lambda svc: object())
+    monkeypatch.setattr("agentcad.server.app.create_app",
+                        lambda *a, **k: object())
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: None)
+    args = SimpleNamespace(host="0.0.0.0", port=8630,
+                           projects_dir=str(projects), no_open=True)
+    return cli.cmd_serve, args
+
+
+def test_a_hosted_state_dir_inside_a_write_root_refuses_to_serve(
+        monkeypatch, tmp_path, capsys, security_slot_cleared):
+    """Review I6. FR5's hosted read posture exists to keep
+    `<state-dir>/secret.key` out of a member's reach — but a state dir placed
+    **inside a writable root** is defeated from the other side: that root is
+    granted write access explicitly, so the session secret is readable and
+    rewritable however narrow the read allow-list is, and whoever reads it can
+    forge any session.
+
+    Fatal, not a warning: this is one misplaced path with an exact remedy, and
+    serving anyway would be serving a hosted instance whose accounts are
+    already forgeable.
+    """
+    projects = tmp_path / "data" / "projects"
+    projects.mkdir(parents=True)
+    state = projects / "state"
+
+    serve, args = _serve_with(monkeypatch, tmp_path, projects, state)
+    with pytest.raises(SystemExit) as exit_info:
+        serve(args, open_browser=False)
+
+    assert exit_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "AGENTCAD_STATE_DIR" in err
+    assert str(state.resolve()) in err and str(projects.resolve()) in err
+    assert "secret.key" in err
+
+
+def test_the_compose_layout_serves(monkeypatch, tmp_path, capsys,
+                                   security_slot_cleared):
+    """The shipped layout is the passing case: `/data/state` is a **sibling**
+    of `/data/projects`, not a child, so nothing here refuses it."""
+    root = tmp_path / "data"
+    projects = root / "projects"
+    projects.mkdir(parents=True)
+    state = root / "state"
+
+    serve, args = _serve_with(monkeypatch, tmp_path, projects, state)
+    serve(args, open_browser=False)          # no SystemExit
+
+    assert "AGENTCAD_STATE_DIR" not in capsys.readouterr().err
+
+
+def test_hosted_default_state_dir_with_the_new_root_is_not_refused(
+        monkeypatch, tmp_path, capsys):
+    """PRD-007 merge: `_writable_roots` now grants
+    `<state-dir>/publications/build` for the shared-pool variant builds
+    (`core/share_build.py`). That subtree is a CHILD of the state dir, not a
+    container of it, so the ordinary hosted layout — state dir at its default
+    location, projects dir elsewhere, both plus the new subtree among the
+    granted roots — must not trip the guard."""
+    from agentcad import cli
+
+    monkeypatch.setenv("AGENTCAD_CONFIG", str(tmp_path / "cfg.json"))
+    monkeypatch.delenv("AGENTCAD_STATE_DIR", raising=False)
+    projects = tmp_path / "projects"
+    roots = cli._writable_roots(projects)
+    build_root = str(Path(tmp_path / "state" / "publications" / "build"))
+    assert build_root in roots
+    service = SimpleNamespace(writable_roots=roots)
+
+    cli._refuse_state_dir_in_a_write_root(SimpleNamespace(hosted=True),
+                                          service)
+    assert capsys.readouterr().err == ""
+
+
+def test_hosted_state_dir_inside_the_projects_dir_is_still_refused(
+        monkeypatch, tmp_path, capsys):
+    """The new publications/build root does not weaken the existing guard: a
+    state dir placed inside the projects tree is refused exactly as before,
+    even once `_writable_roots` grants a second root alongside it."""
+    from agentcad import cli
+
+    projects = tmp_path / "data" / "projects"
+    state = projects / "state"
+    monkeypatch.setenv("AGENTCAD_CONFIG", str(tmp_path / "cfg.json"))
+    monkeypatch.setenv("AGENTCAD_STATE_DIR", str(state))
+    roots = cli._writable_roots(projects)
+    service = SimpleNamespace(writable_roots=roots)
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli._refuse_state_dir_in_a_write_root(SimpleNamespace(hosted=True),
+                                              service)
+    assert exit_info.value.code == 2
+    assert "AGENTCAD_STATE_DIR" in capsys.readouterr().err
+
+
+def test_local_mode_is_not_checked(monkeypatch, tmp_path):
+    """One trusted user on loopback, and no session to forge from another
+    account: the guard is a hosted-mode rule, and local mode is unchanged."""
+    from agentcad import cli
+
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    monkeypatch.setenv("AGENTCAD_STATE_DIR", str(projects / "state"))
+    service = SimpleNamespace(writable_roots=[str(projects)])
+
+    cli._refuse_state_dir_in_a_write_root(SimpleNamespace(hosted=False),
+                                          service)
+    # ...and a service that never recorded its roots is left alone rather
+    # than guessed at.
+    cli._refuse_state_dir_in_a_write_root(SimpleNamespace(hosted=True),
+                                          SimpleNamespace())
 
 
 # ------------------------------------------------------------- the doc

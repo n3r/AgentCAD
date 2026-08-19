@@ -28,6 +28,42 @@ def test_error_doctor_unknown_returns_none():
     assert diagnose("Exception", "some totally novel error xyzzy", "") is None
 
 
+# ---- PRD-006: the four sandbox/quota denials -------------------------------
+# The blob the doctor matches is "<ExcType>: <message>\n<traceback>", which is
+# exactly what `worker._script_error_from_exc` builds, so these are the real
+# strings a denied script produces — not paraphrases of them.
+
+@pytest.mark.parametrize("exc_type,message,tb,expect_id", [
+    ("PermissionError", "[Errno 1] Operation not permitted",
+     '  File "<part>", line 4, in build\n'
+     "    socket.create_connection(('1.1.1.1', 80))\n",
+     "sandbox_network_denied"),
+    ("PermissionError", "[Errno 13] Permission denied: '/usr/pwned'", "",
+     "sandbox_write_denied"),
+    ("BlockingIOError", "[Errno 11] Resource temporarily unavailable", "",
+     "sandbox_process_cap"),
+    ("BlockingIOError", "[Errno 35] Resource temporarily unavailable", "",
+     "sandbox_process_cap"),
+    ("MemoryError", "", "", "sandbox_memory_cap"),
+])
+def test_error_doctor_names_the_sandbox_denials(exc_type, message, tb,
+                                                expect_id):
+    entry = diagnose_text(exc_type, message, tb)
+    assert entry is not None and entry["id"] == expect_id
+    hint = diagnose(exc_type, message, tb)
+    assert hint and "Fix:" in hint
+    assert "sandbox" in hint or "cap" in hint
+
+
+def test_an_eperm_with_no_network_frame_is_not_a_network_denial():
+    """`[Errno 1]` on its own is only a network denial when the traceback
+    shows a socket call — otherwise it is an unattributed EPERM and a wrong
+    hint would send the reader looking for an egress rule."""
+    entry = diagnose_text("PermissionError", "[Errno 1] Operation not permitted",
+                          '  File "<part>", line 2, in build\n    os.chown(x)\n')
+    assert entry is None or entry["id"] != "sandbox_network_denied"
+
+
 # ---- safe_fillet: recover from an impossible radius --------------------------
 
 def test_safe_fillet_finds_largest_working_radius():
