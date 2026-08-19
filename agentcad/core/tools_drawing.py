@@ -17,6 +17,13 @@ build.
 
 from __future__ import annotations
 
+import hashlib
+import json
+
+# `_sheets` is pure data (no OCP/build123d import — verified), so the server
+# process may import it to validate the `sheet` argument against the one
+# authoritative table.
+from ..kernel.handlers._sheets import DEFAULT_SHEET, SHEETS
 from .model import ValidationError
 from .tools import Tool, schema
 
@@ -25,13 +32,132 @@ from .tools import Tool, schema
 #: more ``build_shape`` in the same call.
 _ROW_TIMEOUT_S = 60.0
 
+#: The whitelisted title-block fields (Decision 4). Strings only, length-capped,
+#: control chars refused; an empty string clears a field; unknown keys refused.
+_DRAWING_FIELDS = ("company", "author", "project_code", "approved_by", "notes")
+_MAX_FIELD_LEN = 200
+
+
+def _filled(section: dict) -> dict:
+    """The drawing section with every whitelisted field present (empty when
+    unset) — a stable shape for round-tripping through get/set."""
+    return {name: (section or {}).get(name, "") for name in _DRAWING_FIELDS}
+
+
+def _validate_drawing_fields(fields) -> dict:
+    """Validate a ``{field: value}`` map against the whitelist. Returns the
+    cleaned map (unchanged values); raises ``ValidationError`` on an unknown
+    key, a non-string value, an over-long value, or a control character."""
+    if not isinstance(fields, dict):
+        raise ValidationError("fields must be an object of drawing fields")
+    unknown = sorted(k for k in fields if k not in _DRAWING_FIELDS)
+    if unknown:
+        raise ValidationError(
+            f"unknown drawing field(s): {', '.join(unknown)}; "
+            f"allowed: {', '.join(_DRAWING_FIELDS)}",
+            details={"unknown": unknown, "allowed": list(_DRAWING_FIELDS)})
+    clean: dict = {}
+    for key, value in fields.items():
+        if not isinstance(value, str):
+            raise ValidationError(f"drawing field {key!r} must be a string")
+        if len(value) > _MAX_FIELD_LEN:
+            raise ValidationError(
+                f"drawing field {key!r} is {len(value)} characters; the cap is "
+                f"{_MAX_FIELD_LEN}")
+        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+            raise ValidationError(
+                f"drawing field {key!r} contains a control character")
+        clean[key] = value
+    return clean
+
+
+def _content_hash(service, project: str) -> str:
+    """A stable digest of the project's authored state (manifest + every part
+    script). Same content ⇒ same digest, so the working-tree version ref is
+    reproducible with no repo."""
+    h = hashlib.sha256()
+    manifest = service.store.manifest(project)
+    h.update(json.dumps(manifest, sort_keys=True,
+                        ensure_ascii=False).encode("utf-8"))
+    for part_id in service.store.part_ids(project):
+        try:
+            script = service.store.read_script(project, part_id)
+        except Exception:                                      # noqa: BLE001
+            continue  # a reference part has no script — skip, don't fail
+        h.update(b"\x00" + part_id.encode("utf-8") + b"\x00")
+        h.update(script.encode("utf-8"))
+    return h.hexdigest()
+
+
+def _drawing_version(service, project: str) -> dict:
+    """``{"ref", "date"}`` for the title block, computed service-side (FR2/FR12).
+
+    Reaches history through ``service.history`` (``head``/``tags``/``log``) and
+    the project path through ``service.store.path_of``. With a repo: ``ref`` is
+    a tag pointing at HEAD, else the 7-char HEAD sha; ``date`` is HEAD's commit
+    date (``%cI`` → the ``YYYY-MM-DD`` prefix). With NO repo/unborn: ``ref`` is
+    ``"wt-" + sha256(manifest + scripts)[:7]`` and ``date`` is ``"-"``.
+
+    **Never calls ``datetime.now()``** — the version date is the commit date or
+    ``"-"``, so two renders at the same state produce identical bytes.
+    """
+    path = service.store.path_of(project)
+    if service.history.available():
+        head = service.history.head(path)
+        if head:
+            ref = head[:7]
+            for tag in service.history.tags(path):
+                if tag.get("commit") == head:
+                    ref = tag["name"]
+                    break
+            rows = service.history.log(path, limit=1)
+            date = str(rows[0]["ts"])[:10] if rows and rows[0].get("ts") else "-"
+            return {"ref": ref, "date": date}
+    return {"ref": "wt-" + _content_hash(service, project)[:7], "date": "-"}
+
+
+def _mass_text(mass_g) -> str | None:
+    """A readable mass string from grams, or None. Deterministic (no locale)."""
+    if mass_g is None:
+        return None
+    if mass_g < 1000.0:
+        return f"{mass_g:.1f} g"
+    return f"{mass_g / 1000.0:.3f} kg"
+
+
+def _mass_g(service, project: str, part_id: str, config: str | None):
+    """Best-effort mass in grams for the (config's) built shape, or None. The
+    build is cache-keyed on script+params, so this is a cache hit next to the
+    drawing's own build."""
+    try:
+        if config:
+            result = service._ensure_config_built(project, part_id, config)
+        else:
+            service.store.get_part(project, part_id)
+            result = service._ensure_built(project, part_id)
+        if result.get("ok"):
+            return result["metrics"].get("mass_g")
+    except Exception:                                          # noqa: BLE001
+        return None
+    return None
+
 
 def register(registry, service) -> None:
     def generate_drawing(project: str, part_id: str, views: list | None = None,
                          format: str = "svg", config: str | None = None,
-                         dim_table: bool = False) -> dict:
+                         dim_table: bool = False, sheet: str = DEFAULT_SHEET,
+                         scale: float | None = None,
+                         version: dict | None = None) -> dict:
         if format not in ("svg", "dxf"):
             raise ValidationError("drawing format must be svg or dxf")
+        if sheet not in SHEETS:
+            raise ValidationError(
+                f"unknown sheet {sheet!r}; one of: {', '.join(sorted(SHEETS))}",
+                details={"declared": sorted(SHEETS)})
+        if scale is not None and (not isinstance(scale, (int, float))
+                                  or isinstance(scale, bool) or scale <= 0):
+            raise ValidationError("scale must be a positive number (a ratio, "
+                                  "e.g. 2 for 2:1 or 0.5 for 1:2)")
         # `_record_for` is the one validator: it refuses a reference part, a
         # non-string name and an undeclared configuration, and returns a
         # DERIVED record whose params are the pure configuration map.
@@ -47,12 +173,35 @@ def register(registry, service) -> None:
         suffix = f"_{config}" if config else ""
         out = service.store.exports_dir(project) / \
             f"{part_id}{suffix}_drawing.{format}"
+        # Title-block data (FR2), all resolved SERVICE-side into plain strings —
+        # the kernel handler renders them and never reads git or the clock.
+        manifest = service.store.manifest(project)
+        # `version` override (both {ref, date} strings) pins the title-block
+        # version identity instead of deriving it from git — the "fixed-date"
+        # path the geometry-CI determinism stage needs: a project and its
+        # git-stripped mirror carry different git identity but identical
+        # geometry, so the stage passes ONE fixed version to both sides and
+        # compares the drawing, not the version cell (checks.py, the DXF-GUID
+        # precedent). Absent, it is the real, deterministic project version.
+        ver = version if isinstance(version, dict) else \
+            _drawing_version(service, project)
+        title = {
+            "label": record.label,
+            "units": "mm",
+            "material": record.material,
+            "mass": _mass_text(_mass_g(service, project, part_id, config)),
+            "version_ref": str(ver.get("ref", "-")),
+            "version_date": str(ver.get("date", "-")),
+            **(manifest.get("drawing") or {}),   # only the set fields
+        }
         request = {
             "script": script, "params": record.effective_params,
             "views": views, "format": format,
             "out_path": str(out), "label": f"{project} / {part_id}",
-            "pmi": pmi,
+            "pmi": pmi, "sheet": sheet, "title": title,
         }
+        if scale is not None:
+            request["scale"] = float(scale)
         timeout = 120.0
         declared = record.configs or {}
         # Two ways this is a question rather than a fault, and neither costs
@@ -121,8 +270,72 @@ def register(registry, service) -> None:
                               "Draw a per-configuration dimension table (SVG "
                               "only; ignored when the part has no "
                               "configurations)"},
+                "sheet": {"type": "string", "description":
+                          "Sheet format: iso_a4|iso_a3|iso_a2|iso_a1|iso_a0|"
+                          "ansi_a|ansi_b|ansi_c|ansi_d (landscape; default "
+                          "iso_a3)"},
+                "scale": {"type": "number", "description":
+                          "Optional scale override as a ratio (2 = 2:1, 0.5 = "
+                          "1:2); default auto from the preferred ladder"},
+                "version": {"type": "object", "description":
+                            "Advanced: pin the title-block version identity "
+                            "{ref, date} instead of deriving it from git — for "
+                            "deterministic regeneration (geometry-CI)"},
             },
             ["project", "part_id"],
         ),
         generate_drawing,
+    ))
+
+    def set_drawing_fields(project: str, fields: dict) -> dict:
+        """Set title-block fields at ``manifest["drawing"]`` (whitelist:
+        company/author/project_code/approved_by/notes). Empty string clears a
+        field; an empty section is omitted."""
+        clean = _validate_drawing_fields(fields)
+        manifest = service.store.manifest(project)  # notfound if missing
+        section = dict(manifest.get("drawing") or {})
+        for key, value in clean.items():
+            if value == "":
+                section.pop(key, None)              # empty string clears
+            else:
+                section[key] = value
+        if section:
+            manifest["drawing"] = section
+        else:
+            manifest.pop("drawing", None)           # empty section omitted
+        service.store.save_manifest(project, manifest)
+        service.bus.publish({"type": "project_changed", "project": project})
+        return {"drawing": _filled(section)}
+
+    def get_drawing_fields(project: str) -> dict:
+        manifest = service.store.manifest(project)  # notfound if missing
+        return {"drawing": _filled(manifest.get("drawing") or {})}
+
+    registry.register(Tool(
+        "set_drawing_fields",
+        "Set the project's title-block fields (rendered by generate_drawing). "
+        "Fields is a whitelist: company, author, project_code, approved_by, "
+        "notes (strings, <=200 chars, no control characters). An empty string "
+        "clears a field; unknown keys are refused. Stored at the top-level "
+        "manifest 'drawing' section.",
+        schema(
+            {
+                "project": {"type": "string"},
+                "fields": {"type": "object", "description":
+                           "Map of {company|author|project_code|approved_by|"
+                           "notes: string}; '' clears a field"},
+            },
+            ["project", "fields"],
+        ),
+        set_drawing_fields,
+    ))
+    registry.register(Tool(
+        "get_drawing_fields",
+        "Get the project's title-block fields (every whitelisted field present, "
+        "empty string when unset).",
+        schema(
+            {"project": {"type": "string"}},
+            ["project"],
+        ),
+        get_drawing_fields,
     ))
