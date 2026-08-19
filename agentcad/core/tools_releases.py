@@ -39,6 +39,16 @@ def register(registry, service) -> None:
     def release_finalize(project: str, rev: str) -> dict:
         return releases.release_finalize(service, project, rev)
 
+    def release_bundle(project: str, rev: str) -> dict:
+        record = releases.get_release(service, project, rev)["release"]
+        if record.get("status") not in ("released", "superseded"):
+            raise releases.ValidationError(
+                f"release {rev} is {record.get('status')!r}: a reproducible "
+                "bundle is built only for a released revision (finalize it "
+                "first — release_finalize builds the bundle inline)",
+                {"project": project, "rev": rev, "status": record.get("status")})
+        return releases.build_bundle(service, project, rev)
+
     def list_releases(project: str) -> dict:
         return releases.list_releases(service, project)
 
@@ -94,6 +104,23 @@ def register(registry, service) -> None:
         "No kernel calls — this is git + manifest only.",
         schema({"project": _PROJ, "rev": _REV}, ["project", "rev"]),
         release_finalize,
+    ))
+    registry.register(Tool(
+        "release_bundle",
+        "Rebuild the reproducible release BUNDLE for a released revision "
+        "(FR10-11) — idempotent. Materializes the project at its release/<rev> "
+        "tag in a throwaway worktree and writes exports/releases/<rev>/: a STEP "
+        "per part and for the assembly, PDF+SVG drawings per part (title block "
+        "pinned to the tag so they are byte-stable), bom.csv/bom.json, a flat "
+        "pattern for every sheet-metal part (solids are skipped and noted), a "
+        "README.md and an artifacts.json (sha256, byte-count and class per "
+        "file), plus a <rev>.zip beside the directory. release_finalize already "
+        "builds this inline; call this to regenerate it. Rebuilding at the same "
+        "tag yields identical sha256 for every deterministic-class artifact; "
+        "STEP files match after their FILE_NAME timestamp line is normalized. "
+        "Refused unless the revision is released.",
+        schema({"project": _PROJ, "rev": _REV}, ["project", "rev"]),
+        release_bundle,
     ))
     registry.register(Tool(
         "list_releases",

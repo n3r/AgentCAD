@@ -264,7 +264,7 @@ export const api = {
   // materialized worktree (FR5) without touching the working project.
   getBom: (proj, params) =>
     request("GET", `/api/projects/${enc(proj)}/bom${query(params)}`),
-  /** Plain download URLs (no X-Agent-Id needed: get_bom/export_bom never
+  /** Plain download URLs (no identity header needed: get_bom/export_bom never
    *  depend on client identity) — the drawingSvgUrl/drawingPdfUrl pattern. */
   bomCsvUrl: (proj, params) =>
     `/api/projects/${enc(proj)}/bom.csv${query(params)}`,

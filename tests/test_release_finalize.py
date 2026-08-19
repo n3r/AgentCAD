@@ -66,6 +66,19 @@ def _reset_context():
     pinned_tree_var.reset(pin)
 
 
+@pytest.fixture(autouse=True)
+def _stub_bundle(monkeypatch):
+    """Finalize now builds the reproducible bundle inline (slice 5). That is a
+    real STEP/drawing/BOM build; this suite tests the tag/finalize/immutability
+    paths, so we stub the bundle to a fast no-op (its own coverage lives in
+    tests/test_release_bundle.py). ``release_finalize`` calls ``build_bundle``
+    through the module global, so this patch reaches it."""
+    def _noop(service, project, rev):
+        releases._persist_bundle(service, project, rev, {"stubbed": True})
+        return {"stubbed": True}
+    monkeypatch.setattr(releases, "build_bundle", _noop)
+
+
 @pytest.fixture
 def stack(kernel, tmp_path):
     service = AgentCADService(tmp_path / "projects", kernel, EventBus())

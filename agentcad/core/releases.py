@@ -43,7 +43,12 @@ seam.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import re
+import shutil
+import zipfile
+from pathlib import Path
 
 from . import locks
 from .model import ConflictError, NotFoundError, ValidationError
@@ -326,7 +331,298 @@ def release_finalize(service, project: str, rev: str) -> dict:
                          "reason": "release"})
     service.bus.publish({"type": "release_changed", "project": project,
                          "rev": rev, "status": "released"})
+
+    # Build the reproducible bundle inline (FR10-11). Synchronous is fine for v1
+    # (the design notes a background job is a PRD-020 concern). It is
+    # best-effort: a bundle failure must NOT un-release an already-tagged
+    # release — the tag and the transition are already durable — so we record
+    # the failure on the record and return. ``release_bundle`` re-runs it
+    # idempotently. ``build_bundle`` is referenced through the module global so
+    # a test can stub it (the finalize regression suite does, to stay fast).
+    try:
+        build_bundle(service, project, rev)
+    except Exception as exc:                                    # noqa: BLE001
+        _persist_bundle(service, project, rev, {"error": str(exc)})
+    # Re-read so the returned record carries the bundle the build just persisted.
+    current = _releases_map(service, project).get(rev)
     return copy.deepcopy(current)
+
+
+# --------------------------------------------------------------- the bundle
+
+
+#: The ISO-10303-21 ``FILE_NAME`` header's second entry — the write timestamp.
+#: (``DOTALL`` because the header may wrap; ``count=1`` — only the first.)
+_STEP_FILE_NAME_TS = re.compile(
+    rb"(FILE_NAME\s*\(\s*'[^']*'\s*,\s*)'[^']*'", re.DOTALL)
+
+#: An OCCT assembly-session artifact: the ``NEXT_ASSEMBLY_USAGE_OCCURRENCE``
+#: entity's first field is a PROCESS-GLOBAL monotonic counter, so two assembly
+#: exports in one kernel process (the bundle shares its kernel across rebuilds)
+#: carry different ids for byte-identical geometry. Not the shape — a counter.
+_STEP_NAUO_ID = re.compile(
+    rb"(NEXT_ASSEMBLY_USAGE_OCCURRENCE\s*\(\s*)'[^']*'")
+
+
+def _normalize_step_bytes(data: bytes) -> bytes:
+    """A copy of *data* with STEP's two non-geometry, non-deterministic fields
+    neutralized so two exports of the same shape at the same tag compare equal
+    (FR11): the ``FILE_NAME`` write timestamp and the process-global
+    ``NEXT_ASSEMBLY_USAGE_OCCURRENCE`` session counter (assemblies only).
+    Everything else a STEP writer emits is deterministic for a fixed shape. The
+    README names STEP as the one normalized-comparison artifact class."""
+    data = _STEP_FILE_NAME_TS.sub(rb"\1'NORMALIZED'", data, count=1)
+    data = _STEP_NAUO_ID.sub(rb"\1'NORMALIZED'", data)
+    return data
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _bundle_readme(record: dict, rev: str, tag: str, tag_date: str,
+                   produced: list[Path], skipped: list[str]) -> str:
+    """The bundle README (FR10) — deterministic: it carries the release name,
+    notes, the gate report, any waiver and a sorted artifact list, all off the
+    stable record + the tag's commit date, never the wall clock."""
+    gate = record.get("gate") or {}
+    lines = [f"# {record.get('name') or ('Release ' + rev)}", ""]
+    lines.append(f"- Revision: {rev}")
+    lines.append(f"- Tag: {tag}")
+    lines.append(f"- Date (tag commit): {tag_date}")
+    if record.get("notes"):
+        lines += ["", "## Notes", "", str(record["notes"])]
+
+    lines += ["", "## Gate", "", f"Status: {gate.get('status', 'unknown')}", ""]
+    for check in gate.get("checks") or []:
+        mark = " (waived)" if check.get("waived") else ""
+        lines.append(f"- {check.get('name')}: {check.get('status')}{mark} — "
+                     f"{check.get('detail', '')}")
+
+    waiver = record.get("waiver")
+    if isinstance(waiver, dict):
+        lines += ["", "## Waiver", "",
+                  f"- Reason: {waiver.get('reason')}",
+                  f"- Principal: {waiver.get('principal')} "
+                  f"({waiver.get('principal_kind')})",
+                  f"- Recorded: {waiver.get('ts')}"]
+
+    lines += ["", "## Artifacts", ""]
+    for name in sorted(p.name for p in produced):
+        cls = "step" if Path(name).suffix.lower() in (".step", ".stp") \
+            else "deterministic"
+        lines.append(f"- {name} ({cls})")
+
+    if skipped:
+        lines += ["", "## Skipped", ""]
+        lines += [f"- {note}" for note in skipped]
+
+    lines += [
+        "", "## Reproducibility", "",
+        "Rebuilding this bundle at tag `" + tag + "` yields byte-identical "
+        "sha256 for every `deterministic`-class artifact (drawings, BOM, flat "
+        "patterns, this README). STEP files (`*.step`) are the one "
+        "normalized-comparison class: their ISO-10303-21 `FILE_NAME` header "
+        "carries a write timestamp, and an assembly STEP additionally carries "
+        "an OCCT process-global `NEXT_ASSEMBLY_USAGE_OCCURRENCE` session "
+        "counter — neither is geometry — so STEP files are compared only after "
+        "those two fields are normalized (see `artifacts.json` `class` and the "
+        "release management docs).", ""]
+    return "\n".join(lines)
+
+
+def _zip_dir(src: Path, zip_path: Path) -> None:
+    """Zip *src*'s files (sorted, flat) into *zip_path*, replacing any prior."""
+    if zip_path.exists():
+        zip_path.unlink()
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for child in sorted(src.iterdir(), key=lambda p: p.name):
+            if child.is_file():
+                zf.write(child, child.name)
+
+
+def _persist_bundle(service, project: str, rev: str, bundle: dict) -> None:
+    """RMW the manifest to stamp ``releases[rev].bundle``. This writes
+    generation-owned output onto the record (the bundle pointer), so it does NOT
+    go through ``_ensure_mutable`` — a released record is append-only for its
+    *state*, and the bundle is that release's own produced artifact index, added
+    once and refreshable by an idempotent rebuild."""
+    manifest = service.store.manifest(project)
+    releases = manifest.get("releases")
+    releases = releases if isinstance(releases, dict) else {}
+    record = releases.get(rev)
+    if isinstance(record, dict):
+        record["bundle"] = bundle
+        manifest["releases"] = releases
+        service.store.save_manifest(project, manifest)
+        # Snapshot the bundle stamp (and any exports the build wrote) so the
+        # working tree is left CLEAN — otherwise the next release's
+        # working_tree_clean gate would see the uncommitted manifest and go red.
+        service.bus.publish({"type": "project_changed", "project": project,
+                             "reason": "release"})
+
+
+def build_bundle(service, project: str, rev: str) -> dict:
+    """Produce the reproducible release bundle (FR10-11) for *project* rev *rev*
+    at its tag ``release/<rev-lower>`` and copy it into
+    ``exports/releases/<rev>/`` (with a ``<rev>.zip`` beside it).
+
+    The whole build runs against an **ephemeral service materialized at the
+    tag** (its tree IS the tagged state; its cache is cold, so every export
+    builds for real — this is where the per-tag geometry and mass come from).
+    The produced files are copied OUT of the throwaway worktree BEFORE it is
+    torn down. Idempotent: a rebuild overwrites the directory. Returns the
+    bundle summary and persists it onto the record.
+
+    Zero OCP here — the geometry is done by the ephemeral service's kernel
+    through the export tools; this module stays pure Python.
+    """
+    record = _releases_map(service, project).get(rev)
+    if not isinstance(record, dict):
+        raise NotFoundError(
+            f"release {rev!r} not found in project {project!r}",
+            {"project": project, "rev": rev})
+    tag = record.get("tag") or f"release/{rev.lower()}"
+    canonical = Path(service.store.canonical_path_of(project)).resolve()
+
+    # The tag's commit date pins the drawing title block (byte-stable, no clock).
+    tag_date = "-"
+    for entry in service.history.tags(canonical):
+        if entry.get("name") == tag:
+            tag_date = (str(entry.get("ts") or "")[:10]) or "-"
+            break
+
+    from ._worktree import materialized_service
+
+    produced: list[Path] = []
+    skipped: list[str] = []
+
+    def _keep(path_like) -> None:
+        if path_like is None:
+            return
+        p = Path(path_like)
+        if p.is_file():
+            produced.append(p.resolve())
+
+    with materialized_service(service, project, tag) as (eph, registry, name):
+        exports = Path(eph.store.exports_dir(name)).resolve()
+        manifest = eph.store.manifest(name)
+        parts = [p for p in (manifest.get("parts") or []) if isinstance(p, dict)]
+        script_parts = [p for p in parts if p.get("kind") != "reference"]
+
+        # STEP per part (this also warms the ephemeral build cache, so the BOM
+        # below reads real, built masses rather than `unbuilt`).
+        for part in script_parts:
+            pid = part.get("id")
+            try:
+                res = eph.export_part(name, pid, "step")
+                _keep(res.get("path") or (exports / f"{pid}.step"))
+            except Exception as exc:                            # noqa: BLE001
+                skipped.append(f"{pid}: STEP export failed ({exc})")
+
+        # STEP for the whole assembly (an assembly with no instances raises —
+        # skip it gracefully rather than fail the bundle).
+        try:
+            res = eph.export_assembly(name, "step")
+            _keep(res.get("path") or (exports / "assembly.step"))
+        except Exception as exc:                                # noqa: BLE001
+            skipped.append(f"assembly: STEP skipped ({exc})")
+
+        # Drawings (pdf + svg) per script part, title block PINNED at the tag
+        # via the PRD-014 version override so they are byte-stable (FR11).
+        for part in script_parts:
+            pid = part.get("id")
+            for fmt in ("pdf", "svg"):
+                out = registry.call("generate_drawing", {
+                    "project": name, "part_id": pid, "format": fmt,
+                    "version": {"ref": rev, "date": tag_date}})
+                if "error" in out:
+                    skipped.append(
+                        f"{pid}: {fmt} drawing skipped "
+                        f"({out['error'].get('message')})")
+                    continue
+                _keep(out.get("path") or (exports / f"{pid}_drawing.{fmt}"))
+
+        # Flat patterns for sheet-metal parts; a solid errors/no-ops on
+        # flat_pattern(p) — catch and skip, noting which.
+        for part in script_parts:
+            pid = part.get("id")
+            out = registry.call("flat_pattern", {
+                "project": name, "part_id": pid, "format": "svg"})
+            if "error" in out:
+                skipped.append(f"{pid}: flat pattern skipped (not sheet metal)")
+                continue
+            _keep(out.get("path") or (exports / f"{pid}_flat.svg"))
+
+        # BOM (csv + json) at the tag — after the builds above, so masses are
+        # real.
+        for fmt in ("csv", "json"):
+            out = registry.call("export_bom", {"project": name, "format": fmt})
+            if "error" in out:
+                skipped.append(f"bom.{fmt} skipped ({out['error'].get('message')})")
+                continue
+            _keep(out.get("path") or (exports / f"bom.{fmt}"))
+
+        # De-duplicate, preserving order.
+        seen: set[Path] = set()
+        unique: list[Path] = []
+        for p in produced:
+            if p not in seen:
+                seen.add(p)
+                unique.append(p)
+        produced = unique
+
+        # README (deterministic) — written into the bundle set, then hashed.
+        readme_path = exports / "README.md"
+        readme_path.write_text(
+            _bundle_readme(record, rev, tag, tag_date, produced, skipped),
+            encoding="utf-8")
+        produced.append(readme_path.resolve())
+
+        # Classify + hash every produced file. artifacts.json never lists
+        # itself; STEP is the `step` class, everything else `deterministic`.
+        files = []
+        for p in sorted(produced, key=lambda x: x.name):
+            data = p.read_bytes()
+            cls = "step" if p.suffix.lower() in (".step", ".stp") \
+                else "deterministic"
+            files.append({"path": p.name, "sha256": _sha256_bytes(data),
+                          "bytes": len(data), "class": cls})
+        artifacts = {
+            "rev": rev, "tag": tag, "generated": tag_date, "files": files,
+            "classes": {
+                "deterministic": "byte-identical across rebuilds at this tag",
+                "step": "compared after FILE_NAME timestamp normalization",
+            },
+        }
+        art_path = exports / "artifacts.json"
+        art_path.write_text(json.dumps(artifacts, indent=2, sort_keys=True),
+                            encoding="utf-8")
+
+        # Copy OUT into the real project's exports/releases/<rev>/ BEFORE
+        # teardown removes the worktree.
+        dest = Path(service.store.exports_dir(project)).resolve() \
+            / "releases" / rev
+        if dest.exists():
+            shutil.rmtree(dest)
+        dest.mkdir(parents=True, exist_ok=True)
+        for p in produced:
+            shutil.copy2(p, dest / p.name)
+        shutil.copy2(art_path, dest / "artifacts.json")
+
+    # The worktree is gone; the real dest survives. Zip it beside the directory.
+    zip_path = dest.parent / f"{rev}.zip"
+    _zip_dir(dest, zip_path)
+
+    summary = {
+        "dir": str(dest),
+        "zip": str(zip_path),
+        "artifacts": [f["path"] for f in files],
+        "generated": tag_date,
+        "skipped": skipped,
+    }
+    _persist_bundle(service, project, rev, summary)
+    return summary
 
 
 # ------------------------------------------------------------- the gate report
