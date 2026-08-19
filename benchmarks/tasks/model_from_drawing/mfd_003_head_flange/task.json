@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "model_from_drawing/mfd_003_head_flange",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "model_from_drawing",
+  "title": "Chamber head flange from a three-view drawing",
+  "sets": ["core"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "derived", "example": "rocketry", "parts": ["flange"]},
+  "prompt": "prompt.md",
+  "assets": ["assets/drawing.svg"],
+  "starter": null,
+  "target": {"project": "bench_mfd_003_head_flange", "parts": ["flange"]},
+  "budgets": {"wall_s": 600, "turns": 24},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the flange's bottom face lies on Z = 0, its bore axis is the Z axis and the ring is centred on the origin, so the part spans Z = 0 to Z = 14"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {"flange": "reference/steps/flange.step"},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": null,
+    "parts": {"flange": "specs/parts/flange.py"}
+  },
+  "weights": {
+    "built": 0.15, "valid": 0.10, "specs": 0.10,
+    "geometry": 0.50, "interference": 0.00, "metrics": 0.15
+  }
+}

@@ -1,0 +1,179 @@
+name: bench
+
+# AgentCAD-Bench (PRD-024). A SEPARATE workflow file, deliberately:
+# `tests/test_prd006_acceptance.py` asserts ci.yml's shape byte-wise, and
+# `tests/test_geometry_ci_action.py` asserts its apt block against the
+# composite action — a bench job added to ci.yml would fail both for reasons
+# that have nothing to do with the bench (design D20).
+#
+# Two lanes, and the split is the whole point:
+#
+#   selftest  runs on every push and pull request, holds NO secret, and proves
+#             the TASK SET (AC1: every shipped reference scores exactly 1.0)
+#             and the harness. This is the PR-blocking half.
+#   builtin   drives the real Anthropic-backed chat agent over the fast task
+#             subset and gates the result against benchmarks/baseline.json. It
+#             holds a secret and executes agent-authored Python, so it NEVER
+#             runs on `pull_request` — geometry-ci.yml:8-9's rule, one
+#             workflow over. `guard` exists only because the `secrets` context
+#             is not readable from a job-level `if:`.
+
+on:
+  push:
+    branches: [main, roadmap]
+  pull_request:
+  schedule:
+    # Monday 06:00 UTC — a weekly trend line on the built-in agent.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: bench-${{ github.ref }}
+  # Cancel superseded PR runs only. A push to main can start the PAID `builtin`
+  # job, and cancelling one of those mid-flight burns the API spend and leaves
+  # no result — the opposite of what the group is for.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------ PR lane
+  # The bench suite in full, slow markers included: AC1 builds and scores all
+  # 25 references and the STEP-drift check re-exports all 15 datums. Measured
+  # 264 tests in 70 s on an 8-core macOS laptop under `-n 2 --dist loadscope`
+  # (the whole task set is small parts over one warm kernel). 45 minutes is the
+  # budget anyway, so a runner an order of magnitude slower is a red test
+  # rather than a cancelled job with no output — ci.yml's reasoning for its
+  # own 30. If AC1 ever outgrows it, the honest lever is `--set fast` here and
+  # the full set on the schedule, the split ci.yml already makes.
+  selftest:
+    name: bench self-test (tasks + harness)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # OCCT needs an X/GL stack even headless on Linux. Keep this list and the
+      # apt hardening in sync with .github/workflows/ci.yml and
+      # .github/actions/agentcad-check/action.yml (a test asserts the list).
+      - name: Install OCCT system libraries (Linux)
+        run: |
+          set -euo pipefail
+          # A stalled Ubuntu mirror can wedge apt with no client-side timeout,
+          # hanging the job to its cancel with no output (docs/changelog/0253).
+          apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+                    -o Acquire::https::Timeout=30)
+          for attempt in 1 2 3; do
+            if sudo apt-get "${apt_opts[@]}" update; then break; fi
+            echo "::warning::apt-get update failed (attempt $attempt/3); retrying"
+            sleep 5
+          done
+          sudo apt-get install -y --no-install-recommends "${apt_opts[@]}" \
+            libgl1 libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1
+
+      - name: Sync dependencies (locked)
+        run: uv sync --locked
+
+      # `--dist loadscope` keeps a module on one worker: the acceptance file
+      # shares one warm kernel across its 40 parametrised cases and splitting
+      # it would pay for a second OCCT pool to run the same builds.
+      - name: Run the bench suite
+        run: uv run pytest -q -n 2 --dist loadscope tests/test_bench_*.py tests/test_prd024_acceptance.py
+        env:
+          AGENTCAD_KERNEL_POOL_SIZE: "1"
+          # PRD-006 Decision 13's honesty gate, `ci.yml`'s ubuntu row verbatim:
+          # this job scores candidate-authored Python in a confined worker, so
+          # a worker that failed to confine itself has to be a RED test rather
+          # than a silently degraded run.
+          AGENTCAD_EXPECT_SANDBOX: active
+
+  # ------------------------------------------------------------- the secret
+  # Reads the presence of the key and says so out loud. A silently skipped
+  # benchmark is indistinguishable from a benchmark that scored zero.
+  guard:
+    name: is the API key configured?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      has_key: ${{ steps.k.outputs.has_key }}
+    steps:
+      # The secret arrives through `env`, never interpolated into the script
+      # body: `${{ secrets.X }}` inside `run:` is textual substitution, so a
+      # value carrying a quote or a backtick would be executed rather than
+      # tested. Only its EMPTINESS is read here; it is never printed.
+      - id: k
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          elif [ "$IS_FORK" = "true" ]; then
+            # Not a misconfiguration: GitHub withholds every secret from a fork
+            # pull request by design, and the `builtin` job would refuse this
+            # event anyway. Saying "not configured" here would send a
+            # contributor to look for a setting that is not theirs to set.
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=AgentCAD-Bench::secrets are withheld from fork pull requests, so the built-in agent run was skipped. This is expected; the task-set self-test above is the PR-blocking half."
+          else
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=AgentCAD-Bench::ANTHROPIC_API_KEY is not configured; the built-in agent run was skipped."
+          fi
+
+  # -------------------------------------------------------------- agent lane
+  # ALL THREE conditions are load-bearing, and they are ANDed. `has_key` keeps
+  # the job from starting a run it cannot finish; `event_name != 'pull_request'`
+  # keeps a fork's branch from ever being the thing that runs while the key is
+  # in the environment; `ref == refs/heads/main` keeps the paid run off the
+  # `roadmap` branch, which `on.push` (and `selftest`) deliberately include —
+  # design §13 says schedule, dispatch and main, and a trigger list wider than
+  # the job's own guard is how a spend leak starts. A scheduled run always
+  # carries the default branch, so the ref test costs nothing there; a manual
+  # `workflow_dispatch` must be launched from main, which is deliberate.
+  builtin:
+    name: built-in agent (fast set)
+    needs: guard
+    if: ${{ needs.guard.outputs.has_key == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Sync dependencies (locked)
+        run: uv sync --locked
+
+      # Never exit 1: an over-budget or low-scoring task is a measurement.
+      # Exit 2 is the harness failing, and that is a red job.
+      - name: Run the built-in agent over the fast set
+        run: uv run agentcad bench run --set fast --agent builtin --report bench-out
+
+      # THIS is the gate (FR11/AC5): exit 1 is a regression against the
+      # checked-in baseline beyond --epsilon, on the total or on a category.
+      - name: Report and gate against the baseline
+        run: |
+          uv run agentcad bench report bench-out \
+            --baseline benchmarks/baseline.json --epsilon 0.05 \
+            --md "$GITHUB_STEP_SUMMARY" --json-out bench-out/report.json
+
+      # `always()`: the transcripts of a run that regressed are the reason to
+      # look at it.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-out
+          path: bench-out

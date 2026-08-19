@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 33.06,
+      "metric": "mass_g",
+      "min": 32.72,
+      "name": "clamp_plate_untouched",
+      "part": "clamp_plate"
+    },
+    {
+      "max": 13.37,
+      "metric": "bbox_x_mm",
+      "min": 13.17,
+      "name": "head_diameter",
+      "part": "cap_screw"
+    },
+    {
+      "max": 19.95,
+      "metric": "bbox_z_mm",
+      "name": "objective_screw_height",
+      "part": "cap_screw"
+    },
+    {
+      "max": 22.8,
+      "metric": "bbox_z_mm",
+      "name": "objective_screw_height_relaxed",
+      "part": "cap_screw"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "solids",
+      "part": "cap_screw"
+    },
+    {
+      "max": 244.6,
+      "metric": "mass_g",
+      "min": 242.16,
+      "name": "tapped_plate_untouched",
+      "part": "tapped_plate"
+    }
+  ]
+}

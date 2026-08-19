@@ -1,0 +1,131 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 13.32,
+      "metric": "bbox_x_mm",
+      "min": 13.22,
+      "name": "cap_screw_bbox_x",
+      "part": "cap_screw"
+    },
+    {
+      "max": 13.32,
+      "metric": "bbox_y_mm",
+      "min": 13.22,
+      "name": "cap_screw_bbox_y",
+      "part": "cap_screw"
+    },
+    {
+      "max": 21.05,
+      "metric": "bbox_z_mm",
+      "min": 20.95,
+      "name": "cap_screw_bbox_z",
+      "part": "cap_screw"
+    },
+    {
+      "max": 11.334987,
+      "metric": "mass_g",
+      "min": 11.110531,
+      "name": "cap_screw_mass",
+      "part": "cap_screw"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "cap_screw_solids",
+      "part": "cap_screw"
+    },
+    {
+      "max": 1443.947342,
+      "metric": "volume_mm3",
+      "min": 1415.354325,
+      "name": "cap_screw_volume",
+      "part": "cap_screw"
+    },
+    {
+      "max": 40.05,
+      "metric": "bbox_x_mm",
+      "min": 39.95,
+      "name": "clamp_plate_bbox_x",
+      "part": "clamp_plate"
+    },
+    {
+      "max": 40.05,
+      "metric": "bbox_y_mm",
+      "min": 39.95,
+      "name": "clamp_plate_bbox_y",
+      "part": "clamp_plate"
+    },
+    {
+      "max": 8.05,
+      "metric": "bbox_z_mm",
+      "min": 7.95,
+      "name": "clamp_plate_bbox_z",
+      "part": "clamp_plate"
+    },
+    {
+      "max": 33.218094,
+      "metric": "mass_g",
+      "min": 32.56031,
+      "name": "clamp_plate_mass",
+      "part": "clamp_plate"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "clamp_plate_solids",
+      "part": "clamp_plate"
+    },
+    {
+      "max": 12302.997708,
+      "metric": "volume_mm3",
+      "min": 12059.373991,
+      "name": "clamp_plate_volume",
+      "part": "clamp_plate"
+    },
+    {
+      "max": 40.05,
+      "metric": "bbox_x_mm",
+      "min": 39.95,
+      "name": "tapped_plate_bbox_x",
+      "part": "tapped_plate"
+    },
+    {
+      "max": 40.05,
+      "metric": "bbox_y_mm",
+      "min": 39.95,
+      "name": "tapped_plate_bbox_y",
+      "part": "tapped_plate"
+    },
+    {
+      "max": 20.05,
+      "metric": "bbox_z_mm",
+      "min": 19.95,
+      "name": "tapped_plate_bbox_z",
+      "part": "tapped_plate"
+    },
+    {
+      "max": 245.812813,
+      "metric": "mass_g",
+      "min": 240.945232,
+      "name": "tapped_plate_mass",
+      "part": "tapped_plate"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "tapped_plate_solids",
+      "part": "tapped_plate"
+    },
+    {
+      "max": 31313.734077,
+      "metric": "volume_mm3",
+      "min": 30693.660135,
+      "name": "tapped_plate_volume",
+      "part": "tapped_plate"
+    }
+  ]
+}

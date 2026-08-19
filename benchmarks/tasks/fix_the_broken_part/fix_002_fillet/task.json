@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "fix_the_broken_part/fix_002_fillet",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "fix_the_broken_part",
+  "title": "A bracket whose end break is bigger than the leg it sits on",
+  "sets": ["core"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "authored"},
+  "prompt": "prompt.md",
+  "assets": [],
+  "starter": "starter",
+  "target": {"project": "bench_fix_002_fillet", "parts": ["shelf_bracket"]},
+  "budgets": {"wall_s": 600, "turns": 24},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the outside heel corner is at the origin; the horizontal leg runs into +X, the upright leg into +Z, and the 40 mm width into +Y"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {"shelf_bracket": "reference/steps/shelf_bracket.step"},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": null,
+    "parts": {"shelf_bracket": "specs/parts/shelf_bracket.py"}
+  },
+  "weights": {
+    "built": 0.25, "valid": 0.15, "specs": 0.35,
+    "geometry": 0.15, "interference": 0.00, "metrics": 0.10
+  }
+}

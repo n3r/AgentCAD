@@ -265,6 +265,37 @@ This project is built skill-first. Use the Superpowers process skills:
   aggregator name (MatWeb/MakeItFrom/Prospector/Granta) in any `source` ·
   the CLI is `.venv/bin/agentcad materials lint`, never `python -m
   agentcad.cli` (no `__main__` guard).
+- Bench (`agentcad/bench/`, `kernel/handlers/bench.py`, `benchmarks/`):
+  **`error` means the harness could not measure; `not_applicable` is declared
+  by `task.json` (weight 0) and never by a run** — an absent, broken or
+  mesh-only candidate measures **zero**, because excluded subscores renormalise
+  and the alternative rewards destroying evidence · IoU booleans **only the
+  intersection** (`union = volA + volB − inter`, never `|`), both sides
+  solids-decomposed, `inter` clamped to `min(Σ, volA, volB)`, and a mesh side
+  short-circuits **before** any boolean · the rubric is **injected into a copy
+  and re-binds `SPECS`**, only rubric-owned rows count, and a
+  candidate-inducible skip (`mesh_only`, `no_instances`) is a **fail** ·
+  `score.json` carries **no timestamp/host/path/duration** (they live in
+  `run.json`) and is `sort_keys` + `round(x, 6)` + `allow_nan=False` ·
+  `handlers/bench.py` is a **handler pack, not a tool** (`iou` must stay out of
+  `build_registry`) and `bench/**` is **OCP-free**, both asserted ·
+  `_build_service(examples=False)` is load-bearing (a derived task must not be
+  solvable by opening the example) while the catalog stays registered ·
+  `bench.json["tasks"]` is the roster the report's denominator comes from, and
+  a baseline task missing from it is a **`coverage` regression** ·
+  `--report DIR` **refuses** a directory that is not a results directory and
+  clears only `tasks/` · **`bench report --baseline` exit 1 is the gate** (`run`
+  and `score` are 0/2 only; per-task deltas are printed, never gated) ·
+  `publish` **rule 4 is row-relative** and a rejected row refuses the whole
+  board · the reference **script** is the solution, the reference **STEP** is
+  the datum and is **never byte-compared** (re-export + IoU/volume/bbox) · the
+  secret CI job **never runs on `pull_request`** and lives in its own
+  `bench.yml` (`ci.yml` is byte-asserted) · no fan-out, no `--jobs` · an
+  external evaluator reads a prompt with **`agentcad bench prompt`**, never
+  `cat prompt.md` (the file carries reviewer-only HTML comments the runner
+  strips) · the **only** write root either command grants the confined worker
+  is the work dir — never the task bundle (a candidate script would rewrite
+  the reference STEP it is scored against) and never the submission.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests
@@ -293,6 +324,7 @@ commit manifest-reformatting churn or the venv.
 `docs/deployment.md`
 (hosted mode: `docker compose`, accounts, tokens, backup) · `docs/packages.md`
 (packages, indexes, the publish gate, the bundled catalog) · `docs/geometry-ci.md`
-(`agentcad check` + the GitHub Action) · `docs/roadmap.md` (PRD
+(`agentcad check` + the GitHub Action) · `docs/bench.md` (AgentCAD-Bench:
+the task bundle, the subscores, `agentcad bench`) · `docs/roadmap.md` (PRD
 index) · `docs/prd/` (one PRD per feature) · `docs/market_research.md` ·
 `docs/superpowers/specs|plans/` (design specs and implementation plans).

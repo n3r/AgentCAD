@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 90.15,
+      "metric": "bbox_z_mm",
+      "min": 89.85,
+      "name": "leg_a_height",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 90.15,
+      "metric": "bbox_x_mm",
+      "min": 89.85,
+      "name": "leg_b_length",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 1044.6,
+      "metric": "mass_g",
+      "min": 1003.6,
+      "name": "mass",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "solids",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 80.15,
+      "metric": "bbox_y_mm",
+      "min": 79.85,
+      "name": "width",
+      "part": "angle_bracket"
+    }
+  ]
+}

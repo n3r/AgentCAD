@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "assemble_and_clear/asm_002_lid_on_base",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "assemble_and_clear",
+  "title": "Seat the enclosure lid on its base with the snap-fit allowance intact",
+  "sets": ["core", "fast"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "derived", "example": "prototyping", "parts": ["enclosure_base", "enclosure_lid"]},
+  "prompt": "prompt.md",
+  "assets": [],
+  "starter": "starter",
+  "target": {"project": "bench_asm_002_lid_on_base", "parts": ["enclosure_base", "enclosure_lid"]},
+  "budgets": {"wall_s": 900, "turns": 30},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "world frame, no rotations: the base's underside is Z = 0, it is centred on the origin in X and Y, and the stack grows into +Z"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": "specs/project.py",
+    "parts": {}
+  },
+  "weights": {
+    "built": 0.10, "valid": 0.05, "specs": 0.35,
+    "geometry": 0.00, "interference": 0.40, "metrics": 0.10
+  }
+}

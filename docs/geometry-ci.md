@@ -39,6 +39,13 @@ identical geometry and byte-identical meshes (cache key
 wrong, not that regeneration was flaky — and `--verify-determinism` is the
 standing regression guard for that claim.
 
+**Sibling command:** `agentcad check` certifies a **project** — is this design
+still right? [`agentcad bench`](bench.md) scores an **agent** — how good is it
+at producing one? Both drive the same headless in-process service over one warm
+kernel with no server and no port, and both materialize their work in a
+throwaway cell they created and remove; the bench reuses this feature's muzzled
+ephemeral service verbatim to score a submission without writing into it.
+
 ---
 
 ## Two rules to read the whole feature by

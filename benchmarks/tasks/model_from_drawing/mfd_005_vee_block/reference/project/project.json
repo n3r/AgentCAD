@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "name": "bench_mfd_005_vee_block_reference",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "vee_block",
+      "label": "Vee Block",
+      "material": "steel_a36",
+      "params": {
+        "length": 60.0,
+        "width": 60.0,
+        "height": 40.0,
+        "vee_depth": 15.0,
+        "vee_angle_deg": 90.0,
+        "hole_d": 8.0,
+        "hole_pitch": 40.0,
+        "hole_z": 12.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}

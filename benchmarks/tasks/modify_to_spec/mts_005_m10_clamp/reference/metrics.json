@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 39914.0,
+      "metric": "volume_mm3",
+      "min": 39828.5,
+      "name": "clearance_bore",
+      "part": "clamp_plate"
+    },
+    {
+      "max": 109.81,
+      "metric": "mass_g",
+      "min": 105.5,
+      "name": "mass",
+      "part": "clamp_plate"
+    },
+    {
+      "max": 64.15,
+      "metric": "bbox_x_mm",
+      "min": 63.85,
+      "name": "plate_size_x",
+      "part": "clamp_plate"
+    },
+    {
+      "max": 64.15,
+      "metric": "bbox_y_mm",
+      "min": 63.85,
+      "name": "plate_size_y",
+      "part": "clamp_plate"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "solids",
+      "part": "clamp_plate"
+    },
+    {
+      "max": 10.1,
+      "metric": "bbox_z_mm",
+      "min": 9.9,
+      "name": "thickness",
+      "part": "clamp_plate"
+    }
+  ]
+}

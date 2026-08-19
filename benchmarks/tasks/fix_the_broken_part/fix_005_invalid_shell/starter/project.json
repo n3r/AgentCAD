@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "bench_fix_005_invalid_shell_starter",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "coolant_elbow",
+      "label": "Coolant Elbow",
+      "material": "al6061",
+      "params": {
+        "tube_d": 24.0,
+        "wall": 3.0,
+        "run": 60.0,
+        "bend_r": 6.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}

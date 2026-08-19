@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "task_set": "bench-v1",
+  "harness": 1,
+  "agent": "builtin",
+  "model": "claude-sonnet-5",
+  "agentcad": "0.1.0",
+  "recorded": null,
+  "source": null,
+  "note": "No number is recorded yet. `bench report --baseline` on an unrecorded baseline exits 0 with a warning; the first scheduled run of .github/workflows/bench.yml records one (PRD-024 FR13, out of MVP scope).",
+  "total": null,
+  "categories": {},
+  "tasks": {}
+}

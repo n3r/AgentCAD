@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "fix_the_broken_part/fix_005_invalid_shell",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "fix_the_broken_part",
+  "title": "A swept elbow whose bend is tighter than the tube, so the shell crosses itself",
+  "sets": ["core"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "authored"},
+  "prompt": "prompt.md",
+  "assets": [],
+  "starter": "starter",
+  "target": {"project": "bench_fix_005_invalid_shell", "parts": ["coolant_elbow"]},
+  "budgets": {"wall_s": 600, "turns": 24},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the inlet is centred at the origin with the duct axis along +X; the elbow turns upward and the outlet axis runs along +Z at X = 60. The starter already sits on this datum and the fix must not move it"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {"coolant_elbow": "reference/steps/coolant_elbow.step"},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": null,
+    "parts": {"coolant_elbow": "specs/parts/coolant_elbow.py"}
+  },
+  "weights": {
+    "built": 0.25, "valid": 0.15, "specs": 0.35,
+    "geometry": 0.00, "interference": 0.00, "metrics": 0.25
+  }
+}
