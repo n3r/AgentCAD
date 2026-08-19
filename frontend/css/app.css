@@ -867,13 +867,17 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   position: fixed;
   top: 50px;
   right: 12px;
-  z-index: 90; /* above .modal-overlay (80): merge toasts must stay visible */
+  z-index: 100; /* above .modal-overlay (80) and .dlg-overlay (90): a notice
+                   raised from a dialog has to stay visible over it */
   display: flex;
   flex-direction: column;
   gap: 6px;
   align-items: flex-end;
 }
 .toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   background: var(--raised);
   border: 1px solid var(--hairline);
   border-radius: 7px;
@@ -884,6 +888,22 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   box-shadow: var(--shadow-pop);
 }
 .toast.error { border-color: var(--err-ring); color: var(--err-text); }
+/* `ok` is the kind market.js already passes; `success` is the shell's name
+   for it. Both, so neither call site has to be rewritten to be styled. */
+.toast.success, .toast.ok, .toast.warn { border-color: var(--accent-ring); }
+.toast-text { flex: 1; min-width: 0; }
+/* One action per toast — two choices is a dialog that lost its way. */
+.toast-action {
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 5px;
+  border: 1px solid var(--hairline);
+  background: var(--panel);
+  color: var(--accent-bright);
+  font-size: 11.5px;
+}
+.toast-action:hover { background: var(--raised-2); }
 
 /* ------------------------------------------------------- reference badge */
 
@@ -1391,6 +1411,192 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   padding: 9px 12px;
   border-top: 1px solid var(--hairline);
 }
+
+/* ================================================ shell dialogs (PRD-026)
+   The first-party dialog primitive: `shell/dialogs_model.js` writes the
+   markup, this styles it. Deliberately the SAME design language as
+   `.modal-*` above (one panel, one hairline, one shadow) — a second dialog
+   look would read as a second app. It sits at z-index 90, above the seven
+   legacy `.modal-overlay`s (80) that slice 2 adopts, and below toasts (100),
+   because a notice raised by a dialog has to stay visible over it. */
+
+.dlg-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: var(--scrim);
+  animation: dlg-fade 120ms ease-out;
+}
+.dlg {
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 100%);
+  max-height: 100%;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: var(--shadow-modal);
+}
+.dlg.narrow { width: min(420px, 100%); }
+.dlg.wide { width: min(860px, 100%); }
+.dlg.danger { border-color: var(--err-ring); }
+/* A non-modal dialog is a floating panel: no backdrop, parked bottom-right,
+   and the page underneath stays live (spec §1.1). The class is set on the
+   OVERLAY by dialogs.js — `:has()` would have been prettier, but where it is
+   unsupported the panel silently keeps its scrim and its pointer trap, i.e.
+   silently becomes modal, which is the one thing it must not do. */
+.dlg-overlay.nonmodal {
+  background: none;
+  pointer-events: none;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+.dlg.nonmodal { pointer-events: auto; box-shadow: var(--shadow-pop); }
+
+.dlg-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--hairline);
+}
+.dlg-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.dlg.danger .dlg-title { color: var(--err-text); }
+/* PRD-026's "always visible attribution": a dialog an AGENT opened says so,
+   for as long as it is open. Never a toast, never a tooltip. */
+.dlg-attribution {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--accent-bright);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-ring);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.dlg-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+}
+.dlg-text { font-size: 12.5px; color: var(--text); line-height: 1.5; }
+.dlg-note {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.45;
+}
+.dlg-form { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+.dlg-body > .dlg-form:first-child { margin-top: 0; }
+.dlg-field { display: flex; flex-direction: column; gap: 4px; }
+.dlg-field > label { font-size: 11.5px; color: var(--dim); }
+.dlg-field-check {
+  flex-direction: row-reverse;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.dlg-field-check > label { color: var(--text); font-size: 12.5px; }
+.dlg-input {
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+  background: var(--ink);
+  color: var(--text);
+  font-size: 12.5px;
+  width: 100%;
+}
+.dlg-input.dlg-area {
+  height: auto;
+  padding: 7px 9px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.dlg-input:focus { outline: none; border-color: var(--accent); }
+.dlg-input::placeholder { color: var(--faint); }
+.dlg-input[aria-invalid="true"] { border-color: var(--err-ring); }
+.dlg-check { width: 14px; height: 14px; accent-color: var(--accent); }
+.dlg-help { font-size: 11px; color: var(--dim); }
+.dlg-error { font-size: 11px; color: var(--err-text); }
+.dlg-error:empty, .dlg-foot-error:empty { display: none; }
+
+.dlg-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--hairline);
+}
+.dlg-foot-error { font-size: 11.5px; color: var(--err-text); overflow-wrap: anywhere; }
+.dlg-btns { display: flex; gap: 8px; margin-left: auto; flex: none; }
+.dlg-btn {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.dlg-btn:hover { background: var(--raised-2); }
+.dlg-btn:disabled { opacity: 0.4; cursor: default; }
+.dlg-btn.primary { border-color: var(--accent-ring); color: var(--accent-bright); }
+.dlg-btn.danger { border-color: var(--err-ring); color: var(--err-text); }
+
+/* the "?" cheat-sheet's body */
+.dlg-keys-group {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin: 12px 0 5px;
+}
+.dlg-keys-group:first-child { margin-top: 0; }
+.dlg-keys-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12.5px;
+  padding: 3px 0;
+}
+.dlg-keys-row kbd {
+  flex: none;
+  min-width: 62px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent-bright);
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  border-radius: 4px;
+  padding: 1px 6px;
+  text-align: center;
+}
+
+@keyframes dlg-fade { from { opacity: 0; } to { opacity: 1; } }
 
 /* ------------------------------------------------------- versions dialog */
 
@@ -2133,7 +2339,8 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .row-dot.building, .msg.assistant.streaming::after, .sk-pulse {
+  .row-dot.building, .msg.assistant.streaming::after, .sk-pulse,
+  .dlg-overlay {
     animation: none;
   }
 }
@@ -2504,12 +2711,8 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   white-space: nowrap;
 }
 
-.claim-meta {
-  margin-top: 8px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--dim);
-}
+/* (`.claim-meta` lived here until PRD-026 slice 1 moved the claim conflict
+   onto the shell dialog — its metadata line is `.dlg-note` now.) */
 
 .notif-row {
   display: flex;

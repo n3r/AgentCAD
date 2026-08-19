@@ -398,22 +398,12 @@
     </div>
   </div>
 
-  <!-- The claim conflict. Shown ONLY for a 409 whose details carry
-       overridable:true (a soft per-part claim); a plain turn-lock 409 keeps
-       today's banner and is offered no override, because there is nothing
-       here that could grant one. -->
-  <div id="claim-modal" class="modal-overlay hidden">
-    <div class="modal narrow">
-      <header class="modal-head">
-        <span id="claim-title" class="modal-title">Someone is editing this part</span>
-        <div class="modal-actions">
-          <button id="claim-cancel" class="tb-btn" type="button">Cancel</button>
-          <button id="claim-override" class="tb-btn" type="button">Override</button>
-        </div>
-      </header>
-      <div id="claim-body" class="conflict-body"></div>
-    </div>
-  </div>
+  <!-- The claim conflict has no markup any more: PRD-026 slice 1 moved it onto
+       `dialogs.open({view: "claim"})`, which builds it (and its focus trap,
+       its Esc and its backdrop) from the shell primitive. It is still shown
+       ONLY for a 409 whose details carry overridable:true — a plain turn-lock
+       409 keeps today's banner and is offered no override, because there is
+       nothing here that could grant one. -->
 
   <div id="notifications-modal" class="modal-overlay hidden">
     <div class="modal narrow">
@@ -443,6 +433,13 @@
       <button id="comment-pop-send" class="tb-btn" type="button">Comment</button>
     </div>
   </div>
+
+  <!-- PRD-026: every shell dialog is built into this host by
+       `shell/dialogs.js` — one overlay stack, one Esc listener, one focus
+       trap. Before #toasts so a toast raised from a dialog still paints over
+       it (the z-index says the same thing; the order makes it true without
+       relying on stacking contexts). -->
+  <div id="dialog-host"></div>
 
   <div id="toasts"></div>
 

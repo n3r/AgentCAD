@@ -22,6 +22,12 @@ import * as configs from "./configs.js";
 import * as market from "./market.js";
 import * as auth from "./auth.js";
 import { setupShare } from "./share-links.js";
+// PRD-026 shell. `actions` is the ACTION REGISTRY — the panel DI object that
+// used to own that name is `panelApi` below.
+import * as actions from "./shell/actions.js";
+import * as dialogs from "./shell/dialogs.js";
+import * as shortcuts from "./shell/shortcuts.js";
+import { toast, init as initToasts } from "./shell/toast.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 const BRANCH_RE = /^[a-z0-9][a-z0-9_/-]{0,63}$/;
@@ -40,9 +46,13 @@ let projectRefreshTimer = null;
 let lockHolder = null; // current turn-lock holder for this project (or null)
 let branchSwitchUntil = 0; // suppress the branch_changed echo of our own switch
 
-// ------------------------------------------------------------------ actions
+// ----------------------------------------------------------------- panel API
+// The dependency object every panel module receives. It was called `actions`
+// until PRD-026; the name now belongs to the action registry (shell/actions.js)
+// and this is the panels' API. Panels keep their own parameter names, so the
+// rename is confined to this file.
 
-const actions = {
+const panelApi = {
   selectPart,
   selectAssembly,
   addPart,
@@ -55,7 +65,7 @@ const actions = {
   refreshProject,
   loadProject,
   // A thread anchored to a proposal hunk focuses by opening that proposal's
-  // Files tab; comments.js reaches it through the same actions object every
+  // Files tab; comments.js reaches it through the same panelApi object every
   // other panel uses rather than importing proposals.js and closing a cycle.
   openProposal: (id, tab) => proposals.openTo(id, tab),
   handleWriteConflict,
@@ -719,21 +729,29 @@ async function handleImportFile(file) {
 function setupLibrary() {
   const btn = document.getElementById("library-btn");
   if (!btn) return;
-  btn.addEventListener("click", () => library.open());
+  btn.addEventListener("click", () => actions.run("model.library", null,
+                                                  { source: "toolbar" }));
+}
+
+/** The file picker behind the Import button — an action's `run`, so the same
+ *  verb is reachable from the toolbar, the menus and the palette. */
+function openImportPicker() {
+  const input = document.getElementById("import-input");
+  if (!input) return;
+  if (!state.projectName) {
+    toast("Open a project first", "error");
+    return;
+  }
+  input.value = "";
+  input.click();
 }
 
 function setupImport() {
   const btn = document.getElementById("import-btn");
   const input = document.getElementById("import-input");
   if (!btn || !input) return;
-  btn.addEventListener("click", () => {
-    if (!state.projectName) {
-      toast("Open a project first", "error");
-      return;
-    }
-    input.value = "";
-    input.click();
-  });
+  btn.addEventListener("click", () => actions.run("project.import-cad", null,
+                                                  { source: "toolbar" }));
   input.addEventListener("change", () => {
     const file = input.files && input.files[0];
     if (file) handleImportFile(file);
@@ -1504,7 +1522,8 @@ function setupRepMode() {
   const box = document.getElementById("repmode");
   if (!box) return;
   for (const btn of box.querySelectorAll(".repmode-btn")) {
-    btn.addEventListener("click", () => setRepMode(btn.dataset.rep));
+    btn.addEventListener("click", () => actions.run(
+      `view.repmode.${btn.dataset.rep}`, null, { source: "toolbar" }));
   }
   updateRepModeToggle();
 }
@@ -1512,56 +1531,18 @@ function setupRepMode() {
 function setupUndo() {
   const undoBtn = document.getElementById("undo-btn");
   const redoBtn = document.getElementById("redo-btn");
-  if (undoBtn) undoBtn.addEventListener("click", undoLastChange);
-  if (redoBtn) redoBtn.addEventListener("click", redoLastChange);
+  const run = (id) => () => actions.run(id, null, { source: "toolbar" });
+  if (undoBtn) undoBtn.addEventListener("click", run("edit.undo"));
+  if (redoBtn) redoBtn.addEventListener("click", run("edit.redo"));
+  document.getElementById("fit-btn")
+    ?.addEventListener("click", run("view.fit"));
 }
 
-// Bare-key shortcuts (f/g/r) must not act behind an open dialog.
-function modalOpen() {
-  return document.querySelector(".modal-overlay:not(.hidden)") != null;
-}
-
-function setupKeys() {
-  document.addEventListener("keydown", (e) => {
-    const target = e.target instanceof Element ? e.target : document.body;
-    const inField = target.closest("input, textarea, .CodeMirror") != null;
-    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "z") {
-      // In a text field leave the browser's/CodeMirror's native text undo
-      // alone; elsewhere Cmd/Ctrl+Z is project undo, Shift+Cmd/Ctrl+Z redo.
-      if (inField) return;
-      e.preventDefault();
-      if (e.shiftKey) redoLastChange();
-      else undoLastChange();
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "y") {
-      // Ctrl+Y — the Windows/Linux redo convention.
-      if (inField) return;
-      e.preventDefault();
-      redoLastChange();
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
-      // CodeMirror handles its own Cmd+S; catch it everywhere else
-      if (!target.closest(".CodeMirror")) {
-        e.preventDefault();
-        if (state.part) inspector.saveIfDirty();
-      }
-      return;
-    }
-    if (inField || modalOpen() || e.metaKey || e.ctrlKey || e.altKey) return;
-    const k = e.key.toLowerCase();
-    if (k === "f") {
-      viewport.fit();
-      return;
-    }
-    // Gizmo mode — only meaningful with an editable instance selected.
-    if ((k === "g" || k === "r") && state.mode === "assembly" && state.selectedInstance) {
-      setState({ gizmoMode: k === "g" ? "translate" : "rotate" });
-    }
-  });
-  // Shift-to-snap while dragging the gizmo (1 mm / 5°) — the placement card
-  // advertises it, so it must actually be wired.
+// Shift-to-snap while dragging the gizmo (1 mm / 5°). NOT a shortcut: it is a
+// modifier held during a drag, not a chord that runs a verb, so it stays a
+// plain listener rather than entering the shortcut table. The placement card
+// advertises it, so it must actually be wired.
+function setupGizmoSnapKeys() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Shift") viewport.setGizmoSnap(true);
   });
@@ -1569,19 +1550,11 @@ function setupKeys() {
     if (e.key === "Shift") viewport.setGizmoSnap(false);
   });
   window.addEventListener("blur", () => viewport.setGizmoSnap(false));
-  document.getElementById("fit-btn").addEventListener("click", () => viewport.fit());
 }
 
-// ------------------------------------------------------------------ toasts
-
-function toast(message, kind = "info") {
-  const host = document.getElementById("toasts");
-  const el = document.createElement("div");
-  el.className = `toast ${kind === "error" ? "error" : ""}`;
-  el.textContent = message;
-  host.appendChild(el);
-  setTimeout(() => el.remove(), kind === "error" ? 8000 : 4000);
-}
+// The v0.1 key handler and `toast()` used to live here. Both are shell modules
+// now: chords are declared on actions (see registerActions) and dispatched by
+// `shell/shortcuts.js`, notices come from `shell/toast.js`.
 
 // ---------------------------------------------------- face pick / push-pull
 
@@ -2220,46 +2193,28 @@ function renderLockIndicator() {
 //     Somebody else has this part open. Offer exactly one button, because a
 //     claim exists to stop a silent clobber, not to be a permission system.
 
-let claimResolve = null;
-
-function setupClaimDialog() {
-  const overlay = document.getElementById("claim-modal");
-  const done = (ok) => {
-    overlay.classList.add("hidden");
-    const resolve = claimResolve;
-    claimResolve = null;
-    if (resolve) resolve(ok);
-  };
-  document.getElementById("claim-cancel").addEventListener("click", () => done(false));
-  document.getElementById("claim-override").addEventListener("click", () => done(true));
-  overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) done(false);
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && claimResolve) done(false);
-  });
-}
-
+// PRD-026: the hand-rolled `#claim-modal` (its own Escape listener, its own
+// backdrop handler, one module-level resolve slot that a second 409 would have
+// overwritten) is gone. The dialog primitive already had this promise shape —
+// it was modelled on it — so the callers' contract is unchanged: `true` to
+// retry the write, `false` to give up, and it never resolves twice.
 function askOverride(claim, partId) {
-  const overlay = document.getElementById("claim-modal");
-  const body = document.getElementById("claim-body");
   const label = presence.labelFor(claim.holder);
-  document.getElementById("claim-title").textContent = `${label} is editing ${partId}`;
-  body.textContent = "";
-  const line = document.createElement("div");
-  line.textContent =
-    `${label} (${claim.holder}) has ${partId} open. Overriding takes the ` +
-    "part, lands your change, and tells them it happened — their unsaved " +
-    "edits are still theirs, and the next save wins.";
-  const meta = document.createElement("div");
-  meta.className = "claim-meta";
-  meta.textContent =
-    `holder ${claim.holder} · ${claim.holder_kind} · claim expires on its own`;
-  body.append(line, meta);
-  overlay.classList.remove("hidden");
-  return new Promise((resolve) => {
-    claimResolve = resolve;
-  });
+  return dialogs.open({
+    view: "claim",
+    title: `${label} is editing ${partId}`,
+    width: "narrow",
+    danger: true,
+    body:
+      `${label} (${claim.holder}) has ${partId} open. Overriding takes the ` +
+      "part, lands your change, and tells them it happened — their unsaved " +
+      "edits are still theirs, and the next save wins.",
+    note: `holder ${claim.holder} · ${claim.holder_kind} · claim expires on its own`,
+    buttons: [
+      { id: "cancel", label: "Cancel" },
+      { id: "override", label: "Override", kind: "danger", submits: true },
+    ],
+  }).then((res) => res.ok);
 }
 
 /** Offer the override for a refused part write. Resolves true when the caller
@@ -2277,6 +2232,205 @@ async function handleWriteConflict(err, partId) {
     return false;
   }
   return true;
+}
+
+// --------------------------------------------------------------- the actions
+// PRD-026 FR7's "single action registry": every verb the workbench performs is
+// registered here ONCE and reached three ways — the toolbar button calls
+// `actions.run(id)`, the shortcut table binds whatever `shortcut` declares,
+// and slice 3/4's palette and menu bar read the same list. Registered late in
+// `boot()` (after `shortcuts.init`) so a declared chord is bound as it lands.
+//
+// Nothing is invented here: every entry is a verb the v0.1 toolbar already
+// had, and every chord is one `setupKeys` already honoured. Actions for
+// behaviour that does not exist yet (`help.palette`, `view.sidebar.toggle`,
+// `model.branches.delete`) belong to the slices that build it — a registry row
+// with nothing behind it is a menu that lies.
+
+const notInField = (ctx) => !ctx.inField;
+
+/** Click a button another module owns. The verb stays that module's (it keeps
+ *  its own listener and its own preconditions); the action makes it reachable
+ *  from the keyboard, the menus and the palette without a second copy of the
+ *  logic that would then drift. */
+function clickButton(id) {
+  const btn = document.getElementById(id);
+  if (btn) btn.click();
+}
+
+function enterMarket() {
+  // A full reload into `#market` — boot() re-enters in market mode with the
+  // viewport singleton to itself (the "reload rather than re-run boot()"
+  // discipline showSignIn() uses).
+  window.location.hash = "#market";
+  window.location.reload();
+}
+
+function registerActions() {
+  const A = (spec) => actions.register(spec);
+  const hasProject = (c) => !!c.projectName;
+  const hasPart = (c) => !!c.selectedPart;
+  const inAssembly = (c) => c.mode === "assembly";
+  const onBranch = (c) => !!c.branch;
+
+  // ------------------------------------------------------------------ File
+  A({ id: "project.new", title: "New project…", group: "Project",
+      menu: "file/10", keywords: ["create"], run: () => newProjectPrompt() });
+  A({ id: "project.open-path", title: "Open by path…", group: "Project",
+      menu: "file/11", run: () => openProjectPrompt() });
+  A({ id: "part.new", title: "New part…", group: "Parts", menu: "file/20",
+      keywords: ["create", "add"], when: hasProject, run: () => addPart() });
+  A({ id: "project.import-cad", title: "Import CAD file…", group: "Project",
+      menu: "file/30", keywords: ["step", "stl", "brep"], when: hasProject,
+      run: () => openImportPicker() });
+  const EXPORTS = [
+    ["part", "step", "file/40"], ["part", "stl", "file/41"],
+    ["part", "3mf", "file/42"],
+    ["assembly", "step", "file/50"], ["assembly", "stl", "file/51"],
+  ];
+  for (const [kind, format, menu] of EXPORTS) {
+    A({
+      id: `project.export.${kind}.${format}`,
+      title: `Export ${kind} as ${format.toUpperCase()}`,
+      group: "Export", menu, keywords: ["save", "download"],
+      when: hasProject,
+      // Both halves read `ctx`, never module state: a synthetic context (the
+      // palette's, a test's) must grade the row the same way the live one does.
+      enabled: (c) => (kind === "part" ? !!c.selectedPart : !!c.hasInstances),
+      run: () => runExport(kind, format),
+    });
+  }
+  A({ id: "project.share", title: "Share a part…", group: "Project",
+      menu: "file/60",
+      // Hosted mode only: share-links.js unhides the button once it knows the
+      // app has a public origin, so the button's visibility IS the capability.
+      when: () => {
+        const btn = document.getElementById("share-btn");
+        return !!btn && !btn.classList.contains("hidden");
+      },
+      run: () => clickButton("share-btn") });
+
+  // ------------------------------------------------------------------ Edit
+  A({ id: "edit.undo", title: "Undo", group: "Edit", menu: "edit/10",
+      // In a text field the browser's/CodeMirror's own text undo is the right
+      // answer — the binding declines and does not preventDefault.
+      shortcut: { chord: "Mod+Z", when: notInField },
+      when: hasProject, run: () => undoLastChange() });
+  A({ id: "edit.redo", title: "Redo", group: "Edit", menu: "edit/11",
+      shortcut: [{ chord: "Mod+Y", when: notInField },
+                 { chord: "Mod+Shift+Z", when: notInField }],
+      when: hasProject, run: () => redoLastChange() });
+  A({ id: "part.save-script", title: "Save & rebuild", group: "Parts",
+      menu: "edit/20",
+      // CodeMirror binds its own Cmd+S; everywhere else this catches it.
+      shortcut: { chord: "Mod+S", when: (c) => !c.inCodeMirror },
+      // `enabled`, NOT `when`: dispatch consults `when` BEFORE it
+      // `preventDefault`s, so a `when`-gated ⌘S with no part selected would
+      // fall through to the browser's "Save page as…" — which v0.1 always
+      // suppressed outside CodeMirror. The menu still greys the row out, and
+      // the run body keeps v0.1's own `if (state.part)` guard.
+      enabled: hasPart,
+      run: () => { if (state.part) inspector.saveIfDirty(); } });
+  A({ id: "part.delete", title: "Delete part…", group: "Parts",
+      menu: "edit/30", danger: true, when: hasPart,
+      run: () => deletePart(state.selectedPart) });
+
+  // ------------------------------------------------------------------ View
+  A({ id: "view.fit", title: "Fit view", group: "View", menu: "view/10",
+      shortcut: "F", keywords: ["zoom", "frame"], run: () => viewport.fit() });
+  A({ id: "view.gizmo.translate", title: "Move gizmo", group: "View",
+      menu: "view/20", shortcut: "G",
+      when: (c) => inAssembly(c) && !!c.selectedInstance,
+      run: () => setState({ gizmoMode: "translate" }) });
+  A({ id: "view.gizmo.rotate", title: "Rotate gizmo", group: "View",
+      menu: "view/21", shortcut: "R",
+      when: (c) => inAssembly(c) && !!c.selectedInstance,
+      run: () => setState({ gizmoMode: "rotate" }) });
+  A({ id: "view.repmode.full", title: "Full geometry", group: "View",
+      menu: "view/30", when: inAssembly, run: () => setRepMode("full") });
+  A({ id: "view.repmode.simplified", title: "Simplified proxies",
+      group: "View", menu: "view/31", when: inAssembly,
+      run: () => setRepMode("simplified") });
+  A({ id: "view.theme.toggle", title: "Toggle light/dark theme", group: "View",
+      menu: "view/40", run: () => theme.toggle() });
+
+  // ----------------------------------------------------------------- Model
+  A({ id: "model.sketch", title: "2D sketch…", group: "Model", menu: "model/10",
+      when: hasPart, run: () => clickButton("sketch-btn") });
+  A({ id: "model.library", title: "Parts library…", group: "Model",
+      menu: "model/20", keywords: ["package", "screw", "insert"],
+      run: () => library.open() });
+  A({ id: "model.market", title: "Marketplace…", group: "Model",
+      menu: "model/21", run: () => enterMarket() });
+  A({ id: "model.versions", title: "Versions…", group: "Model",
+      menu: "model/30", when: onBranch, run: () => versions.open() });
+  A({ id: "model.branches.new", title: "New branch…", group: "Model",
+      menu: "model/31", when: onBranch, run: () => newBranchPrompt() });
+  A({ id: "model.proposals", title: "Proposals…", group: "Model",
+      menu: "model/32", when: onBranch, run: () => proposals.open() });
+  A({ id: "model.configs", title: "Configurations…", group: "Model",
+      menu: "model/40", when: hasPart,
+      run: () => configs.open(state.selectedPart) });
+  A({ id: "model.drawing", title: "Drawing preview…", group: "Model",
+      menu: "model/41", when: hasPart,
+      run: () => drawings.previewSvg(state.projectName, state.selectedPart) });
+
+  // ------------------------------------------------------------------ Help
+  A({ id: "help.shortcuts", title: "Keyboard shortcuts", group: "Help",
+      menu: "help/10", shortcut: "?", keywords: ["keys", "cheat sheet"],
+      run: () => openShortcutSheet() });
+
+  // The sketcher is a modal MODE, not a set of bindings: its `onKey`
+  // stopPropagation's before the shortcut table ever sees the event. The
+  // cheat-sheet still has to tell the truth about it, so those rows are
+  // declared data (spec §6).
+  shortcuts.declare({ chord: "Escape", group: "While sketching",
+                      title: "Cancel the pending entity, then the selection, "
+                             + "then close the sketch" });
+  shortcuts.declare({ chord: "Delete", group: "While sketching",
+                      title: "Delete the selected sketch entities" });
+
+  // FR3: the one view slice 1 can offer the registry (and, through it,
+  // `ui_open`). The claim dialog is deliberately NOT registered — it is a
+  // response to a 409, and nothing should be able to conjure one.
+  dialogs.register("shortcuts", () => openShortcutSheet(), {
+    title: "Keyboard shortcuts",
+    description: "Every chord this workbench binds, grouped by area",
+  });
+}
+
+/** The "?" cheat-sheet: `shortcuts.list()` grouped by area. Built as DOM (not
+ *  an HTML string) so no shortcut title can ever be interpolated as markup. */
+function openShortcutSheet() {
+  const groups = new Map();
+  for (const row of shortcuts.list()) {
+    if (!groups.has(row.group)) groups.set(row.group, []);
+    groups.get(row.group).push(row);
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "dlg-keys";
+  for (const [group, rows] of groups) {
+    const head = document.createElement("h3");
+    head.className = "dlg-keys-group";
+    head.textContent = group;
+    wrap.appendChild(head);
+    for (const row of rows) {
+      const line = document.createElement("div");
+      line.className = "dlg-keys-row";
+      const chord = document.createElement("kbd");
+      chord.textContent = row.label;
+      const title = document.createElement("span");
+      title.textContent = row.title;
+      line.append(chord, title);
+      wrap.appendChild(line);
+    }
+  }
+  return dialogs.open({
+    view: "shortcuts",
+    title: "Keyboard shortcuts",
+    body: wrap,
+    buttons: [{ id: "ok", label: "Close", kind: "primary" }],
+  });
 }
 
 // -------------------------------------------------------------------- boot
@@ -2301,6 +2455,11 @@ function showSignIn() {
 }
 
 async function boot() {
+  // The shell first: toasts and dialogs are used by everything below (auth
+  // failures included), and the dialog stack must own its Esc listener before
+  // any panel installs one of its own.
+  initToasts(document.getElementById("toasts"));
+  dialogs.init(document.getElementById("dialog-host"));
   theme.init(); // before viewport.init so the scene is born with the stored palette
 
   // Identity first: in hosted mode there is nothing to render until we know
@@ -2316,7 +2475,7 @@ async function boot() {
   // (add-to-library still needs a session). It takes over the whole page and
   // does not init the workbench, so the viewport singleton is its alone.
   if (window.location.hash.startsWith("#market")) {
-    market.enter(identity, actions);
+    market.enter(identity, panelApi);
     return;
   }
   if (identity === null) {
@@ -2324,41 +2483,40 @@ async function boot() {
     return;
   }
   window.addEventListener("agentcad:unauthenticated", showSignIn, { once: true });
+  // Before the panels and before registerActions(): the table subscribes to
+  // `actions.onChange`, so every chord an action declares is bound as the
+  // action lands — and a conflict throws from that registration.
+  shortcuts.init({ actions, dialogs });
+  registerActions();
   viewport.init(document.getElementById("viewport"), { onPick });
-  tree.init(actions);
-  inspector.init(actions);
-  chat.init(actions);
-  placement.init(actions);
-  drawings.init(actions);
-  sketcher.init(actions);
-  versions.init(actions);
-  merge.init(actions);
-  proposals.init(actions);
-  library.init(actions);
-  configs.init(actions);
+  tree.init(panelApi);
+  inspector.init(panelApi);
+  chat.init(panelApi);
+  placement.init(panelApi);
+  drawings.init(panelApi);
+  sketcher.init(panelApi);
+  versions.init(panelApi);
+  merge.init(panelApi);
+  proposals.init(panelApi);
+  library.init(panelApi);
+  configs.init(panelApi);
   presence.init();
   // After inspector.init: comments.js registers inspector's param decorator
   // and subscribes to `part` behind it, so a badge is applied to rows the
   // inspector has already built.
-  comments.init(actions);
+  comments.init(panelApi);
   setupMenus();
   setupProjectMenu();
   setupBranchMenu();
   setupProposals();
-  setupClaimDialog();
   setupExportMenu();
   setupShare(identity);
   setupImport();
   setupLibrary();
-  // The Market button takes over the page via a full reload into `#market`, so
-  // boot() re-enters in market mode with the viewport singleton to itself — the
-  // same "reload rather than re-run boot()" discipline showSignIn() uses.
-  document.getElementById("market-btn")?.addEventListener("click", () => {
-    window.location.hash = "#market";
-    window.location.reload();
-  });
+  document.getElementById("market-btn")?.addEventListener("click",
+    () => actions.run("model.market", null, { source: "toolbar" }));
   setupUndo();
-  setupKeys();
+  setupGizmoSnapKeys();
   setupRepMode();
   onKeys(["rebuilding", "connected"], renderIndicators);
   onKeys(["rebuilding", "part", "mode", "selectedPart", "selectedInstance"], updateHUD);
