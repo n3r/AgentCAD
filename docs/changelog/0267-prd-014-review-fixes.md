@@ -45,6 +45,7 @@ no-repo and a non-dict `version` override without crashing; table float cells us
 not a determinism defect. The SHIP verdict stands; these are hardening, no
 behavior change for valid input.
 
-`make test` — **4514 passed, 32 skipped** (clean run; the full suite measured
-4505 with the 9 `*_cites_a_make_test_count` guards reading this entry's own count
-before it was filled — green once it lands; +3 review-fix regression tests).
+`make test` — **4514 passed, 32 skipped** on the pre-merge branch; after merging
+main (PRD-006b landed in parallel), the combined tree is **4550 passed, 38
+skipped** (the extra skips are 006b's platform-gated sandbox tests). CI on the
+three-OS matrix is the authoritative validation.
