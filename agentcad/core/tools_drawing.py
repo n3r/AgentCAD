@@ -231,7 +231,8 @@ def register(registry, service) -> None:
                          version: dict | None = None,
                          sections: list | None = None,
                          details: list | None = None,
-                         hole_table: bool = False) -> dict:
+                         hole_table: bool = False,
+                         tabulate: bool = False) -> dict:
         if format not in ("svg", "dxf", "pdf"):
             raise ValidationError("drawing format must be svg, pdf, or dxf")
         # Section/detail specs are validated SERVICE-side (naming a bad entry's
@@ -310,12 +311,39 @@ def register(registry, service) -> None:
         if format in ("svg", "pdf"):
             timeout += _SECTION_TIMEOUT_S * len(clean_sections)
         declared = record.configs or {}
-        # Two ways this is a question rather than a fault, and neither costs
-        # the kernel anything: a part with no configurations (the request
-        # carries no table and the sheet is byte-identical to a plain call),
-        # and a DXF request (DXF discards the table exactly as it discards
-        # PMI, so measuring the family for it would buy a minute of builds per
-        # eight members and throw every one of them away).
+        # FR10 config tabulation. `tabulate` wins the sheet's table column over
+        # `dim_table` (they cannot share it), so it is decided first and turns
+        # the dim table off when both are asked. A part with no configurations
+        # is a question, not a fault (a `warnings` note, byte-identical sheet);
+        # DXF discards the table exactly as it discards the dim table and PMI.
+        config_table_warnings: list[str] = []
+        if tabulate and format in ("svg", "pdf"):
+            if declared:
+                names = list(declared)                   # family order
+                # Per-config mass, resolved SERVICE-side (the material density
+                # lives here) — a cache hit beside the kernel's own build.
+                rows = [{"config": name,
+                         "label": (declared[name].get("label")
+                                   if isinstance(declared[name], dict)
+                                   else None) or name,
+                         "params": record.config_params(name),
+                         "mass": _mass_text(
+                             _mass_g(service, project, part_id, name))}
+                        for name in names]
+                request["tabulate"] = {
+                    "rows": rows,
+                    "active_config": config or record.active_config,
+                }
+                timeout += _ROW_TIMEOUT_S * len(names)
+                if dim_table:
+                    config_table_warnings.append(
+                        "dim_table was ignored: tabulate takes the sheet's "
+                        "table column (the letter-variable table wins)")
+                dim_table = False                        # tabulate wins
+            else:
+                config_table_warnings.append(
+                    "tabulate was requested but the part declares no "
+                    "configurations, so no configuration table is drawn")
         if dim_table and declared and format in ("svg", "pdf"):
             names = list(declared)                       # family order
             columns: list[str] = []                      # union, first-seen
@@ -354,6 +382,20 @@ def register(registry, service) -> None:
         hole_table = (result.get("detected") or {}).get("hole_table")
         if hole_table is not None:
             result["hole_table"] = hole_table
+        # FR10/FR13: surface the config table at the top level. When the part
+        # has no configurations (or the dim table was dropped for it) the kernel
+        # drew nothing, so the note is attached here — a machine-readable answer
+        # to "did tabulate produce a table?" that is never an error.
+        config_table = (result.get("detected") or {}).get("config_table")
+        if config_table is not None:
+            if config_table_warnings:
+                config_table["warnings"] = (list(config_table.get("warnings")
+                                                 or []) + config_table_warnings)
+            result["config_table"] = config_table
+        elif config_table_warnings:
+            result["config_table"] = {
+                "variables": [], "rows": [], "active_config": None,
+                "warnings": config_table_warnings}
         return result
 
     registry.register(Tool(
@@ -382,6 +424,14 @@ def register(registry, service) -> None:
                               "Draw a per-configuration dimension table (SVG/"
                               "PDF; ignored for DXF and when the part has no "
                               "configurations)"},
+                "tabulate": {"type": "boolean", "description":
+                             "Draw a configuration table with letter variables "
+                             "(A/B/C = overall X/Y/Z extents, then PMI diameter "
+                             "dims) and a per-config mass; letters label the "
+                             "drawn dimensions. The drawn views use the active "
+                             "configuration. Wins the table column over "
+                             "dim_table; SVG/PDF, ignored when the part has no "
+                             "configurations (a warning, never an error)"},
                 "hole_table": {"type": "boolean", "description":
                                "Draw a hole table (SVG/PDF): tag, X/Y from the "
                                "top-view datum, and the standard designation "

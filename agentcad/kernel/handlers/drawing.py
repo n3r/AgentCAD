@@ -327,6 +327,150 @@ def _dim_table(rows, columns, x=_TABLE_X, y_top=_TABLE_Y, row_h=_TABLE_ROW_H):
     return els, dropped, warnings
 
 
+# ---- configuration tabulation (PRD-014 FR10) ------------------------------
+#
+# `tabulate` assigns **letter variables** (A, B, C, …) at render time and draws
+# a config table keyed by them. The letters are a render-time layer — PMI dim
+# ids stay lowercase (core/pmi.py); only datums are single uppercase letters.
+#
+# Stable order (determinism, FR12): A/B/C are always the overall X/Y/Z extents;
+# any PMI *diameter* dims follow in DECLARATION order. PMI *linear* dims resolve
+# to the very overall extents A/B/C already carry (pmi.py: width=X, height=Z,
+# depth=Y), so lettering them again would print a redundant column — they are
+# deliberately NOT separately lettered, and the X/Y/Z overall extents are the
+# guaranteed core FR10 names.
+
+
+def _tabulate_variables(pmi) -> list:
+    """The ordered letter variables: A/B/C for the overall X/Y/Z extents, then
+    one letter per PMI diameter dim (declaration order)."""
+    variables = [
+        {"letter": "A", "kind": "extent", "axis": "X", "source": "overall X (mm)"},
+        {"letter": "B", "kind": "extent", "axis": "Y", "source": "overall Y (mm)"},
+        {"letter": "C", "kind": "extent", "axis": "Z", "source": "overall Z (mm)"},
+    ]
+    i = 3
+    for d in ((pmi or {}).get("dims") or []):
+        if d.get("kind") == "diameter":
+            variables.append({
+                "letter": _letter(i), "kind": "diameter",
+                "target": float(d["target"]), "dim_id": d["id"],
+                "source": f"⌀{fmt(d['target'])} (pmi {d['id']})"})
+            i += 1
+    return variables
+
+
+def _detected_top_diameters(shape) -> list:
+    """The distinct diameters (mm, 2 dp) of closed circles in the TOP view — the
+    same projection `detected["diameters_mm"]` reports, sorted for determinism."""
+    vis, _hid = shape.project_to_viewport(look_at=(0, 0, 0), **_VIEW_DIRS["top"])
+    return sorted({round(2 * r, 2) for _c, r in _detect_circles(vis)})
+
+
+def _nearest_diameter(diameters, target):
+    """The detected diameter within ``_HOLE_DIA_TOL`` of ``target`` (nearest
+    wins), or ``None`` — a member whose feature is a different size than the
+    dim's nominal earns no value, not a wrong one."""
+    best = None
+    for d in diameters:
+        err = abs(d - float(target))
+        if err <= _HOLE_DIA_TOL and (best is None or err < best[0]):
+            best = (err, d)
+    return best[1] if best else None
+
+
+def _measure_tabulate(build_shape, script, spec, pmi) -> dict:
+    """The measured configuration table: ``{variables, rows, warnings,
+    active_config}``.
+
+    **Reuses `_measure_table`** for the overall X/Y/Z extents, the truncation to
+    ``_MAX_TABLE_ROWS`` and the one-broken-member em-dash contract — every extent
+    is a number off a built shape, which is this module's whole reason to draw a
+    table. For any PMI *diameter* variables, each buildable member is rebuilt
+    (a worker shape-cache hit) and its top view re-projected to find the detected
+    diameter nearest the dim's nominal; a member without that feature gets
+    ``None`` (an em-dash on the sheet). ``mass`` rides in from the request (it is
+    resolved service-side, where the material density lives)."""
+    variables = _tabulate_variables(pmi)
+    dia_vars = [v for v in variables if v["kind"] == "diameter"]
+    spec_rows = list(spec.get("rows") or [])
+    base = _measure_table(build_shape, script,
+                          {"columns": [], "rows": spec_rows})
+    by_name = {r.get("config"): r for r in spec_rows}
+    rows: list = []
+    for src in base["rows"]:
+        name = src["config"]
+        spec_row = by_name.get(name, {})
+        row = {"config": name, "label": src["label"],
+               "ok": src.get("ok", True), "mass": spec_row.get("mass")}
+        if not row["ok"]:
+            row["values"] = {v["letter"]: None for v in variables}
+            row["error"] = src.get("error")
+            rows.append(row)
+            continue
+        values = src.get("values") or {}
+        letter_vals: dict = {}
+        for v in variables:
+            if v["kind"] == "extent":
+                axis = values.get(v["axis"])
+                letter_vals[v["letter"]] = (round(float(axis), 3)
+                                            if axis is not None else None)
+        if dia_vars:
+            try:
+                shape, _values, _warnings = build_shape(
+                    script, spec_row.get("params") or {})
+                detected = _detected_top_diameters(shape)
+            except Exception:                                      # noqa: BLE001
+                detected = []
+            for v in dia_vars:
+                letter_vals[v["letter"]] = _nearest_diameter(detected,
+                                                             v["target"])
+        row["values"] = letter_vals
+        rows.append(row)
+    return {"variables": variables, "rows": rows,
+            "warnings": list(base["warnings"]),
+            "active_config": spec.get("active_config")}
+
+
+def _config_table(variables, rows, x=_TABLE_X, y_top=_TABLE_Y,
+                  row_h=_TABLE_ROW_H):
+    """The letter-variable configuration table (FR10) as primitives:
+    ``(elements, warnings)``.
+
+    Header (``config``, the letters, ``mass``) then one row per configuration.
+    A member that did not build prints em dashes (the ``_dim_table`` contract).
+    Column widths follow ``_dim_table``'s rule so the numbers stay
+    deterministic; letters are one character, so the table fits comfortably."""
+    warnings: list[str] = []
+    letters = [v["letter"] for v in variables]
+    lines = [["config", *letters, "mass"]]
+    for row in rows:
+        label = _row_label(row)
+        if not row.get("ok", True):
+            lines.append([label] + ["—"] * (len(letters) + 1))
+            continue
+        values = row.get("values") or {}
+        lines.append([label]
+                     + [_cell(values.get(letter)) for letter in letters]
+                     + [_cell(row.get("mass"))])
+    widths = [max(14.0, 2.2 * max(len(line[i]) for line in lines) + 4.0)
+              for i in range(len(lines[0]))]
+    if sum(widths) > _TABLE_W:
+        warnings.append(
+            f"the configuration table is {sum(widths):.0f} mm wide and "
+            f"overflows the sheet's {_TABLE_W:g} mm column")
+    els, y = [], y_top
+    for line in lines:
+        cx = x
+        for width, text in zip(widths, line):
+            els.append(Rect(cx, y, width, row_h, style=Style.DIM, fill="white"))
+            els.append(Text(cx + width / 2, y + row_h / 2 + 1.0, text,
+                            Style.DIM, anchor="middle", size=3.5))
+            cx += width
+        y += row_h
+    return els, warnings
+
+
 # ---- hole table (PRD-014 FR9) ---------------------------------------------
 
 
@@ -1098,7 +1242,7 @@ def _title_block(dl, template, scale_str, title, fallback_label):
 def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
                         dim_table=None, sheet=DEFAULT_SHEET,
                         scale_override=None, title=None, sections=(),
-                        details=(), hole_table=False):
+                        details=(), hole_table=False, tabulate=None):
     """Build the ordered display list for one sheet — the SINGLE composition
     both backends render (Slice 2, Decision 1/7). Returns
     ``(display_list, width_mm, height_mm, meta)``; ``detected_out`` is filled in
@@ -1127,6 +1271,19 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
         if d.get("kind") == "linear":
             linear_by_target.setdefault(d["target"], d)
     placements: dict = {}  # view name -> (ox, oy, scale, bounds)
+
+    # Config tabulation (FR10): letter variables label the drawn dims. A/B/C map
+    # to the overall X/Y/Z extents; a PMI diameter dim's letter labels its own
+    # diameter callout. The letters are a render-time layer over the same
+    # measurements the plain sheet draws.
+    axis_letter: dict = {}
+    dia_dim_letter: dict = {}
+    if tabulate:
+        for v in tabulate.get("variables", []):
+            if v["kind"] == "extent":
+                axis_letter[v["axis"]] = v["letter"]
+            elif v["kind"] == "diameter":
+                dia_dim_letter[v["dim_id"]] = v["letter"]
 
     # The display list: an ordered list of typed primitives (z-order = insert
     # order), rendered by SvgBackend at the end. Sheet background + frame from
@@ -1185,6 +1342,12 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
             x_dim = linear_by_target.get("width")
             y_dim = linear_by_target.get("height" if name == "front" else "depth")
             x_text, y_text = fmt(w), fmt(h)
+            # Letter labels (FR10): width is X (=A) on both views; front's
+            # height is Z (=C), top's depth is Y (=B).
+            if axis_letter:
+                x_text = f"{axis_letter['X']} {x_text}"
+                y_axis = "Z" if name == "front" else "Y"
+                y_text = f"{axis_letter[y_axis]} {y_text}"
             if x_dim is not None:
                 x_text += _tol_suffix(x_dim["plus"], x_dim["minus"])
                 rendered_linear.add(x_dim["id"])
@@ -1299,7 +1462,11 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
                 continue
             _err, dia, cs = best
             prefix = f"{len(cs)}x " if len(cs) > 1 else ""
-            _leader(cs, f"{prefix}⌀{dia:.2f}"
+            # A lettered PMI diameter dim (FR10) carries its letter on the
+            # callout too, cross-referencing the config table.
+            letter = (f"{dia_dim_letter[d['id']]} " if d["id"] in dia_dim_letter
+                      else "")
+            _leader(cs, f"{letter}{prefix}⌀{dia:.2f}"
                         f"{_tol_suffix(d['plus'], d['minus'])}")
             n_dia_rendered += 1
             pmi_drawn.add(dia)
@@ -1521,6 +1688,24 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
             "warnings": list(dim_table.get("warnings") or []) + table_warnings,
         }
 
+    # The configuration table (FR10), in the sheet's table column. It takes the
+    # place of the dimension table (the service sends one or the other — never
+    # both — so they never contend for the zone). `detected` echoes it so a
+    # caller verifies "every config, its A/B/C, its mass" without parsing SVG.
+    if tabulate:
+        zone = template.table_zone
+        table_els, table_warnings = _config_table(
+            tabulate["variables"], tabulate["rows"],
+            x=zone.x, y_top=zone.y)
+        dl.extend(table_els)
+        detected_out["config_table"] = {
+            "variables": [{"letter": v["letter"], "source": v["source"]}
+                          for v in tabulate["variables"]],
+            "rows": tabulate["rows"],
+            "active_config": tabulate.get("active_config"),
+            "warnings": list(tabulate.get("warnings") or []) + table_warnings,
+        }
+
     # The hole table (FR9), stacked BELOW the dimension table in the same
     # `table_zone` — they share the zone, and a larger sheet has more room. Rows
     # that overflow the zone are capped with a warning, never silently dropped.
@@ -1687,24 +1872,28 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
 
 def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
                dim_table=None, sheet=DEFAULT_SHEET, scale_override=None,
-               title=None, sections=(), details=(), hole_table=False):
+               title=None, sections=(), details=(), hole_table=False,
+               tabulate=None):
     """Render the sheet to an SVG string (thin wrapper over the shared list)."""
     dl, W, H, meta = _build_display_list(
         part, views, detected_out, pmi=pmi, hole_records=hole_records,
         dim_table=dim_table, sheet=sheet, scale_override=scale_override,
-        title=title, sections=sections, details=details, hole_table=hole_table)
+        title=title, sections=sections, details=details, hole_table=hole_table,
+        tabulate=tabulate)
     return SvgBackend().render(dl, W, H), meta
 
 
 def _build_pdf(part, views, detected_out, pmi=None, hole_records=(),
                dim_table=None, sheet=DEFAULT_SHEET, scale_override=None,
-               title=None, sections=(), details=(), hole_table=False):
+               title=None, sections=(), details=(), hole_table=False,
+               tabulate=None):
     """Render the sheet to PDF bytes (the SAME list, a different backend —
     FR11). Deterministic: see :mod:`agentcad.kernel.handlers._pdf`."""
     dl, W, H, meta = _build_display_list(
         part, views, detected_out, pmi=pmi, hole_records=hole_records,
         dim_table=dim_table, sheet=sheet, scale_override=scale_override,
-        title=title, sections=sections, details=details, hole_table=hole_table)
+        title=title, sections=sections, details=details, hole_table=hole_table,
+        tabulate=tabulate)
     return PdfBackend().render(dl, W, H), meta
 
 
@@ -1751,6 +1940,16 @@ def register(toolbox: dict):
             measured = (_measure_table(build_shape, params["script"], table)
                         if isinstance(table, dict) and table.get("rows")
                         else None)
+            # FR10: the letter-variable configuration table. Like the dim table,
+            # every value is measured from a built shape here (the diameter
+            # columns re-project each member's top view); mass rides in from the
+            # request, resolved service-side where the material density lives.
+            tabulate_spec = params.get("tabulate")
+            tabulated = (
+                _measure_tabulate(build_shape, params["script"], tabulate_spec,
+                                  params.get("pmi"))
+                if isinstance(tabulate_spec, dict) and tabulate_spec.get("rows")
+                else None)
             build = _build_svg if out_format == "svg" else _build_pdf
             payload, meta = build(
                 shape, views, detected, pmi=params.get("pmi"),
@@ -1759,7 +1958,8 @@ def register(toolbox: dict):
                 title=params.get("title"),
                 sections=params.get("sections") or (),
                 details=params.get("details") or (),
-                hole_table=bool(params.get("hole_table")))
+                hole_table=bool(params.get("hole_table")),
+                tabulate=tabulated)
             # SVG is a str, PDF is already bytes.
             atomic_write(out_path,
                          payload.encode() if isinstance(payload, str)
