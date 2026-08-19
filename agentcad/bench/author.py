@@ -105,9 +105,12 @@ _PATH_RE = re.compile(r'd="M ([-0-9. L]+)"')
 
 
 def _compact_path(points, epsilon: float) -> list:
-    """Douglas–Peucker over one polyline. Iterative: a 700-point path recurses
-    ~10 deep on average and 700 deep in the worst case, and a RecursionError
-    inside an authoring helper is not a useful sentence."""
+    """The INDICES of the vertices Douglas-Peucker keeps, in order.
+
+    Indices rather than points so the caller can emit each survivor's own
+    input substring. Iterative: a 700-point path recurses ~10 deep on average
+    and 700 deep in the worst case, and a RecursionError inside an authoring
+    helper is not a useful sentence."""
     keep = [False] * len(points)
     keep[0] = keep[-1] = True
     stack = [(0, len(points) - 1)]
@@ -131,7 +134,7 @@ def _compact_path(points, epsilon: float) -> list:
             keep[index] = True
             stack.append((lo, index))
             stack.append((index, hi))
-    return [point for point, flag in zip(points, keep) if flag]
+    return [index for index, flag in enumerate(keep) if flag]
 
 
 def compact_svg(text: str, epsilon: float = PATH_EPSILON) -> str:
@@ -152,22 +155,73 @@ def compact_svg(text: str, epsilon: float = PATH_EPSILON) -> str:
     line and arrowhead survives byte-for-byte.
     """
     def _rewrite(match: re.Match) -> str:
+        chunks = match.group(1).split(" L ")
         try:
             pairs = [tuple(float(value) for value in chunk.split())
-                     for chunk in match.group(1).split(" L ")]
+                     for chunk in chunks]
         except ValueError:                       # not a plain "M x y L x y" path
             return match.group(0)
         if len(pairs) < 3 or any(len(pair) != 2 for pair in pairs):
             return match.group(0)
-        kept = _compact_path(pairs, epsilon)
-        body = " L ".join(f"{x:.3f} {y:.3f}" for x, y in kept)
+        keep = _compact_path(pairs, epsilon)
+        # The surviving vertices are emitted as their OWN input substrings, not
+        # re-formatted: a kept point is byte-identical to the point it was, so
+        # the compaction can neither add precision the source did not carry nor
+        # round away precision it did. Nothing here has to know that the
+        # drawing handler prints three decimals.
+        body = " L ".join(chunks[index] for index in keep)
         return f'd="M {body}"'
 
     return _PATH_RE.sub(_rewrite, text)
 
 
+#: How far a sheet's overall-dimension annotation may sit from the part's own
+#: bbox extent before the sheet is lying. 0.5 mm is far looser than any
+#: rounding in a `%.2f` dimension and far tighter than the defect this guards.
+DIM_TOLERANCE_MM = 0.5
+
+#: A dimension annotation in a generated sheet: `handlers/drawing._TXT` paints
+#: every one of them this colour, and only the two overall dims per view are
+#: rendered as a BARE number (a hole callout carries `x`/diameter glyphs and a
+#: PMI-toleranced dim carries a +/- suffix), so a bare float in this colour is
+#: an overall extent and nothing else.
+_DIM_TEXT_RE = re.compile(r'fill="#1a56db"[^>]*>([^<]+)</text>')
+
+
+def overall_dim_problems(svg_text: str, extents_mm, *,
+                         tolerance: float = DIM_TOLERANCE_MM) -> list[str]:
+    """Every overall dimension on *svg_text* that disagrees with the part.
+
+    A sheet that dimensions a Ø140 flange `132.64` is worse than no sheet: the
+    agent is being graded against geometry the drawing denies. `_view_bounds`
+    (`kernel/handlers/drawing.py`) samples each edge at **six** points, which
+    is exact for a line and wrong for a circle -- a full circle is sampled at
+    0/72/144/216/288 degrees, so its silhouette extremes are missed and the
+    view bounds, which are also what the overall dims are drawn from, come out
+    under the truth. Rectilinear parts are unaffected, which is why this is a
+    guard and not a blanket refusal.
+
+    Pure and non-raising, `task_problems`' shape: the caller decides whether a
+    disagreement is a refusal or a report.
+    """
+    extents = [float(value) for value in extents_mm]
+    out: list[str] = []
+    for raw in _DIM_TEXT_RE.findall(svg_text):
+        try:
+            value = float(raw.strip())
+        except ValueError:
+            continue                     # a callout or a toleranced dim
+        if not any(abs(value - extent) <= tolerance for extent in extents):
+            out.append(
+                f"the sheet dimensions {value:g} mm, which matches none of the "
+                f"part's extents "
+                f"({', '.join(f'{e:g}' for e in extents)}) within "
+                f"{tolerance:g} mm")
+    return sorted(set(out))
+
+
 def render_drawing(task_dir, part_id: str, *, service, views=None,
-                   out=None) -> Path:
+                   out=None, check_dims: bool = True) -> Path:
     """Render ``reference/project``'s *part_id* as a three-view SVG asset.
 
     Uses the product's own drawing path (``generate_drawing``,
@@ -180,6 +234,12 @@ def render_drawing(task_dir, part_id: str, *, service, views=None,
     SVG only. The prompt attaches an asset as **text** (design §8.4) and the
     loader's `ASSET_SUFFIXES` refuses anything else, so a DXF option here
     would only be a way to author a bundle the loader then rejects.
+
+    ``check_dims`` verifies the rendered sheet's overall dimensions against the
+    part's own bbox (:func:`overall_dim_problems`) and **refuses** rather than
+    writing a sheet that contradicts the geometry it is a drawing of. It is a
+    guard against a real defect on curved silhouettes, not a formality --
+    see that function. Pass ``check_dims=False`` only to look at a bad sheet.
     """
     from ..core.tools import build_registry
 
@@ -204,11 +264,24 @@ def render_drawing(task_dir, part_id: str, *, service, views=None,
             f"generate_drawing refused to draw {part_id!r}: "
             f"{result['error'].get('message')}",
             {"part": part_id, "error": result["error"]})
+    sheet = compact_svg(Path(result["path"]).read_text(encoding="utf-8"))
+    if check_dims:
+        built = service._ensure_built(proj, part_id)
+        box = (built.get("metrics") or {}).get("bbox") or {}
+        low, high = box.get("min") or [], box.get("max") or []
+        extents = [float(high[i]) - float(low[i]) for i in range(3)] \
+            if len(low) == 3 and len(high) == 3 else []
+        problems = overall_dim_problems(sheet, extents) if extents else \
+            ["the part did not build, so the sheet could not be checked "
+             "against its own geometry"]
+        if problems:
+            raise ValidationError(
+                f"the rendered sheet for {part_id!r} contradicts the part: "
+                + "; ".join(problems),
+                {"part": part_id, "problems": problems, "extents_mm": extents})
     target = Path(out) if out else task_dir / "assets" / "drawing.svg"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        compact_svg(Path(result["path"]).read_text(encoding="utf-8")),
-        encoding="utf-8")
+    target.write_text(sheet, encoding="utf-8")
     return target
 
 
@@ -271,6 +344,11 @@ def main(argv: list[str] | None = None) -> int:
                                         f"(default {','.join(DEFAULT_VIEWS)})")
     parser.add_argument("--out", help="drawing: where to write the SVG "
                                       "(default <task_dir>/assets/drawing.svg)")
+    parser.add_argument("--no-check-dims", dest="check_dims",
+                        action="store_false",
+                        help="drawing: write the sheet even when its overall "
+                             "dimensions contradict the part's own bbox "
+                             "(they should not; see overall_dim_problems)")
     args = parser.parse_args(argv)
     if args.command == "drawing" and not args.part:
         parser.error("drawing needs --part <part_id>")
@@ -296,10 +374,17 @@ def main(argv: list[str] | None = None) -> int:
             views = ([name.strip() for name in args.views.split(",")
                       if name.strip()] if args.views else None)
             print(render_drawing(task_dir, args.part, service=service,
-                                 views=views, out=args.out))
+                                 views=views, out=args.out,
+                                 check_dims=args.check_dims))
         else:
             print(seed_metrics(task_dir, service=service,
                                tolerance=args.tolerance))
+    except ValidationError as exc:
+        # An authoring refusal is a sentence and exit 2, `cmd_check`'s idiom --
+        # a traceback here reads as a crash in the helper rather than as the
+        # helper telling the author their bundle is wrong.
+        print(f"{exc}", file=sys.stderr)
+        return 2
     finally:
         if service is not None:
             try:

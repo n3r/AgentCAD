@@ -175,15 +175,128 @@ def test_every_shipped_svg_asset_is_small_enough_to_attach():
 def test_every_derived_task_copies_its_scripts_into_the_bundle():
     """A derived task may never reach into `examples/` at run time: the runner
     registers no examples (design §8.2), so a reference that imported one would
-    be a task nobody can score."""
+    be a task nobody can score.
+
+    Every script in the bundle is checked, not only `target.parts`: a project
+    holds parts the task does not *score* but does have to *build* — `mts_005`
+    scores `clamp_plate` and builds `tapped_plate` beside it for the
+    interference subscore — and a missing copy there is the same defect.
+    `source.parts` is cross-checked against what is on disk so a bundle cannot
+    quietly under-declare its provenance either.
+    """
     root = bench_tasks.tasks_root()
+    seen = 0
     for path in sorted(root.glob("*/*/task.json")):
         raw = json.loads(path.read_text())
         if raw["source"]["kind"] != "derived":
             continue
-        project = path.parent / raw["reference"]["project"]
-        for part_id in raw["target"]["parts"]:
-            script = project / "parts" / f"{part_id}.py"
-            assert script.is_file(), f"{path.parent.name}: {script} is missing"
-            assert "examples/" not in script.read_text().replace(
-                "# Copied from examples/", "")
+        seen += 1
+        roots = [path.parent / raw["reference"]["project"]]
+        if raw.get("starter"):
+            roots.append(path.parent / raw["starter"])
+        for project in roots:
+            scripts = sorted((project / "parts").glob("*.py"))
+            assert scripts, f"{path.parent.name}: {project} holds no parts"
+            declared = set(raw["source"].get("parts") or ())
+            assert {s.stem for s in scripts} <= declared or not declared, (
+                f"{path.parent.name}: {sorted(s.stem for s in scripts)} is not "
+                f"covered by source.parts {sorted(declared)}")
+            for part_id in raw["target"]["parts"]:
+                assert (project / "parts" / f"{part_id}.py").is_file(), (
+                    f"{path.parent.name}: {part_id} has no script in {project}")
+            for script in scripts:
+                body = script.read_text().replace("# Copied from examples/", "")
+                assert "examples/" not in body, f"{script} reaches examples/"
+    assert seen, "no derived task is shipped"
+
+
+# --------------------------------------------- overall-dimension honesty
+
+#: What a generated sheet's title block says. The hand-authored assets do not
+#: carry it, which is exactly how the roster test tells the two apart.
+GENERATED_MARKER = "AgentCAD · mm · third angle"
+
+
+def _declared_extents(task_dir: Path) -> list[float]:
+    """The part's three bbox extents, from the task's own metric windows."""
+    doc = json.loads((task_dir / "reference" / "metrics.json").read_text())
+    by_metric = {w["metric"]: w for w in doc["windows"]}
+    out = []
+    for key in ("bbox_x_mm", "bbox_y_mm", "bbox_z_mm"):
+        window = by_metric.get(key)
+        if window is None or window.get("min") is None or \
+                window.get("max") is None:
+            return []
+        out.append((float(window["min"]) + float(window["max"])) / 2.0)
+    return out
+
+
+def test_overall_dim_problems_flags_a_sheet_that_contradicts_the_part():
+    svg = ('<text x="1" y="2" fill="#1a56db">132.64</text>'
+           '<text x="3" y="4" fill="#1a56db">14.00</text>')
+    problems = author.overall_dim_problems(svg, [140.0, 140.0, 14.0])
+    assert len(problems) == 1
+    assert "132.64" in problems[0] and "140" in problems[0]
+
+
+def test_overall_dim_problems_ignores_callouts_and_toleranced_dims():
+    svg = ('<text fill="#1a56db">8× ⌀9.00</text>'
+           '<text fill="#1a56db">140.00 +0.10/-0.10</text>'
+           '<text fill="#111">FRONT</text>'
+           '<text fill="#1a56db">14.00</text>')
+    assert author.overall_dim_problems(svg, [140.0, 140.0, 14.0]) == []
+
+
+def test_every_generated_sheet_dimensions_the_part_it_draws():
+    """A sheet that dimensions a Ø140 flange `132.64` is worse than no sheet.
+
+    Only *generated* sheets are checked — a hand-authored drawing is full of
+    legitimate numbers that are not overall extents (a hole pitch, a groove
+    depth) and is reviewed by reading it, not by this rule.
+    """
+    root = bench_tasks.tasks_root()
+    checked = 0
+    for path in sorted(root.glob("*/*/assets/*.svg")):
+        text = path.read_text(encoding="utf-8")
+        if GENERATED_MARKER not in text:
+            continue
+        extents = _declared_extents(path.parent.parent)
+        if not extents:                  # the task pins no bbox windows
+            continue
+        checked += 1
+        assert author.overall_dim_problems(text, extents) == [], str(path)
+    assert checked, "no generated sheet was checked"
+
+
+@pytest.mark.timeout(300)
+def test_render_drawing_refuses_a_sheet_that_contradicts_the_part(tmp_path,
+                                                                  kernel):
+    """The tripwire, end to end, on the part that actually trips it.
+
+    `handlers/drawing._view_bounds` samples each edge at six points — exact for
+    a line, wrong for a circle — so the flange's plan view is dimensioned
+    132.64 for a Ø140 part while the front view on the same sheet says 140.00.
+    `mfd_003`'s shipped asset carries the corrected annotation; this pins the
+    guard that stops a re-render putting the lie back.
+
+    **If this test ever fails because the render succeeded, the product bug is
+    fixed:** delete the test and re-render `mfd_003`'s asset from the helper.
+    """
+    bundle = _bundle_copy(tmp_path, "model_from_drawing/mfd_003_head_flange")
+    service = make_test_service(tmp_path / "projects", kernel)
+    from agentcad.core.tools import build_registry
+
+    build_registry(service)
+    before = (bundle / "assets" / "drawing.svg").read_text(encoding="utf-8")
+    with pytest.raises(ValidationError) as excinfo:
+        author.render_drawing(bundle, "flange", service=service)
+    assert "contradicts the part" in str(excinfo.value)
+    # Refused BEFORE the write: the good asset is still there.
+    assert (bundle / "assets" / "drawing.svg").read_text(
+        encoding="utf-8") == before
+    # And `check_dims=False` is the deliberate way to look at the bad sheet.
+    author.render_drawing(bundle, "flange", service=service, check_dims=False,
+                          out=tmp_path / "bad.svg")
+    assert author.overall_dim_problems(
+        (tmp_path / "bad.svg").read_text(encoding="utf-8"),
+        [140.0, 140.0, 14.0])

@@ -14,6 +14,7 @@ Constraints:
 - The corner screw bosses, the PCB standoffs and the ventilation slots are all
   derived from the shell dimensions in the script; they must follow the new
   size rather than be re-placed by hand.
+- Keep the material as it is (`abs`).
 
 Datum: unchanged. The shell's outside floor lies on Z = 0, the box is centred
 on the origin in X and Y, the open top faces +Z and the length runs along X.

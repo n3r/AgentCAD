@@ -18,6 +18,8 @@ Constraints:
 - The assembly must stay interference-free: the clamp plate sits on the tapped
   plate's top face and grows upward, never into it.
 - Do not move either instance.
+- Keep both materials as they are (`al6061` for the clamp plate,
+  `steel_4340` for the tapped plate).
 
 Datum: unchanged. The clamp plate's underside lies on Z = 0 and it extends into
 +Z, centred on the origin in X and Y; the tapped plate's top face is also Z = 0

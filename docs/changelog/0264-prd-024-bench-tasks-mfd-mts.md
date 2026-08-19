@@ -36,7 +36,18 @@ rubrics measurements rather than formalities.
   resolution (three decimals), so the sheet renders identically and the task is
   neither easier nor harder — only cheaper: **17.5 KB** and **28.9 KB** after,
   an 8.9x and 7.8x reduction. Nothing but `d="M … L …"` attributes is touched.
-- `main` gains `drawing` with `--part` (required), `--views` and `--out`.
+- `main` gains `drawing` with `--part` (required), `--views`, `--out` and
+  `--no-check-dims`; a `ValidationError` out of any subcommand is now one
+  sentence on stderr and exit 2 (`cmd_check`'s idiom) rather than a traceback.
+- `overall_dim_problems(svg_text, extents_mm)` + `DIM_TOLERANCE_MM = 0.5` —
+  a pure, non-raising `task_problems`-shaped guard, and `render_drawing`
+  **refuses** rather than writing a sheet whose overall dimensions contradict
+  the part's own bbox. It exists because of a real defect, below.
+- `compact_svg` now emits each surviving vertex's **own input substring**
+  instead of re-formatting through `%.3f`, so it can neither add precision
+  the source did not carry nor round away precision it did, and nothing in
+  the helper has to know how many decimals the drawing handler prints.
+  (`_compact_path` returns indices for the same reason.)
 
 ### Nine new task bundles
 
@@ -105,11 +116,84 @@ no path over 64 points, refuses a part outside `target.parts`, and honours
 `--out`/`--views`; plus two roster invariants — every shipped SVG asset is
 under 40 KB, and every derived task's reference scripts live inside the bundle.
 
+### A drawing defect found in review, and what was done about it
+
+**`kernel/handlers/drawing._view_bounds` samples each edge at six points**
+(`position_at(i/5)`). That is exact for a line and wrong for a circle: a full
+circle is sampled at 0/72/144/216/288°, so its silhouette extremes are missed
+and the view bounds — which are also what the two overall dimensions are drawn
+from — come out under the truth. On `mfd_003`'s flange the plan view was
+dimensioned **132.64** and **133.15** for a Ø140 part, while the FRONT view on
+the same sheet said **140.00**; the geometry was drawn correctly (`_edge_svg`
+uses `arc_center`/`radius`), only the annotation lied. `compact_svg` is not
+involved — the raw handler output has the same numbers. `mfd_002` is
+rectilinear and is unaffected; a fresh render of it is byte-identical to the
+shipped asset.
+
+Three things were done, none of them in the product:
+
+1. **`mfd_003`'s asset carries the corrected annotation.** The top view's two
+   dimension groups were recomputed with `_linear_dim`'s own arithmetic against
+   the true silhouette (`cx ± r` = 60.197…154.829 at scale 0.675943, i.e.
+   140.000 mm) — twelve elements: two extension lines, the dimension line, two
+   arrowheads and the text, per dimension. Both texts now read `140.00`.
+2. **`render_drawing` refuses to write such a sheet** (`overall_dim_problems`),
+   so a re-render cannot put the lie back silently. Verified: the helper now
+   exits 2 on `mfd_003` with *"the sheet dimensions 132.64 mm, which matches
+   none of the part's extents (140, 140, 14) within 0.5 mm"*, and renders
+   `mfd_002` clean.
+3. **Two tests pin it** — a roster test that every *generated* sheet (the ones
+   carrying the AgentCAD title block) dimensions the part its own
+   `reference/metrics.json` bbox windows describe, and an end-to-end test that
+   `render_drawing` raises on the flange and leaves the good asset in place.
+   The second one is written to fail loudly if the product bug is ever fixed,
+   with the instruction to delete it and re-render.
+
+**This is a product bug and should be raised against
+`kernel/handlers/drawing.py` separately.** Every AgentCAD drawing of a part
+with a curved silhouette is mis-dimensioned today; the bench only noticed it
+because a bench task states the answer twice.
+
+### Review fixes to the bundles
+
+- **`mts_005`: the Ø11.0 clearance bore was never measured.** A Ø12 or Ø14 hole
+  scored ≈0.99 — it moved no window and no spec row. Two independent
+  instruments now measure it: a `clearance_bore` **`volume_mm3` window**
+  (39828.5…39914.0 — the reference's 39872.32 with the adjacent half-millimetre
+  bores, Ø10.5 at 39956.75 and Ø11.5 at 39783.97, outside it; with the bbox
+  pinned to 64x64x10 the residual volume *is* the hole), and a
+  `clearance_bore` **`check_that`** that asks the shape directly for a circular
+  edge of radius 5.5 ± 0.15 (nothing else on the plate is round but the R4
+  corner fillets), which is robust to a candidate whose fillet differs.
+  Measured effect: Ø11.5/Ø12/Ø14 now score **0.895/0.894/0.892**, down from
+  ≈0.99. The rubric comment about `check_wall(min_mm=9.5)` was corrected too:
+  on a plate with one central hole the sampler returns the **thickness**, and
+  it says nothing whatever about the bore.
+- **`mfd_004`: the `check_wall` floor sat exactly on the part's true minimum.**
+  Grid 4 reports 3.00 mm (the clamp slit), but the real thinnest ligament is
+  `outer_r − screw_offset − screw_r = 20 − 15 − 2.5 = 2.50 mm` at the
+  pinch-screw bore, which that grid happens not to sample. A floor of 2.5
+  flips on a sampling change rather than on the geometry, so it is now **2.2**,
+  with the arithmetic written into the rubric comment. A 2 mm slit is still
+  red, and the claim that the slit reaches the rim is carried where it belongs,
+  by the `slit_opens_the_rim` bbox window.
+- **All five `mts` prompts gain a "keep the material" clause.** A material swap
+  was a paper cheat on `mts_001` and `mts_004`, whose requirement is a *mass*
+  budget: the clause says so out loud on those two and pins the material on the
+  other three.
+- **`test_every_derived_task_copies_its_scripts_into_the_bundle` now iterates
+  every `parts/*.py` in both the reference project and the starter**, and
+  cross-checks them against `source.parts`, rather than only `target.parts`.
+  `mts_005`'s `tapped_plate` — built for the interference subscore but never
+  scored — was previously uncovered.
+
 ## Files
 
 - `agentcad/bench/author.py` — `DEFAULT_VIEWS`, `PATH_EPSILON`, `_PATH_RE`,
-  `_compact_path`, `compact_svg`, `render_drawing`; `main` gains `drawing`,
-  `--part`, `--views`, `--out`.
+  `_compact_path`, `compact_svg`, `DIM_TOLERANCE_MM`, `_DIM_TEXT_RE`,
+  `overall_dim_problems`, `render_drawing`; `main` gains `drawing`,
+  `--part`, `--views`, `--out`, `--no-check-dims` and a `ValidationError`
+  handler.
 - `benchmarks/tasks/model_from_drawing/mfd_00{2,3,4,5}_*/` — nine files each:
   `task.json`, `prompt.md`, `assets/drawing.svg`, `reference/project/{project.json,parts/*.py}`,
   `reference/steps/*.step`, `reference/metrics.json`, `specs/parts/*.py`.
@@ -142,15 +226,37 @@ mts_001_thin_the_nozzle   0.758196  specs 0.75 (mass_budget red) · metrics 0.4 
 mts_002_bigger_pcb        0.460772  specs 0.50 (cavity_length, cavity_width) · metrics 0.4 · iou 0.1692
 mts_003_gusset_pattern    0.496679  specs 0.50 (chord_reach, diagonal_reach) · metrics 0.4 · iou 0.2889
 mts_004_lighter_flywheel  0.795222  specs 0.75 (mass_budget red) · metrics 0.6 · iou 0.8507
-mts_005_m10_clamp         0.539465  specs 0.50 (footprint, plate_thickness) · metrics 0.2 · iou 0.2973
+mts_005_m10_clamp         0.494465  specs 0.40 (clearance_bore, footprint, plate_thickness) · metrics 0.1667 · iou 0.2973
+```
+
+`mts_005_m10_clamp` again, with a **wrong bore** — the near-miss the review
+found (it used to score ≈0.99):
+
+```
+clearance_d = 11.0  total 1.0       specs 1.0  []                         metrics 1.0       []
+clearance_d = 11.5  total 0.894557  specs 0.8  [clamp_plate:clearance_bore]  metrics 0.833333  [clearance_bore]
+clearance_d = 12.0  total 0.894094  specs 0.8  [clamp_plate:clearance_bore]  metrics 0.833333  [clearance_bore]
+clearance_d = 14.0  total 0.892045  specs 0.8  [clamp_plate:clearance_bore]  metrics 0.833333  [clearance_bore]
+```
+
+The drawing guard, from the helper itself:
+
+```
+$ uv run python -m agentcad.bench.author drawing .../mfd_002_angle_bracket --part angle_bracket
+/tmp/mfd002_recheck.svg          # and byte-identical to the shipped asset
+
+$ uv run python -m agentcad.bench.author drawing .../mfd_003_head_flange --part flange
+the rendered sheet for 'flange' contradicts the part: the sheet dimensions
+132.64 mm, which matches none of the part's extents (140, 140, 14) within
+0.5 mm; the sheet dimensions 133.15 mm, ...
+exit=2
 ```
 
 Targeted suites:
 
 ```
-uv run pytest -q tests/test_bench_tasks.py tests/test_bench_author.py \
-    tests/test_bench_report.py tests/test_bench_kernel_iou.py
-77 passed in 3.65s
+uv run pytest -q tests/test_bench_tasks.py tests/test_bench_author.py
+35 passed in 7.30s
 ```
 
 `make test` — <orchestrator fills>
@@ -167,6 +273,10 @@ uv run pytest -q tests/test_bench_tasks.py tests/test_bench_author.py \
   make it 207 faces and 590 edges. That is above the design's "20-200 KB per
   part" estimate; the ten shipped datums total about 1.6 MB, still inside "25
   tasks are a few MB".
+- **Follow-up owed to the product:** `handlers/drawing._view_bounds` samples
+  six points per edge, which mis-dimensions every drawing of a part with a
+  curved silhouette (see above). `overall_dim_problems` is a bench-side
+  tripwire, not a fix.
 - `compact_svg` is deliberately in `author.py` and not in
   `kernel/handlers/drawing.py`: changing the handler would change every drawing
   the product emits, which is a product decision and not this task's. The

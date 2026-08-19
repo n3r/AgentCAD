@@ -12,6 +12,8 @@ Constraints:
   millimetre**, and it must stay as **thick** as the mass budget allows —
   inertia is the point of a flywheel, so a wheel thinner than the budget
   requires is a rejected design.
+- Keep the material as it is (`steel_4130`). This is a mass budget, not a
+  materials decision — a lighter alloy is not an answer to it.
 
 Datum: unchanged. The friction (clutch) face lies on Z = 0 and the disc extends
 into +Z; the pilot-bore axis is the Z axis and the wheel is centred on the

@@ -17,6 +17,7 @@ Constraints:
   rather than be drawn by hand.
 - Note that the part's current parameters are stored in the project manifest
   and are **not** the script's own defaults. Change the stored parameters.
+- Keep the material as it is (`steel_a36`).
 
 Datum: unchanged. The plate lies flat with its back face on Z = 0, the panel
 work point is the origin in X, the bottom chord band runs along X and the plate

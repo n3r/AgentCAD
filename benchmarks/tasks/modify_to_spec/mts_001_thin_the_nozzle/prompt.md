@@ -16,6 +16,8 @@ Constraints:
   roughly a third of `wall` — thinning too far breaches it.
 - Move `wall` in 0.5 mm steps, and leave it as **thick** as the mass budget
   allows. A chamber thinner than it needs to be is a rejected design.
+- Keep the material as it is (`inconel718`). This is a mass budget, not a
+  materials decision — a lighter alloy is not an answer to it.
 
 Datum: unchanged. The injector-interface rim lies on Z = 0, the engine axis is
 the Z axis, the chamber runs down -Z to the exit and the part is centred on the

@@ -2,6 +2,13 @@
   "schema": 1,
   "windows": [
     {
+      "max": 39914.0,
+      "metric": "volume_mm3",
+      "min": 39828.5,
+      "name": "clearance_bore",
+      "part": "clamp_plate"
+    },
+    {
       "max": 109.81,
       "metric": "mass_g",
       "min": 105.5,
