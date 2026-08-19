@@ -106,8 +106,9 @@ format's proving ground.
 | 6 | **031b** | Open publishing, verified tiers, moderation, economy. |
 
 Demoted behind that chain: **015, 017** (daily-driver depth —
-they buy credibility but do not compound); **013 (PR #23) and 014 (PR #25) are
-now DONE** — the first two of that depth tier to ship, ahead of the rest. **026/027** stay early-v5 movable:
+they buy credibility but do not compound); **013 (PR #23), 014 (PR #25) and
+028 (PR #27) are now DONE** — the first three of that depth tier to ship, ahead
+of the rest. **026/027** stay early-v5 movable:
 if we are inviting an audience, the shell is the shop window.
 
 Success metric for the catalog is **usefulness, not contributors**. We will
@@ -154,7 +155,7 @@ commit. The 031a licensing precondition is closed.
 | [025](prd/pending/PRD-025-workspaces-ia.md) | Workspaces — Build · Test · Produce · Library · Market over one model; process profiles as the "swappable modules" | pending | idea 1 | 026 |
 | [026](prd/pending/PRD-026-workbench-shell.md) | Workbench shell revamp — dialog system (no native prompts), ⌘K palette over the registry, menus, resizable panels, shortcuts | pending | idea 8 | — |
 | [027](prd/pending/PRD-027-project-navigation-scale.md) | Navigation at scale — folders, tags, search, thumbnails, bulk ops, project dashboard, virtualized trees | pending | idea 5 | 026 (soft) |
-| [028](prd/in-progress/PRD-028-materials-database.md) | Materials database — 300–1,000 cited generic materials, basis labels, temperature tables, process metadata, community cards | in progress (branch `prd-028-materials-database`) | idea 2 | — |
+| [028](prd/completed/PRD-028-materials-database.md) | Materials database — 300–1,000 cited generic materials, basis labels, temperature tables, process metadata, community cards | completed (PR #27, MVP + Phase 2: 434 cited cards across 30 leaves, schema v2 with per-value basis/source and 80 temperature tables, `find_materials`/`get_material`, FEM resolves E/ν/k at temperature, `agentcad materials lint`, Materials browser; community repo + package distribution + FreeCAD import + 600+ records → `docs/materials.md` Deferred) | idea 2 | — |
 | [029](prd/pending/PRD-029-agent-skills.md) | Agent skills & knowledge packs — loadable, versioned craft (core/org/project layers), bench-measured | pending | idea 4 | — |
 
 ### v6 — generative engineering, manufacturing & community

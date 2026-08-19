@@ -1,6 +1,6 @@
 # PRD-028 — Materials database expansion
 
-- **Status:** in progress (branch `prd-028-materials-database`)
+- **Status:** completed — merged to main in PR #27 (4bd8f44); MVP + Phase 2 (434 cited cards, schema v2, find_materials, FEM temperature resolution, lint, browser); community repo / package distribution / FreeCAD import / 600+ records deferred (docs/materials.md)
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** founder idea #2 (Aug 2026), engineering-reviewed; grounded by dedicated research (market_research.md, "Materials data")
