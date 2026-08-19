@@ -612,7 +612,7 @@ def cmd_export(args) -> None:
     service = _build_service(_projects_dir(args))
     try:
         project = args.project
-        if "/" in project or project.startswith("."):
+        if _is_path(project):
             project = service.open_project(project)["name"]
         result = service.export_part(project, args.part, args.format,
                                      config=args.config)
@@ -629,9 +629,33 @@ def cmd_export(args) -> None:
 
 
 def _is_path(project: str) -> bool:
-    """``cmd_export``'s idiom: a project argument is a path, not a name, when
-    it contains a separator or starts with a dot."""
-    return "/" in project or project.startswith(".")
+    """Whether a project argument is a **path** rather than a project name.
+
+    A separator of either kind, a leading dot, or a drive spec. Windows is why
+    this is not simply ``"/" in project``: an absolute ``C:\\Users\\...``
+    contains no forward slash at all, so ``agentcad check --project <abs path>``
+    did not recognise it as a path, never added the project to the kernel's
+    writable roots, and — once PRD-006b gave Windows a real confinement — every
+    build failed with ``PermissionError: [WinError 5]`` writing its ``.cache/``
+    (PR #24, CI round 1). On macOS and Linux such an argument always carried a
+    ``/``, so the gap was invisible until something enforced it.
+
+    Both separators are tested on both platforms, deliberately: ``os.sep`` alone
+    would make ``a\\b`` a name on POSIX, and a Windows path handed to a POSIX
+    tool (or the reverse, through a config file or a CI matrix) should be read
+    the same way by both.
+    """
+    if not project:
+        return False
+    if project.startswith("."):
+        return True
+    if any(separator and separator in project
+           for separator in ("/", "\\", os.sep, os.altsep)):
+        return True
+    # A drive spec — `C:`, `C:\\x`, and the drive-relative `C:x`. None of them
+    # is a project name (names have no colon), and the last two would otherwise
+    # slip through on a POSIX box reading a Windows argument.
+    return len(project) > 1 and project[1] == ":"
 
 
 def _check_stages(value: str | None) -> tuple[str, ...]:

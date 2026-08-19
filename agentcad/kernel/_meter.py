@@ -152,21 +152,78 @@ def _macos_rss_mb() -> float | None:
     return None if rss is None else rss / _MB
 
 
+#: ``OpenProcess`` access mask for the fallback below — the same one
+#: ``sandbox_windows._open_process`` asks for when it samples a worker.
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
 def _windows_memory_counters() -> tuple[float, float] | None:  # pragma: no cover
-    """``(PeakWorkingSetSize, WorkingSetSize)`` in bytes, via psapi."""
+    """``(PeakWorkingSetSize, WorkingSetSize)`` in bytes, via psapi, or
+    ``None`` when Windows would not answer.
+
+    **This function never raises**, and that is not defensive tidiness: it is
+    on ``Meter.finish()``, which runs after *every* request — result, error and
+    shutdown alike — so an exception here does not degrade a measurement, it
+    kills the worker on the way out of a build that had already succeeded.
+
+    It used to raise, and only inside an AppContainer (PRD-006b probe, round
+    1). Two things had to line up. ``GetCurrentProcess()`` returns the
+    pseudo-handle ``(HANDLE)-1``; with no ``restype`` ctypes marshals that
+    return through a 32-bit ``c_int`` and hands psapi ``0x00000000FFFFFFFF``
+    on 64-bit Windows, which is not a handle. Outside a container that is a
+    plain ``FALSE`` return; **inside** one it is not, because an AppContainer
+    process runs with strict handle checking, so passing an invalid handle
+    raises ``STATUS_INVALID_HANDLE`` (0xC0000008) as a structured exception —
+    which ctypes converts into ``OSError: [WinError -1073741816]`` and which
+    escaped straight through ``finish()``. Hence: an explicit ``restype`` on
+    the one call that returns a handle, explicit ``argtypes`` on the one that
+    takes it, a real handle from ``OpenProcess`` if the pseudo-handle is
+    refused anyway, and a ``try`` around the lot.
+    """
     if sys.platform != "win32":
         return None
     try:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        psapi = ctypes.WinDLL("psapi", use_last_error=True)
-    except (OSError, AttributeError):
+        return _psapi_counters()
+    except Exception:  # noqa: BLE001 - a meter may not kill the worker
         return None
+
+
+def _psapi_counters() -> tuple[float, float] | None:  # pragma: no cover
+    """The call itself. Separated so the guard above is one unmissable line."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    # The three declarations the bug was made of. Without the first, the
+    # pseudo-handle is truncated; without the second, a 64-bit handle argument
+    # is marshalled as a 32-bit int.
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.GetCurrentProcessId.restype = ctypes.c_uint32
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int,
+                                     ctypes.c_uint32]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    psapi.GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                           ctypes.c_uint32]
+    psapi.GetProcessMemoryInfo.restype = ctypes.c_int
+
     # PROCESS_MEMORY_COUNTERS: cb, PageFaultCount (u32 each), then eight
     # size_t fields; PeakWorkingSetSize is the first of them.
     size = 8 + 8 * ctypes.sizeof(ctypes.c_size_t)
     buffer = ctypes.create_string_buffer(size)
     struct.pack_into("=I", buffer, 0, size)
     ok = psapi.GetProcessMemoryInfo(kernel32.GetCurrentProcess(), buffer, size)
+    if not ok:
+        # A real handle for the same process, in case this Windows refuses the
+        # pseudo-handle for the query at all.
+        opened = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0,
+                                      kernel32.GetCurrentProcessId())
+        if not opened:
+            return None
+        try:
+            struct.pack_into("=I", buffer, 0, size)
+            ok = psapi.GetProcessMemoryInfo(ctypes.c_void_p(opened), buffer,
+                                            size)
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(opened))
     if not ok:
         return None
     fmt = "=Q" if ctypes.sizeof(ctypes.c_size_t) == 8 else "=I"

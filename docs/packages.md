@@ -13,10 +13,9 @@ copies a package part *into* the project as an ordinary part.
 > proves *nothing about intent*. A package is Python: `use_part` copies it into
 > your project and the next rebuild executes it **in your kernel worker with
 > your privileges** — since PRD-006 inside a deny-by-default confinement on
-> macOS (the seatbelt profile) and on Linux (Landlock + seccomp): writes only
-> in your project roots and the worker's private temp dir, no network, capped
-> memory and process count. On Windows the caps apply and the confinement does
-> not (that is [PRD-006b](prd/pending/PRD-006b-windows-appcontainer.md)).
+> macOS (the seatbelt profile), on Linux (Landlock + seccomp) and, since
+> PRD-006b, on Windows (an AppContainer): writes only in your project roots and
+> the worker's private temp dir, no network, capped memory and process count.
 > Confinement bounds what a package's script may reach; it says nothing about
 > whether the geometry is what you wanted. Install packages from indexes you
 > trust, exactly as you would a pip package.
