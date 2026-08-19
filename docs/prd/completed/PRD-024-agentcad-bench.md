@@ -1,6 +1,6 @@
 # PRD-024 — AgentCAD-Bench: public agentic-CAD evals
 
-- **Status:** in-progress
+- **Status:** completed — merged to main in PR #26 (MVP + FR10–FR12: format, loader, six-subscore kernel scorer, `iou` handler, `bench run|score|report|publish|prompt`, 25 tasks (5 × 5) with references scoring 1.0, baseline gate, leaderboard renderer, external-agent walkthrough; FR13 launch results, `fem/` category, rotation policy and PRD-018 wiring are Phase 2/3)
 - **Phase:** v6 — moats
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
