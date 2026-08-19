@@ -1,6 +1,6 @@
 # PRD-014 — Drawings v2: the standards wrapper
 
-- **Status:** pending
+- **Status:** completed — merged to main in PR #25 (MVP + Phase-3: FR1-2, 6-13; FR3 revision block and FR4/FR5 assembly balloons + BOM deferred to PRD-015)
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
