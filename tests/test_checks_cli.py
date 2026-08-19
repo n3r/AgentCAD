@@ -282,6 +282,42 @@ def test_a_project_outside_the_usual_roots_is_still_writable(tmp_path):
     assert (proj / ".cache").is_dir()
 
 
+@pytest.mark.parametrize("argument", [
+    "C:\\x\\y",          # a Windows absolute path: NO forward slash in it
+    "C:\\",              # ...a bare drive root
+    "C:x",              # ...and the drive-relative form
+    "x\\y",              # a Windows relative path
+    "/x", "/x/y", "x/y",
+    ".", "./x", "../sibling",
+])
+def test_a_path_shaped_project_argument_is_read_as_a_path(argument):
+    """PR #24, CI round 1. `_is_path` decides whether `agentcad check
+    --project <arg>` opens a *path* — and therefore whether that directory is
+    added to the kernel's **writable roots** before the workers spawn.
+
+    It was `"/" in project or project.startswith(".")`, and a Windows absolute
+    path contains no forward slash at all: the project was treated as a name,
+    never granted, and once PRD-006b gave Windows a real AppContainer every
+    build died with `PermissionError: [WinError 5]` writing its `.cache/`.
+    On macOS and Linux the `/` had always carried it, so nothing had ever
+    enforced the gap.
+    """
+    from agentcad.cli import _is_path
+
+    assert _is_path(argument) is True
+
+
+@pytest.mark.parametrize("argument", ["rocketry", "my-project", "widget_2",
+                                      "a", ""])
+def test_a_bare_project_name_is_not_read_as_a_path(argument):
+    """The other half: a name still resolves under `--projects-dir`, and a
+    name that got read as a path would be looked up in the wrong place."""
+    from agentcad.cli import _is_path
+
+    assert _is_path(argument) is False
+
+
+
 # ------------------------------- the wiring, without paying for a kernel
 
 def _report(**overrides) -> dict:

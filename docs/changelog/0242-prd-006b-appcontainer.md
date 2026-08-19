@@ -118,9 +118,39 @@ token** so `confinement.status: "active"` stays measured rather than intended.
   `tests/test_denials.py`, `tests/test_prd006_acceptance.py`
 - `docs/architecture.md`, `docs/deployment.md`, `docs/packages.md`
 
+## CI round 1 (PR #24) — the one thing the container caught
+
+Probe 28/28 OK; macOS and ubuntu green; windows portability `2 failed, 803
+passed, 43 skipped`, both failures the same root cause and **not** in the
+sandbox: `cli._is_path` was `"/" in project or project.startswith(".")`, and a
+Windows absolute path (`C:\Users\...`) contains no forward slash — so
+`agentcad check --project <abs path>` never recognised it as a path, never
+appended the canonical project dir to `extra_writable`, the AppContainer never
+got the write ACE, and every build/drawing row failed with
+`PermissionError: [WinError 5]` on its `.cache/` write
+(`tests/test_checks_cli.py::test_a_project_outside_the_usual_roots_is_still_writable`,
+`tests/test_prd004_acceptance.py::test_ac5_the_three_exit_codes_and_a_report_that_validates`).
+
+- `agentcad/cli.py` — `_is_path` now accepts either separator (`/`, `\\`,
+  `os.sep`, `os.altsep`), a leading `.`, and a drive spec (`C:`, `C:\x`,
+  `C:x`); `cmd_export` uses the shared helper instead of repeating the old
+  idiom inline. `cmd_package_validate`/`cmd_publish` were re-read: both take
+  `Path(args.path).expanduser().resolve()` unconditionally, so neither has a
+  POSIX-only path test to fix.
+- `tests/test_checks_cli.py` — `_is_path` pinned on both platforms:
+  `C:\x\y`, `C:\`, `C:x`, `x\y`, `/x`, `/x/y`, `x/y`, `.`, `./x`,
+  `../sibling` are paths; `rocketry`, `my-project`, `widget_2`, `a`, `""` are
+  names.
+
+This was a **real bug of PRD-004's**, latent on macOS/Linux because the
+argument always carried a `/` there, and visible on Windows only once there
+was a confinement to enforce the missing grant.
+
 ## Notes
 
-- **`make test` — 4366 passed, 42 skipped in 523.97s** (macOS, this branch).
+- **`make test` — 4366 passed, 42 skipped in 523.97s** (macOS, this branch;
+  re-run after the CI-round-1 fix: `tests/test_checks_cli.py
+  tests/test_prd004_acceptance.py tests/test_sandbox_plan.py` — 151 passed).
   Everything Windows in that run is the *stubbed* plan shape: **the live
   evidence — the AppContainer battery, the token self-report, the report shape
   under `AGENTCAD_EXPECT_SANDBOX=active` — lands with the next
