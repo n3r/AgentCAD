@@ -67,7 +67,8 @@ def test_expected_defaults_to_the_tasks_root_when_one_is_given(tmp_path):
     """A tasks root names the tasks the report *must* cover -- an unrun task
     cannot vanish from the denominator by never having been run."""
     root = tmp_path / "tasks_root"
-    shutil.copytree(REPO / "benchmarks" / "tasks", root)
+    seed = "model_from_drawing/mfd_001_spacer_plate"
+    shutil.copytree(REPO / "benchmarks" / "tasks" / seed, root / seed)
     results = _results(tmp_path / "out", [])
     report = bench_report.aggregate(results, tasks_root=root)
     assert report["tasks"]["model_from_drawing/mfd_001_spacer_plate"]["missing"]
