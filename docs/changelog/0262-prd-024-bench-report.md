@@ -25,12 +25,29 @@ a socket or reads a clock.
     category cannot silently reweight the headline number.
   - **A missing task is a row with `total: 0.0`, `missing: true`,** counted in
     its category's `missing`. Without that rule a release could be gated green
-    by not running the hard half.
+    by not running the hard half. The roster comes from `expected`, else a
+    `tasks_root`, else **`bench.json`'s per-task index** (`tasks`: canonically
+    an object keyed by task id, a list of ids accepted — the contract the
+    runner writes against, stated in the module docstring), else the ids on
+    disk. A directory with no rows at all raises instead of answering
+    `total: 0.0`: "we measured nothing" is the harness lane, and a zero is a
+    measurement.
   - `compare_baseline(report, baseline, epsilon, *, path=None)` →
     `{"path", "epsilon", "status", "regressions", "task_deltas"}` with
     `status ∈ {ok, regressed, incomparable, unrecorded}`. **It gates on `total`
     and on each category only.** A category the baseline names and the run
     never produced measures `0.0` — the missing-task rule one level up.
+  - **A baseline task id the report does not carry is folded in at `0.0`
+    before anything is gated** (`_with_coverage`): the affected category mean
+    and the overall total are recomputed with those zeros, and the gap is also
+    named on its own as a `coverage` regression listing the ids. `coverage`
+    gates regardless of `epsilon` — not measuring a task is not a small drop in
+    a number, it is the absence of one, and running half the suite is the one
+    failure mode a release gate exists to catch (design §11).
+  - **The numeric gate is `round(delta, 6) < -epsilon`** — the report's own
+    precision. Raw arithmetic makes `0.9 - 0.88` come out at
+    `-0.020000000000000018`, which would fail a gate whose own table prints
+    `-0.0200` against `epsilon 0.0200`: a verdict contradicted by its evidence.
   - **Per-task deltas are computed, sorted worst-first, rendered — and never
     gated.** A single task under a stochastic agent is noise; gating on noise
     makes the release gate a coin flip. This is the one place the design
@@ -47,20 +64,48 @@ a socket or reads a clock.
 - **`benchmarks/baseline.json`** (new): the v1 baseline, `total: null`,
   `recorded`/`source` null, with the `note` field saying so. A null baseline is
   `unrecorded` and exits **0** with the reason printed.
-- **`tests/test_bench_report.py`** (new, 17 tests): the mean-of-category-means
+- **`tests/test_bench_report.py`** (new, 29 tests): the mean-of-category-means
   rule, the missing-task rule via an explicit `expected` list and via a
   `tasks_root` (a `shutil.copytree` of `benchmarks/tasks` into `tmp_path` —
   `benchmarks/` is read, never written), harness-mismatched score rows included
   with a warning, an unreadable `score.json` raising, byte-identity across two
   aggregations, the regression / inside-epsilon / missing-category / per-task
   cases, the non-finite epsilon refusal, the shipped baseline's exit 0, and the
-  three markdown assertions (table, cap, regression names).
+  three markdown assertions (table, cap, regression names); plus the review
+  round: the `bench.json` roster (dict and list forms, and `expected`
+  outranking it), a bare `NaN` total and an `Infinity` subscore, an empty
+  results directory, an uncovered baseline task gating at exit 1, a run that
+  covers the baseline exactly at exit 0, the epsilon boundary parametrised at
+  exactly `epsilon` (passes) and `epsilon + 1e-6` (fails), the ungated-category
+  warning, and the two markdown minors.
 
 ## Files
 - `agentcad/bench/report.py` — new module (aggregate, gate, exit code, markdown)
 - `benchmarks/baseline.json` — new, unrecorded v1 baseline
 - `tests/test_bench_report.py` — new test module
 - `docs/changelog/0262-prd-024-bench-report.md` — this entry
+
+## Review round 1 (findings fixed in place)
+
+- **A partial run passed the gate.** A baseline task absent from the report
+  landed only in the ungated `task_deltas`, so half a suite scored green. Fixed
+  in both halves: `aggregate` now reads the roster from `bench.json`'s
+  per-task index, and `compare_baseline` folds uncovered baseline ids in at
+  `0.0` before recomputing the gated means, plus the `coverage` regression.
+- **The epsilon boundary fired on float dust** while the rendered (rounded)
+  delta contradicted the verdict — now `round(delta, 6) < -epsilon`.
+- **A non-finite `total` or subscore value was accepted.** `json.loads` parses
+  the bare `NaN` / `Infinity` literals; `nan < -epsilon` is `False`, so the
+  gate went green, and `canonical_json` then died with a bare `ValueError`
+  (`allow_nan=False`) — the wrong exit lane, raised too late to name the file.
+  `_finite()` now guards both in `_read_scores`, raising `ValidationError`.
+- **An empty results directory answered `total: 0.0`.** It now raises, and
+  `compare_baseline` tests the total with an explicit `is None`.
+- Minors taken: the `+N more` line no longer promises a `report.json` that only
+  exists with `--json-out`; an unnamed baseline `path` is omitted rather than
+  rendered as the literal `None`; a measured category the baseline does not
+  record produces a `baseline.warnings` sentence (it is ungated until a
+  baseline records it).
 
 ## Notes
 - **Ordering inside `compare_baseline` is load-bearing.** Foreign *schema* →
@@ -108,6 +153,10 @@ a socket or reads a clock.
   for `_cmd_report`, but `cli.py` is Task 5's file and was being written
   concurrently; wiring `_cmd_report` to these four functions belongs to that
   task's diff. The command path was smoked directly instead (see the report).
-- Tests: `uv run pytest -q tests/test_bench_report.py` → **17 passed in 0.29s**;
-  `uv run pytest -q tests/test_bench_report.py tests/test_bench_tasks.py -x` →
-  **36 passed in 0.26s**. `make test` — <orchestrator fills>.
+- Tests: `uv run pytest -q tests/test_bench_report.py` → **29 passed in 0.33s**;
+  `uv run pytest -q tests/test_bench_report.py tests/test_bench_tasks.py` →
+  **48 passed in 0.34s**; `uv run ruff check agentcad/bench/report.py
+  tests/test_bench_report.py` → **All checks passed!**. Run against the
+  pre-review module (`git show f3eb7a8:agentcad/bench/report.py`) the review
+  round's tests are **10 failed, 19 passed** — every finding is covered by a
+  test that fails without its fix. `make test` — <orchestrator fills>.

@@ -75,6 +75,64 @@ def test_expected_defaults_to_the_tasks_root_when_one_is_given(tmp_path):
     assert report["n"] == 1
 
 
+def test_expected_comes_from_bench_jsons_per_task_index(tmp_path):
+    """The runner's roster is the denominator: a task it selected and never
+    scored is a `missing` row, not a hole in the average."""
+    results = _results(tmp_path, [("model_from_drawing/a", 1.0, "model_from_drawing")])
+    header = read_json(results / "bench.json")
+    header["tasks"] = {"model_from_drawing/a": {"score": "tasks/model_from_drawing/a"},
+                       "model_from_drawing/b": {"score": None}}
+    write_json(results / "bench.json", header)
+    report = bench_report.aggregate(results)
+    assert report["tasks"]["model_from_drawing/b"]["missing"] is True
+    assert report["n"] == 2 and report["total"] == pytest.approx(0.5)
+
+
+def test_a_bench_json_index_may_be_a_plain_list_of_ids(tmp_path):
+    results = _results(tmp_path, [("model_from_drawing/a", 1.0, "model_from_drawing")])
+    header = read_json(results / "bench.json")
+    header["tasks"] = ["model_from_drawing/a", "modify_to_spec/b"]
+    write_json(results / "bench.json", header)
+    report = bench_report.aggregate(results)
+    assert report["categories"]["modify_to_spec"]["missing"] == 1
+    assert report["total"] == pytest.approx(0.5)     # mean of {1.0, 0.0}
+
+
+def test_an_explicit_expected_list_outranks_the_index(tmp_path):
+    results = _results(tmp_path, [("model_from_drawing/a", 1.0, "model_from_drawing")])
+    header = read_json(results / "bench.json")
+    header["tasks"] = ["model_from_drawing/a", "modify_to_spec/b"]
+    write_json(results / "bench.json", header)
+    report = bench_report.aggregate(results, expected=["model_from_drawing/a"])
+    assert report["n"] == 1
+
+
+def test_a_non_finite_score_is_a_harness_error(tmp_path):
+    """`json.loads` parses bare `NaN`; every `nan < -epsilon` is False, so an
+    accepted NaN is a silently green gate."""
+    results = _results(tmp_path, [("model_from_drawing/a", 1.0, "model_from_drawing")])
+    path = results / "tasks" / "model_from_drawing" / "a" / "score.json"
+    path.write_text(path.read_text().replace('"total": 1.0', '"total": NaN'))
+    with pytest.raises(ValidationError):
+        bench_report.aggregate(results)
+
+
+def test_a_non_finite_subscore_is_a_harness_error(tmp_path):
+    results = _results(tmp_path, [("model_from_drawing/a", 1.0, "model_from_drawing")])
+    path = results / "tasks" / "model_from_drawing" / "a" / "score.json"
+    path.write_text(path.read_text().replace('"value": 1.0', '"value": Infinity'))
+    with pytest.raises(ValidationError):
+        bench_report.aggregate(results)
+
+
+def test_a_results_directory_with_nothing_in_it_is_a_harness_error(tmp_path):
+    """`n: 0, total: 0.0` would answer "we measured nothing" with a number."""
+    write_json(tmp_path / "bench.json", {"schema": 1, "task_set": "bench-v1",
+                                         "harness": 1})
+    with pytest.raises(ValidationError):
+        bench_report.aggregate(tmp_path)
+
+
 def test_a_score_from_another_harness_is_included_and_warned_about(tmp_path):
     results = _results(tmp_path, [("model_from_drawing/a", 1.0, "model_from_drawing")])
     rogue = results / "tasks" / "modify_to_spec" / "z"
@@ -165,6 +223,69 @@ def test_a_non_finite_epsilon_is_refused(tmp_path):
         bench_report.compare_baseline(report, baseline, float("nan"))
 
 
+def test_a_baseline_task_the_run_never_scored_gates(tmp_path):
+    """Half a suite must not pass by shrinking its own denominator."""
+    results = _results(tmp_path, [("model_from_drawing/a", 0.9, "model_from_drawing")])
+    report = bench_report.aggregate(results)
+    assert report["n"] == 1                       # the roster is silent on disk
+    baseline = {"schema": 1, "task_set": "bench-v1", "harness": 1, "total": 0.9,
+                "categories": {"model_from_drawing": 0.9},
+                "tasks": {"model_from_drawing/a": 0.9,
+                          "model_from_drawing/b": 0.9}}
+    report["baseline"] = bench_report.compare_baseline(report, baseline, 0.02)
+    assert report["baseline"]["status"] == "regressed"
+    coverage = [row for row in report["baseline"]["regressions"]
+                if row["scope"] == "coverage"]
+    assert coverage and coverage[0]["missing"] == ["model_from_drawing/b"]
+    scopes = {row["scope"] for row in report["baseline"]["regressions"]}
+    # the uncovered task is folded in at 0.0 *before* the means are gated
+    assert {"total", "category:model_from_drawing"} <= scopes
+    assert bench_report.report_exit_code(report) == 1
+    assert "model_from_drawing/b" in bench_report.render_markdown(report)
+
+
+def test_a_run_that_covers_the_baseline_exactly_is_exit_zero(tmp_path):
+    results = _results(tmp_path, [("model_from_drawing/a", 0.9, "model_from_drawing"),
+                                  ("model_from_drawing/b", 0.9, "model_from_drawing")])
+    report = bench_report.aggregate(results)
+    baseline = {"schema": 1, "task_set": "bench-v1", "harness": 1, "total": 0.9,
+                "categories": {"model_from_drawing": 0.9},
+                "tasks": {"model_from_drawing/a": 0.9,
+                          "model_from_drawing/b": 0.9}}
+    report["baseline"] = bench_report.compare_baseline(report, baseline, 0.02)
+    assert report["baseline"]["status"] == "ok"
+    assert report["baseline"]["regressions"] == []
+    assert bench_report.report_exit_code(report) == 0
+
+
+@pytest.mark.parametrize("measured, gated", [(0.88, False), (0.879999, True)])
+def test_the_epsilon_boundary_is_the_reports_own_precision(tmp_path, measured,
+                                                           gated):
+    """A drop of exactly epsilon passes; epsilon + 1e-6 fails. Raw float
+    arithmetic makes 0.9 - 0.88 come out at 0.020000000000000018, which would
+    fail a gate whose own table prints -0.0200 against epsilon 0.0200."""
+    results = _results(tmp_path, [("model_from_drawing/a", measured,
+                                   "model_from_drawing")])
+    report = bench_report.aggregate(results)
+    report["baseline"] = bench_report.compare_baseline(
+        report, {"schema": 1, "task_set": "bench-v1", "harness": 1, "total": 0.9,
+                 "categories": {"model_from_drawing": 0.9}, "tasks": {}}, 0.02)
+    assert (report["baseline"]["status"] == "regressed") is gated
+    assert bench_report.report_exit_code(report) == (1 if gated else 0)
+
+
+def test_a_category_the_baseline_does_not_record_is_warned_about(tmp_path):
+    results = _results(tmp_path, [("model_from_drawing/a", 1.0, "model_from_drawing"),
+                                  ("modify_to_spec/b", 1.0, "modify_to_spec")])
+    report = bench_report.aggregate(results)
+    report["baseline"] = bench_report.compare_baseline(
+        report, {"schema": 1, "task_set": "bench-v1", "harness": 1, "total": 1.0,
+                 "categories": {"model_from_drawing": 1.0}, "tasks": {}}, 0.02)
+    assert report["baseline"]["status"] == "ok"
+    assert any("modify_to_spec" in line
+               for line in report["baseline"]["warnings"])
+
+
 def test_a_harness_mismatch_is_exit_two(tmp_path):
     results = _results(tmp_path, [("model_from_drawing/a", 1.0, "model_from_drawing")])
     report = bench_report.aggregate(results)
@@ -225,3 +346,11 @@ def test_markdown_names_every_regression(tmp_path):
                  "tasks": {"model_from_drawing/a": 0.9}}, 0.02)
     text = bench_report.render_markdown(report)
     assert "regressed" in text and "category:model_from_drawing" in text
+    assert "None" not in text                  # an unnamed baseline path
+
+
+def test_markdown_never_promises_an_unwritten_report_json(tmp_path):
+    rows = [(f"model_from_drawing/t{index:03d}", index / 100.0,
+             "model_from_drawing") for index in range(60)]
+    text = bench_report.render_markdown(bench_report.aggregate(_results(tmp_path, rows)))
+    assert "--json-out" in text and "see report.json" not in text

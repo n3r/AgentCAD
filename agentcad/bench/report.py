@@ -7,20 +7,33 @@ lives in `run.json`; this module reads exactly one field out of it
 `report.json` is byte-identical across machines that measured the same thing
 (FR6/AC3).
 
-Three rules carry the whole design:
+Four rules carry the whole design:
 
 * **A category total is the unweighted mean of its tasks' totals; the overall
   total is the unweighted mean of the *category* totals.** At five tasks per
   category the two coincide -- stating it this way means a v2 that adds tasks
   to one category cannot silently reweight the headline number.
 * **A missing task scores `0.0`** and is flagged `missing: true`; against a
-  baseline that is a regression. Without it a release could be gated green by
-  not running the hard half.
-* **The gate is `total` plus each category, never a single task.** One task
+  baseline it is a regression twice over -- it depresses its category mean, and
+  it is named as a `coverage` regression in its own right. Without that a
+  release could be gated green by not running the hard half.
+* **The roster is read, never assumed.** `expected` names the ids the report
+  must cover; in its absence `aggregate` takes the roster from
+  `bench.json`'s per-task index, then from a `tasks_root`, and only then from
+  the ids that happen to be on disk (`_expected_ids`).
+* **The gate is `total`, each category and coverage, never a single task.** One task
   under a stochastic agent is noise, and gating on noise makes the release gate
   a coin flip. Per-task deltas are computed and printed anyway -- this is the
   one place the design deliberately measures more than it enforces
   (design §11).
+
+**The `bench.json` contract this module depends on** (design §8.7, "run header
++ per-task index"): the key is **`tasks`**, and it is canonically an **object
+keyed by task id** -- the per-task index, whose values this module does not
+read. A plain **list of task ids** is accepted as the equivalent shorthand.
+Whatever the runner writes there is the roster the report is measured against,
+so a task the runner selected and never scored shows up as `missing: true`
+instead of quietly leaving the denominator.
 """
 from __future__ import annotations
 
@@ -49,6 +62,19 @@ MAX_RENDERED_TASKS = 25
 
 # ------------------------------------------------------------- aggregation
 
+def _finite(value) -> bool:
+    """A real, finite number -- `True`/`False` are ints and are not numbers here.
+
+    `json.loads` parses the bare `NaN` / `Infinity` literals, so an
+    `isinstance` test alone lets a non-finite measurement into the aggregate,
+    where every `nan < -epsilon` is `False` (a silently green gate) and the
+    writer later dies with a bare `ValueError` from `allow_nan=False` -- the
+    wrong exit lane, raised too late to name the file.
+    """
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
+
+
 def _score_paths(results_dir: Path) -> dict:
     """`{task_id: path}` for every `<results>/tasks/<category>/<id>/score.json`.
 
@@ -64,8 +90,8 @@ def _score_paths(results_dir: Path) -> dict:
             for path in sorted(base.glob("*/*/score.json"))}
 
 
-def _header(results_dir: Path, scores: dict) -> dict:
-    """The run header: `bench.json` if there is one, else the scores agree.
+def _header_doc(results_dir: Path) -> dict:
+    """`bench.json` if there is one, `{}` if there is not.
 
     A hand-assembled results directory (one `bench score` output, a downloaded
     submission) has no `bench.json`, and refusing it would make the reporter
@@ -74,14 +100,35 @@ def _header(results_dir: Path, scores: dict) -> dict:
     document we could not read.
     """
     path = Path(results_dir) / "bench.json"
-    head = {}
-    if path.is_file():
-        head = read_json(path)
-        if head.get("schema") != HEADER_SCHEMA:
-            raise ValidationError(
-                f"{path} declares schema {head.get('schema')!r}, "
-                f"this harness reads {HEADER_SCHEMA}",
-                {"path": str(path)})
+    if not path.is_file():
+        return {}
+    head = read_json(path)
+    if head.get("schema") != HEADER_SCHEMA:
+        raise ValidationError(
+            f"{path} declares schema {head.get('schema')!r}, "
+            f"this harness reads {HEADER_SCHEMA}",
+            {"path": str(path)})
+    return head
+
+
+def _index_ids(head: dict) -> list | None:
+    """The roster `bench.json`'s per-task index declares, or `None`.
+
+    The key is `tasks` (module docstring): canonically an object keyed by task
+    id, with a list of ids accepted as the shorthand. Anything else is ignored
+    rather than guessed at -- a malformed index must not silently shrink the
+    denominator, which is the whole failure this roster exists to prevent.
+    """
+    index = head.get("tasks")
+    if isinstance(index, dict):
+        return sorted(str(key) for key in index)
+    if isinstance(index, list):
+        return sorted(str(item) for item in index if isinstance(item, str))
+    return None
+
+
+def _header(head: dict, scores: dict) -> dict:
+    """The report's identity fields: the header's, else the scores' own."""
     first = next(iter(scores.values()), {})
     return {
         "task_set": head.get("task_set", first.get("task_set")),
@@ -108,10 +155,18 @@ def _read_scores(paths: dict) -> dict:
                 f"this harness reads {SCORE_SCHEMA}",
                 {"path": str(path), "task": task_id})
         total = score.get("total")
-        if not isinstance(total, (int, float)) or isinstance(total, bool):
+        if not _finite(total):
             raise ValidationError(
-                f"{path} has no numeric total (got {total!r})",
+                f"{path} has no finite numeric total (got {total!r})",
                 {"path": str(path), "task": task_id})
+        for name, entry in (score.get("subscores") or {}).items():
+            if isinstance(entry, dict) and "value" in entry \
+                    and not _finite(entry["value"]):
+                raise ValidationError(
+                    f"{path}: subscore {name!r} has a non-finite value "
+                    f"({entry['value']!r}); a non-finite measurement is a "
+                    f"status: \"error\" subscore, never a number",
+                    {"path": str(path), "task": task_id, "subscore": name})
         out[task_id] = score
     return out
 
@@ -168,21 +223,30 @@ def _comparability(task_id: str, score: dict, header: dict) -> list:
 def aggregate(results_dir, *, tasks_root=None, expected: list | None = None) -> dict:
     """The report document of design §10 over a results directory.
 
-    *expected* names the task ids the report must cover. Given a *tasks_root* it
-    defaults to `[t.id for t in load_tasks(root=tasks_root)]` -- the honest
+    *expected* names the task ids the report must cover -- the honest
     denominator, because a task that was never run must not vanish from it.
-    With neither, the ids found on disk are the denominator: a hand-assembled
-    directory has no roster to be measured against, and inventing one out of
-    the shipped `benchmarks/tasks` would turn "score this submission" into
-    "score this submission against 25 tasks it never claimed".
+    In its absence the roster is taken, in order, from `tasks_root`
+    (`[t.id for t in load_tasks(root=tasks_root)]`), then from `bench.json`'s
+    per-task index (`tasks`, see the module docstring), then from the ids found
+    on disk. That last fallback is a hand-assembled directory: it has no roster
+    to be measured against, and inventing one out of the shipped
+    `benchmarks/tasks` would turn "score this submission" into "score this
+    submission against 25 tasks it never claimed".
+
+    A results directory with no rows at all -- no score and no roster -- raises
+    `ValidationError` rather than answering `total: 0.0`. "We measured nothing"
+    is the harness lane (exit 2), and a zero is a measurement.
     """
     results_dir = Path(results_dir)
     paths = _score_paths(results_dir)
     scores = _read_scores(paths)
-    header = _header(results_dir, scores)
+    head = _header_doc(results_dir)
+    header = _header(head, scores)
 
     if expected is None and tasks_root is not None:
         expected = [task.id for task in load_tasks(root=tasks_root)]
+    if expected is None:
+        expected = _index_ids(head)
     ids = sorted(set(paths) | set(expected or ()))
 
     warnings: list = []
@@ -217,10 +281,16 @@ def aggregate(results_dir, *, tasks_root=None, expected: list | None = None) -> 
                          "missing": bucket["missing"]}
                   for name, bucket in sorted(categories.items())}
 
+    if not tasks:
+        raise ValidationError(
+            f"{results_dir} holds no score.json and names no expected task; "
+            f"there is nothing to report",
+            {"path": str(results_dir)})
+
     # The mean of the *category* means, never the mean of the tasks: adding a
     # sixth task to one category must not reweight the headline number.
     total = (sum(row["total"] for row in categories.values()) / len(categories)
-             if categories else 0.0)
+             if categories else None)
 
     report = {
         "schema": REPORT_SCHEMA,
@@ -244,12 +314,46 @@ def _delta(measured, baseline) -> float:
     return float(measured) - float(baseline)
 
 
+def _with_coverage(report: dict, baseline: dict) -> tuple:
+    """`(total, {category: total}, uncovered_ids)` with the baseline's tasks in.
+
+    Every baseline task id the report does not carry is folded in as a `0.0`
+    row before the means are recomputed, so a half-run suite cannot pass by
+    shrinking its own denominator. The recomputation repeats `aggregate`'s
+    rule exactly: a category mean over its tasks, the total over the category
+    means.
+    """
+    rows = {task_id: float(row.get("total") or 0.0)
+            for task_id, row in (report.get("tasks") or {}).items()}
+    uncovered = sorted(set(baseline.get("tasks") or {}) - set(rows))
+    rows.update({task_id: 0.0 for task_id in uncovered})
+
+    buckets: dict = {}
+    for task_id, total in rows.items():
+        buckets.setdefault(task_id.split("/")[0], []).append(total)
+    categories = {name: sum(totals) / len(totals)
+                  for name, totals in buckets.items()}
+    total = (sum(categories.values()) / len(categories)
+             if categories else None)
+    return total, categories, uncovered
+
+
 def compare_baseline(report: dict, baseline: dict, epsilon: float,
                      *, path=None) -> dict:
     """Gate *report* against *baseline*: total and each category, nothing else.
 
     Status is one of `ok` / `regressed` / `incomparable` / `unrecorded`, and
     `report_exit_code` maps it to `0` / `1` / `2` / `0`.
+
+    **A baseline task id the report does not contain is scored `0.0` before
+    anything is gated** (design §11: "a baseline naming tasks the results do
+    not contain -- those tasks are `missing` and count as full regressions").
+    Its category mean and the overall total are recomputed with those zeros in
+    them, and the gap is *also* named on its own as a `coverage` regression --
+    otherwise the cheapest way to pass the gate would be to run half the suite,
+    which is the one failure mode a release gate exists to catch. Note that
+    `coverage` gates regardless of `epsilon`: not measuring a task is not a
+    small drop in a number, it is the absence of one.
 
     The order of the tests is deliberate. A baseline of a foreign **schema** is
     incomparable -- we cannot even read what it claims. A baseline whose
@@ -273,7 +377,7 @@ def compare_baseline(report: dict, baseline: dict, epsilon: float,
             {"epsilon": str(epsilon)})
     out = {"path": str(path) if path is not None else None,
            "epsilon": epsilon, "status": "ok",
-           "regressions": [], "task_deltas": []}
+           "regressions": [], "task_deltas": [], "warnings": []}
 
     if baseline.get("schema") != BASELINE_SCHEMA:
         out["status"] = "incomparable"
@@ -294,19 +398,34 @@ def compare_baseline(report: dict, baseline: dict, epsilon: float,
                 f"{field} versions is not a comparison")
             return out
 
-    scopes = [("total", report.get("total") or 0.0, baseline.get("total"))]
-    measured_categories = report.get("categories") or {}
+    covered_total, covered_categories, uncovered = _with_coverage(report, baseline)
+    if uncovered:
+        out["regressions"].append(
+            {"scope": "coverage", "baseline": None, "measured": None,
+             "delta": None, "missing": uncovered})
+
+    scopes = []
+    if covered_total is not None:
+        scopes.append(("total", covered_total, baseline.get("total")))
     for name, was in sorted((baseline.get("categories") or {}).items()):
         # A category the baseline names and the run never produced measures
         # zero -- the missing-task rule, one level up.
-        now = (measured_categories.get(name) or {}).get("total", 0.0)
-        scopes.append((f"category:{name}", now, was))
+        scopes.append((f"category:{name}", covered_categories.get(name, 0.0), was))
+    for name in sorted(covered_categories):
+        if name not in (baseline.get("categories") or {}):
+            out["warnings"].append(
+                f"category {name!r} is measured here but the baseline does "
+                f"not record it; it is ungated until a baseline does")
 
     for scope, measured, was in scopes:
         if was is None:
             continue
         delta = _delta(measured, was)
-        if delta < -epsilon:
+        # Gate on the report's own precision. Raw float arithmetic makes a
+        # drop of exactly `epsilon` come out at -0.020000000000000018, which
+        # would fail a gate while the table prints "-0.0200 vs epsilon
+        # 0.0200" -- a verdict contradicted by its own evidence.
+        if round(delta, 6) < -epsilon:
             out["regressions"].append({"scope": scope, "baseline": float(was),
                                        "measured": float(measured),
                                        "delta": delta})
@@ -359,7 +478,10 @@ def _capped(rows: list, limit: int = MAX_RENDERED_TASKS) -> tuple:
 
 
 def _more(extra: int) -> list:
-    return [f"_+{extra} more — see report.json_", ""] if extra else []
+    """The `+N more` line. It does not promise a file that may not exist --
+    `report.json` is only written when the caller passes `--json-out`."""
+    return [f"_+{extra} more — the full list is in the report document "
+            f"(`--json-out`)_", ""] if extra else []
 
 
 def render_markdown(report: dict) -> str:
@@ -390,19 +512,34 @@ def render_markdown(report: dict) -> str:
               ""]
 
     if status:
-        lines += [f"## Baseline — {status}",
-                  "", f"`{baseline.get('path')}` · epsilon "
-                      f"{_num(baseline.get('epsilon'))}"
-                  + (f" · {baseline['reason']}" if baseline.get("reason") else ""),
-                  ""]
+        facts = []
+        if baseline.get("path"):
+            facts.append(f"`{baseline['path']}`")
+        facts.append(f"epsilon {_num(baseline.get('epsilon'))}")
+        if baseline.get("reason"):
+            facts.append(str(baseline["reason"]))
+        lines += [f"## Baseline — {status}", "", " · ".join(facts), ""]
         regressions = baseline.get("regressions") or []
         if regressions:
             lines += ["| Scope | Baseline | Measured | Delta |",
                       "|---|---:|---:|---:|"]
-            lines += [f"| {row['scope']} | {_num(row['baseline'])} | "
-                      f"{_num(row['measured'])} | {_signed(row['delta'])} |"
+            lines += [f"| {row['scope']} | {_num(row.get('baseline'))} | "
+                      f"{_num(row.get('measured'))} | "
+                      f"{_signed(row.get('delta'))} |"
                       for row in regressions]
             lines.append("")
+        for row in regressions:
+            # A coverage gap has no two numbers to subtract -- it is the
+            # absence of a measurement, so it is named rather than tabulated.
+            if row.get("scope") == "coverage":
+                shown, extra = _capped(row.get("missing") or [])
+                named = ", ".join(f"`{task_id}`" for task_id in shown)
+                tail = f" (+{extra} more)" if extra else ""
+                lines += [f"**coverage** — {len(row.get('missing') or [])} "
+                          f"baseline task(s) were not scored by this run and "
+                          f"count as 0.0: {named}{tail}", ""]
+        for line in baseline.get("warnings") or []:
+            lines += [f"> {line}", ""]
 
     rows = sorted((report.get("tasks") or {}).items(),
                   key=lambda item: (item[1].get("total", 0.0), item[0]))
