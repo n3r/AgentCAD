@@ -13,7 +13,9 @@ seam ``release_start`` reaches. This pack registers **no gate provider** of its
 own: the release checks are composed inline in ``release_start`` from the
 proposal's already-evaluated specs/checks gates, not appended to
 ``gate_providers`` (which would run against *every* proposal). ``release_finalize``
-— the tag/finalize path — is slice 4 and is deliberately absent here.
+— the tag/finalize path (slice 4, FR9/FR12) — tags ``release/<rev>``, registers
+the tag referrer and transitions the record to ``released``; it too is git +
+manifest only, with no gate provider and no kernel call.
 """
 
 from __future__ import annotations
@@ -33,6 +35,9 @@ def register(registry, service) -> None:
                       waive: dict | None = None) -> dict:
         return releases.release_start(service, project, notes=notes,
                                       waive=waive)
+
+    def release_finalize(project: str, rev: str) -> dict:
+        return releases.release_finalize(service, project, rev)
 
     def list_releases(project: str) -> dict:
         return releases.list_releases(service, project)
@@ -71,6 +76,24 @@ def register(registry, service) -> None:
             ["project"],
         ),
         release_start,
+    ))
+    registry.register(Tool(
+        "release_finalize",
+        "Finalize an in-review release (FR9): create the immutable version tag "
+        "release/<rev> at the approved head, register the release as the tag's "
+        "referrer, transition the record to 'released' (recording the approving "
+        "principals), and mark the immediately-prior released revision "
+        "'superseded'. The release proposal MUST be approved first "
+        "(proposal_review verdict 'approve' by a reviewer other than the "
+        "author) — otherwise this refuses. IDEMPOTENT: calling it again on an "
+        "already-released rev returns the same record and creates nothing. A "
+        "draft (its gate never passed) is refused with 'gate has not passed'; a "
+        "released/superseded record is append-only, so re-finalizing it is a "
+        "conflict_error directing you to branch off the tag "
+        "(branch_create from_ref=release/<rev>). Returns the finalized record. "
+        "No kernel calls — this is git + manifest only.",
+        schema({"project": _PROJ, "rev": _REV}, ["project", "rev"]),
+        release_finalize,
     ))
     registry.register(Tool(
         "list_releases",

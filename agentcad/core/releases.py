@@ -46,8 +46,8 @@ import copy
 import re
 
 from . import locks
-from .model import NotFoundError, ValidationError
-from .proposals import _now, actor_kind
+from .model import ConflictError, NotFoundError, ValidationError
+from .proposals import _COUNTED_VERDICTS, _now, actor_kind
 
 STATUSES = ("draft", "in_review", "released", "superseded")
 
@@ -181,6 +181,152 @@ def release_start(service, project: str, notes: str | None = None,
                          "reason": "release"})
 
     return {"rev": rev, "proposal": pid, "gate": gate, "status": status}
+
+
+# ------------------------------------------------------------- the finalize
+
+
+def _ensure_mutable(record: dict) -> None:
+    """Refuse to mutate a finalized release record (FR12).
+
+    ``released`` and ``superseded`` are terminal: the record is append-only, so
+    any tool that would rewrite one raises ``ConflictError`` directing the
+    caller to branch off the tag instead. A ``draft``/``in_review`` record is
+    still live and passes through. This is the record-level immutability seam —
+    the tag's *tree* is already immutable structurally (no write path can land
+    on a tag; you can only ``branch_create(from_ref=tag)``)."""
+    status = record.get("status")
+    if status in ("released", "superseded"):
+        rev = record.get("rev")
+        raise ConflictError(
+            f"release {rev} is {status}; a finalized release is immutable — "
+            "branch off its tag (branch_create from_ref=release/<rev>) to "
+            "evolve it",
+            {"rev": rev, "status": status})
+
+
+def _release_approvals(proposal: dict, policy: dict) -> list[dict]:
+    """The approve reviews that count for this proposal, as
+    ``[{principal, ts}]`` (principal = the reviewer's ``actor``, ts = the
+    review's own stamp — no new wall-clock).
+
+    Mirrors :meth:`ProposalManager._approvals_gate` exactly: the *latest*
+    counted verdict per actor decides (a later ``request_changes`` retracts an
+    earlier approve; a ``comment`` never does), and — unless the policy allows
+    self-approval — the author's own approve does not count. Sorted by
+    ``(ts, principal)`` so the recorded list is deterministic."""
+    latest: dict[str, dict] = {}
+    for review in proposal.get("reviews") or []:
+        actor = review.get("actor")
+        if actor and review.get("verdict") in _COUNTED_VERDICTS:
+            latest[actor] = review
+    self_approve = bool(policy.get("self_approve"))
+    author = proposal.get("author")
+    approvals = [
+        {"principal": actor, "ts": review.get("ts")}
+        for actor, review in latest.items()
+        if review.get("verdict") == "approve"
+        and (self_approve or actor != author)
+    ]
+    approvals.sort(key=lambda a: (a.get("ts") or "", a.get("principal") or ""))
+    return approvals
+
+
+def _prior_released_rev(releases: dict, rev: str) -> str | None:
+    """The immediately-prior rev (``_inc_rev(prior) == rev``) if it exists and
+    is ``released`` — the one this finalize supersedes. ``None`` for rev ``A``
+    or when the predecessor was never released."""
+    for name, record in (releases or {}).items():
+        if _is_rev(name) and isinstance(record, dict) \
+                and _inc_rev(name) == rev \
+                and record.get("status") == "released":
+            return name
+    return None
+
+
+def release_finalize(service, project: str, rev: str) -> dict:
+    """Finalize an ``in_review`` release: tag it, register the referrer,
+    transition the record to ``released`` and supersede the prior rev.
+
+    **Idempotent.** A second call on an already-``released`` rev returns the
+    same record and creates nothing. A ``draft`` (the gate never passed) is a
+    ``ValidationError``; a ``superseded`` (or any other attempt to rewrite a
+    finalized record) is a ``ConflictError`` (FR12).
+
+    **Approval-gated.** The release proposal must be approved — the same
+    approval rule the merge gate uses (:meth:`ProposalManager._approvals_gate`):
+    at least one counted ``approve`` review that the policy accepts (the
+    author's own does not count unless ``self_approve``). The approving
+    principals are copied onto the record as ``approvals: [{principal, ts}]``.
+
+    Zero kernel calls: this is git (``branches.tag``) + manifest only. The tag
+    is ``release/<rev>`` **lower-cased** because a git ref is lowercase by the
+    project's ``valid_ref_name`` rule — the record's ``tag`` field carries that
+    exact, resolvable name.
+    """
+    branches = _branches(service)
+    record = _releases_map(service, project).get(rev)
+    if not isinstance(record, dict):
+        raise NotFoundError(
+            f"release {rev!r} not found in project {project!r}",
+            {"project": project, "rev": rev})
+
+    status = record.get("status")
+    if status == "released":
+        return copy.deepcopy(record)          # idempotent no-op
+    _ensure_mutable(record)                    # superseded / terminal -> refuse
+    if status != "in_review":
+        raise ValidationError(
+            f"release {rev} cannot be finalized from {status!r}: its gate has "
+            "not passed (a red gate leaves the release draft — fix the failing "
+            "checks or record a waiver, then cut it again)",
+            {"project": project, "rev": rev, "status": status})
+
+    # The release proposal must be approved.
+    pid = record.get("proposal")
+    proposal = service.proposals.store.load(project, pid)
+    policy = service.proposals.store.policy(project)
+    approvals = _release_approvals(proposal, policy)
+    if not approvals:
+        raise ConflictError(
+            f"release proposal {pid} is not approved; a release is finalized "
+            "only after its proposal is approved (proposal_review verdict "
+            "'approve' by a reviewer other than the author)",
+            {"project": project, "rev": rev, "proposal": pid})
+
+    # Create the immutable tag at the approved head, then register the referrer.
+    tag_name = f"release/{rev.lower()}"
+    branches.tag(project, tag_name, message=record.get("notes")
+                 or record.get("name") or tag_name)
+    branches.add_referrer(project, tag_name, {"release": rev})
+
+    # Transition the record (RMW the live branch manifest) and supersede the
+    # immediately-prior released rev.
+    manifest = service.store.manifest(project)
+    releases = manifest.get("releases")
+    releases = releases if isinstance(releases, dict) else {}
+    current = releases.get(rev)
+    if not isinstance(current, dict):
+        raise NotFoundError(
+            f"release {rev!r} not found in project {project!r}",
+            {"project": project, "rev": rev})
+    _ensure_mutable(current)                   # re-check under the RMW
+    current["status"] = "released"
+    current["tag"] = tag_name
+    current["approvals"] = approvals
+    prior = _prior_released_rev(releases, rev)
+    if prior is not None:
+        releases[prior]["status"] = "superseded"
+    manifest["releases"] = releases
+    service.store.save_manifest(project, manifest)
+
+    # project_changed keeps the manifest write committed (clean tree); the
+    # release_changed event is the UI/agent signal for the transition.
+    service.bus.publish({"type": "project_changed", "project": project,
+                         "reason": "release"})
+    service.bus.publish({"type": "release_changed", "project": project,
+                         "rev": rev, "status": "released"})
+    return copy.deepcopy(current)
 
 
 # ------------------------------------------------------------- the gate report
