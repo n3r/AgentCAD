@@ -161,7 +161,16 @@ def _link_problem(key: str, value, base: Path) -> str | None:
     target = base / Path(*parts)
     try:
         contained = target.resolve().is_relative_to(base.resolve())
-    except OSError:                       # a broken symlink loop, a dead mount
+    except (OSError, RuntimeError):
+        # `Path.resolve()` answers two different exception types for the two
+        # ways a path can be unresolvable, and both must land here or this
+        # module breaks its own "never raises for a bad row" contract: a dead
+        # mount or an unreadable parent is an `OSError`, while a symlink
+        # **cycle** is a bare `RuntimeError("Symlink loop from ...")` on
+        # CPython 3.12. That `RuntimeError` used to escape `row_problems` ->
+        # `load_rows` -> `publish` and surface at the CLI as exit 2 with a raw
+        # traceback string, when it is exactly an exit-1 disclosure problem:
+        # the link cannot be fetched.
         contained = False
     if not contained:
         return (f"{key} {value!r} resolves outside the row directory; a link "

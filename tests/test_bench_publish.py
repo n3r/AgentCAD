@@ -11,6 +11,7 @@ import pytest
 
 from agentcad.bench import publish as bench_publish
 from agentcad.bench._json import write_json
+from agentcad.core.model import ValidationError
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -260,6 +261,30 @@ def test_a_symlink_out_of_the_row_directory_is_refused(tmp_path):
         bench_publish.publish(board, tmp_path / "out.html", title="T",
                               expected_tasks=TASKS)
     assert "submission" in str(exc.value)
+
+
+def test_a_symlink_loop_inside_the_row_directory_is_a_problem_not_a_raise(
+        tmp_path):
+    """`Path.resolve()` answers a bare `RuntimeError` on a cycle, not `OSError`.
+
+    It must still land as an exit-1 disclosure problem: `load_rows` never
+    raises for a bad row, and `publish` writes nothing.
+    """
+    board = _board(tmp_path, [_row("builtin", submission="a")])
+    row_dir = board / "rows" / "builtin"
+    (row_dir / "a").symlink_to(row_dir / "b")
+    (row_dir / "b").symlink_to(row_dir / "a")
+
+    rows, problems = bench_publish.load_rows(board, TASKS)
+    assert rows == []
+    assert any("builtin" in problem and "submission" in problem
+               for problem in problems)
+
+    with pytest.raises(ValidationError) as exc:
+        bench_publish.publish(board, tmp_path / "out.html", title="T",
+                              expected_tasks=TASKS)
+    assert "submission" in str(exc.value)
+    assert not (tmp_path / "out.html").exists()
 
 
 def test_load_rows_reports_problems_instead_of_raising(tmp_path):

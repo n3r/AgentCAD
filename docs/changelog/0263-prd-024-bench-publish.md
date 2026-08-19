@@ -55,6 +55,12 @@ reading, ordered so that republishing the same input produces the same bytes.
     `target.resolve().is_relative_to(base.resolve())`, which catches what the
     text cannot see — a symlink inside the row directory pointing out of it,
     and the Windows spellings `PurePosixPath` reads as one innocent component.
+    Both of `Path.resolve()`'s failure types are caught — a dead mount or an
+    unreadable parent is an `OSError`, but a symlink **cycle** is a bare
+    `RuntimeError("Symlink loop from ...")` on CPython 3.12, and letting it
+    escape would break this module's own "never raises for a bad row" contract
+    (it would surface as exit 2 with a raw traceback string instead of the
+    exit-1 disclosure problem it is).
     Every refusal message says "relative to the row directory
     (<leaderboard>/rows/<row-id>/)" so a submitter who followed §12 literally
     sees the narrowing instead of guessing at it.
@@ -86,12 +92,13 @@ reading, ordered so that republishing the same input produces the same bytes.
 ## Files
 - `agentcad/bench/publish.py` — new: the five rules, the loader, the renderer,
   `publish`.
-- `tests/test_bench_publish.py` — new: 31 tests (self-contained page, the
+- `tests/test_bench_publish.py` — new: 32 tests (self-contained page, the
   measured/not-measured statement, byte-identical republish, ordering, escaping,
   the six parametrized rule rejections, partial run by absence and by
   `missing: true`, report schema mismatch, absent report, relative-link
   existence and containment, four refused link forms, a symlink out of the row
-  directory, a degenerate `https://`, an `id` disagreeing with its directory,
+  directory, a symlink **cycle** inside the row directory, a degenerate
+  `https://`, an `id` disagreeing with its directory,
   an unreadable `row.json` becoming a problem rather than a raise, a mixed
   `[good, bad]` board writing nothing at all, `load_rows` returning problems
   instead of raising, the checked-in layout, an absent leaderboard directory,
@@ -119,6 +126,6 @@ reading, ordered so that republishing the same input produces the same bytes.
   the harness lane (exit 2). A handler should branch on the key, not on the
   message text.
 - Targeted test evidence: `uv run pytest -q tests/test_bench_publish.py` →
-  **31 passed**; `uv run ruff check agentcad/bench/publish.py
+  **32 passed**; `uv run ruff check agentcad/bench/publish.py
   tests/test_bench_publish.py` → clean.
 - Full suite: `make test — <orchestrator fills>`.
