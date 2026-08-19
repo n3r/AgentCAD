@@ -32,6 +32,87 @@ from .tools import Tool, schema
 #: more ``build_shape`` in the same call.
 _ROW_TIMEOUT_S = 60.0
 
+#: Per-section allowance. Each section cuts the built shape (a ``b3d.section``
+#: per solid body) in the same pinned worker, so it is geometry work exactly as
+#: a dim-table row is — the timeout scales by it, like ``_ROW_TIMEOUT_S``.
+#: Details are a pure 2D clip of an already-computed projection, so they add
+#: nothing.
+_SECTION_TIMEOUT_S = 30.0
+
+#: The section planes and the views a detail can magnify, named for the caller.
+_SECTION_PLANES = ("xy", "xz", "yz")
+_DETAIL_VIEWS = ("top", "front", "right", "iso")
+
+
+def _is_number(value) -> bool:
+    """A JSON number, excluding ``bool`` (which is an ``int`` in Python)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _validate_sections(sections) -> list:
+    """Validate + normalize the ``sections`` spec (FR6). Each entry names a
+    plane, an ``offset_mm`` and an optional ``label``. A malformed entry raises
+    ``ValidationError`` whose message NAMES the offending index (house
+    contract)."""
+    if not isinstance(sections, list):
+        raise ValidationError("sections must be an array of "
+                              "{plane, offset_mm, label?} objects")
+    out: list = []
+    for i, entry in enumerate(sections):
+        if not isinstance(entry, dict):
+            raise ValidationError(
+                f"section[{i}] must be an object with a plane and an offset_mm")
+        plane = entry.get("plane")
+        if plane not in _SECTION_PLANES:
+            raise ValidationError(
+                f"section[{i}] plane must be one of "
+                f"{', '.join(_SECTION_PLANES)} (got {plane!r})")
+        offset = entry.get("offset_mm", 0.0)
+        if not _is_number(offset):
+            raise ValidationError(
+                f"section[{i}] offset_mm must be a number (got {offset!r})")
+        label = entry.get("label")
+        if label is not None and not isinstance(label, str):
+            raise ValidationError(f"section[{i}] label must be a string")
+        out.append({"plane": plane, "offset_mm": float(offset), "label": label})
+    return out
+
+
+def _validate_details(details) -> list:
+    """Validate + normalize the ``details`` spec (FR7). Each entry names a parent
+    ``view``, a two-element ``center_mm``, a positive ``radius_mm`` and a
+    positive ``scale``. A malformed entry raises ``ValidationError`` naming the
+    offending index."""
+    if not isinstance(details, list):
+        raise ValidationError("details must be an array of "
+                              "{view, center_mm, radius_mm, scale} objects")
+    out: list = []
+    for i, entry in enumerate(details):
+        if not isinstance(entry, dict):
+            raise ValidationError(f"detail[{i}] must be an object")
+        view = entry.get("view")
+        if view not in _DETAIL_VIEWS:
+            raise ValidationError(
+                f"detail[{i}] view must be one of {', '.join(_DETAIL_VIEWS)} "
+                f"(got {view!r})")
+        center = entry.get("center_mm")
+        if (not isinstance(center, (list, tuple)) or len(center) != 2
+                or not all(_is_number(c) for c in center)):
+            raise ValidationError(
+                f"detail[{i}] center_mm must be a two-element [x, y] of numbers")
+        radius = entry.get("radius_mm")
+        if not _is_number(radius) or radius <= 0:
+            raise ValidationError(
+                f"detail[{i}] radius_mm must be a positive number")
+        scale = entry.get("scale")
+        if not _is_number(scale) or scale <= 0:
+            raise ValidationError(
+                f"detail[{i}] scale must be a positive number")
+        out.append({"view": view,
+                    "center_mm": [float(center[0]), float(center[1])],
+                    "radius_mm": float(radius), "scale": float(scale)})
+    return out
+
 #: The whitelisted title-block fields (Decision 4). Strings only, length-capped,
 #: control chars refused; an empty string clears a field; unknown keys refused.
 _DRAWING_FIELDS = ("company", "author", "project_code", "approved_by", "notes")
@@ -147,9 +228,18 @@ def register(registry, service) -> None:
                          format: str = "svg", config: str | None = None,
                          dim_table: bool = False, sheet: str = DEFAULT_SHEET,
                          scale: float | None = None,
-                         version: dict | None = None) -> dict:
+                         version: dict | None = None,
+                         sections: list | None = None,
+                         details: list | None = None) -> dict:
         if format not in ("svg", "dxf", "pdf"):
             raise ValidationError("drawing format must be svg, pdf, or dxf")
+        # Section/detail specs are validated SERVICE-side (naming a bad entry's
+        # index); the geometry itself happens in the kernel handler, which
+        # already holds the built shape — no second kernel round-trip. DXF
+        # renders neither (it is geometry exchange, no sheet wrapper), so the
+        # specs are dropped for it exactly as PMI and the dim-table are.
+        clean_sections = _validate_sections(sections) if sections else []
+        clean_details = _validate_details(details) if details else []
         if sheet not in SHEETS:
             raise ValidationError(
                 f"unknown sheet {sheet!r}; one of: {', '.join(sorted(SHEETS))}",
@@ -202,7 +292,17 @@ def register(registry, service) -> None:
         }
         if scale is not None:
             request["scale"] = float(scale)
+        # Sections/details only reach the (SVG/PDF) sheet path; DXF ignores them.
+        if format in ("svg", "pdf"):
+            if clean_sections:
+                request["sections"] = clean_sections
+            if clean_details:
+                request["details"] = clean_details
         timeout = 120.0
+        # Each section is one build-shaped kernel op per solid body — scale the
+        # request timeout by it, the same reasoning as the dim-table rows below.
+        if format in ("svg", "pdf"):
+            timeout += _SECTION_TIMEOUT_S * len(clean_sections)
         declared = record.configs or {}
         # Two ways this is a question rather than a fault, and neither costs
         # the kernel anything: a part with no configurations (the request
@@ -282,6 +382,15 @@ def register(registry, service) -> None:
                             "Advanced: pin the title-block version identity "
                             "{ref, date} instead of deriving it from git — for "
                             "deterministic regeneration (geometry-CI)"},
+                "sections": {"type": "array", "description":
+                             "Section views (SVG/PDF): a list of {plane: "
+                             "xy|xz|yz, offset_mm: number, label?: string}. Each "
+                             "cuts the shape and draws a hatched A-A, B-B, … view "
+                             "with cutting-plane arrows on the parent view"},
+                "details": {"type": "array", "description":
+                            "Detail views (SVG/PDF): a list of {view, center_mm: "
+                            "[x, y], radius_mm, scale}. Draws a labelled circle "
+                            "on the parent view and a magnified A (n:1) view"},
             },
             ["project", "part_id"],
         ),

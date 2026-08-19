@@ -98,6 +98,7 @@ import build123d as b3d
 
 from ._draw_primitives import (
     Circle,
+    Hatch,
     Line,
     Polyline,
     Rect,
@@ -412,6 +413,169 @@ def _view_bounds(edges):
 def _detect_circles(vis_edges):
     return [(e.arc_center, e.radius) for e in vis_edges
             if e.geom_type.name == "CIRCLE" and e.is_closed]
+
+
+# ---- section views (FR6) ---------------------------------------------------
+#
+# The section geometry is cut HERE, in the worker that already holds the built
+# shape (Decision 10) — no second kernel round-trip and `affinity=part_id` is
+# trivially satisfied. `analysis._section` computes only area/n_faces and throws
+# the geometry away; this keeps it. Every 2D coordinate is a plane-LOCAL
+# coordinate (`Plane.to_local_coords`), so the loops are already the section's
+# own 2D frame, and every wire is traced in connectivity order
+# (`wire.order_edges()`) with a fixed sampling density and then the whole result
+# is sorted by a geometric key — nothing depends on OCCT's internal iteration
+# order, which is the FR12 determinism requirement.
+
+#: The three orthogonal section planes, keyed by the lowercase spec name. A
+#: positive `offset_mm` moves the cut along the plane's own normal
+#: (`Plane.offset`): +Z for xy, -Y for xz, +X for yz.
+_SECTION_PLANES = {"xy": "XY", "xz": "XZ", "yz": "YZ"}
+
+#: The standard view each cut is seen edge-on in, so the cutting-plane line and
+#: arrows land on a view that actually shows where A-A is taken. Deterministic;
+#: falls back to the first rendered view when the preferred one is absent.
+_SECTION_PARENT = {"xy": "front", "xz": "top", "yz": "front"}
+
+
+def _letter(i: int) -> str:
+    """0->'A', 1->'B', ... 25->'Z', 26->'AA' — the section/detail label run."""
+    s = ""
+    i += 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def _wire_loop_2d(wire, plane) -> tuple:
+    """One section wire as a closed ring of plane-local (x, y) points.
+
+    Traced in connectivity order via ``order_edges`` (a line contributes its
+    start vertex; a curved edge is sampled at a fixed density) so the ring never
+    self-intersects and never depends on OCCT vertex order. The final point is
+    dropped — the ring is closed by the consumer — so no vertex is duplicated.
+    """
+    pts: list = []
+    for edge in wire.order_edges():
+        if edge.geom_type.name == "LINE":
+            p = plane.to_local_coords(edge.position_at(0.0))
+            pts.append((float(p.X), float(p.Y)))
+        else:
+            n = max(2, min(256, int(edge.length / 0.4)))
+            for i in range(n):
+                p = plane.to_local_coords(edge.position_at(i / n))
+                pts.append((float(p.X), float(p.Y)))
+    return tuple(pts)
+
+
+def _loop_key(loop) -> tuple:
+    """A stable geometric sort key for a loop (min-x, min-y, size, count)."""
+    if not loop:
+        return (0.0, 0.0, 0.0, 0.0, 0)
+    xs = [x for x, _ in loop]
+    ys = [y for _, y in loop]
+    return (round(min(xs), 6), round(min(ys), 6),
+            round(max(xs), 6), round(max(ys), 6), len(loop))
+
+
+def _section_bodies(part, plane_name: str, offset_mm: float) -> list:
+    """Cut `part` at the plane+offset; per-solid closed 2D loops, or ``[]``.
+
+    Each solid body is sectioned **separately** (the design's per-body rule, so a
+    multi-solid part hatches per body) and every section face contributes its
+    outer wire plus any inner wires (a bore leaves an even-odd hole). Bodies with
+    no intersection are dropped; a completely-missed plane yields ``[]``. Loops
+    within a body and the bodies themselves are sorted by ``_loop_key`` so the
+    output is order-stable across runs.
+    """
+    plane = getattr(b3d.Plane, _SECTION_PLANES[plane_name]).offset(float(offset_mm))
+    bodies: list = []
+    for solid in (part.solids() or [part]):
+        sec = b3d.section(solid, section_by=plane)
+        loops: list = []
+        for face in sec.faces():
+            for wire in (face.outer_wire(), *face.inner_wires()):
+                loop = _wire_loop_2d(wire, plane)
+                if len(loop) >= 3:
+                    loops.append(loop)
+        if loops:
+            loops.sort(key=_loop_key)
+            bodies.append(loops)
+    bodies.sort(key=lambda ls: _loop_key(ls[0]))
+    return bodies
+
+
+def _bbox2d(loops):
+    """(x0, y0, x1, y1) over every point in every loop, or a unit box."""
+    xs = [x for loop in loops for x, _ in loop]
+    ys = [y for loop in loops for _, y in loop]
+    if not xs:
+        return (0.0, 0.0, 1.0, 1.0)
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _extra_slots(va, n: int) -> list:
+    """`n` view slots in a row along the bottom of the view area (sections then
+    details land here beneath the standard views). Returns (cx, cy, w, h)."""
+    n = max(1, n)
+    cell_w = va.w / n
+    cell_h = va.h * 0.30
+    cy = va.y + va.h - cell_h * 0.5
+    return [(va.x + cell_w * (k + 0.5), cy, cell_w, cell_h) for k in range(n)]
+
+
+def _cutting_marks(placement, plane_name, offset_mm, label):
+    """Cutting-plane line + two arrows + the section letter on the parent view.
+
+    Horizontal for an xy/xz cut, vertical for a yz cut; positioned at the cut's
+    projected coordinate in the parent view (front: projX=worldX, projY=worldZ;
+    top: projY=worldY). A cut off the geometry still draws — a reader sees the
+    plane leaving the part."""
+    ox, oy, scale, (bx0, by0, bx1, by1) = placement
+    x0, x1 = ox + scale * bx0, ox + scale * bx1
+    y_top, y_bot = oy - scale * by1, oy - scale * by0
+    els: list = []
+    if plane_name == "yz":                      # vertical line at worldX=offset
+        sx = ox + scale * float(offset_mm)
+        a, b = (sx, y_top - 8.0), (sx, y_bot + 8.0)
+        els.append(Line(a[0], a[1], b[0], b[1], Style.CHAIN))
+        els.append(_arrow(a, (1.0, 0.0)))
+        els.append(_arrow(b, (1.0, 0.0)))
+        els.append(Text(a[0], a[1] - 2.0, label, Style.TEXT, size=4))
+        els.append(Text(b[0], b[1] + 5.0, label, Style.TEXT, size=4))
+    else:                                       # horizontal line
+        v = float(offset_mm) if plane_name == "xy" else -float(offset_mm)
+        sy = oy - scale * v
+        a, b = (x0 - 8.0, sy), (x1 + 8.0, sy)
+        els.append(Line(a[0], a[1], b[0], b[1], Style.CHAIN))
+        els.append(_arrow(a, (0.0, 1.0)))
+        els.append(_arrow(b, (0.0, 1.0)))
+        els.append(Text(a[0] - 3.0, sy + 1.0, label, Style.TEXT, size=4))
+        els.append(Text(b[0] + 3.0, sy + 1.0, label, Style.TEXT, size=4))
+    return els
+
+
+def _clip_edges_to_circle(edges, cx, cy, radius):
+    """Sub-polylines of each projected edge that fall inside the detail circle
+    (projected 2D coords). A pure 2D op — reuses the parent view's projection, no
+    kernel rebuild (FR7)."""
+    runs: list = []
+    for e in edges:
+        n = max(2, min(256, int(e.length / 0.4)))
+        cur: list = []
+        for i in range(n):
+            p = e.position_at(i / (n - 1))
+            if math.hypot(float(p.X) - cx, float(p.Y) - cy) <= radius:
+                cur.append((float(p.X), float(p.Y)))
+            elif len(cur) >= 2:
+                runs.append(cur)
+                cur = []
+            else:
+                cur = []
+        if len(cur) >= 2:
+            runs.append(cur)
+    return runs
 
 
 # ---- hole records -> callouts ----------------------------------------------
@@ -807,7 +971,8 @@ def _title_block(dl, template, scale_str, title, fallback_label):
 
 def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
                         dim_table=None, sheet=DEFAULT_SHEET,
-                        scale_override=None, title=None):
+                        scale_override=None, title=None, sections=(),
+                        details=()):
     """Build the ordered display list for one sheet — the SINGLE composition
     both backends render (Slice 2, Decision 1/7). Returns
     ``(display_list, width_mm, height_mm, meta)``; ``detected_out`` is filled in
@@ -1197,29 +1362,117 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
         }
         detected_out["pmi_warnings"] = pmi_warnings
 
-    return dl, W, H, {"scale": scale_str, "views": order, "warnings": warnings}
+    # Section & detail views (FR6/FR7). Both land in a row of slots beneath the
+    # standard views; sections cut the built shape here (no second kernel call),
+    # details clip the parent view's already-computed projection (no rebuild).
+    section_specs = list(sections or [])
+    detail_specs = list(details or [])
+    slots = _extra_slots(va, len(section_specs) + len(detail_specs))
+    section_descs: list = []
+    detail_descs: list = []
+    slot_i = 0
+
+    for s_i, spec in enumerate(section_specs):
+        label = spec.get("label") or f"{_letter(s_i)}-{_letter(s_i)}"
+        plane_name = spec["plane"]
+        offset_mm = float(spec.get("offset_mm", 0.0))
+        bodies = _section_bodies(part, plane_name, offset_mm)
+        cx, cy, cell_w, cell_h = slots[slot_i]
+        slot_i += 1
+        # Cutting-plane marks on the parent view (whichever is rendered).
+        parent = _SECTION_PARENT[plane_name]
+        if parent not in placements:
+            parent = order[0] if order else None
+        if parent is not None:
+            dl.extend(_cutting_marks(placements[parent], plane_name,
+                                     offset_mm, label))
+        if not bodies:
+            # A plane that misses the solid: a warning + an empty, labelled
+            # section view — never a silent blank sheet.
+            warnings.append(f"section {label}: plane misses the solid")
+            dl.append(Text(cx, cy, f"{label} (empty)", Style.TEXT, size=4))
+            section_descs.append({"label": label, "plane": plane_name,
+                                  "offset_mm": offset_mm, "bodies": 0,
+                                  "empty": True})
+            continue
+        x0, y0, x1, y1 = _bbox2d([p for body in bodies for p in body])
+        ox = cx - scale * (x0 + x1) / 2.0
+        oy = cy + scale * (y0 + y1) / 2.0
+        for b_i, body in enumerate(bodies):
+            sheet_loops = tuple(
+                tuple((ox + scale * lx, oy - scale * ly) for lx, ly in loop)
+                for loop in body)
+            for sl in sheet_loops:
+                dl.append(Polyline(sl, style=Style.VIS, closed=True))
+            # Alternating hatch angle across bodies: 45, 135, 45, ...
+            angle = 45.0 if b_i % 2 == 0 else 135.0
+            dl.append(Hatch(sheet_loops, angle=angle, pitch=2.0))
+        dl.append(Text(cx, oy - scale * y0 + 6.0, label, Style.TEXT, size=4))
+        section_descs.append({"label": label, "plane": plane_name,
+                              "offset_mm": offset_mm, "bodies": len(bodies)})
+
+    for d_i, spec in enumerate(detail_specs):
+        label = _letter(d_i)
+        view = spec["view"]
+        cxm, cym = spec["center_mm"]
+        radius = float(spec["radius_mm"])
+        dscale = float(spec["scale"])
+        cx, cy, cell_w, cell_h = slots[slot_i]
+        slot_i += 1
+        if view not in placements or view not in proj:
+            warnings.append(
+                f"detail {label}: view {view!r} is not rendered, so it has no "
+                f"magnified view")
+            detail_descs.append({"label": label, "view": view,
+                                 "center_mm": [cxm, cym], "radius_mm": radius,
+                                 "scale": dscale, "clipped": False})
+            continue
+        ox_p, oy_p, sc_p, _bb = placements[view]
+        # The labelled circle on the parent view (where the detail is taken).
+        dl.append(Circle(ox_p + sc_p * cxm, oy_p - sc_p * cym, sc_p * radius,
+                         Style.THIN))
+        dl.append(Text(ox_p + sc_p * cxm, oy_p - sc_p * cym - sc_p * radius - 2.0,
+                       label, Style.TEXT, size=4))
+        # The magnified view: clip the parent projection to the circle, scale up.
+        vis, hid = proj[view]
+        for edges, style in ((hid, Style.HID), (vis, Style.VIS)):
+            if view == "iso" and style is Style.HID:
+                continue
+            for run in _clip_edges_to_circle(edges, cxm, cym, radius):
+                pts = tuple((cx + dscale * (px - cxm), cy - dscale * (py - cym))
+                            for px, py in run)
+                dl.append(Polyline(pts, style))
+        dl.append(Circle(cx, cy, dscale * radius, Style.THIN))
+        dl.append(Text(cx, cy + dscale * radius + 6.0,
+                       f"{label} ({scale_label(dscale)})", Style.TEXT, size=4))
+        detail_descs.append({"label": label, "view": view,
+                             "center_mm": [cxm, cym], "radius_mm": radius,
+                             "scale": dscale, "clipped": True})
+
+    return dl, W, H, {"scale": scale_str, "views": order, "warnings": warnings,
+                      "sections": section_descs, "details": detail_descs}
 
 
 def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
                dim_table=None, sheet=DEFAULT_SHEET, scale_override=None,
-               title=None):
+               title=None, sections=(), details=()):
     """Render the sheet to an SVG string (thin wrapper over the shared list)."""
     dl, W, H, meta = _build_display_list(
         part, views, detected_out, pmi=pmi, hole_records=hole_records,
         dim_table=dim_table, sheet=sheet, scale_override=scale_override,
-        title=title)
+        title=title, sections=sections, details=details)
     return SvgBackend().render(dl, W, H), meta
 
 
 def _build_pdf(part, views, detected_out, pmi=None, hole_records=(),
                dim_table=None, sheet=DEFAULT_SHEET, scale_override=None,
-               title=None):
+               title=None, sections=(), details=()):
     """Render the sheet to PDF bytes (the SAME list, a different backend —
     FR11). Deterministic: see :mod:`agentcad.kernel.handlers._pdf`."""
     dl, W, H, meta = _build_display_list(
         part, views, detected_out, pmi=pmi, hole_records=hole_records,
         dim_table=dim_table, sheet=sheet, scale_override=scale_override,
-        title=title)
+        title=title, sections=sections, details=details)
     return PdfBackend().render(dl, W, H), meta
 
 
@@ -1271,7 +1524,9 @@ def register(toolbox: dict):
                 shape, views, detected, pmi=params.get("pmi"),
                 hole_records=_records_on(shape), dim_table=measured,
                 sheet=sheet, scale_override=params.get("scale"),
-                title=params.get("title"))
+                title=params.get("title"),
+                sections=params.get("sections") or (),
+                details=params.get("details") or ())
             # SVG is a str, PDF is already bytes.
             atomic_write(out_path,
                          payload.encode() if isinstance(payload, str)
@@ -1284,11 +1539,13 @@ def register(toolbox: dict):
             raise WorkerError(ERROR_CONTRACT,
                               f"unknown drawing format {out_format!r}")
         import os
-        # FR13 machine-readable result skeleton. `sections` is filled in Slice
-        # 3; `detected` keeps pmi_rendered/hole_groups/dim_table as before.
+        # FR13 machine-readable result skeleton. `sections`/`details` are filled
+        # from the composition (Slice 3); DXF renders neither, so they stay empty
+        # for that format. `detected` keeps pmi_rendered/hole_groups/dim_table.
         return {"path": out_path, "size_bytes": os.path.getsize(out_path),
                 "sheet": sheet, "scale": meta["scale"],
-                "views": meta["views"], "sections": [],
+                "views": meta["views"], "sections": meta.get("sections", []),
+                "details": meta.get("details", []),
                 "detected": detected, "warnings": meta["warnings"]}
 
     return {"drawing": drawing}

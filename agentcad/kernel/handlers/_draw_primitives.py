@@ -25,6 +25,7 @@ a trailing dot and never emits ``-0``.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
 from enum import Enum
@@ -54,6 +55,58 @@ def fmt(x: float) -> str:
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return s or "0"
+
+
+def hatch_line_segments(loops, angle: float, pitch: float) -> list:
+    """Parallel section-hatch line segments clipping ``loops`` (Slice 3).
+
+    Standard scanline fill with the **even-odd** rule, so a body's inner loops
+    (bores) leave unhatched holes. The frame is rotated by ``-angle`` so the
+    hatch lines are horizontal in ``(u, v)`` space; scanlines sit at integer
+    multiples of ``pitch`` (a **fixed anchor at 0**, so the same geometry gives
+    the same lines every run — the FR12 determinism keystone), and each
+    scanline's crossings are paired left-to-right into segments. Endpoints are
+    rotated back to sheet space. ``loops`` is a sequence of point tuples;
+    degenerate loops (< 3 points) are ignored, and an all-empty input yields no
+    lines rather than raising.
+
+    Returns a list of ``(x1, y1, x2, y2)`` in sheet millimetres; both backends
+    render them identically, so hatching is one shared, deterministic geometry.
+    """
+    clean = [list(loop) for loop in loops if loop and len(loop) >= 3]
+    if not clean or pitch <= 0:
+        return []
+    a = math.radians(angle)
+    ca, sa = math.cos(a), math.sin(a)
+    rloops = [[(x * ca + y * sa, -x * sa + y * ca) for (x, y) in loop]
+              for loop in clean]
+    vs = [v for loop in rloops for (_u, v) in loop]
+    vmin, vmax = min(vs), max(vs)
+    segs: list = []
+    k = math.ceil(vmin / pitch)
+    kmax = math.floor(vmax / pitch)
+    while k <= kmax:
+        v = k * pitch
+        xs: list[float] = []
+        for loop in rloops:
+            n = len(loop)
+            for i in range(n):
+                u1, w1 = loop[i]
+                u2, w2 = loop[(i + 1) % n]
+                if w1 == w2:
+                    continue
+                if (w1 <= v < w2) or (w2 <= v < w1):
+                    t = (v - w1) / (w2 - w1)
+                    xs.append(u1 + t * (u2 - u1))
+        xs.sort()
+        for i in range(0, len(xs) - 1, 2):
+            ua, ub = xs[i], xs[i + 1]
+            if ub - ua < 1e-9:
+                continue
+            segs.append((ua * ca - v * sa, ua * sa + v * ca,
+                         ub * ca - v * sa, ub * sa + v * ca))
+        k += 1
+    return segs
 
 
 class Style(Enum):
@@ -271,14 +324,14 @@ class SvgBackend:
                 f'{_esc(p.s)}</text>')
 
     def _hatch(self, p: Hatch) -> str:
-        # No producer this slice; render loops as thin outlines so a stray
-        # Hatch is at least visible rather than dropped.
-        out = []
-        for loop in p.loops:
-            pts = " ".join(f"{fmt(x)} {fmt(y)}" for x, y in loop)
-            if pts:
-                out.append(f'<path d="M {pts} Z" {_stroke_attrs(p.style)} '
-                           f'fill="none"/>')
+        # Section hatching (Slice 3): parallel fill lines clipped to the loops
+        # (even-odd), computed by the shared deterministic helper so the SVG and
+        # PDF backends draw the identical geometry.
+        attrs = _stroke_attrs(p.style)
+        out = [f'<line x1="{fmt(x1)}" y1="{fmt(y1)}" x2="{fmt(x2)}" '
+               f'y2="{fmt(y2)}" {attrs} fill="none"/>'
+               for (x1, y1, x2, y2)
+               in hatch_line_segments(p.loops, p.angle, p.pitch)]
         return "".join(out) if out else f"<!-- hatch {fmt(p.angle)} -->"
 
     def _rect(self, p: Rect) -> str:

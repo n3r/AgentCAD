@@ -56,6 +56,7 @@ from ._draw_primitives import (
     Style,
     Text,
     fmt,
+    hatch_line_segments,
 )
 
 #: Millimetres → PostScript points. 1 in = 25.4 mm = 72 pt.
@@ -263,18 +264,16 @@ class PdfBackend:
         return "\n".join(ops)
 
     def _hatch(self, p: Hatch) -> str:
-        # No producer emits Hatch this slice; mirror SvgBackend's fallback and
-        # outline each loop so a stray Hatch is visible rather than dropped.
-        out = []
-        for loop in p.loops:
-            pts = list(loop)
-            if not pts:
-                continue
-            path = f"{self._p(*pts[0])} m " + " ".join(
-                f"{self._p(x, y)} l" for x, y in pts[1:])
-            out.append("\n".join(["q", *_stroke_setup(p.style),
-                                  path + " h S", "Q"]))
-        return "\n".join(out)
+        # Section hatching (Slice 3): the SAME parallel fill lines the SVG
+        # backend draws, from the shared deterministic helper, as PDF stroke ops.
+        segs = hatch_line_segments(p.loops, p.angle, p.pitch)
+        if not segs:
+            return ""
+        ops = ["q", *_stroke_setup(p.style)]
+        for x1, y1, x2, y2 in segs:
+            ops.append(f"{self._p(x1, y1)} m {self._p(x2, y2)} l S")
+        ops.append("Q")
+        return "\n".join(ops)
 
     def _raw(self, p: Raw) -> str:
         # A verbatim SVG fragment cannot be rendered to PDF. Slice 2 converts
