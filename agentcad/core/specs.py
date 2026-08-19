@@ -1029,16 +1029,20 @@ class SpecRunner:
     def _youngs_mpa(self, proj: str, material_id: str) -> float | None:
         """The part material's Young's modulus, when the catalog has one —
         ``fem_modal``'s convention, minus its hard error: a spec that cannot
-        find E should still measure, with the solver's own default."""
-        try:
-            resolve = getattr(self.service.materials, "resolve", None)
-            if callable(resolve):
-                material = resolve(proj, material_id)
-            else:
-                from .materials import get_material
+        find E should still measure, with the solver's own default.
 
-                material = get_material(material_id)
-            return None if material.E_gpa is None else material.E_gpa * 1000.0
+        Read through the FEM tools' own resolver at **20 °C** (PRD-028 FR4), so
+        the key below is the modulus the solver would consume. A point-only
+        material is unaffected (``Property.at`` ignores the temperature without
+        a table), and a material whose E *table* moves away from 20 °C leaves
+        the memo alone — which is right: ``_eval_fem`` sends no temperature.
+        """
+        try:
+            from .tools_analysis import resolve_property  # deferred: tool pack
+
+            entry = resolve_property(self.service, proj, material_id, "E_gpa",
+                                     20.0)
+            return None if entry is None else entry["value"] * 1000.0
         except Exception:  # noqa: BLE001 — a missing material is not this
             return None    #                check's error to raise
 

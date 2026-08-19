@@ -1,0 +1,131 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 140.05,
+      "metric": "bbox_x_mm",
+      "min": 139.95,
+      "name": "flange_bbox_x",
+      "part": "flange"
+    },
+    {
+      "max": 140.05,
+      "metric": "bbox_y_mm",
+      "min": 139.95,
+      "name": "flange_bbox_y",
+      "part": "flange"
+    },
+    {
+      "max": 14.05,
+      "metric": "bbox_z_mm",
+      "min": 13.95,
+      "name": "flange_bbox_z",
+      "part": "flange"
+    },
+    {
+      "max": 1002.576435,
+      "metric": "mass_g",
+      "min": 982.723436,
+      "name": "flange_mass",
+      "part": "flange"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "flange_solids",
+      "part": "flange"
+    },
+    {
+      "max": 125322.054361,
+      "metric": "volume_mm3",
+      "min": 122840.429522,
+      "name": "flange_volume",
+      "part": "flange"
+    },
+    {
+      "max": 132.05,
+      "metric": "bbox_x_mm",
+      "min": 131.95,
+      "name": "injector_plate_bbox_x",
+      "part": "injector_plate"
+    },
+    {
+      "max": 132.05,
+      "metric": "bbox_y_mm",
+      "min": 131.95,
+      "name": "injector_plate_bbox_y",
+      "part": "injector_plate"
+    },
+    {
+      "max": 18.05,
+      "metric": "bbox_z_mm",
+      "min": 17.95,
+      "name": "injector_plate_bbox_z",
+      "part": "injector_plate"
+    },
+    {
+      "max": 1325.090924,
+      "metric": "mass_g",
+      "min": 1298.8515,
+      "name": "injector_plate_mass",
+      "part": "injector_plate"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "injector_plate_solids",
+      "part": "injector_plate"
+    },
+    {
+      "max": 165636.365512,
+      "metric": "volume_mm3",
+      "min": 162356.437482,
+      "name": "injector_plate_volume",
+      "part": "injector_plate"
+    },
+    {
+      "max": 86.05,
+      "metric": "bbox_x_mm",
+      "min": 85.95,
+      "name": "nozzle_bbox_x",
+      "part": "nozzle"
+    },
+    {
+      "max": 86.05,
+      "metric": "bbox_y_mm",
+      "min": 85.95,
+      "name": "nozzle_bbox_y",
+      "part": "nozzle"
+    },
+    {
+      "max": 199.237937,
+      "metric": "bbox_z_mm",
+      "min": 199.137937,
+      "name": "nozzle_bbox_z",
+      "part": "nozzle"
+    },
+    {
+      "max": 1088.859171,
+      "metric": "mass_g",
+      "min": 1067.297604,
+      "name": "nozzle_mass",
+      "part": "nozzle"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "nozzle_solids",
+      "part": "nozzle"
+    },
+    {
+      "max": 132949.83778,
+      "metric": "volume_mm3",
+      "min": 130317.167725,
+      "name": "nozzle_volume",
+      "part": "nozzle"
+    }
+  ]
+}

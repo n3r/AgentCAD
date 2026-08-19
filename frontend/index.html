@@ -76,6 +76,8 @@
 
     <button id="market-btn" class="tb-btn" title="Browse the public marketplace catalog">Market</button>
 
+    <button id="materials-btn" class="tb-btn" title="Browse the materials database">Materials</button>
+
     <button id="import-btn" class="tb-btn" title="Import a CAD file (.step / .stp / .brep / .stl)">Import</button>
     <input id="import-input" type="file" accept=".step,.stp,.brep,.stl" hidden>
 
@@ -438,6 +440,64 @@
         </div>
       </header>
       <div id="configs-body" class="cfg-body"></div>
+    </div>
+  </div>
+
+  <!-- The materials database browser (PRD-028 FR7/Decision 10). A MODAL
+       inside the workbench — not a `#market`-style full-page takeover — so
+       assign mode (opened from the inspector's material block Browse…
+       button) keeps the workbench, and the part being assigned to, alive
+       underneath it. Same `.modal-overlay` shape as the other six; the tree/
+       filter bar/table/compare/detail panes are built in JS from the
+       `GET /api/materials` and `GET /api/materials/{id}` payloads. -->
+  <div id="materials-modal" class="modal-overlay hidden">
+    <div class="modal wide" role="dialog" aria-modal="true" aria-label="Materials database">
+      <header class="modal-head">
+        <span id="materials-title" class="modal-title">Materials</span>
+        <div class="modal-actions">
+          <span id="materials-count" class="mat-count"></span>
+          <button id="materials-compare-btn" class="tb-btn hidden" type="button">Compare</button>
+          <button id="materials-close" class="tb-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div class="mat-modal-body">
+        <aside id="materials-tree" class="mat-tree" aria-label="Category tree"></aside>
+        <div class="mat-center">
+          <div id="materials-filters" class="mat-filters">
+            <label class="mat-filter">Min density
+              <input id="mat-f-density-min" type="number" step="any" inputmode="decimal" placeholder="g/cm³">
+            </label>
+            <label class="mat-filter">Max density
+              <input id="mat-f-density-max" type="number" step="any" inputmode="decimal" placeholder="g/cm³">
+            </label>
+            <label class="mat-filter">Min E
+              <input id="mat-f-e-min" type="number" step="any" inputmode="decimal" placeholder="GPa">
+            </label>
+            <label class="mat-filter">Min yield
+              <input id="mat-f-yield-min" type="number" step="any" inputmode="decimal" placeholder="MPa">
+            </label>
+            <label class="mat-filter">Min max service temp
+              <input id="mat-f-temp-min" type="number" step="any" inputmode="decimal" placeholder="°C">
+            </label>
+            <label class="mat-filter">Max cost
+              <input id="mat-f-cost-max" type="number" step="any" inputmode="decimal" placeholder="USD/kg">
+            </label>
+            <div id="mat-f-process" class="mat-chips" role="group" aria-label="Process"></div>
+            <label class="mat-filter">Basis
+              <select id="mat-f-basis">
+                <option value="">any</option>
+                <option value="typical">typical</option>
+                <option value="minimum">minimum</option>
+                <option value="characteristic">characteristic</option>
+              </select>
+            </label>
+            <button id="mat-f-clear" class="tb-btn" type="button">Clear filters</button>
+          </div>
+          <div id="materials-table-wrap" class="mat-table-wrap"></div>
+          <div id="materials-compare" class="mat-compare hidden"></div>
+        </div>
+        <aside id="materials-detail" class="mat-detail" aria-label="Material detail"></aside>
+      </div>
     </div>
   </div>
 

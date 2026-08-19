@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "model_from_drawing/mfd_004_shaft_collar",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "model_from_drawing",
+  "title": "Clamping shaft collar from a three-view drawing",
+  "sets": ["core"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "authored"},
+  "prompt": "prompt.md",
+  "assets": ["assets/drawing.svg"],
+  "starter": null,
+  "target": {"project": "bench_mfd_004_shaft_collar", "parts": ["shaft_collar"]},
+  "budgets": {"wall_s": 600, "turns": 24},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the collar's bottom face lies on Z = 0 and its bore axis is the Z axis, so the part spans Z = 0 to Z = 15; the clamp slit is cut through the +X wall and the pinch-screw hole runs along Y"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {"shaft_collar": "reference/steps/shaft_collar.step"},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": null,
+    "parts": {"shaft_collar": "specs/parts/shaft_collar.py"}
+  },
+  "weights": {
+    "built": 0.15, "valid": 0.10, "specs": 0.10,
+    "geometry": 0.50, "interference": 0.00, "metrics": 0.15
+  }
+}

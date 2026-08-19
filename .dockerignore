@@ -24,3 +24,9 @@ exports/
 tests/
 docs/
 scripts/
+
+# PRD-024: the benchmark task tree is resource data for `agentcad bench`, not
+# runtime payload (it is not in the wheel either), and `out/` is where a bench
+# run's results and transcripts land.
+benchmarks/
+out/

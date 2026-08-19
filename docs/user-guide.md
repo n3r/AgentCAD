@@ -1193,6 +1193,41 @@ later phase.
 > that runs in your kernel with your privileges; the validated badge is a
 > **correctness** gate, not a security boundary, and the listing says so.
 
+## Materials browser
+
+The **Materials** button on the toolbar (next to Market) opens the materials
+database in a modal over the workbench — unlike Market it never navigates
+away, so it can also open in **assign mode** from the inspector's material
+block (its **Browse…** button, under the material dropdown) without losing
+your place. The `#materials` URL hash opens it at boot too.
+
+- **Tree.** Category → subcategory on the left, each with a material count;
+  click one to filter the table. Counts are read once per open from the whole
+  catalog, so they don't shift as you narrow other filters.
+- **Filters.** Min/max density, min E, min yield, min max-service-temperature,
+  max cost, a row of process chips (`cnc`, `weld`, `fdm`, `sheet`, …) and a
+  basis select (`typical`/`minimum`/`characteristic`). Numeric fields debounce
+  250 ms; the count next to Close updates with every query.
+- **Table.** id/label, category/subcategory, condition, density, E, yield,
+  max service temperature and cost — click a column header to sort (numbers
+  first, missing values always last). Click a row to open its full record in
+  the detail pane on the right.
+- **Compare.** Check up to four rows' pin boxes; the **Compare** button (it
+  shows the count) swaps the table for a side-by-side column view of every
+  cited property, ranges rendered `lo–hi` and a missing value as `—`.
+- **Detail.** Label, condition, standards, every property with its value/range
+  and unit, a **basis badge** (`typical`/`minimum`/`characteristic`, or
+  `uncited` when the property carries no source), the source text, a
+  temperature table when a property has one, the process block as chips, and
+  `links` as outbound references (MMPDS, manufacturer datasheets — never
+  mirrored). In assign mode a **Use for…** button writes the selected material
+  straight to the part you opened it from, through the exact same call the
+  inspector's material dropdown makes.
+
+The same room-temperature-typical, not-a-design-allowable caveat from the
+Inspector's material block applies here too — it is shown on every detail
+record.
+
 ## Working with the bundled examples
 
 Pick them from the project switcher:

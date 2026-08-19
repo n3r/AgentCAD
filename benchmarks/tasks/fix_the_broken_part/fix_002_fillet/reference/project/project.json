@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "name": "bench_fix_002_fillet_reference",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "shelf_bracket",
+      "label": "Shelf Bracket",
+      "material": "steel_a36",
+      "params": {}
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}

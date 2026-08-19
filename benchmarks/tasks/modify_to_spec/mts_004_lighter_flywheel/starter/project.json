@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "name": "bench_mts_004_lighter_flywheel_starter",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "flywheel",
+      "label": "Flywheel",
+      "material": "steel_4130",
+      "params": {
+        "diameter": 200.0,
+        "thickness": 22.0,
+        "bolt_circle_d": 56.0,
+        "n_bolts": 6.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}

@@ -1,0 +1,4077 @@
+{
+  "schema_version": 2,
+  "materials": {
+    "al6061": {
+      "label": "Aluminum 6061-T6",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T6",
+      "standards": [
+        "ASTM B209",
+        "EN 573-3 (EN AW-6061)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.7,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 6061 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T6 sheet/plate typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 276.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T6 sheet/plate typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 310.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T6 sheet/plate typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 12.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T6 sheet/plate typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.6,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T6 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 167.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T6 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 4.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "good",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 1.5
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association forming guidelines)"
+      },
+      "links": [
+        {
+          "label": "MMPDS (design allowables, linked not mirrored)",
+          "url": "https://www.mmpds.org/"
+        }
+      ]
+    },
+    "al7075": {
+      "label": "Aluminum 7075-T6",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T6",
+      "standards": [
+        "ASTM B209",
+        "EN 573-3 (EN AW-7075)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.81,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 7075 nominal density"
+        },
+        "E_gpa": {
+          "value": 71.7,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T6 sheet/plate typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 503.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T6 sheet/plate typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 572.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T6 sheet/plate typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 11.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T6 sheet/plate typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T6 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 130.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T6 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 6.5,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "source": "editorial classification (Machining Data Handbook; 7xxx alloys are not fusion welded in structural practice)"
+      },
+      "links": [
+        {
+          "label": "MMPDS (design allowables, linked not mirrored)",
+          "url": "https://www.mmpds.org/"
+        }
+      ]
+    },
+    "al2024": {
+      "label": "Aluminum 2024-T3",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T3",
+      "standards": [
+        "ASTM B209",
+        "EN 573-3 (EN AW-2024)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.78,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 2024 nominal density"
+        },
+        "E_gpa": {
+          "value": 73.1,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T3 sheet typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 345.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T3 sheet typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 483.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T3 sheet typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 18.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T3 sheet typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.2,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T3 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 121.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T3 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 6.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "source": "editorial classification (Machining Data Handbook; 2xxx alloys are riveted/bonded, not fusion welded)"
+      },
+      "links": [
+        {
+          "label": "MMPDS (design allowables, linked not mirrored)",
+          "url": "https://www.mmpds.org/"
+        }
+      ],
+      "notes": "Poor corrosion resistance bare; usually clad or coated."
+    },
+    "alsi10mg": {
+      "label": "AlSi10Mg (LPBF, as-built)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "as-built LPBF",
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.67,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), physical properties"
+        },
+        "E_gpa": {
+          "value": 70.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 270.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 460.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 6.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 21.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), physical properties"
+        },
+        "k_w_m_k": {
+          "value": 120.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), physical properties"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 35.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude (powder, not stock)",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "printable": {
+          "dmls": "excellent"
+        },
+        "source": "editorial classification (EOS AlSi10Mg process guidance)"
+      },
+      "notes": "Additive (laser powder-bed fusion), as-built, typical vendor datasheet; properties drop after stress relief. Cost = powder."
+    },
+    "al1100_o": {
+      "label": "Aluminum 1100-O",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "O (annealed)",
+      "standards": [
+        "ASTM B209",
+        "EN 573-3 (EN AW-1100)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.71,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 1100 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1100 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 34.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1100-O sheet typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 90.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1100-O sheet typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 35.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1100-O sheet, 1.6 mm typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.6,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1100 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 222.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1100-O physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        },
+        "cp_j_kg_k": {
+          "value": 904.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1100 specific heat at 100 C"
+        }
+      },
+      "process": {
+        "machinability": "poor",
+        "weldability": "excellent",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 0.0
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Commercially pure aluminium (>= 99.0 % Al): the most formable and most conductive wrought alloy, and the weakest. Annealed temper."
+    },
+    "al1100_h14": {
+      "label": "Aluminum 1100-H14",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "H14 (half hard)",
+      "standards": [
+        "ASTM B209",
+        "EN 573-3 (EN AW-1100)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.71,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 1100 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1100 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 115.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1100-H14 sheet typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 125.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1100-H14 sheet typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 9.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1100-H14 sheet, 1.6 mm typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.6,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1100 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "range": [
+            218.0,
+            222.0
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1100 thermal conductivity (O 222, H18 218 W/(m*K); H14 lies between)"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "weldability": "excellent",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 0.5
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Strain-hardened 1100 — the usual stock temper for flashing, gaskets and spun parts."
+    },
+    "al1350_h19": {
+      "label": "Aluminum 1350-H19 (electrical conductor)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "H19 (extra hard)",
+      "standards": [
+        "ASTM B230",
+        "ASTM B609",
+        "EN 573-3 (EN AW-1350)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.705,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 1350 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1350 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 165.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1350-H19 wire typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 186.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1350-H19 wire typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.6,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1350 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 234.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 1350-H19 physical properties at 20-100 C"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "poor",
+        "weldability": "excellent",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.5,
+          6.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Electrical-grade aluminium: ASTM B230 specifies 61.8 % IACS minimum conductivity, so conductivity is the property being bought and strength is whatever the drawn temper gives."
+    },
+    "al2011_t3": {
+      "label": "Aluminum 2011-T3 (free-machining)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T3",
+      "standards": [
+        "ASTM B211",
+        "EN 573-3 (EN AW-2011)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.83,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 2011 nominal density"
+        },
+        "E_gpa": {
+          "value": 70.3,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2011 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 296.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2011-T3 rod and bar typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 379.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2011-T3 rod and bar typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 15.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2011-T3 rod and bar typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2011 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 152.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2011-T3 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          5.5,
+          9.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Lead/bismuth free-machining screw-machine alloy: it cuts and chips better than anything else in aluminium, and in exchange it is not weldable and has poor corrosion resistance."
+    },
+    "al2014_t6": {
+      "label": "Aluminum 2014-T6",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T6",
+      "standards": [
+        "ASTM B211",
+        "ASTM B209",
+        "EN 573-3 (EN AW-2014)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.8,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 2014 nominal density"
+        },
+        "E_gpa": {
+          "value": 72.4,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2014 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 414.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2014-T6 typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 483.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2014-T6 typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 13.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2014-T6 typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2014 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 155.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2014-T6 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          6.0,
+          10.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "links": [
+        {
+          "label": "MMPDS (design allowables, linked not mirrored)",
+          "url": "https://www.mmpds.org/"
+        }
+      ],
+      "notes": "High-strength Al-Cu forging and fitting alloy; like all 2xxx it is riveted or bonded rather than fusion welded, and is normally clad or anodised for corrosion protection."
+    },
+    "al2024_t351": {
+      "label": "Aluminum 2024-T351 (plate)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T351 (solution treated, stress-relieved by stretching, naturally aged)",
+      "standards": [
+        "ASTM B209",
+        "EN 573-3 (EN AW-2024)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.78,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 2024 nominal density"
+        },
+        "E_gpa": {
+          "value": 73.1,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 325.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T351 plate typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 470.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T351 plate typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 19.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T351 plate typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.2,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 121.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T351 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          6.0,
+          10.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "links": [
+        {
+          "label": "MMPDS (design allowables, linked not mirrored)",
+          "url": "https://www.mmpds.org/"
+        }
+      ],
+      "notes": "The plate temper of 2024: stretched after solution treatment, so residual stress is low and a part machined out of it stays flat. Bare 2024 corrodes; specify Alclad or anodise."
+    },
+    "al3003_o": {
+      "label": "Aluminum 3003-O",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "O (annealed)",
+      "standards": [
+        "ASTM B209",
+        "EN 573-3 (EN AW-3003)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.73,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 3003 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3003 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 42.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3003-O sheet typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 110.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3003-O sheet typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 30.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3003-O sheet, 1.6 mm typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.2,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3003 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 193.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3003-O physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        },
+        "cp_j_kg_k": {
+          "value": 893.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3003 specific heat at 100 C"
+        }
+      },
+      "process": {
+        "machinability": "poor",
+        "weldability": "excellent",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 0.0
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "1100 with ~1.2 % manganese: about 20 % stronger, same formability and weldability. The standard alloy for drawn and spun vessels."
+    },
+    "al3003_h14": {
+      "label": "Aluminum 3003-H14",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "H14 (half hard)",
+      "standards": [
+        "ASTM B209",
+        "EN 573-3 (EN AW-3003)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.73,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 3003 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3003 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 145.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3003-H14 sheet typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 150.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3003-H14 sheet typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 8.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3003-H14 sheet, 1.6 mm typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.2,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3003 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 159.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3003-H14 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "weldability": "excellent",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 1.0
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "General-purpose sheet temper: strain hardening costs it about a fifth of its thermal conductivity relative to the O temper."
+    },
+    "al3004_h32": {
+      "label": "Aluminum 3004-H32",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "H32",
+      "standards": [
+        "ASTM B209",
+        "EN 573-3 (EN AW-3004)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.72,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 3004 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3004 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 170.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3004-H32 sheet typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 215.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3004-H32 sheet typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 10.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3004-H32 sheet, 1.6 mm typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.9,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3004 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 163.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 3004 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "weldability": "excellent",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 1.0
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Mn + Mg: the deep-drawing alloy of the beverage-can body. Stronger than 3003 and still not heat treatable."
+    },
+    "al5005_h34": {
+      "label": "Aluminum 5005-H34",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "H34",
+      "standards": [
+        "ASTM B209",
+        "EN 485-2",
+        "EN 573-3 (EN AW-5005)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.7,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 5005 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5005 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 138.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5005-H34 sheet typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 160.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5005-H34 sheet typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 8.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5005-H34 sheet, 1.6 mm typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.8,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5005 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 200.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5005-H34 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "weldability": "excellent",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 1.0
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.5,
+          6.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Anodises to a brighter, more uniform colour than 3003 — the usual choice for anodised trim and architectural sheet."
+    },
+    "al5052_o": {
+      "label": "Aluminum 5052-O",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "O (annealed)",
+      "standards": [
+        "ASTM B209",
+        "EN 485-2",
+        "EN 573-3 (EN AW-5052)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.68,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 5052 nominal density"
+        },
+        "E_gpa": {
+          "value": 70.3,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 90.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052-O sheet typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 195.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052-O sheet typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 25.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052-O sheet, 1.6 mm typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.8,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 138.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052-O physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        },
+        "cp_j_kg_k": {
+          "value": 880.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052 specific heat at 100 C"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "excellent",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 0.0
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.5,
+          6.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Annealed 5052 for severe forming; work-hardens back toward H32 as it is formed."
+    },
+    "al5052_h32": {
+      "label": "Aluminum 5052-H32",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "H32",
+      "standards": [
+        "ASTM B209",
+        "EN 485-2",
+        "EN 573-3 (EN AW-5052)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.68,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 5052 nominal density"
+        },
+        "E_gpa": {
+          "value": 70.3,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 195.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052-H32 sheet typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 230.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052-H32 sheet typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 12.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052-H32 sheet, 1.6 mm typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.8,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 138.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052-H32 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        },
+        "cp_j_kg_k": {
+          "value": 880.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5052 specific heat at 100 C"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "excellent",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 1.5
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.5,
+          6.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The default sheet-metal aluminium: bends and welds well, holds up in salt water, and is not heat treatable — so a weld does not need a post-weld heat treatment to be sound (it does lose the H32 temper locally)."
+    },
+    "al5083_h116": {
+      "label": "Aluminum 5083-H116 (marine plate)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "H116",
+      "standards": [
+        "ASTM B928/B928M",
+        "ASTM B209",
+        "EN 485-2",
+        "EN 573-3 (EN AW-5083)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.66,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 5083 nominal density"
+        },
+        "E_gpa": {
+          "value": 70.3,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5083 physical properties at 20-100 C",
+          "table": [
+            [
+              20,
+              70.3
+            ],
+            [
+              100,
+              63.3
+            ],
+            [
+              150,
+              55.5
+            ],
+            [
+              200,
+              38.7
+            ],
+            [
+              250,
+              21.8
+            ]
+          ]
+        },
+        "yield_mpa": {
+          "value": 215.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B928/B928M, 5083-H116 plate, specified minimum yield strength"
+        },
+        "ultimate_mpa": {
+          "value": 305.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B928/B928M, 5083-H116 plate, specified minimum tensile strength"
+        },
+        "elongation_pct": {
+          "value": 10.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "ASTM B928/B928M, 5083-H116 plate, specified minimum elongation"
+        },
+        "cte_um_m_k": {
+          "value": 23.8,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5083 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 117.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5083 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 65.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: ASTM B928 restricts 5xxx marine plate with > 3 % Mg to service below 65 C (sensitization / exfoliation)"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "excellent",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 2.0
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.5,
+          8.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The marine hull plate: the strongest non-heat-treatable alloy in common use, and the H116 temper is what qualifies it against exfoliation. The 65 C ceiling is a sensitization limit, not a strength one. E(T) rows are the EN 1999-1-2 fire-design reduction curve, which folds in creep and is far more conservative than a short-term elastic measurement."
+    },
+    "al5086_h116": {
+      "label": "Aluminum 5086-H116",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "H116",
+      "standards": [
+        "ASTM B928/B928M",
+        "ASTM B209",
+        "EN 573-3 (EN AW-5086)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.66,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 5086 nominal density"
+        },
+        "E_gpa": {
+          "value": 71.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5086 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 195.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B928/B928M, 5086-H116 plate, specified minimum yield strength"
+        },
+        "ultimate_mpa": {
+          "value": 275.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B928/B928M, 5086-H116 plate, specified minimum tensile strength"
+        },
+        "elongation_pct": {
+          "value": 8.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "ASTM B928/B928M, 5086-H116 plate, specified minimum elongation"
+        },
+        "cte_um_m_k": {
+          "value": 23.8,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5086 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 125.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5086 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 65.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: ASTM B928 restricts 5xxx marine plate with > 3 % Mg to service below 65 C (sensitization / exfoliation)"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "excellent",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 2.0
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.5,
+          8.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "A little below 5083 in strength and a little easier to form; the other marine-plate alloy."
+    },
+    "al5754_h22": {
+      "label": "Aluminum EN AW-5754 H22",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "H22",
+      "standards": [
+        "EN 485-2",
+        "EN 573-3 (EN AW-5754)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.67,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 5754 (AlMg3) nominal density"
+        },
+        "E_gpa": {
+          "value": 70.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5754 (AlMg3) physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 130.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 485-2, EN AW-5754 sheet, specified properties, H22: Rp0.2 minimum"
+        },
+        "ultimate_mpa": {
+          "range": [
+            220.0,
+            270.0
+          ],
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 485-2, EN AW-5754 sheet, specified properties, H22: specified Rm band"
+        },
+        "elongation_pct": {
+          "value": 12.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "EN 485-2, EN AW-5754 sheet, specified properties, H22: A50 minimum"
+        },
+        "cte_um_m_k": {
+          "value": 23.7,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5754 (AlMg3) physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 147.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 5754 (AlMg3) physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "excellent",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 1.0
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.5,
+          6.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Europe's automotive body and structural sheet alloy (AlMg3). EN 485-2 specifies Rm for H22 as a band rather than a floor, so the card carries the band; the yield and elongation figures are floors."
+    },
+    "al6005a_t6": {
+      "label": "Aluminum EN AW-6005A T6",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T6",
+      "standards": [
+        "EN 755-2",
+        "EN 573-3 (EN AW-6005A)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.7,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 6005A nominal density"
+        },
+        "E_gpa": {
+          "value": 70.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6005/6005A physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 225.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 755-2, EN AW-6005A extruded profiles, specified minimum properties T6, t <= 5 mm: Rp0.2 minimum"
+        },
+        "ultimate_mpa": {
+          "value": 270.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 755-2, EN AW-6005A extruded profiles, specified minimum properties T6, t <= 5 mm: Rm minimum"
+        },
+        "elongation_pct": {
+          "value": 8.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "EN 755-2, EN AW-6005A extruded profiles, specified minimum properties T6, t <= 5 mm: A minimum"
+        },
+        "cte_um_m_k": {
+          "value": 23.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6005A physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "range": [
+            180.0,
+            200.0
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6005/6005A physical properties at 20-100 C (temper-dependent; a range rather than a point)"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "good",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.5,
+          6.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Thin-wall extrusion alloy: close to 6082 in strength and much easier to extrude into complex hollow profiles. Rail-vehicle and framing sections."
+    },
+    "al6060_t6": {
+      "label": "Aluminum EN AW-6060 T6",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T6",
+      "standards": [
+        "EN 755-2",
+        "EN 573-3 (EN AW-6060)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.7,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 6060 nominal density"
+        },
+        "E_gpa": {
+          "value": 70.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6060 (AlMgSi) physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 150.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 755-2, EN AW-6060 extruded profiles, specified minimum properties T6, t <= 3 mm: Rp0.2 minimum"
+        },
+        "ultimate_mpa": {
+          "value": 190.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 755-2, EN AW-6060 extruded profiles, specified minimum properties T6, t <= 3 mm: Rm minimum"
+        },
+        "elongation_pct": {
+          "value": 8.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "EN 755-2, EN AW-6060 extruded profiles, specified minimum properties T6, t <= 3 mm: A minimum"
+        },
+        "cte_um_m_k": {
+          "value": 23.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6060 (AlMgSi) physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "range": [
+            200.0,
+            220.0
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6060 (AlMgSi) physical properties at 20-100 C (temper-dependent; a range rather than a point)"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "good",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The European architectural extrusion alloy: lean AlMgSi, so it extrudes into fine sections with an excellent anodising finish and only modest strength. Minima quoted for t <= 3 mm; thicker sections are specified lower."
+    },
+    "al6061_t4": {
+      "label": "Aluminum 6061-T4",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T4 (naturally aged)",
+      "standards": [
+        "ASTM B209",
+        "ASTM B221",
+        "EN 573-3 (EN AW-6061)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.7,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 6061 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 145.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T4 sheet typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 241.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T4 sheet typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 22.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T4 sheet, 1.6 mm typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.6,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 154.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T4 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        },
+        "cp_j_kg_k": {
+          "value": 896.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061 specific heat at 100 C"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "good",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 1.0
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.5,
+          6.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Solution treated and naturally aged: about half the yield of T6 and twice the elongation. Form in T4, then artificially age to T6."
+    },
+    "al6063_t5": {
+      "label": "Aluminum 6063-T5",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T5",
+      "standards": [
+        "ASTM B221",
+        "EN 755-2",
+        "EN 573-3 (EN AW-6063)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.7,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 6063 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6063 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 145.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6063-T5 extrusion typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 186.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6063-T5 extrusion typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 12.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6063-T5 extrusion typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6063 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 209.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6063-T5 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "good",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Cooled from the press and artificially aged (T5) rather than separately solution treated: cheaper than T6, a little weaker, and the most conductive of the common structural tempers."
+    },
+    "al6063_t6": {
+      "label": "Aluminum 6063-T6",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T6",
+      "standards": [
+        "ASTM B221",
+        "EN 755-2",
+        "EN 573-3 (EN AW-6063)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.7,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 6063 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6063 physical properties at 20-100 C",
+          "table": [
+            [
+              20,
+              68.9
+            ],
+            [
+              100,
+              62.0
+            ],
+            [
+              150,
+              54.4
+            ],
+            [
+              200,
+              37.9
+            ],
+            [
+              250,
+              21.4
+            ]
+          ]
+        },
+        "yield_mpa": {
+          "value": 214.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6063-T6 extrusion typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 241.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6063-T6 extrusion typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 12.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6063-T6 extrusion typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6063 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 200.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6063-T6 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6063 specific heat at 100 C"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "good",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The extrusion workhorse: framing, window sections and heat sinks. Its 200 W/(m*K) is why heat sinks are 6063 and not 6061. The E(T) rows are the EN 1999-1-2 fire-design reduction curve (creep included), not a short-term elastic measurement."
+    },
+    "al6082_t6": {
+      "label": "Aluminum EN AW-6082 T6",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T6",
+      "standards": [
+        "EN 755-2",
+        "EN 485-2",
+        "EN 573-3 (EN AW-6082)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.7,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 6082 nominal density"
+        },
+        "E_gpa": {
+          "value": 70.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6082 (AlSi1MgMn) physical properties at 20-100 C",
+          "table": [
+            [
+              20,
+              70.0
+            ],
+            [
+              100,
+              63.0
+            ],
+            [
+              150,
+              55.3
+            ],
+            [
+              200,
+              38.5
+            ],
+            [
+              250,
+              21.7
+            ]
+          ]
+        },
+        "yield_mpa": {
+          "value": 250.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 755-2, EN AW-6082 extruded profiles, specified minimum properties T6, t <= 5 mm: Rp0.2 minimum"
+        },
+        "ultimate_mpa": {
+          "value": 290.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 755-2, EN AW-6082 extruded profiles, specified minimum properties T6, t <= 5 mm: Rm minimum"
+        },
+        "elongation_pct": {
+          "value": 8.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "EN 755-2, EN AW-6082 extruded profiles, specified minimum properties T6, t <= 5 mm: A minimum"
+        },
+        "cte_um_m_k": {
+          "value": 23.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6082 (AlSi1MgMn) physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 170.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6082 (AlSi1MgMn) physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6082 specific heat at 100 C"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "good",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 2.5
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.5,
+          6.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Europe's structural 6xxx and the practical answer to '6061-T6 or not' outside North America: higher manganese, slightly stronger, slightly harder to extrude. Values are EN 755-2 minima for profiles t <= 5 mm, so they are floors and not typicals — do not compare them like-for-like against the ASM typicals on al6061. E(T) rows are the EN 1999-1-2 fire-design reduction curve."
+    },
+    "al6101_t6": {
+      "label": "Aluminum 6101-T6 (bus conductor)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T6",
+      "standards": [
+        "ASTM B317/B317M",
+        "EN 573-3 (EN AW-6101)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.7,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 6101 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6101 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 172.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B317/B317M, 6101-T6 bus conductor, specified minimum yield strength"
+        },
+        "ultimate_mpa": {
+          "value": 200.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B317/B317M, 6101-T6 bus conductor, specified minimum tensile strength"
+        },
+        "cte_um_m_k": {
+          "value": 23.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6101 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 218.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6101-T6 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "good",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          7.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Electrical bus-bar alloy: ASTM B317 specifies 55 % IACS minimum conductivity as well as strength, which is the whole point of the grade."
+    },
+    "al6262_t9": {
+      "label": "Aluminum 6262-T9 (free-machining)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T9",
+      "standards": [
+        "ASTM B211",
+        "EN 573-3 (EN AW-6262)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.72,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 6262 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6262 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 379.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6262-T9 rod and bar typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 400.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6262-T9 rod and bar typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 10.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6262-T9 rod and bar typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6262 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 172.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6262-T9 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "fair",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          5.0,
+          9.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Free-machining 6xxx (Bi + Pb) with the corrosion resistance of 6061: hydraulic fittings, valve bodies and screw-machine parts that also have to survive outdoors. 2011 machines better; 6262 corrodes far less."
+    },
+    "al7020_t6": {
+      "label": "Aluminum EN AW-7020 T6",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T6",
+      "standards": [
+        "EN 755-2",
+        "EN 573-3 (EN AW-7020)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.78,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 7020 nominal density"
+        },
+        "E_gpa": {
+          "value": 70.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7020 (AlZn4.5Mg1) physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 290.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 755-2, EN AW-7020 extruded profiles, specified minimum properties T6: Rp0.2 minimum"
+        },
+        "ultimate_mpa": {
+          "value": 350.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 755-2, EN AW-7020 extruded profiles, specified minimum properties T6: Rm minimum"
+        },
+        "elongation_pct": {
+          "value": 10.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "EN 755-2, EN AW-7020 extruded profiles, specified minimum properties T6: A minimum"
+        },
+        "cte_um_m_k": {
+          "value": 23.1,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7020 (AlZn4.5Mg1) physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "good",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          6.0,
+          11.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The weldable 7xxx: it re-ages naturally in the heat-affected zone, so a welded joint recovers much of its strength. It is stress-corrosion sensitive and needs a controlled welding and ageing procedure. Thermal conductivity is omitted rather than guessed."
+    },
+    "al7050_t7451": {
+      "label": "Aluminum 7050-T7451 (plate)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T7451 (overaged, stress-relieved by stretching)",
+      "standards": [
+        "ASTM B209",
+        "AMS 4050"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.83,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 7050 nominal density"
+        },
+        "E_gpa": {
+          "value": 71.7,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7050 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 469.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7050-T7451 plate typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 524.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7050-T7451 plate typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 11.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7050-T7451 plate typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.5,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7050 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 157.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7050-T7451 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          8.0,
+          14.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "links": [
+        {
+          "label": "MMPDS (design allowables, linked not mirrored)",
+          "url": "https://www.mmpds.org/"
+        }
+      ],
+      "notes": "Thick-plate aerospace alloy: 7050 hardens further through the section than 7075, and T7451 trades a few per cent of strength for stress-corrosion resistance and low residual stress in machined parts."
+    },
+    "al7075_t651": {
+      "label": "Aluminum 7075-T651 (plate)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T651 (stress-relieved by stretching, then artificially aged)",
+      "standards": [
+        "ASTM B209",
+        "EN 573-3 (EN AW-7075)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.81,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 7075 nominal density"
+        },
+        "E_gpa": {
+          "value": 71.7,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 503.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T651 plate typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 572.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T651 plate typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 11.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T651 plate typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 130.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T651 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          7.0,
+          12.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "links": [
+        {
+          "label": "MMPDS (design allowables, linked not mirrored)",
+          "url": "https://www.mmpds.org/"
+        }
+      ],
+      "notes": "The temper to specify for machined plate: mechanically identical to T6 but stretched before ageing, so a pocketed part does not banana as material comes off."
+    },
+    "al7075_t73": {
+      "label": "Aluminum 7075-T73",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T73 (overaged)",
+      "standards": [
+        "ASTM B211",
+        "ASTM B209",
+        "EN 573-3 (EN AW-7075)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.81,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 7075 nominal density"
+        },
+        "E_gpa": {
+          "value": 71.7,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 434.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T73 rod and bar typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 503.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T73 rod and bar typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 13.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T73 rod and bar typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 155.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T73 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          7.0,
+          12.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "links": [
+        {
+          "label": "MMPDS (design allowables, linked not mirrored)",
+          "url": "https://www.mmpds.org/"
+        }
+      ],
+      "notes": "Overaged 7075: about 14 % below T6 in yield, bought back as immunity to stress-corrosion cracking. The higher thermal conductivity (155 vs 130 W/(m*K)) is the physical tell that the alloy has been overaged."
+    },
+    "al356_t6": {
+      "label": "Aluminum A356.0-T6 (cast)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T6",
+      "standards": [
+        "ASTM B26/B26M",
+        "ASTM B108",
+        "EN 1706 (EN AC-42100)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.67,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: A356.0 nominal density"
+        },
+        "E_gpa": {
+          "value": 72.4,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A356.0 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 165.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B26/B26M, A356.0-T6 sand castings, specified minimum yield strength"
+        },
+        "ultimate_mpa": {
+          "value": 234.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B26/B26M, A356.0-T6 sand castings, specified minimum tensile strength"
+        },
+        "elongation_pct": {
+          "value": 3.5,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "ASTM B26/B26M, A356.0-T6 sand castings, specified minimum elongation"
+        },
+        "cte_um_m_k": {
+          "value": 21.5,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A356.0 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 151.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A356.0-T6 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "good",
+        "casting": "excellent",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The general-purpose Al-Si-Mg casting alloy and the one most commonly specified for structural castings. Values are ASTM B26 sand-casting minima; permanent-mould castings of the same alloy and temper run roughly 10 % higher."
+    },
+    "al319_t6": {
+      "label": "Aluminum 319.0-T6 (cast)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T6",
+      "standards": [
+        "ASTM B26/B26M"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.79,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 319.0 nominal density"
+        },
+        "E_gpa": {
+          "value": 74.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 319.0 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 165.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B26/B26M, 319.0-T6 sand castings, specified minimum yield strength"
+        },
+        "ultimate_mpa": {
+          "value": 250.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B26/B26M, 319.0-T6 sand castings, specified minimum tensile strength"
+        },
+        "elongation_pct": {
+          "value": 1.5,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "ASTM B26/B26M, 319.0-T6 sand castings, specified minimum elongation"
+        },
+        "cte_um_m_k": {
+          "value": 21.5,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 319.0 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 109.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 319.0-T6 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 200.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "fair",
+        "casting": "good",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.5,
+          4.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Copper-bearing Al-Si-Cu: better hot strength than A356 (engine blocks, cylinder heads), and correspondingly less ductile and less corrosion resistant."
+    },
+    "al380": {
+      "label": "Aluminum A380.0 (die cast)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "as-cast (F), high-pressure die cast",
+      "standards": [
+        "ASTM B85/B85M"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.76,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: A380.0 nominal density"
+        },
+        "E_gpa": {
+          "value": 71.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A380.0 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 159.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A380.0-F die castings typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 324.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A380.0-F die castings typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 3.5,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A380.0-F die castings typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 21.8,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A380.0 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 96.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A380.0 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "poor",
+        "casting": "excellent",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.5,
+          4.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The default aluminium die-casting alloy — most North American aluminium die castings are A380. The figures are separately cast test bars; porosity means a thick section of a real casting will not reach them, and the same porosity is why it is not welded or solution heat treated."
+    },
+    "al413": {
+      "label": "Aluminum A413.0 (die cast)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "as-cast (F), high-pressure die cast",
+      "standards": [
+        "ASTM B85/B85M"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.66,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: A413.0 nominal density"
+        },
+        "E_gpa": {
+          "value": 71.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A413.0 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 145.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A413.0-F die castings typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 296.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A413.0-F die castings typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 2.5,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A413.0-F die castings typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 20.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A413.0 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 121.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), A413.0 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "weldability": "fair",
+        "casting": "excellent",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.5,
+          4.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Near-eutectic Al-12Si: the best-filling die-casting alloy, so it is what thin-walled and pressure-tight housings are cast in. The high silicon gives it the lowest expansion of the common die-cast alloys and makes it abrasive to machine."
+    },
+    "al535": {
+      "label": "Aluminum 535.0 (Almag 35, sand cast)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "as-cast (F)",
+      "standards": [
+        "ASTM B26/B26M"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.62,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 535.0 nominal density"
+        },
+        "E_gpa": {
+          "value": 70.3,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 535.0 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 125.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B26/B26M, 535.0-F sand castings, specified minimum yield strength"
+        },
+        "ultimate_mpa": {
+          "value": 240.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B26/B26M, 535.0-F sand castings, specified minimum tensile strength"
+        },
+        "elongation_pct": {
+          "value": 9.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "ASTM B26/B26M, 535.0-F sand castings, specified minimum elongation"
+        },
+        "cte_um_m_k": {
+          "value": 24.5,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 535.0 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 100.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 535.0 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.33,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of wrought aluminum alloys (nu = 0.33)"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "good",
+        "casting": "fair",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          7.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Al-Mg sand-casting alloy that reaches those properties as cast — no heat treatment, so no quench distortion. Excellent machinability, finish and corrosion resistance; harder to pour than the Al-Si alloys, which is why it stays a speciality."
+    },
+    "en_ac_44300": {
+      "label": "EN AC-44300 AlSi12(Cu) (die cast)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "as-cast (F), high-pressure die cast",
+      "standards": [
+        "EN 1706"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.65,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1706, EN AC-44300 AlSi12(Cu) nominal density"
+        },
+        "E_gpa": {
+          "value": 71.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), physical properties of the equivalent near-eutectic Al-12Si alloy (413.0)"
+        },
+        "yield_mpa": {
+          "value": 140.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 1706, EN AC-44300 die cast (D), F temper: Rp0.2 minimum"
+        },
+        "ultimate_mpa": {
+          "value": 240.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 1706, EN AC-44300 die cast (D), F temper: Rm minimum"
+        },
+        "elongation_pct": {
+          "value": 1.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "EN 1706, EN AC-44300 die cast (D), F temper: A minimum"
+        },
+        "cte_um_m_k": {
+          "value": 20.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), physical properties of the equivalent near-eutectic Al-12Si alloy (413.0)"
+        },
+        "k_w_m_k": {
+          "value": 121.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), physical properties of the equivalent near-eutectic Al-12Si alloy (413.0)"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "casting": "excellent",
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association welding and forming guidelines)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.5,
+          4.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The European high-pressure die-casting alloy, the counterpart of ASTM 413.0. Mechanical values are EN 1706 minima for die castings; the physical properties are taken from the equivalent ASTM alloy because EN 1706 does not specify them, and the card says so rather than implying EN 1706 published them."
+    },
+    "az31b_h24": {
+      "label": "Magnesium AZ31B-H24 (sheet)",
+      "category": "metal",
+      "subcategory": "magnesium",
+      "condition": "H24",
+      "standards": [
+        "ASTM B90/B90M",
+        "ASTM B107/B107M"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.77,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ31B physical properties at 20-100 C"
+        },
+        "E_gpa": {
+          "value": 45.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ31B physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 200.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B90/B90M, AZ31B-H24 sheet and plate, specified minimum yield strength"
+        },
+        "ultimate_mpa": {
+          "value": 260.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B90/B90M, AZ31B-H24 sheet and plate, specified minimum tensile strength"
+        },
+        "elongation_pct": {
+          "value": 6.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "ASTM B90/B90M, AZ31B-H24 sheet and plate, specified minimum elongation"
+        },
+        "cte_um_m_k": {
+          "value": 26.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ31B physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 96.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ31B physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.35,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of magnesium alloys (nu = 0.35)"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ31B specific heat at 20 C"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "good",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 5.0
+        },
+        "source": "editorial classification (ASM Handbook Vol. 2, fabrication and joining of magnesium alloys)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          5.0,
+          10.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Wrought magnesium sheet: a third lighter than aluminium at similar specific stiffness, and the standard structural magnesium. It does not cold form — bends are made at 200-250 C, and the 5t minimum radius is a room-temperature figure. Magnesium chips and dust burn: dry machining needs a fire plan."
+    },
+    "az61a_f": {
+      "label": "Magnesium AZ61A-F (extruded)",
+      "category": "metal",
+      "subcategory": "magnesium",
+      "condition": "F (as extruded)",
+      "standards": [
+        "ASTM B107/B107M"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.8,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ61A physical properties at 20-100 C"
+        },
+        "E_gpa": {
+          "value": 45.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ61A physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 230.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ61A-F extrusions typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 310.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ61A-F extrusions typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 16.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ61A-F extrusions typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 26.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ61A physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 80.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ61A physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.35,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of magnesium alloys (nu = 0.35)"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "good",
+        "source": "editorial classification (ASM Handbook Vol. 2, fabrication and joining of magnesium alloys)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          5.0,
+          10.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "More aluminium than AZ31: stronger extrusions, slightly harder to form. Typical as-extruded values, not the ASTM B107 floors."
+    },
+    "az91d": {
+      "label": "Magnesium AZ91D (die cast)",
+      "category": "metal",
+      "subcategory": "magnesium",
+      "condition": "as-cast (F), high-pressure die cast",
+      "standards": [
+        "ASTM B94"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.81,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ91D physical properties at 20-100 C"
+        },
+        "E_gpa": {
+          "value": 45.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ91D physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 150.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ91D die castings typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 230.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ91D die castings typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 3.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ91D die castings typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 26.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ91D physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 72.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ91D physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.35,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of magnesium alloys (nu = 0.35)"
+        },
+        "cp_j_kg_k": {
+          "value": 1020.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AZ91D specific heat at 20 C"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "fair",
+        "casting": "excellent",
+        "source": "editorial classification (ASM Handbook Vol. 2, fabrication and joining of magnesium alloys)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          8.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The dominant magnesium die-casting alloy. The 'D' is high-purity chemistry (tight Fe/Ni/Cu limits) and it is the whole reason the alloy has usable salt-spray corrosion resistance; AZ91B does not."
+    },
+    "am60b": {
+      "label": "Magnesium AM60B (die cast)",
+      "category": "metal",
+      "subcategory": "magnesium",
+      "condition": "as-cast (F), high-pressure die cast",
+      "standards": [
+        "ASTM B94"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.8,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AM60B physical properties at 20-100 C"
+        },
+        "E_gpa": {
+          "value": 45.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AM60B physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 130.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AM60B die castings typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 220.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AM60B die castings typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 8.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AM60B die castings typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 25.6,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AM60B physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 62.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), AM60B physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.35,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of magnesium alloys (nu = 0.35)"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "fair",
+        "casting": "excellent",
+        "source": "editorial classification (ASM Handbook Vol. 2, fabrication and joining of magnesium alloys)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          8.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Less aluminium than AZ91D: lower strength, two to three times the elongation and much better energy absorption — steering wheels, seat frames and instrument-panel beams."
+    },
+    "zk60a_t5": {
+      "label": "Magnesium ZK60A-T5 (extruded)",
+      "category": "metal",
+      "subcategory": "magnesium",
+      "condition": "T5",
+      "standards": [
+        "ASTM B107/B107M"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.83,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZK60A physical properties at 20-100 C"
+        },
+        "E_gpa": {
+          "value": 45.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZK60A physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 305.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZK60A-T5 extrusions typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 365.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZK60A-T5 extrusions typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 11.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZK60A-T5 extrusions typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 26.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZK60A physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 121.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZK60A physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.35,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of magnesium alloys (nu = 0.35)"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "source": "editorial classification (ASM Handbook Vol. 2, fabrication and joining of magnesium alloys)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          10.0,
+          25.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The strongest of the common wrought magnesiums (Zn + Zr; the zirconium is a grain refiner). Its zinc content makes it hot-crack prone, so it is bolted and bonded rather than welded."
+    },
+    "we43_t6": {
+      "label": "Magnesium WE43A-T6 (cast)",
+      "category": "metal",
+      "subcategory": "magnesium",
+      "condition": "T6",
+      "standards": [
+        "ASTM B80",
+        "AMS 4427"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.84,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), WE43 physical properties at 20-100 C"
+        },
+        "E_gpa": {
+          "value": 44.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), WE43 physical properties at 20-100 C"
+        },
+        "yield_mpa": {
+          "value": 172.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B80, WE43A-T6 sand castings, specified minimum yield strength"
+        },
+        "ultimate_mpa": {
+          "value": 220.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM B80, WE43A-T6 sand castings, specified minimum tensile strength"
+        },
+        "elongation_pct": {
+          "value": 2.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "ASTM B80, WE43A-T6 sand castings, specified minimum elongation"
+        },
+        "cte_um_m_k": {
+          "value": 26.7,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), WE43 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 51.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), WE43 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: the rare-earth addition is what keeps WE43 useful to ~250 C; not a datasheet rating"
+        },
+        "poisson_ratio": {
+          "value": 0.35,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), elastic constants of magnesium alloys (nu = 0.35)"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "good",
+        "casting": "good",
+        "source": "editorial classification (ASM Handbook Vol. 2, fabrication and joining of magnesium alloys)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          40.0,
+          90.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Yttrium + neodymium magnesium: it holds strength and creep resistance to about 250 C, which is why helicopter gearbox housings are cast in it, and the rare earths are why it costs an order of magnitude more than AZ91D."
+    },
+    "zamak3": {
+      "label": "Zinc Zamak 3 (ZnAl4, die cast)",
+      "category": "metal",
+      "subcategory": "zinc",
+      "condition": "as-cast (F), hot-chamber die cast",
+      "standards": [
+        "ASTM B86 (alloy AG40A)",
+        "EN 12844 (ZP0400)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 6.6,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Zamak 3 (AG40A) physical properties"
+        },
+        "E_gpa": {
+          "value": 96.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Zamak 3 (AG40A) physical properties"
+        },
+        "yield_mpa": {
+          "value": 221.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM B86 (zinc and zinc-aluminum alloy die castings), typical as-cast mechanical properties for Zamak 3 (AG40A)"
+        },
+        "ultimate_mpa": {
+          "value": 283.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM B86 (zinc and zinc-aluminum alloy die castings), typical as-cast mechanical properties for Zamak 3 (AG40A)"
+        },
+        "elongation_pct": {
+          "value": 10.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASTM B86 (zinc and zinc-aluminum alloy die castings), typical as-cast mechanical properties for Zamak 3 (AG40A)"
+        },
+        "cte_um_m_k": {
+          "value": 27.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Zamak 3 (AG40A) physical properties"
+        },
+        "k_w_m_k": {
+          "value": 113.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Zamak 3 (AG40A) physical properties"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: zinc die castings creep under sustained load well below their melting point; a load-bearing service ceiling, not a thermal rating"
+        },
+        "cp_j_kg_k": {
+          "value": 419.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Zamak 3 (AG40A) physical properties"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "casting": "excellent",
+        "source": "editorial classification (ASM Handbook Vol. 2, zinc die-casting practice)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The default zinc die-casting alloy and about 70 % of all zinc castings: it holds the finest detail and the thinnest walls of any castable metal, at 2.4 times the density of aluminium. The 80 C ceiling is a creep limit under load, not a melting or softening point."
+    },
+    "zamak5": {
+      "label": "Zinc Zamak 5 (ZnAl4Cu1, die cast)",
+      "category": "metal",
+      "subcategory": "zinc",
+      "condition": "as-cast (F), hot-chamber die cast",
+      "standards": [
+        "ASTM B86 (alloy AC41A)",
+        "EN 12844 (ZP0410)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 6.6,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Zamak 5 (AC41A) physical properties"
+        },
+        "E_gpa": {
+          "value": 96.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Zamak 5 (AC41A) physical properties"
+        },
+        "yield_mpa": {
+          "value": 269.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM B86 (zinc and zinc-aluminum alloy die castings), typical as-cast mechanical properties for Zamak 5 (AC41A)"
+        },
+        "ultimate_mpa": {
+          "value": 328.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM B86 (zinc and zinc-aluminum alloy die castings), typical as-cast mechanical properties for Zamak 5 (AC41A)"
+        },
+        "elongation_pct": {
+          "value": 7.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASTM B86 (zinc and zinc-aluminum alloy die castings), typical as-cast mechanical properties for Zamak 5 (AC41A)"
+        },
+        "cte_um_m_k": {
+          "value": 27.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Zamak 5 (AC41A) physical properties"
+        },
+        "k_w_m_k": {
+          "value": 109.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Zamak 5 (AC41A) physical properties"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: zinc die castings creep under sustained load well below their melting point; a load-bearing service ceiling, not a thermal rating"
+        },
+        "cp_j_kg_k": {
+          "value": 419.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Zamak 5 (AC41A) physical properties"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "casting": "excellent",
+        "source": "editorial classification (ASM Handbook Vol. 2, zinc die-casting practice)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Zamak 3 plus about 1 % copper: harder and roughly 15 % stronger, less ductile, and slightly less dimensionally stable over years (the copper phase ages). Europe's default where the US would use Zamak 3."
+    },
+    "za8": {
+      "label": "Zinc ZA-8 (die cast)",
+      "category": "metal",
+      "subcategory": "zinc",
+      "condition": "as-cast (F), hot-chamber die cast",
+      "standards": [
+        "ASTM B86 (alloy Z35636)",
+        "ASTM B791"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 6.3,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZA-8 physical properties"
+        },
+        "E_gpa": {
+          "value": 85.5,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZA-8 physical properties"
+        },
+        "yield_mpa": {
+          "value": 290.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM B86 (zinc and zinc-aluminum alloy die castings), typical as-cast mechanical properties for ZA-8"
+        },
+        "ultimate_mpa": {
+          "value": 374.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM B86 (zinc and zinc-aluminum alloy die castings), typical as-cast mechanical properties for ZA-8"
+        },
+        "elongation_pct": {
+          "value": 6.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASTM B86 (zinc and zinc-aluminum alloy die castings), typical as-cast mechanical properties for ZA-8"
+        },
+        "cte_um_m_k": {
+          "value": 23.3,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZA-8 physical properties"
+        },
+        "k_w_m_k": {
+          "value": 115.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZA-8 physical properties"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: the ZA alloys creep less than Zamak, but the ceiling is still a sustained-load limit, not a thermal rating"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "casting": "excellent",
+        "source": "editorial classification (ASM Handbook Vol. 2, zinc die-casting practice)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.5,
+          6.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "8 % aluminium: still hot-chamber castable like Zamak, but stronger, harder and noticeably more creep resistant. The usual step up when a Zamak 3 part is creeping."
+    },
+    "za27": {
+      "label": "Zinc ZA-27 (gravity cast)",
+      "category": "metal",
+      "subcategory": "zinc",
+      "condition": "as-cast (F), sand or permanent mould",
+      "standards": [
+        "ASTM B791"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 5.0,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZA-27 physical properties"
+        },
+        "E_gpa": {
+          "value": 77.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZA-27 physical properties"
+        },
+        "yield_mpa": {
+          "value": 371.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM B791 (zinc-aluminum alloy foundry castings), ZA-27 typical as-cast properties"
+        },
+        "ultimate_mpa": {
+          "value": 426.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM B791 (zinc-aluminum alloy foundry castings), ZA-27 typical as-cast properties"
+        },
+        "elongation_pct": {
+          "value": 3.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASTM B791 (zinc-aluminum alloy foundry castings), ZA-27 typical as-cast properties"
+        },
+        "cte_um_m_k": {
+          "value": 26.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZA-27 physical properties"
+        },
+        "k_w_m_k": {
+          "value": 125.5,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), ZA-27 physical properties"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: the ZA alloys creep less than Zamak, but the ceiling is still a sustained-load limit, not a thermal rating"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "casting": "good",
+        "source": "editorial classification (ASM Handbook Vol. 2, zinc die-casting practice)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          7.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The strongest and lightest zinc alloy: 27 % aluminium puts its melting range above what a hot-chamber machine tolerates, so it is sand or permanent-mould cast. Widely used as a cast bronze bearing replacement."
+    }
+  }
+}

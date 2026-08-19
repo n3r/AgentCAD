@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 100.3,
+      "metric": "bbox_x_mm",
+      "min": 99.5,
+      "name": "footprint_x",
+      "part": "enclosure_lid"
+    },
+    {
+      "max": 60.3,
+      "metric": "bbox_y_mm",
+      "min": 59.5,
+      "name": "footprint_y",
+      "part": "enclosure_lid"
+    },
+    {
+      "max": 12817.89,
+      "metric": "volume_mm3",
+      "name": "objective_volume",
+      "part": "enclosure_lid"
+    },
+    {
+      "max": 14649.02,
+      "metric": "volume_mm3",
+      "name": "objective_volume_relaxed",
+      "part": "enclosure_lid"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "solids",
+      "part": "enclosure_lid"
+    }
+  ]
+}

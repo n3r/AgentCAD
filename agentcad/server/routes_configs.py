@@ -126,7 +126,11 @@ async def _json(request: Request) -> dict:
     """
     if not await request.body():
         return {}
-    body = await request.json()
+    try:
+        body = await request.json()
+    except RecursionError as exc:  # not a ValueError — the packages/_json.py trap
+        raise ValidationError("body is nested too deeply to be a request",
+                              {"error": "RecursionError"}) from exc
     if not isinstance(body, dict):
         raise ValidationError("body must be a JSON object",
                               {"got": type(body).__name__})

@@ -1,0 +1,3382 @@
+{
+  "schema_version": 2,
+  "materials": {
+    "peek": {
+      "label": "PEEK",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "injection moulded, unfilled",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.3,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "E_gpa": {
+          "value": 3.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "yield_mpa": {
+          "value": 100.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "ultimate_mpa": {
+          "value": 100.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "elongation_pct": {
+          "value": 30.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "cte_um_m_k": {
+          "value": 47.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "k_w_m_k": {
+          "value": 0.25,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 90.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      }
+    },
+    "ultem": {
+      "label": "Ultem 1000 (PEI)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "injection moulded, unfilled",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.27,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "E_gpa": {
+          "value": 3.2,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "yield_mpa": {
+          "value": 110.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "ultimate_mpa": {
+          "value": 105.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "elongation_pct": {
+          "value": 60.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "cte_um_m_k": {
+          "value": 56.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "k_w_m_k": {
+          "value": 0.22,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "max_service_temp_c": {
+          "value": 170.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 40.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "notes": "Break strength below yield is real datasheet behavior."
+    },
+    "peek_cf30": {
+      "label": "PEEK-CF30 (30 % carbon fibre)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "extruded stock shape, 30 % short carbon fibre",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.41,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Ensinger TECAPEEK CF30 black datasheet (extruded stock shape), typical"
+        },
+        "E_gpa": {
+          "range": [
+            11.0,
+            15.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Ensinger TECAPEEK CF30 black datasheet (extruded stock shape), typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            130.0,
+            160.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Ensinger TECAPEEK CF30 black datasheet (extruded stock shape), typical"
+        },
+        "elongation_pct": {
+          "range": [
+            1.5,
+            3.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Ensinger TECAPEEK CF30 black datasheet (extruded stock shape), typical"
+        },
+        "cte_um_m_k": {
+          "range": [
+            10.0,
+            22.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Ensinger TECAPEEK CF30 black datasheet (extruded stock shape), typical (parallel to extrusion)"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.4,
+            0.9
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Ensinger TECAPEEK CF30 black datasheet (extruded stock shape), typical (filler-orientation dependent)"
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.4,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: standard value for glassy thermoplastics (0.38-0.42); ISO 527 datasheets rarely publish Poisson's ratio"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "printable": {
+          "fdm": "fair"
+        },
+        "im": "fair",
+        "source": "editorial classification; Ensinger machining guideline for TECAPEEK stock shapes"
+      },
+      "cost_usd_kg": {
+        "range": [
+          120.0,
+          220.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Short-carbon-fibre compound: stiffness and strength are strongly orientation dependent, and these are extruded stock-shape figures — injection-moulded skins are stiffer, weld lines much weaker."
+    },
+    "peek_gf30": {
+      "label": "PEEK-GF30 (30 % glass fibre)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "extruded stock shape, 30 % short glass fibre",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.51,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Ensinger TECAPEEK GF30 datasheet (extruded stock shape), typical"
+        },
+        "E_gpa": {
+          "range": [
+            8.0,
+            11.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Ensinger TECAPEEK GF30 datasheet (extruded stock shape), typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            120.0,
+            160.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Ensinger TECAPEEK GF30 datasheet (extruded stock shape), typical"
+        },
+        "elongation_pct": {
+          "range": [
+            2.0,
+            3.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Ensinger TECAPEEK GF30 datasheet (extruded stock shape), typical"
+        },
+        "cte_um_m_k": {
+          "range": [
+            18.0,
+            30.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Ensinger TECAPEEK GF30 datasheet (extruded stock shape), typical (parallel to extrusion)"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.3,
+            0.5
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Ensinger TECAPEEK GF30 datasheet (extruded stock shape), typical"
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.4,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: standard value for glassy thermoplastics (0.38-0.42); ISO 527 datasheets rarely publish Poisson's ratio"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "fair",
+        "source": "editorial classification; Ensinger machining guideline for TECAPEEK stock shapes"
+      },
+      "cost_usd_kg": {
+        "range": [
+          90.0,
+          160.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Glass fibre is electrically insulating (unlike the CF grade) and abrasive to tooling; properties are orientation dependent."
+    },
+    "pekk": {
+      "label": "PEKK",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "injection moulded, unfilled",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.3,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Arkema Kepstan 6002 PEKK datasheet, typical"
+        },
+        "E_gpa": {
+          "range": [
+            3.5,
+            4.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Arkema Kepstan 6002 PEKK datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            90.0,
+            110.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Arkema Kepstan 6002 PEKK datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 240.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.4,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: standard value for glassy thermoplastics (0.38-0.42); ISO 527 datasheets rarely publish Poisson's ratio"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "printable": {
+          "fdm": "fair"
+        },
+        "im": "fair",
+        "source": "editorial classification; Arkema Kepstan processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          150.0,
+          350.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "PEEK's slower-crystallising cousin: a Tg near 160 C, a melting point that the 6000-series trades against processability, and the AM industry's high-temperature filament. Elongation and thermal properties are omitted — they swing with the crystallinity the process leaves behind."
+    },
+    "ultem_9085": {
+      "label": "ULTEM 9085 (PEI, FDM)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "FDM printed, XZ (flat) orientation, as-built",
+      "standards": [
+        "ASTM D638",
+        "ASTM D790"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.34,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Stratasys ULTEM 9085 datasheet, typical (FDM, XZ orientation)"
+        },
+        "E_gpa": {
+          "value": 2.2,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Stratasys ULTEM 9085 datasheet, typical (FDM, XZ orientation)"
+        },
+        "ultimate_mpa": {
+          "value": 69.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Stratasys ULTEM 9085 datasheet, typical (FDM, XZ orientation)"
+        },
+        "elongation_pct": {
+          "value": 5.8,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Stratasys ULTEM 9085 datasheet, typical (FDM, XZ orientation)"
+        },
+        "max_service_temp_c": {
+          "value": 153.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Stratasys ULTEM 9085 datasheet, heat deflection temperature at 0.45 MPa"
+        },
+        "poisson_ratio": {
+          "value": 0.4,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: standard value for glassy thermoplastics (0.38-0.42); ISO 527 datasheets rarely publish Poisson's ratio"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "printable": {
+          "fdm": "excellent"
+        },
+        "source": "Stratasys ULTEM 9085 processing data; editorial classification"
+      },
+      "cost_usd_kg": {
+        "range": [
+          200.0,
+          450.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The certifiable FDM material (FST-rated, flown in aircraft interiors). Printed properties are anisotropic: ZX (upright) strength is roughly half the XZ figure quoted here. max_service_temp_c is the 0.45 MPa HDT, not a creep-rated limit."
+    },
+    "pps": {
+      "label": "PPS (unfilled)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "injection moulded, unfilled",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.35,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Solvay Ryton PPS unfilled resin datasheet, typical"
+        },
+        "E_gpa": {
+          "range": [
+            3.3,
+            4.1
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Solvay Ryton PPS unfilled resin datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            70.0,
+            90.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Solvay Ryton PPS unfilled resin datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            2.0,
+            6.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Solvay Ryton PPS unfilled resin datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "range": [
+            40.0,
+            60.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Solvay Ryton PPS unfilled resin datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.3,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Solvay Ryton PPS unfilled resin datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 200.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.4,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: standard value for glassy thermoplastics (0.38-0.42); ISO 527 datasheets rarely publish Poisson's ratio"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "excellent",
+        "source": "editorial classification; Solvay Ryton processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          10.0,
+          22.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Chemically inert to essentially everything below 200 C and inherently flame retardant; unfilled PPS is brittle, which is why the filled grades dominate real parts."
+    },
+    "pps_gf40": {
+      "label": "PPS-GF40 (40 % glass fibre)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "injection moulded, 40 % short glass fibre",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.65,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Solvay Ryton R-4 (40 % glass-filled PPS) datasheet, typical"
+        },
+        "E_gpa": {
+          "range": [
+            12.0,
+            15.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Solvay Ryton R-4 (40 % glass-filled PPS) datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            150.0,
+            195.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Solvay Ryton R-4 (40 % glass-filled PPS) datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            1.0,
+            2.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Solvay Ryton R-4 (40 % glass-filled PPS) datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "range": [
+            15.0,
+            30.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Solvay Ryton R-4 (40 % glass-filled PPS) datasheet, typical (flow direction)"
+        },
+        "k_w_m_k": {
+          "value": 0.3,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Solvay Ryton R-4 (40 % glass-filled PPS) datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 220.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.4,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: standard value for glassy thermoplastics (0.38-0.42); ISO 527 datasheets rarely publish Poisson's ratio"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "excellent",
+        "source": "editorial classification; Solvay Ryton processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          8.0,
+          18.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The under-bonnet workhorse: pumps, thermostat housings, connectors. Glass makes it abrasive to tools and moulds."
+    },
+    "ppsu": {
+      "label": "PPSU (polyphenylsulfone)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "injection moulded, unfilled",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.29,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Solvay Radel R-5000 PPSU datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 2.34,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Solvay Radel R-5000 PPSU datasheet, typical"
+        },
+        "yield_mpa": {
+          "value": 70.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Solvay Radel R-5000 PPSU datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            60.0,
+            90.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Solvay Radel R-5000 PPSU datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "value": 56.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Solvay Radel R-5000 PPSU datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.35,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Solvay Radel R-5000 PPSU datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 180.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.4,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: standard value for glassy thermoplastics (0.38-0.42); ISO 527 datasheets rarely publish Poisson's ratio"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "good",
+        "source": "editorial classification; Solvay Radel processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          20.0,
+          45.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Amorphous, transparent-amber, and the one sulfone that shrugs off 1000+ steam-autoclave cycles — hence surgical trays and aircraft interior panels."
+    },
+    "psu": {
+      "label": "PSU (polysulfone)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "injection moulded, unfilled",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.24,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Solvay Udel P-1700 PSU datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 2.48,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Solvay Udel P-1700 PSU datasheet, typical"
+        },
+        "yield_mpa": {
+          "value": 70.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Solvay Udel P-1700 PSU datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            50.0,
+            100.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Solvay Udel P-1700 PSU datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "value": 56.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Solvay Udel P-1700 PSU datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.26,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Solvay Udel P-1700 PSU datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 160.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.4,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: standard value for glassy thermoplastics (0.38-0.42); ISO 527 datasheets rarely publish Poisson's ratio"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "good",
+        "source": "editorial classification; Solvay Udel processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          12.0,
+          28.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Transparent, hydrolysis resistant, cheaper than PPSU and PEI; notch sensitive and attacked by ketones and chlorinated solvents."
+    },
+    "pes": {
+      "label": "PES (polyethersulfone)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "injection moulded, unfilled",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.37,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "BASF Ultrason E 2010 (PESU) datasheet, typical"
+        },
+        "E_gpa": {
+          "range": [
+            2.6,
+            2.9
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "BASF Ultrason E 2010 (PESU) datasheet, typical"
+        },
+        "yield_mpa": {
+          "value": 85.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "BASF Ultrason E 2010 (PESU) datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "value": 55.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "BASF Ultrason E 2010 (PESU) datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.18,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "BASF Ultrason E 2010 (PESU) datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 180.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.4,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: standard value for glassy thermoplastics (0.38-0.42); ISO 527 datasheets rarely publish Poisson's ratio"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "good",
+        "source": "editorial classification; BASF Ultrason processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          15.0,
+          35.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The highest-Tg sulfone (about 225 C). Elongation is omitted: it ranges from a few percent to tens of percent with drying and moulding conditions, and the datasheet value is not a design number."
+    },
+    "ptfe": {
+      "label": "PTFE (virgin)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "compression moulded and sintered, virgin, unfilled",
+      "standards": [
+        "ASTM D4894",
+        "ISO 12086-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.16,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Chemours Teflon PTFE virgin resin properties handbook, typical"
+        },
+        "E_gpa": {
+          "value": 0.5,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Chemours Teflon PTFE properties handbook, tensile-modulus vs temperature curve (read-off, indicative +/- 20 %)",
+          "table": [
+            [
+              -20.0,
+              1.0
+            ],
+            [
+              23.0,
+              0.5
+            ],
+            [
+              100.0,
+              0.2
+            ],
+            [
+              200.0,
+              0.09
+            ]
+          ]
+        },
+        "ultimate_mpa": {
+          "range": [
+            25.0,
+            35.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Chemours Teflon PTFE virgin resin properties handbook, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            250.0,
+            400.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Chemours Teflon PTFE virgin resin properties handbook, typical"
+        },
+        "cte_um_m_k": {
+          "range": [
+            100.0,
+            160.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Chemours Teflon PTFE virgin resin properties handbook, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.25,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Chemours Teflon PTFE virgin resin properties handbook, typical"
+        },
+        "max_service_temp_c": {
+          "value": 260.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Chemours Teflon PTFE virgin resin properties handbook, typical"
+        },
+        "poisson_ratio": {
+          "value": 0.46,
+          "unit": "-",
+          "basis": "typical",
+          "source": "Chemours Teflon PTFE properties handbook (nu ~ 0.46)"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "Chemours Teflon PTFE virgin resin properties handbook, typical"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "source": "editorial classification; Chemours PTFE processing guide (PTFE is not melt-processable)"
+      },
+      "cost_usd_kg": {
+        "range": [
+          15.0,
+          35.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Lowest friction of any bulk polymer and inert to nearly every chemical, but it creeps badly under load ('cold flow') and cannot be injection moulded — parts are sintered billets, machined. The E table is a read-off of the handbook's modulus-temperature curve and is indicative (+/- 20 %), not a certified allowable."
+    },
+    "pfa": {
+      "label": "PFA",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "melt processed, unfilled",
+      "standards": [
+        "ASTM D3307",
+        "ISO 12086-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.15,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Chemours Teflon PFA 340 datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 0.6,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Chemours Teflon PFA 340 datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            25.0,
+            32.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Chemours Teflon PFA 340 datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            280.0,
+            350.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Chemours Teflon PFA 340 datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "range": [
+            100.0,
+            140.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Chemours Teflon PFA 340 datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.19,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Chemours Teflon PFA 340 datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 260.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Chemours Teflon PFA 340 datasheet, typical"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "good",
+        "source": "editorial classification; Chemours PFA processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          45.0,
+          90.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "PTFE's chemistry with melt processability: the same 260 C service and inertness, injection mouldable and weldable, at several times the price. Semiconductor and high-purity fluid handling."
+    },
+    "fep": {
+      "label": "FEP",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "melt processed, unfilled",
+      "standards": [
+        "ASTM D2116",
+        "ISO 12086-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.15,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Chemours Teflon FEP 100 datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 0.55,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Chemours Teflon FEP 100 datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            20.0,
+            27.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Chemours Teflon FEP 100 datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            250.0,
+            330.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Chemours Teflon FEP 100 datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "range": [
+            110.0,
+            160.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Chemours Teflon FEP 100 datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.2,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Chemours Teflon FEP 100 datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 200.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Chemours Teflon FEP 100 datasheet, typical"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "good",
+        "source": "editorial classification; Chemours FEP processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          40.0,
+          80.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The cheap, clear, easily processed fluoropolymer — wire insulation and film — capped near 200 C, well below PFA and PTFE."
+    },
+    "pvdf": {
+      "label": "PVDF",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "injection moulded / extruded, unfilled",
+      "standards": [
+        "ISO 527-2",
+        "ASTM D3222"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.78,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Arkema Kynar 720 PVDF datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 2.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Arkema Kynar PVDF modulus vs temperature curve (read-off, indicative +/- 20 %)",
+          "table": [
+            [
+              -20.0,
+              3.0
+            ],
+            [
+              23.0,
+              2.0
+            ],
+            [
+              60.0,
+              1.2
+            ],
+            [
+              100.0,
+              0.6
+            ],
+            [
+              140.0,
+              0.3
+            ]
+          ]
+        },
+        "yield_mpa": {
+          "range": [
+            45.0,
+            55.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Arkema Kynar 720 PVDF datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            20.0,
+            60.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Arkema Kynar 720 PVDF datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "range": [
+            110.0,
+            150.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Arkema Kynar 720 PVDF datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.19,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Arkema Kynar 720 PVDF datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Arkema Kynar 720 PVDF datasheet, typical"
+        },
+        "poisson_ratio": {
+          "value": 0.4,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: standard value for glassy thermoplastics (0.38-0.42); ISO 527 datasheets rarely publish Poisson's ratio"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "good",
+        "im": "good",
+        "source": "editorial classification; Arkema Kynar processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          15.0,
+          35.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The chemical-plant fluoropolymer: weldable pipe and lining, UV-stable, and piezoelectric when poled. The E table is a read-off of the datasheet's modulus-temperature curve (indicative +/- 20 %)."
+    },
+    "pai_torlon_4203": {
+      "label": "PAI (Torlon 4203L)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "injection moulded and post-cured, unfilled",
+      "standards": [
+        "ASTM D1708",
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.42,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Solvay Torlon 4203L datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 4.5,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Solvay Torlon 4203L flexural-modulus vs temperature curve (read-off, indicative +/- 20 %)",
+          "table": [
+            [
+              23.0,
+              4.5
+            ],
+            [
+              100.0,
+              4.0
+            ],
+            [
+              200.0,
+              3.4
+            ],
+            [
+              250.0,
+              3.0
+            ]
+          ]
+        },
+        "ultimate_mpa": {
+          "value": 192.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Solvay Torlon 4203L datasheet, typical"
+        },
+        "elongation_pct": {
+          "value": 15.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Solvay Torlon 4203L datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "value": 30.6,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Solvay Torlon 4203L datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.26,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Solvay Torlon 4203L datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Solvay Torlon 4203L datasheet, typical"
+        },
+        "poisson_ratio": {
+          "value": 0.4,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: standard value for glassy thermoplastics (0.38-0.42); ISO 527 datasheets rarely publish Poisson's ratio"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "fair",
+        "source": "editorial classification; Solvay Torlon processing and post-cure guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          80.0,
+          180.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The strongest unreinforced thermoplastic in service at 250 C. Moulded parts need a multi-day post-cure to reach these numbers; stock shapes are supplied cured. The E table is a read-off of the published modulus-temperature curve (indicative +/- 20 %)."
+    },
+    "pi_vespel_sp1": {
+      "label": "Polyimide (Vespel SP-1)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "direct-formed polyimide, unfilled",
+      "standards": [
+        "ASTM D1708"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.43,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "DuPont Vespel SP-1 datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 2.5,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "DuPont Vespel SP-1 datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "value": 86.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "DuPont Vespel SP-1 datasheet, typical"
+        },
+        "elongation_pct": {
+          "value": 7.5,
+          "unit": "%",
+          "basis": "typical",
+          "source": "DuPont Vespel SP-1 datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "value": 54.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "DuPont Vespel SP-1 datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.35,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "DuPont Vespel SP-1 datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 288.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "DuPont Vespel SP-1 datasheet, typical"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "source": "editorial classification; DuPont Vespel machining guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          300.0,
+          1000.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Not melt-processable at all: shapes are sintered from powder, then machined, which is most of why it costs what it costs. Runs to 300 C continuously (480 C briefly) and is the default bushing material where nothing else survives."
+    },
+    "lcp": {
+      "label": "LCP (unfilled)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "injection moulded, unfilled",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Celanese Vectra A950 LCP datasheet, typical"
+        },
+        "E_gpa": {
+          "range": [
+            9.0,
+            12.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Celanese Vectra A950 LCP datasheet, typical (flow direction)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            150.0,
+            190.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Celanese Vectra A950 LCP datasheet, typical (flow direction)"
+        },
+        "elongation_pct": {
+          "range": [
+            2.0,
+            5.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Celanese Vectra A950 LCP datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 200.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "excellent",
+        "source": "editorial classification; Celanese Vectra processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          15.0,
+          40.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Self-reinforcing: the melt orients into fibrils, so a thin-wall moulding is stiff in the flow direction and weak across it. Fills 0.2 mm walls, which is why connectors are made of it. CTE is omitted deliberately — it differs by an order of magnitude between flow and transverse directions."
+    },
+    "epoxy_cast": {
+      "label": "Epoxy, cast (unfilled)",
+      "category": "polymer",
+      "subcategory": "thermoset",
+      "condition": "cast, amine cured, post-cured",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.16,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Huntsman Araldite LY 1564 / Aradur 3486 cast resin datasheet, typical"
+        },
+        "E_gpa": {
+          "range": [
+            2.8,
+            3.4
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Huntsman Araldite LY 1564 / Aradur 3486 cast resin datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            60.0,
+            85.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Huntsman Araldite LY 1564 / Aradur 3486 cast resin datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            3.0,
+            7.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Huntsman Araldite LY 1564 / Aradur 3486 cast resin datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "range": [
+            55.0,
+            70.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Huntsman Araldite LY 1564 / Aradur 3486 cast resin datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.2,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Huntsman Araldite LY 1564 / Aradur 3486 cast resin datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service below a 110-130 C Tg, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.35,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: standard value for cast thermosetting resins (0.33-0.37)"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "casting": "excellent",
+        "source": "editorial classification; Huntsman Araldite processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          8.0,
+          22.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Neat cast resin, not a laminate. Above Tg the modulus falls by orders of magnitude, so the service limit is a Tg statement and not a strength one."
+    },
+    "epoxy_laminating": {
+      "label": "Epoxy laminating resin",
+      "category": "polymer",
+      "subcategory": "thermoset",
+      "condition": "cast neat resin, post-cured",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.15,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Gurit Ampreg 31 laminating epoxy datasheet, typical (neat cast resin)"
+        },
+        "E_gpa": {
+          "value": 3.2,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Gurit Ampreg 31 laminating epoxy datasheet, typical (neat cast resin)"
+        },
+        "ultimate_mpa": {
+          "value": 73.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Gurit Ampreg 31 laminating epoxy datasheet, typical (neat cast resin)"
+        },
+        "elongation_pct": {
+          "value": 5.4,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Gurit Ampreg 31 laminating epoxy datasheet, typical (neat cast resin)"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service below the 80-100 C cured Tg, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.35,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: standard value for cast thermosetting resins (0.33-0.37)"
+        }
+      },
+      "process": {
+        "casting": "good",
+        "source": "editorial classification; Gurit Ampreg processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          10.0,
+          28.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Low-viscosity wet-layup and infusion resin. These are neat-resin numbers: a laminate's stiffness comes from the fibre, so use the composite family for a real part."
+    },
+    "polyester_resin": {
+      "label": "Unsaturated polyester resin",
+      "category": "polymer",
+      "subcategory": "thermoset",
+      "condition": "cast, orthophthalic, cured",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.2,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Scott Bader Crystic 2-446PA orthophthalic polyester, cast resin datasheet, typical"
+        },
+        "E_gpa": {
+          "range": [
+            3.0,
+            4.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Scott Bader Crystic 2-446PA orthophthalic polyester, cast resin datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            45.0,
+            70.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Scott Bader Crystic 2-446PA orthophthalic polyester, cast resin datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            1.5,
+            3.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Scott Bader Crystic 2-446PA orthophthalic polyester, cast resin datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "range": [
+            80.0,
+            130.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Scott Bader Crystic 2-446PA orthophthalic polyester, cast resin datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.2,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Scott Bader Crystic 2-446PA orthophthalic polyester, cast resin datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 70.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service below a 70-90 C HDT"
+        }
+      },
+      "process": {
+        "casting": "good",
+        "source": "editorial classification; Scott Bader Crystic processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          7.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The cheap boatyard resin: high cure shrinkage (5-8 %), styrene emissions, and poorer water resistance than epoxy or vinyl ester."
+    },
+    "vinyl_ester": {
+      "label": "Vinyl ester resin",
+      "category": "polymer",
+      "subcategory": "thermoset",
+      "condition": "cast, bisphenol-A epoxy vinyl ester, post-cured",
+      "standards": [
+        "ISO 527-2",
+        "ASTM D638"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.14,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Ashland Derakane 411-350 vinyl ester datasheet, typical (cast, post-cured)"
+        },
+        "E_gpa": {
+          "value": 3.2,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Ashland Derakane 411-350 vinyl ester datasheet, typical (cast, post-cured)"
+        },
+        "ultimate_mpa": {
+          "value": 86.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Ashland Derakane 411-350 vinyl ester datasheet, typical (cast, post-cured)"
+        },
+        "elongation_pct": {
+          "range": [
+            5.0,
+            6.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Ashland Derakane 411-350 vinyl ester datasheet, typical (cast, post-cured)"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Ashland Derakane 411-350 datasheet, heat distortion temperature (post-cured)"
+        }
+      },
+      "process": {
+        "casting": "good",
+        "source": "editorial classification; Ashland Derakane fabrication guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          10.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Sits between polyester and epoxy: polyester-like processing and price, epoxy-like toughness and far better resistance to water and acids. The chemical-tank and marine-hull default."
+    },
+    "phenolic_gp": {
+      "label": "Phenolic moulding compound (general purpose)",
+      "category": "polymer",
+      "subcategory": "thermoset",
+      "condition": "compression moulded, wood-flour filled",
+      "standards": [
+        "ASTM D700",
+        "ISO 14526-3"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM D700 general-purpose phenolic moulding compound, typical class values"
+        },
+        "E_gpa": {
+          "range": [
+            6.0,
+            9.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASTM D700 general-purpose phenolic moulding compound, typical class values (flexural)"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "ASTM D700 general-purpose phenolic moulding compound, typical class values"
+        },
+        "compressive_mpa": {
+          "range": [
+            150.0,
+            250.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM D700 general-purpose phenolic moulding compound, typical class values"
+        },
+        "bending_mpa": {
+          "range": [
+            60.0,
+            90.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM D700 general-purpose phenolic moulding compound, typical class values (ASTM D790 flexural strength)"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "source": "editorial classification; ASTM D700 compression-moulding practice"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          7.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Bakelite. Brittle, so it is specified by flexural and compressive strength rather than a tensile yield; dimensionally stable, self-extinguishing, and still the cheapest way to a 150 C electrical part."
+    },
+    "pu_rigid_cast": {
+      "label": "Polyurethane, rigid cast",
+      "category": "polymer",
+      "subcategory": "thermoset",
+      "condition": "cast, ~80 Shore D",
+      "standards": [
+        "ASTM D638",
+        "ASTM D2240"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.04,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Smooth-On TASK 9 rigid polyurethane casting resin datasheet, typical"
+        },
+        "E_gpa": {
+          "range": [
+            1.5,
+            2.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Smooth-On TASK 9 rigid polyurethane casting resin datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            40.0,
+            50.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Smooth-On TASK 9 rigid polyurethane casting resin datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            3.0,
+            8.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Smooth-On TASK 9 rigid polyurethane casting resin datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service below the resin's ~90 C HDT"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "casting": "excellent",
+        "source": "editorial classification; Smooth-On casting guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          10.0,
+          30.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Room-temperature vacuum casting and silicone-mould prototyping: hours to a rigid part, no tooling. Not UV stable and it creeps under sustained load."
+    },
+    "sla_standard_resin": {
+      "label": "SLA standard photopolymer",
+      "category": "polymer",
+      "subcategory": "thermoset",
+      "condition": "SLA printed, post-cured",
+      "standards": [
+        "ASTM D638",
+        "ASTM D790"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.18,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Formlabs Clear Resin V4 datasheet, post-cured, typical"
+        },
+        "E_gpa": {
+          "value": 2.8,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Formlabs Clear Resin V4 datasheet, post-cured, typical"
+        },
+        "ultimate_mpa": {
+          "value": 65.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Formlabs Clear Resin V4 datasheet, post-cured, typical"
+        },
+        "elongation_pct": {
+          "value": 6.2,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Formlabs Clear Resin V4 datasheet, post-cured, typical"
+        },
+        "max_service_temp_c": {
+          "value": 73.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Formlabs Clear Resin V4 datasheet, heat deflection temperature at 0.45 MPa (post-cured)"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "printable": {
+          "sla": "excellent"
+        },
+        "source": "editorial classification; Formlabs post-processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          80.0,
+          200.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Generic stand-in for a standard SLA/DLP photopolymer; the cited grade is one representative product. Green (uncured) parts are far weaker, and every photopolymer embrittles and yellows under UV."
+    },
+    "sla_tough_resin": {
+      "label": "SLA tough photopolymer",
+      "category": "polymer",
+      "subcategory": "thermoset",
+      "condition": "SLA printed, post-cured",
+      "standards": [
+        "ASTM D638",
+        "ASTM D790"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.15,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "editorial estimate: photopolymer family typical (the grade datasheet does not publish density)"
+        },
+        "E_gpa": {
+          "value": 1.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Formlabs Tough 2000 Resin datasheet, post-cured, typical"
+        },
+        "ultimate_mpa": {
+          "value": 46.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Formlabs Tough 2000 Resin datasheet, post-cured, typical"
+        },
+        "elongation_pct": {
+          "value": 48.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Formlabs Tough 2000 Resin datasheet, post-cured, typical"
+        },
+        "max_service_temp_c": {
+          "value": 46.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Formlabs Tough 2000 Resin datasheet, heat deflection temperature at 0.45 MPa (post-cured)"
+        }
+      },
+      "process": {
+        "printable": {
+          "sla": "excellent"
+        },
+        "source": "editorial classification; Formlabs post-processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          100.0,
+          250.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The ABS-like SLA resin: half the stiffness of the standard resin and eight times the elongation, for snap fits and living-hinge-ish prototypes. Density is an editorial family typical, not a datasheet number."
+    },
+    "bmi_resin": {
+      "label": "Bismaleimide (BMI) resin",
+      "category": "polymer",
+      "subcategory": "thermoset",
+      "condition": "cast neat resin, cured and post-cured",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.25,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Solvay CYCOM 5250-4 BMI resin datasheet, typical (neat cast resin)"
+        },
+        "E_gpa": {
+          "range": [
+            3.5,
+            4.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Solvay CYCOM 5250-4 BMI resin datasheet, typical (neat cast resin)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            50.0,
+            80.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Solvay CYCOM 5250-4 BMI resin datasheet, typical (neat cast resin)"
+        },
+        "max_service_temp_c": {
+          "value": 200.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service well below the 250-300 C cured Tg"
+        }
+      },
+      "process": {
+        "casting": "fair",
+        "source": "editorial classification; Solvay CYCOM cure-cycle guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          50.0,
+          150.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Kept deliberately thin: BMI is bought as prepreg, and the neat resin numbers that exist are cure-cycle dependent. Its reason to exist is a 250-300 C Tg where epoxy stops at 180 C."
+    },
+    "rubber_nr": {
+      "label": "Natural rubber (NR)",
+      "category": "polymer",
+      "subcategory": "elastomer",
+      "condition": "vulcanized, ~50 Shore A, lightly filled",
+      "standards": [
+        "ASTM D2000",
+        "ISO 37"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.95,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM D2000 M2AA natural-rubber compound; tensile per ISO 37, typical trade compound"
+        },
+        "ultimate_mpa": {
+          "range": [
+            20.0,
+            30.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM D2000 M2AA natural-rubber compound; tensile per ISO 37, typical trade compound"
+        },
+        "elongation_pct": {
+          "range": [
+            450.0,
+            700.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASTM D2000 M2AA natural-rubber compound; tensile per ISO 37, typical trade compound"
+        },
+        "k_w_m_k": {
+          "value": 0.15,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASTM D2000 M2AA natural-rubber compound; tensile per ISO 37, typical trade compound"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "ASTM D2000 M2AA natural-rubber compound; tensile per ISO 37, typical trade compound"
+        },
+        "poisson_ratio": {
+          "value": 0.49,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: near-incompressible elastomer convention (nu ~ 0.49)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.0,
+          6.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Unbeaten for resilience and tear strength (vibration mounts, tyres), destroyed by ozone, oil and sunlight. A rubber's properties are set by its compound, so read these as the class band, not a grade. No Young's modulus is given: rubber is hyperelastic and a single E is only meaningful at small strain."
+    },
+    "rubber_sbr": {
+      "label": "SBR (styrene-butadiene rubber)",
+      "category": "polymer",
+      "subcategory": "elastomer",
+      "condition": "vulcanized, ~60 Shore A, carbon-black filled",
+      "standards": [
+        "ASTM D2000",
+        "ISO 37"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.1,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM D2000 AA styrene-butadiene compound; tensile per ISO 37, typical trade compound"
+        },
+        "ultimate_mpa": {
+          "range": [
+            10.0,
+            25.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM D2000 AA styrene-butadiene compound; tensile per ISO 37, typical trade compound"
+        },
+        "elongation_pct": {
+          "range": [
+            350.0,
+            600.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASTM D2000 AA styrene-butadiene compound; tensile per ISO 37, typical trade compound"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "ASTM D2000 AA styrene-butadiene compound; tensile per ISO 37, typical trade compound"
+        },
+        "poisson_ratio": {
+          "value": 0.49,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: near-incompressible elastomer convention (nu ~ 0.49)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.5,
+          4.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The cheap general-purpose rubber: better wear and heat than NR, worse resilience and tear. A rubber's properties are set by its compound, so read these as the class band, not a grade. No Young's modulus is given: rubber is hyperelastic and a single E is only meaningful at small strain."
+    },
+    "nbr": {
+      "label": "NBR (nitrile rubber)",
+      "category": "polymer",
+      "subcategory": "elastomer",
+      "condition": "vulcanized, ~70 Shore A, medium acrylonitrile",
+      "standards": [
+        "ASTM D2000",
+        "ISO 37",
+        "ISO 3601-3"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.2,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM D2000 BG/BF nitrile compound (medium acrylonitrile); tensile per ISO 37, typical trade compound"
+        },
+        "ultimate_mpa": {
+          "range": [
+            10.0,
+            25.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM D2000 BG/BF nitrile compound (medium acrylonitrile); tensile per ISO 37, typical trade compound"
+        },
+        "elongation_pct": {
+          "range": [
+            250.0,
+            550.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASTM D2000 BG/BF nitrile compound (medium acrylonitrile); tensile per ISO 37, typical trade compound"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "ASTM D2000 BG/BF nitrile compound (medium acrylonitrile); tensile per ISO 37, typical trade compound"
+        },
+        "poisson_ratio": {
+          "value": 0.49,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: near-incompressible elastomer convention (nu ~ 0.49)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          8.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The default O-ring and oil-seal rubber. Acrylonitrile content trades oil resistance against low-temperature flexibility; no ozone or weather resistance without protection. A rubber's properties are set by its compound, so read these as the class band, not a grade. No Young's modulus is given: rubber is hyperelastic and a single E is only meaningful at small strain."
+    },
+    "hnbr": {
+      "label": "HNBR (hydrogenated nitrile)",
+      "category": "polymer",
+      "subcategory": "elastomer",
+      "condition": "vulcanized, ~70 Shore A",
+      "standards": [
+        "ASTM D2000",
+        "ISO 37"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.2,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM D2000 DH hydrogenated-nitrile compound; Zeon Zetpol product data, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            20.0,
+            35.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM D2000 DH hydrogenated-nitrile compound; Zeon Zetpol product data, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            200.0,
+            450.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASTM D2000 DH hydrogenated-nitrile compound; Zeon Zetpol product data, typical"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "ASTM D2000 DH hydrogenated-nitrile compound; Zeon Zetpol product data, typical"
+        },
+        "poisson_ratio": {
+          "value": 0.49,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: near-incompressible elastomer convention (nu ~ 0.49)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          15.0,
+          40.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Hydrogenating the nitrile backbone buys 50 C of service temperature, ozone resistance and roughly double the strength — for several times the price. Air-conditioning and oilfield seals. A rubber's properties are set by its compound, so read these as the class band, not a grade. No Young's modulus is given: rubber is hyperelastic and a single E is only meaningful at small strain."
+    },
+    "epdm": {
+      "label": "EPDM",
+      "category": "polymer",
+      "subcategory": "elastomer",
+      "condition": "vulcanized, ~65 Shore A",
+      "standards": [
+        "ASTM D2000",
+        "ISO 37"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.1,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM D2000 CA/DA ethylene-propylene-diene compound; tensile per ISO 37, typical trade compound"
+        },
+        "ultimate_mpa": {
+          "range": [
+            7.0,
+            21.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM D2000 CA/DA ethylene-propylene-diene compound; tensile per ISO 37, typical trade compound"
+        },
+        "elongation_pct": {
+          "range": [
+            300.0,
+            600.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASTM D2000 CA/DA ethylene-propylene-diene compound; tensile per ISO 37, typical trade compound"
+        },
+        "max_service_temp_c": {
+          "value": 130.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "ASTM D2000 CA/DA ethylene-propylene-diene compound; tensile per ISO 37, typical trade compound"
+        },
+        "poisson_ratio": {
+          "value": 0.49,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: near-incompressible elastomer convention (nu ~ 0.49)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.0,
+          6.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Weather, ozone, steam and brake-fluid resistant, and useless in petroleum oils — the opposite selection to NBR. Roof membrane, door seal, coolant hose. A rubber's properties are set by its compound, so read these as the class band, not a grade. No Young's modulus is given: rubber is hyperelastic and a single E is only meaningful at small strain."
+    },
+    "cr_neoprene": {
+      "label": "CR (chloroprene / neoprene)",
+      "category": "polymer",
+      "subcategory": "elastomer",
+      "condition": "vulcanized, ~60 Shore A",
+      "standards": [
+        "ASTM D2000",
+        "ISO 37"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM D2000 BC/BE chloroprene compound; tensile per ISO 37, typical trade compound"
+        },
+        "ultimate_mpa": {
+          "range": [
+            10.0,
+            25.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM D2000 BC/BE chloroprene compound; tensile per ISO 37, typical trade compound"
+        },
+        "elongation_pct": {
+          "range": [
+            300.0,
+            600.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASTM D2000 BC/BE chloroprene compound; tensile per ISO 37, typical trade compound"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "ASTM D2000 BC/BE chloroprene compound; tensile per ISO 37, typical trade compound"
+        },
+        "poisson_ratio": {
+          "value": 0.49,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: near-incompressible elastomer convention (nu ~ 0.49)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          10.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The all-rounder: moderate oil resistance, good weathering, inherently flame retardant, and it bonds to metal well. A rubber's properties are set by its compound, so read these as the class band, not a grade. No Young's modulus is given: rubber is hyperelastic and a single E is only meaningful at small strain."
+    },
+    "silicone_vmq": {
+      "label": "Silicone (VMQ)",
+      "category": "polymer",
+      "subcategory": "elastomer",
+      "condition": "vulcanized, ~60 Shore A",
+      "standards": [
+        "ASTM D2000",
+        "ISO 37"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.2,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM D2000 GE silicone compound; tensile per ISO 37, typical trade compound"
+        },
+        "ultimate_mpa": {
+          "range": [
+            4.0,
+            10.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM D2000 GE silicone compound; tensile per ISO 37, typical trade compound"
+        },
+        "elongation_pct": {
+          "range": [
+            200.0,
+            600.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASTM D2000 GE silicone compound; tensile per ISO 37, typical trade compound"
+        },
+        "k_w_m_k": {
+          "value": 0.2,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASTM D2000 GE silicone compound; tensile per ISO 37, typical trade compound"
+        },
+        "max_service_temp_c": {
+          "value": 200.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "ASTM D2000 GE silicone compound; tensile per ISO 37, typical trade compound"
+        },
+        "poisson_ratio": {
+          "value": 0.49,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: near-incompressible elastomer convention (nu ~ 0.49)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          8.0,
+          30.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The widest service window of the common rubbers (about -60 C to +200 C), physiologically inert, and by far the weakest and most tear-prone. A rubber's properties are set by its compound, so read these as the class band, not a grade. No Young's modulus is given: rubber is hyperelastic and a single E is only meaningful at small strain."
+    },
+    "fkm": {
+      "label": "FKM (fluoroelastomer)",
+      "category": "polymer",
+      "subcategory": "elastomer",
+      "condition": "vulcanized, ~75 Shore A, bisphenol cured",
+      "standards": [
+        "ASTM D2000",
+        "ISO 37"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.85,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Chemours Viton A-401C fluoroelastomer datasheet and ASTM D2000 HK class, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            10.0,
+            16.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Chemours Viton A-401C fluoroelastomer datasheet and ASTM D2000 HK class, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            150.0,
+            300.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Chemours Viton A-401C fluoroelastomer datasheet and ASTM D2000 HK class, typical"
+        },
+        "max_service_temp_c": {
+          "value": 200.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Chemours Viton A-401C fluoroelastomer datasheet and ASTM D2000 HK class, typical"
+        },
+        "poisson_ratio": {
+          "value": 0.49,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: near-incompressible elastomer convention (nu ~ 0.49)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          30.0,
+          90.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Fuels, oils, solvents and 200 C continuously — the aerospace and engine seal. Poor below about -20 C and it swells in ketones, esters and hot water/steam. A rubber's properties are set by its compound, so read these as the class band, not a grade. No Young's modulus is given: rubber is hyperelastic and a single E is only meaningful at small strain."
+    },
+    "tpu_95a": {
+      "label": "TPU 95A",
+      "category": "polymer",
+      "subcategory": "elastomer",
+      "condition": "injection moulded / extruded, 95 Shore A",
+      "standards": [
+        "ISO 527-2",
+        "ISO 868"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.19,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "BASF Elastollan 1195A TPU datasheet, typical"
+        },
+        "E_gpa": {
+          "range": [
+            0.03,
+            0.08
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "BASF Elastollan 1195A TPU datasheet, typical (ISO 178 flexural modulus)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            40.0,
+            50.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "BASF Elastollan 1195A TPU datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            450.0,
+            600.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "BASF Elastollan 1195A TPU datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "BASF Elastollan 1195A TPU datasheet, typical"
+        },
+        "poisson_ratio": {
+          "value": 0.49,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: near-incompressible elastomer convention (nu ~ 0.49)"
+        }
+      },
+      "process": {
+        "printable": {
+          "fdm": "good"
+        },
+        "im": "excellent",
+        "source": "editorial classification; BASF Elastollan processing guide and community FDM practice"
+      },
+      "cost_usd_kg": {
+        "range": [
+          6.0,
+          16.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The printable and mouldable rubber: abrasion resistance no vulcanizate matches, at the cost of creep and a 80 C ceiling. E is a flexural (secant) modulus, not a true elastic constant."
+    },
+    "tpu_85a": {
+      "label": "TPU 85A",
+      "category": "polymer",
+      "subcategory": "elastomer",
+      "condition": "injection moulded / extruded, 85 Shore A",
+      "standards": [
+        "ISO 527-2",
+        "ISO 868"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.12,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "BASF Elastollan 1185A TPU datasheet, typical"
+        },
+        "E_gpa": {
+          "range": [
+            0.01,
+            0.03
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "BASF Elastollan 1185A TPU datasheet, typical (ISO 178 flexural modulus)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            30.0,
+            45.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "BASF Elastollan 1185A TPU datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            500.0,
+            700.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "BASF Elastollan 1185A TPU datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "BASF Elastollan 1185A TPU datasheet, typical"
+        },
+        "poisson_ratio": {
+          "value": 0.49,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: near-incompressible elastomer convention (nu ~ 0.49)"
+        }
+      },
+      "process": {
+        "printable": {
+          "fdm": "fair"
+        },
+        "im": "excellent",
+        "source": "editorial classification; BASF Elastollan processing guide and community FDM practice"
+      },
+      "cost_usd_kg": {
+        "range": [
+          6.0,
+          16.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Softer, stretchier sibling of the 95A grade. Direct-drive extruders only: it buckles in a Bowden tube. E is a flexural (secant) modulus, not a true elastic constant."
+    },
+    "tpe_sebs": {
+      "label": "TPE-S (SEBS compound, 60 Shore A)",
+      "category": "polymer",
+      "subcategory": "elastomer",
+      "condition": "injection moulded, 60 Shore A",
+      "standards": [
+        "ISO 527-2",
+        "ISO 868"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.9,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Kraiburg THERMOLAST K TPE-S (60 Shore A) datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            4.0,
+            9.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Kraiburg THERMOLAST K TPE-S (60 Shore A) datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            400.0,
+            700.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Kraiburg THERMOLAST K TPE-S (60 Shore A) datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 90.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Kraiburg THERMOLAST K TPE-S (60 Shore A) datasheet, typical"
+        },
+        "poisson_ratio": {
+          "value": 0.49,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: near-incompressible elastomer convention (nu ~ 0.49)"
+        }
+      },
+      "process": {
+        "im": "excellent",
+        "source": "editorial classification; Kraiburg THERMOLAST processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          10.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The soft-touch overmould: bonds to PP and PC/ABS in a two-shot tool, recyclable, and mediocre in oil and above 90 C."
+    },
+    "tpc_et_hytrel": {
+      "label": "TPC-ET (Hytrel 5556)",
+      "category": "polymer",
+      "subcategory": "elastomer",
+      "condition": "injection moulded, 55 Shore D",
+      "standards": [
+        "ISO 527-2",
+        "ISO 868"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.19,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "DuPont Hytrel 5556 datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 0.207,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "DuPont Hytrel 5556 datasheet, typical (ISO 178 flexural modulus)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            35.0,
+            45.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "DuPont Hytrel 5556 datasheet, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            400.0,
+            600.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "DuPont Hytrel 5556 datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "DuPont Hytrel 5556 datasheet, typical"
+        }
+      },
+      "process": {
+        "printable": {
+          "fdm": "fair"
+        },
+        "im": "excellent",
+        "source": "editorial classification; DuPont Hytrel processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          8.0,
+          20.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "A copolyester elastomer: stiffer than TPU, keeps its spring to 120 C and in flexural fatigue (CVJ boots, hose, energy chain). E is a flexural (secant) modulus."
+    },
+    "pu_elastomer_cast": {
+      "label": "Cast polyurethane elastomer (90 Shore A)",
+      "category": "polymer",
+      "subcategory": "elastomer",
+      "condition": "cast, 90 Shore A",
+      "standards": [
+        "ASTM D2000",
+        "ASTM D412",
+        "ISO 868"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.2,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Cast MDI/polyester polyurethane elastomer (Lanxess Adiprene product data) and ASTM D2000 BG class, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            30.0,
+            50.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Cast MDI/polyester polyurethane elastomer (Lanxess Adiprene product data) and ASTM D2000 BG class, typical"
+        },
+        "elongation_pct": {
+          "range": [
+            350.0,
+            600.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "Cast MDI/polyester polyurethane elastomer (Lanxess Adiprene product data) and ASTM D2000 BG class, typical"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Cast MDI/polyester polyurethane elastomer (Lanxess Adiprene product data) and ASTM D2000 BG class, typical"
+        },
+        "poisson_ratio": {
+          "value": 0.49,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial estimate: near-incompressible elastomer convention (nu ~ 0.49)"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "casting": "excellent",
+        "source": "editorial classification; cast-polyurethane processing practice"
+      },
+      "cost_usd_kg": {
+        "range": [
+          8.0,
+          22.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Poured, not moulded: rollers, wheels, wear liners and short-run tooling parts in hours. Best-in-class abrasion and load capacity; hydrolyses in hot water (polyester grades) and stops at 80 C."
+    },
+    "eps_foam": {
+      "label": "EPS foam (EN 13163, EPS 100)",
+      "category": "polymer",
+      "subcategory": "foam",
+      "condition": "expanded polystyrene, 20 kg/m3, CS(10)100",
+      "standards": [
+        "EN 13163",
+        "EN ISO 10456",
+        "EN 826"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.02,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 13163 declared values for a 20 kg/m3 EPS board (level CS(10)100); EN ISO 10456 Table 3"
+        },
+        "E_gpa": {
+          "range": [
+            0.003,
+            0.008
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate derived from the EN 13163 CS(10) level (compressive modulus ~ 30-60x the 10 % stress)"
+        },
+        "k_w_m_k": {
+          "value": 0.036,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 13163 declared lambda_D for a 20 kg/m3 board; EN ISO 10456 Table 3 band 0.036-0.040 W/(m*K)"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: long-term service limit for expanded polystyrene (softens near 100 C)"
+        },
+        "cp_j_kg_k": {
+          "value": 1450.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, expanded polystyrene c_p = 1450 J/(kg*K)"
+        },
+        "compressive_mpa": {
+          "value": 0.1,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 13163 level CS(10)100: stress at 10 % deformation, EN 826"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.0,
+          6.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Insulation and packaging, sold by declared level rather than by grade: CS(10)100 means 100 kPa at 10 % deformation. Compressive strength is the design property; tensile is negligible. The density warning the library lint raises is expected — a foam is far below the polymer band."
+    },
+    "xps_foam": {
+      "label": "XPS foam (EN 13164, XPS 300)",
+      "category": "polymer",
+      "subcategory": "foam",
+      "condition": "extruded polystyrene, 33 kg/m3, CS(10\\Y)300",
+      "standards": [
+        "EN 13164",
+        "EN ISO 10456",
+        "EN 826"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.033,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 13164 declared values for an XPS board (level CS(10\\Y)300); EN ISO 10456 Table 3"
+        },
+        "E_gpa": {
+          "range": [
+            0.01,
+            0.02
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate derived from the EN 13164 CS(10\\Y) level (compressive modulus ~ 30-60x the 10 % stress)"
+        },
+        "k_w_m_k": {
+          "value": 0.034,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 13164 declared lambda_D; EN ISO 10456 Table 3 band 0.033-0.037 W/(m*K)"
+        },
+        "max_service_temp_c": {
+          "value": 75.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: long-term service limit for extruded polystyrene"
+        },
+        "cp_j_kg_k": {
+          "value": 1450.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, extruded polystyrene c_p = 1450 J/(kg*K)"
+        },
+        "compressive_mpa": {
+          "value": 0.3,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 13164 level CS(10\\Y)300: stress at 10 % deformation, EN 826"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          8.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Closed-cell and near-impermeable to water, so it is the below-grade and inverted-roof board where EPS would soak. Three times the compressive strength of EPS 100 at 1.6x the density."
+    },
+    "pu_rigid_foam": {
+      "label": "Rigid polyurethane foam (PUR/PIR board)",
+      "category": "polymer",
+      "subcategory": "foam",
+      "condition": "rigid PUR/PIR insulation board, 35 kg/m3",
+      "standards": [
+        "EN 13165",
+        "EN ISO 10456",
+        "EN 826"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.035,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 13165 declared values for a rigid PUR/PIR board; EN ISO 10456 Table 3"
+        },
+        "k_w_m_k": {
+          "value": 0.024,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 13165 declared lambda_D for a faced PUR/PIR board (0.022-0.028 W/(m*K))"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit for rigid PUR (PIR is higher)"
+        },
+        "cp_j_kg_k": {
+          "value": 1400.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, polyurethane c_p = 1400 J/(kg*K)"
+        },
+        "compressive_mpa": {
+          "value": 0.15,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 13165 level CS(10\\Y)150: stress at 10 % deformation, EN 826"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          10.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The lowest thermal conductivity of the mainstream boards, because the cells hold a heavy blowing agent rather than air; lambda drifts upward over years as that gas exchanges (the declared value is already aged)."
+    },
+    "epp_foam": {
+      "label": "EPP bead foam (60 g/l)",
+      "category": "polymer",
+      "subcategory": "foam",
+      "condition": "moulded expanded polypropylene beads, 60 kg/m3",
+      "standards": [
+        "ISO 844",
+        "ISO 1798"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.06,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "JSP ARPRO EPP (60 g/l) datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            0.7,
+            1.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "JSP ARPRO EPP (60 g/l) datasheet, typical (ISO 1798 tensile)"
+        },
+        "k_w_m_k": {
+          "value": 0.04,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "JSP ARPRO EPP (60 g/l) datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "JSP ARPRO EPP (60 g/l) datasheet, typical"
+        },
+        "compressive_mpa": {
+          "range": [
+            0.35,
+            0.55
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "JSP ARPRO EPP (60 g/l) datasheet, typical (ISO 844 compressive stress at 25 % strain)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          5.0,
+          14.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The energy absorber that recovers: bumper cores, returnable dunnage and helmet liners take repeated impacts where EPS crushes once."
+    },
+    "pvc_foam_core": {
+      "label": "PVC foam core (80 kg/m3)",
+      "category": "polymer",
+      "subcategory": "foam",
+      "condition": "cross-linked PVC structural core, 80 kg/m3",
+      "standards": [
+        "ASTM C365",
+        "ASTM C273",
+        "ISO 845"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.08,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "DIAB Divinycell H80 datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 0.095,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "DIAB Divinycell H80 datasheet, typical (tensile modulus 95 MPa)"
+        },
+        "ultimate_mpa": {
+          "value": 2.2,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "DIAB Divinycell H80 datasheet, typical (tensile strength)"
+        },
+        "k_w_m_k": {
+          "value": 0.031,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "DIAB Divinycell H80 datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 70.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "DIAB Divinycell H80 datasheet, typical"
+        },
+        "shear_modulus_gpa": {
+          "value": 0.027,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "DIAB Divinycell H80 datasheet, typical (ASTM C273 shear modulus 27 MPa)"
+        },
+        "compressive_mpa": {
+          "value": 1.4,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "DIAB Divinycell H80 datasheet, typical (ASTM C365 compressive strength)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "source": "editorial classification; DIAB core-processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          10.0,
+          28.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The default sandwich core for marine and wind laminates. Shear strength and shear modulus are what a sandwich panel actually uses; the 70 C limit rules out most prepreg cure cycles."
+    },
+    "pet_foam_core": {
+      "label": "PET foam core (100 kg/m3)",
+      "category": "polymer",
+      "subcategory": "foam",
+      "condition": "thermoplastic PET structural core, 100 kg/m3",
+      "standards": [
+        "ASTM C365",
+        "ASTM C273",
+        "ISO 845"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.1,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "3A Composites AIREX T90.100 PET foam datasheet, typical"
+        },
+        "E_gpa": {
+          "range": [
+            0.07,
+            0.09
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "3A Composites AIREX T90.100 PET foam datasheet, typical (compressive modulus)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            1.2,
+            1.6
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "3A Composites AIREX T90.100 PET foam datasheet, typical (tensile strength)"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "3A Composites AIREX T90.100 PET foam datasheet, typical"
+        },
+        "shear_modulus_gpa": {
+          "range": [
+            0.015,
+            0.025
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "3A Composites AIREX T90.100 PET foam datasheet, typical (ASTM C273 shear modulus)"
+        },
+        "compressive_mpa": {
+          "range": [
+            1.2,
+            1.6
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "3A Composites AIREX T90.100 PET foam datasheet, typical (ASTM C365 compressive strength)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "source": "editorial classification; 3A Composites AIREX processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          8.0,
+          20.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Thermoplastic, so it thermoforms and is recyclable, and it takes a higher cure temperature than PVC core — at somewhat lower stiffness per kg."
+    },
+    "pmi_foam": {
+      "label": "PMI foam core (ROHACELL 71 IG-F)",
+      "category": "polymer",
+      "subcategory": "foam",
+      "condition": "polymethacrylimide structural core, 75 kg/m3",
+      "standards": [
+        "ASTM C365",
+        "ASTM C273",
+        "ISO 845"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.075,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Evonik ROHACELL 71 IG-F datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 0.092,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Evonik ROHACELL 71 IG-F datasheet, typical (tensile modulus 92 MPa)"
+        },
+        "ultimate_mpa": {
+          "value": 1.9,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Evonik ROHACELL 71 IG-F datasheet, typical (tensile strength)"
+        },
+        "k_w_m_k": {
+          "value": 0.031,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Evonik ROHACELL 71 IG-F datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 180.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Evonik ROHACELL 71 IG-F datasheet, typical"
+        },
+        "shear_modulus_gpa": {
+          "value": 0.029,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Evonik ROHACELL 71 IG-F datasheet, typical (ASTM C273 shear modulus 29 MPa)"
+        },
+        "compressive_mpa": {
+          "value": 1.7,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Evonik ROHACELL 71 IG-F datasheet, typical (ASTM C365 compressive strength)"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "source": "editorial classification; Evonik ROHACELL processing guide"
+      },
+      "cost_usd_kg": {
+        "range": [
+          40.0,
+          120.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The aerospace core: closed-cell PMI survives a 180 C / 0.7 MPa autoclave cure, so it can be co-cured with prepreg skins in one shot. Costs several times a PVC core and is the reason to accept that."
+    },
+    "pe_foam": {
+      "label": "Closed-cell PE foam (33 kg/m3)",
+      "category": "polymer",
+      "subcategory": "foam",
+      "condition": "nitrogen-expanded closed-cell polyethylene, 33 kg/m3",
+      "standards": [
+        "ISO 845",
+        "ISO 1798"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.033,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Zotefoams Plastazote LD33 datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "range": [
+            0.25,
+            0.45
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Zotefoams Plastazote LD33 datasheet, typical (ISO 1798 tensile)"
+        },
+        "max_service_temp_c": {
+          "value": 90.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Zotefoams Plastazote LD33 datasheet, typical"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          5.0,
+          14.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Kept thin on purpose: cushioning and case inserts are specified by density and compression-deflection curves, and a single stiffness number would misrepresent them."
+    }
+  }
+}

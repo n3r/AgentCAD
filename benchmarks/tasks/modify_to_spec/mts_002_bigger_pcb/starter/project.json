@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "name": "bench_mts_002_bigger_pcb_starter",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "enclosure_base",
+      "label": "Enclosure Base",
+      "material": "abs",
+      "params": {
+        "length": 100.0,
+        "width": 60.0,
+        "height": 30.0,
+        "wall": 2.5,
+        "corner_r": 3.0,
+        "boss_d": 6.0,
+        "pilot_d": 2.2,
+        "standoff_d": 6.0,
+        "standoff_h": 5.0,
+        "pcb_margin": 8.0,
+        "n_vents": 6.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}
