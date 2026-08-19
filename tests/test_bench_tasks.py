@@ -283,14 +283,26 @@ def test_read_json_refuses_by_size_before_parsing(tmp_path):
     assert "refused before parsing" in exc.value.message
 
 
-def test_read_json_catches_recursion_error(tmp_path):
-    """`json.loads` raises RecursionError, which is NOT a ValueError."""
-    from agentcad.bench._json import read_json
+def test_read_json_catches_recursion_error(tmp_path, monkeypatch):
+    """`json.loads` can raise RecursionError, which is NOT a ValueError.
+
+    Whether a deeply nested document actually trips it is interpreter-
+    dependent (CPython 3.12's C scanner counts depth against the recursion
+    limit; 3.14's is stack-based and parses 100 000 levels fine), so the
+    exception is injected rather than provoked -- the property under test is
+    the reader's `except` clause, not the scanner's limit.
+    """
+    from agentcad.bench import _json as bench_json
     path = tmp_path / "deep.json"
-    path.write_text("[" * 100_000 + "]" * 100_000)
+    path.write_text("[" * 64 + "]" * 64)
+
+    def boom(_text):
+        raise RecursionError("maximum recursion depth exceeded while decoding")
+
+    monkeypatch.setattr(bench_json.json, "loads", boom)
     with pytest.raises(ValidationError) as exc:
-        read_json(path)
-    # Pinned to the recursion path: the document is 200 kB, far under the size
+        bench_json.read_json(path)
+    # Pinned to the recursion path: the document is tiny, far under the size
     # ceiling, so a pass here cannot come from the cheaper refusal.
     assert "not readable JSON" in exc.value.message
     assert "recursion" in exc.value.message

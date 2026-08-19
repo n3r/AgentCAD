@@ -206,3 +206,13 @@ author test asserts only that no `bench_`/`_reference` reaches a sheet; and
 `test_ci_yml_is_untouched_by_the_bench` asserts `>= 2`. Merged tree:
 `make test` — 4831 passed, 44 skipped in 15m22s.
 
+## CI follow-up (PR #26, macOS runner)
+
+`tests/test_bench_tasks.py::test_read_json_catches_recursion_error` provoked
+`RecursionError` with a 100 000-deep document; CPython 3.14 (the macOS
+runner's interpreter) parses that fine, because its C JSON scanner is
+stack-based rather than recursion-limit-based, so the reader answered
+"must hold a JSON object" instead. The property under test is the reader's
+`except` clause, so the test now injects the exception (`monkeypatch` on
+`json.loads`) instead of relying on the interpreter's limit. No code change.
+
