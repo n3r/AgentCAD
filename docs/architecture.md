@@ -563,7 +563,7 @@ confinement is a second line, not the reason the workflow is safe.
 (PRD-024, [`docs/bench.md`](bench.md)). One OCP-free package, `agentcad/bench/`
 (`tasks.py` the bundle loader, `scoring.py` the six subscores, `runner.py` the
 budgeted `ChatEngine` client, `report.py` the aggregation and the baseline gate,
-`publish.py` the leaderboard, `cli.py` the four subcommands, `author.py` the
+`publish.py` the leaderboard, `cli.py` the five subcommands, `author.py` the
 task-authoring helper), plus one kernel handler pack —
 `agentcad/kernel/handlers/bench.py`, exposing a single `iou` method that is
 **never registered as a model-facing tool**, because a bench-only tool would

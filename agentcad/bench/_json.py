@@ -10,10 +10,28 @@ leaderboard row) that come from somewhere else.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from ..core.model import ValidationError
 from ..core.project import ProjectStore
+
+
+def is_finite_number(value) -> bool:
+    """A real, finite number. ``True``/``False`` are ints and are not numbers.
+
+    One definition for all three readers (`scoring`, `report`, `publish`),
+    because the rule is the same fact about JSON everywhere it is asked:
+    ``json.loads`` parses the bare ``NaN`` / ``Infinity`` literals, so an
+    ``isinstance`` test alone lets a non-finite value through — into a
+    measurement (where a ``nan`` window comparison is false and the value never
+    survives ``allow_nan=False``), into an aggregate (where every
+    ``nan < -epsilon`` is false and the gate goes silently green) or into a
+    sort key (where every comparison is false and the order stops being
+    stable). ``isinstance(True, int)`` is true, so the bool test comes first.
+    """
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
 
 
 def round_floats(value, places: int = 6):

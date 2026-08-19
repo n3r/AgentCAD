@@ -261,3 +261,102 @@ def test_a_side_that_is_neither_script_nor_source_is_a_contract_error(kernel):
 def test_iou_is_kernel_internal_and_not_a_tool(service):
     names = {tool.name for tool in build_registry(service).list()}
     assert "iou" not in names
+
+
+# ------------------------------------------------- the non-finite guard (A3)
+#
+# Driven against `register()`'s own toolbox rather than through the kernel: the
+# failure being pinned is a volume OCCT could not compute, and there is no
+# build123d script that reliably produces one. The stubs are exactly the five
+# toolbox entries the handler reads, so the test stays OCP-free like the module
+# it exercises.
+
+class _StubWorkerError(Exception):
+    def __init__(self, type_, message, details=None):
+        super().__init__(message)
+        self.type = type_
+        self.message = message
+        self.details = details or {}
+
+
+class _StubLocation:
+    def __init__(self, *args):
+        self.args = args
+
+    def __mul__(self, other):
+        return self
+
+
+class _StubBox:
+    def __init__(self):
+        self.min = _StubPoint()
+        self.max = _StubPoint(1.0)
+
+
+class _StubPoint:
+    def __init__(self, value=0.0):
+        self.X = self.Y = self.Z = value
+
+
+class _StubShape:
+    wrapped = object()
+
+    def solids(self):
+        return []
+
+    def moved(self, placement):
+        return self
+
+    def bounding_box(self):
+        return _StubBox()
+
+    def __and__(self, other):
+        return self
+
+
+def _stub_toolbox(shape_volume):
+    from types import SimpleNamespace
+
+    return {
+        "b3d": SimpleNamespace(Location=_StubLocation),
+        "build_shape": lambda script, params: (_StubShape(), {}, []),
+        "shape_volume": shape_volume,
+        "WorkerError": _StubWorkerError,
+        "ERROR_KERNEL": "kernel_error",
+        "ERROR_CONTRACT": "contract_error",
+    }
+
+
+def _stub_iou(shape_volume):
+    from agentcad.kernel.handlers import bench as bench_handler
+
+    handler = bench_handler.register(_stub_toolbox(shape_volume))["iou"]
+    item = {"script": "irrelevant", "params": {}}
+    return lambda: handler({"candidate": item, "reference": item})
+
+
+def test_a_non_finite_side_volume_is_an_error_and_never_a_perfect_score():
+    """`min(1.0, nan)` answers **1.0** — `min` keeps its running minimum when
+    `nan < 1.0` is false — and `union <= 0.0` is false for a NaN union, so a
+    shape whose volume OCCT could not compute used to walk through both clamps
+    and score a perfect `iou: 1.0`. It is a kernel error instead, which the
+    scorer reports as `status: "error"` (FR7)."""
+    with pytest.raises(_StubWorkerError) as exc:
+        _stub_iou(lambda shape: float("nan"))()
+    assert exc.value.type == "kernel_error"
+    assert exc.value.details["stage"] == "candidate_volume"
+
+
+def test_a_non_finite_intersection_is_an_error_too():
+    """The same guard one stage later: `max(nan, 0.0)` is `nan`, so a boolean
+    that answered NaN would reach `inter / union` with both sides finite."""
+    calls = []
+
+    def _volume(shape):
+        calls.append(shape)
+        return 1000.0 if len(calls) <= 2 else float("nan")
+
+    with pytest.raises(_StubWorkerError) as exc:
+        _stub_iou(_volume)()
+    assert exc.value.type == "kernel_error"
+    assert exc.value.details["stage"] == "intersect"

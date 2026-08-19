@@ -240,6 +240,6 @@
 <polygon points="147.393,90.000 148.689,87.115 150.160,88.469" stroke="#1a56db" stroke-width="0.18" fill="#1a56db"/>
 <text x="196.000" y="40.000" text-anchor="start" font-family="Helvetica, Arial, sans-serif" font-size="3.5" fill="#1a56db">8× ⌀9.00</text>
 <rect x="264" y="263" width="150" height="28" fill="white" stroke="#111" stroke-width="0.5"/>
-<text x="268" y="272" font-size="5" fill="#111">bench_mfd_003_head_flange_reference / flange</text>
+<text x="268" y="272" font-size="5" fill="#111">flange</text>
 <text x="268" y="281" font-size="3" fill="#111">AgentCAD · mm · third angle</text>
 </svg>

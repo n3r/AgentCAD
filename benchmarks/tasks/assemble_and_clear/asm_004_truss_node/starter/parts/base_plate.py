@@ -1,9 +1,4 @@
-# Copied from examples/construction/parts/base_plate.py for bench task
-# assemble_and_clear/asm_004_truss_node.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer.
-# The rubric is injected from the bundle's specs/, so this script declares no
-# SPECS of its own.
+# Copied from examples/construction/parts/base_plate.py into this project.
 """Column base plate with anchor slots and a column footprint marking.
 
 A rectangular steel base plate (plate_w x plate_l x plate_t, corner

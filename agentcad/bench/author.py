@@ -220,6 +220,30 @@ def overall_dim_problems(svg_text: str, extents_mm, *,
     return sorted(set(out))
 
 
+def neutral_title(svg_text: str, project: str, part_id: str) -> str:
+    """Rewrite the title block's label from ``<project> / <part>`` to ``<part>``.
+
+    A bench asset is handed to the model **verbatim**, and the project the
+    drawing was rendered from is the task's own *reference* project
+    (`_stage_reference` opens it under its manifest name, e.g.
+    ``bench_mfd_002_angle_bracket_reference``). `tools_drawing` builds the
+    title-block label as ``f"{project} / {part_id}"``, so an unscrubbed sheet
+    tells the agent the id of the task it is being graded on and that a
+    reference project exists — neither of which the built-in agent's own
+    `generate_drawing` output would ever carry.
+
+    Post-processed here rather than fixed at the source: the label is the
+    *product's* behaviour and it is right for a product user, whose project
+    name is their own. Only a bench asset has to be anonymous.
+
+    Exact, and a no-op when the label is not there: the substring is the whole
+    text node, so a dimension that happens to read like a project name cannot
+    be caught by it.
+    """
+    return svg_text.replace(f">{project} / {part_id}</text>",
+                            f">{part_id}</text>")
+
+
 def render_drawing(task_dir, part_id: str, *, service, views=None,
                    out=None, check_dims: bool = True) -> Path:
     """Render ``reference/project``'s *part_id* as a three-view SVG asset.
@@ -264,7 +288,12 @@ def render_drawing(task_dir, part_id: str, *, service, views=None,
             f"generate_drawing refused to draw {part_id!r}: "
             f"{result['error'].get('message')}",
             {"part": part_id, "error": result["error"]})
-    sheet = compact_svg(Path(result["path"]).read_text(encoding="utf-8"))
+    # Scrubbed BEFORE `check_dims`: `neutral_title` touches one text node and
+    # no coordinate, but the sheet that is checked has to be the sheet that is
+    # written.
+    sheet = neutral_title(
+        compact_svg(Path(result["path"]).read_text(encoding="utf-8")),
+        proj, part_id)
     if check_dims:
         built = service._ensure_built(proj, part_id)
         box = (built.get("metrics") or {}).get("bbox") or {}

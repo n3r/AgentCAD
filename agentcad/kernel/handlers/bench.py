@@ -112,6 +112,27 @@ def register(toolbox: dict) -> dict:
             raise WorkerError(ERROR_KERNEL, f"iou unavailable: {exc}",
                               {"stage": stage}) from exc
 
+    def _finite(value: float, stage: str) -> float:
+        """*value*, or a kernel error naming the stage that produced a NaN.
+
+        Not a formality. Every comparison against NaN is false, so a NaN
+        volume walks straight through the two clamps the IoU is built on:
+        ``union <= 0.0`` is false, ``min(1.0, nan)`` answers **1.0** (``min``
+        keeps its running minimum when the test ``nan < 1.0`` fails), and
+        ``max(0.0, 1.0)`` leaves it there. A degenerate shape whose volume
+        OCCT could not compute would therefore have scored a perfect
+        ``iou: 1.0`` — the single worst answer this handler can give, because
+        the scorer's own non-finite guard (`scoring._geometry_part`) never sees
+        a non-finite number to reject. Refused here instead, as
+        ``status: "error"`` one level up (FR7).
+        """
+        number = float(value)
+        if not math.isfinite(number):
+            raise WorkerError(ERROR_KERNEL,
+                              f"iou unavailable: {stage} is not a finite "
+                              f"number ({number})", {"stage": stage})
+        return number
+
     def _boxes_touch(a, b, tol=1e-6) -> bool:
         return not (a.max.X < b.min.X - tol or b.max.X < a.min.X - tol
                     or a.max.Y < b.min.Y - tol or b.max.Y < a.min.Y - tol
@@ -161,8 +182,10 @@ def register(toolbox: dict) -> dict:
 
         cand, cand_kind = _side(params.get("candidate"), "candidate")
         ref, ref_kind = _side(params.get("reference"), "reference")
-        vol_a = _guarded(lambda: shape_volume(cand), "candidate_volume")
-        vol_b = _guarded(lambda: shape_volume(ref), "reference_volume")
+        vol_a = _finite(_guarded(lambda: shape_volume(cand),
+                                 "candidate_volume"), "candidate_volume")
+        vol_b = _finite(_guarded(lambda: shape_volume(ref), "reference_volume"),
+                        "reference_volume")
         base = {
             "candidate_volume_mm3": vol_a,
             "reference_volume_mm3": vol_b,
@@ -193,8 +216,9 @@ def register(toolbox: dict) -> dict:
             # the right-hand Location is applied first.
             placement = (b3d.Location(anchor_r, rot)
                          * b3d.Location(tuple(-v for v in anchor_c)))
-            total = _guarded(
-                lambda: _pass(cand.moved(placement), right), "intersect")
+            total = _finite(
+                _guarded(lambda: _pass(cand.moved(placement), right),
+                         "intersect"), "intersect")
             # The pairwise sum is volume(A & B) only when each side's solids
             # are mutually disjoint; a self-overlapping side over-counts.
             inter = min(total, vol_a, vol_b)

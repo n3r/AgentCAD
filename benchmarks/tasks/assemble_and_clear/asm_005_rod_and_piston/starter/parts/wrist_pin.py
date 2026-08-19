@@ -1,9 +1,4 @@
-# Copied from examples/engine/parts/wrist_pin.py for bench task
-# assemble_and_clear/asm_005_rod_and_piston.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer.
-# The rubric is injected from the bundle's specs/, so this script declares no
-# SPECS of its own.
+# Copied from examples/engine/parts/wrist_pin.py into this project.
 """Floating wrist pin: slides through piston boss - rod small end - boss.
 
 Local frame: the pin axis is Y through the origin (the same axis its piston

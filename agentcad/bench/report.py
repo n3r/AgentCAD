@@ -41,6 +41,7 @@ import math
 from pathlib import Path
 
 from ..core.model import ValidationError
+from ._json import is_finite_number as _finite
 from ._json import read_json, round_floats
 from .tasks import load_tasks
 
@@ -61,19 +62,6 @@ MAX_RENDERED_TASKS = 25
 
 
 # ------------------------------------------------------------- aggregation
-
-def _finite(value) -> bool:
-    """A real, finite number -- `True`/`False` are ints and are not numbers here.
-
-    `json.loads` parses the bare `NaN` / `Infinity` literals, so an
-    `isinstance` test alone lets a non-finite measurement into the aggregate,
-    where every `nan < -epsilon` is `False` (a silently green gate) and the
-    writer later dies with a bare `ValueError` from `allow_nan=False` -- the
-    wrong exit lane, raised too late to name the file.
-    """
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value))
-
 
 def _score_paths(results_dir: Path) -> dict:
     """`{task_id: path}` for every `<results>/tasks/<category>/<id>/score.json`.

@@ -134,6 +134,67 @@ def test_bench_score_registers_no_examples(tmp_path, monkeypatch):
     assert seen["examples"] is False
 
 
+def _writable_spy(monkeypatch, bench_cli):
+    """Capture `extra_writable` at the `bench_service` seam and stop there.
+
+    The grant is decided before the kernel spawns, so the assertion costs no
+    kernel: the spy raises, the handler's blanket arm reports exit 2, and what
+    the test reads is the list the worker *would* have been confined with.
+    """
+    seen = {}
+
+    def _fake(projects_dir, *, extra_writable=None):
+        seen["extra"] = [str(root) for root in (extra_writable or [])]
+        raise RuntimeError("stop here — the write grant is the assertion")
+
+    monkeypatch.setattr(bench_cli, "bench_service", _fake)
+    return seen
+
+
+def test_bench_score_never_grants_the_worker_a_write_into_the_inputs(
+        tmp_path, monkeypatch):
+    """A candidate's part script runs *inside* the confined worker, so a write
+    grant on the task bundle would let it overwrite the reference STEP it is
+    about to be measured against — a geometry 1.0 it wrote itself — and a grant
+    on the submission would break the one thing `bench score` promises. Neither
+    grant buys a read: reads are unrestricted in the `local` posture and the
+    `hosted` read roots are a separate list.
+    """
+    from agentcad.bench import cli as bench_cli
+    from agentcad.bench import tasks as bench_tasks
+
+    seen = _writable_spy(monkeypatch, bench_cli)
+    task = bench_tasks.load_task(SEED)
+    submission = tmp_path / "submission"
+    submission.mkdir()
+    work = tmp_path / "work"
+
+    assert _run(["bench", "score", str(submission), "--task", SEED,
+                 "--work-dir", str(work), "--quiet"]) == 2
+    assert seen["extra"] == [str(work)]
+    for granted in seen["extra"]:
+        assert not str(task.root).startswith(granted)
+        assert not str(bench_tasks.tasks_root()).startswith(granted)
+        assert not str(submission).startswith(granted)
+
+
+def test_bench_run_never_grants_the_worker_a_write_into_the_task_tree(
+        tmp_path, monkeypatch):
+    """`bench run`'s half of the same rule — and the sharper one: the tree it
+    would have granted is the maintainer's checked-in `benchmarks/`."""
+    from agentcad.bench import cli as bench_cli
+    from agentcad.bench import tasks as bench_tasks
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-used-the-spy-raises-first")
+    seen = _writable_spy(monkeypatch, bench_cli)
+    work = tmp_path / "work"
+
+    assert _run(["bench", "run", "--report", str(tmp_path / "out"),
+                 "--tasks", SEED, "--work-dir", str(work), "--quiet"]) == 2
+    assert seen["extra"] == [str(work)]
+    assert str(bench_tasks.tasks_root()) not in seen["extra"]
+
+
 def test_bench_score_json_and_quiet_are_the_check_conventions(capsys):
     """stdout is a contract, stderr is for humans — without a kernel."""
     from types import SimpleNamespace
@@ -242,17 +303,84 @@ def test_bench_score_refuses_a_work_dir_inside_the_submission(tmp_path, capsys):
     assert not (inside / "cell").exists()   # a refused path leaves nothing behind
 
 
-def test_bench_help_lists_the_four_subcommands(capsys):
+def test_bench_help_lists_every_subcommand(capsys):
     # `_run` already absorbs argparse's SystemExit; `--help` exits 0.
     assert _run(["bench", "--help"]) == 0
     text = capsys.readouterr().out
-    for name in ("run", "score", "report", "publish"):
+    for name in ("run", "score", "prompt", "report", "publish"):
         assert name in text
 
 
 def test_bench_with_no_subcommand_is_exit_two(capsys):
     assert _run(["bench"]) == 2
     assert "pick a subcommand" in capsys.readouterr().err
+
+
+# ----------------------------------------------------------- bench prompt
+
+#: A task whose `prompt.md` carries the reviewer-only rationale block — the
+#: whole reason this command exists. `cat prompt.md` hands a model the
+#: reference parameters the thresholds were derived from.
+COMMENTED = "optimize_under_constraints/opt_001_lightest_bracket"
+
+
+def test_bench_prompt_strips_the_reviewer_comments_cat_would_leak(capsys):
+    from agentcad.bench import tasks as bench_tasks
+
+    raw = (bench_tasks.load_task(COMMENTED).prompt_path
+           .read_text(encoding="utf-8"))
+    assert "<!--" in raw          # the leak `cat prompt.md` would hand over
+
+    assert _run(["bench", "prompt", COMMENTED]) == 0
+    captured = capsys.readouterr()
+    assert "<!--" not in captured.out and "-->" not in captured.out
+    assert captured.err == ""
+    assert captured.out == bench_tasks.prompt_text(
+        bench_tasks.load_task(COMMENTED))
+
+
+def test_bench_prompt_inlines_the_assets_as_the_runner_does(capsys):
+    from agentcad.bench import tasks as bench_tasks
+
+    task_id = "model_from_drawing/mfd_002_angle_bracket"
+    task = bench_tasks.load_task(task_id)
+    asset = task.asset_paths[0]
+
+    assert _run(["bench", "prompt", task_id]) == 0
+    out = capsys.readouterr().out
+    assert f"--- attachment: {asset.relative_to(task.root).as_posix()} ---" in out
+    assert asset.read_text(encoding="utf-8").strip() in out
+
+
+def test_bench_prompt_json_names_the_task_the_prompt_and_the_assets(capsys):
+    from agentcad.bench import tasks as bench_tasks
+
+    task_id = "model_from_drawing/mfd_002_angle_bracket"
+    assert _run(["bench", "prompt", task_id, "--json"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert payload["task"] == task_id
+    assert payload["assets"] == ["assets/drawing.svg"]
+    assert payload["prompt"] == bench_tasks.prompt_text(
+        bench_tasks.load_task(task_id))
+
+
+def test_bench_prompt_an_unknown_task_is_exit_two(capsys):
+    assert _run(["bench", "prompt", "model_from_drawing/nope"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "agentcad bench prompt" in captured.err
+
+
+def test_bench_prompt_needs_no_kernel(tmp_path, monkeypatch):
+    """Pure over a bundle: an external evaluator runs it on a checkout, not on
+    a machine that has ever built a solid."""
+    def _explode(*args, **kwargs):
+        raise AssertionError("bench prompt built a service")
+
+    monkeypatch.setattr("agentcad.cli._build_service", _explode)
+    assert _run(["bench", "prompt", COMMENTED]) == 0
 
 
 def test_run_without_an_agent_it_can_drive_is_exit_two(tmp_path, capsys,

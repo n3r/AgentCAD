@@ -176,10 +176,23 @@ FIX_STARTER_FORBIDDEN = {
                               "tightest bend"),
 }
 
-#: Text NO starter may contain, whatever the task.
-STARTER_FORBIDDEN_ANYWHERE = ("Reference solution", "the rubric",
-                              "The rubric", "specs/parts/", "consequence 3",
-                              "the reference")
+#: Text NO starter may contain, whatever the task or the category.
+#:
+#: Two classes, and the second one is why this list grew. **An answer key** —
+#: "Reference solution", "the reference" — is the obvious leak. **Harness meta
+#: and a strategy hint** are the quiet one: a starter header explaining that
+#: "the starter and the reference are the SAME script at different parameters"
+#: tells the agent the task is a parameter edit and never a rewrite, and one
+#: naming `specs/parts/` tells it a rubric it cannot see is about to be
+#: injected. Both were written for a maintainer reading the bundle; a
+#: maintainer reads the **reference** side, which keeps the full note. Every
+#: starter header is trimmed to the one-line provenance form
+#: `# Copied from examples/<...>.py into this project.`
+STARTER_FORBIDDEN_ANYWHERE = ("Reference solution", "rubric", "Rubric",
+                              "specs/parts", "consequence 3",
+                              "the reference", "SAME script", "SAME scripts",
+                              "registers no examples", "_reference",
+                              "bench task", "design §1")
 
 
 def test_no_fix_starter_script_leaks_its_own_defect():
@@ -192,6 +205,44 @@ def test_no_fix_starter_script_leaks_its_own_defect():
                          + STARTER_FORBIDDEN_ANYWHERE + (name, task.id))
             hits = [token for token in forbidden if token in text]
             assert not hits, f"{task.id}: {script.name} leaks {hits}"
+
+
+def test_no_starter_in_any_category_carries_harness_meta_or_a_hint():
+    """The whole shipped starter set, not just `fix_*`.
+
+    `starter/` is copied verbatim into the agent's scratch project, so every
+    byte of every starter is prompt — including the provenance header. The
+    `fix_*` starters already carried the one-line form; `mts_*`, `asm_*` and
+    `opt_*` carried a six-to-nine-line block explaining the harness to a
+    maintainer who reads the reference side anyway.
+    """
+    seen = 0
+    for task in bench_tasks.load_tasks():
+        if task.starter_dir is None:
+            continue
+        for script in sorted((task.starter_dir / "parts").glob("*.py")):
+            seen += 1
+            text = script.read_text(encoding="utf-8")
+            hits = [token for token in STARTER_FORBIDDEN_ANYWHERE
+                    if token in text]
+            assert not hits, f"{task.id}: {script.name} leaks {hits}"
+    assert seen >= 20, seen
+
+
+def test_every_derived_starter_keeps_its_one_line_provenance_header():
+    """Trimmed, not deleted: a reader of a scratch project still has to be able
+    to tell a copied example from something the agent wrote."""
+    for task in bench_tasks.load_tasks():
+        if task.starter_dir is None:
+            continue
+        for script in sorted((task.starter_dir / "parts").glob("*.py")):
+            first = script.read_text(encoding="utf-8").splitlines()[0]
+            if not first.startswith("#"):
+                continue          # a hand-authored broken part (`fix_001`)
+            assert first.startswith("# Copied from examples/"), \
+                f"{task.id}: {script.name}: {first}"
+            assert first.endswith(" into this project."), \
+                f"{task.id}: {script.name}: {first}"
 
 
 def test_no_starter_script_is_byte_identical_to_its_reference():

@@ -1,10 +1,4 @@
-# Copied from examples/construction/parts/angle_bracket.py for bench task
-# optimize_under_constraints/opt_001_lightest_bracket. A derived task copies the
-# script INTO the bundle: the runner registers no examples, so a run can never
-# read the answer, and the starter and the reference are the SAME script at
-# different parameters — the task is an optimisation over the parameters, not a
-# rewrite. The rubric is injected from ../../../specs/parts/, so this script
-# declares no SPECS of its own.
+# Copied from examples/construction/parts/angle_bracket.py into this project.
 """L-shaped erection angle bracket.
 
 An L-bracket (leg_b along X, leg_a up Z, extruded to width along Y) with

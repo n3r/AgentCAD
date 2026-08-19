@@ -1,9 +1,4 @@
-# Copied from examples/rocketry/parts/injector_plate.py for bench task
-# assemble_and_clear/asm_001_thrust_chamber.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer.
-# The rubric is injected from the bundle's specs/, so this script declares no
-# SPECS of its own.
+# Copied from examples/rocketry/parts/injector_plate.py into this project.
 """Injector plate: showerhead orifice ring around a center igniter boss.
 
 A circular plate with a polar pattern of small propellant orifices at a

@@ -1,11 +1,4 @@
-# Copied from examples/rocketry/parts/flange.py for bench task
-# assemble_and_clear/asm_001_thrust_chamber.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer.
-# The example's own SPECS block and its toolkit.specs import are
-# STRIPPED here (design §1, consequence 3).
-# The rubric is injected from the bundle's specs/, so this script declares no
-# SPECS of its own.
+# Copied from examples/rocketry/parts/flange.py into this project.
 """Chamber-head interface flange: annular ring with a bolt circle.
 
 Slips over the combustion chamber barrel and gives the injector plate a

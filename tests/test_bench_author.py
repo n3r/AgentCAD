@@ -122,6 +122,46 @@ def test_render_drawing_writes_a_three_view_svg(tmp_path, kernel):
     assert shipped.read_text(encoding="utf-8") != text
 
 
+def test_neutral_title_replaces_the_project_slash_part_label():
+    """`tools_drawing` labels the title block `f"{project} / {part_id}"`, and
+    the project a bench sheet is rendered from is the task's own *reference*
+    project. Handed to the model verbatim, that label names the task and tells
+    it a reference exists."""
+    svg = ('<text x="268" y="272" font-size="5" fill="#111">'
+           'bench_x_reference / widget</text>')
+    assert author.neutral_title(svg, "bench_x_reference", "widget") == (
+        '<text x="268" y="272" font-size="5" fill="#111">widget</text>')
+    # Exact and a no-op otherwise: the substring is the whole text node.
+    assert author.neutral_title(svg, "other", "widget") == svg
+
+
+@pytest.mark.timeout(300)
+def test_a_rendered_sheet_never_names_the_project_it_was_rendered_from(
+        tmp_path, kernel):
+    bundle = _bundle_copy(tmp_path, "model_from_drawing/mfd_001_spacer_plate")
+    service = make_test_service(tmp_path / "projects", kernel)
+    from agentcad.core.tools import build_registry
+
+    build_registry(service)
+    target = author.render_drawing(bundle, "spacer_plate", service=service)
+    text = target.read_text(encoding="utf-8")
+    assert "bench_" not in text and "_reference" not in text
+    assert ">spacer_plate</text>" in text
+
+
+def test_no_shipped_asset_names_the_bench_or_a_reference_project():
+    """An asset is handed to the agent verbatim, so every byte of it is prompt.
+    `bench_` and `_reference` are the two tokens a task's own scratch/reference
+    project names are built from."""
+    root = bench_tasks.tasks_root()
+    assets = sorted(root.glob("*/*/assets/*"))
+    assert assets, "no assets are shipped"
+    for path in assets:
+        text = path.read_text(encoding="utf-8")
+        for token in ("bench_", "_reference"):
+            assert token not in text, f"{path} leaks {token!r}"
+
+
 @pytest.mark.timeout(300)
 def test_render_drawing_refuses_a_part_the_task_does_not_score(tmp_path, kernel):
     bundle = _bundle_copy(tmp_path, "model_from_drawing/mfd_001_spacer_plate")

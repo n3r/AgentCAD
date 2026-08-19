@@ -48,7 +48,6 @@ lives in the sibling `run.json` the runner writes (design §8.6). That, plus
 """
 from __future__ import annotations
 
-import math
 import shutil
 import tempfile
 import time
@@ -65,6 +64,7 @@ from ..kernel.client import KernelError
 from ..kernel.protocol import (ERROR_CONTRACT, ERROR_CRASH, ERROR_SCRIPT,
                                ERROR_TIMEOUT)
 from . import HARNESS_VERSION
+from ._json import is_finite_number as _finite
 from ._json import round_floats
 from .tasks import SUBSCORES, Task, load_windows, tasks_root
 
@@ -328,11 +328,6 @@ def interference_fraction(checked: int, pair_count: int,
     return max(0.0, min(1.0, clean / total_pairs))
 
 
-def _finite(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) \
-        and math.isfinite(value)
-
-
 def _blames_harness(exc: BaseException) -> bool:
     """Whether *exc* is **us** failing to measure, rather than the candidate
     being wrong.
@@ -499,7 +494,7 @@ class Scorer:
         # A build is a kernel call, and §4.7 is literal: a subscore the task
         # zeroed is never measured. When no subscore reads a build result, no
         # part is built at all.
-        builds = (self._build_all(service, task, proj)
+        builds = (self._build_all(service, task, proj, deadline, notes)
                   if any(self._scored(task, name) for name in _BUILD_READERS)
                   else {})
         return {
@@ -570,19 +565,41 @@ class Scorer:
 
     # -- built / valid -----------------------------------------------------
 
-    def _build_all(self, service, task: Task, proj: str) -> dict:
+    def _build_all(self, service, task: Task, proj: str, deadline=None,
+                   notes: list | None = None) -> dict:
         """One entry per target part: what happened when we built it.
 
         ``state`` is ``"ok"`` (built), ``"failed"`` (the candidate's doing —
-        not in the manifest, no script on disk, a script that raised, geometry
-        OCCT could not make) or ``"error"`` (**ours** — a timeout, a dead
-        worker, an exception class we did not anticipate).
+        not in the manifest, no script on disk, a script that raised, a build
+        that timed out, geometry OCCT could not make) or ``"error"`` (**ours**
+        — budget truncation, a dead worker, an exception class we did not
+        anticipate).
 
         The split is `_blames_harness`, and it is the fix for the sharpest
         version of the exploit rule 2 exists for: deleting `parts/<id>.py`
         makes `_ensure_built` raise `NotFoundError` out of `store.read_script`,
         which as a bare `except Exception` marked four subscores `error` and
         renormalised the candidate's whole score onto the one subscore left.
+
+        **A build never raises a `KernelError`** — `service._build_with`
+        catches it and answers ``{"ok": False, "error": payload}`` — so the
+        classification for a build is made *here*, from the payload's type,
+        rather than by `_blames_harness` (which still governs the defensive
+        `except` below, and the kernel calls the other subscores make
+        themselves):
+
+        * **a timeout is the candidate's**, and it is named `build_timeout`
+          rather than folded into `build_failed`. Nothing here shortens the
+          build's own ceiling, so with no ``--budget`` in force the timeout is
+          a fact about how long the candidate's script takes to run — a
+          measured zero, exactly like a script that raises. The one exception
+          is a ``--budget`` that has already expired: that timeout is *our*
+          deadline truncating the measurement (`checks._budget_broke`'s rule,
+          restated for a call whose ceiling we do not own), and truncation is
+          an `error` everywhere else in this module.
+        * **a crash is ours**: rule 2 names "a kernel that is gone" as a
+          harness failure, and `_blames_harness` already answers it that way
+          for `iou` and `check_interference`.
         """
         try:
             present = set(service.store.part_ids(proj))
@@ -614,11 +631,35 @@ class Scorer:
                                     "reason": payload["type"],
                                     "error": payload}
                 continue
-            out[part_id] = {
-                "state": "ok" if result.get("ok") else "failed",
-                "result": result,
-                "reason": None if result.get("ok") else "build_failed"}
+            if result.get("ok"):
+                out[part_id] = {"state": "ok", "result": result,
+                                "reason": None}
+                continue
+            out[part_id] = self._failed_build(result, part_id, deadline, notes)
         return out
+
+    def _failed_build(self, result: dict, part_id: str, deadline,
+                      notes: list | None) -> dict:
+        """One not-``ok`` build result, classified. See :meth:`_build_all`."""
+        error = result.get("error") or {}
+        # Trimmed to `_error`'s two keys: a `KernelError` payload's `details`
+        # holds a traceback, a traceback names files, and a file name in
+        # `score.json` is both a path leak and a determinism break.
+        payload = {"type": error.get("type"),
+                   "message": error.get("message") or ""}
+        if error.get("type") == ERROR_CRASH:
+            return {"state": "error", "result": None, "error": payload}
+        if error.get("type") == ERROR_TIMEOUT:
+            remaining = self._remaining(deadline)
+            if remaining is not None and remaining <= 0.0:
+                if notes is not None:
+                    notes.append("the budget ran out while a target part was "
+                                 "building; the build-derived subscores are "
+                                 "excluded")
+                return {"state": "error", "result": None, "error": payload}
+            return {"state": "failed", "result": result,
+                    "reason": "build_timeout", "error": payload}
+        return {"state": "failed", "result": result, "reason": "build_failed"}
 
     def _built(self, task: Task, builds: dict) -> dict:
         if not self._scored(task, "built"):
@@ -851,6 +892,16 @@ class Scorer:
         if part_id not in task.reference_steps:
             return {"iou": 0.0, "reason": "no_reference_step"}, None
         build = builds.get(part_id) or {}
+        if build.get("state") == "error":
+            # The build was a HARNESS failure (a dead worker, or a deadline
+            # that expired mid-build): there is no candidate shape, and 0.0
+            # would report a measurement nobody took. `built`, `valid` and
+            # `metrics` all answer `error` for the same row.
+            error = build.get("error") or {}
+            return None, {"type": error.get("type") or "kernel_error",
+                          "message": error.get("message")
+                          or "the target part's build failed in the harness",
+                          "stage": "build", "part": part_id}
         if build.get("state") != "ok":
             # Not `error`: a candidate that did not build is wrong, and a wrong
             # candidate is measured at zero (rule 2).

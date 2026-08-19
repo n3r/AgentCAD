@@ -57,13 +57,13 @@ OCP-free, like everything under `agentcad/bench/`.
 from __future__ import annotations
 
 import datetime
-import math
 from html import escape as _escape
 from pathlib import Path, PurePosixPath
 
 from ..core.model import ValidationError
 from ..core.project import ProjectStore
 from ._json import canonical_json, read_json
+from ._json import is_finite_number as _finite
 from .report import REPORT_SCHEMA
 from .tasks import CATEGORIES
 
@@ -101,17 +101,6 @@ _URL_PREFIX = "https://"
 def _is_int(value) -> bool:
     """A real int. `True` is an `int` in Python and is not one here."""
     return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _finite(value) -> bool:
-    """A real, finite number -- `report._finite`'s rule, restated.
-
-    `json.loads` parses the bare `NaN` / `Infinity` literals, so a plain
-    `isinstance` test would let a non-finite total into the sort key, where
-    every comparison against it is false and the order stops being stable.
-    """
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value))
 
 
 def _nonempty_str(value) -> bool:

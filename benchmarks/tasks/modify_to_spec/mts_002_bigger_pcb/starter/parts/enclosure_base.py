@@ -1,9 +1,4 @@
-# Copied from examples/prototyping/parts/enclosure_base.py for bench task modify_to_spec/mts_002_bigger_pcb.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer, and the starter and the
-# reference are the SAME script at different parameters — the task is a
-# parameter change, not a rewrite. The rubric is injected from
-# ../../../specs/parts/, so this script declares no SPECS of its own.
+# Copied from examples/prototyping/parts/enclosure_base.py into this project.
 """Snap-fit electronics enclosure -- base shell.
 
 Open-top shelled box with four corner screw bosses (pilot-holed, running

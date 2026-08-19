@@ -1,9 +1,4 @@
-# Copied from examples/construction/parts/gusset_plate.py for bench task
-# assemble_and_clear/asm_004_truss_node.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer.
-# The rubric is injected from the bundle's specs/, so this script declares no
-# SPECS of its own.
+# Copied from examples/construction/parts/gusset_plate.py into this project.
 """Steel truss gusset plate.
 
 Joins a horizontal bottom chord and two diagonal web members at a truss

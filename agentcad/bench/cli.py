@@ -3,7 +3,7 @@
 Design §9. Two things are worth reading before changing anything here.
 
 **`agentcad/cli.py` takes exactly two edits and this module owns the rest.**
-`add_bench_parser(sub)` builds the four sub-subcommands, `cmd_bench(args)`
+`add_bench_parser(sub)` builds the sub-subcommands, `cmd_bench(args)`
 dispatches them, and both are imported *lazily* from `main()` so
 `agentcad serve` pays nothing for a package it never touches.
 
@@ -13,6 +13,7 @@ dispatches them, and both are imported *lazily* from `main()` so
 |---|---|---|---|
 | `bench run` | every selected task ran and was scored | — | harness |
 | `bench score` | a score was produced | — | harness |
+| `bench prompt` | the prompt was printed | — | harness |
 | `bench report` | no baseline, or the baseline is met | a regression | harness |
 | `bench publish` | the page was written | a row was rejected, and NOTHING was written | harness |
 
@@ -78,9 +79,9 @@ def _tasks_root(args):
 # ------------------------------------------------------------- the parser
 
 def add_bench_parser(sub) -> None:
-    """Add `bench` and its four sub-subcommands to *sub*.
+    """Add `bench` and its sub-subcommands to *sub*.
 
-    All four are registered together: `agentcad bench --help` is a promise
+    All of them are registered together: `agentcad bench --help` is a promise
     about the surface, and a help text that grows a subcommand per merge
     teaches a reader to re-read it every week.
     """
@@ -92,11 +93,12 @@ def add_bench_parser(sub) -> None:
                     "Scoring is mechanical — six subscores measured by the "
                     "geometry kernel, no LLM judging anywhere. `run` drives "
                     "the built-in chat agent over a task set, `score` measures "
-                    "one submission against one task, `report` aggregates a "
+                    "one submission against one task, `prompt` prints the "
+                    "exact prompt an agent is handed, `report` aggregates a "
                     "results directory and gates it against a baseline, and "
                     "`publish` renders the leaderboard.")
-    bench_sub = p.add_subparsers(dest="bench_command",
-                                 metavar="{run,score,report,publish}")
+    bench_sub = p.add_subparsers(
+        dest="bench_command", metavar="{run,score,prompt,report,publish}")
 
     # -------------------------------------------------------------- run
     r = bench_sub.add_parser(
@@ -150,7 +152,9 @@ def add_bench_parser(sub) -> None:
                    help="the task tree to load from (default: the shipped "
                         "benchmarks/tasks)")
     s.add_argument("--out", default=None, metavar="DIR",
-                   help="write score.json into this directory")
+                   help="write score.json into this directory. It is one "
+                        "score, not a results directory: `bench report` reads "
+                        "the layout `bench run --report DIR` writes")
     s.add_argument("--work-dir", default=None, metavar="DIR",
                    help="where the scorer materializes its throwaway cell, in "
                         "a unique subdirectory it creates and removes "
@@ -165,6 +169,24 @@ def add_bench_parser(sub) -> None:
                         "already in flight cannot be preempted, so the worst "
                         "case is one such call")
     _output_group(s, "the subscore table")
+
+    # ----------------------------------------------------------- prompt
+    pr = bench_sub.add_parser(
+        "prompt", help="print the exact prompt an agent is handed for a task",
+        description="Print one task's prompt on stdout, exactly as the "
+                    "built-in runner hands it to the agent: reviewer-only "
+                    "HTML comments stripped and every asset inlined as text. "
+                    "`cat prompt.md` is NOT the same document — the file "
+                    "carries the task author's rationale, including reference "
+                    "parameters and thresholds, which the runner strips and an "
+                    "external evaluator must not paste into a model.")
+    pr.add_argument("task", metavar="ID", help="the task id, '<category>/<id>'")
+    pr.add_argument("--tasks-dir", default=None, metavar="DIR",
+                    help="the task tree to load from (default: the shipped "
+                         "benchmarks/tasks)")
+    pr.add_argument("--json", action="store_true",
+                    help="print {task, prompt, assets} as JSON instead of the "
+                         "prompt text")
 
     # ----------------------------------------------------------- report
     rep = bench_sub.add_parser(
@@ -222,13 +244,13 @@ def _output_group(parser, what: str) -> None:
 # ------------------------------------------------------------- dispatch
 
 def cmd_bench(args) -> int:
-    """`agentcad bench` — dispatch to one of the four handlers."""
-    handler = {"run": _cmd_run, "score": _cmd_score,
+    """`agentcad bench` — dispatch to one of the five handlers."""
+    handler = {"run": _cmd_run, "score": _cmd_score, "prompt": _cmd_prompt,
                "report": _cmd_report, "publish": _cmd_publish}.get(
         getattr(args, "bench_command", None))
     if handler is None:
-        print("agentcad bench: pick a subcommand: run, score, report, publish",
-              file=sys.stderr)
+        print("agentcad bench: pick a subcommand: run, score, prompt, report, "
+              "publish", file=sys.stderr)
         return 2
     return handler(args)
 
@@ -300,10 +322,20 @@ def _cmd_run(args) -> int:
             args.work_dir,
             lambda root: refuse_scoring_overlap(root, report_dir, tasks_base,
                                                 projects_root))
-        # The task tree is granted because **scoring** reads a reference STEP
-        # from it inside the confined worker. The results directory is not: a
-        # submission is copied out by this process, never written by a worker.
-        extra = [str(tasks_base)] + ([work_dir] if work_dir else [])
+        # **Only the work dir.** `extra_writable` is a WRITE grant
+        # (`_build_service` → `KernelClient(writable_dirs)` → the Landlock /
+        # seatbelt write rules) handed to the worker that executes the
+        # candidate's own Python, so granting the task tree here would let a
+        # candidate script overwrite `reference/steps/<part>.step` before
+        # `_geometry` measures against it — a 1.0 geometry subscore it wrote
+        # itself — and, on `bench run`, corrupt the maintainer's checked-in
+        # `benchmarks/` tree for good. It buys nothing either way: reads are
+        # unrestricted in the `local` posture and `resource_root()` (the repo
+        # root, which holds `benchmarks/`) is read-granted in `hosted`
+        # (`sandbox_linux._read_roots`). The results directory was never
+        # granted for the same reason — a submission is copied out by *this*
+        # process, never written by a worker.
+        extra = [work_dir] if work_dir else []
         service = bench_service(projects_root, extra_writable=extra)
         locks.set_client_id(CLIENT_ID)
         scorer = Scorer(service, build_registry(service))
@@ -625,6 +657,14 @@ def _cmd_publish(args) -> int:
         # The roster is the shipped task set: rule 5 (`_coverage_problems`) is
         # what stops a row buying a place by running the easy half, and it can
         # only ask that question against the tasks this harness ships.
+        #
+        # Deliberately NOT per row: every row is measured against the roster
+        # this checkout ships, whatever `task_set` the row declares. That is
+        # right while one set exists (a row naming another set is measured
+        # against the only tasks anyone can reproduce) and is the line to
+        # revisit when a second one does — a v2 board wants
+        # `load_tasks(set_name=row["task_set"])` and a per-set section, not one
+        # roster spanning both.
         expected = [task.id for task in load_tasks()]
         board = Path(args.leaderboard).expanduser()
         rows, problems = bench_publish.load_rows(board, expected)
@@ -690,11 +730,17 @@ def _cmd_score(args) -> int:
             args.work_dir,
             lambda root: refuse_scoring_overlap(root, submission, task.root,
                                                 projects_root))
-        # Known here, the one moment the seatbelt profile can still be widened:
-        # the submission and the task bundle live nowhere `_writable_roots`
-        # guessed, and on Linux the worker's read of a reference STEP is
-        # governed by the same rule set as its writes.
-        extra = [str(submission), str(task.root)] + ([work_dir] if work_dir else [])
+        # **Only the work dir**, and never the submission or the task bundle:
+        # `extra_writable` is a WRITE grant handed to the worker that executes
+        # the candidate's own Python (`_cmd_run`'s note), so granting the task
+        # bundle would let a candidate script rewrite the reference STEP it is
+        # about to be measured against, and granting the submission would put
+        # the caller's own directory — the one thing this command promises
+        # never to write — inside the confined worker's write set. Neither
+        # grant buys a read: reads are unrestricted in the `local` posture, and
+        # in `hosted` the read roots are their own list
+        # (`sandbox_linux._read_roots`).
+        extra = [work_dir] if work_dir else []
         service = bench_service(projects_root, extra_writable=extra)
         locks.set_client_id(CLIENT_ID)
         scorer = Scorer(service, build_registry(service))
@@ -804,6 +850,51 @@ def _print_score(args, score: dict, written: list) -> None:
     print(f"bench score: {score.get('task')} — "
           f"{'—' if total is None else f'{float(total):.4f}'} "
           f"over {len(score.get('weights_effective') or {})} subscore(s)")
+
+
+# --------------------------------------------------------------- prompt
+
+def _cmd_prompt(args) -> int:
+    """`agentcad bench prompt` — the prompt, byte-for-byte as an agent gets it.
+
+    **Why this is a command and not `cat prompt.md`.** `prompt.md` is authored
+    for two audiences: the agent, and the reviewer who has to judge whether the
+    task is fair. The reviewer's half lives in HTML comments — the rationale
+    for a weight override, the reference parameters a threshold was derived
+    from — and `tasks.prompt_text` strips it (`strip_reviewer_comments`) before
+    the built-in runner hands the prompt over. An external evaluator reading
+    the file and pasting it "verbatim" would therefore hand their model a
+    document the built-in agent never sees, containing part of the answer. One
+    command that emits exactly `prompt_text` is the whole fix.
+
+    **No service and no kernel**: this command is pure over a task bundle.
+    """
+    from ..core.model import AppError
+    from ._json import canonical_json
+    from .tasks import load_task, prompt_text
+
+    try:
+        task = load_task(args.task, _tasks_root(args))
+        text = prompt_text(task)
+        if args.json:
+            sys.stdout.write(canonical_json({
+                "task": task.id,
+                "prompt": text,
+                "assets": [asset.relative_to(task.root).as_posix()
+                           for asset in task.asset_paths]}).decode())
+        else:
+            # `prompt_text` already ends in a newline; `write` rather than
+            # `print` so the bytes on stdout are the bytes the agent is handed.
+            sys.stdout.write(text)
+    except AppError as exc:
+        print(f"agentcad bench prompt: {exc.message}", file=sys.stderr)
+        _print_problems(exc)
+        return 2
+    except Exception as exc:  # noqa: BLE001 — any harness failure is exit 2
+        print(f"agentcad bench prompt: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return 2
+    return 0
 
 
 # --------------------------------------------------------------- report

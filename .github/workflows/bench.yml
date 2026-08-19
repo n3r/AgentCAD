@@ -88,6 +88,11 @@ jobs:
         run: uv run pytest -q -n 2 --dist loadscope tests/test_bench_*.py tests/test_prd024_acceptance.py
         env:
           AGENTCAD_KERNEL_POOL_SIZE: "1"
+          # PRD-006 Decision 13's honesty gate, `ci.yml`'s ubuntu row verbatim:
+          # this job scores candidate-authored Python in a confined worker, so
+          # a worker that failed to confine itself has to be a RED test rather
+          # than a silently degraded run.
+          AGENTCAD_EXPECT_SANDBOX: active
 
   # ------------------------------------------------------------- the secret
   # Reads the presence of the key and says so out loud. A silently skipped

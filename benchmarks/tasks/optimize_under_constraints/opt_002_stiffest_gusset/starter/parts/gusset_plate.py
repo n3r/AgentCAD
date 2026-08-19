@@ -1,10 +1,4 @@
-# Copied from examples/construction/parts/gusset_plate.py for bench task
-# optimize_under_constraints/opt_002_stiffest_gusset. A derived task copies the
-# script INTO the bundle: the runner registers no examples, so a run can never
-# read the answer, and the starter and the reference are the SAME script at
-# different parameters — the task is an optimisation over the parameters, not a
-# rewrite. The rubric is injected from ../../../specs/parts/, so this script
-# declares no SPECS of its own.
+# Copied from examples/construction/parts/gusset_plate.py into this project.
 """Steel truss gusset plate.
 
 Joins a horizontal bottom chord and two diagonal web members at a truss

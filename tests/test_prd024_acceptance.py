@@ -358,6 +358,17 @@ def test_the_pr_job_touches_no_secret_and_runs_the_bench_suite():
     runs = " ".join(step.get("run", "") for step in selftest["steps"])
     assert "tests/test_prd024_acceptance.py" in runs
     assert "tests/test_bench_" in runs
+    # The slow half IS the PR-blocking half: AC1 scores all 25 references and
+    # the STEP-drift check re-exports all 15 datums, and both carry `slow`.
+    # A `-m "not slow"` here would leave the task set unproved on every PR
+    # while the job still reported green.
+    assert "not slow" not in runs
+    # PRD-006 Decision 13: this job runs candidate-authored Python in a
+    # confined worker, so a degraded sandbox is red, not skipped.
+    suite_step = [step for step in selftest["steps"]
+                  if "pytest" in step.get("run", "")]
+    assert len(suite_step) == 1, suite_step
+    assert suite_step[0]["env"]["AGENTCAD_EXPECT_SANDBOX"] == "active"
 
 
 def test_the_guard_job_says_out_loud_when_the_key_is_absent():

@@ -1,10 +1,4 @@
-# Copied from examples/fasteners/parts/tapped_plate.py for bench task
-# optimize_under_constraints/opt_005_shortest_screw. A derived task copies the
-# script INTO the bundle: the runner registers no examples, so a run can never
-# read the answer, and the starter and the reference are the SAME scripts at
-# different parameters — the task is an optimisation over one parameter, not a
-# rewrite. The rubric is injected from ../../../specs/, so this script declares
-# no SPECS of its own.
+# Copied from examples/fasteners/parts/tapped_plate.py into this project.
 """Tapped base plate: a square plate with a blind M8x1.25 tapped hole.
 
 Built with ``agentcad.toolkit.threads``. The hole is a plain clearance

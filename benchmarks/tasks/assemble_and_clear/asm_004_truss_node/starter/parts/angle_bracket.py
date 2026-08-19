@@ -1,9 +1,4 @@
-# Copied from examples/construction/parts/angle_bracket.py for bench task
-# assemble_and_clear/asm_004_truss_node.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer.
-# The rubric is injected from the bundle's specs/, so this script declares no
-# SPECS of its own.
+# Copied from examples/construction/parts/angle_bracket.py into this project.
 """L-shaped erection angle bracket.
 
 An L-bracket (leg_b along X, leg_a up Z, extruded to width along Y) with

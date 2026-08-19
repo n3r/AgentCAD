@@ -1,9 +1,4 @@
-# Copied from examples/engine/parts/flywheel.py for bench task modify_to_spec/mts_004_lighter_flywheel.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer, and the starter and the
-# reference are the SAME script at different parameters — the task is a
-# parameter change, not a rewrite. The rubric is injected from
-# ../../../specs/parts/, so this script declares no SPECS of its own.
+# Copied from examples/engine/parts/flywheel.py into this project.
 """Flywheel: a stepped disc that bolts to the crankshaft's rear flange.
 
 Local frame: the friction (clutch) face is z = 0 and the disc extends +Z.

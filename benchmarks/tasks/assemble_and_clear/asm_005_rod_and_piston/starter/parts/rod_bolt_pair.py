@@ -1,9 +1,4 @@
-# Copied from examples/engine/parts/rod_bolt_pair.py for bench task
-# assemble_and_clear/asm_005_rod_and_piston.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer.
-# The rubric is injected from the bundle's specs/, so this script declares no
-# SPECS of its own.
+# Copied from examples/engine/parts/rod_bolt_pair.py into this project.
 """Rod-bolt pair: two M6 socket screws clamping one rod cap to its body.
 
 Local frame matches ``rod_body``/``rod_cap``: screws point up (+Z), heads

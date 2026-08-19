@@ -1,10 +1,4 @@
-# Copied from examples/fasteners/parts/cap_screw.py for bench task
-# optimize_under_constraints/opt_005_shortest_screw. A derived task copies the
-# script INTO the bundle: the runner registers no examples, so a run can never
-# read the answer, and the starter and the reference are the SAME scripts at
-# different parameters — the task is an optimisation over one parameter, not a
-# rewrite. The rubric is injected from ../../../specs/, so this script declares
-# no SPECS of its own.
+# Copied from examples/fasteners/parts/cap_screw.py into this project.
 """Socket-head cap screw (ISO 4762), built with agentcad.toolkit.threads.
 
 A catalog fastener: the M8x1.25 size is fixed and only the length under the

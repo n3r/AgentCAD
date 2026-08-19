@@ -1,9 +1,4 @@
-# Copied from examples/prototyping/parts/enclosure_base.py for bench task
-# assemble_and_clear/asm_002_lid_on_base.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer.
-# The rubric is injected from the bundle's specs/, so this script declares no
-# SPECS of its own.
+# Copied from examples/prototyping/parts/enclosure_base.py into this project.
 """Snap-fit electronics enclosure -- base shell.
 
 Open-top shelled box with four corner screw bosses (pilot-holed, running

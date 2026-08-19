@@ -22,10 +22,11 @@ model_from_drawing/mfd_001_spacer_plate — model_from_drawing · task set bench
 bench score: model_from_drawing/mfd_001_spacer_plate — 0.9959 over 5 subscore(s)
 ```
 
-The same four commands serve every audience: `bench run` drives an agent over a
-task set, `bench score` measures one submission, `bench report` aggregates a
-results directory and gates it against a baseline, and `bench publish` renders
-the leaderboard. There is **no bench tool, route or event** — see
+The same five commands serve every audience: `bench run` drives an agent over a
+task set, `bench score` measures one submission, `bench prompt` prints the exact
+prompt an agent is handed, `bench report` aggregates a results directory and
+gates it against a baseline, and `bench publish` renders the leaderboard. There
+is **no bench tool, route or event** — see
 [Why there is no `bench_*` tool](#why-there-is-no-bench_-tool).
 
 **Sibling document:** [`docs/geometry-ci.md`](geometry-ci.md). `agentcad check`
@@ -77,6 +78,7 @@ agentcad bench run     --report DIR [--tasks GLOB] [--set NAME] [--agent builtin
                        [--quiet | --json]
 agentcad bench score   SUBMISSION --task ID [--tasks-dir DIR] [--out DIR]
                        [--work-dir DIR] [--budget SECONDS] [--quiet | --json]
+agentcad bench prompt  ID [--tasks-dir DIR] [--json]
 agentcad bench report  RESULTS [--baseline PATH] [--epsilon F]
                        [--md PATH] [--json-out PATH] [--quiet | --json]
 agentcad bench publish LEADERBOARD [-o PATH] [--title TEXT]
@@ -88,11 +90,12 @@ agentcad bench publish LEADERBOARD [-o PATH] [--title TEXT]
 | `--set` | Select by `task.json`'s `sets` membership. `core` is all 25; `fast` is one task per category, the CI subset. Naming neither selects `core`, so a bare `bench run` keeps meaning the same suite as the set grows. |
 | `--agent` | Today only `builtin`, the shipped chat agent. An external agent does not use `bench run` at all — it hands in a project directory and you `bench score` it. |
 | `--report` | The results directory to write. A previous run's `tasks/` is cleared first; a non-empty directory that does not look like a results directory is **refused untouched** (`--report ~/Documents` is a typo, never a delete command). |
-| `--work-dir` | Where a run or a score materializes its throwaway cells, in unique subdirectories it creates and removes. A work dir that **is, holds or sits inside** the submission, the task tree, the results directory or the projects root is refused, exit 2. |
+| `--tasks-dir` | The task tree to load from (default: the shipped `benchmarks/tasks`). On `score` and `prompt`. |
+| `--work-dir` | Where a run or a score materializes its throwaway cells, in unique subdirectories it creates and removes. A work dir that **is, holds or sits inside** the submission, the task tree, the results directory or the projects root is refused, exit 2. It is also the **only** path either command grants the confined worker a write into: the task bundle and the submission are read-only inputs, and the worker executes the candidate's own Python. |
 | `--budget` | A wall-clock ceiling in seconds. On `run` it overrides `task.json`'s wall budget (never the tool-call ceiling — that is what keeps a task inside one engine turn). On `score` it is a deadline read before every kernel call. Must be finite and non-negative: a NaN deadline is never in the past, so it bounds nothing. |
 | `--baseline` / `--epsilon` | Gate a report against `benchmarks/baseline.json`, tolerating a drop of `epsilon` (default 0.02) on the total and on each category. |
 | `--md` / `--json-out` | Write the markdown summary (`$GITHUB_STEP_SUMMARY`, a PR comment) / the JSON report. |
-| `--quiet` / `--json` | `--quiet` prints nothing; `--json` puts the document **alone** on stdout, so `agentcad bench score --json \| jq` works. Neither moves the exit code. |
+| `--quiet` / `--json` | `--quiet` prints nothing; `--json` puts the document **alone** on stdout, so `agentcad bench score --json \| jq` works. Neither moves the exit code. (`prompt` has only `--json`: printing the prompt *is* the command.) |
 
 **stdout is a contract, stderr is for humans** — the tables and the harness
 errors go to stderr, the one-line verdict to stdout.
@@ -103,6 +106,7 @@ errors go to stderr, the one-line verdict to stdout.
 |---|---|---|---|
 | `bench run` | every selected task ran and was scored | — | harness |
 | `bench score` | a score was produced | — | harness |
+| `bench prompt` | the prompt was printed | — | harness |
 | `bench report` | no baseline, or the baseline is met | **a regression** | harness |
 | `bench publish` | the page was written | **a row was rejected**, nothing written | harness |
 
@@ -195,8 +199,17 @@ rotations, and an empty metric-window list on a task that weights `metrics`.
 **`assets` are text.** SVG, MD, TXT, JSON, CSV — attached to the prompt inline,
 fenced, and named by their path relative to the bundle. There are no PNG assets
 in v1: the chat surface accepts a `str` message and adding an image block is a
-product change with its own review (see [Seams](#phase-2--3-seams)). An SVG
-drawing *is* the drawing; the model reads it as markup.
+product change with its own review (see [Seams](#phase-2--3-seams)). The model
+reads an SVG as markup, so a drawing needs no OCR and no vision model.
+
+What a generated sheet *carries*, though, is narrower than a draughtsman's:
+three orthographic views, the **overall extents** of each view and one hole
+callout. It is not a fully dimensioned drawing, and a task whose prompt said
+only "model the attached drawing" would be unanswerable. So **the prompt
+carries the full dimension set in words** — every feature size, the material
+and the datum — and the sheet is the shape, the proportions and the
+corroborating overall dimensions. Read the two together, as the reviewer
+checklist below requires.
 
 ### The rubric
 
@@ -257,9 +270,9 @@ in a `finally`.
 
 | subscore | value |
 |---|---|
-| `built` | `passed / len(target.parts)`, where a part passes when the service builds it. A part missing from the manifest counts as failed, never as an error. |
+| `built` | `passed / len(target.parts)`, where a part passes when the service builds it. A part missing from the manifest counts as failed, never as an error — and so does a build that **timed out** (`reason: "build_timeout"`), unless a `--budget` had already expired, which is our truncation and an `error`. A build that took the worker down (`kernel_crash`) is an `error`: the kernel is gone, so nothing was measured. |
 | `valid` | `valid_parts / len(target.parts)` over `metrics.is_valid`. A part that did not build is invalid. `check`'s imported-geometry escape is deliberately absent: a bench candidate that imports a mesh is measured, not forgiven. |
-| `specs` | `passed / (passed + failed + errors)` over the rubric-owned rows of one `SpecRunner.run`. A `skip` leaves the denominator — *unless* the candidate induced it (`mesh_only`, `no_instances`), in which case it counts as a **fail** and is named under `detail.skipped_as_failed`. A machine-specific skip (a missing extra) is neither a pass nor a fail. |
+| `specs` | `passed / (passed + failed + errors)` over the rubric-owned rows of one `SpecRunner.run`. A `skip` leaves the denominator — *unless* the candidate induced it (`mesh_only`, `no_instances`), in which case it counts as a **fail** and is named under `detail.skipped_as_failed`. A machine-specific skip (a missing extra) is neither a pass nor a fail. **A zero denominator is `0.0` with `status: "ok"`, never a division and never an exclusion**: `reason: "no_rubric_attached"` when the task ships a rubric and none of it could be appended (the candidate deleted the part, or handed back a mesh reference), `reason: "nothing_measured"` when it attached and every row skipped or the part did not build. Both are the candidate's doing, and an exclusion would renormalise the weight onto whatever is left — the exploit rule 2 exists for. |
 | `geometry` | The mean over the target parts of the kernel's IoU against that part's reference STEP. A part with no datum is not scored; a part that resolves mesh-only contributes `0.0` and is named. |
 | `interference` | `clean_pairs / C(n, 2)` over the resolved assembly instances. `skipped_mesh` pairs count as **un-clean**: an unmeasurable pair is not a clean pair. Fewer than two instances, with a non-zero weight, is `0.0` — the task asked for an assembly and got none. |
 | `metrics` | `satisfied / len(windows)`. A window whose part did not build is unsatisfied. |
@@ -354,8 +367,26 @@ submissions.
 ## `bench run` — driving the built-in agent
 
 ```bash
+export ANTHROPIC_API_KEY=sk-ant-…          # required, checked before anything spawns
 uv run agentcad bench run --set fast --agent builtin --report out/
 ```
+
+**Prerequisite: `ANTHROPIC_API_KEY`.** `bench run` drives the shipped chat
+agent, which is an Anthropic client, and a run without a key is **refused
+before the kernel spawns** (`runner.require_agent`) rather than discovered as a
+401 three minutes in. There is no offline mode and no other provider: the one
+seam is `runner.CLIENT_FACTORY`, which the tests set to a scripted client, and
+it is not a flag. If you have no key, drive AgentCAD from your own agent over
+`agentcad mcp` and hand the result to `bench score`.
+
+**`--model`** takes any model id the Anthropic Messages API accepts and is
+passed straight through to `ChatEngine`; it is neither validated nor enumerated
+here, so a typo surfaces as an API error on the first turn. The default is the
+chat engine's own `DEFAULT_MODEL` (`agentcad/agent/chat.py`) — today
+`claude-sonnet-5` — which means **a `bench run` with no `--model` measures
+whatever the product currently ships**. The id that actually ran is stamped in
+`bench.json`, every `run.json` and the report, and a baseline records it, so a
+model change shows up as a comparison rather than as a silent drift.
 
 Each task gets a **fresh scratch project** in a throwaway cell under the work
 root, with its own service over the **shared** warm kernel. The prompt (plus
@@ -496,19 +527,27 @@ uses — and hands in an ordinary project directory.
 claude mcp add agentcad -- uv --directory /path/to/agentcad run agentcad mcp
 ```
 
-**2. Pick a task and read its prompt.** The bundle is the whole specification:
+**2. Print the task's prompt with `bench prompt`.** It writes on stdout exactly
+what the built-in runner hands its agent — every asset already inlined as text,
+named by its path relative to the bundle:
 
 ```bash
-cat benchmarks/tasks/model_from_drawing/mfd_001_spacer_plate/prompt.md
-cat benchmarks/tasks/model_from_drawing/mfd_001_spacer_plate/assets/drawing.svg
+uv run agentcad bench prompt model_from_drawing/mfd_001_spacer_plate > prompt.txt
 ```
 
-**3. Hand the agent the prompt and the assets, verbatim,** and nothing else — no
-reference project, no `specs/`, no `reference/metrics.json`. Attach each asset
-as text, named by its path relative to the bundle; that is exactly what the
-built-in runner does (`tasks.prompt_text`). Let it work in a scratch project
-whose name matches `target.project` (any name works for `bench score` — the
-scorer opens the directory you point at — but matching keeps the two paths
+**Do not `cat prompt.md`.** That file is authored for two audiences, and the
+reviewer's half sits in HTML comments: the rationale for a weight override, the
+reference parameters a threshold was derived from — part of the answer, in
+short. `tasks.prompt_text` strips those comments before the built-in agent ever
+sees them (`bench prompt` is that function and nothing else), so pasting the
+raw file would hand your model a document the built-in agent never gets, and
+your score would not be comparable to anyone else's. `--json` emits
+`{"task", "prompt", "assets"}` if you would rather pipe it.
+
+**3. Hand the agent that text, verbatim,** and nothing else — no reference
+project, no `specs/`, no `reference/metrics.json`. Let it work in a scratch
+project whose name matches `target.project` (any name works for `bench score` —
+the scorer opens the directory you point at — but matching keeps the two paths
 identical).
 
 **4. Score the directory it produced.**
@@ -670,17 +709,62 @@ the server-side code it measures.
   placed rather than mated. v1 ships the limitation disclosed rather than
   papered over; closing it needs a max-clearance (or placement-window) check in
   `toolkit/specs.py` and a v2 task set that uses it.
+* **Two product findings bound what `geometry` can measure at all.** Both were
+  found by authoring the task set and are stated here because a subscore that
+  is silently unmeasurable is worse than one that says so.
+  * *A swept surface does not survive the STEP round trip as a boolean
+    operand.* `fix_005_invalid_shell`'s coolant elbow is a swept pipe:
+    script-against-script and STEP-against-STEP both intersect cleanly at
+    21 711.685 mm³, but the boolean the IoU handler actually takes — the
+    candidate's script solid against the checked-in STEP — returns `None`,
+    i.e. **0 mm³ of intersection between two solids of identical volume**. The
+    task therefore weights `geometry` 0.00 and carries the weight on `metrics`,
+    which measures the same fact through mass, volume and bbox. This is an
+    OCCT/product observation, not a bench one: any AgentCAD feature that
+    booleans an imported swept surface meets it.
+  * *Generated view bounds undersize a curved silhouette.*
+    `kernel/handlers/drawing.py`'s `_view_bounds` samples each edge at six
+    points, which is exact for a line and wrong for a circle, so a sheet's
+    overall dimensions can come out under the truth. `author.py drawing`
+    refuses to write such a sheet (`check_dims=True`), because a bench asset
+    that contradicts its own part is a task nobody can solve.
+* **A build that times out is the candidate's, and it is a zero.** Nothing in
+  the scorer shortens a build's own ceiling, so with no `--budget` a `timeout`
+  is a fact about how long the candidate's script runs: `built` scores it 0.0
+  with `status: "ok"` and `reason: "build_timeout"`, and the weights are not
+  renormalised. Only a `--budget` that has already expired makes it a harness
+  `error`. A slow-but-correct part is therefore scored against wall clock the
+  bench never declared — the honest lever is the task's own `budgets`.
 * **Per-task deltas are not gated** — see above.
 * **A stochastic agent against a per-category gate.** `--epsilon` is the only
   knob and 0.05 on a five-task category mean is loose. The gate is advisory on
   the schedule and blocking on a release branch; many samples per task is
   unaffordable and is not proposed.
+* **The optimisation category's constraint is sometimes the parameter range.**
+  `opt_002_stiffest_gusset` and `opt_005_shortest_screw` are genuinely
+  constraint-bound: the optimum sits where a declared engineering check (wall,
+  clearance, thread engagement) stops being satisfiable, which is the shape the
+  category promises. On `opt_001_lightest_bracket`, `opt_003_thinnest_lid` and
+  `opt_004_most_bolts` the binding limit is instead the **`PARAMS` range the
+  script declares** — the best answer is the end of the slider, and an agent
+  that reads `PARAMS` and goes to the bound scores as well as one that
+  reasoned. Those three still measure that the agent can read a constraint set,
+  drive a parametric model and verify it, but they do not measure engineering
+  judgement. Closing it is a v2 task-set change (widen the declared ranges so a
+  real check binds first), not a harness change, and the three tasks are
+  disclosed rather than removed.
 * **Contamination.** These tasks are public, so they will eventually appear in
   training corpora. The mitigations are versioned task sets (every score is
-  labelled `bench-v1`), published transcripts (a shortcut is inspectable) and a
-  rotation policy adding fresh tasks per release. Public-and-reproducible beats
-  secret-and-unverifiable for this purpose, and we would rather say that out
-  loud than imply a secrecy we do not have.
+  labelled `bench-v1`) and published transcripts (a shortcut is inspectable);
+  a **rotation policy adding fresh tasks per release is Phase 3** — designed,
+  with `task_set` stamped everywhere it needs to be, and not yet built. Note
+  too that a run is not blind: the scratch project the runner creates is named
+  `bench_<task_id>` (`target.project`), so the agent can see it is being
+  benchmarked and which task it is on. That is deliberate — the name is what
+  makes `bench run` and an external `bench score` submission the same shape —
+  but it is contamination surface an "unaware agent" claim would not survive.
+  Public-and-reproducible beats secret-and-unverifiable for this purpose, and
+  we would rather say that out loud than imply a secrecy we do not have.
 
 ---
 

@@ -1,9 +1,4 @@
-# Copied from examples/engine/parts/rod_body.py for bench task
-# assemble_and_clear/asm_005_rod_and_piston.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer.
-# The rubric is injected from the bundle's specs/, so this script declares no
-# SPECS of its own.
+# Copied from examples/engine/parts/rod_body.py into this project.
 """Connecting-rod body: small end, I-beam blade, and the UPPER big-end half.
 
 A one-piece rod can never be installed on a one-piece crankshaft — the big

@@ -56,6 +56,84 @@ def test_the_shipped_set_is_five_per_category():
     assert sum(counts.values()) == 25
 
 
+def test_exactly_one_task_per_category_is_in_the_fast_set():
+    """`--set fast` is the CI subset and the paid `builtin` job's whole input.
+
+    One per category, five in total: fewer leaves a category unmeasured on the
+    schedule, more multiplies the API spend of every scheduled run. Membership
+    is declared per bundle, so nothing but a test keeps the shape.
+    """
+    from collections import Counter
+
+    fast = [task for task in bench_tasks.load_tasks(set_name="fast")]
+    counts = Counter(task.category for task in fast)
+    assert dict(counts) == {name: 1 for name in bench_tasks.CATEGORIES}
+    assert len(fast) == 5
+    # `core` is every task, so `fast` is a strict subset and never a lane of
+    # its own: a task in `fast` but not `core` would be scored by the schedule
+    # and left out of the roster the report's denominator comes from.
+    for task in fast:
+        assert "core" in task.sets, task.id
+
+
+#: The design §7.6 category default weight vectors, written out rather than
+#: read from a bundle: the point of the test below is that a bundle agrees
+#: with the design, and a fixture derived from the bundles would agree with
+#: itself no matter what anyone edited.
+CATEGORY_DEFAULT_WEIGHTS = {
+    "model_from_drawing": {"built": 0.15, "valid": 0.10, "specs": 0.10,
+                           "geometry": 0.50, "interference": 0.00,
+                           "metrics": 0.15},
+    "modify_to_spec": {"built": 0.10, "valid": 0.05, "specs": 0.40,
+                       "geometry": 0.30, "interference": 0.00,
+                       "metrics": 0.15},
+    "fix_the_broken_part": {"built": 0.25, "valid": 0.15, "specs": 0.35,
+                            "geometry": 0.15, "interference": 0.00,
+                            "metrics": 0.10},
+    "assemble_and_clear": {"built": 0.10, "valid": 0.05, "specs": 0.35,
+                           "geometry": 0.00, "interference": 0.40,
+                           "metrics": 0.10},
+    "optimize_under_constraints": {"built": 0.10, "valid": 0.05, "specs": 0.45,
+                                   "geometry": 0.00, "interference": 0.00,
+                                   "metrics": 0.40},
+}
+
+#: The two overrides the v1 set ships, each argued in an HTML comment at the
+#: top of its own `prompt.md` (design §7.6's rule: an override is allowed, an
+#: *unargued* one is not).
+#:
+#: * `mts_005_m10_clamp` moves 0.10 of `geometry` to `interference`: the task
+#:   is a two-plate bolted joint, so non-interference is part of the answer.
+#: * `fix_005_invalid_shell` moves its whole 0.15 `geometry` weight onto
+#:   `metrics` (0.10 -> 0.25): the part is a swept pipe and a swept surface
+#:   does not survive the STEP round trip as a boolean operand, so `geometry`
+#:   would score every submission zero.
+WEIGHT_OVERRIDES = {
+    "modify_to_spec/mts_005_m10_clamp": {"geometry": 0.20,
+                                         "interference": 0.10},
+    "fix_the_broken_part/fix_005_invalid_shell": {"geometry": 0.00,
+                                                  "metrics": 0.25},
+}
+
+
+def test_every_task_carries_its_category_default_weights_or_an_override():
+    overridden = set()
+    for task in bench_tasks.load_tasks():
+        expected = dict(CATEGORY_DEFAULT_WEIGHTS[task.category])
+        override = WEIGHT_OVERRIDES.get(task.id)
+        if override:
+            overridden.add(task.id)
+            expected.update(override)
+        assert task.weights == pytest.approx(expected), task.id
+        # An override still has to be argued where a reviewer reads it, and
+        # `prompt_text` strips the block before the agent ever sees it.
+        if override:
+            body = task.prompt_path.read_text(encoding="utf-8")
+            assert "<!--" in body, task.id
+            assert "<!--" not in bench_tasks.prompt_text(task), task.id
+    assert overridden == set(WEIGHT_OVERRIDES), sorted(overridden)
+
+
 def _seed_raw(tmp_path: Path) -> tuple[dict, Path]:
     """A copy of the seed bundle a test may mutate."""
     import shutil

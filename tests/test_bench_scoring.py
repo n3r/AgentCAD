@@ -701,6 +701,103 @@ def test_a_harness_build_error_is_the_only_metrics_error(bare_scorer,
     assert bare_scorer._metrics(task, errored)["status"] == "error"
 
 
+# ------------------------------------------------ how a build failure lands
+
+def _build_service(result, parts=("spacer_plate",)):
+    """A service whose every build answers *result* — the shape
+    `service._build_with` returns, which never raises a `KernelError`."""
+    return SimpleNamespace(
+        store=SimpleNamespace(part_ids=lambda proj: list(parts)),
+        _ensure_built=lambda proj, part_id: result)
+
+
+def _built_only(task):
+    return _weighted(task, built=1.0)
+
+
+def test_an_unbudgeted_build_timeout_is_a_measured_zero_and_names_itself(
+        bare_scorer):
+    """With no `--budget`, nothing here shortens the build's own ceiling, so a
+    timeout is a fact about how long the candidate's script runs: a measured
+    zero (`status: "ok"`), named `build_timeout` rather than folded into
+    `build_failed`, and emphatically NOT an exclusion — an exclusion would pay
+    a candidate for writing a script that never finishes."""
+    from agentcad.bench.scoring import total_of
+
+    task = _built_only(bench_tasks.load_task(SEED))
+    notes = []
+    builds = bare_scorer._build_all(
+        _build_service({"ok": False,
+                        "error": {"type": "timeout", "message": "no answer"}}),
+        task, "proj", None, notes)
+    assert builds["spacer_plate"]["state"] == "failed"
+    assert builds["spacer_plate"]["reason"] == "build_timeout"
+    assert notes == []
+
+    row = bare_scorer._built(task, builds)
+    assert (row["status"], row["value"]) == ("ok", 0.0)
+    assert row["detail"]["reasons"] == {"spacer_plate": "build_timeout"}
+    total, effective = total_of({"built": row})
+    assert (total, effective) == (0.0, {"built": 1.0})
+
+
+def test_a_build_timeout_after_the_budget_expired_is_harness_truncation(
+        bare_scorer):
+    """The one exception: with an expired deadline the timeout is OUR budget
+    truncating the measurement, which is an `error` everywhere else here."""
+    task = _built_only(bench_tasks.load_task(SEED))
+    notes = []
+    builds = bare_scorer._build_all(
+        _build_service({"ok": False,
+                        "error": {"type": "timeout", "message": "no answer"}}),
+        task, "proj", time.monotonic() - 5.0, notes)
+    assert builds["spacer_plate"]["state"] == "error"
+    assert bare_scorer._built(task, builds)["status"] == "error"
+    assert any("budget ran out" in note for note in notes)
+
+
+def test_a_worker_that_crashed_building_is_the_harness_not_the_candidate(
+        bare_scorer):
+    """Rule 2 names "a kernel that is gone" as ours, and `_blames_harness`
+    already answers it that way for `iou` and `check_interference`."""
+    task = _built_only(bench_tasks.load_task(SEED))
+    builds = bare_scorer._build_all(
+        _build_service({"ok": False,
+                        "error": {"type": "kernel_crash", "message": "worker gone",
+                                  "details": {"traceback": "/home/me/x.py"}}}),
+        task, "proj", None, [])
+    assert builds["spacer_plate"]["state"] == "error"
+    # `details` is dropped: a traceback names files, and a file name in
+    # `score.json` is both a path leak and a determinism break.
+    assert set(builds["spacer_plate"]["error"]) == {"type", "message"}
+
+
+def test_every_other_build_failure_is_still_the_candidates(bare_scorer):
+    task = _built_only(bench_tasks.load_task(SEED))
+    builds = bare_scorer._build_all(
+        _build_service({"ok": False,
+                        "error": {"type": "script_error", "message": "boom"}}),
+        task, "proj", None, [])
+    assert builds["spacer_plate"]["state"] == "failed"
+    assert builds["spacer_plate"]["reason"] == "build_failed"
+    assert bare_scorer._built(task, builds)["status"] == "ok"
+
+
+def test_geometry_excludes_itself_when_the_build_was_a_harness_error(
+        bare_scorer):
+    """A harness build error leaves no candidate shape to measure, so
+    `geometry` answers `error` like `built`, `valid` and `metrics` do —
+    answering 0.0 would report a measurement nobody took."""
+    task = _weighted(bench_tasks.load_task(SEED), geometry=1.0)
+    builds = {"spacer_plate": {"state": "error", "result": None,
+                               "error": {"type": "kernel_crash", "message": "gone"}}}
+    row, failure = bare_scorer._geometry_part(_Explodes(), task, "proj",
+                                              builds, "spacer_plate", None, [])
+    assert row is None
+    assert failure["type"] == "kernel_crash"
+    assert failure["stage"] == "build"
+
+
 def test_a_budget_shortens_the_kernel_timeout_and_names_the_truncation(
         bare_scorer):
     ceiling = 300.0

@@ -1,12 +1,4 @@
-# Copied from examples/rocketry/parts/flange.py for bench task
-# optimize_under_constraints/opt_004_most_bolts. A derived task copies the
-# script INTO the bundle: the runner registers no examples, so a run can never
-# read the answer, and the starter and the reference are the SAME script at
-# different parameters — the task is an optimisation over the parameters, not a
-# rewrite. The example's own SPECS block (INT-003) and its check_wall import
-# are STRIPPED here — the rubric is injected from ../../../specs/parts/flange.py
-# and the reference is measured against exactly what every other submission is
-# measured against (design section 1).
+# Copied from examples/rocketry/parts/flange.py into this project.
 """Chamber-head interface flange: annular ring with a bolt circle.
 
 Slips over the combustion chamber barrel and gives the injector plate a

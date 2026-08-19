@@ -1,9 +1,4 @@
-# Copied from examples/engine/parts/rod_cap.py for bench task
-# assemble_and_clear/asm_005_rod_and_piston.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer.
-# The rubric is injected from the bundle's specs/, so this script declares no
-# SPECS of its own.
+# Copied from examples/engine/parts/rod_cap.py into this project.
 """Connecting-rod cap: the lower big-end half, bolted up into the rod body.
 
 Local frame matches ``rod_body``: the joint face is z = 0, the bore axis is

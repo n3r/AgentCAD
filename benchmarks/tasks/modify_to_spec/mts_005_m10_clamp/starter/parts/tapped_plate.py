@@ -1,9 +1,4 @@
-# Copied from examples/fasteners/parts/tapped_plate.py for bench task modify_to_spec/mts_005_m10_clamp.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer, and the starter and the
-# reference are the SAME script at different parameters — the task is a
-# parameter change, not a rewrite. The rubric is injected from
-# ../../../specs/parts/, so this script declares no SPECS of its own.
+# Copied from examples/fasteners/parts/tapped_plate.py into this project.
 """Tapped base plate: a square plate with a blind M8x1.25 tapped hole.
 
 Built with ``agentcad.toolkit.threads``. The hole is a plain clearance

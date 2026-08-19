@@ -1,9 +1,4 @@
-# Copied from examples/fasteners/parts/cap_screw.py for bench task
-# assemble_and_clear/asm_003_bolted_joint.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer.
-# The rubric is injected from the bundle's specs/, so this script declares no
-# SPECS of its own.
+# Copied from examples/fasteners/parts/cap_screw.py into this project.
 """Socket-head cap screw (ISO 4762), built with agentcad.toolkit.threads.
 
 A catalog fastener: the M8x1.25 size is fixed and only the length under the

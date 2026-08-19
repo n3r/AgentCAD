@@ -271,7 +271,12 @@ This project is built skill-first. Use the Superpowers process skills:
   board · the reference **script** is the solution, the reference **STEP** is
   the datum and is **never byte-compared** (re-export + IoU/volume/bbox) · the
   secret CI job **never runs on `pull_request`** and lives in its own
-  `bench.yml` (`ci.yml` is byte-asserted) · no fan-out, no `--jobs`.
+  `bench.yml` (`ci.yml` is byte-asserted) · no fan-out, no `--jobs` · an
+  external evaluator reads a prompt with **`agentcad bench prompt`**, never
+  `cat prompt.md` (the file carries reviewer-only HTML comments the runner
+  strips) · the **only** write root either command grants the confined worker
+  is the work dir — never the task bundle (a candidate script would rewrite
+  the reference STEP it is scored against) and never the submission.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests
