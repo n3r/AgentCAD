@@ -1,4 +1,4 @@
-# 0271 — PRD-028 slice 1: material card schema v2, the data loader, the migration of the 30, and `materials lint`
+# 0286 — PRD-028 slice 1: material card schema v2, the data loader, the migration of the 30, and `materials lint`
 
 - **Commit:** pending
 - **Date:** 2026-08-19

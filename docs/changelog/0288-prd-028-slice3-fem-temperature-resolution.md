@@ -1,4 +1,4 @@
-# 0273 — PRD-028 slice 3: FEM temperature resolution and `material_basis`
+# 0288 — PRD-028 slice 3: FEM temperature resolution and `material_basis`
 
 - **Commit:** pending
 - **Date:** 2026-08-20

@@ -1,4 +1,4 @@
-# 0275 — PRD-028 slice 5: the materials database browser (frontend)
+# 0290 — PRD-028 slice 5: the materials database browser (frontend)
 
 - **Commit:** pending
 - **Date:** 2026-08-20
@@ -142,7 +142,7 @@ underneath it.
     round-tripping against the live server and matching the `curl` evidence
     (117 metal/yield≥200 rows both ways). Killed the server and confirmed
     port 8639 is free afterward.
-- Last full `make test`-equivalent run on this branch (entry 0271): 4565
+- Last full `make test`-equivalent run on this branch (entry 0286): 4565
   passed, 44 skipped; the controller's full-suite run over the finished
   branch is cited in the close-out entry.
 

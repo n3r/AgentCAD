@@ -2487,7 +2487,7 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
 
 ## Materials library gotchas (PRD-028 — read before touching `materials.py`, `materials_query.py`, `materials_lint.py`, `materials_data/`, or the FEM tools' material resolution)
 
-Every item is traceable to a measurement in `docs/changelog/0271`–`0277`.
+Every item is traceable to a measurement in `docs/changelog/0286`–`0292`.
 User-facing reference: `docs/materials.md` and the Materials/FEM sections of
 `docs/agent-api.md`.
 

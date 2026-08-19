@@ -1,4 +1,4 @@
-# 0272 — PRD-028 slice 2: the materials query engine, `find_materials`/`get_material`, and the routes
+# 0287 — PRD-028 slice 2: the materials query engine, `find_materials`/`get_material`, and the routes
 
 - **Commit:** pending
 - **Date:** 2026-08-20
@@ -89,7 +89,7 @@ the matching `GET /api/materials`, `GET /api/materials/{id}` and
 - `docs/agent-api.md` — Materials section rewritten
 - `tests/test_materials_query.py` — new, 29 pure tests
 - `tests/test_materials_tools.py` — new, 17 tool/route/gating tests
-- `docs/changelog/0272-prd-028-slice2-query-tools-routes.md` — this file
+- `docs/changelog/0287-prd-028-slice2-query-tools-routes.md` — this file
 
 ## Verification
 Targeted commands actually run in this slice (the orchestrator adds the

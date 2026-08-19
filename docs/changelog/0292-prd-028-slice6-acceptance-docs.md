@@ -1,4 +1,4 @@
-# 0277 — PRD-028 slice 6: acceptance tests + docs
+# 0292 — PRD-028 slice 6: acceptance tests + docs
 
 - **Commit:** pending
 - **Date:** 2026-08-20
@@ -38,7 +38,7 @@ gotchas sections in `AGENTS.md`/`CLAUDE.md`, and a verification pass over
     taxonomy leaves populated (>= 5 on the 13 example-touched leaves), and
     `materials_data/PROVENANCE.md` exists and attests (loose check: file
     exists + contains "Prospector" — a QA agent owns that file's prose in the
-    concurrent 0276 slice).
+    concurrent 0291 slice).
   - AC5: `materials_lint.lint_card` and the real CLI subprocess
     (`[sys.executable, "-c", "from agentcad.cli import main; main()"]`, the
     `test_materials_lint.py` pattern) both reject a card whose `yield_mpa` has
@@ -116,15 +116,15 @@ gotchas sections in `AGENTS.md`/`CLAUDE.md`, and a verification pass over
   tests/test_prd004_acceptance.py tests/test_prd011_acceptance.py
   tests/test_prd012_acceptance.py tests/test_examples.py -k "not exhaustive"`
   → 107 passed, 2 skipped.
-- Last full `make test`-equivalent run on this branch (entry 0271): 4565
+- Last full `make test`-equivalent run on this branch (entry 0286): 4565
   passed, 44 skipped; the controller's full-suite run over the finished
   branch is cited in the close-out entry.
 
 ## Notes
 `docs/user-guide.md`'s "Materials browser" subsection and `frontend/**` are a
-concurrent agent's slice (changelog 0275) and were not touched here.
+concurrent agent's slice (changelog 0290) and were not touched here.
 `materials_data/*.json` and `materials_data/PROVENANCE.md` are a concurrent
-QA agent's slice (changelog 0276) and were not touched here either — AC4's
+QA agent's slice (changelog 0291) and were not touched here either — AC4's
 `PROVENANCE.md` assertion is deliberately loose (existence + "Prospector")
 for exactly that reason. No product code changed in this slice; every test
 here graded the surface slices 1–4 already shipped, and none of them exposed

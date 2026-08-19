@@ -1,4 +1,4 @@
-# 0270 — PRD-028 Materials database: design spec + implementation plan
+# 0285 — PRD-028 Materials database: design spec + implementation plan
 
 - **Commit:** pending
 - **Date:** 2026-08-19

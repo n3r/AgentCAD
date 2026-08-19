@@ -1,4 +1,4 @@
-# 0274 — PRD-028 slice 4: the curated library — 434 cited material cards across every leaf
+# 0289 — PRD-028 slice 4: the curated library — 434 cited material cards across every leaf
 
 - **Commit:** pending
 - **Date:** 2026-08-20

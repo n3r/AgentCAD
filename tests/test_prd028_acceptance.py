@@ -304,7 +304,7 @@ def test_ac4_taxonomy_leaves_populated():
 def test_ac4_provenance_file_exists_and_attests():
     """The editorial QA record exists and carries the AC7 attestation
     (loose on purpose: a QA agent is actively rewriting this file's prose in
-    a concurrent slice — see changelog 0276)."""
+    a concurrent slice — see changelog 0291)."""
     path = DATA_DIR / "PROVENANCE.md"
     assert path.is_file(), f"{path} is missing"
     text = path.read_text(encoding="utf-8")

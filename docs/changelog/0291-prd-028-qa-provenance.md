@@ -1,4 +1,4 @@
-# 0276 — PRD-028 AC4/AC7: editorial QA of 20 records, whole-library sweep, and the rewritten provenance audit
+# 0291 — PRD-028 AC4/AC7: editorial QA of 20 records, whole-library sweep, and the rewritten provenance audit
 
 - **Commit:** pending
 - **Date:** 2026-08-20
@@ -97,7 +97,7 @@ polymers, 4 sandwich panels, 2 cemented-carbide rows, 6 AAC rows, 2 stones).
   `boron_carbide` `max_service_temp_c.source`. No value touched.
 - `agentcad/core/materials_data/PROVENANCE.md` — rewritten (30-record version →
   full 434-record, eight-file audit + AC4 QA table + AC7 attestation).
-- `docs/changelog/0276-prd-028-qa-provenance.md` — this entry.
+- `docs/changelog/0291-prd-028-qa-provenance.md` — this entry.
 
 ## Verification
 
@@ -112,12 +112,12 @@ $ .venv/bin/python -m pytest -q tests/test_materials.py tests/test_materials_lin
 63 passed in 8.92s
 ```
 
-The 22 warnings are the same 22 documented in entry 0274 and now itemized with
+The 22 warnings are the same 22 documented in entry 0289 and now itemized with
 their reasons in `PROVENANCE.md`; the pinned-density test
 (`test_v1_ids_and_densities_preserved`) is inside that 63 and is green, which
 is the mechanical proof that this pass changed no value.
 
-Last full `make test`-equivalent run on this branch (entry 0271): 4565 passed,
+Last full `make test`-equivalent run on this branch (entry 0286): 4565 passed,
 44 skipped; the controller's full-suite run over the finished branch is cited
 in the close-out entry.
 
