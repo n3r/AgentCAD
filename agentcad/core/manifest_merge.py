@@ -23,6 +23,7 @@ Key space (every leaf merges independently)::
     materials.<id>                                              atomic
     packages.<name>                                             atomic
     packages_lock.<name>                                        atomic
+    releases.<rev>                                              atomic
 
 ``pmi`` is atomic because its frames cross-reference each other by id;
 ``materials.<id>`` because merging one side's density with the other's yield
@@ -85,9 +86,16 @@ _PART_SUBDICTS = ("params", "solid_materials", "bom")
 _PART_ENTRY_DICTS = {"configs": ("params",)}
 
 # Top-level maps whose ENTRIES merge key-wise and are themselves atomic.
-# ``_write_path`` has to know the same set, or a resolution writes a bogus
-# flat key (``"packages.iso4762"``) instead of into the map.
-_ENTRY_DICTS = ("materials", "packages", "packages_lock")
+# ``_write_path`` has to know the same set (it reads ``*_ENTRY_DICTS`` at its
+# len==2 branch), or a resolution writes a bogus flat key
+# (``"packages.iso4762"``) instead of into the map.
+#
+# ``releases`` (PRD-015 FR6) joins them: a release record is a coherent unit
+# keyed by its revision letter, exactly like a material or a package entry. Two
+# branches cutting DIFFERENT revs (A and B) merge clean; a same-rev edit
+# conflicts on the whole record — which is what "append-only, never rewrites"
+# means at merge granularity.
+_ENTRY_DICTS = ("materials", "packages", "packages_lock", "releases")
 
 # `assembly` sub-maps (PRD-013) whose ENTRIES merge key-wise and are atomic per
 # name — exactly the `_ENTRY_DICTS` discipline, one level down. An interface

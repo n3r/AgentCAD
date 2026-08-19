@@ -108,7 +108,7 @@ def build_router(service, registry) -> APIRouter:
         body = await _json(request)
         args = {"project": proj, "source": body.get("source", ""),
                 "title": body.get("title", ""),
-                **_body_keys(body, "target", "description", "draft")}
+                **_body_keys(body, "target", "description", "draft", "kind")}
         return _result(registry.call("proposal_create", args))
 
     @router.get("/projects/{proj}/proposals/{pid}")
