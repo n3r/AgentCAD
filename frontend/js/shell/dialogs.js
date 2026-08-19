@@ -111,7 +111,13 @@ export function open(spec) {
   pendingAttribution = null;
   const s = { modal: true, ...spec };
   const id = `dlg${(seq += 1)}`;
-  const fields = Array.isArray(s.fields) ? s.fields : [];
+  // `entry.fields` is the list of CONTROLS — `readValues`, `refreshValidity`
+  // and `model.validate` all walk it, and a `{divider: true}` separator (the
+  // palette's required/optional rule, §3) is not one. The renderer still
+  // receives the unfiltered `s.fields`, because the separator's whole job is
+  // to be drawn.
+  const fields = (Array.isArray(s.fields) ? s.fields : [])
+    .filter((f) => f && !f.divider && f.name);
   const bodyNode = s.body && typeof s.body === "object";
   const { html, ids } = model.markup({
     ...s,

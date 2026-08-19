@@ -4,6 +4,7 @@
 
 import { api, ApiError } from "./api.js";
 import { state, onKeys } from "./state.js";
+import * as layout from "./shell/layout.js";
 
 const MCP_SNIPPET =
   "claude mcp add agentcad -- uv --directory <path-to-agentcad-repo> run agentcad mcp";
@@ -34,8 +35,15 @@ export function init() {
     send();
   });
 
-  if (localStorage.getItem("agentcad.chat.open") === "1") {
-    dock.classList.remove("collapsed");
+  // PRD-026 slice 4: `layout.init()` (called earlier in boot()) already
+  // applied the dock's initial collapsed state — migrated once from this
+  // module's old `agentcad.chat.open` key — so this module no longer reads
+  // localStorage itself. A MutationObserver keeps the chevron in sync with
+  // the `collapsed` class regardless of WHO changes it: this header click,
+  // the `view.chat.toggle` shortcut/menu row, or a future workspace switch.
+  if (typeof MutationObserver !== "undefined") {
+    new MutationObserver(updateChevron)
+      .observe(dock, { attributes: true, attributeFilter: ["class"] });
   }
   updateChevron();
 
@@ -56,10 +64,8 @@ export function init() {
 }
 
 function toggle() {
-  dock.classList.toggle("collapsed");
+  layout.toggle("chat"); // persists and applies the `.collapsed` class itself
   const open = !dock.classList.contains("collapsed");
-  localStorage.setItem("agentcad.chat.open", open ? "1" : "0");
-  updateChevron();
   if (open) inputEl.focus();
 }
 

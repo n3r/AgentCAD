@@ -128,6 +128,14 @@ export function markup(spec) {
 }
 
 function renderField(field, uid, ids, error) {
+  // A `{divider: true}` entry is a SEPARATOR, not a control: the palette's
+  // `formFields` emits one between a tool's required and optional arguments
+  // (PRD-026 §3). Without this branch it fell through to the generic `else`
+  // and rendered an unlabeled, focusable `<input type="text">` under
+  // `ids.fields["undefined"]` — an extra Tab stop with no accessible name.
+  if (field.divider) {
+    return '<div class="dlg-divider" role="separator" aria-orientation="horizontal"></div>';
+  }
   const name = field.name;
   const base = `dlg-f-${uid}-${cssSafe(name)}`;
   const entry = {

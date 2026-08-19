@@ -27,6 +27,10 @@ import { setupShare } from "./share-links.js";
 import * as actions from "./shell/actions.js";
 import * as dialogs from "./shell/dialogs.js";
 import * as shortcuts from "./shell/shortcuts.js";
+import * as menu from "./shell/menu.js";
+import * as layout from "./shell/layout.js";
+import * as palette from "./shell/palette.js";
+import * as events from "./shell/events.js";
 import { toast, init as initToasts } from "./shell/toast.js";
 
 const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
@@ -983,6 +987,20 @@ function handleEvent(ev) {
     case "chat_done":
       chat.handleEvent(ev);
       return;
+    // PRD-026: the agent's one way into this UI. `ui_open` is a BROADCAST —
+    // the bus has no per-client routing — so every connected browser opens the
+    // view, and each one shows the "opened by agent" attribution chip.
+    // `openView` refuses (and toasts) a view this shell does not have; it
+    // never guesses.
+    case "ui_open":
+      dialogs.openView(ev.view, ev.args || {}, { by: "agent" });
+      return;
+    // Our own UX telemetry, echoed back to us by the bus. Handling any of
+    // these would make `dialog_opened` open a dialog.
+    case "dialog_opened":
+    case "dialog_submitted":
+    case "palette_executed":
+      return;
     default:
       return;
   }
@@ -1085,35 +1103,14 @@ function setMenuHidden(menu, hidden) {
   if (btn) btn.setAttribute("aria-expanded", hidden ? "false" : "true");
 }
 
+// PRD-026 slice 4: the outside-click/Esc/roving behaviour itself moved to
+// `shell/menu.js`'s `attach()`, which queries `.menu-wrap` LIVE at event time
+// (no more "snapshots them at boot" caveat — a wrap inserted after this call,
+// like the menu bar's own generated ones, is handled too). This just attaches
+// the three PRE-EXISTING static wraps (project/branch/export); `menu.js`
+// attaches its own generated wraps itself.
 function setupMenus() {
-  const wraps = [...document.querySelectorAll(".menu-wrap")];
-  document.addEventListener("click", (e) => {
-    for (const wrap of wraps) {
-      if (!wrap.contains(e.target)) {
-        setMenuHidden(wrap.querySelector(".menu"), true);
-      }
-    }
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      for (const wrap of wraps) setMenuHidden(wrap.querySelector(".menu"), true);
-      return;
-    }
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    const open = wraps
-      .map((w) => w.querySelector(".menu"))
-      .find((m) => !m.classList.contains("hidden"));
-    if (!open) return;
-    const items = [...open.querySelectorAll(".menu-item")].filter((i) => !i.disabled);
-    if (!items.length) return;
-    e.preventDefault();
-    const idx = items.indexOf(document.activeElement);
-    const next =
-      e.key === "ArrowDown"
-        ? items[(idx + 1) % items.length]
-        : items[(idx - 1 + items.length) % items.length];
-    next.focus();
-  });
+  for (const wrap of document.querySelectorAll(".menu-wrap")) menu.attach(wrap);
 }
 
 function setupProjectMenu() {
@@ -1201,8 +1198,9 @@ async function openProjectPrompt() {
 }
 
 // ------------------------------------------------------------------ branches
-// The switcher is a static .menu-wrap (setupMenus() snapshots them at boot).
-// It stays hidden when the server has no versioning routes — git missing means
+// The switcher is a static .menu-wrap, attached by setupMenus() via
+// shell/menu.js's attach(). It stays hidden when the server has no
+// versioning routes — git missing means
 // the tool pack registered nothing and the project has no branches at all.
 
 async function loadBranchState() {
@@ -2346,13 +2344,17 @@ function registerActions() {
       menu: "view/21", shortcut: "R",
       when: (c) => inAssembly(c) && !!c.selectedInstance,
       run: () => setState({ gizmoMode: "rotate" }) });
+  // view/30-32 belong to the panel toggles registered by `shell/layout.js`
+  // (sidebar / inspector / chat dock), so the representation modes start at
+  // 40 and the theme toggle at 50 — three groups, three separators, and no
+  // two rows sharing a rank.
   A({ id: "view.repmode.full", title: "Full geometry", group: "View",
-      menu: "view/30", when: inAssembly, run: () => setRepMode("full") });
+      menu: "view/40", when: inAssembly, run: () => setRepMode("full") });
   A({ id: "view.repmode.simplified", title: "Simplified proxies",
-      group: "View", menu: "view/31", when: inAssembly,
+      group: "View", menu: "view/41", when: inAssembly,
       run: () => setRepMode("simplified") });
   A({ id: "view.theme.toggle", title: "Toggle light/dark theme", group: "View",
-      menu: "view/40", run: () => theme.toggle() });
+      menu: "view/50", run: () => theme.toggle() });
 
   // ----------------------------------------------------------------- Model
   A({ id: "model.sketch", title: "2D sketch…", group: "Model", menu: "model/10",
@@ -2376,8 +2378,10 @@ function registerActions() {
       run: () => drawings.previewSvg(state.projectName, state.selectedPart) });
 
   // ------------------------------------------------------------------ Help
+  // help/10 is the command palette (`shell/palette.js`) — the row people reach
+  // for first, and the one that leads to everything else.
   A({ id: "help.shortcuts", title: "Keyboard shortcuts", group: "Help",
-      menu: "help/10", shortcut: "?", keywords: ["keys", "cheat sheet"],
+      menu: "help/11", shortcut: "?", keywords: ["keys", "cheat sheet"],
       run: () => openShortcutSheet() });
 
   // The sketcher is a modal MODE, not a set of bindings: its `onKey`
@@ -2397,6 +2401,25 @@ function registerActions() {
     title: "Keyboard shortcuts",
     description: "Every chord this workbench binds, grouped by area",
   });
+}
+
+/** The toolbar's palette affordance. Its label is the CHORD, so it is read
+ *  from the shortcut table rather than hard-coded: `index.html` cannot know
+ *  whether this browser renders `⌘K` or `Ctrl+K`, and a Windows user seeing a
+ *  Command glyph learns the wrong key. If the chord ever moves, this follows. */
+function setupPaletteButton() {
+  const btn = document.getElementById("palette-btn");
+  if (!btn) return;
+  const row = shortcuts.list().find((r) => r.actionId === "help.palette");
+  if (row) {
+    btn.textContent = row.label;
+    btn.title = `Command palette (${row.label})`;
+    btn.setAttribute("aria-keyshortcuts",
+                     row.chord.replace(/^Mod\+/, navigator.platform
+                       && /Mac/i.test(navigator.platform) ? "Meta+" : "Control+"));
+  }
+  btn.addEventListener("click",
+    () => actions.run("help.palette", null, { source: "toolbar" }));
 }
 
 /** The "?" cheat-sheet: `shortcuts.list()` grouped by area. Built as DOM (not
@@ -2447,8 +2470,8 @@ function showSignIn() {
     document.getElementById(id)?.classList.add("hidden");
   }
   // A full reload rather than re-running boot(): every panel's init() is
-  // written to run once (setupMenus snapshots .menu-wrap, comments.js
-  // registers an inspector decorator), so re-booting in place would be a
+  // written to run once (comments.js registers an inspector decorator,
+  // layout.js inserts its resize handles), so re-booting in place would be a
   // second, subtly different app.
   auth.renderSignIn(document.getElementById("auth-view"),
                     () => location.reload());
@@ -2488,6 +2511,29 @@ async function boot() {
   // action lands — and a conflict throws from that registration.
   shortcuts.init({ actions, dialogs });
   registerActions();
+  // After registerActions() (so the first render has every File/Edit/View/
+  // Model/Help row) and after shortcuts.init() (so the three toggle actions
+  // layout.init() registers get their chords bound through the same
+  // onChange subscription as everything else).
+  menu.init({ actions, host: document.getElementById("menubar") });
+  layout.init({ workspace: "default", actions });
+  // The UX-events client, then the dialog stack's emitter: from here every
+  // `dialog_opened`/`dialog_submitted` reaches `POST /api/ui/events`
+  // fire-and-forget. `events.emit` accepts the one-object shape the dialog
+  // stack calls it with, so this line IS the wiring.
+  events.init({ api });
+  dialogs.setEmitter(events.emit);
+  // One `palette_executed` per palette run, emitted from the registry's run
+  // listener so that a menu/toolbar/shortcut run of the same action is never
+  // recorded as a palette one. Rows the palette runs WITHOUT the registry
+  // (a tool, a view, a navigation target) emit it themselves.
+  actions.onRun(({ id, source }) => {
+    if (source === "palette") events.emit("palette_executed", { action: id });
+  });
+  // After registerActions(): the palette registers `help.palette`/`Mod+K`
+  // itself, and a chord conflict must throw from that registration.
+  palette.init({ actions, dialogs, shortcuts, api, state, toast, events,
+                 loadProject, selectPart });
   viewport.init(document.getElementById("viewport"), { onPick });
   tree.init(panelApi);
   inspector.init(panelApi);
@@ -2515,6 +2561,7 @@ async function boot() {
   setupLibrary();
   document.getElementById("market-btn")?.addEventListener("click",
     () => actions.run("model.market", null, { source: "toolbar" }));
+  setupPaletteButton();
   setupUndo();
   setupGizmoSnapKeys();
   setupRepMode();

@@ -438,6 +438,16 @@ export const api = {
   // ---- generic tool passthrough (used by import) ----
   callTool: (name, body) => request("POST", `/api/tools/${enc(name)}`, body),
 
+  // ---- the workbench shell (PRD-026) ----
+  /** The LIVE tool registry — the command palette's only source of tools, so
+   *  a pack that registers late simply appears and nothing frontend-side ever
+   *  enumerates them (FR6). Same payload the MCP server proxies. */
+  listTools: () => request("GET", "/api/tools"),
+  /** One UX event (`dialog_opened` / `dialog_submitted` / `palette_executed`).
+   *  `shell/events.js` posts these fire-and-forget and swallows the failure —
+   *  nothing in the UI waits for this call. */
+  postUiEvent: (body) => request("POST", "/api/ui/events", body),
+
   // ---- 2D sketch solve (constraint solver) ----
   /** Solve a constrained sketch. `opts` carries the optional keys the route
    *  whitelists: `initial` (the previous frame's solution — the warm start

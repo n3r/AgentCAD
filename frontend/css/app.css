@@ -280,6 +280,72 @@ input, textarea { font: inherit; color: inherit; }
   color: var(--dim);
 }
 
+/* ---------------------------------- menubar + layout (PRD-026 slice 4) */
+
+#menubar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+}
+#menubar .menu-wrap > button {
+  padding: 6px 9px;
+  font-size: 12.5px;
+}
+#menubar .menu-item .menu-kbd {
+  color: var(--dim);
+  font-size: 10.5px;
+  font-family: var(--mono);
+  margin-left: 12px;
+}
+#menubar .menu-item.danger { color: var(--err-text); }
+#menubar .menu-item.danger:hover { background: var(--err-soft); color: var(--err); }
+#menubar .menu-item[aria-disabled="true"] {
+  color: var(--faint);
+  cursor: default;
+}
+#menubar .menu-item[aria-disabled="true"]:hover { background: none; }
+
+/* One splitter primitive shared by the sidebar, inspector and chat-dock
+   boundaries — a hairline by default, an accent tint under the pointer or
+   keyboard focus, and a stronger tint while actively dragging. */
+.resize-handle {
+  flex: none;
+  position: relative;
+  z-index: 5;
+  background: transparent;
+}
+.resize-handle[aria-orientation="vertical"] {
+  width: 5px;
+  margin: 0 -2px;
+  cursor: col-resize;
+}
+.resize-handle[aria-orientation="horizontal"] {
+  height: 5px;
+  margin: -2px 0;
+  cursor: row-resize;
+}
+.resize-handle:hover { background: var(--accent-soft); }
+.resize-handle:focus-visible {
+  outline: none;
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.resize-handle.dragging { background: var(--accent-ring); }
+
+#sidebar.collapsed {
+  width: 0 !important;
+  min-width: 0;
+  overflow: hidden;
+  border-right-color: transparent;
+}
+#inspector.collapsed {
+  width: 0 !important;
+  min-width: 0;
+  overflow: hidden;
+  border-left-color: transparent;
+}
+
 /* ----------------------------------------------------------- workspace */
 
 #workspace {
@@ -1597,6 +1663,115 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
 }
 
 @keyframes dlg-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* palette (PRD-026 slice 3) ------------------------------------------------
+   The command palette lives inside a `wide` shell dialog, so it inherits the
+   dialog's ground, border and shadow and only has to style the input, the
+   listbox and the row. Colours are tokens only — the palette is the one
+   surface a user sees in every theme, and a hard-coded hex here would be the
+   first thing to look wrong in light mode. */
+
+/* The separator `formFields` puts between a tool's required and optional
+   arguments. It lives in a `.dlg-form`, which is a flex column — so a plain
+   border on a zero-height box is the whole rule. */
+.dlg-divider {
+  height: 0;
+  border-top: 1px solid var(--hairline-soft);
+  margin: 2px 0;
+}
+
+.palette { display: flex; flex-direction: column; min-height: 0; }
+.palette-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+}
+.palette-input:focus { outline: none; border-color: var(--accent); }
+.palette-input::placeholder { color: var(--faint); }
+
+.palette-list {
+  margin-top: 8px;
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.palette-option {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: default;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.palette-option.active { background: var(--accent-soft); }
+.palette-option.disabled { opacity: 0.45; }
+.palette-option:hover:not(.active) { background: var(--raised); }
+.palette-title { flex: none; }
+.palette-option.active .palette-title { color: var(--accent-bright); }
+.palette-title.mono { font-family: var(--mono); font-size: 12px; }
+.palette-desc {
+  flex: 1;
+  min-width: 0;
+  color: var(--dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.palette-badge {
+  flex: none;
+  margin-left: auto;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+  border: 1px solid var(--hairline-soft);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.palette-kbd {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--accent-bright);
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.palette-empty {
+  padding: 14px 8px;
+  color: var(--dim);
+  font-size: 12.5px;
+  text-align: center;
+}
+.palette-empty.hidden { display: none; }
+
+/* the non-modal tool-result panel */
+.dlg-result { display: flex; flex-direction: column; gap: 8px; }
+.dlg-result pre {
+  margin: 0;
+  max-height: min(46vh, 380px);
+  overflow: auto;
+  background: var(--ink);
+  border: 1px solid var(--hairline-soft);
+  border-radius: 5px;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--code-text);
+  white-space: pre;
+}
+.palette-copy { align-self: flex-start; }
 
 /* ------------------------------------------------------- versions dialog */
 
