@@ -593,8 +593,8 @@ get backwards: read the pair like `git merge <source>` — the **target branch i
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `proposal_create` | **project, source, title**, target, description, draft | `{proposal, gates, packet}`. `target` defaults to the project's **default** branch, not your current one (a proposal is read by other clients). A second *active* proposal for the same pair is a `conflict_error` naming the existing id; an unknown branch is a `notfound_error` (a version tag does not answer for a branch); `source == target` is a `validation_error`. `draft: true` opens it unreviewable until you update it to `open`. |
-| `proposal_list` | **project**, state | `{proposals: [{id, source, target, title, state, author, author_kind, created, updated, reviews, merge_commit}], counts: {<state>: n}}`, oldest id first. |
+| `proposal_create` | **project, source, title**, target, description, draft, kind | `{proposal, gates, packet}`. `target` defaults to the project's **default** branch, not your current one (a proposal is read by other clients). A second *active* proposal for the same pair is a `conflict_error` naming the existing id; an unknown branch is a `notfound_error` (a version tag does not answer for a branch); `source == target` is a `validation_error`. `draft: true` opens it unreviewable until you update it to `open`. `kind` is `"change"` (default) or `"release"` — the approval/merge machinery is identical either way; a release proposal is normally opened for you by `release_start` (see [BOM and releases](#bom-and-releases)), not by calling this directly with `kind: "release"`. |
+| `proposal_list` | **project**, state | `{proposals: [{id, source, target, kind, title, state, author, author_kind, created, updated, reviews, merge_commit}], counts: {<state>: n}}`, oldest id first. `kind` defaults to `"change"` for proposals created before PRD-015. |
 | `proposal_get` | **project, id** | `{proposal, gates, audit, packet}`. `gates` is the merge checklist — `[{name, state: pass\|fail\|pending\|skipped, summary, details}]` over `state`, `approvals`, `validation` (pending until the merge runs it), `specs` (the fail-closed design-spec gate over the source branch — see [Design specs](#design-specs)) and `checks` (the geometry-CI verdict posted to this proposal — see [Geometry CI](#geometry-ci); `skipped` until one is). `audit` is the append-only log. `packet` here is only a status summary (`{generated, stale, ok, frozen}`, or `null` before the first view). |
 | `proposal_update` | **project, id**, title, description, state | Edits the title/description, or moves state: `draft → open`, anything active → `closed`, `closed → open`, `changes_requested → open`. Approving is `proposal_review` and merging is `proposal_merge`; neither can be faked by writing a state — any other move is a `validation_error` carrying `{from, to, allowed}`. |
 | `proposal_packet` | **project, id**, regenerate | The review packet (below). Generated on first view, re-served while both branch heads hold, regenerated when either moved or on `regenerate: true`. A packet frozen by a merge refuses `regenerate` with a `conflict_error`. A **terminal** (merged/closed) proposal is never measured again — a packet built then would describe the branches as they are now, under this proposal's name. Merging freezes the packet, or, when none was ever generated, freezes the *absence* as `{frozen: true, generated: null, ok: false, parts: [], note: "…"}`; a closed proposal keeps whatever it had, and a terminal proposal with no packet at all is a `conflict_error`. |
@@ -1247,6 +1247,142 @@ A part that declares no configurations is unchanged in every respect: nothing
 new is written to its manifest entry, its cache keys are the keys it always
 had, and `configs` / `active_config` simply answer `{}` and `null`.
 
+### BOM and releases
+
+Eight tools (PRD-015): three over `agentcad/core/bom.py` + `tools_bom.py` (a
+structured bill of materials rolled up from the assembly, and the manual
+fields it can't derive), five over `agentcad/core/releases.py` +
+`tools_releases.py` (the revision state machine). The release tools —
+and their routes — **self-disable** exactly like `tools_proposals`/
+`tools_versioning` when `git` is not on the server's PATH (a release opens a
+proposal, and proposals need branches); the BOM tools have no such
+dependency.
+
+**BOM**
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `get_bom` | **project**, config, structure, ref | `{structure, lines, totals, warnings, generated_ref}`. One line per rolled-up `(origin_project, part_id, config)` — `structure: flat` (default; one row per group) or `indented` (one row per occurrence, carrying `level`). Patterns count by their `count`; a sub-assembly's members roll up multiplied through, attributed to the sub-assembly's own project (`origin_project`). Both structures agree on `item` numbering and on `totals` (always summed over the flat grouping, never per-occurrence, so float addition can't drift between the two views). `config` applies one configuration assembly-wide, but only to a leaf whose instance binds none **and** whose part actually declares that configuration. `ref` (branch/tag/commit) computes the BOM against a throwaway worktree materialized at that ref instead of the working tree — see the reproducibility note below. Makes **zero kernel calls**: a structural count over `manifest["assembly"]["instances"]`, never `mates.expand`'s `resolve_assembly`. |
+| `export_bom` | **project**, format, config, structure, ref | Writes `exports/bom.<ext>` in the **real** project — even with `ref` set, where the throwaway worktree is already gone by the time this returns — and answers `{path, size_bytes, format, lines, totals, warnings}`. `format` is `csv` (RFC-4180: a header row, one row per line, a `TOTAL` row carrying the summed mass/cost) or `json` (mirrors `get_bom`'s payload, sorted keys, byte-deterministic). |
+| `set_bom_fields` | **project, part_id**, part_number, unit_cost_usd, supplier, url, config | Writes `parts[i].bom` — only the fields you pass; unknown keys are refused. `unit_cost_usd` must be a non-negative number (there is no verb to *clear* one in v1 — omit it to leave it alone; the frontend works around the same gap by no-oping an emptied field rather than writing `0`). Strings are capped at 200 characters and refuse control characters. `config` is accepted but **reserved** — v1 stores one BOM per part, config-agnostic (a per-config part-number override is a documented follow-up). Publishes `project_changed`. |
+
+Line fields (FR2): `item` (stable ordinal), `origin_project`, `part_id`,
+`part_number`, `label`, `config`, `material`, `unit_mass_g`, `unit_cost_usd`,
+`ext_cost_usd`, `qty`, `source`, plus two honesty columns that survive into
+the CSV export as their own columns — never folded into `unit_cost_usd` or
+`unit_mass_g` where a reader could mistake one for a measurement:
+`cost_source` (`manual` | `material_estimate` | `none`) and `mass_source`
+(`built` | `stale` | `unbuilt`). A manual `set_bom_fields` cost always wins;
+otherwise cost is estimated as `unit_mass_g × material.cost_usd_kg / 1000`
+and flagged `material_estimate`, or `none` when neither is available. Mass is
+**peeked**, never built: `service._status`/`_config_status` read directly
+(the way `get_project` reads a badge), staleness detected by recomputing the
+pure `_cache_key_for` hash and comparing it to the memoized one. An unbuilt
+part reads `mass_source: unbuilt` (nothing is triggered); a part whose cache
+key no longer matches its last build reads `stale` (the last-known mass, if
+any); both are named in `warnings: [{kind: "mass_unbuilt"|"mass_stale",
+project, part, config}]`. `totals: {mass_g, cost_usd}` sums only lines that
+carry a value.
+
+**`get_bom {ref}` reproduces the manifest-derived BOM faithfully — quantities,
+part numbers, manual costs, materials, configurations — but not necessarily
+mass.** The ephemeral service a ref materializes into starts with a cold
+build cache, and the zero-kernel builder never triggers a build to warm it,
+so every part typically reads `mass_source: unbuilt` at a ref. The release
+bundle (below) gets real per-tag mass because it runs the STEP/drawing
+exports *before* computing the BOM, warming that same ephemeral cache first.
+
+**Releases**
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `release_start` | **project**, notes, waive | Cuts the next revision (`A`, `B`, … per project; spreadsheet-style rollover past `Z` to `AA`) from the **current branch, which must not be the project's default**. Opens a `release`-kind proposal (its specs/checks gates evaluate for free on create — nothing is re-run), composes a gate report from those gates plus three release-only checks, and writes the record either way. Returns `{rev, proposal, gate, status}` — `status: "in_review"` on a green gate, `"draft"` on red, with every failing check named in `gate.checks`. `waive: {reason}` marks the failing checks `waived` and proceeds anyway, recording the waiver durably (never silently). |
+| `release_finalize` | **project, rev** | Finalizes an `in_review` release (FR9): requires the release proposal **approved** first (`proposal_review` verdict `approve`, by someone other than the author, under the project's approval policy) or refuses with a `conflict_error` naming the unapproved proposal; then tags `release/<rev-lowercased>`, registers the tag as **referenced** (PRD-001 FR5 — a referenced tag can't be deleted or moved), transitions the record to `released`, marks the immediately-prior `released` rev `superseded`, and builds the bundle inline (best-effort: a bundle failure is recorded on the record, never un-releases the already-tagged revision). **Idempotent** — calling it again on an already-`released` rev returns the same record and creates nothing. A `draft` (the gate never passed) is a `validation_error`; a `superseded`/terminal record is a `conflict_error`. Zero kernel calls of its own — git + manifest only. |
+| `release_bundle` | **project, rev** | Rebuilds the reproducible bundle for a `released`/`superseded` rev — idempotent, overwrites the directory. `release_finalize` already builds it inline; call this to regenerate (e.g. after fixing something in the tagged tree is not possible, but re-running is useful if the first build partially failed). Refuses a rev that has never been released. **Not exposed as an HTTP route** — tool/MCP only. |
+| `list_releases` | **project** | `{project, releases: [<record>, …]}` in revision order. |
+| `get_release` | **project, rev** | `{project, release: <record>, gate: <record.gate>}`. An unknown rev is a `notfound_error`. |
+
+**The record**: `{name, rev, status, tag, proposal, notes, approvals:
+[{principal, ts}], waiver?, gate, bundle}`. `status` is `draft → in_review →
+released → superseded` — `draft`/`in_review` are live and rewritable;
+`released`/`superseded` are **append-only** (any tool that would mutate one
+raises `conflict_error` directing you to `branch_create {from_ref:
+"release/<rev>"}` instead — evolving a released state means branching off its
+tag, never editing it in place). `tag` is `null` until finalize, then the
+**lowercased** ref name (`release/b`, never `release/B` — the project's
+ref-name rule forbids uppercase); the true-case rev is kept as plain data in
+the tag's referrer payload (`{"release": "B"}`) and in the record's own
+`rev` field. `bundle` is `null` until a build runs, then either the summary
+(`{dir, zip, artifacts, generated, skipped}`) or `{error}` if the inline
+build that follows finalize failed.
+
+**The gate report**: `{status: "green"|"red", checks: [{name, status:
+pass|fail|warn|skip, detail, gate?, waived?}], waiver}`. Five checks: `specs`
+and `checks` are lifted straight off the proposal's already-evaluated gates
+(a `pending` proposal-gate state counts as `fail` here — fail-closed, never
+"we don't know yet"); `working_tree_clean`, `subassembly_refs_pinned` (a
+**warning**, never blocking — PRD-013 doesn't yet let you pin a sub-assembly
+reference's version, so nothing could satisfy a hard check in v1) and
+`drawings_regenerable` (a **soft pass** in v1 — a real probe would be a
+`generate_drawing` kernel call this zero-kernel path avoids) are computed
+fresh. Only a `fail` blocks the gate; `waive` marks every blocking check
+`waived` and the gate reads green anyway, but the failing check — and the
+waiver itself — stay in the report, visible in `get_release` and in the
+bundle's README.
+
+**PRD-002 proposals gained a `release` kind.** `proposal_create`'s `kind`
+argument (default `"change"`, now also `"release"`) rides through
+`proposal_list`/`proposal_get` unchanged in every other respect — same
+review/approval/merge flow. In practice you never call `proposal_create
+{kind: "release"}` yourself; `release_start` opens it for you.
+
+**The bundle** (`exports/releases/<rev>/` plus a `<rev>.zip` beside it):
+STEP per script part and for the whole assembly (skipped, and noted, when
+the assembly has no instances), PDF+SVG drawings per part with the title
+block **pinned to the tag** (`version: {ref: rev, date: <tag commit date>}` —
+the same override the geometry-CI determinism stage uses to make drawings
+comparable across runs), a flat pattern per sheet-metal part (a solid part
+is skipped and noted, not an error), `bom.csv` + `bom.json` computed *after*
+the geometry above so their mass is warm and real, a clock-free `README.md`
+(release name, notes, the gate report, any waiver, a sorted artifact list),
+and `artifacts.json` (`{rev, tag, generated, files: [{path, sha256, bytes,
+class}], classes}`, sorted, never listing itself). **Reproducibility**:
+every `deterministic`-class artifact (drawings, BOM, flat patterns, README)
+is byte-identical across rebuilds at the same tag. STEP is the one
+**normalized-comparison** class — two non-geometry fields are neutralized
+before comparing bytes: the ISO-10303-21 `FILE_NAME` write timestamp, and
+(assembly STEP only) OCCT's `NEXT_ASSEMBLY_USAGE_OCCURRENCE` entity, a
+process-global session counter that increments between exports in one
+kernel process even for byte-identical geometry — neither field is geometry,
+and both are named in `artifacts.json.classes` and the README.
+
+**Events**: `release_changed {project, rev, status}` fires only from
+`release_finalize` (the `released` transition) — `release_start` publishes
+only the ordinary `project_changed {reason: "release"}`, so a draft/
+in-review transition carries no dedicated event of its own.
+
+**Routes**:
+
+```
+GET   /api/projects/{proj}/bom                    ?structure=&config=&ref=
+GET   /api/projects/{proj}/bom.csv                 ?structure=&config=&ref=
+GET   /api/projects/{proj}/bom.json                ?structure=&config=&ref=
+PATCH /api/projects/{proj}/parts/{part_id}/bom     {part_number, unit_cost_usd, supplier, url, config}
+GET   /api/projects/{proj}/releases                          -> list_releases
+GET   /api/projects/{proj}/releases/{rev}                    -> get_release
+POST  /api/projects/{proj}/releases           {notes, waive} -> release_start
+POST  /api/projects/{proj}/releases/{rev}/finalize           -> release_finalize
+```
+
+The two `bom.<ext>` routes call `export_bom` and then stream the exact bytes
+it wrote (`text/csv` / `application/json`, `Cache-Control: no-store`) rather
+than the tool's JSON envelope — the `routes_drawing` precedent for a
+regenerated file. There is no `POST …/releases/{rev}/bundle` route:
+`release_bundle` is tool/MCP-only, and the browser never needs it directly
+because finalize already builds the bundle inline. The release routes mount
+an **empty** router exactly where the tools self-disable — no `git` on the
+server's PATH.
+
 ### Packages — the parts library and registry
 
 Seven tools over `agentcad/core/packages/`. Full reference:
@@ -1720,3 +1856,58 @@ What this buys, and the traps:
   that merge (`already_landed: true`) instead of merging an ancestor; a merge
   you discarded with `merge_abort` is audited `merge_discarded` and the
   proposal stays exactly where it was.
+
+## A v5 example: cut a release
+
+A release rides the same proposal machinery the loop above uses — cutting one
+opens a `release`-kind proposal for you — with its own revision state machine
+layered on top:
+
+```
+→ set_bom_fields {"project": "rig", "part_id": "nozzle",
+                  "part_number": "RIG-NOZ-100", "supplier": "Acme Metal",
+                  "unit_cost_usd": 14.50}
+← {"ok": true, "part_id": "nozzle", "bom": {"part_number": "RIG-NOZ-100", …}}
+
+→ branch_create {"project": "rig", "name": "rev-b"}
+→ branch_switch {"project": "rig", "name": "rev-b"}
+   # ... the edits for this revision, committed ...
+
+→ release_start {"project": "rig", "notes": "Thinner nozzle wall, tightened
+                                              bolt circle"}
+← {"rev": "B", "proposal": "4", "status": "in_review",
+   "gate": {"status": "green",
+            "checks": [{"name": "specs", "status": "pass", …},
+                       {"name": "checks", "status": "pass", …},
+                       {"name": "working_tree_clean", "status": "pass", …},
+                       {"name": "subassembly_refs_pinned", "status": "pass", …},
+                       {"name": "drawings_regenerable", "status": "pass", …}],
+            "waiver": null}}
+
+# A human reviews the release proposal exactly like any other:
+→ proposal_review {"project": "rig", "id": "4", "verdict": "approve",
+                   "summary": "Mass and cost check out"}
+
+→ release_finalize {"project": "rig", "rev": "B"}
+← {"name": "Release B", "rev": "B", "status": "released", "tag": "release/b",
+   "proposal": "4", "approvals": [{"principal": "browser:…", "ts": "…"}],
+   "bundle": {"dir": "…/exports/releases/B", "zip": "…/exports/releases/B.zip",
+              "artifacts": ["README.md", "artifacts.json", "assembly.step",
+                            "bom.csv", "bom.json", "nozzle.step",
+                            "nozzle_drawing.pdf", "nozzle_drawing.svg"],
+              "generated": "2026-08-20", "skipped": []}}
+
+→ get_bom {"project": "rig", "ref": "release/b"}   # reproduces the released BOM
+```
+
+Two things worth knowing before you rely on this:
+
+- **A red gate does not block `release_start`.** It writes a `draft` record
+  naming every failing check, so you can see exactly why before fixing
+  anything and cutting again — or pass `waive: {reason}` to proceed
+  knowingly, which stays visible in `get_release` forever.
+- **`release_finalize` refuses until the proposal carries a counted
+  `approve`**, same rule as `proposal_merge` — an agent cannot release its
+  own work any more than it can merge its own proposal. Once released, the
+  tag is immutable and the record is append-only; `branch_create {from_ref:
+  "release/b"}` is how you evolve it into Rev C.

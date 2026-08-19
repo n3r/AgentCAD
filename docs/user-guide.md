@@ -1018,6 +1018,96 @@ documented in [agent-api.md](agent-api.md#configurations). A part that
 declares no configurations is completely unaffected: same manifest, same
 caches, same UI.
 
+## Bill of materials
+
+The **BOM** toolbar button opens the assembly's bill of materials — the table
+that answers "what do I actually need to buy or send to the shop," derived
+from the model on demand rather than maintained beside it.
+
+**One row per part, quantities rolled up.** A screw pattern of eight, used
+twice in a bolted-on bracket sub-assembly, is one row with `qty: 16` — you
+never hand-count instances. The **flat / indented** selector switches between
+that rolled-up view and a per-occurrence tree (indented by assembly level);
+totals at the footer (mass, cost) are identical either way. Each row shows
+item number, quantity, part number, name, config, material, unit mass, unit
+cost, extended cost and source.
+
+**Part numbers, costs and sourcing are edited in the model, not in a
+spreadsheet.** `Part #`, `Unit cost` and `Source` are inline-editable cells —
+type a value and it commits on blur/Enter, written to the part like any other
+manifest field (and undoable the same way). There is no verb yet to *clear* a
+manual cost once set — leave the field as-is if you want to fall back to the
+estimate again; a later release adds that.
+
+**Cost honesty.** A unit cost you never set is not blank — if the part's
+material carries a `cost_usd_kg`, the BOM estimates it (`mass × cost/kg`) and
+tags the cell **(est)** so nobody downstream reads a guess as a quote. No
+material cost and no manual price shows **(none)**. The same discipline
+applies to mass: a part that hasn't been built in this server session shows
+**(unbuilt)** rather than triggering a rebuild just to answer a BOM query, and
+one whose script or parameters changed since its last build shows **(stale)**
+(the table still shows the last-known value). A banner above the table names
+how many rows are affected. **These tags survive into the CSV/JSON export as
+their own `cost_source`/`mass_source` columns** — the honesty travels with the
+file, not just the screen.
+
+**Export** writes `exports/bom.csv` or `exports/bom.json` next to the project
+(the same download-to-disk convention as the Export menu); CSV opens cleanly
+in Sheets/Excel, quoting commas and quotes correctly, with a `TOTAL` row.
+
+Agents get the same three calls — `get_bom`, `export_bom`, `set_bom_fields` —
+documented in
+[agent-api.md](agent-api.md#bom-and-releases).
+
+## Releases
+
+The **Releases** toolbar button opens the revision panel: draft a release,
+watch its gate, get it approved, and finalize it into an immutable, tagged,
+reproducible snapshot — Onshape's "PDM built in" pitch, built on the git
+substrate the app already has rather than a vault.
+
+**Cutting a release.** You must be on a branch other than the project's
+default (make one with **New branch…** first, same as any other change).
+**Cut release…** prompts for release notes and allocates the next revision
+letter (`A`, `B`, `C`, …) — this opens a `release`-kind change proposal behind
+the scenes and evaluates its **gate**: design specs (PRD-003) and geometry CI
+(PRD-004) green, the working tree clean, sub-assembly references pinned and
+drawings regenerable (the last two are soft checks in v1 — named, not yet
+blocking). A green gate moves the row to **in review**; a red one leaves it
+**draft** with every failing check listed right there, so you know exactly
+what to fix before cutting again.
+
+**Approving is reviewing the proposal — there is no separate "approve
+release" button.** Each row's **Review proposal** action opens the same
+Proposals modal as any other change: read the evidence, **Approve**. A
+release, like any proposal, cannot be approved by its own author.
+
+**Finalize** appears once a row is **in review**; it refuses (with a clear
+error) until the proposal actually carries an approval. Finalizing tags the
+approved state as `release/<rev>` (an immutable, protected version — it can't
+be deleted or moved out from under the release), marks the row **released**
+with a 🔒, supersedes the previous release, and builds the bundle in the
+background: STEP for every part and the assembly, drawings, the BOM at that
+exact revision, flat patterns for sheet-metal parts, and a README summarizing
+the gate report — all written under `exports/releases/<rev>/` plus a zip
+beside it.
+
+**A released row is visibly locked.** There is no edit path back into it —
+the append-only record and the tag's own immutability both refuse a write.
+To evolve a released design, branch off its tag (`branch_create` from
+`release/<rev>`) and cut the next revision from there when it's ready.
+
+**Reproducibility, honestly qualified.** Re-running the bundle at the same
+tag produces byte-identical drawings, BOM files, flat patterns and README on
+every rebuild. STEP is the one exception: two non-geometry fields (a write
+timestamp, and an OCCT session counter on assembly exports) are normalized
+before comparing, and the bundle's own README says so rather than claiming a
+perfect byte match it can't deliver.
+
+Agents get the same five calls — `release_start`, `release_finalize`,
+`release_bundle`, `list_releases`, `get_release` — documented in
+[agent-api.md](agent-api.md#bom-and-releases).
+
 ## The Parts library
 
 The **Library** button on the toolbar opens the parts library: search a
