@@ -1,0 +1,626 @@
+{
+  "schema_version": 2,
+  "materials": {
+    "ti6al4v": {
+      "label": "Titanium Ti-6Al-4V (Grade 5)",
+      "category": "metal",
+      "subcategory": "titanium",
+      "condition": "annealed",
+      "standards": [
+        "ASTM B265 (Grade 5)",
+        "AMS 4911"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 4.43,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Ti-6Al-4V physical properties"
+        },
+        "E_gpa": {
+          "value": 114.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Ti-6Al-4V annealed bar typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 880.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Ti-6Al-4V annealed bar typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 950.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Ti-6Al-4V annealed bar typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 14.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Ti-6Al-4V annealed bar typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 8.6,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Ti-6Al-4V physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 6.7,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), Ti-6Al-4V physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 350.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 35.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "machinability": "poor",
+        "weldability": "fair",
+        "source": "editorial classification (Machining Data Handbook; AWS D17.1 inert-gas practice)"
+      },
+      "links": [
+        {
+          "label": "MMPDS (design allowables, linked not mirrored)",
+          "url": "https://www.mmpds.org/"
+        }
+      ]
+    },
+    "inconel718": {
+      "label": "Inconel 718 (aged)",
+      "category": "metal",
+      "subcategory": "nickel",
+      "condition": "solution treated + aged (AMS 5662)",
+      "standards": [
+        "AMS 5662",
+        "UNS N07718"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 8.19,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 718 datasheet, physical constants"
+        },
+        "E_gpa": {
+          "value": 200.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 718 datasheet, aged bar typical room-temperature tensile properties"
+        },
+        "yield_mpa": {
+          "value": 1030.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 718 datasheet, aged bar typical room-temperature tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 1240.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 718 datasheet, aged bar typical room-temperature tensile properties"
+        },
+        "elongation_pct": {
+          "value": 12.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 718 datasheet, aged bar typical room-temperature tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 13.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 718 datasheet, thermal properties"
+        },
+        "k_w_m_k": {
+          "value": 11.4,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 718 datasheet, thermal properties"
+        },
+        "max_service_temp_c": {
+          "value": 650.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 60.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "links": [
+        {
+          "label": "MMPDS (design allowables, linked not mirrored)",
+          "url": "https://www.mmpds.org/"
+        }
+      ],
+      "notes": "AMS 5662 solution + aged, room temperature."
+    },
+    "inconel625": {
+      "label": "Inconel 625 (annealed)",
+      "category": "metal",
+      "subcategory": "nickel",
+      "condition": "annealed",
+      "standards": [
+        "ASTM B443",
+        "UNS N06625"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 8.44,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 625 datasheet, physical constants"
+        },
+        "E_gpa": {
+          "value": 208.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 625 datasheet, annealed typical room-temperature tensile properties"
+        },
+        "yield_mpa": {
+          "value": 460.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 625 datasheet, annealed typical room-temperature tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 880.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 625 datasheet, annealed typical room-temperature tensile properties"
+        },
+        "elongation_pct": {
+          "value": 45.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 625 datasheet, annealed typical room-temperature tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 12.8,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 625 datasheet, thermal properties"
+        },
+        "k_w_m_k": {
+          "value": 9.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Special Metals INCONEL alloy 625 datasheet, thermal properties"
+        },
+        "max_service_temp_c": {
+          "value": 800.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 55.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "notes": "Oxidation-limited to ~980 C; strength falls off above ~650 C."
+    },
+    "stainless_304": {
+      "label": "Stainless 304 (annealed)",
+      "category": "metal",
+      "subcategory": "stainless",
+      "condition": "annealed",
+      "standards": [
+        "ASTM A240/A240M (UNS S30400)",
+        "EN 10088-2 (1.4301)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 8.0,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 304 physical properties"
+        },
+        "E_gpa": {
+          "value": 193.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 304 annealed sheet typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 215.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 304 annealed sheet typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 505.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 304 annealed sheet typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 40.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 304 annealed sheet typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 17.3,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 304 thermal properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 16.2,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 304 thermal properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 800.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 4.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      }
+    },
+    "stainless_316": {
+      "label": "Stainless 316 (annealed)",
+      "category": "metal",
+      "subcategory": "stainless",
+      "condition": "annealed",
+      "standards": [
+        "ASTM A240/A240M (UNS S31600)",
+        "EN 10088-2 (1.4401)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 8.0,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 316 physical properties"
+        },
+        "E_gpa": {
+          "value": 193.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 316 annealed sheet typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 205.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 316 annealed sheet typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 515.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 316 annealed sheet typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 40.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 316 annealed sheet typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 16.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 316 thermal properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 16.3,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 316 thermal properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 800.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 5.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      }
+    },
+    "ss17_4ph": {
+      "label": "Stainless 17-4PH (H900)",
+      "category": "metal",
+      "subcategory": "stainless",
+      "condition": "H900",
+      "standards": [
+        "ASTM A564/A564M (UNS S17400)",
+        "AMS 5643"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 7.75,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 17-4PH physical properties"
+        },
+        "E_gpa": {
+          "value": 196.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 17-4PH H900 typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 1170.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 17-4PH H900 typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 1310.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 17-4PH H900 typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 10.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 17-4PH H900 typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 10.8,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 17-4PH thermal properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 17.9,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 17-4PH thermal properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 300.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 8.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "notes": "H900 peak-aged; service above ~315 C over-ages the temper."
+    },
+    "copper_c110": {
+      "label": "Copper C110 (annealed)",
+      "category": "metal",
+      "subcategory": "copper",
+      "condition": "annealed (O60)",
+      "standards": [
+        "ASTM B152 (UNS C11000)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 8.94,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Copper Development Association, C11000 physical properties"
+        },
+        "E_gpa": {
+          "value": 115.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Copper Development Association, C11000 annealed typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 70.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Copper Development Association, C11000 annealed typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 220.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Copper Development Association, C11000 annealed typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 45.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Copper Development Association, C11000 annealed typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 17.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Copper Development Association, C11000 thermal properties"
+        },
+        "k_w_m_k": {
+          "value": 391.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Copper Development Association, C11000 thermal properties"
+        },
+        "max_service_temp_c": {
+          "value": 200.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 10.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      }
+    },
+    "brass_c260": {
+      "label": "Brass C260 (half-hard)",
+      "category": "metal",
+      "subcategory": "copper",
+      "condition": "half hard (H02)",
+      "standards": [
+        "ASTM B36/B36M (UNS C26000)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 8.53,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Copper Development Association, C26000 physical properties"
+        },
+        "E_gpa": {
+          "value": 110.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Copper Development Association, C26000 half-hard typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 310.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Copper Development Association, C26000 half-hard typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 420.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Copper Development Association, C26000 half-hard typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 25.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Copper Development Association, C26000 half-hard typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 20.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Copper Development Association, C26000 thermal properties"
+        },
+        "k_w_m_k": {
+          "value": 120.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Copper Development Association, C26000 thermal properties"
+        },
+        "max_service_temp_c": {
+          "value": 200.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 8.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      }
+    },
+    "bronze_c932": {
+      "label": "Bearing bronze C932 (SAE 660)",
+      "category": "metal",
+      "subcategory": "copper",
+      "condition": "as cast",
+      "standards": [
+        "ASTM B505/B505M (UNS C93200)",
+        "SAE 660"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 8.93,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Copper Development Association, C93200 physical properties"
+        },
+        "E_gpa": {
+          "value": 100.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Copper Development Association, C93200 as-cast typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 125.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Copper Development Association, C93200 as-cast typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 240.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Copper Development Association, C93200 as-cast typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 20.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Copper Development Association, C93200 as-cast typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 18.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Copper Development Association, C93200 thermal properties"
+        },
+        "k_w_m_k": {
+          "value": 59.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Copper Development Association, C93200 thermal properties"
+        },
+        "max_service_temp_c": {
+          "value": 200.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 12.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      }
+    }
+  }
+}

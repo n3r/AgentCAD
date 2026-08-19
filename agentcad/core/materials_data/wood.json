@@ -1,0 +1,124 @@
+{
+  "schema_version": 2,
+  "materials": {
+    "glulam": {
+      "label": "Glulam GL24h",
+      "category": "wood",
+      "subcategory": "engineered",
+      "condition": "GL24h",
+      "standards": [
+        "EN 14080"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.42,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 14080 Table 5 (GL24h), mean density"
+        },
+        "E_gpa": {
+          "value": 11.5,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 14080 Table 5 (GL24h)"
+        },
+        "ultimate_mpa": {
+          "value": 24.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 14080 Table 5 (GL24h)"
+        },
+        "cte_um_m_k": {
+          "value": 5.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "FPL Wood Handbook (2010) Ch. 4, softwood thermal properties at 12% MC"
+        },
+        "k_w_m_k": {
+          "value": 0.13,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "FPL Wood Handbook (2010) Ch. 4, softwood thermal properties at 12% MC"
+        },
+        "max_service_temp_c": {
+          "value": 60.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 1.5,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        },
+        "bending_mpa": {
+          "value": 24.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 14080 Table 5 (GL24h), f_m,k"
+        }
+      },
+      "notes": "EN 14080: E parallel to grain (mean), ultimate = characteristic bending strength f_m,k."
+    },
+    "douglas_fir": {
+      "label": "Douglas Fir (clear, 12% MC)",
+      "category": "wood",
+      "subcategory": "softwood",
+      "condition": "clear, 12% MC",
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.53,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "FPL Wood Handbook (2010) Table 5-3, Douglas-fir (Coast) at 12% MC"
+        },
+        "E_gpa": {
+          "value": 13.4,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "FPL Wood Handbook (2010) Table 5-3, Douglas-fir (Coast), clear wood at 12% MC"
+        },
+        "ultimate_mpa": {
+          "value": 85.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "FPL Wood Handbook (2010) Table 5-3, Douglas-fir (Coast), clear wood at 12% MC"
+        },
+        "cte_um_m_k": {
+          "value": 4.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "FPL Wood Handbook (2010) Ch. 4, softwood thermal properties at 12% MC"
+        },
+        "k_w_m_k": {
+          "value": 0.12,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "FPL Wood Handbook (2010) Ch. 4, softwood thermal properties at 12% MC"
+        },
+        "max_service_temp_c": {
+          "value": 60.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 1.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        },
+        "bending_mpa": {
+          "value": 85.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "FPL Wood Handbook (2010) Table 5-3, Douglas-fir (Coast) modulus of rupture"
+        }
+      },
+      "notes": "FPL Wood Handbook clear-wood bending values along grain; graded lumber allowables are far lower."
+    }
+  }
+}

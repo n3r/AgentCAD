@@ -1,0 +1,356 @@
+{
+  "schema_version": 2,
+  "materials": {
+    "steel_4130": {
+      "label": "Chromoly 4130 (normalized)",
+      "category": "metal",
+      "subcategory": "steel",
+      "condition": "normalized",
+      "standards": [
+        "ASTM A29/A29M",
+        "SAE J404 (4130)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 7.85,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4130 physical properties"
+        },
+        "E_gpa": {
+          "value": 205.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4130 normalized typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 435.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4130 normalized typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 670.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4130 normalized typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 25.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4130 normalized typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 12.2,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4130 thermal properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 42.6,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4130 thermal properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 450.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 1.5,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "good",
+        "source": "editorial classification (Machining Data Handbook; AWS D1.1 preheat practice)"
+      }
+    },
+    "steel_4340": {
+      "label": "Alloy 4340 (normalized)",
+      "category": "metal",
+      "subcategory": "steel",
+      "condition": "normalized",
+      "standards": [
+        "ASTM A29/A29M",
+        "SAE J404 (4340)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 7.85,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4340 physical properties"
+        },
+        "E_gpa": {
+          "value": 205.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4340 normalized typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 860.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4340 normalized typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 1280.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4340 normalized typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 12.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4340 normalized typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 12.3,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4340 thermal properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 44.5,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 4340 thermal properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 450.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 2.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "notes": "Q&T tempers reach 1500-1900 MPa UTS; this row is normalized."
+    },
+    "maraging300": {
+      "label": "Maraging 300 (aged)",
+      "category": "metal",
+      "subcategory": "steel",
+      "condition": "solution + aged",
+      "standards": [
+        "DIN 1.2709",
+        "UNS K93120 (18Ni-300)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 8.0,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 18Ni(300) maraging steel physical properties"
+        },
+        "E_gpa": {
+          "value": 190.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 18Ni(300) maraging steel aged typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 1900.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 18Ni(300) maraging steel aged typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 2000.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 18Ni(300) maraging steel aged typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 7.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 18Ni(300) maraging steel aged typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 10.1,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 18Ni(300) maraging steel thermal properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 21.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), 18Ni(300) maraging steel thermal properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 400.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 80.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "notes": "18Ni-300 / 1.2709, solution + aged; common in AM tooling."
+    },
+    "steel_a36": {
+      "label": "Steel A36 (structural)",
+      "category": "metal",
+      "subcategory": "steel",
+      "condition": "hot-rolled structural",
+      "standards": [
+        "ASTM A36/A36M"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 7.85,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), carbon structural steel physical properties"
+        },
+        "E_gpa": {
+          "value": 200.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), carbon structural steel elastic modulus at room temperature"
+        },
+        "yield_mpa": {
+          "value": 250.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM A36/A36M specified minimum tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 450.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM A36/A36M specified minimum tensile properties"
+        },
+        "elongation_pct": {
+          "value": 20.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "ASTM A36/A36M specified minimum tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 11.7,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), carbon structural steel thermal properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 50.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), carbon structural steel thermal properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 400.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 0.8,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "excellent",
+        "source": "editorial classification (Machining Data Handbook; AWS D1.1 prequalified practice)"
+      },
+      "notes": "ys/uts are ASTM spec minimums (uts range 400-550)."
+    },
+    "steel_a992": {
+      "label": "Steel A992 (W-shapes)",
+      "category": "metal",
+      "subcategory": "steel",
+      "condition": "hot-rolled W-shapes",
+      "standards": [
+        "ASTM A992/A992M"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 7.85,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), carbon structural steel physical properties"
+        },
+        "E_gpa": {
+          "value": 200.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), carbon structural steel elastic modulus at room temperature"
+        },
+        "yield_mpa": {
+          "value": 345.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM A992/A992M specified minimum tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 450.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM A992/A992M specified minimum tensile properties"
+        },
+        "elongation_pct": {
+          "value": 21.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "ASTM A992/A992M specified minimum tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 11.7,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), carbon structural steel thermal properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 50.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 1 (Irons and Steels), carbon structural steel thermal properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 400.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 0.9,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "excellent",
+        "source": "editorial classification (Machining Data Handbook; AWS D1.1 prequalified practice)"
+      }
+    }
+  }
+}

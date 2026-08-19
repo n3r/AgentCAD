@@ -1,0 +1,317 @@
+{
+  "schema_version": 2,
+  "materials": {
+    "al6061": {
+      "label": "Aluminum 6061-T6",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T6",
+      "standards": [
+        "ASTM B209",
+        "EN 573-3 (EN AW-6061)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.7,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 6061 nominal density"
+        },
+        "E_gpa": {
+          "value": 68.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T6 sheet/plate typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 276.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T6 sheet/plate typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 310.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T6 sheet/plate typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 12.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T6 sheet/plate typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.6,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T6 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 167.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 6061-T6 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 4.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "good",
+        "sheet": {
+          "k_factor_range": [
+            0.33,
+            0.5
+          ],
+          "min_bend_radius_t": 1.5
+        },
+        "source": "editorial classification (Machining Data Handbook; Aluminum Association forming guidelines)"
+      },
+      "links": [
+        {
+          "label": "MMPDS (design allowables, linked not mirrored)",
+          "url": "https://www.mmpds.org/"
+        }
+      ]
+    },
+    "al7075": {
+      "label": "Aluminum 7075-T6",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T6",
+      "standards": [
+        "ASTM B209",
+        "EN 573-3 (EN AW-7075)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.81,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 7075 nominal density"
+        },
+        "E_gpa": {
+          "value": 71.7,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T6 sheet/plate typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 503.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T6 sheet/plate typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 572.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T6 sheet/plate typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 11.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T6 sheet/plate typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T6 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 130.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 7075-T6 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 6.5,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "source": "editorial classification (Machining Data Handbook; 7xxx alloys are not fusion welded in structural practice)"
+      },
+      "links": [
+        {
+          "label": "MMPDS (design allowables, linked not mirrored)",
+          "url": "https://www.mmpds.org/"
+        }
+      ]
+    },
+    "al2024": {
+      "label": "Aluminum 2024-T3",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "T3",
+      "standards": [
+        "ASTM B209",
+        "EN 573-3 (EN AW-2024)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.78,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Aluminum Association, Aluminum Standards and Data: 2024 nominal density"
+        },
+        "E_gpa": {
+          "value": 73.1,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T3 sheet typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 345.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T3 sheet typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 483.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T3 sheet typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 18.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T3 sheet typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 23.2,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T3 physical properties at 20-100 C"
+        },
+        "k_w_m_k": {
+          "value": 121.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 2 (Nonferrous Alloys), 2024-T3 physical properties at 20-100 C"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 6.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "weldability": "poor",
+        "source": "editorial classification (Machining Data Handbook; 2xxx alloys are riveted/bonded, not fusion welded)"
+      },
+      "links": [
+        {
+          "label": "MMPDS (design allowables, linked not mirrored)",
+          "url": "https://www.mmpds.org/"
+        }
+      ],
+      "notes": "Poor corrosion resistance bare; usually clad or coated."
+    },
+    "alsi10mg": {
+      "label": "AlSi10Mg (LPBF, as-built)",
+      "category": "metal",
+      "subcategory": "aluminum",
+      "condition": "as-built LPBF",
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.67,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), physical properties"
+        },
+        "E_gpa": {
+          "value": 70.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), typical tensile properties"
+        },
+        "yield_mpa": {
+          "value": 270.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), typical tensile properties"
+        },
+        "ultimate_mpa": {
+          "value": 460.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), typical tensile properties"
+        },
+        "elongation_pct": {
+          "value": 6.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), typical tensile properties"
+        },
+        "cte_um_m_k": {
+          "value": 21.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), physical properties"
+        },
+        "k_w_m_k": {
+          "value": 120.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EOS AlSi10Mg datasheet (as-built), physical properties"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 35.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude (powder, not stock)",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "printable": {
+          "dmls": "excellent"
+        },
+        "source": "editorial classification (EOS AlSi10Mg process guidance)"
+      },
+      "notes": "Additive (laser powder-bed fusion), as-built, typical vendor datasheet; properties drop after stress relief. Cost = powder."
+    }
+  }
+}

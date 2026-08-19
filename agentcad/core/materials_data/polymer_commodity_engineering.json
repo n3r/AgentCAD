@@ -1,0 +1,367 @@
+{
+  "schema_version": 2,
+  "materials": {
+    "abs": {
+      "label": "ABS",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "injection moulded",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.04,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "SABIC Cycolac ABS datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 2.3,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "SABIC Cycolac ABS datasheet, typical"
+        },
+        "yield_mpa": {
+          "value": 40.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "SABIC Cycolac ABS datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "value": 40.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "SABIC Cycolac ABS datasheet, typical"
+        },
+        "elongation_pct": {
+          "value": 25.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "SABIC Cycolac ABS datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "value": 90.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "SABIC Cycolac ABS datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.17,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "SABIC Cycolac ABS datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "SABIC Cycolac ABS datasheet, typical (heat deflection basis)"
+        },
+        "cost_usd_kg": {
+          "value": 2.5,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "printable": {
+          "fdm": "good"
+        },
+        "im": "excellent",
+        "source": "editorial classification (community FDM practice; SABIC processing guide)"
+      }
+    },
+    "pla": {
+      "label": "PLA",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "extruded filament",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.24,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "NatureWorks Ingeo PLA datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 3.5,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "NatureWorks Ingeo PLA datasheet, typical"
+        },
+        "yield_mpa": {
+          "value": 60.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "NatureWorks Ingeo PLA datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "value": 60.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "NatureWorks Ingeo PLA datasheet, typical"
+        },
+        "elongation_pct": {
+          "value": 6.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "NatureWorks Ingeo PLA datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "value": 68.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "NatureWorks Ingeo PLA datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.13,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "NatureWorks Ingeo PLA datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 50.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 2.5,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "printable": {
+          "fdm": "excellent"
+        },
+        "source": "editorial classification (community FDM practice)"
+      },
+      "notes": "Low heat deflection (~55 C); creeps in warm environments."
+    },
+    "petg": {
+      "label": "PETG",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "extruded",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.27,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Eastman PETG copolyester datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 2.1,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Eastman PETG copolyester datasheet, typical"
+        },
+        "yield_mpa": {
+          "value": 50.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Eastman PETG copolyester datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "value": 53.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Eastman PETG copolyester datasheet, typical"
+        },
+        "elongation_pct": {
+          "value": 120.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Eastman PETG copolyester datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "value": 68.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Eastman PETG copolyester datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.2,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Eastman PETG copolyester datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 70.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 3.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "printable": {
+          "fdm": "good"
+        },
+        "source": "editorial classification (community FDM practice)"
+      }
+    },
+    "nylon_pa12": {
+      "label": "Nylon PA12 (SLS/MJF typical)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "powder-bed printed (SLS/MJF)",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.01,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EOS PA 2200 (PA 12) datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 1.7,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EOS PA 2200 (PA 12) datasheet, typical"
+        },
+        "yield_mpa": {
+          "value": 45.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EOS PA 2200 (PA 12) datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "value": 48.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EOS PA 2200 (PA 12) datasheet, typical"
+        },
+        "elongation_pct": {
+          "value": 20.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "EOS PA 2200 (PA 12) datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "value": 110.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EOS PA 2200 (PA 12) datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.23,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EOS PA 2200 (PA 12) datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 5.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "printable": {
+          "sls": "excellent",
+          "mjf": "excellent"
+        },
+        "source": "editorial classification (EOS and HP powder-bed process guides)"
+      },
+      "notes": "Powder-bed printed typical; molded PA12 elongates far more."
+    },
+    "pc": {
+      "label": "Polycarbonate",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.2,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Covestro Makrolon 2405 polycarbonate datasheet, typical"
+        },
+        "E_gpa": {
+          "value": 2.4,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Covestro Makrolon 2405 polycarbonate datasheet, typical"
+        },
+        "yield_mpa": {
+          "value": 62.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Covestro Makrolon 2405 polycarbonate datasheet, typical"
+        },
+        "ultimate_mpa": {
+          "value": 66.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Covestro Makrolon 2405 polycarbonate datasheet, typical"
+        },
+        "elongation_pct": {
+          "value": 110.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Covestro Makrolon 2405 polycarbonate datasheet, typical"
+        },
+        "cte_um_m_k": {
+          "value": 68.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Covestro Makrolon 2405 polycarbonate datasheet, typical"
+        },
+        "k_w_m_k": {
+          "value": 0.2,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Covestro Makrolon 2405 polycarbonate datasheet, typical"
+        },
+        "max_service_temp_c": {
+          "value": 115.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 4.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "process": {
+        "im": "good",
+        "source": "editorial classification (Covestro Makrolon processing guide)"
+      }
+    }
+  }
+}

@@ -1,0 +1,121 @@
+{
+  "schema_version": 2,
+  "materials": {
+    "cfrp_qi": {
+      "label": "CFRP quasi-iso laminate",
+      "category": "composite",
+      "subcategory": "laminate",
+      "condition": "quasi-isotropic epoxy prepreg, ~55-60% fibre volume",
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.6,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "typical epoxy-prepreg laminate data, quasi-isotropic (e.g. Hexcel HexPly datasheets)"
+        },
+        "E_gpa": {
+          "value": 50.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "typical epoxy-prepreg laminate data, quasi-isotropic (e.g. Hexcel HexPly datasheets)"
+        },
+        "ultimate_mpa": {
+          "value": 600.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "typical epoxy-prepreg laminate data, quasi-isotropic (e.g. Hexcel HexPly datasheets)"
+        },
+        "elongation_pct": {
+          "value": 1.5,
+          "unit": "%",
+          "basis": "typical",
+          "source": "typical epoxy-prepreg laminate data, quasi-isotropic (e.g. Hexcel HexPly datasheets)"
+        },
+        "cte_um_m_k": {
+          "value": 3.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "typical epoxy-prepreg laminate data, quasi-isotropic (e.g. Hexcel HexPly datasheets)"
+        },
+        "k_w_m_k": {
+          "value": 5.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "typical epoxy-prepreg laminate data, quasi-isotropic (e.g. Hexcel HexPly datasheets)"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 40.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "notes": "In-plane values; through-thickness k ~0.7 W/m-K. Epoxy Tg limits service temperature."
+    },
+    "gfrp_qi": {
+      "label": "GFRP (E-glass) quasi-iso laminate",
+      "category": "composite",
+      "subcategory": "laminate",
+      "condition": "quasi-isotropic E-glass epoxy laminate",
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.85,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "typical epoxy-prepreg laminate data, quasi-isotropic (e.g. Hexcel HexPly datasheets)"
+        },
+        "E_gpa": {
+          "value": 18.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "typical epoxy-prepreg laminate data, quasi-isotropic (e.g. Hexcel HexPly datasheets)"
+        },
+        "ultimate_mpa": {
+          "value": 300.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "typical epoxy-prepreg laminate data, quasi-isotropic (e.g. Hexcel HexPly datasheets)"
+        },
+        "elongation_pct": {
+          "value": 2.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "typical epoxy-prepreg laminate data, quasi-isotropic (e.g. Hexcel HexPly datasheets)"
+        },
+        "cte_um_m_k": {
+          "value": 12.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "typical epoxy-prepreg laminate data, quasi-isotropic (e.g. Hexcel HexPly datasheets)"
+        },
+        "k_w_m_k": {
+          "value": 0.35,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "typical epoxy-prepreg laminate data, quasi-isotropic (e.g. Hexcel HexPly datasheets)"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 8.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "notes": "In-plane values, quasi-isotropic epoxy laminate."
+    }
+  }
+}

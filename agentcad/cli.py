@@ -10,6 +10,7 @@ Commands:
     agentcad admin user|token add|list|... / admin enrol  # hosted identity
     agentcad package validate <dir> [--strict] [--report R] [--budget S]
     agentcad publish <dir> --index NAME [--yank name@version] [--budget S]
+    agentcad materials lint <path>… [--profile library|user] [--json]
 """
 
 from __future__ import annotations
@@ -1463,13 +1464,59 @@ def cmd_publish(args) -> int:
     return 0
 
 
+def cmd_materials(args) -> int:
+    if args.materials_command == "lint":
+        return cmd_materials_lint(args)
+    print("agentcad materials: expected a subcommand (lint)", file=sys.stderr)
+    return 2
+
+
+def cmd_materials_lint(args) -> int:
+    """`agentcad materials lint <path>…` — the material card lint (PRD-028).
+
+    Deliberately thin: every rule lives in `core/materials_lint.py`, which is
+    pure, so the community repo's CI runs exactly what this prints. No
+    service, no kernel — linting a card must never build anything.
+
+    The exit code is the API: ``0`` clean · ``1`` at least one error · ``2``
+    usage — no paths, or a path we could not read (a file that exists and is
+    broken JSON is an *error*, not a usage failure).
+    """
+    import json
+
+    from .core.materials_lint import has_errors, lint_paths
+
+    if not args.paths:
+        print("agentcad materials lint: expected at least one path",
+              file=sys.stderr)
+        return 2
+    try:
+        findings = lint_paths(args.paths, args.profile)
+    except OSError as exc:
+        print(f"agentcad materials lint: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps([f.to_dict() for f in findings], indent=2))
+    else:
+        for f in findings:
+            where = f"{f.file or '-'}:{f.id}"
+            if f.property:
+                where += f".{f.property}"
+            print(f"{f.level} {where} {f.code}: {f.message}")
+        errors = sum(1 for f in findings if f.level == "error")
+        print(f"{errors} errors, {len(findings) - errors} warnings")
+    return 1 if has_errors(findings) else 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agentcad", description="Agentic-first CAD")
     parser.add_argument("--version", action="version", version=agentcad.__version__)
     # metavar hides the internal `worker` subcommand from usage/help.
     sub = parser.add_subparsers(
         dest="command",
-        metavar="{serve,open,mcp,new,export,check,package,publish,admin}")
+        metavar="{serve,open,mcp,new,export,check,package,publish,admin,"
+                "materials}")
 
     for name in ("serve", "open"):
         p = sub.add_parser(name, help=f"{name} the AgentCAD server")
@@ -1709,6 +1756,30 @@ def main() -> None:
                     "stops working.")
     a.add_argument("handle")
 
+    p = sub.add_parser(
+        "materials", help="work with material cards (PRD-028)",
+        description="Material library commands. The lint is what the shipped "
+                    "library and a contributed card are both held to.")
+    materials_sub = p.add_subparsers(dest="materials_command",
+                                     metavar="{lint}")
+    lint_p = materials_sub.add_parser(
+        "lint", help="lint material cards",
+        description="Lint material card files, directories of them, or a "
+                    "project.json (whose `materials` section is a user layer "
+                    "whatever profile is asked for). Exit 0 clean, 1 errors, "
+                    "2 usage.")
+    lint_p.add_argument("paths", nargs="*", metavar="PATH",
+                        help="card file, directory of card files, or a "
+                             "project.json")
+    lint_p.add_argument("--profile", default="library",
+                        choices=["library", "user"],
+                        help="library (default): every rule an error, every "
+                             "property must cite its source. user: v1 flat "
+                             "entries are fine and an uncited property is a "
+                             "warning")
+    lint_p.add_argument("--json", action="store_true",
+                        help="print the findings as a JSON list")
+
     args = parser.parse_args()
     if args.command == "admin":
         cmd_admin(args)
@@ -1728,5 +1799,7 @@ def main() -> None:
         raise SystemExit(cmd_package(args))
     elif args.command == "publish":
         raise SystemExit(cmd_publish(args))
+    elif args.command == "materials":
+        raise SystemExit(cmd_materials(args))
     else:
         parser.print_help()

@@ -1,0 +1,138 @@
+{
+  "schema_version": 2,
+  "materials": {
+    "peek": {
+      "label": "PEEK",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "injection moulded, unfilled",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.3,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "E_gpa": {
+          "value": 3.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "yield_mpa": {
+          "value": 100.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "ultimate_mpa": {
+          "value": 100.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "elongation_pct": {
+          "value": 30.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "cte_um_m_k": {
+          "value": 47.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "k_w_m_k": {
+          "value": 0.25,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Victrex PEEK 450G datasheet"
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 90.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      }
+    },
+    "ultem": {
+      "label": "Ultem 1000 (PEI)",
+      "category": "polymer",
+      "subcategory": "high_performance",
+      "condition": "injection moulded, unfilled",
+      "standards": [
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.27,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "E_gpa": {
+          "value": 3.2,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "yield_mpa": {
+          "value": 110.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "ultimate_mpa": {
+          "value": 105.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "elongation_pct": {
+          "value": 60.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "cte_um_m_k": {
+          "value": 56.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "k_w_m_k": {
+          "value": 0.22,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "SABIC Ultem 1000 datasheet"
+        },
+        "max_service_temp_c": {
+          "value": 170.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "cost_usd_kg": {
+          "value": 40.0,
+          "unit": "USD/kg",
+          "basis": "typical",
+          "source": "editorial estimate, bulk order-of-magnitude",
+          "as_of": "2025"
+        }
+      },
+      "notes": "Break strength below yield is real datasheet behavior."
+    }
+  }
+}

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import locks
-from .materials import DEFAULT_MATERIAL, get_material
+from .materials import DEFAULT_MATERIAL, LIBRARY_VERSION, get_material
 from .model import (
     ConflictError,
     DiskBudgetError,
@@ -102,10 +102,23 @@ _UNSET = object()
 
 
 def _empty_manifest(name: str) -> dict:
+    """The one shape every new project starts from.
+
+    ``materials_library`` (PRD-028 FR9) records which shipped material library
+    the project was created against. It is written HERE rather than in
+    ``service.create_project`` because this is the single place a new manifest
+    comes from — a project created by the CLI, by a template copy or by a
+    package cell gets the pin the same way. It is additive and merges whole
+    (``manifest_merge`` treats an unknown top-level key atomically), and
+    nothing resolves against it: what preserves byte-stable rebuilds is the
+    editorial immutability rule (a builtin id's density never changes), and
+    the pin is what ``list_materials`` reports back.
+    """
     return {
         "schema_version": SCHEMA_VERSION,
         "name": name,
         "units": "mm",
+        "materials_library": LIBRARY_VERSION,
         "parts": [],
         "assembly": {"instances": []},
     }
