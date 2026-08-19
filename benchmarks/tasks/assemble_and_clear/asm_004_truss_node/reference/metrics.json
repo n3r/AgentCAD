@@ -1,0 +1,131 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 90.05,
+      "metric": "bbox_x_mm",
+      "min": 89.95,
+      "name": "angle_bracket_bbox_x",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 80.05,
+      "metric": "bbox_y_mm",
+      "min": 79.95,
+      "name": "angle_bracket_bbox_y",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 90.05,
+      "metric": "bbox_z_mm",
+      "min": 89.95,
+      "name": "angle_bracket_bbox_z",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 1034.356325,
+      "metric": "mass_g",
+      "min": 1013.874022,
+      "name": "angle_bracket_mass",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "angle_bracket_solids",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 131765.137005,
+      "metric": "volume_mm3",
+      "min": 129155.926371,
+      "name": "angle_bracket_volume",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 300.05,
+      "metric": "bbox_x_mm",
+      "min": 299.95,
+      "name": "base_plate_bbox_x",
+      "part": "base_plate"
+    },
+    {
+      "max": 300.05,
+      "metric": "bbox_y_mm",
+      "min": 299.95,
+      "name": "base_plate_bbox_y",
+      "part": "base_plate"
+    },
+    {
+      "max": 20.05,
+      "metric": "bbox_z_mm",
+      "min": 19.95,
+      "name": "base_plate_bbox_z",
+      "part": "base_plate"
+    },
+    {
+      "max": 13517.240729,
+      "metric": "mass_g",
+      "min": 13249.572595,
+      "name": "base_plate_mass",
+      "part": "base_plate"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "base_plate_solids",
+      "part": "base_plate"
+    },
+    {
+      "max": 1721941.494105,
+      "metric": "volume_mm3",
+      "min": 1687843.642736,
+      "name": "base_plate_volume",
+      "part": "base_plate"
+    },
+    {
+      "max": 272.993218,
+      "metric": "bbox_x_mm",
+      "min": 272.893218,
+      "name": "gusset_plate_bbox_x",
+      "part": "gusset_plate"
+    },
+    {
+      "max": 176.521609,
+      "metric": "bbox_y_mm",
+      "min": 176.421609,
+      "name": "gusset_plate_bbox_y",
+      "part": "gusset_plate"
+    },
+    {
+      "max": 10.05,
+      "metric": "bbox_z_mm",
+      "min": 9.95,
+      "name": "gusset_plate_bbox_z",
+      "part": "gusset_plate"
+    },
+    {
+      "max": 2541.647926,
+      "metric": "mass_g",
+      "min": 2491.318264,
+      "name": "gusset_plate_mass",
+      "part": "gusset_plate"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "gusset_plate_solids",
+      "part": "gusset_plate"
+    },
+    {
+      "max": 323776.805801,
+      "metric": "volume_mm3",
+      "min": 317365.383904,
+      "name": "gusset_plate_volume",
+      "part": "gusset_plate"
+    }
+  ]
+}

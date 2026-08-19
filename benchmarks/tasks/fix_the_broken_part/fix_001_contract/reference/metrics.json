@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 60.05,
+      "metric": "bbox_x_mm",
+      "min": 59.95,
+      "name": "sensor_mount_bbox_x",
+      "part": "sensor_mount"
+    },
+    {
+      "max": 40.05,
+      "metric": "bbox_y_mm",
+      "min": 39.95,
+      "name": "sensor_mount_bbox_y",
+      "part": "sensor_mount"
+    },
+    {
+      "max": 17.05,
+      "metric": "bbox_z_mm",
+      "min": 16.95,
+      "name": "sensor_mount_bbox_z",
+      "part": "sensor_mount"
+    },
+    {
+      "max": 36.145238,
+      "metric": "mass_g",
+      "min": 35.429491,
+      "name": "sensor_mount_mass",
+      "part": "sensor_mount"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "sensor_mount_solids",
+      "part": "sensor_mount"
+    },
+    {
+      "max": 13387.125292,
+      "metric": "volume_mm3",
+      "min": 13122.033702,
+      "name": "sensor_mount_volume",
+      "part": "sensor_mount"
+    }
+  ]
+}

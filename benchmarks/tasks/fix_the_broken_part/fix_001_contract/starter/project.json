@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "name": "bench_fix_001_contract_starter",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "sensor_mount",
+      "label": "Sensor Mount",
+      "material": "al6061",
+      "params": {}
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}

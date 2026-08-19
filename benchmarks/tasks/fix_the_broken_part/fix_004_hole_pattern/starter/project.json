@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "name": "bench_fix_004_hole_pattern_starter",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "base_plate",
+      "label": "Column Base Plate",
+      "material": "steel_a36",
+      "params": {
+        "plate_w": 300.0,
+        "plate_l": 300.0,
+        "plate_t": 20.0,
+        "hss_w": 150.0,
+        "slot_w": 22.0,
+        "slot_l": 45.0,
+        "anchor_offset": 50.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}
