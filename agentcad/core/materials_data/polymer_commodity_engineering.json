@@ -362,6 +362,3584 @@
         "im": "good",
         "source": "editorial classification (Covestro Makrolon processing guide)"
       }
+    },
+    "pe_hd": {
+      "label": "PE-HD (high-density polyethylene)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "extruded / injection moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 1872-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.95,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. LyondellBasell Hostalen and Lupolen HDPE datasheets)"
+        },
+        "E_gpa": {
+          "range": [
+            0.8,
+            1.4
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. LyondellBasell Hostalen and Lupolen HDPE datasheets)"
+        },
+        "yield_mpa": {
+          "range": [
+            22.0,
+            31.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. LyondellBasell Hostalen and Lupolen HDPE datasheets)"
+        },
+        "elongation_pct": {
+          "value": 600.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. LyondellBasell Hostalen and Lupolen HDPE datasheets)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            120.0,
+            200.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. LyondellBasell Hostalen and Lupolen HDPE datasheets)"
+        },
+        "k_w_m_k": {
+          "value": 0.45,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. LyondellBasell Hostalen and Lupolen HDPE datasheets)"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.45,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        },
+        "cp_j_kg_k": {
+          "value": 1900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; specific heat is seldom given on mechanical datasheets"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "excellent",
+        "printable": {
+          "fdm": "poor"
+        },
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides and community FDM practice"
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.2,
+          2.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Class band, not a grade: film, blow-moulding, pipe and injection grades sit in different corners of these ranges. Very low surface energy, so it neither bonds nor prints well; hot-plate and extrusion welding are the joining methods."
+    },
+    "pe_ld": {
+      "label": "PE-LD (low-density polyethylene)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "extruded / blown film",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 1872-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.92,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. LyondellBasell Lupolen LDPE datasheets)"
+        },
+        "E_gpa": {
+          "range": [
+            0.15,
+            0.35
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. LyondellBasell Lupolen LDPE datasheets)"
+        },
+        "yield_mpa": {
+          "range": [
+            8.0,
+            12.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. LyondellBasell Lupolen LDPE datasheets)"
+        },
+        "elongation_pct": {
+          "range": [
+            300.0,
+            600.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. LyondellBasell Lupolen LDPE datasheets)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            180.0,
+            250.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. LyondellBasell Lupolen LDPE datasheets)"
+        },
+        "k_w_m_k": {
+          "value": 0.33,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. LyondellBasell Lupolen LDPE datasheets)"
+        },
+        "max_service_temp_c": {
+          "value": 60.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.45,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "weldability": "excellent",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.2,
+          2.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Long-chain-branched polyethylene: soft, tough and clear in thin film, with about a fifth of the modulus of PE-HD. Chosen for film, squeeze bottles and cable insulation, never for stiffness."
+    },
+    "pe_lld": {
+      "label": "PE-LLD (linear low-density polyethylene)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "extruded film / rotomoulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 1872-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.92,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. ExxonMobil LLDPE and LyondellBasell rotomoulding grade datasheets)"
+        },
+        "E_gpa": {
+          "range": [
+            0.2,
+            0.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. ExxonMobil LLDPE and LyondellBasell rotomoulding grade datasheets)"
+        },
+        "yield_mpa": {
+          "range": [
+            9.0,
+            15.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. ExxonMobil LLDPE and LyondellBasell rotomoulding grade datasheets)"
+        },
+        "elongation_pct": {
+          "range": [
+            500.0,
+            900.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. ExxonMobil LLDPE and LyondellBasell rotomoulding grade datasheets)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            150.0,
+            220.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 / ISO 1183 datasheet values (e.g. ExxonMobil LLDPE and LyondellBasell rotomoulding grade datasheets)"
+        },
+        "max_service_temp_c": {
+          "value": 70.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "weldability": "excellent",
+        "im": "good",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.3,
+          2.1
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Short-chain-branched copolymer: PE-LD's flexibility with much better puncture and tear resistance, which is why it took over film and rotomoulded tanks."
+    },
+    "pe_100": {
+      "label": "PE 100 (pipe-grade HDPE)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "extruded pipe, PE 100 (MRS 10.0 MPa)",
+      "standards": [
+        "EN 12201-2",
+        "ISO 4427-2",
+        "ISO 12162"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.96,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic PE 100 pipe compound, typical of EN 12201-2 / ISO 4427-2 grade datasheets (e.g. Borealis BorSafe HE3490-LS)"
+        },
+        "E_gpa": {
+          "range": [
+            0.9,
+            1.3
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic PE 100 pipe compound, typical of EN 12201-2 / ISO 4427-2 grade datasheets (e.g. Borealis BorSafe HE3490-LS)"
+        },
+        "yield_mpa": {
+          "range": [
+            23.0,
+            28.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic PE 100 pipe compound, typical of EN 12201-2 / ISO 4427-2 grade datasheets (e.g. Borealis BorSafe HE3490-LS)"
+        },
+        "elongation_pct": {
+          "value": 350.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "EN 12201-2 (elongation at break >= 350 % on the pipe)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            130.0,
+            200.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic PE 100 pipe compound, typical of EN 12201-2 / ISO 4427-2 grade datasheets (e.g. Borealis BorSafe HE3490-LS)"
+        },
+        "k_w_m_k": {
+          "value": 0.45,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic PE 100 pipe compound, typical of EN 12201-2 / ISO 4427-2 grade datasheets (e.g. Borealis BorSafe HE3490-LS)"
+        },
+        "max_service_temp_c": {
+          "value": 60.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.5,
+          2.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Pressure-pipe classification, not a mechanical grade: MRS 10.0 MPa at 20 C for 50 years (ISO 12162), giving a design stress of 8.0 MPa at the EN 12201 design coefficient C = 1.25. Joined by butt fusion or electrofusion; short-term tensile data above is not the design basis."
+    },
+    "uhmwpe": {
+      "label": "UHMW-PE (ultra-high molecular weight polyethylene)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "ram-extruded / compression-moulded stock shape",
+      "standards": [
+        "ISO 11542-2",
+        "ASTM D4020",
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.93,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic stock-shape grade, typical of ISO 11542-2 / ASTM D4020 datasheet values (e.g. R\u00f6chling Polystone M / Celanese GUR)"
+        },
+        "E_gpa": {
+          "range": [
+            0.6,
+            1.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic stock-shape grade, typical of ISO 11542-2 / ASTM D4020 datasheet values (e.g. R\u00f6chling Polystone M / Celanese GUR)"
+        },
+        "yield_mpa": {
+          "range": [
+            17.0,
+            25.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic stock-shape grade, typical of ISO 11542-2 / ASTM D4020 datasheet values (e.g. R\u00f6chling Polystone M / Celanese GUR)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            30.0,
+            45.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic stock-shape grade, typical of ISO 11542-2 / ASTM D4020 datasheet values (e.g. R\u00f6chling Polystone M / Celanese GUR)"
+        },
+        "elongation_pct": {
+          "range": [
+            250.0,
+            450.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic stock-shape grade, typical of ISO 11542-2 / ASTM D4020 datasheet values (e.g. R\u00f6chling Polystone M / Celanese GUR)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            150.0,
+            200.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic stock-shape grade, typical of ISO 11542-2 / ASTM D4020 datasheet values (e.g. R\u00f6chling Polystone M / Celanese GUR)"
+        },
+        "k_w_m_k": {
+          "value": 0.42,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic stock-shape grade, typical of ISO 11542-2 / ASTM D4020 datasheet values (e.g. R\u00f6chling Polystone M / Celanese GUR)"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "fair",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          9.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Molecular weight above ~3 million means the melt does not flow: it cannot be injection moulded, so parts are machined from ram-extruded or compression-moulded stock. Best-in-class abrasion resistance and a very low friction coefficient; it creeps badly under sustained load."
+    },
+    "pp_homopolymer": {
+      "label": "PP homopolymer",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "injection moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 19069-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.905,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. LyondellBasell Moplen HP500N datasheet)"
+        },
+        "E_gpa": {
+          "value": 1.5,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "LyondellBasell Moplen design data, tensile modulus versus temperature curve (values read from the published curve)",
+          "table": [
+            [
+              23.0,
+              1.5
+            ],
+            [
+              50.0,
+              1.0
+            ],
+            [
+              80.0,
+              0.6
+            ]
+          ]
+        },
+        "yield_mpa": {
+          "range": [
+            30.0,
+            38.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. LyondellBasell Moplen HP500N datasheet)"
+        },
+        "elongation_pct": {
+          "value": 50.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "generic grade, ISO 527-2 nominal strain at break >= 50 % (e.g. LyondellBasell Moplen HP500N datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            100.0,
+            150.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. LyondellBasell Moplen HP500N datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.22,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. LyondellBasell Moplen HP500N datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.42,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        },
+        "cp_j_kg_k": {
+          "value": 1900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; specific heat is seldom given on mechanical datasheets"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "good",
+        "printable": {
+          "fdm": "fair"
+        },
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides and community FDM practice"
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.2,
+          2.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The stiffest and cheapest of the polyolefins, but it embrittles below about 0 C \u2014 that is what the impact copolymer exists to fix. The E_gpa table is read off the published modulus-versus-temperature curve: PP loses a third of its stiffness by 50 C."
+    },
+    "pp_copolymer": {
+      "label": "PP block (impact) copolymer",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "injection moulded, block copolymer",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 19069-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.905,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. LyondellBasell Moplen EP300K datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            1.0,
+            1.4
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. LyondellBasell Moplen EP300K datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            22.0,
+            30.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. LyondellBasell Moplen EP300K datasheet)"
+        },
+        "elongation_pct": {
+          "value": 100.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. LyondellBasell Moplen EP300K datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            100.0,
+            160.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. LyondellBasell Moplen EP300K datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.22,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. LyondellBasell Moplen EP300K datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 90.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.42,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "good",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.3,
+          2.1
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Ethylene-propylene rubber phase dispersed in the PP matrix: roughly a third less stiffness and strength than the homopolymer in exchange for impact strength that survives -20 C. The default for crates, bumpers and living hinges."
+    },
+    "pp_random_copolymer": {
+      "label": "PP-R (random copolymer, pipe grade)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "extruded pipe, PP-R (type 3)",
+      "standards": [
+        "EN ISO 15874-2",
+        "ISO 527-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.9,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic PP-R pipe compound, typical of EN ISO 15874-2 grade datasheets (e.g. Borealis RA130E)"
+        },
+        "E_gpa": {
+          "range": [
+            0.75,
+            0.95
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic PP-R pipe compound, typical of EN ISO 15874-2 grade datasheets (e.g. Borealis RA130E)"
+        },
+        "yield_mpa": {
+          "range": [
+            20.0,
+            26.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic PP-R pipe compound, typical of EN ISO 15874-2 grade datasheets (e.g. Borealis RA130E)"
+        },
+        "cte_um_m_k": {
+          "value": 150.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic PP-R pipe compound, typical of EN ISO 15874-2 grade datasheets (e.g. Borealis RA130E)"
+        },
+        "k_w_m_k": {
+          "value": 0.24,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic PP-R pipe compound, typical of EN ISO 15874-2 grade datasheets (e.g. Borealis RA130E)"
+        },
+        "max_service_temp_c": {
+          "value": 70.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "excellent",
+        "im": "good",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.0,
+          3.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Random ethylene comonomer suppresses crystallinity: clearer, softer and far tougher than the homopolymer, and stable in hot water. Rated for 70 C continuous with 95 C peaks per the EN ISO 15874 classes; socket- or butt-fused, never glued. Elongation at break is omitted \u2014 the pipe standards specify hydrostatic performance, not a tensile strain."
+    },
+    "gpps": {
+      "label": "GPPS (general-purpose polystyrene)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "injection moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1622-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.05,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution PS 158K datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            3.0,
+            3.4
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution PS 158K datasheet)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            40.0,
+            50.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution PS 158K datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            1.5,
+            3.5
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution PS 158K datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            60.0,
+            80.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution PS 158K datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.15,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution PS 158K datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 65.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.34,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.5,
+          2.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Brittle and glass-clear: it breaks without yielding, so ultimate_mpa is the break strength and there is no yield_mpa. Cheap, dimensionally stable and easy to mould; crazes under load and dissolves in most solvents."
+    },
+    "hips": {
+      "label": "HIPS (high-impact polystyrene)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "injection moulded / extruded sheet",
+      "standards": [
+        "ISO 527-2",
+        "ISO 2897-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.04,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution HIPS 486N datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            1.8,
+            2.4
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution HIPS 486N datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            18.0,
+            28.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution HIPS 486N datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            20.0,
+            60.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution HIPS 486N datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            70.0,
+            100.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution HIPS 486N datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.16,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution HIPS 486N datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 65.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.35,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "printable": {
+          "fdm": "good"
+        },
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides and community FDM practice"
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.6,
+          2.6
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Polybutadiene rubber particles buy a large jump in impact strength at the cost of stiffness and clarity. Thermoforms extremely well, and it is the limonene-soluble support material for dual-extruder ABS printing."
+    },
+    "pvc_rigid": {
+      "label": "PVC-U (rigid, unplasticised)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "extruded, unplasticised",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1163-2",
+        "EN 1452-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.42,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic unplasticised compound, typical of ISO 527-2 / ISO 1163-2 datasheet values (e.g. Simona PVC-CAW sheet datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            2.7,
+            3.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic unplasticised compound, typical of ISO 527-2 / ISO 1163-2 datasheet values (e.g. Simona PVC-CAW sheet datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            45.0,
+            55.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic unplasticised compound, typical of ISO 527-2 / ISO 1163-2 datasheet values (e.g. Simona PVC-CAW sheet datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            15.0,
+            50.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic unplasticised compound, typical of ISO 527-2 / ISO 1163-2 datasheet values (e.g. Simona PVC-CAW sheet datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            60.0,
+            80.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic unplasticised compound, typical of ISO 527-2 / ISO 1163-2 datasheet values (e.g. Simona PVC-CAW sheet datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.16,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic unplasticised compound, typical of ISO 527-2 / ISO 1163-2 datasheet values (e.g. Simona PVC-CAW sheet datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 60.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.38,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "excellent",
+        "im": "good",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.3,
+          2.2
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Roughly 57 % chlorine by mass, so it is inherently flame retardant and self-extinguishing \u2014 and it releases HCl when overheated, which limits both the processing window and the service temperature to about 60 C. Solvent-cemented or hot-gas welded. Properties depend heavily on the stabiliser/filler package."
+    },
+    "pvc_plasticized": {
+      "label": "PVC-P (plasticised, flexible)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "extruded, plasticised (~30 % plasticiser)",
+      "standards": [
+        "ISO 527-2",
+        "ISO 2898-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.3,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic flexible compound, typical of ISO 527-2 datasheet values for medium-plasticiser PVC-P"
+        },
+        "ultimate_mpa": {
+          "range": [
+            10.0,
+            25.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic flexible compound, typical of ISO 527-2 datasheet values for medium-plasticiser PVC-P"
+        },
+        "elongation_pct": {
+          "range": [
+            200.0,
+            450.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic flexible compound, typical of ISO 527-2 datasheet values for medium-plasticiser PVC-P"
+        },
+        "cte_um_m_k": {
+          "range": [
+            150.0,
+            250.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic flexible compound, typical of ISO 527-2 datasheet values for medium-plasticiser PVC-P"
+        },
+        "max_service_temp_c": {
+          "value": 60.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "weldability": "excellent",
+        "im": "good",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.6,
+          2.6
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "A class, not a grade: modulus, hardness and elongation are set almost entirely by plasticiser content, so no single stiffness value would be honest and E_gpa is omitted. Plasticiser migration is the usual failure mode (it hardens with age)."
+    },
+    "cpvc": {
+      "label": "PVC-C (chlorinated PVC)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "extruded, chlorinated",
+      "standards": [
+        "ISO 527-2",
+        "EN ISO 15877-2",
+        "ASTM D1784 (CPVC 4120)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.55,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic PVC-C compound, typical of EN ISO 15877 / ASTM D1784 grade datasheets (e.g. Lubrizol Corzan CPVC)"
+        },
+        "E_gpa": {
+          "range": [
+            2.5,
+            3.2
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic PVC-C compound, typical of EN ISO 15877 / ASTM D1784 grade datasheets (e.g. Lubrizol Corzan CPVC)"
+        },
+        "yield_mpa": {
+          "range": [
+            50.0,
+            60.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic PVC-C compound, typical of EN ISO 15877 / ASTM D1784 grade datasheets (e.g. Lubrizol Corzan CPVC)"
+        },
+        "cte_um_m_k": {
+          "value": 70.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic PVC-C compound, typical of EN ISO 15877 / ASTM D1784 grade datasheets (e.g. Lubrizol Corzan CPVC)"
+        },
+        "k_w_m_k": {
+          "value": 0.14,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic PVC-C compound, typical of EN ISO 15877 / ASTM D1784 grade datasheets (e.g. Lubrizol Corzan CPVC)"
+        },
+        "max_service_temp_c": {
+          "value": 90.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "weldability": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          6.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Post-chlorination raises the chlorine content to ~67 % and the glass transition with it: about 30 C more heat capability than PVC-U, which is why hot-water and chemical piping uses it. Elongation at break is omitted (grade-dependent, 5-40 %)."
+    },
+    "pmma_cast": {
+      "label": "PMMA, cast (acrylic sheet)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "cast sheet",
+      "standards": [
+        "ISO 527-2",
+        "ISO 7823-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.19,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic cast acrylic sheet, typical of ISO 7823-1 datasheet values (e.g. R\u00f6hm Plexiglas GS datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            3.0,
+            3.3
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic cast acrylic sheet, typical of ISO 7823-1 datasheet values (e.g. R\u00f6hm Plexiglas GS datasheet)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            70.0,
+            80.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic cast acrylic sheet, typical of ISO 7823-1 datasheet values (e.g. R\u00f6hm Plexiglas GS datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            2.0,
+            6.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic cast acrylic sheet, typical of ISO 7823-1 datasheet values (e.g. R\u00f6hm Plexiglas GS datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            65.0,
+            80.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic cast acrylic sheet, typical of ISO 7823-1 datasheet values (e.g. R\u00f6hm Plexiglas GS datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.19,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic cast acrylic sheet, typical of ISO 7823-1 datasheet values (e.g. R\u00f6hm Plexiglas GS datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.37,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        },
+        "cp_j_kg_k": {
+          "value": 1470.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; specific heat is seldom given on mechanical datasheets"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          8.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Cell-cast sheet has a far higher molecular weight than extruded PMMA: better machining and laser cutting, cleaner solvent cementing, and it can be annealed to relieve stress. It is not injection mouldable \u2014 it is polymerised in the sheet mould. Brittle: ultimate_mpa is the break strength, no yield point."
+    },
+    "pmma_extruded": {
+      "label": "PMMA, extruded (XT acrylic)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "extruded sheet / injection moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 8257-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.18,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic extruded acrylic, typical of ISO 527-2 datasheet values (e.g. R\u00f6hm Plexiglas XT datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            2.7,
+            3.2
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic extruded acrylic, typical of ISO 527-2 datasheet values (e.g. R\u00f6hm Plexiglas XT datasheet)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            60.0,
+            72.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic extruded acrylic, typical of ISO 527-2 datasheet values (e.g. R\u00f6hm Plexiglas XT datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            2.0,
+            6.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic extruded acrylic, typical of ISO 527-2 datasheet values (e.g. R\u00f6hm Plexiglas XT datasheet)"
+        },
+        "cte_um_m_k": {
+          "value": 75.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic extruded acrylic, typical of ISO 527-2 datasheet values (e.g. R\u00f6hm Plexiglas XT datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.19,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic extruded acrylic, typical of ISO 527-2 datasheet values (e.g. R\u00f6hm Plexiglas XT datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 70.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.37,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          6.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Lower molecular weight than cast: thermoforms and injection moulds well and costs less, but it crazes more readily with solvents, gums up on the router and has a narrower thickness tolerance advantage only in thin sheet."
+    },
+    "pmma_impact": {
+      "label": "PMMA, impact modified",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "injection moulded, rubber toughened",
+      "standards": [
+        "ISO 527-2",
+        "ISO 8257-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.17,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic impact-modified acrylic, typical of ISO 527-2 datasheet values (e.g. R\u00f6hm Plexiglas Resist datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            1.8,
+            2.6
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic impact-modified acrylic, typical of ISO 527-2 datasheet values (e.g. R\u00f6hm Plexiglas Resist datasheet)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            40.0,
+            55.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic impact-modified acrylic, typical of ISO 527-2 datasheet values (e.g. R\u00f6hm Plexiglas Resist datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            15.0,
+            50.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic impact-modified acrylic, typical of ISO 527-2 datasheet values (e.g. R\u00f6hm Plexiglas Resist datasheet)"
+        },
+        "cte_um_m_k": {
+          "value": 80.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic impact-modified acrylic, typical of ISO 527-2 datasheet values (e.g. R\u00f6hm Plexiglas Resist datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 70.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          7.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Acrylic-rubber particles multiply the notched impact strength several times over, at a real cost in modulus, surface hardness and clarity. The choice when a transparent part must survive handling but polycarbonate's cost or scratch resistance rules it out."
+    },
+    "pet": {
+      "label": "PET (semi-crystalline, moulded)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "injection moulded, semi-crystalline",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 7792-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.38,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic moulding grade, typical of ISO 527-2 datasheet values (e.g. Indorama Ramapet moulding-grade and Ensinger TECAPET stock-shape datasheets)"
+        },
+        "E_gpa": {
+          "range": [
+            2.8,
+            3.4
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic moulding grade, typical of ISO 527-2 datasheet values (e.g. Indorama Ramapet moulding-grade and Ensinger TECAPET stock-shape datasheets)"
+        },
+        "yield_mpa": {
+          "range": [
+            55.0,
+            75.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic moulding grade, typical of ISO 527-2 datasheet values (e.g. Indorama Ramapet moulding-grade and Ensinger TECAPET stock-shape datasheets)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            60.0,
+            80.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic moulding grade, typical of ISO 527-2 datasheet values (e.g. Indorama Ramapet moulding-grade and Ensinger TECAPET stock-shape datasheets)"
+        },
+        "k_w_m_k": {
+          "value": 0.24,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic moulding grade, typical of ISO 527-2 datasheet values (e.g. Indorama Ramapet moulding-grade and Ensinger TECAPET stock-shape datasheets)"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.4,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "good",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.5,
+          2.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "This is the crystallised moulded/stock-shape form, not bottle or film PET (amorphous or biaxially oriented, with very different elongation). Elongation at break is omitted because it swings from ~15 % crystalline to >200 % amorphous. Must be dried below 0.02 % moisture before processing or it hydrolyses in the barrel."
+    },
+    "san": {
+      "label": "SAN (styrene-acrylonitrile)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "injection moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 4894-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.08,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution Luran 358N datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            3.4,
+            3.8
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution Luran 358N datasheet)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            65.0,
+            78.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution Luran 358N datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            2.0,
+            5.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution Luran 358N datasheet)"
+        },
+        "cte_um_m_k": {
+          "value": 70.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution Luran 358N datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.17,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution Luran 358N datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.2,
+          3.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The rubber-free matrix of ABS: transparent, stiffer and much more chemically resistant than GPPS, and still brittle. Battery housings, mixer bowls, cosmetics packaging."
+    },
+    "asa": {
+      "label": "ASA (acrylonitrile-styrene-acrylate)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "injection moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 6402-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.07,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution Luran S 778T datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            2.0,
+            2.6
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution Luran S 778T datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            40.0,
+            50.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution Luran S 778T datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            10.0,
+            30.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution Luran S 778T datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            80.0,
+            100.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution Luran S 778T datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.17,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Ineos Styrolution Luran S 778T datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 85.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "printable": {
+          "fdm": "good"
+        },
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides and community FDM practice"
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.8,
+          4.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "ABS with the butadiene rubber replaced by a saturated acrylate rubber, which has no double bonds left for UV to attack: it keeps colour and impact outdoors for years where ABS chalks in months. Slightly lower impact strength than ABS at room temperature."
+    },
+    "eva": {
+      "label": "EVA (ethylene-vinyl acetate, ~18 % VA)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "extruded / injection moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 4613-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.94,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic ~18 % vinyl-acetate grade, typical of ISO 527-2 datasheet values (e.g. Dow Elvax 460 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            0.02,
+            0.12
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic ~18 % vinyl-acetate grade, typical of ISO 527-2 datasheet values (e.g. Dow Elvax 460 datasheet)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            12.0,
+            25.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic ~18 % vinyl-acetate grade, typical of ISO 527-2 datasheet values (e.g. Dow Elvax 460 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            600.0,
+            900.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic ~18 % vinyl-acetate grade, typical of ISO 527-2 datasheet values (e.g. Dow Elvax 460 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 60.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "weldability": "good",
+        "im": "good",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.8,
+          3.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Flexible without any plasticiser to migrate out, which is why it is used for medical tubing, gaskets and foamed midsoles. Stiffness falls steeply as vinyl-acetate content rises, so read these numbers as the ~18 % VA point of a wide family; CTE and conductivity are omitted for the same reason."
+    },
+    "abs_fr": {
+      "label": "ABS, flame retardant (UL 94 V-0)",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "injection moulded, FR grade",
+      "standards": [
+        "ISO 527-2",
+        "ISO 2580-2",
+        "UL 94"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.18,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic V-0 grade, typical of ISO 527-2 datasheet values (e.g. SABIC Cycolac S157 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            2.2,
+            2.7
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic V-0 grade, typical of ISO 527-2 datasheet values (e.g. SABIC Cycolac S157 datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            38.0,
+            48.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic V-0 grade, typical of ISO 527-2 datasheet values (e.g. SABIC Cycolac S157 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            5.0,
+            25.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic V-0 grade, typical of ISO 527-2 datasheet values (e.g. SABIC Cycolac S157 datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            70.0,
+            95.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic V-0 grade, typical of ISO 527-2 datasheet values (e.g. SABIC Cycolac S157 datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.17,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic V-0 grade, typical of ISO 527-2 datasheet values (e.g. SABIC Cycolac S157 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The flame-retardant package (brominated or phosphorus based) raises density by ~15 %, cuts elongation and notched impact, and darkens the colour space. Rated V-0 at a stated wall thickness \u2014 always check the thickness the listing was obtained at."
+    },
+    "abs_high_heat": {
+      "label": "ABS, high heat",
+      "category": "polymer",
+      "subcategory": "commodity",
+      "condition": "injection moulded, high-heat grade",
+      "standards": [
+        "ISO 527-2",
+        "ISO 2580-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.05,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic high-heat grade, typical of ISO 527-2 datasheet values (e.g. SABIC Cycolac X37 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            2.3,
+            2.8
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic high-heat grade, typical of ISO 527-2 datasheet values (e.g. SABIC Cycolac X37 datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            42.0,
+            52.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic high-heat grade, typical of ISO 527-2 datasheet values (e.g. SABIC Cycolac X37 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            5.0,
+            25.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic high-heat grade, typical of ISO 527-2 datasheet values (e.g. SABIC Cycolac X37 datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            70.0,
+            90.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic high-heat grade, typical of ISO 527-2 datasheet values (e.g. SABIC Cycolac X37 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 95.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          4.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Higher acrylonitrile and alpha-methylstyrene content lifts the glass transition roughly 15 C above standard ABS, at the cost of melt flow and impact. Used for instrument panels and appliance parts near heat sources; above this, PC/ABS is the next step."
+    },
+    "pa6": {
+      "label": "PA6 (nylon 6), dry as moulded",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, dry as moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 1874-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.13,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid B3S datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            2.8,
+            3.2
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid B3S datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            70.0,
+            85.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid B3S datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            20.0,
+            100.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid B3S datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            70.0,
+            100.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid B3S datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.25,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid B3S datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.39,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        },
+        "cp_j_kg_k": {
+          "value": 1700.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; specific heat is seldom given on mechanical datasheets"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.5,
+          4.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Absorbs the most water of the common nylons (up to ~9 % saturated, ~3 % at 50 % RH) and swells with it. Tougher and easier to mould than PA66, with a lower melting point (~220 C) and less heat and wear resistance. Card values are dry as moulded (DAM). Polyamides absorb water, and it acts as a plasticiser: at equilibrium in 50 % RH the modulus and yield strength fall by roughly a third to a half while elongation and impact rise sharply. Never size a nylon part off DAM stiffness alone."
+    },
+    "pa66": {
+      "label": "PA66 (nylon 6/6), dry as moulded",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, dry as moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 1874-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.14,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3K datasheet)"
+        },
+        "E_gpa": {
+          "value": 3.2,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "BASF Ultramid A3K design data, tensile modulus versus temperature curve, dry as moulded (values read from the published curve)",
+          "table": [
+            [
+              23.0,
+              3.2
+            ],
+            [
+              50.0,
+              2.6
+            ],
+            [
+              80.0,
+              1.7
+            ],
+            [
+              120.0,
+              1.1
+            ]
+          ]
+        },
+        "yield_mpa": {
+          "range": [
+            75.0,
+            90.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3K datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            15.0,
+            60.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3K datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            70.0,
+            100.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3K datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.25,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3K datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 105.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.39,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        },
+        "cp_j_kg_k": {
+          "value": 1700.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; specific heat is seldom given on mechanical datasheets"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          4.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Melts near 260 C and keeps more strength hot than PA6, with better wear and creep resistance and a narrower processing window. The E_gpa table is read off the published dry-as-moulded modulus-versus-temperature curve \u2014 the drop through the ~70 C glass transition is the number most designs miss. Card values are dry as moulded (DAM). Polyamides absorb water, and it acts as a plasticiser: at equilibrium in 50 % RH the modulus and yield strength fall by roughly a third to a half while elongation and impact rise sharply. Never size a nylon part off DAM stiffness alone."
+    },
+    "pa66_gf30": {
+      "label": "PA66-GF30 (30 % glass fibre)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, dry as moulded, 30 % glass fibre",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 1874-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.36,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3WG6 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            9.0,
+            10.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3WG6 datasheet)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            170.0,
+            200.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3WG6 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            2.0,
+            4.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3WG6 datasheet)"
+        },
+        "cte_um_m_k": {
+          "value": 30.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3WG6 datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.3,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3WG6 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.5,
+          5.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The default structural nylon. Values are dry as moulded and parallel to flow: the transverse CTE is 2-3x the 30 um/(m*K) quoted, and a weld line keeps almost none of the fibre benefit \u2014 design gates so knit lines fall away from load. Glass makes it abrasive to tooling and it fails at ~3 % strain instead of yielding. Card values are dry as moulded (DAM). Polyamides absorb water, and it acts as a plasticiser: at equilibrium in 50 % RH the modulus and yield strength fall by roughly a third to a half while elongation and impact rise sharply. Never size a nylon part off DAM stiffness alone."
+    },
+    "pa66_gf15": {
+      "label": "PA66-GF15 (15 % glass fibre)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, dry as moulded, 15 % glass fibre",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 1874-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.24,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic 15 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3WG3 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            5.0,
+            6.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic 15 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3WG3 datasheet)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            110.0,
+            135.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic 15 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3WG3 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            3.0,
+            6.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic 15 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3WG3 datasheet)"
+        },
+        "cte_um_m_k": {
+          "value": 45.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic 15 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid A3WG3 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.2,
+          5.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Half the glass of the GF30 grade: about 60 % of its stiffness but noticeably more ductility, less warpage and a better surface. The usual pick when GF30 is too brittle or too distorted. Card values are dry as moulded (DAM). Polyamides absorb water, and it acts as a plasticiser: at equilibrium in 50 % RH the modulus and yield strength fall by roughly a third to a half while elongation and impact rise sharply. Never size a nylon part off DAM stiffness alone."
+    },
+    "pa6_gf30": {
+      "label": "PA6-GF30 (30 % glass fibre)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, dry as moulded, 30 % glass fibre",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 1874-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.36,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid B3WG6 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            8.5,
+            10.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid B3WG6 datasheet)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            160.0,
+            185.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid B3WG6 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            2.0,
+            4.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid B3WG6 datasheet)"
+        },
+        "cte_um_m_k": {
+          "value": 30.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid B3WG6 datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.3,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. BASF Ultramid B3WG6 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 110.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          4.8
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Cheaper and easier to mould than PA66-GF30 with a slightly lower heat ceiling and more moisture sensitivity. Values are dry as moulded and parallel to flow. Card values are dry as moulded (DAM). Polyamides absorb water, and it acts as a plasticiser: at equilibrium in 50 % RH the modulus and yield strength fall by roughly a third to a half while elongation and impact rise sharply. Never size a nylon part off DAM stiffness alone."
+    },
+    "pa12_molded": {
+      "label": "PA12 (nylon 12), injection moulded",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 1874-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.02,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Evonik Vestamid L1901 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            1.2,
+            1.6
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Evonik Vestamid L1901 datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            40.0,
+            50.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Evonik Vestamid L1901 datasheet)"
+        },
+        "elongation_pct": {
+          "value": 200.0,
+          "unit": "%",
+          "basis": "minimum",
+          "source": "generic grade, ISO 527-2 strain at break >= 200 % (e.g. Evonik Vestamid L1901 datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            100.0,
+            150.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Evonik Vestamid L1901 datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.25,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Evonik Vestamid L1901 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 90.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.4,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          6.0,
+          12.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The long aliphatic chain means only ~1.5 % water uptake against PA6's 9 %, so dimensions and stiffness barely move with humidity \u2014 that stability, not strength, is why it is specified. Softer and lower-melting than PA6/PA66, and several times the price. The `nylon_pa12` card is the powder-bed printed form of the same polymer."
+    },
+    "pa11": {
+      "label": "PA11 (nylon 11, bio-based)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded / extruded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 1874-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.03,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Arkema Rilsan BMNO datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            1.0,
+            1.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Arkema Rilsan BMNO datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            35.0,
+            45.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Arkema Rilsan BMNO datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            200.0,
+            400.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Arkema Rilsan BMNO datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            100.0,
+            150.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values (e.g. Arkema Rilsan BMNO datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 90.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          8.0,
+          16.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Polymerised from castor-oil undecylenic acid, so it is ~100 % bio-based. The toughest common nylon at low temperature \u2014 it stays ductile well below -40 C \u2014 which is why it is used for air-brake and fuel lines and offshore flexible-pipe liners."
+    },
+    "pa46": {
+      "label": "PA46 (nylon 4/6)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, dry as moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 1874-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.18,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. Envalior/DSM Stanyl TW200F6 unfilled datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            3.0,
+            3.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. Envalior/DSM Stanyl TW200F6 unfilled datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            90.0,
+            100.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. Envalior/DSM Stanyl TW200F6 unfilled datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            15.0,
+            40.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. Envalior/DSM Stanyl TW200F6 unfilled datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            70.0,
+            100.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. Envalior/DSM Stanyl TW200F6 unfilled datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "good",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          8.0,
+          15.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The most crystalline of the aliphatic nylons: melts near 295 C and holds stiffness above 150 C where PA66 has long since gone soft, which makes it the gear and bearing nylon for engine bays. The price is the highest moisture uptake of the family and a narrow processing window. Card values are dry as moulded (DAM). Polyamides absorb water, and it acts as a plasticiser: at equilibrium in 50 % RH the modulus and yield strength fall by roughly a third to a half while elongation and impact rise sharply. Never size a nylon part off DAM stiffness alone."
+    },
+    "pa612": {
+      "label": "PA612 (nylon 6/12)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, dry as moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 1874-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.07,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. DuPont Zytel 151L datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            1.8,
+            2.4
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. DuPont Zytel 151L datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            55.0,
+            65.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. DuPont Zytel 151L datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            50.0,
+            200.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. DuPont Zytel 151L datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            80.0,
+            120.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic grade, typical of ISO 527-2 datasheet values, dry as moulded (e.g. DuPont Zytel 151L datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          6.0,
+          12.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Sits between PA66 and PA12: ~1.3 % moisture at 50 % RH, so it keeps most of PA66's strength with a fraction of its humidity drift. Used for precision moulded parts, monofilament and toothbrush bristles. Card values are dry as moulded (DAM). Polyamides absorb water, and it acts as a plasticiser: at equilibrium in 50 % RH the modulus and yield strength fall by roughly a third to a half while elongation and impact rise sharply. Never size a nylon part off DAM stiffness alone."
+    },
+    "pa6_cast": {
+      "label": "PA6, cast (monomer cast nylon)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "monomer cast stock shape",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.15,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic monomer-cast stock shape, typical of ISO 527-2 datasheet values (e.g. R\u00f6chling Polyamid 6 G / Ensinger TECAST T datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            3.0,
+            3.6
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic monomer-cast stock shape, typical of ISO 527-2 datasheet values (e.g. R\u00f6chling Polyamid 6 G / Ensinger TECAST T datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            70.0,
+            90.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic monomer-cast stock shape, typical of ISO 527-2 datasheet values (e.g. R\u00f6chling Polyamid 6 G / Ensinger TECAST T datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            10.0,
+            40.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic monomer-cast stock shape, typical of ISO 527-2 datasheet values (e.g. R\u00f6chling Polyamid 6 G / Ensinger TECAST T datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            70.0,
+            100.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic monomer-cast stock shape, typical of ISO 527-2 datasheet values (e.g. R\u00f6chling Polyamid 6 G / Ensinger TECAST T datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.25,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic monomer-cast stock shape, typical of ISO 527-2 datasheet values (e.g. R\u00f6chling Polyamid 6 G / Ensinger TECAST T datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          6.0,
+          12.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Polymerised from caprolactam directly in the mould at low pressure, so very large sections are possible and crystallinity is higher than in moulded PA6: stiffer, harder and more wear resistant, with low residual stress. It is a stock-shape material \u2014 parts are machined, not moulded \u2014 and it is the default for large gears, sheaves and wear pads. Card values are dry as moulded (DAM). Polyamides absorb water, and it acts as a plasticiser: at equilibrium in 50 % RH the modulus and yield strength fall by roughly a third to a half while elongation and impact rise sharply. Never size a nylon part off DAM stiffness alone."
+    },
+    "pom_homopolymer": {
+      "label": "POM-H (acetal homopolymer)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 9988-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.42,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic homopolymer grade, typical of ISO 527-2 datasheet values (e.g. DuPont Delrin 500P datasheet)"
+        },
+        "E_gpa": {
+          "value": 3.1,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "DuPont Delrin design guide, flexural modulus versus temperature chart (values read from the published curve)",
+          "table": [
+            [
+              23.0,
+              3.1
+            ],
+            [
+              60.0,
+              2.2
+            ],
+            [
+              100.0,
+              1.4
+            ]
+          ]
+        },
+        "yield_mpa": {
+          "range": [
+            68.0,
+            75.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic homopolymer grade, typical of ISO 527-2 datasheet values (e.g. DuPont Delrin 500P datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            15.0,
+            40.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic homopolymer grade, typical of ISO 527-2 datasheet values (e.g. DuPont Delrin 500P datasheet)"
+        },
+        "cte_um_m_k": {
+          "value": 110.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic homopolymer grade, typical of ISO 527-2 datasheet values (e.g. DuPont Delrin 500P datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.31,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic homopolymer grade, typical of ISO 527-2 datasheet values (e.g. DuPont Delrin 500P datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 90.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.35,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        },
+        "cp_j_kg_k": {
+          "value": 1470.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; specific heat is seldom given on mechanical datasheets"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The stiffest, strongest acetal, with the best fatigue endurance and creep resistance and a famously low, stable friction coefficient \u2014 the classic small-gear and snap-fit material. It depolymerises to formaldehyde above ~230 C (never let it sit in a hot barrel), is attacked by acids and hot chlorinated water, and can leave centreline voids in thick sections. Nothing bonds to it without surface treatment."
+    },
+    "pom_copolymer": {
+      "label": "POM-C (acetal copolymer)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 9988-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.41,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic copolymer grade, typical of ISO 527-2 datasheet values (e.g. Celanese Hostaform C 9021 datasheet)"
+        },
+        "E_gpa": {
+          "value": 2.8,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Celanese Hostaform (POM copolymer) design guide, tensile modulus versus temperature curve (values read from the published curve)",
+          "table": [
+            [
+              23.0,
+              2.8
+            ],
+            [
+              60.0,
+              1.9
+            ],
+            [
+              100.0,
+              1.2
+            ]
+          ]
+        },
+        "yield_mpa": {
+          "range": [
+            62.0,
+            68.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic copolymer grade, typical of ISO 527-2 datasheet values (e.g. Celanese Hostaform C 9021 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            25.0,
+            40.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic copolymer grade, typical of ISO 527-2 datasheet values (e.g. Celanese Hostaform C 9021 datasheet)"
+        },
+        "cte_um_m_k": {
+          "value": 110.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic copolymer grade, typical of ISO 527-2 datasheet values (e.g. Celanese Hostaform C 9021 datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.31,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic copolymer grade, typical of ISO 527-2 datasheet values (e.g. Celanese Hostaform C 9021 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.35,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        },
+        "cp_j_kg_k": {
+          "value": 1470.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; specific heat is seldom given on mechanical datasheets"
+        }
+      },
+      "process": {
+        "machinability": "excellent",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Roughly 10 % less stiff and strong than the homopolymer, and much more stable against hot water, steam, alkalis and thermal degradation because the comonomer units cap the depolymerisation front. It moulds and extrudes into void-free thick sections, so it is what machining stock is usually made of."
+    },
+    "pom_gf25": {
+      "label": "POM-C GF25 (25 % glass fibre)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, 25 % glass fibre",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 9988-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.59,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic 25 % glass-fibre copolymer grade, typical of ISO 527-2 datasheet values (e.g. Celanese Hostaform C 9021 GV1/30 family)"
+        },
+        "E_gpa": {
+          "range": [
+            7.5,
+            9.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic 25 % glass-fibre copolymer grade, typical of ISO 527-2 datasheet values (e.g. Celanese Hostaform C 9021 GV1/30 family)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            110.0,
+            135.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic 25 % glass-fibre copolymer grade, typical of ISO 527-2 datasheet values (e.g. Celanese Hostaform C 9021 GV1/30 family)"
+        },
+        "elongation_pct": {
+          "range": [
+            2.0,
+            4.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic 25 % glass-fibre copolymer grade, typical of ISO 527-2 datasheet values (e.g. Celanese Hostaform C 9021 GV1/30 family)"
+        },
+        "cte_um_m_k": {
+          "value": 40.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic 25 % glass-fibre copolymer grade, typical of ISO 527-2 datasheet values (e.g. Celanese Hostaform C 9021 GV1/30 family)"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          6.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Glass roughly triples the modulus and halves the CTE, but it removes the toughness and the low, self-lubricating friction that acetal is normally chosen for \u2014 a filled acetal is a structural material, not a bearing material."
+    },
+    "pbt": {
+      "label": "PBT (polybutylene terephthalate)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 7792-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.31,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic unfilled grade, typical of ISO 527-2 datasheet values (e.g. DuPont Crastin S600F40 / BASF Ultradur B 4500 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            2.4,
+            2.8
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic unfilled grade, typical of ISO 527-2 datasheet values (e.g. DuPont Crastin S600F40 / BASF Ultradur B 4500 datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            50.0,
+            60.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic unfilled grade, typical of ISO 527-2 datasheet values (e.g. DuPont Crastin S600F40 / BASF Ultradur B 4500 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            20.0,
+            100.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic unfilled grade, typical of ISO 527-2 datasheet values (e.g. DuPont Crastin S600F40 / BASF Ultradur B 4500 datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            60.0,
+            100.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic unfilled grade, typical of ISO 527-2 datasheet values (e.g. DuPont Crastin S600F40 / BASF Ultradur B 4500 datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.24,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic unfilled grade, typical of ISO 527-2 datasheet values (e.g. DuPont Crastin S600F40 / BASF Ultradur B 4500 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Crystallises fast in a cool mould, so it gives short cycles and excellent dimensional stability, and it takes up almost no water (unlike the nylons) which is why connectors and electrical housings are made of it. It hydrolyses in hot water and steam above ~60 C, and it must be dried before moulding."
+    },
+    "pbt_gf30": {
+      "label": "PBT-GF30 (30 % glass fibre)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, 30 % glass fibre",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 7792-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.53,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. BASF Ultradur B 4300 G6 / DuPont Crastin SK645 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            9.0,
+            11.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. BASF Ultradur B 4300 G6 / DuPont Crastin SK645 datasheet)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            125.0,
+            150.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. BASF Ultradur B 4300 G6 / DuPont Crastin SK645 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            2.0,
+            4.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. BASF Ultradur B 4300 G6 / DuPont Crastin SK645 datasheet)"
+        },
+        "cte_um_m_k": {
+          "value": 25.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. BASF Ultradur B 4300 G6 / DuPont Crastin SK645 datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.3,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. BASF Ultradur B 4300 G6 / DuPont Crastin SK645 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 140.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.2,
+          5.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The connector-housing workhorse: stiff, dimensionally stable, solder-survivable and cheap for what it does. Values are dry and parallel to flow \u2014 transverse CTE is 2-3x \u2014 and glass-filled PBT warps if the fibre orientation is not thought about at the gate."
+    },
+    "pet_gf30": {
+      "label": "PET-GF30 (30 % glass fibre)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, 30 % glass fibre",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 7792-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.56,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. DuPont Rynite 530 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            9.5,
+            11.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. DuPont Rynite 530 datasheet)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            150.0,
+            180.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. DuPont Rynite 530 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            1.5,
+            3.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. DuPont Rynite 530 datasheet)"
+        },
+        "cte_um_m_k": {
+          "value": 25.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. DuPont Rynite 530 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 140.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "good",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          5.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Stiffer, stronger and glossier than PBT-GF30 with better creep resistance hot, but PET crystallises slowly: it needs a mould above ~120 C or the part comes out amorphous, brittle and dimensionally unstable. Choose PBT-GF30 when the tool cannot run that hot."
+    },
+    "ppo": {
+      "label": "PPO / mPPE (modified polyphenylene ether)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, PPE + PS blend",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 15103-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.06,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic unfilled blend, typical of ISO 527-2 datasheet values (e.g. SABIC Noryl 731 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            2.2,
+            2.6
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic unfilled blend, typical of ISO 527-2 datasheet values (e.g. SABIC Noryl 731 datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            55.0,
+            68.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic unfilled blend, typical of ISO 527-2 datasheet values (e.g. SABIC Noryl 731 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            20.0,
+            60.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic unfilled blend, typical of ISO 527-2 datasheet values (e.g. SABIC Noryl 731 datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            60.0,
+            80.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic unfilled blend, typical of ISO 527-2 datasheet values (e.g. SABIC Noryl 731 datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.22,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic unfilled blend, typical of ISO 527-2 datasheet values (e.g. SABIC Noryl 731 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.38,
+          "unit": "-",
+          "basis": "typical",
+          "source": "editorial typical for the polymer class; Poisson's ratio is seldom given on moulding datasheets"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          7.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Never sold neat \u2014 PPE is blended with polystyrene (Noryl-type) to make it processable, and the blend ratio sets everything, so grades span roughly 100-140 C heat deflection. Near-zero water absorption and a very stable, low dielectric constant make it the choice for pump housings, water manifolds and electrical parts that must not move with humidity."
+    },
+    "ppo_gf30": {
+      "label": "PPO / mPPE GF30 (30 % glass fibre)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, 30 % glass fibre",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 15103-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.27,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre blend, typical of ISO 527-2 datasheet values (e.g. SABIC Noryl GFN3 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            7.5,
+            9.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre blend, typical of ISO 527-2 datasheet values (e.g. SABIC Noryl GFN3 datasheet)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            110.0,
+            130.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre blend, typical of ISO 527-2 datasheet values (e.g. SABIC Noryl GFN3 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            2.0,
+            5.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre blend, typical of ISO 527-2 datasheet values (e.g. SABIC Noryl GFN3 datasheet)"
+        },
+        "cte_um_m_k": {
+          "value": 30.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic 30 % glass-fibre blend, typical of ISO 527-2 datasheet values (e.g. SABIC Noryl GFN3 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.5,
+          7.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Keeps the blend's dimensional stability and dielectric behaviour and adds structural stiffness; values are parallel to flow."
+    },
+    "pc_gf20": {
+      "label": "PC-GF20 (20 % glass fibre)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, 20 % glass fibre",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183",
+        "ISO 7391-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.34,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic 20 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. Covestro Makrolon 8035 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            5.5,
+            6.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic 20 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. Covestro Makrolon 8035 datasheet)"
+        },
+        "ultimate_mpa": {
+          "range": [
+            95.0,
+            120.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic 20 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. Covestro Makrolon 8035 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            3.0,
+            6.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic 20 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. Covestro Makrolon 8035 datasheet)"
+        },
+        "cte_um_m_k": {
+          "value": 30.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic 20 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. Covestro Makrolon 8035 datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.22,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic 20 % glass-fibre grade, typical of ISO 527-2 datasheet values (e.g. Covestro Makrolon 8035 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 125.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "fair",
+        "im": "good",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          5.0,
+          8.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Glass more than doubles PC's stiffness and drops the CTE to roughly aluminium's \u2014 useful when a plastic housing must hold tolerance against a metal frame. It costs the transparency and, more importantly, the ductile high-energy impact behaviour that unfilled PC is usually specified for."
+    },
+    "pc_abs": {
+      "label": "PC/ABS blend",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded, ~60/40 PC/ABS",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.15,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic blend, typical of ISO 527-2 datasheet values (e.g. SABIC Cycoloy C1200 / Covestro Bayblend T65 datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            2.2,
+            2.6
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic blend, typical of ISO 527-2 datasheet values (e.g. SABIC Cycoloy C1200 / Covestro Bayblend T65 datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            50.0,
+            60.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic blend, typical of ISO 527-2 datasheet values (e.g. SABIC Cycoloy C1200 / Covestro Bayblend T65 datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            30.0,
+            100.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic blend, typical of ISO 527-2 datasheet values (e.g. SABIC Cycoloy C1200 / Covestro Bayblend T65 datasheet)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            70.0,
+            90.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "generic blend, typical of ISO 527-2 datasheet values (e.g. SABIC Cycoloy C1200 / Covestro Bayblend T65 datasheet)"
+        },
+        "k_w_m_k": {
+          "value": 0.2,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "generic blend, typical of ISO 527-2 datasheet values (e.g. SABIC Cycoloy C1200 / Covestro Bayblend T65 datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "printable": {
+          "fdm": "good"
+        },
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides and community FDM practice"
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.5,
+          5.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Most of polycarbonate's heat resistance and notched impact with ABS's melt flow, cost and thick-section mouldability, and far less notch sensitivity than neat PC. The PC fraction (typically 50-70 %) sets where a grade lands, so read the specific datasheet. The standard automotive-interior and IT-housing material, and a common FDM engineering filament."
+    },
+    "pctg": {
+      "label": "PCTG (glycol-modified copolyester)",
+      "category": "polymer",
+      "subcategory": "engineering",
+      "condition": "injection moulded",
+      "standards": [
+        "ISO 527-2",
+        "ISO 1183"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.23,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "generic copolyester grade, typical of ISO 527-2 datasheet values (e.g. Eastman PCTG / Tritan copolyester datasheet)"
+        },
+        "E_gpa": {
+          "range": [
+            1.5,
+            2.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "generic copolyester grade, typical of ISO 527-2 datasheet values (e.g. Eastman PCTG / Tritan copolyester datasheet)"
+        },
+        "yield_mpa": {
+          "range": [
+            40.0,
+            50.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "generic copolyester grade, typical of ISO 527-2 datasheet values (e.g. Eastman PCTG / Tritan copolyester datasheet)"
+        },
+        "elongation_pct": {
+          "range": [
+            200.0,
+            400.0
+          ],
+          "unit": "%",
+          "basis": "typical",
+          "source": "generic copolyester grade, typical of ISO 527-2 datasheet values (e.g. Eastman PCTG / Tritan copolyester datasheet)"
+        },
+        "max_service_temp_c": {
+          "value": 70.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "process": {
+        "machinability": "good",
+        "im": "excellent",
+        "source": "editorial classification from manufacturer processing guides"
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          7.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Tougher and clearer than PETG in thick sections, with better resistance to detergents, disinfectants and lipids \u2014 the medical-device and drinkware copolyester. Amorphous, so it moulds without crystallisation control; CTE and thermal conductivity are omitted rather than guessed."
     }
   }
 }

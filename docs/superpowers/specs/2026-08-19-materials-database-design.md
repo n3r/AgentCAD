@@ -399,7 +399,7 @@ ACI, mortar/brick/stone) ~35.
   PRD's exact query with every member checked and cited; AC3 fake-kernel +
   importorskip; AC4 `len(MATERIALS) >= 300` and every builtin property cited;
   AC5 lint rejects a missing citation naming the property; AC6 the construction
-  example copied, a part re-materialled to `timber_c24` and `concrete_c30_37`,
+  example copied, a part re-materialled to `c24` and `concrete_c30_37`,
   mass within ±5 % of density × volume, `fem_static` through the fake-kernel
   path (+ importorskip real); AC7 no aggregator name in any shipped `source`.
 

@@ -62,6 +62,4429 @@
         }
       },
       "notes": "ultimate = mean tensile fctm; compressive fck = 30 MPa (cylinder). Unreinforced — no meaningful tensile design use."
+    },
+    "concrete_c12_15": {
+      "label": "Concrete C12/15 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C12/15",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 27.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C12/15), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 1.6,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C12/15), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 12.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C12/15), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.08,
+          0.15
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports."
+    },
+    "concrete_c16_20": {
+      "label": "Concrete C16/20 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C16/20",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 29.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C16/20), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 1.9,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C16/20), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 16.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C16/20), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.08,
+          0.15
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports."
+    },
+    "concrete_c20_25": {
+      "label": "Concrete C20/25 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C20/25",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 30.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C20/25), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 2.2,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C20/25), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 20.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C20/25), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.08,
+          0.15
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports."
+    },
+    "concrete_c25_30": {
+      "label": "Concrete C25/30 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C25/30",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 31.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C25/30), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 2.6,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C25/30), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 25.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C25/30), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.08,
+          0.15
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports."
+    },
+    "concrete_c30_37": {
+      "label": "Concrete C30/37 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C30/37",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 33.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C30/37), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 2.9,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C30/37), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 30.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C30/37), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.08,
+          0.15
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports. Same class as the legacy id `concrete`, which is kept byte-identical; this card is the EN 1992-1-1 Table 3.1 series entry."
+    },
+    "concrete_c35_45": {
+      "label": "Concrete C35/45 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C35/45",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 34.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C35/45), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 3.2,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C35/45), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 35.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C35/45), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.08,
+          0.15
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports."
+    },
+    "concrete_c40_50": {
+      "label": "Concrete C40/50 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C40/50",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 35.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C40/50), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 3.5,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C40/50), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 40.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C40/50), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.08,
+          0.15
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports."
+    },
+    "concrete_c45_55": {
+      "label": "Concrete C45/55 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C45/55",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 36.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C45/55), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 3.8,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C45/55), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 45.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C45/55), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.12,
+          0.22
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports."
+    },
+    "concrete_c50_60": {
+      "label": "Concrete C50/60 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C50/60",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 37.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C50/60), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 4.1,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C50/60), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 50.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C50/60), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.12,
+          0.22
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports."
+    },
+    "concrete_c55_67": {
+      "label": "Concrete C55/67 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C55/67",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 38.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C55/67), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 4.2,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C55/67), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 55.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C55/67), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.12,
+          0.22
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports."
+    },
+    "concrete_c60_75": {
+      "label": "Concrete C60/75 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C60/75",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 39.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C60/75), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 4.4,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C60/75), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 60.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C60/75), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.12,
+          0.22
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports."
+    },
+    "concrete_c70_85": {
+      "label": "Concrete C70/85 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C70/85",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 41.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C70/85), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 4.6,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C70/85), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 70.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C70/85), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.18,
+          0.35
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports."
+    },
+    "concrete_c80_95": {
+      "label": "Concrete C80/95 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C80/95",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 42.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C80/95), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 4.8,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C80/95), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 80.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C80/95), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.18,
+          0.35
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports."
+    },
+    "concrete_c90_105": {
+      "label": "Concrete C90/105 (EN 1992-1-1)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C90/105",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 1991-1-1 Table A.1, unreinforced normal-weight concrete 24 kN/m3"
+        },
+        "E_gpa": {
+          "value": 44.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C90/105), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 5.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C90/105), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 90.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 1992-1-1 Table 3.1 (C90/105), f_ck cylinder"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.18,
+          0.35
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 1992-1-1 Table 3.1: compressive = f_ck (cylinder, 5%-fractile characteristic), ultimate = f_ctm (mean axial tensile), E = E_cm (secant modulus). Density 2.4 g/cm3 unreinforced / 2.5 reinforced (EN 1991-1-1 Table A.1) - the 2.4 point is used here. The k point 1.8 W/(m*K) is the usual design value between the EN 1992-1-2 upper and lower limits; the k table is the upper-limit curve, which is what the 20 C row 1.95 reports."
+    },
+    "concrete_2500psi": {
+      "label": "Concrete 2500 psi (ACI 318, normal weight)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "f'c = 2500 psi (17.2 MPa)",
+      "standards": [
+        "ACI 318-19",
+        "ASTM C39"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.32,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.2.1, normal-weight concrete w_c ~ 2320 kg/m3 (145 lb/ft3)"
+        },
+        "E_gpa": {
+          "value": 19.5,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.2.1(b), E_c = 4700*sqrt(f'c) MPa"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 17.2,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ACI 318-19, specified compressive strength f'c = 2500 psi"
+        },
+        "bending_mpa": {
+          "value": 2.57,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.3.1, modulus of rupture f_r = 0.62*sqrt(f'c) MPa"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.08,
+          0.15
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "compressive = specified f'c (ACI 318 is a specified minimum, not a fractile); E = 4700*sqrt(f'c) MPa (ACI 318-19 19.2.2.1(b), normal-weight concrete); bending = modulus of rupture f_r = 0.62*lambda*sqrt(f'c) (ACI 318-19 19.2.3.1, lambda = 1.0). Thermal values are the EN figures for the same material."
+    },
+    "concrete_3000psi": {
+      "label": "Concrete 3000 psi (ACI 318, normal weight)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "f'c = 3000 psi (20.7 MPa)",
+      "standards": [
+        "ACI 318-19",
+        "ASTM C39"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.32,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.2.1, normal-weight concrete w_c ~ 2320 kg/m3 (145 lb/ft3)"
+        },
+        "E_gpa": {
+          "value": 21.4,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.2.1(b), E_c = 4700*sqrt(f'c) MPa"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 20.7,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ACI 318-19, specified compressive strength f'c = 3000 psi"
+        },
+        "bending_mpa": {
+          "value": 2.82,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.3.1, modulus of rupture f_r = 0.62*sqrt(f'c) MPa"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.08,
+          0.15
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "compressive = specified f'c (ACI 318 is a specified minimum, not a fractile); E = 4700*sqrt(f'c) MPa (ACI 318-19 19.2.2.1(b), normal-weight concrete); bending = modulus of rupture f_r = 0.62*lambda*sqrt(f'c) (ACI 318-19 19.2.3.1, lambda = 1.0). Thermal values are the EN figures for the same material."
+    },
+    "concrete_4000psi": {
+      "label": "Concrete 4000 psi (ACI 318, normal weight)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "f'c = 4000 psi (27.6 MPa)",
+      "standards": [
+        "ACI 318-19",
+        "ASTM C39"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.32,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.2.1, normal-weight concrete w_c ~ 2320 kg/m3 (145 lb/ft3)"
+        },
+        "E_gpa": {
+          "value": 24.7,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.2.1(b), E_c = 4700*sqrt(f'c) MPa"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 27.6,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ACI 318-19, specified compressive strength f'c = 4000 psi"
+        },
+        "bending_mpa": {
+          "value": 3.26,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.3.1, modulus of rupture f_r = 0.62*sqrt(f'c) MPa"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.08,
+          0.15
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "compressive = specified f'c (ACI 318 is a specified minimum, not a fractile); E = 4700*sqrt(f'c) MPa (ACI 318-19 19.2.2.1(b), normal-weight concrete); bending = modulus of rupture f_r = 0.62*lambda*sqrt(f'c) (ACI 318-19 19.2.3.1, lambda = 1.0). Thermal values are the EN figures for the same material."
+    },
+    "concrete_5000psi": {
+      "label": "Concrete 5000 psi (ACI 318, normal weight)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "f'c = 5000 psi (34.5 MPa)",
+      "standards": [
+        "ACI 318-19",
+        "ASTM C39"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.32,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.2.1, normal-weight concrete w_c ~ 2320 kg/m3 (145 lb/ft3)"
+        },
+        "E_gpa": {
+          "value": 27.6,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.2.1(b), E_c = 4700*sqrt(f'c) MPa"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 34.5,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ACI 318-19, specified compressive strength f'c = 5000 psi"
+        },
+        "bending_mpa": {
+          "value": 3.64,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.3.1, modulus of rupture f_r = 0.62*sqrt(f'c) MPa"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.08,
+          0.15
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "compressive = specified f'c (ACI 318 is a specified minimum, not a fractile); E = 4700*sqrt(f'c) MPa (ACI 318-19 19.2.2.1(b), normal-weight concrete); bending = modulus of rupture f_r = 0.62*lambda*sqrt(f'c) (ACI 318-19 19.2.3.1, lambda = 1.0). Thermal values are the EN figures for the same material."
+    },
+    "concrete_6000psi": {
+      "label": "Concrete 6000 psi (ACI 318, normal weight)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "f'c = 6000 psi (41.4 MPa)",
+      "standards": [
+        "ACI 318-19",
+        "ASTM C39"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.32,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.2.1, normal-weight concrete w_c ~ 2320 kg/m3 (145 lb/ft3)"
+        },
+        "E_gpa": {
+          "value": 30.2,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.2.1(b), E_c = 4700*sqrt(f'c) MPa"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 41.4,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ACI 318-19, specified compressive strength f'c = 6000 psi"
+        },
+        "bending_mpa": {
+          "value": 3.99,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ACI 318-19 §19.2.3.1, modulus of rupture f_r = 0.62*sqrt(f'c) MPa"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.08,
+          0.15
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "compressive = specified f'c (ACI 318 is a specified minimum, not a fractile); E = 4700*sqrt(f'c) MPa (ACI 318-19 19.2.2.1(b), normal-weight concrete); bending = modulus of rupture f_r = 0.62*lambda*sqrt(f'c) (ACI 318-19 19.2.3.1, lambda = 1.0). Thermal values are the EN figures for the same material."
+    },
+    "concrete_lightweight_1850": {
+      "label": "Lightweight structural concrete LC30/33 (1850 kg/m3)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "LC30/33, density class D1.8",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1 §11",
+        "ACI 213R"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.85,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 206 density class D1.8 (1801-2000 kg/m3), oven-dry lightweight aggregate concrete"
+        },
+        "E_gpa": {
+          "value": 23.3,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §11.3.2 eq. (11.3.2): E_lcm = E_cm * (rho/2200)^2, E_cm = 33 GPa for C30/37"
+        },
+        "ultimate_mpa": {
+          "value": 2.6,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §11.3.1: f_lctm = f_ctm * eta_1, eta_1 = 0.40 + 0.60*rho/2200"
+        },
+        "cte_um_m_k": {
+          "range": [
+            7.0,
+            9.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §11.3.2(2): lightweight aggregate concrete thermal expansion, ~8e-6 /K"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.7,
+            1.2
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate from EN ISO 10456 Table 3 density-dependent concrete conductivities at 1800-1900 kg/m3"
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 30.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 206 / EN 1992-1-1 §11, f_lck for strength class LC30/33 (cylinder)"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.15,
+          0.3
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Structural lightweight-aggregate concrete. Strength is the EN class value; stiffness and tensile strength are the EN 1992-1-1 §11 density reductions applied to the C30/37 normal-weight figures. No k(T) table: the EN 1992-1-2 curve is for normal-weight concrete."
+    },
+    "concrete_lightweight_1600": {
+      "label": "Lightweight structural concrete LC20/22 (1600 kg/m3)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "LC20/22, density class D1.6",
+      "standards": [
+        "EN 206",
+        "EN 1992-1-1 §11",
+        "ACI 213R"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.6,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 206 density class D1.6 (1601-1800 kg/m3), oven-dry lightweight aggregate concrete"
+        },
+        "E_gpa": {
+          "value": 15.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §11.3.2 eq. (11.3.2): E_lcm = E_cm * (rho/2200)^2, E_cm = 30 GPa for C20/25"
+        },
+        "ultimate_mpa": {
+          "value": 1.8,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §11.3.1: f_lctm = f_ctm * eta_1, eta_1 = 0.40 + 0.60*rho/2200"
+        },
+        "cte_um_m_k": {
+          "range": [
+            7.0,
+            9.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §11.3.2(2): lightweight aggregate concrete thermal expansion, ~8e-6 /K"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.5,
+            0.9
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate from EN ISO 10456 Table 3 density-dependent concrete conductivities at 1600 kg/m3"
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 20.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 206 / EN 1992-1-1 §11, f_lck for strength class LC20/22 (cylinder)"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.15,
+          0.3
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Semi-lightweight structural concrete; same derivation as concrete_lightweight_1850 from the C20/25 normal-weight row."
+    },
+    "concrete_uhpc": {
+      "label": "Ultra-high-performance concrete (UHPC, generic)",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "generic UHPC, steel-fibre reinforced",
+      "standards": [
+        "ACI 239R",
+        "ASTM C1856",
+        "FHWA-HRT-13-060"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.5,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "FHWA-HRT-13-060 (public-domain UHPC research report), typical UHPC density 2500 kg/m3"
+        },
+        "E_gpa": {
+          "range": [
+            45.0,
+            55.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "FHWA-HRT-13-060, measured elastic modulus range for commercial UHPC mixes"
+        },
+        "ultimate_mpa": {
+          "range": [
+            6.0,
+            10.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "FHWA-HRT-13-060, direct tensile / first-cracking strength range for fibre-reinforced UHPC"
+        },
+        "cte_um_m_k": {
+          "range": [
+            10.0,
+            12.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "FHWA-HRT-13-060, coefficient of thermal expansion of UHPC"
+        },
+        "k_w_m_k": {
+          "range": [
+            1.8,
+            2.4
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: dense low-porosity cementitious matrix, above the EN 1992-1-2 normal-weight band"
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "range": [
+            120.0,
+            180.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASTM C1856 / ACI 239R define UHPC as f'c >= 150 MPa (22 ksi); FHWA-HRT-13-060 reports 120-200 MPa for commercial mixes"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.5,
+          4.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Generic UHPC, not a supplier product: ranges rather than a datasheet point. Tensile strength is fibre-dependent and is the first-cracking/direct-tension band, not a design allowable."
+    },
+    "concrete_shotcrete": {
+      "label": "Sprayed concrete (shotcrete) C25/30",
+      "category": "masonry",
+      "subcategory": "concrete",
+      "condition": "C25/30, wet-mix sprayed",
+      "standards": [
+        "EN 14487-1",
+        "EN 1992-1-1",
+        "ACI 506R"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.3,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "editorial estimate: sprayed concrete is 2-5% lighter than cast normal-weight concrete (EN 1991-1-1 Table A.1 basis 2400 kg/m3)"
+        },
+        "E_gpa": {
+          "value": 31.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C25/30), E_cm"
+        },
+        "ultimate_mpa": {
+          "value": 2.6,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 1992-1-1 Table 3.1 (C25/30), f_ctm"
+        },
+        "cte_um_m_k": {
+          "value": 10.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(5), coefficient of thermal expansion 10e-6 /K for concrete"
+        },
+        "k_w_m_k": {
+          "value": 1.8,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.3; 1.8 W/(m*K) is the usual design point between the code's upper and lower limits at 20 C; table rows: EN 1992-1-2 §3.3.3 eq. (3.1) upper limit",
+          "table": [
+            [
+              20.0,
+              1.95
+            ],
+            [
+              100.0,
+              1.77
+            ],
+            [
+              200.0,
+              1.55
+            ],
+            [
+              300.0,
+              1.36
+            ],
+            [
+              400.0,
+              1.19
+            ],
+            [
+              500.0,
+              1.04
+            ],
+            [
+              600.0,
+              0.91
+            ],
+            [
+              800.0,
+              0.72
+            ],
+            [
+              1000.0,
+              0.62
+            ],
+            [
+              1200.0,
+              0.6
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 1992-1-1 §3.1.3(4), Poisson's ratio 0.2 for uncracked concrete"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 1992-1-2 §3.3.2, specific heat of siliceous/calcareous concrete at 20-100 C (moisture-free)"
+        },
+        "compressive_mpa": {
+          "value": 25.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 14487-1 strength class C25/30 (f_ck cylinder, EN 1992-1-1 Table 3.1)"
+        }
+      },
+      "process": {
+        "casting": "excellent",
+        "source": "editorial classification: cast-in-place and precast concrete"
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.2,
+          0.45
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Sprayed concrete of EN 14487-1 strength class C25/30; mechanical values are the EN 1992-1-1 Table 3.1 row for that class. Density is an editorial allowance for spray porosity/rebound."
+    },
+    "mortar_type_m": {
+      "label": "Masonry mortar ASTM C270 Type M",
+      "category": "masonry",
+      "subcategory": "mortar",
+      "condition": "Type M",
+      "standards": [
+        "ASTM C270",
+        "ASTM C780"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.0,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, hardened masonry mortar (~2000 kg/m3)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            10.0,
+            13.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: cement-lime mortar, 10-13 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.8,
+            1.2
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, masonry mortar (density-dependent design conductivity)"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of mortar"
+        },
+        "compressive_mpa": {
+          "value": 17.2,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C270 property specification, Type M: minimum average 28-day compressive strength 2500 psi"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.15,
+          0.4
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "ASTM C270 property specification (laboratory-prepared mortar, 50 mm cubes at 28 days) - a minimum, not a typical field strength. No E_gpa: the modulus of a mortar joint is not specified by C270 and the masonry assembly modulus (TMS 402) is the design quantity."
+    },
+    "mortar_type_s": {
+      "label": "Masonry mortar ASTM C270 Type S",
+      "category": "masonry",
+      "subcategory": "mortar",
+      "condition": "Type S",
+      "standards": [
+        "ASTM C270",
+        "ASTM C780"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.0,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, hardened masonry mortar (~2000 kg/m3)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            10.0,
+            13.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: cement-lime mortar, 10-13 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.8,
+            1.2
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, masonry mortar (density-dependent design conductivity)"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of mortar"
+        },
+        "compressive_mpa": {
+          "value": 12.4,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C270 property specification, Type S: minimum average 28-day compressive strength 1800 psi"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.15,
+          0.4
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "ASTM C270 property specification (laboratory-prepared mortar, 50 mm cubes at 28 days) - a minimum, not a typical field strength. No E_gpa: the modulus of a mortar joint is not specified by C270 and the masonry assembly modulus (TMS 402) is the design quantity."
+    },
+    "mortar_type_n": {
+      "label": "Masonry mortar ASTM C270 Type N",
+      "category": "masonry",
+      "subcategory": "mortar",
+      "condition": "Type N",
+      "standards": [
+        "ASTM C270",
+        "ASTM C780"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.0,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, hardened masonry mortar (~2000 kg/m3)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            10.0,
+            13.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: cement-lime mortar, 10-13 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.8,
+            1.2
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, masonry mortar (density-dependent design conductivity)"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of mortar"
+        },
+        "compressive_mpa": {
+          "value": 5.2,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C270 property specification, Type N: minimum average 28-day compressive strength 750 psi"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.15,
+          0.4
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "ASTM C270 property specification (laboratory-prepared mortar, 50 mm cubes at 28 days) - a minimum, not a typical field strength. No E_gpa: the modulus of a mortar joint is not specified by C270 and the masonry assembly modulus (TMS 402) is the design quantity."
+    },
+    "mortar_type_o": {
+      "label": "Masonry mortar ASTM C270 Type O",
+      "category": "masonry",
+      "subcategory": "mortar",
+      "condition": "Type O",
+      "standards": [
+        "ASTM C270",
+        "ASTM C780"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.0,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, hardened masonry mortar (~2000 kg/m3)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            10.0,
+            13.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: cement-lime mortar, 10-13 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.8,
+            1.2
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, masonry mortar (density-dependent design conductivity)"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of mortar"
+        },
+        "compressive_mpa": {
+          "value": 2.4,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C270 property specification, Type O: minimum average 28-day compressive strength 350 psi"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.15,
+          0.4
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "ASTM C270 property specification (laboratory-prepared mortar, 50 mm cubes at 28 days) - a minimum, not a typical field strength. No E_gpa: the modulus of a mortar joint is not specified by C270 and the masonry assembly modulus (TMS 402) is the design quantity."
+    },
+    "mortar_type_k": {
+      "label": "Masonry mortar ASTM C270 Type K",
+      "category": "masonry",
+      "subcategory": "mortar",
+      "condition": "Type K",
+      "standards": [
+        "ASTM C270",
+        "ASTM C780"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.0,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, hardened masonry mortar (~2000 kg/m3)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            10.0,
+            13.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: cement-lime mortar, 10-13 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.8,
+            1.2
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, masonry mortar (density-dependent design conductivity)"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of mortar"
+        },
+        "compressive_mpa": {
+          "value": 0.5,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C270 property specification, Type K: minimum average 28-day compressive strength 75 psi"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.15,
+          0.4
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "ASTM C270 property specification (laboratory-prepared mortar, 50 mm cubes at 28 days) - a minimum, not a typical field strength. No E_gpa: the modulus of a mortar joint is not specified by C270 and the masonry assembly modulus (TMS 402) is the design quantity."
+    },
+    "mortar_en998_m5": {
+      "label": "Masonry mortar EN 998-2 M5",
+      "category": "masonry",
+      "subcategory": "mortar",
+      "condition": "M5",
+      "standards": [
+        "EN 998-2",
+        "EN 1015-11",
+        "EN 1996-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.9,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 998-2 / EN 1015-10, hardened dry density of general-purpose masonry mortar (~1900 kg/m3)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            10.0,
+            13.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: cement-lime mortar, 10-13 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.8,
+            1.2
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, masonry mortar (density-dependent design conductivity)"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of mortar"
+        },
+        "compressive_mpa": {
+          "value": 5.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 998-2 §5.2, declared compressive strength class M5 (5 N/mm2, EN 1015-11)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.15,
+          0.4
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 998-2 general-purpose masonry mortar: the class number is the declared compressive strength in N/mm2, a floor rather than a typical value."
+    },
+    "mortar_en998_m10": {
+      "label": "Masonry mortar EN 998-2 M10",
+      "category": "masonry",
+      "subcategory": "mortar",
+      "condition": "M10",
+      "standards": [
+        "EN 998-2",
+        "EN 1015-11",
+        "EN 1996-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.9,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 998-2 / EN 1015-10, hardened dry density of general-purpose masonry mortar (~1900 kg/m3)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            10.0,
+            13.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: cement-lime mortar, 10-13 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.8,
+            1.2
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, masonry mortar (density-dependent design conductivity)"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of mortar"
+        },
+        "compressive_mpa": {
+          "value": 10.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 998-2 §5.2, declared compressive strength class M10 (10 N/mm2, EN 1015-11)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.15,
+          0.4
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 998-2 general-purpose masonry mortar: the class number is the declared compressive strength in N/mm2, a floor rather than a typical value."
+    },
+    "mortar_en998_m20": {
+      "label": "Masonry mortar EN 998-2 M20",
+      "category": "masonry",
+      "subcategory": "mortar",
+      "condition": "M20",
+      "standards": [
+        "EN 998-2",
+        "EN 1015-11",
+        "EN 1996-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.9,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 998-2 / EN 1015-10, hardened dry density of general-purpose masonry mortar (~1900 kg/m3)"
+        },
+        "cte_um_m_k": {
+          "range": [
+            10.0,
+            13.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: cement-lime mortar, 10-13 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.8,
+            1.2
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, masonry mortar (density-dependent design conductivity)"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of mortar"
+        },
+        "compressive_mpa": {
+          "value": 20.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 998-2 §5.2, declared compressive strength class M20 (20 N/mm2, EN 1015-11)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.15,
+          0.4
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "EN 998-2 general-purpose masonry mortar: the class number is the declared compressive strength in N/mm2, a floor rather than a typical value."
+    },
+    "clay_brick": {
+      "label": "Clay brick, solid (generic)",
+      "category": "masonry",
+      "subcategory": "brick",
+      "condition": "solid fired-clay unit",
+      "standards": [
+        "EN 771-1",
+        "EN 772-1",
+        "ASTM C62"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.9,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 771-1 / EN 772-13, gross dry density of solid fired-clay units (1700-2100 kg/m3); 1900 kg/m3 taken as typical"
+        },
+        "E_gpa": {
+          "range": [
+            10.0,
+            25.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate: fired-clay masonry unit modulus; EN 1996-1-1 §3.7.2 takes masonry E = 1000*f_k"
+        },
+        "cte_um_m_k": {
+          "range": [
+            4.0,
+            8.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1996-2 Annex D, coefficient of thermal expansion of masonry, clay masonry"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.6,
+            1.0
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, fired-clay masonry units at 1700-2100 kg/m3"
+        },
+        "cp_j_kg_k": {
+          "range": [
+            800.0,
+            1000.0
+          ],
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial estimate: fired-clay masonry, 800-1000 J/(kg*K)"
+        },
+        "compressive_mpa": {
+          "range": [
+            20.0,
+            40.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 771-1 §5.3 declared normalised compressive strength f_b; common band for solid facing units (ASTM C62 grade SW requires >= 17.2 MPa)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.25,
+          0.6
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "A generic solid fired-clay unit, not a product: EN 771-1 units are declared by the manufacturer over a wide band, so strength and stiffness are ranges. Unit properties, not masonry-assembly properties."
+    },
+    "engineering_brick_class_a": {
+      "label": "Engineering brick Class A",
+      "category": "masonry",
+      "subcategory": "brick",
+      "condition": "Class A (BS 3921)",
+      "standards": [
+        "BS 3921",
+        "EN 771-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.3,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "editorial estimate: dense vitrified engineering brick, 2200-2400 kg/m3"
+        },
+        "E_gpa": {
+          "range": [
+            20.0,
+            35.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate: dense vitrified fired-clay unit; EN 1996-1-1 §3.7.2 takes masonry E = 1000*f_k"
+        },
+        "cte_um_m_k": {
+          "range": [
+            4.0,
+            8.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1996-2 Annex D, coefficient of thermal expansion of masonry, clay masonry"
+        },
+        "k_w_m_k": {
+          "range": [
+            1.0,
+            1.5
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, dense fired-clay masonry units at 2200-2400 kg/m3"
+        },
+        "cp_j_kg_k": {
+          "range": [
+            800.0,
+            1000.0
+          ],
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial estimate: fired-clay masonry, 800-1000 J/(kg*K)"
+        },
+        "compressive_mpa": {
+          "value": 125.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "BS 3921 Table 2, engineering brick Class A: minimum compressive strength 125 N/mm2"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.35,
+          0.8
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "BS 3921 Class A also caps water absorption at 4.5% by mass - the reason engineering brick is used for damp-proof courses, manholes and retaining structures. Density and modulus are editorial; only the strength floor is the standard's."
+    },
+    "engineering_brick_class_b": {
+      "label": "Engineering brick Class B",
+      "category": "masonry",
+      "subcategory": "brick",
+      "condition": "Class B (BS 3921)",
+      "standards": [
+        "BS 3921",
+        "EN 771-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.1,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "editorial estimate: Class B engineering brick, 2000-2200 kg/m3"
+        },
+        "E_gpa": {
+          "range": [
+            15.0,
+            30.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate: dense fired-clay unit; EN 1996-1-1 §3.7.2 takes masonry E = 1000*f_k"
+        },
+        "cte_um_m_k": {
+          "range": [
+            4.0,
+            8.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1996-2 Annex D, coefficient of thermal expansion of masonry, clay masonry"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.8,
+            1.3
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, fired-clay masonry units at 2000-2200 kg/m3"
+        },
+        "cp_j_kg_k": {
+          "range": [
+            800.0,
+            1000.0
+          ],
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial estimate: fired-clay masonry, 800-1000 J/(kg*K)"
+        },
+        "compressive_mpa": {
+          "value": 75.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "BS 3921 Table 2, engineering brick Class B: minimum compressive strength 75 N/mm2"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.3,
+          0.7
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "BS 3921 Class B caps water absorption at 7% by mass. The common choice where Class A's 125 N/mm2 is not needed."
+    },
+    "cmu_normal_weight": {
+      "label": "Concrete masonry unit, normal weight (CMU)",
+      "category": "masonry",
+      "subcategory": "brick",
+      "condition": "normal weight, ASTM C90",
+      "standards": [
+        "ASTM C90",
+        "ASTM C140",
+        "TMS 402"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.15,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM C90 density classification: normal weight is oven-dry concrete density >= 2000 kg/m3 (125 lb/ft3); 2150 taken as typical"
+        },
+        "E_gpa": {
+          "value": 12.4,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "TMS 402 §4.2.2: E_m = 900*f'_m for concrete masonry, with f'_m = 13.8 MPa"
+        },
+        "cte_um_m_k": {
+          "range": [
+            6.0,
+            12.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1996-2 Annex D, coefficient of thermal expansion of masonry, aggregate concrete and manufactured stone masonry"
+        },
+        "k_w_m_k": {
+          "range": [
+            1.0,
+            1.4
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate from EN ISO 10456 Table 3 concrete conductivities at 2000-2200 kg/m3"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of concrete"
+        },
+        "compressive_mpa": {
+          "value": 13.8,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C90 §5.1: minimum net-area compressive strength 13.8 MPa (2000 psi)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.12,
+          0.3
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Unit strength is ASTM C90's net-area floor; real units are often specified higher so the assembly reaches f'_m. E is the TMS 402 assembly modulus for that f'_m, not a unit measurement."
+    },
+    "cmu_lightweight": {
+      "label": "Concrete masonry unit, lightweight (CMU)",
+      "category": "masonry",
+      "subcategory": "brick",
+      "condition": "lightweight, ASTM C90",
+      "standards": [
+        "ASTM C90",
+        "ASTM C140",
+        "TMS 402"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.55,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM C90 density classification: lightweight is oven-dry concrete density < 1680 kg/m3 (105 lb/ft3); 1550 taken as typical"
+        },
+        "E_gpa": {
+          "range": [
+            8.0,
+            12.4
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "TMS 402 §4.2.2: E_m = 900*f'_m for concrete masonry, reduced for lightweight aggregate"
+        },
+        "cte_um_m_k": {
+          "range": [
+            6.0,
+            12.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1996-2 Annex D, coefficient of thermal expansion of masonry, aggregate concrete and manufactured stone masonry"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.4,
+            0.8
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate from EN ISO 10456 Table 3 lightweight concrete conductivities at 1400-1700 kg/m3"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of concrete"
+        },
+        "compressive_mpa": {
+          "value": 13.8,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C90 §5.1: minimum net-area compressive strength 13.8 MPa (2000 psi), the same floor for every density class"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.15,
+          0.35
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Same C90 strength floor as the normal-weight unit; the trade is roughly 30% less mass and about half the thermal conductivity."
+    },
+    "aac_400": {
+      "label": "Autoclaved aerated concrete block, 400 kg/m3",
+      "category": "masonry",
+      "subcategory": "brick",
+      "condition": "gross dry density class 400 kg/m3",
+      "standards": [
+        "EN 771-4",
+        "EN 12602",
+        "EN 1996-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 771-4 declared gross dry density class 400 kg/m3 (EN 772-13)"
+        },
+        "E_gpa": {
+          "range": [
+            1.0,
+            1.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 12602 Annex / editorial estimate: AAC modulus of elasticity 1.0-2.5 GPa over the 400-600 kg/m3 density range"
+        },
+        "cte_um_m_k": {
+          "range": [
+            7.0,
+            9.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1996-2 Annex D, coefficient of thermal expansion of masonry, autoclaved aerated concrete masonry"
+        },
+        "k_w_m_k": {
+          "value": 0.1,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3 / EN 12602, design thermal conductivity of AAC at 400 kg/m3 dry density"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of autoclaved aerated concrete"
+        },
+        "compressive_mpa": {
+          "value": 2.5,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 771-4 declared normalised compressive strength f_b for AAC of gross dry density 400 kg/m3"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.3,
+          0.7
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "AAC is the load-bearing insulator of the masonry family: at 400 kg/m3 its conductivity is 0.1 W/(m*K), roughly a tenth of dense concrete, at a tenth of the strength. Density and modulus fall below the library's masonry sanity band, which is tuned to concrete - the values are correct."
+    },
+    "aac_500": {
+      "label": "Autoclaved aerated concrete block, 500 kg/m3",
+      "category": "masonry",
+      "subcategory": "brick",
+      "condition": "gross dry density class 500 kg/m3",
+      "standards": [
+        "EN 771-4",
+        "EN 12602",
+        "EN 1996-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.5,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 771-4 declared gross dry density class 500 kg/m3 (EN 772-13)"
+        },
+        "E_gpa": {
+          "range": [
+            1.5,
+            2.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 12602 Annex / editorial estimate: AAC modulus of elasticity 1.0-2.5 GPa over the 400-600 kg/m3 density range"
+        },
+        "cte_um_m_k": {
+          "range": [
+            7.0,
+            9.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1996-2 Annex D, coefficient of thermal expansion of masonry, autoclaved aerated concrete masonry"
+        },
+        "k_w_m_k": {
+          "value": 0.13,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3 / EN 12602, design thermal conductivity of AAC at 500 kg/m3 dry density"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of autoclaved aerated concrete"
+        },
+        "compressive_mpa": {
+          "value": 3.5,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 771-4 declared normalised compressive strength f_b for AAC of gross dry density 500 kg/m3"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.3,
+          0.7
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "AAC is the load-bearing insulator of the masonry family: at 500 kg/m3 its conductivity is 0.13 W/(m*K), roughly a tenth of dense concrete, at a tenth of the strength. Density and modulus fall below the library's masonry sanity band, which is tuned to concrete - the values are correct."
+    },
+    "aac_600": {
+      "label": "Autoclaved aerated concrete block, 600 kg/m3",
+      "category": "masonry",
+      "subcategory": "brick",
+      "condition": "gross dry density class 600 kg/m3",
+      "standards": [
+        "EN 771-4",
+        "EN 12602",
+        "EN 1996-1-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.6,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 771-4 declared gross dry density class 600 kg/m3 (EN 772-13)"
+        },
+        "E_gpa": {
+          "range": [
+            2.0,
+            2.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 12602 Annex / editorial estimate: AAC modulus of elasticity 1.0-2.5 GPa over the 400-600 kg/m3 density range"
+        },
+        "cte_um_m_k": {
+          "range": [
+            7.0,
+            9.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1996-2 Annex D, coefficient of thermal expansion of masonry, autoclaved aerated concrete masonry"
+        },
+        "k_w_m_k": {
+          "value": 0.16,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3 / EN 12602, design thermal conductivity of AAC at 600 kg/m3 dry density"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of autoclaved aerated concrete"
+        },
+        "compressive_mpa": {
+          "value": 5.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "EN 771-4 declared normalised compressive strength f_b for AAC of gross dry density 600 kg/m3"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.3,
+          0.7
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "AAC is the load-bearing insulator of the masonry family: at 600 kg/m3 its conductivity is 0.16 W/(m*K), roughly a tenth of dense concrete, at a tenth of the strength. Density and modulus fall below the library's masonry sanity band, which is tuned to concrete - the values are correct."
+    },
+    "calcium_silicate_brick": {
+      "label": "Calcium silicate brick",
+      "category": "masonry",
+      "subcategory": "brick",
+      "condition": "solid unit, EN 771-2",
+      "standards": [
+        "EN 771-2",
+        "ASTM C73"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.9,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 771-2 / EN 772-13 gross dry density of calcium silicate units (1800-2100 kg/m3); 1900 taken as typical"
+        },
+        "E_gpa": {
+          "range": [
+            10.0,
+            20.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate: calcium silicate unit modulus; EN 1996-1-1 §3.7.2 takes masonry E = 1000*f_k"
+        },
+        "cte_um_m_k": {
+          "range": [
+            7.0,
+            11.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 1996-2 Annex D, coefficient of thermal expansion of masonry, calcium silicate masonry"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.7,
+            1.1
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, calcium silicate masonry units at 1800-2100 kg/m3"
+        },
+        "cp_j_kg_k": {
+          "value": 1000.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN ISO 10456 Table 3, specific heat capacity of calcium silicate masonry"
+        },
+        "compressive_mpa": {
+          "range": [
+            12.0,
+            25.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "EN 771-2 declared normalised compressive strength f_b; ASTM C73 grade SW requires >= 4.8 MPa (700 psi) average"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.2,
+          0.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Lime-bound sand unit (not fired): dimensionally precise, higher thermal expansion and more moisture movement than fired clay - EN 1996-2 gives it 7-11 um/(m*K) against clay's 4-8."
+    },
+    "granite": {
+      "label": "Granite (dimension stone)",
+      "category": "masonry",
+      "subcategory": "stone",
+      "condition": "dimension stone, ASTM C615",
+      "standards": [
+        "ASTM C615",
+        "ASTM C170",
+        "ASTM C99"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.65,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "USGS public rock-property data, average granite bulk density 2650 kg/m3; ASTM C615 requires >= 2560 kg/m3"
+        },
+        "E_gpa": {
+          "range": [
+            40.0,
+            70.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate from public rock-mechanics compilations (USGS/FHWA) for granite"
+        },
+        "cte_um_m_k": {
+          "range": [
+            5.0,
+            9.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: igneous rock thermal expansion, 5-9 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            2.5,
+            3.5
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate from USGS/NIST rock thermal conductivity compilations for granite"
+        },
+        "cp_j_kg_k": {
+          "value": 790.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial estimate: granite specific heat ~790 J/(kg*K) (public thermal-property data)"
+        },
+        "compressive_mpa": {
+          "value": 131.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C615 Table 1, minimum compressive strength 131 MPa (19 000 psi), ASTM C170"
+        },
+        "bending_mpa": {
+          "value": 10.34,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C615 Table 1, minimum modulus of rupture 10.34 MPa (1500 psi), ASTM C99"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.8,
+          3.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The strong, low-absorption end of the stone family (C615 also caps absorption at 0.4%). ASTM dimension-stone limits are minimum physical requirements for acceptance, not typical values; the elastic and thermal ranges are handbook/public-data bands for the rock type."
+    },
+    "limestone": {
+      "label": "Limestone, medium density (dimension stone)",
+      "category": "masonry",
+      "subcategory": "stone",
+      "condition": "ASTM C568 Class II (medium density)",
+      "standards": [
+        "ASTM C568",
+        "ASTM C170",
+        "ASTM C99"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.35,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM C568 Class II (medium density): 2160-2560 kg/m3; 2350 taken as typical"
+        },
+        "E_gpa": {
+          "range": [
+            20.0,
+            50.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate from public rock-mechanics compilations (USGS/FHWA) for limestone"
+        },
+        "cte_um_m_k": {
+          "range": [
+            3.0,
+            8.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: carbonate rock thermal expansion, 3-8 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            1.1,
+            2.2
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate from USGS/NIST rock thermal conductivity compilations for limestone"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial estimate: limestone specific heat ~900 J/(kg*K) (public thermal-property data)"
+        },
+        "compressive_mpa": {
+          "value": 28.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C568 Table 1 Class II, minimum compressive strength 28 MPa (4000 psi)"
+        },
+        "bending_mpa": {
+          "value": 3.4,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C568 Table 1 Class II, minimum modulus of rupture 3.4 MPa (500 psi)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.5,
+          2.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "ASTM C568 splits limestone into three density classes; this is the middle one, the usual building limestone. ASTM dimension-stone limits are minimum physical requirements for acceptance, not typical values; the elastic and thermal ranges are handbook/public-data bands for the rock type."
+    },
+    "limestone_high_density": {
+      "label": "Limestone, high density (dimension stone)",
+      "category": "masonry",
+      "subcategory": "stone",
+      "condition": "ASTM C568 Class III (high density)",
+      "standards": [
+        "ASTM C568",
+        "ASTM C170",
+        "ASTM C99"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.6,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM C568 Class III (high density): >= 2560 kg/m3; 2600 taken as typical"
+        },
+        "E_gpa": {
+          "range": [
+            40.0,
+            60.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate from public rock-mechanics compilations (USGS/FHWA) for dense limestone"
+        },
+        "cte_um_m_k": {
+          "range": [
+            3.0,
+            8.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: carbonate rock thermal expansion, 3-8 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            1.5,
+            2.5
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate from USGS/NIST rock thermal conductivity compilations for dense limestone"
+        },
+        "cp_j_kg_k": {
+          "value": 900.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial estimate: limestone specific heat ~900 J/(kg*K) (public thermal-property data)"
+        },
+        "compressive_mpa": {
+          "value": 55.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C568 Table 1 Class III, minimum compressive strength 55 MPa (8000 psi)"
+        },
+        "bending_mpa": {
+          "value": 6.9,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C568 Table 1 Class III, minimum modulus of rupture 6.9 MPa (1000 psi)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.6,
+          2.2
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The dense end of ASTM C568 - twice the strength floor of Class II at 10% more mass. ASTM dimension-stone limits are minimum physical requirements for acceptance, not typical values; the elastic and thermal ranges are handbook/public-data bands for the rock type."
+    },
+    "sandstone": {
+      "label": "Sandstone (dimension stone)",
+      "category": "masonry",
+      "subcategory": "stone",
+      "condition": "ASTM C616, sandstone class",
+      "standards": [
+        "ASTM C616",
+        "ASTM C170",
+        "ASTM C99"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.2,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM C616 Table 1, sandstone: minimum density 2000 kg/m3; 2200 taken as typical"
+        },
+        "E_gpa": {
+          "range": [
+            10.0,
+            40.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate from public rock-mechanics compilations (USGS/FHWA) for sandstone"
+        },
+        "cte_um_m_k": {
+          "range": [
+            7.0,
+            12.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: quartz-rich clastic rock, 7-12 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            1.5,
+            4.0
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate from USGS/NIST rock thermal conductivity compilations for sandstone (strongly porosity- and saturation-dependent)"
+        },
+        "cp_j_kg_k": {
+          "value": 920.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial estimate: sandstone specific heat ~920 J/(kg*K) (public thermal-property data)"
+        },
+        "compressive_mpa": {
+          "value": 28.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C616 Table 1, sandstone: minimum compressive strength 28 MPa (4000 psi)"
+        },
+        "bending_mpa": {
+          "value": 2.4,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C616 Table 1, sandstone: minimum modulus of rupture 2.4 MPa (350 psi)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.4,
+          1.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "ASTM C616 covers three grades of increasing quartz cementation (sandstone, quartzitic sandstone, quartzite); this is the base grade and the weakest stone in the file. ASTM dimension-stone limits are minimum physical requirements for acceptance, not typical values; the elastic and thermal ranges are handbook/public-data bands for the rock type."
+    },
+    "quartzite": {
+      "label": "Quartzite (dimension stone)",
+      "category": "masonry",
+      "subcategory": "stone",
+      "condition": "ASTM C616, quartzite class",
+      "standards": [
+        "ASTM C616",
+        "ASTM C170",
+        "ASTM C99"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.65,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM C616 Table 1, quartzite: minimum density 2560 kg/m3; 2650 taken as typical"
+        },
+        "E_gpa": {
+          "range": [
+            50.0,
+            90.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate from public rock-mechanics compilations (USGS/FHWA) for quartzite"
+        },
+        "cte_um_m_k": {
+          "range": [
+            9.0,
+            13.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: quartz-dominated rock, 9-13 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            4.0,
+            6.5
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate from USGS/NIST rock thermal conductivity compilations for quartzite (quartz is the most conductive rock-forming mineral)"
+        },
+        "cp_j_kg_k": {
+          "value": 780.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial estimate: quartzite specific heat ~780 J/(kg*K) (public thermal-property data)"
+        },
+        "compressive_mpa": {
+          "value": 138.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C616 Table 1, quartzite: minimum compressive strength 138 MPa (20 000 psi)"
+        },
+        "bending_mpa": {
+          "value": 13.9,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C616 Table 1, quartzite: minimum modulus of rupture 13.9 MPa (2000 psi)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.8,
+          3.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The strongest and most abrasion-resistant stone here; its modulus band sits above the library's masonry sanity rail, which is tuned to concrete. ASTM dimension-stone limits are minimum physical requirements for acceptance, not typical values; the elastic and thermal ranges are handbook/public-data bands for the rock type."
+    },
+    "marble": {
+      "label": "Marble (dimension stone)",
+      "category": "masonry",
+      "subcategory": "stone",
+      "condition": "ASTM C503, calcite marble",
+      "standards": [
+        "ASTM C503",
+        "ASTM C170",
+        "ASTM C99"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.65,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASTM C503 Table 1 requires >= 2595 kg/m3 for calcite marble; 2650 taken as typical"
+        },
+        "E_gpa": {
+          "range": [
+            40.0,
+            70.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate from public rock-mechanics compilations (USGS/FHWA) for marble"
+        },
+        "cte_um_m_k": {
+          "range": [
+            4.0,
+            12.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: calcite is strongly anisotropic, so marble expansion is quoted as a wide band"
+        },
+        "k_w_m_k": {
+          "range": [
+            2.0,
+            3.5
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate from USGS/NIST rock thermal conductivity compilations for marble"
+        },
+        "cp_j_kg_k": {
+          "value": 880.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial estimate: marble specific heat ~880 J/(kg*K) (public thermal-property data)"
+        },
+        "compressive_mpa": {
+          "value": 52.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C503 Table 1, minimum compressive strength 52 MPa (7500 psi)"
+        },
+        "bending_mpa": {
+          "value": 7.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "ASTM C503 Table 1, minimum modulus of rupture 7.0 MPa (1000 psi)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.0,
+          5.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "ASTM C503 also caps absorption at 0.20%. Marble bows and etches under acid exposure, which is why its C503 limits are about acceptance rather than structure. ASTM dimension-stone limits are minimum physical requirements for acceptance, not typical values; the elastic and thermal ranges are handbook/public-data bands for the rock type."
+    },
+    "slate": {
+      "label": "Slate (dimension stone)",
+      "category": "masonry",
+      "subcategory": "stone",
+      "condition": "dimension slate, ASTM C629",
+      "standards": [
+        "ASTM C629",
+        "ASTM C120",
+        "ASTM C121"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.75,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "editorial estimate from public rock-property data: slate bulk density 2700-2800 kg/m3 (ASTM C629 governs absorption and flexure, not density)"
+        },
+        "E_gpa": {
+          "range": [
+            20.0,
+            50.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate from public rock-mechanics compilations (USGS/FHWA) for slate, measured across the cleavage"
+        },
+        "cte_um_m_k": {
+          "range": [
+            8.0,
+            12.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: metamorphic pelitic rock, 8-12 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            1.5,
+            2.5
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate from USGS/NIST rock thermal conductivity compilations for slate"
+        },
+        "cp_j_kg_k": {
+          "value": 760.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial estimate: slate specific heat ~760 J/(kg*K) (public thermal-property data)"
+        },
+        "bending_mpa": {
+          "range": [
+            45.0,
+            90.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "editorial estimate from published dimension-slate flexure data (ASTM C120 across the grain); ASTM C629 sets the acceptance requirements"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.8,
+          2.5
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "Slate's usable property is flexural strength across the cleavage (roofing and paving), so bending is quoted and compressive is omitted rather than guessed. Strongly anisotropic: values apply across the cleavage plane."
+    },
+    "basalt": {
+      "label": "Basalt (dimension/aggregate stone)",
+      "category": "masonry",
+      "subcategory": "stone",
+      "condition": "dense igneous, generic",
+      "standards": [
+        "ASTM C615",
+        "ASTM C170"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.9,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "USGS public rock-property data: basalt bulk density 2800-3000 kg/m3; 2900 taken as typical"
+        },
+        "E_gpa": {
+          "range": [
+            50.0,
+            90.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "editorial estimate from public rock-mechanics compilations (USGS/FHWA) for basalt"
+        },
+        "cte_um_m_k": {
+          "range": [
+            5.0,
+            8.0
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate: mafic igneous rock, 5-8 um/(m*K)"
+        },
+        "k_w_m_k": {
+          "range": [
+            1.5,
+            2.5
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "editorial estimate from USGS/NIST rock thermal conductivity compilations for basalt"
+        },
+        "cp_j_kg_k": {
+          "value": 840.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "editorial estimate: basalt specific heat ~840 J/(kg*K) (public thermal-property data)"
+        },
+        "compressive_mpa": {
+          "range": [
+            150.0,
+            300.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "editorial estimate from public rock-mechanics compilations (USGS/FHWA) for fresh basalt"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          0.3,
+          1.2
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "as_of": "2025",
+        "source": "editorial estimate, bulk order-of-magnitude"
+      },
+      "notes": "The densest stone in the file, and the usual high-strength aggregate. No US dimension-stone standard covers basalt specifically (ASTM C615 covers granite-class stone), so the values are public-data ranges, not acceptance minima. Its modulus band sits above the library's concrete-tuned masonry sanity rail."
     }
   }
 }

@@ -116,6 +116,3654 @@
         }
       },
       "notes": "In-plane values, quasi-isotropic epoxy laminate."
+    },
+    "cfrp_ud": {
+      "label": "CFRP UD lamina, HS carbon/epoxy (0 deg)",
+      "category": "composite",
+      "subcategory": "laminate",
+      "condition": "unidirectional prepreg, ~60% fibre volume, room temperature dry",
+      "standards": [
+        "ASTM D3039 (tensile)",
+        "ASTM D6641 (compression)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.57,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional high-strength carbon/epoxy lamina, ~60% Vf"
+        },
+        "E_gpa": {
+          "value": 135.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional high-strength carbon/epoxy lamina, ~60% Vf"
+        },
+        "ultimate_mpa": {
+          "value": 2000.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional high-strength carbon/epoxy lamina, ~60% Vf"
+        },
+        "elongation_pct": {
+          "value": 1.5,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional high-strength carbon/epoxy lamina, ~60% Vf"
+        },
+        "k_w_m_k": {
+          "range": [
+            4.0,
+            7.0
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional high-strength carbon/epoxy lamina, ~60% Vf"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.3,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional high-strength carbon/epoxy lamina, ~60% Vf"
+        },
+        "shear_modulus_gpa": {
+          "value": 5.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional high-strength carbon/epoxy lamina, ~60% Vf"
+        },
+        "compressive_mpa": {
+          "value": 1200.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional high-strength carbon/epoxy lamina, ~60% Vf"
+        },
+        "E_perp_gpa": {
+          "value": 10.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional high-strength carbon/epoxy lamina, ~60% Vf"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          40.0,
+          90.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "process": {
+        "machinability": "poor",
+        "source": "editorial classification: a cured laminate is trimmed and drilled with diamond/PCD tooling, not conventionally machined"
+      },
+      "links": [
+        {
+          "label": "CMH-17 (composite design allowables, linked not mirrored)",
+          "url": "https://www.cmh17.org/"
+        }
+      ],
+      "notes": "Lamina (ply) values in the fibre direction: E_gpa is E1, E_perp_gpa is E2, shear_modulus_gpa is G12, poisson_ratio is nu12. k is in-plane longitudinal; through-thickness is ~0.6 W/m-K. The longitudinal CTE is slightly NEGATIVE (about -0.5 um/m-K) and is therefore omitted - this schema's properties are non-negative; the transverse CTE is ~30 um/m-K. A real part is a laminate, not a lamina: run classical laminate theory over your stack."
+    },
+    "cfrp_ud_im": {
+      "label": "CFRP UD lamina, IM carbon/epoxy 8552/IM7-class (0 deg)",
+      "category": "composite",
+      "subcategory": "laminate",
+      "condition": "unidirectional prepreg, ~58% fibre volume, room temperature dry",
+      "standards": [
+        "ASTM D3039 (tensile)",
+        "ASTM D6641 (compression)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.58,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Hexcel HexPly 8552/IM7 unidirectional prepreg datasheet, 57.7% fibre volume, room-temperature dry"
+        },
+        "E_gpa": {
+          "value": 164.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Hexcel HexPly 8552/IM7 unidirectional prepreg datasheet, 57.7% fibre volume, room-temperature dry"
+        },
+        "ultimate_mpa": {
+          "value": 2720.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Hexcel HexPly 8552/IM7 unidirectional prepreg datasheet, 57.7% fibre volume, room-temperature dry"
+        },
+        "elongation_pct": {
+          "value": 1.7,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Hexcel HexPly 8552/IM7 unidirectional prepreg datasheet, 57.7% fibre volume, room-temperature dry"
+        },
+        "k_w_m_k": {
+          "range": [
+            4.0,
+            7.0
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), carbon/epoxy lamina thermal conductivity"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.32,
+          "unit": "-",
+          "basis": "typical",
+          "source": "Hexcel HexPly 8552/IM7 unidirectional prepreg datasheet, 57.7% fibre volume, room-temperature dry"
+        },
+        "compressive_mpa": {
+          "value": 1690.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Hexcel HexPly 8552/IM7 unidirectional prepreg datasheet, 57.7% fibre volume, room-temperature dry"
+        },
+        "E_perp_gpa": {
+          "value": 12.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Hexcel HexPly 8552/IM7 unidirectional prepreg datasheet, 57.7% fibre volume, room-temperature dry"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          60.0,
+          150.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "links": [
+        {
+          "label": "CMH-17 (composite design allowables, linked not mirrored)",
+          "url": "https://www.cmh17.org/"
+        }
+      ],
+      "notes": "The aerospace workhorse: a 180 C-cure toughened epoxy on intermediate-modulus fibre. Datasheet lamina typicals, NOT design allowables - use CMH-17 / a qualification database (NCAMP) for those. E_perp_gpa is E2, poisson_ratio is nu12."
+    },
+    "cfrp_hm_ud": {
+      "label": "CFRP UD lamina, high-modulus carbon/epoxy (0 deg)",
+      "category": "composite",
+      "subcategory": "laminate",
+      "condition": "unidirectional prepreg, M55J-class HM fibre, ~60% fibre volume",
+      "standards": [
+        "ASTM D3039 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.65,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Toray M55J fibre datasheet with ASM Handbook Vol. 21 (Composites) rule-of-mixtures lamina typicals at ~60% Vf"
+        },
+        "E_gpa": {
+          "value": 300.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Toray M55J fibre datasheet with ASM Handbook Vol. 21 (Composites) rule-of-mixtures lamina typicals at ~60% Vf"
+        },
+        "ultimate_mpa": {
+          "value": 1600.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Toray M55J fibre datasheet with ASM Handbook Vol. 21 (Composites) rule-of-mixtures lamina typicals at ~60% Vf"
+        },
+        "elongation_pct": {
+          "value": 0.6,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Toray M55J fibre datasheet with ASM Handbook Vol. 21 (Composites) rule-of-mixtures lamina typicals at ~60% Vf"
+        },
+        "k_w_m_k": {
+          "range": [
+            40.0,
+            80.0
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Toray M55J fibre datasheet with ASM Handbook Vol. 21 (Composites) rule-of-mixtures lamina typicals at ~60% Vf"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.3,
+          "unit": "-",
+          "basis": "typical",
+          "source": "Toray M55J fibre datasheet with ASM Handbook Vol. 21 (Composites) rule-of-mixtures lamina typicals at ~60% Vf"
+        },
+        "compressive_mpa": {
+          "value": 700.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Toray M55J fibre datasheet with ASM Handbook Vol. 21 (Composites) rule-of-mixtures lamina typicals at ~60% Vf"
+        },
+        "E_perp_gpa": {
+          "value": 6.5,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Toray M55J fibre datasheet with ASM Handbook Vol. 21 (Composites) rule-of-mixtures lamina typicals at ~60% Vf"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          200.0,
+          500.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "High-modulus fibre buys stiffness and axial thermal conductivity and pays for it in strain to failure and compressive strength - the trade behind satellite structures and optical benches. Longitudinal CTE is negative (about -1 um/m-K) and is omitted (non-negative schema)."
+    },
+    "cfrp_woven": {
+      "label": "CFRP woven fabric laminate (2x2 twill, 0/90)",
+      "category": "composite",
+      "subcategory": "laminate",
+      "condition": "balanced woven carbon/epoxy prepreg, ~55% fibre volume",
+      "standards": [
+        "ASTM D3039 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.55,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven carbon-fabric/epoxy laminate typicals, ~55% Vf"
+        },
+        "E_gpa": {
+          "value": 60.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven carbon-fabric/epoxy laminate typicals, ~55% Vf"
+        },
+        "ultimate_mpa": {
+          "value": 600.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven carbon-fabric/epoxy laminate typicals, ~55% Vf"
+        },
+        "elongation_pct": {
+          "value": 1.2,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven carbon-fabric/epoxy laminate typicals, ~55% Vf"
+        },
+        "k_w_m_k": {
+          "range": [
+            3.0,
+            6.0
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven carbon-fabric/epoxy laminate typicals, ~55% Vf"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "range": [
+            0.04,
+            0.1
+          ],
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven carbon-fabric/epoxy laminate typicals, ~55% Vf"
+        },
+        "compressive_mpa": {
+          "value": 570.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven carbon-fabric/epoxy laminate typicals, ~55% Vf"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          30.0,
+          70.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "In-plane values, near-equal in warp and weft, so no separate E_perp_gpa is quoted (through-thickness modulus is ~8 GPa). A balanced weave has a strikingly low in-plane Poisson ratio - do not let a solver default to 0.3 here. Drapes over curvature far better than UD tape at ~15% lower in-plane stiffness."
+    },
+    "gfrp_ud": {
+      "label": "GFRP UD lamina, E-glass/epoxy (0 deg)",
+      "category": "composite",
+      "subcategory": "laminate",
+      "condition": "unidirectional prepreg, ~55% fibre volume",
+      "standards": [
+        "ASTM D3039 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.0,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional E-glass/epoxy lamina, ~55% Vf"
+        },
+        "E_gpa": {
+          "value": 45.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional E-glass/epoxy lamina, ~55% Vf"
+        },
+        "ultimate_mpa": {
+          "value": 1000.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional E-glass/epoxy lamina, ~55% Vf"
+        },
+        "elongation_pct": {
+          "value": 2.5,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional E-glass/epoxy lamina, ~55% Vf"
+        },
+        "cte_um_m_k": {
+          "value": 6.5,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional E-glass/epoxy lamina, ~55% Vf"
+        },
+        "k_w_m_k": {
+          "range": [
+            0.4,
+            0.9
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional E-glass/epoxy lamina, ~55% Vf"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.28,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional E-glass/epoxy lamina, ~55% Vf"
+        },
+        "shear_modulus_gpa": {
+          "value": 5.5,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional E-glass/epoxy lamina, ~55% Vf"
+        },
+        "compressive_mpa": {
+          "value": 600.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional E-glass/epoxy lamina, ~55% Vf"
+        },
+        "E_perp_gpa": {
+          "value": 12.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), unidirectional E-glass/epoxy lamina, ~55% Vf"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          5.0,
+          12.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "E_gpa is E1, E_perp_gpa is E2, poisson_ratio is nu12, shear_modulus_gpa is G12; cte is the longitudinal value (transverse is ~20 um/m-K). A quarter of the stiffness of carbon at a tenth of the price, and electrically transparent - the radome/leaf-spring choice."
+    },
+    "gfrp_woven": {
+      "label": "GFRP woven fabric laminate (E-glass, 0/90)",
+      "category": "composite",
+      "subcategory": "laminate",
+      "condition": "balanced woven E-glass/epoxy, ~50% fibre volume",
+      "standards": [
+        "ASTM D3039 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.9,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven E-glass-fabric/epoxy laminate typicals, ~50% Vf"
+        },
+        "E_gpa": {
+          "value": 23.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven E-glass-fabric/epoxy laminate typicals, ~50% Vf"
+        },
+        "ultimate_mpa": {
+          "value": 380.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven E-glass-fabric/epoxy laminate typicals, ~50% Vf"
+        },
+        "elongation_pct": {
+          "value": 2.2,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven E-glass-fabric/epoxy laminate typicals, ~50% Vf"
+        },
+        "cte_um_m_k": {
+          "value": 11.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven E-glass-fabric/epoxy laminate typicals, ~50% Vf"
+        },
+        "k_w_m_k": {
+          "value": 0.35,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven E-glass-fabric/epoxy laminate typicals, ~50% Vf"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "compressive_mpa": {
+          "value": 320.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), woven E-glass-fabric/epoxy laminate typicals, ~50% Vf"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          10.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "In-plane values, near-equal in warp and weft. The default wet-layup or vacuum-infusion laminate for boats, ducts and tooling."
+    },
+    "aramid_qi": {
+      "label": "Aramid (Kevlar 49)/epoxy quasi-isotropic laminate",
+      "category": "composite",
+      "subcategory": "laminate",
+      "condition": "quasi-isotropic epoxy prepreg, ~60% fibre volume",
+      "standards": [
+        "ASTM D3039 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.38,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), Kevlar 49/epoxy laminate typicals; DuPont Kevlar technical guide"
+        },
+        "E_gpa": {
+          "value": 29.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), Kevlar 49/epoxy laminate typicals; DuPont Kevlar technical guide"
+        },
+        "ultimate_mpa": {
+          "value": 450.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), Kevlar 49/epoxy laminate typicals; DuPont Kevlar technical guide"
+        },
+        "elongation_pct": {
+          "value": 1.8,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), Kevlar 49/epoxy laminate typicals; DuPont Kevlar technical guide"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          25.0,
+          60.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Impact and ballistic work, not compression: aramid laminates fail in compression at roughly a quarter of their tensile strength, so the compressive value is deliberately not quoted as a design number. They absorb moisture and are difficult to machine cleanly. The longitudinal CTE of the fibre is negative; the quasi-isotropic laminate CTE is near zero and is omitted rather than guessed."
+    },
+    "cf_peek_ud": {
+      "label": "CF/PEEK UD lamina (AS4/PEEK, 0 deg)",
+      "category": "composite",
+      "subcategory": "laminate",
+      "condition": "unidirectional thermoplastic tape, ~61% fibre volume, consolidated",
+      "standards": [
+        "ASTM D3039 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.6,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Solvay APC-2/AS4 (PEEK) prepreg datasheet, unidirectional 0 deg, 61% fibre volume; ASM Handbook Vol. 21 (Composites)"
+        },
+        "E_gpa": {
+          "value": 135.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Solvay APC-2/AS4 (PEEK) prepreg datasheet, unidirectional 0 deg, 61% fibre volume; ASM Handbook Vol. 21 (Composites)"
+        },
+        "ultimate_mpa": {
+          "value": 2070.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Solvay APC-2/AS4 (PEEK) prepreg datasheet, unidirectional 0 deg, 61% fibre volume; ASM Handbook Vol. 21 (Composites)"
+        },
+        "elongation_pct": {
+          "value": 1.4,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Solvay APC-2/AS4 (PEEK) prepreg datasheet, unidirectional 0 deg, 61% fibre volume; ASM Handbook Vol. 21 (Composites)"
+        },
+        "k_w_m_k": {
+          "range": [
+            4.0,
+            7.0
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), carbon-fibre lamina thermal conductivity"
+        },
+        "max_service_temp_c": {
+          "value": 250.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.3,
+          "unit": "-",
+          "basis": "typical",
+          "source": "Solvay APC-2/AS4 (PEEK) prepreg datasheet, unidirectional 0 deg, 61% fibre volume; ASM Handbook Vol. 21 (Composites)"
+        },
+        "compressive_mpa": {
+          "value": 1100.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Solvay APC-2/AS4 (PEEK) prepreg datasheet, unidirectional 0 deg, 61% fibre volume; ASM Handbook Vol. 21 (Composites)"
+        },
+        "E_perp_gpa": {
+          "value": 10.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Solvay APC-2/AS4 (PEEK) prepreg datasheet, unidirectional 0 deg, 61% fibre volume; ASM Handbook Vol. 21 (Composites)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          150.0,
+          400.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Thermoplastic matrix: no shelf life, no cure cycle, weldable and reformable, far tougher than epoxy - and consolidated hot (AFP or press) rather than autoclaved. Service temperature is matrix-limited by PEEK's 143 C Tg but continuous use to ~250 C is normal in compression-loaded parts."
+    },
+    "basalt_epoxy": {
+      "label": "Basalt fibre/epoxy woven laminate",
+      "category": "composite",
+      "subcategory": "laminate",
+      "condition": "balanced woven basalt fabric/epoxy, ~50% fibre volume",
+      "standards": [
+        "ASTM D3039 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.95,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "basalt roving manufacturer datasheets (Basaltex/Kamenny Vek) combined with ASM Handbook Vol. 21 (Composites) rule-of-mixtures laminate typicals"
+        },
+        "E_gpa": {
+          "range": [
+            18.0,
+            26.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "basalt roving manufacturer datasheets (Basaltex/Kamenny Vek) combined with ASM Handbook Vol. 21 (Composites) rule-of-mixtures laminate typicals"
+        },
+        "ultimate_mpa": {
+          "range": [
+            300.0,
+            450.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "basalt roving manufacturer datasheets (Basaltex/Kamenny Vek) combined with ASM Handbook Vol. 21 (Composites) rule-of-mixtures laminate typicals"
+        },
+        "elongation_pct": {
+          "value": 2.5,
+          "unit": "%",
+          "basis": "typical",
+          "source": "basalt roving manufacturer datasheets (Basaltex/Kamenny Vek) combined with ASM Handbook Vol. 21 (Composites) rule-of-mixtures laminate typicals"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          8.0,
+          18.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Melt-spun volcanic rock: slightly stiffer and more chemically durable than E-glass at a similar price, with a fibre that survives 600 C on its own - the epoxy matrix, not the fibre, sets the service limit here. Ranges, not points: laminate data for basalt is thinner than for glass."
+    },
+    "flax_epoxy": {
+      "label": "Flax/epoxy natural-fibre laminate",
+      "category": "composite",
+      "subcategory": "laminate",
+      "condition": "woven or UD flax prepreg, ~50% fibre volume",
+      "standards": [
+        "ASTM D3039 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.3,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Bcomp ampliTex flax prepreg datasheet with ASM Handbook Vol. 21 (Composites) natural-fibre composite typicals"
+        },
+        "E_gpa": {
+          "range": [
+            15.0,
+            25.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Bcomp ampliTex flax prepreg datasheet with ASM Handbook Vol. 21 (Composites) natural-fibre composite typicals"
+        },
+        "ultimate_mpa": {
+          "range": [
+            150.0,
+            260.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Bcomp ampliTex flax prepreg datasheet with ASM Handbook Vol. 21 (Composites) natural-fibre composite typicals"
+        },
+        "elongation_pct": {
+          "value": 1.8,
+          "unit": "%",
+          "basis": "typical",
+          "source": "Bcomp ampliTex flax prepreg datasheet with ASM Handbook Vol. 21 (Composites) natural-fibre composite typicals"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          6.0,
+          14.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Renewable fibre with very high specific damping - used for motorsport bodywork, skis and speaker cabinets. Properties scatter with the harvest and with moisture uptake, hence ranges."
+    },
+    "g10_fr4": {
+      "label": "Glass-epoxy industrial laminate (G-10 / FR-4)",
+      "category": "composite",
+      "subcategory": "laminate",
+      "condition": "cured sheet, woven E-glass in epoxy (FR-4 = flame retardant)",
+      "standards": [
+        "IEC 60893-3-2 (EP GC 201/202)",
+        "NEMA LI 1 (G-10, FR-4)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.85,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "industrial glass-epoxy laminate (G-10/FR-4) datasheets, lengthwise properties per IEC 60893-3-2 test methods"
+        },
+        "E_gpa": {
+          "value": 18.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "industrial glass-epoxy laminate (G-10/FR-4) datasheets, lengthwise properties per IEC 60893-3-2 test methods"
+        },
+        "ultimate_mpa": {
+          "value": 280.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "industrial glass-epoxy laminate (G-10/FR-4) datasheets, lengthwise properties per IEC 60893-3-2 test methods"
+        },
+        "cte_um_m_k": {
+          "value": 13.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "industrial glass-epoxy laminate (G-10/FR-4) datasheets, lengthwise properties per IEC 60893-3-2 test methods"
+        },
+        "k_w_m_k": {
+          "value": 0.3,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "industrial glass-epoxy laminate (G-10/FR-4) datasheets, lengthwise properties per IEC 60893-3-2 test methods"
+        },
+        "max_service_temp_c": {
+          "value": 130.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: FR-4 grades are rated to about their 130-140 C glass transition"
+        },
+        "compressive_mpa": {
+          "value": 420.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "industrial glass-epoxy laminate (G-10/FR-4) datasheets, lengthwise properties per IEC 60893-3-2 test methods"
+        },
+        "bending_mpa": {
+          "value": 415.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "industrial glass-epoxy laminate (G-10/FR-4) datasheets, lengthwise properties per IEC 60893-3-2 test methods"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          8.0,
+          20.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The electrical/structural sheet laminate every workshop keeps: printed-circuit substrate, insulating standoffs, jigs, battery packs, cryogenic supports. Values are LENGTHWISE and in-plane; crosswise is ~10-15% lower and through-thickness far weaker. FR-4 is G-10 plus a flame retardant; G-11 keeps more strength hot. It machines well but the glass destroys tooling."
+    },
+    "al_honeycomb_panel": {
+      "label": "Aluminium honeycomb sandwich panel (generic)",
+      "category": "composite",
+      "subcategory": "sandwich",
+      "condition": "0.5 mm 5052-H32 skins over 12.7 mm 5052 honeycomb core (50 kg/m3)",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.24,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "panel-level density computed from Hexcel HexWeb 5052 aluminium honeycomb (50 kg/m3, 4.8 mm cell) and 0.5 mm 5052-H32 skins (2.68 g/cm3)"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          40.0,
+          120.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Panel-level (smeared) density for mass estimation. A sandwich panel's bending stiffness is a SECTION property (skin modulus x separation), not a material E, so no E is quoted - size it with skin/core sandwich mechanics and the core's own shear modulus. Recompute the density for your own skin thickness and core: rho = (2 t_skin rho_skin + t_core rho_core) / (2 t_skin + t_core). Adhesive, not aluminium, sets the service temperature. Honeycomb cores are directional (L vs W ribbon direction) in shear."
+    },
+    "nomex_cfrp_panel": {
+      "label": "Nomex honeycomb / CFRP skin sandwich panel (generic)",
+      "category": "composite",
+      "subcategory": "sandwich",
+      "condition": "1 mm woven CFRP skins over 10 mm Nomex honeycomb core (48 kg/m3)",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.3,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "panel-level density computed from Hexcel HexWeb HRH-10 aramid-paper honeycomb (48 kg/m3) and 1 mm woven carbon/epoxy skins (1.55 g/cm3)"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          80.0,
+          250.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Panel-level (smeared) density for mass estimation. A sandwich panel's bending stiffness is a SECTION property (skin modulus x separation), not a material E, so no E is quoted - size it with skin/core sandwich mechanics and the core's own shear modulus. Recompute the density for your own skin thickness and core: rho = (2 t_skin rho_skin + t_core rho_core) / (2 t_skin + t_core). The aircraft-interior and satellite-panel standard: non-metallic, non-corroding, and it takes an insert."
+    },
+    "pvc_foam_gfrp_panel": {
+      "label": "PVC foam core / GFRP skin sandwich panel (generic)",
+      "category": "composite",
+      "subcategory": "sandwich",
+      "condition": "1.5 mm GFRP skins over 20 mm cross-linked PVC foam core (80 kg/m3)",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.31,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "panel-level density computed from cross-linked PVC structural foam core datasheets (Diab Divinycell H80, 80 kg/m3) and 1.5 mm E-glass/epoxy skins (1.85 g/cm3)"
+        },
+        "max_service_temp_c": {
+          "value": 70.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          10.0,
+          30.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Panel-level (smeared) density for mass estimation. A sandwich panel's bending stiffness is a SECTION property (skin modulus x separation), not a material E, so no E is quoted - size it with skin/core sandwich mechanics and the core's own shear modulus. Recompute the density for your own skin thickness and core: rho = (2 t_skin rho_skin + t_core rho_core) / (2 t_skin + t_core). The marine/wind-blade sandwich. The foam creeps and softens well below the laminate's limit, which is why the service temperature is the core's, not the skin's."
+    },
+    "balsa_gfrp_panel": {
+      "label": "End-grain balsa core / GFRP skin sandwich panel (generic)",
+      "category": "composite",
+      "subcategory": "sandwich",
+      "condition": "2 mm GFRP skins over 20 mm end-grain balsa core (150 kg/m3)",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.43,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "panel-level density computed from end-grain balsa core datasheets (Airex/Baltek SB.100, 150 kg/m3) and 2 mm E-glass/epoxy skins (1.85 g/cm3)"
+        },
+        "max_service_temp_c": {
+          "value": 80.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          8.0,
+          25.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Panel-level (smeared) density for mass estimation. A sandwich panel's bending stiffness is a SECTION property (skin modulus x separation), not a material E, so no E is quoted - size it with skin/core sandwich mechanics and the core's own shear modulus. Recompute the density for your own skin thickness and core: rho = (2 t_skin rho_skin + t_core rho_core) / (2 t_skin + t_core). Balsa is far stiffer and more compression-resistant than a foam of the same weight and is renewable, but it takes up water wherever the skin is breached."
+    },
+    "pp_gf30": {
+      "label": "PP-GF30 (30% glass-fibre polypropylene)",
+      "category": "composite",
+      "subcategory": "reinforced_polymer",
+      "condition": "injection moulded, coupled compound, dry as moulded",
+      "standards": [
+        "ISO 527-2 (tensile)",
+        "ISO 178 (flexural)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.13,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "coupled 30% glass-fibre polypropylene compound datasheets, ISO 527-2 typicals, dry as moulded"
+        },
+        "E_gpa": {
+          "value": 6.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "coupled 30% glass-fibre polypropylene compound datasheets, ISO 527-2 typicals, dry as moulded"
+        },
+        "ultimate_mpa": {
+          "value": 85.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "coupled 30% glass-fibre polypropylene compound datasheets, ISO 527-2 typicals, dry as moulded"
+        },
+        "elongation_pct": {
+          "value": 3.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "coupled 30% glass-fibre polypropylene compound datasheets, ISO 527-2 typicals, dry as moulded"
+        },
+        "cte_um_m_k": {
+          "value": 30.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "coupled 30% glass-fibre polypropylene compound datasheets, ISO 527-2 typicals, dry as moulded"
+        },
+        "k_w_m_k": {
+          "value": 0.3,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "coupled 30% glass-fibre polypropylene compound datasheets, ISO 527-2 typicals, dry as moulded"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.0,
+          4.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "process": {
+        "im": "excellent",
+        "machinability": "good",
+        "source": "editorial classification: standard injection moulding; glass fibre is abrasive to tooling and to cutters"
+      },
+      "notes": "Coupled (maleic-anhydride grafted) compounds are what these numbers describe; an uncoupled one is 30-40% weaker. Properties are measured along the flow direction - across it, stiffness and CTE move substantially."
+    },
+    "pp_talc20": {
+      "label": "PP-T20 (20% talc-filled polypropylene)",
+      "category": "composite",
+      "subcategory": "reinforced_polymer",
+      "condition": "injection moulded, dry as moulded",
+      "standards": [
+        "ISO 527-2 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.05,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "talc-filled polypropylene compound datasheets, ISO 527-2 typicals, dry as moulded"
+        },
+        "E_gpa": {
+          "value": 2.8,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "talc-filled polypropylene compound datasheets, ISO 527-2 typicals, dry as moulded"
+        },
+        "ultimate_mpa": {
+          "value": 30.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "talc-filled polypropylene compound datasheets, ISO 527-2 typicals, dry as moulded"
+        },
+        "elongation_pct": {
+          "value": 8.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "talc-filled polypropylene compound datasheets, ISO 527-2 typicals, dry as moulded"
+        },
+        "cte_um_m_k": {
+          "value": 60.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "talc-filled polypropylene compound datasheets, ISO 527-2 typicals, dry as moulded"
+        },
+        "k_w_m_k": {
+          "value": 0.3,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "talc-filled polypropylene compound datasheets, ISO 527-2 typicals, dry as moulded"
+        },
+        "max_service_temp_c": {
+          "value": 100.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.5,
+          3.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "process": {
+        "im": "excellent",
+        "source": "editorial classification: the automotive-interior moulding compound"
+      },
+      "notes": "A mineral filler, not a reinforcement: it buys stiffness, dimensional stability and cost, and gives back impact strength. The automotive bumper/interior workhorse."
+    },
+    "smc_gf30": {
+      "label": "SMC (glass/polyester sheet moulding compound)",
+      "category": "composite",
+      "subcategory": "reinforced_polymer",
+      "condition": "compression moulded, ~30 wt% chopped glass",
+      "standards": [
+        "ASTM D3039 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.85,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), sheet moulding compound (SMC-R30) typicals"
+        },
+        "E_gpa": {
+          "value": 11.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), sheet moulding compound (SMC-R30) typicals"
+        },
+        "ultimate_mpa": {
+          "value": 80.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), sheet moulding compound (SMC-R30) typicals"
+        },
+        "elongation_pct": {
+          "value": 1.5,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), sheet moulding compound (SMC-R30) typicals"
+        },
+        "cte_um_m_k": {
+          "value": 20.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), sheet moulding compound (SMC-R30) typicals"
+        },
+        "k_w_m_k": {
+          "value": 0.25,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), sheet moulding compound (SMC-R30) typicals"
+        },
+        "max_service_temp_c": {
+          "value": 150.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "bending_mpa": {
+          "value": 180.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), sheet moulding compound (SMC-R30) typicals"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          8.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Randomly oriented chopped glass in a filled polyester paste, compression moulded: isotropic in plane, cheap in volume, and the reason truck panels and electrical enclosures are not steel."
+    },
+    "gmt_pp_gf40": {
+      "label": "PP-GMT (glass-mat thermoplastic polypropylene)",
+      "category": "composite",
+      "subcategory": "reinforced_polymer",
+      "condition": "compression (flow) moulded, ~40 wt% continuous glass mat",
+      "standards": [
+        "ISO 527-2 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.19,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), glass-mat thermoplastic (GMT) typicals"
+        },
+        "E_gpa": {
+          "value": 5.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), glass-mat thermoplastic (GMT) typicals"
+        },
+        "ultimate_mpa": {
+          "value": 90.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), glass-mat thermoplastic (GMT) typicals"
+        },
+        "elongation_pct": {
+          "value": 2.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), glass-mat thermoplastic (GMT) typicals"
+        },
+        "cte_um_m_k": {
+          "value": 25.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), glass-mat thermoplastic (GMT) typicals"
+        },
+        "k_w_m_k": {
+          "value": 0.3,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), glass-mat thermoplastic (GMT) typicals"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          6.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "A random CONTINUOUS glass mat, not chopped fibre: in-plane isotropic, far tougher than an injection-moulded compound, and stamped from a pre-heated blank in under a minute. Underbody shields, seat pans, bumper beams, battery trays."
+    },
+    "bmc_gf20": {
+      "label": "BMC (glass/polyester bulk moulding compound)",
+      "category": "composite",
+      "subcategory": "reinforced_polymer",
+      "condition": "injection or compression moulded, ~20 wt% short glass",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.85,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), bulk moulding compound (BMC/DMC) typicals"
+        },
+        "E_gpa": {
+          "value": 9.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), bulk moulding compound (BMC/DMC) typicals"
+        },
+        "ultimate_mpa": {
+          "value": 45.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), bulk moulding compound (BMC/DMC) typicals"
+        },
+        "elongation_pct": {
+          "value": 1.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), bulk moulding compound (BMC/DMC) typicals"
+        },
+        "cte_um_m_k": {
+          "value": 25.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), bulk moulding compound (BMC/DMC) typicals"
+        },
+        "k_w_m_k": {
+          "value": 0.3,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), bulk moulding compound (BMC/DMC) typicals"
+        },
+        "max_service_temp_c": {
+          "value": 180.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "bending_mpa": {
+          "value": 80.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), bulk moulding compound (BMC/DMC) typicals"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          8.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "SMC's short-fibre sibling: a doughy thermoset compound that fills ribs and bosses an SMC charge cannot, at roughly half the strength. Chosen for arc and tracking resistance and dimensional stability at temperature - switchgear, motor housings, headlamp reflectors."
+    },
+    "pa12_cf_fdm": {
+      "label": "PA12-CF (carbon-fibre nylon 12, FDM filament)",
+      "category": "composite",
+      "subcategory": "reinforced_polymer",
+      "condition": "FDM printed, XY orientation, dry",
+      "standards": [
+        "ISO 527-2 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.06,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "carbon-fibre-filled PA12 FDM filament datasheets, ISO 527 values on XY-printed specimens"
+        },
+        "E_gpa": {
+          "range": [
+            4.0,
+            6.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "carbon-fibre-filled PA12 FDM filament datasheets, ISO 527 values on XY-printed specimens"
+        },
+        "ultimate_mpa": {
+          "range": [
+            60.0,
+            80.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "carbon-fibre-filled PA12 FDM filament datasheets, ISO 527 values on XY-printed specimens"
+        },
+        "elongation_pct": {
+          "value": 3.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "carbon-fibre-filled PA12 FDM filament datasheets, ISO 527 values on XY-printed specimens"
+        },
+        "max_service_temp_c": {
+          "value": 130.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          70.0,
+          150.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "process": {
+        "printable": {
+          "fdm": "good"
+        },
+        "machinability": "good",
+        "source": "editorial classification: needs a heated chamber and a hardened nozzle; dry the filament before printing"
+      },
+      "notes": "Printed properties are ORIENTATION dependent: these are XY (in-layer) values, and Z strength is typically a third to a half of them. Chopped fibre suppresses warp and roughly triples unfilled PA12's stiffness."
+    },
+    "petg_cf_fdm": {
+      "label": "PETG-CF (carbon-fibre PETG, FDM filament)",
+      "category": "composite",
+      "subcategory": "reinforced_polymer",
+      "condition": "FDM printed, XY orientation",
+      "standards": [
+        "ISO 527-2 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.32,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "carbon-fibre-filled PETG FDM filament datasheets, ISO 527 values on XY-printed specimens"
+        },
+        "E_gpa": {
+          "range": [
+            4.5,
+            6.5
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "carbon-fibre-filled PETG FDM filament datasheets, ISO 527 values on XY-printed specimens"
+        },
+        "ultimate_mpa": {
+          "range": [
+            45.0,
+            60.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "carbon-fibre-filled PETG FDM filament datasheets, ISO 527 values on XY-printed specimens"
+        },
+        "elongation_pct": {
+          "value": 2.5,
+          "unit": "%",
+          "basis": "typical",
+          "source": "carbon-fibre-filled PETG FDM filament datasheets, ISO 527 values on XY-printed specimens"
+        },
+        "max_service_temp_c": {
+          "value": 75.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          40.0,
+          90.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "process": {
+        "printable": {
+          "fdm": "excellent"
+        },
+        "source": "editorial classification: prints on an open machine; hardened nozzle required"
+      },
+      "notes": "The easy carbon-filled filament: stiff, matte, low-warp and printable without a chamber - but PETG's glass transition still caps it around 75 C. XY values; Z is much weaker."
+    },
+    "pa6_gf_fdm": {
+      "label": "PA6-GF (short-fibre-filled nylon, FDM filament)",
+      "category": "composite",
+      "subcategory": "reinforced_polymer",
+      "condition": "FDM printed, XY orientation, dry",
+      "standards": [
+        "ISO 527-2 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.2,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "short-fibre-filled nylon FDM filament datasheets (glass-filled PA6 grades and Markforged Onyx-class chopped-carbon nylon), ISO 527 values on XY-printed specimens"
+        },
+        "E_gpa": {
+          "range": [
+            2.4,
+            5.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "short-fibre-filled nylon FDM filament datasheets (glass-filled PA6 grades and Markforged Onyx-class chopped-carbon nylon), ISO 527 values on XY-printed specimens"
+        },
+        "ultimate_mpa": {
+          "range": [
+            35.0,
+            60.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "short-fibre-filled nylon FDM filament datasheets (glass-filled PA6 grades and Markforged Onyx-class chopped-carbon nylon), ISO 527 values on XY-printed specimens"
+        },
+        "elongation_pct": {
+          "value": 4.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "short-fibre-filled nylon FDM filament datasheets (glass-filled PA6 grades and Markforged Onyx-class chopped-carbon nylon), ISO 527 values on XY-printed specimens"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          60.0,
+          130.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "process": {
+        "printable": {
+          "fdm": "good"
+        },
+        "source": "editorial classification: hygroscopic - dry before printing; hardened nozzle required"
+      },
+      "notes": "A wide range on purpose: this covers both the glass-filled PA6 filaments and the chopped-carbon micro-fibre nylons (Onyx-class), which sit at the bottom of the stiffness band unless continuous fibre is laid into them. XY values; nylon absorbs moisture and softens."
+    },
+    "abs_cf_fdm": {
+      "label": "ABS-CF (carbon-fibre ABS, FDM filament)",
+      "category": "composite",
+      "subcategory": "reinforced_polymer",
+      "condition": "FDM printed, XY orientation",
+      "standards": [
+        "ISO 527-2 (tensile)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.11,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "carbon-fibre-filled ABS FDM filament datasheets, ISO 527 values on XY-printed specimens"
+        },
+        "E_gpa": {
+          "range": [
+            2.5,
+            4.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "carbon-fibre-filled ABS FDM filament datasheets, ISO 527 values on XY-printed specimens"
+        },
+        "ultimate_mpa": {
+          "range": [
+            35.0,
+            50.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "carbon-fibre-filled ABS FDM filament datasheets, ISO 527 values on XY-printed specimens"
+        },
+        "elongation_pct": {
+          "value": 2.0,
+          "unit": "%",
+          "basis": "typical",
+          "source": "carbon-fibre-filled ABS FDM filament datasheets, ISO 527 values on XY-printed specimens"
+        },
+        "max_service_temp_c": {
+          "value": 90.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          40.0,
+          80.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "process": {
+        "printable": {
+          "fdm": "good"
+        },
+        "source": "editorial classification: heated chamber recommended; the fibre is what stops ABS warping"
+      },
+      "notes": "Chopped fibre in ABS is a dimensional-stability play more than a strength one: it kills warp and shrink at the cost of elongation. XY values."
+    },
+    "alumina_96": {
+      "label": "Alumina 96% (Al2O3)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "sintered, 96% purity",
+      "standards": [
+        "IEC 60672-3 (C 795, alumina 95-99%)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 3.72,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "CoorsTek AD-96 alumina datasheet; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "E_gpa": {
+          "value": 300.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "CoorsTek AD-96 alumina datasheet; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cte_um_m_k": {
+          "value": 8.2,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "CoorsTek AD-96 alumina datasheet; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "k_w_m_k": {
+          "value": 24.7,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "CoorsTek AD-96 alumina datasheet, thermal conductivity vs temperature",
+          "table": [
+            [
+              20.0,
+              24.7
+            ],
+            [
+              100.0,
+              20.9
+            ],
+            [
+              400.0,
+              12.6
+            ],
+            [
+              800.0,
+              7.9
+            ],
+            [
+              1200.0,
+              5.9
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 1500.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "CoorsTek AD-96 alumina datasheet, maximum use temperature (no load)"
+        },
+        "poisson_ratio": {
+          "value": 0.21,
+          "unit": "-",
+          "basis": "typical",
+          "source": "CoorsTek AD-96 alumina datasheet; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cp_j_kg_k": {
+          "value": 880.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "CoorsTek AD-96 alumina datasheet; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "compressive_mpa": {
+          "value": 2100.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "CoorsTek AD-96 alumina datasheet; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "bending_mpa": {
+          "value": 330.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "CoorsTek AD-96 alumina datasheet, flexural strength (MOR, 4-point)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          10.0,
+          30.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "process": {
+        "machinability": "poor",
+        "source": "editorial classification: green-machined then fired; the sintered body needs diamond grinding"
+      },
+      "notes": "The default technical ceramic - insulators, wear parts, substrates, seal faces. 96% is the tough, cheap, metallizable grade; the residual glassy phase is what makes it brazable. Strength is a Weibull distribution, not a single number: design to a stress, not to the MOR. The k table is why a ceramic heat-sink calculation at 800 C must not use the room-temperature value."
+    },
+    "alumina_995": {
+      "label": "Alumina 99.5% (Al2O3)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "sintered, 99.5% purity",
+      "standards": [
+        "IEC 60672-3 (C 799, alumina >= 99%)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 3.89,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "CoorsTek AD-995 alumina datasheet; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "E_gpa": {
+          "value": 370.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "CoorsTek AD-995 alumina datasheet; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cte_um_m_k": {
+          "value": 8.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "CoorsTek AD-995 alumina datasheet; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "k_w_m_k": {
+          "value": 35.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "CoorsTek AD-995 alumina datasheet, thermal conductivity vs temperature",
+          "table": [
+            [
+              20.0,
+              35.0
+            ],
+            [
+              100.0,
+              28.0
+            ],
+            [
+              400.0,
+              16.0
+            ],
+            [
+              800.0,
+              10.0
+            ],
+            [
+              1200.0,
+              6.5
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 1750.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "CoorsTek AD-995 alumina datasheet, maximum use temperature (no load)"
+        },
+        "poisson_ratio": {
+          "value": 0.22,
+          "unit": "-",
+          "basis": "typical",
+          "source": "CoorsTek AD-995 alumina datasheet; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cp_j_kg_k": {
+          "value": 880.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "CoorsTek AD-995 alumina datasheet; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "compressive_mpa": {
+          "value": 2600.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "CoorsTek AD-995 alumina datasheet; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "bending_mpa": {
+          "value": 379.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "CoorsTek AD-995 alumina datasheet, flexural strength (MOR, 4-point)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          25.0,
+          70.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Higher purity buys strength, stiffness, thermal conductivity, corrosion resistance and a higher use temperature over the 96% grade - and costs two to three times as much. The choice between them is the ceramic equivalent of 6061 vs 7075."
+    },
+    "zirconia_ytzp": {
+      "label": "Zirconia 3Y-TZP (yttria-stabilised)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "sintered, 3 mol% Y2O3 tetragonal polycrystal",
+      "standards": [
+        "ISO 13356 (Y-TZP for surgical implants)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 6.05,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "CeramTec/Kyocera 3Y-TZP zirconia datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "E_gpa": {
+          "value": 210.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "CeramTec/Kyocera 3Y-TZP zirconia datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cte_um_m_k": {
+          "value": 10.3,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "CeramTec/Kyocera 3Y-TZP zirconia datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "k_w_m_k": {
+          "value": 2.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "CeramTec/Kyocera 3Y-TZP zirconia datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "max_service_temp_c": {
+          "value": 1000.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.3,
+          "unit": "-",
+          "basis": "typical",
+          "source": "CeramTec/Kyocera 3Y-TZP zirconia datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cp_j_kg_k": {
+          "value": 400.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "CeramTec/Kyocera 3Y-TZP zirconia datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "compressive_mpa": {
+          "value": 2000.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "CeramTec/Kyocera 3Y-TZP zirconia datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "bending_mpa": {
+          "range": [
+            900.0,
+            1200.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "CeramTec/Kyocera 3Y-TZP datasheets, flexural strength (4-point)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          30.0,
+          100.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The strong, tough ceramic: transformation toughening gives it steel-like flexural strength and a fracture toughness several times alumina's, with a CTE close to steel's - hence dies, knife blades, pump plungers and implants. Two catches: it conducts heat poorly (2 W/m-K, an insulator among ceramics) and unstabilised grades age in humid air around 150-300 C."
+    },
+    "zta": {
+      "label": "Zirconia-toughened alumina (ZTA, ~80/20)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "sintered, ~20% zirconia dispersed in alumina",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 4.15,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "CoorsTek/CeramTec zirconia-toughened alumina datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "E_gpa": {
+          "value": 340.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "CoorsTek/CeramTec zirconia-toughened alumina datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cte_um_m_k": {
+          "value": 8.3,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "CoorsTek/CeramTec zirconia-toughened alumina datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "k_w_m_k": {
+          "value": 22.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "CoorsTek/CeramTec zirconia-toughened alumina datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "max_service_temp_c": {
+          "value": 1500.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.23,
+          "unit": "-",
+          "basis": "typical",
+          "source": "CoorsTek/CeramTec zirconia-toughened alumina datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "compressive_mpa": {
+          "value": 2400.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "CoorsTek/CeramTec zirconia-toughened alumina datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "bending_mpa": {
+          "value": 550.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "CoorsTek/CeramTec ZTA datasheets, flexural strength (4-point)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          25.0,
+          70.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The middle of the alumina-zirconia trade: most of alumina's stiffness, hardness and thermal conductivity with a big share of zirconia's toughness. Wear liners, cutting tools, armour tiles."
+    },
+    "silicon_carbide": {
+      "label": "Silicon carbide, sintered (SSiC)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "pressureless-sintered alpha SiC",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 3.1,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "sintered alpha silicon carbide datasheets (Saint-Gobain Hexoloy SA, CoorsTek, CeramTec); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "E_gpa": {
+          "value": 410.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "sintered alpha silicon carbide datasheets (Saint-Gobain Hexoloy SA, CoorsTek, CeramTec); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cte_um_m_k": {
+          "value": 4.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "sintered alpha silicon carbide datasheets (Saint-Gobain Hexoloy SA, CoorsTek, CeramTec); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "k_w_m_k": {
+          "value": 120.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses), sintered alpha-SiC thermal conductivity vs temperature",
+          "table": [
+            [
+              20.0,
+              120.0
+            ],
+            [
+              400.0,
+              80.0
+            ],
+            [
+              800.0,
+              60.0
+            ],
+            [
+              1200.0,
+              47.0
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 1600.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.16,
+          "unit": "-",
+          "basis": "typical",
+          "source": "sintered alpha silicon carbide datasheets (Saint-Gobain Hexoloy SA, CoorsTek, CeramTec); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cp_j_kg_k": {
+          "value": 750.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "sintered alpha silicon carbide datasheets (Saint-Gobain Hexoloy SA, CoorsTek, CeramTec); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "compressive_mpa": {
+          "value": 3900.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "sintered alpha silicon carbide datasheets (Saint-Gobain Hexoloy SA, CoorsTek, CeramTec); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "bending_mpa": {
+          "range": [
+            350.0,
+            450.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "sintered alpha-SiC datasheets, flexural strength (4-point)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          30.0,
+          100.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Hard, stiff, chemically inert and - unusually for a ceramic - a good thermal conductor, which is why it survives thermal shock and turns up as mechanical seal faces, kiln furniture, mirror blanks and diesel particulate filters. Sintered SSiC has no free silicon, so it beats reaction-bonded SiC in acids and above 1400 C."
+    },
+    "silicon_carbide_rbsic": {
+      "label": "Silicon carbide, reaction-bonded (SiSiC)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "reaction-bonded, silicon-infiltrated (8-15% free Si)",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 3.05,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "reaction-bonded SiC (SiSiC) datasheets (Saint-Gobain, CeramTec); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "E_gpa": {
+          "value": 380.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "reaction-bonded SiC (SiSiC) datasheets (Saint-Gobain, CeramTec); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cte_um_m_k": {
+          "value": 4.3,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "reaction-bonded SiC (SiSiC) datasheets (Saint-Gobain, CeramTec); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "k_w_m_k": {
+          "value": 125.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "reaction-bonded SiC (SiSiC) datasheets (Saint-Gobain, CeramTec); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "max_service_temp_c": {
+          "value": 1350.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.17,
+          "unit": "-",
+          "basis": "typical",
+          "source": "reaction-bonded SiC (SiSiC) datasheets (Saint-Gobain, CeramTec); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "compressive_mpa": {
+          "value": 2500.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "reaction-bonded SiC (SiSiC) datasheets (Saint-Gobain, CeramTec); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "bending_mpa": {
+          "value": 300.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "reaction-bonded SiC datasheets, flexural strength (4-point)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          15.0,
+          50.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Near-net-shape and much cheaper than sintered SSiC because it is fired without shrinkage - large burner tubes, beams and rollers. The free silicon caps it at ~1350 C (silicon melts at 1410 C) and is attacked by alkalis and strong acids."
+    },
+    "silicon_nitride": {
+      "label": "Silicon nitride (gas-pressure sintered)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "gas-pressure-sintered Si3N4",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 3.21,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "gas-pressure-sintered Si3N4 datasheets (CeramTec SL200B, Kyocera SN-220 class); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "E_gpa": {
+          "value": 310.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "gas-pressure-sintered Si3N4 datasheets (CeramTec SL200B, Kyocera SN-220 class); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cte_um_m_k": {
+          "value": 3.2,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "gas-pressure-sintered Si3N4 datasheets (CeramTec SL200B, Kyocera SN-220 class); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "k_w_m_k": {
+          "value": 28.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "gas-pressure-sintered Si3N4 datasheets (CeramTec SL200B, Kyocera SN-220 class); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "max_service_temp_c": {
+          "value": 1200.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.27,
+          "unit": "-",
+          "basis": "typical",
+          "source": "gas-pressure-sintered Si3N4 datasheets (CeramTec SL200B, Kyocera SN-220 class); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cp_j_kg_k": {
+          "value": 700.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "gas-pressure-sintered Si3N4 datasheets (CeramTec SL200B, Kyocera SN-220 class); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "compressive_mpa": {
+          "value": 3000.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "gas-pressure-sintered Si3N4 datasheets (CeramTec SL200B, Kyocera SN-220 class); ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "bending_mpa": {
+          "range": [
+            700.0,
+            900.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "gas-pressure-sintered Si3N4 datasheets, flexural strength (4-point)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          50.0,
+          200.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The thermal-shock champion: high strength, a very low CTE and decent conductivity, so it takes a quench that would shatter alumina. Hybrid bearing balls, turbocharger rotors, welding pins, molten-metal handling. Toughness comes from its interlocked acicular grains."
+    },
+    "aluminium_nitride": {
+      "label": "Aluminium nitride (AlN)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "sintered, high purity",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 3.26,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "CoorsTek/Kyocera AlN substrate datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "E_gpa": {
+          "value": 330.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "CoorsTek/Kyocera AlN substrate datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cte_um_m_k": {
+          "value": 4.6,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "CoorsTek/Kyocera AlN substrate datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "k_w_m_k": {
+          "value": 170.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "CoorsTek/Kyocera AlN substrate datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "max_service_temp_c": {
+          "value": 1000.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.24,
+          "unit": "-",
+          "basis": "typical",
+          "source": "CoorsTek/Kyocera AlN substrate datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cp_j_kg_k": {
+          "value": 740.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "CoorsTek/Kyocera AlN substrate datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "bending_mpa": {
+          "value": 320.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "CoorsTek/Kyocera AlN datasheets, flexural strength (4-point)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          80.0,
+          300.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "An electrical insulator that conducts heat like a metal (170 W/m-K, eight times alumina) with a CTE matched to silicon - the power-module and laser-diode substrate. It hydrolyses slowly in water and oxidises in air above ~700 C, so the use temperature is atmosphere dependent."
+    },
+    "boron_carbide": {
+      "label": "Boron carbide (B4C)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "hot-pressed / pressureless-sintered",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.52,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "CoorsTek and 3M boron carbide datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "E_gpa": {
+          "value": 450.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "CoorsTek and 3M boron carbide datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cte_um_m_k": {
+          "value": 5.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "CoorsTek and 3M boron carbide datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "k_w_m_k": {
+          "value": 35.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "CoorsTek and 3M boron carbide datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "max_service_temp_c": {
+          "value": 1000.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.17,
+          "unit": "-",
+          "basis": "typical",
+          "source": "CoorsTek and 3M boron carbide datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cp_j_kg_k": {
+          "value": 950.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "CoorsTek and 3M boron carbide datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "compressive_mpa": {
+          "value": 2800.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "CoorsTek and 3M boron carbide datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "bending_mpa": {
+          "value": 350.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "CoorsTek/3M boron carbide datasheets, flexural strength (4-point)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          100.0,
+          400.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The third-hardest material in production use and the lightest of the hard ceramics - body and vehicle armour, blast nozzles, and neutron absorbers (boron-10 has an enormous capture cross-section). It oxidises in air above ~600 C, so the quoted ceiling assumes an inert or short-duration exposure."
+    },
+    "steatite": {
+      "label": "Steatite (magnesium silicate ceramic)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "sintered, IEC C 221 class",
+      "standards": [
+        "IEC 60672-3 (C 221 steatite)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.8,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 221 steatite property values; CeramTec steatite datasheet"
+        },
+        "E_gpa": {
+          "value": 100.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 221 steatite property values; CeramTec steatite datasheet"
+        },
+        "cte_um_m_k": {
+          "value": 8.5,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 221 steatite property values; CeramTec steatite datasheet"
+        },
+        "k_w_m_k": {
+          "value": 2.5,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 221 steatite property values; CeramTec steatite datasheet"
+        },
+        "max_service_temp_c": {
+          "value": 1000.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.24,
+          "unit": "-",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 221 steatite property values; CeramTec steatite datasheet"
+        },
+        "compressive_mpa": {
+          "value": 850.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 221 steatite property values; CeramTec steatite datasheet"
+        },
+        "bending_mpa": {
+          "value": 140.0,
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "IEC 60672-3 C 221, specified minimum flexural strength"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          10.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The cheap electrical ceramic: heater bodies, terminal blocks, insulating bushes. Dry-pressed to net shape in huge volumes. Modest strength, excellent dielectric loss, and it will not take thermal shock the way cordierite does."
+    },
+    "cordierite": {
+      "label": "Cordierite (2MgO-2Al2O3-5SiO2)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "sintered, IEC C 410 class",
+      "standards": [
+        "IEC 60672-3 (C 410 cordierite)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.2,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 410 cordierite property values; CeramTec/Saint-Gobain cordierite datasheets"
+        },
+        "E_gpa": {
+          "value": 70.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 410 cordierite property values; CeramTec/Saint-Gobain cordierite datasheets"
+        },
+        "cte_um_m_k": {
+          "value": 2.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 410 cordierite property values; CeramTec/Saint-Gobain cordierite datasheets"
+        },
+        "k_w_m_k": {
+          "value": 2.5,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 410 cordierite property values; CeramTec/Saint-Gobain cordierite datasheets"
+        },
+        "max_service_temp_c": {
+          "value": 1200.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "compressive_mpa": {
+          "value": 350.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 410 cordierite property values; CeramTec/Saint-Gobain cordierite datasheets"
+        },
+        "bending_mpa": {
+          "value": 100.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 410 / CeramTec cordierite datasheets, flexural strength"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          10.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Chosen for one number: a CTE of ~2 um/m-K, which makes it almost immune to thermal shock. Kiln furniture, heater plates, catalytic converter and DPF honeycombs. Weak and porous by ceramic standards - the low expansion is the whole point."
+    },
+    "technical_porcelain": {
+      "label": "Technical porcelain (quartz porcelain)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "glazed, IEC C 110 class",
+      "standards": [
+        "IEC 60672-3 (C 110 quartz porcelain)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.4,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 110 quartz porcelain property values"
+        },
+        "E_gpa": {
+          "value": 70.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 110 quartz porcelain property values"
+        },
+        "cte_um_m_k": {
+          "value": 6.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 110 quartz porcelain property values"
+        },
+        "k_w_m_k": {
+          "value": 1.6,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 110 quartz porcelain property values"
+        },
+        "max_service_temp_c": {
+          "value": 900.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "compressive_mpa": {
+          "value": 400.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "IEC 60672-3 C 110 quartz porcelain property values"
+        },
+        "bending_mpa": {
+          "range": [
+            50.0,
+            80.0
+          ],
+          "unit": "MPa",
+          "basis": "minimum",
+          "source": "IEC 60672-3 C 110, specified minimum flexural strength (unglazed/glazed)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.0,
+          6.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "High-voltage insulators, fuse bodies, lamp holders: the oldest electrical ceramic and still the cheapest per part. The glaze carries a share of the strength, so a chipped insulator is a weakened one."
+    },
+    "machinable_glass_ceramic": {
+      "label": "Machinable glass-ceramic (Macor-class fluorophlogopite)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "fully dense mica glass-ceramic, as supplied (no post-firing)",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.52,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Corning MACOR machinable glass ceramic datasheet"
+        },
+        "E_gpa": {
+          "value": 66.9,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Corning MACOR machinable glass ceramic datasheet"
+        },
+        "cte_um_m_k": {
+          "value": 9.3,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Corning MACOR machinable glass ceramic datasheet"
+        },
+        "k_w_m_k": {
+          "value": 1.46,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Corning MACOR machinable glass ceramic datasheet"
+        },
+        "max_service_temp_c": {
+          "value": 800.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Corning MACOR datasheet, continuous operating temperature (peak 1000 C)"
+        },
+        "poisson_ratio": {
+          "value": 0.29,
+          "unit": "-",
+          "basis": "typical",
+          "source": "Corning MACOR machinable glass ceramic datasheet"
+        },
+        "cp_j_kg_k": {
+          "value": 790.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "Corning MACOR machinable glass ceramic datasheet"
+        },
+        "compressive_mpa": {
+          "value": 345.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Corning MACOR machinable glass ceramic datasheet"
+        },
+        "bending_mpa": {
+          "value": 94.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Corning MACOR datasheet, modulus of rupture"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          80.0,
+          250.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "process": {
+        "machinability": "excellent",
+        "source": "Corning MACOR datasheet: machined to tolerance with ordinary metalworking tooling, with no firing or shrinkage afterwards"
+      },
+      "notes": "Half mica, half borosilicate glass: it machines on a mill like a hard brass and comes off the machine at final size - no sintering shrinkage, no diamond grinding. That is the entire reason to pay for it. Vacuum-tight, zero porosity, an excellent insulator; weak and not for a load path."
+    },
+    "sapphire": {
+      "label": "Sapphire (single-crystal Al2O3)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "single crystal (Czochralski/EFG grown)",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 3.98,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "single-crystal sapphire datasheets (Saint-Gobain, Kyocera); NIST/CRC single-crystal Al2O3 elastic and thermal data"
+        },
+        "E_gpa": {
+          "range": [
+            345.0,
+            435.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "single-crystal sapphire datasheets (Saint-Gobain, Kyocera); NIST/CRC single-crystal Al2O3 elastic and thermal data"
+        },
+        "cte_um_m_k": {
+          "range": [
+            5.0,
+            6.6
+          ],
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "single-crystal sapphire datasheets (Saint-Gobain, Kyocera); NIST/CRC single-crystal Al2O3 elastic and thermal data"
+        },
+        "k_w_m_k": {
+          "range": [
+            25.0,
+            35.0
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "single-crystal sapphire datasheets (Saint-Gobain, Kyocera); NIST/CRC single-crystal Al2O3 elastic and thermal data"
+        },
+        "max_service_temp_c": {
+          "value": 1800.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.29,
+          "unit": "-",
+          "basis": "typical",
+          "source": "single-crystal sapphire datasheets (Saint-Gobain, Kyocera); NIST/CRC single-crystal Al2O3 elastic and thermal data"
+        },
+        "cp_j_kg_k": {
+          "value": 750.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "single-crystal sapphire datasheets (Saint-Gobain, Kyocera); NIST/CRC single-crystal Al2O3 elastic and thermal data"
+        },
+        "compressive_mpa": {
+          "value": 2000.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "single-crystal sapphire datasheets (Saint-Gobain, Kyocera); NIST/CRC single-crystal Al2O3 elastic and thermal data"
+        },
+        "bending_mpa": {
+          "range": [
+            350.0,
+            700.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "single-crystal sapphire datasheets, flexural strength (orientation and surface finish dependent)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          200.0,
+          2000.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Single-crystal alumina: transparent from UV to mid-IR, harder than anything but diamond and carbides, and chemically untouchable - windows, watch crystals, scanner platens, high-pressure optics. Properties are ANISOTROPIC (the ranges are the spread between the a- and c-axes); strength also depends heavily on surface finish, which is why it is given as a range."
+    },
+    "mullite": {
+      "label": "Mullite (3Al2O3-2SiO2)",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "sintered",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.8,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "CeramTec/Saint-Gobain mullite datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "E_gpa": {
+          "value": 150.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "CeramTec/Saint-Gobain mullite datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "cte_um_m_k": {
+          "value": 5.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "CeramTec/Saint-Gobain mullite datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "k_w_m_k": {
+          "value": 6.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "CeramTec/Saint-Gobain mullite datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "max_service_temp_c": {
+          "value": 1600.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: continuous service limit, not a datasheet value"
+        },
+        "compressive_mpa": {
+          "value": 1000.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "CeramTec/Saint-Gobain mullite datasheets; ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses)"
+        },
+        "bending_mpa": {
+          "value": 180.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "CeramTec/Saint-Gobain mullite datasheets, flexural strength"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          5.0,
+          20.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The refractory compromise: it keeps most of its strength to 1500 C, creeps far less than alumina at temperature, and has a low enough CTE to be cycled. Furnace tubes, thermocouple sheaths, kiln furniture, and the matrix of most oxide-oxide CMCs."
+    },
+    "tungsten_carbide_wc6co": {
+      "label": "Cemented carbide WC-6%Co",
+      "category": "ceramic",
+      "subcategory": "technical_ceramic",
+      "condition": "sintered hardmetal, 6 wt% cobalt binder, ~0.8 um WC",
+      "standards": [
+        "ISO 513 (K-grade hardmetal)"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 14.9,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ISO 513 K-grade cemented carbide data; Sandvik/Kennametal WC-Co grade datasheets; ASM Handbook Vol. 2"
+        },
+        "E_gpa": {
+          "value": 620.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ISO 513 K-grade cemented carbide data; Sandvik/Kennametal WC-Co grade datasheets; ASM Handbook Vol. 2"
+        },
+        "cte_um_m_k": {
+          "value": 5.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ISO 513 K-grade cemented carbide data; Sandvik/Kennametal WC-Co grade datasheets; ASM Handbook Vol. 2"
+        },
+        "k_w_m_k": {
+          "value": 80.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ISO 513 K-grade cemented carbide data; Sandvik/Kennametal WC-Co grade datasheets; ASM Handbook Vol. 2"
+        },
+        "max_service_temp_c": {
+          "value": 600.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: the cobalt binder oxidises and softens in air above ~600 C; not a datasheet value"
+        },
+        "poisson_ratio": {
+          "value": 0.22,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ISO 513 K-grade cemented carbide data; Sandvik/Kennametal WC-Co grade datasheets; ASM Handbook Vol. 2"
+        },
+        "compressive_mpa": {
+          "value": 4500.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ISO 513 K-grade cemented carbide data; Sandvik/Kennametal WC-Co grade datasheets; ASM Handbook Vol. 2"
+        },
+        "bending_mpa": {
+          "value": 2000.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Sandvik/Kennametal WC-6Co grade datasheets, transverse rupture strength"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          40.0,
+          120.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "process": {
+        "machinability": "poor",
+        "source": "editorial classification: pressed and sintered to near net shape, then diamond ground or EDM'd"
+      },
+      "notes": "A CERMET - tungsten carbide grains cemented in cobalt - filed here with the technical ceramics because that is how it is selected and used (cutting tools, dies, wear parts, gauge blocks). Its density (14.9) and modulus (620 GPa) sit outside the lint's ceramic sanity bands by nature, not by typo: it is twice as dense as steel and three times as stiff. More cobalt = tougher and weaker; less = harder and more brittle."
+    },
+    "soda_lime_glass": {
+      "label": "Soda-lime silicate float glass (annealed)",
+      "category": "ceramic",
+      "subcategory": "glass",
+      "condition": "annealed float glass",
+      "standards": [
+        "EN 572-1",
+        "EN 572-2"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.5,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 572-1, mechanical and physical properties of soda lime silicate glass"
+        },
+        "E_gpa": {
+          "value": 70.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 572-1, mechanical and physical properties of soda lime silicate glass"
+        },
+        "cte_um_m_k": {
+          "value": 9.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 572-1, mechanical and physical properties of soda lime silicate glass"
+        },
+        "k_w_m_k": {
+          "value": 1.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 572-1, mechanical and physical properties of soda lime silicate glass"
+        },
+        "max_service_temp_c": {
+          "value": 110.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: annealed float glass is thermal-shock limited (about 40 K differential), not softening limited"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 572-1, mechanical and physical properties of soda lime silicate glass"
+        },
+        "cp_j_kg_k": {
+          "value": 720.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 572-1, mechanical and physical properties of soda lime silicate glass"
+        },
+        "compressive_mpa": {
+          "range": [
+            700.0,
+            1000.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Engineered Materials Handbook Vol. 4 (Ceramics and Glasses), soda-lime silicate glass compressive strength"
+        },
+        "bending_mpa": {
+          "value": 45.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 572-1, characteristic bending strength of annealed float glass"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          1.0,
+          3.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The 45 MPa bending value is EN 572-1's CHARACTERISTIC (5%-fractile) strength, not a typical: glass strength is governed by surface flaws, so a design value follows EN 16612 with its edge, duration and surface factors. Annealed glass breaks into shards; see the toughened record for the safety grade."
+    },
+    "soda_lime_glass_tempered": {
+      "label": "Toughened (thermally tempered) soda-lime float glass",
+      "category": "ceramic",
+      "subcategory": "glass",
+      "condition": "thermally toughened safety glass",
+      "standards": [
+        "EN 12150-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.5,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "EN 12150-1 (thermally toughened soda lime silicate safety glass) with EN 572-1 physical properties"
+        },
+        "E_gpa": {
+          "value": 70.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "EN 12150-1 (thermally toughened soda lime silicate safety glass) with EN 572-1 physical properties"
+        },
+        "cte_um_m_k": {
+          "value": 9.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "EN 12150-1 (thermally toughened soda lime silicate safety glass) with EN 572-1 physical properties"
+        },
+        "k_w_m_k": {
+          "value": 1.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "EN 12150-1 (thermally toughened soda lime silicate safety glass) with EN 572-1 physical properties"
+        },
+        "max_service_temp_c": {
+          "value": 200.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: toughening raises the tolerable thermal differential to about 200 K; not a softening limit"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "EN 12150-1 (thermally toughened soda lime silicate safety glass) with EN 572-1 physical properties"
+        },
+        "cp_j_kg_k": {
+          "value": 720.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "EN 12150-1 (thermally toughened soda lime silicate safety glass) with EN 572-1 physical properties"
+        },
+        "bending_mpa": {
+          "value": 120.0,
+          "unit": "MPa",
+          "basis": "characteristic",
+          "source": "EN 12150-1, characteristic bending strength of thermally toughened float glass"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          3.0,
+          8.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Same glass, different residual stress state: a compressive surface layer roughly triples the characteristic bending strength and makes it dice instead of shard. It cannot be cut, drilled or ground after toughening - every hole and edge must exist before the furnace."
+    },
+    "borosilicate_glass": {
+      "label": "Borosilicate glass 3.3",
+      "category": "ceramic",
+      "subcategory": "glass",
+      "condition": "annealed",
+      "standards": [
+        "ISO 3585 (borosilicate glass 3.3)",
+        "EN 1748-1"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.23,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "SCHOTT BOROFLOAT 33 datasheet; ISO 3585 borosilicate glass 3.3 property values"
+        },
+        "E_gpa": {
+          "value": 64.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "SCHOTT BOROFLOAT 33 datasheet; ISO 3585 borosilicate glass 3.3 property values"
+        },
+        "cte_um_m_k": {
+          "value": 3.3,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "SCHOTT BOROFLOAT 33 datasheet; ISO 3585 borosilicate glass 3.3 property values"
+        },
+        "k_w_m_k": {
+          "value": 1.2,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "SCHOTT BOROFLOAT 33 datasheet; ISO 3585 borosilicate glass 3.3 property values"
+        },
+        "max_service_temp_c": {
+          "value": 450.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "SCHOTT BOROFLOAT 33 datasheet, maximum continuous operating temperature"
+        },
+        "poisson_ratio": {
+          "value": 0.2,
+          "unit": "-",
+          "basis": "typical",
+          "source": "SCHOTT BOROFLOAT 33 datasheet; ISO 3585 borosilicate glass 3.3 property values"
+        },
+        "cp_j_kg_k": {
+          "value": 830.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "SCHOTT BOROFLOAT 33 datasheet; ISO 3585 borosilicate glass 3.3 property values"
+        },
+        "bending_mpa": {
+          "value": 25.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "SCHOTT BOROFLOAT 33 datasheet, bending strength"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          4.0,
+          12.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "A third of soda-lime's expansion, which is the whole story: labware, sight glasses, cookware, viewports and optics that must survive a temperature step. Chemically far more durable than soda-lime in water and acids."
+    },
+    "fused_silica": {
+      "label": "Fused silica (fused quartz)",
+      "category": "ceramic",
+      "subcategory": "glass",
+      "condition": "synthetic/fused, annealed",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.2,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Corning HPFS 7980 fused silica datasheet; Heraeus fused quartz property data; NIST reference data"
+        },
+        "E_gpa": {
+          "value": 73.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Corning HPFS 7980 fused silica datasheet; Heraeus fused quartz property data; NIST reference data"
+        },
+        "cte_um_m_k": {
+          "value": 0.55,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Corning HPFS 7980 fused silica datasheet; Heraeus fused quartz property data; NIST reference data"
+        },
+        "k_w_m_k": {
+          "value": 1.38,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Corning HPFS 7980 fused silica datasheet; Heraeus fused quartz property data; NIST reference data"
+        },
+        "max_service_temp_c": {
+          "value": 1000.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "Heraeus fused quartz datasheet, continuous working temperature (short-term ~1200 C)"
+        },
+        "poisson_ratio": {
+          "value": 0.17,
+          "unit": "-",
+          "basis": "typical",
+          "source": "Corning HPFS 7980 fused silica datasheet; Heraeus fused quartz property data; NIST reference data"
+        },
+        "cp_j_kg_k": {
+          "value": 740.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "Corning HPFS 7980 fused silica datasheet; Heraeus fused quartz property data; NIST reference data"
+        },
+        "compressive_mpa": {
+          "value": 1100.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Corning HPFS 7980 fused silica datasheet; Heraeus fused quartz property data; NIST reference data"
+        },
+        "bending_mpa": {
+          "value": 50.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "Corning HPFS 7980 / Heraeus fused silica datasheets, flexural strength"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          20.0,
+          80.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Pure SiO2: a CTE of 0.55 um/m-K, transmission from deep UV to near-IR, and use to 1000 C. Semiconductor tubes and boats, photomasks, laser optics, precision mirror blanks. Attacked by hydrofluoric acid and by alkalis; devitrifies over long holds above ~1100 C."
+    },
+    "aluminosilicate_glass": {
+      "label": "Alkali-aluminosilicate glass (chemically strengthened)",
+      "category": "ceramic",
+      "subcategory": "glass",
+      "condition": "ion-exchanged (Gorilla-class cover glass)",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.42,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Corning Gorilla Glass 3 product information sheet"
+        },
+        "E_gpa": {
+          "value": 71.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Corning Gorilla Glass 3 product information sheet"
+        },
+        "cte_um_m_k": {
+          "value": 7.8,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Corning Gorilla Glass 3 product information sheet"
+        },
+        "max_service_temp_c": {
+          "value": 300.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: well below the ~550 C strain point, above which the ion-exchange compression relaxes"
+        },
+        "poisson_ratio": {
+          "value": 0.21,
+          "unit": "-",
+          "basis": "typical",
+          "source": "Corning Gorilla Glass 3 product information sheet"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          10.0,
+          40.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Deliberately thin: the useful strength of this glass comes from an ion-exchanged compressive surface layer (its depth and stress are the spec, and they vary by product), so quoting a single bending strength would be dishonest. Density, modulus, Poisson ratio and CTE are the bulk properties. Heating it above the strain point undoes the strengthening."
+    },
+    "glass_ceramic_las": {
+      "label": "Lithium-aluminosilicate glass-ceramic (zero-expansion)",
+      "category": "ceramic",
+      "subcategory": "glass",
+      "condition": "ceramised LAS glass-ceramic (Zerodur/Ceran class)",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.53,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "SCHOTT ZERODUR extremely-low-expansion glass ceramic datasheet"
+        },
+        "E_gpa": {
+          "value": 90.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "SCHOTT ZERODUR extremely-low-expansion glass ceramic datasheet"
+        },
+        "cte_um_m_k": {
+          "value": 0.02,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "SCHOTT ZERODUR datasheet, mean CTE 0 +/- 0.02 um/(m*K) over 0-50 C"
+        },
+        "k_w_m_k": {
+          "value": 1.46,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "SCHOTT ZERODUR extremely-low-expansion glass ceramic datasheet"
+        },
+        "max_service_temp_c": {
+          "value": 600.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "SCHOTT glass-ceramic datasheets, maximum continuous use temperature"
+        },
+        "poisson_ratio": {
+          "value": 0.24,
+          "unit": "-",
+          "basis": "typical",
+          "source": "SCHOTT ZERODUR extremely-low-expansion glass ceramic datasheet"
+        },
+        "cp_j_kg_k": {
+          "value": 800.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "SCHOTT ZERODUR extremely-low-expansion glass ceramic datasheet"
+        },
+        "bending_mpa": {
+          "range": [
+            30.0,
+            60.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "SCHOTT ZERODUR datasheet, bending strength (surface-finish dependent)"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          100.0,
+          500.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "A glass ceramised into a mixture of a negative-expansion crystal phase and a positive-expansion glass phase, tuned so the net CTE is essentially zero. Telescope mirror blanks, metrology bases, ring-laser gyros - and, in its opaque cousin, every ceramic hob. The near-zero CTE is written as 0.02 because this schema's values are non-negative; the real figure is 0 +/- 0.02."
+    },
+    "e_glass_fibre": {
+      "label": "E-glass fibre (bulk fibre)",
+      "category": "ceramic",
+      "subcategory": "glass",
+      "condition": "virgin filament",
+      "standards": [
+        "ISO 2078",
+        "ASTM D578"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.54,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), E-glass fibre properties; ISO 2078"
+        },
+        "E_gpa": {
+          "value": 73.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), E-glass fibre properties; ISO 2078"
+        },
+        "ultimate_mpa": {
+          "value": 3400.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), E-glass fibre properties; ISO 2078"
+        },
+        "elongation_pct": {
+          "value": 4.8,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), E-glass fibre properties; ISO 2078"
+        },
+        "cte_um_m_k": {
+          "value": 5.4,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), E-glass fibre properties; ISO 2078"
+        },
+        "k_w_m_k": {
+          "value": 1.3,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), E-glass fibre properties; ISO 2078"
+        },
+        "max_service_temp_c": {
+          "value": 550.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: sizing burns off and strength falls long before the ~850 C softening point"
+        },
+        "poisson_ratio": {
+          "value": 0.22,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), E-glass fibre properties; ISO 2078"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          2.0,
+          5.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "A FIBRE property, not a laminate one: the 3400 MPa is a virgin filament strength that no composite ever realises (handling damage and the matrix reduce it). Use it for rule-of-mixtures work; use the gfrp_* records for parts."
+    },
+    "s_glass_fibre": {
+      "label": "S-2 glass fibre (bulk fibre)",
+      "category": "ceramic",
+      "subcategory": "glass",
+      "condition": "virgin filament",
+      "standards": [
+        "ISO 2078"
+      ],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.49,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), S-glass fibre properties; AGY S-2 Glass fibre datasheet"
+        },
+        "E_gpa": {
+          "value": 87.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), S-glass fibre properties; AGY S-2 Glass fibre datasheet"
+        },
+        "ultimate_mpa": {
+          "value": 4600.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), S-glass fibre properties; AGY S-2 Glass fibre datasheet"
+        },
+        "elongation_pct": {
+          "value": 5.4,
+          "unit": "%",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), S-glass fibre properties; AGY S-2 Glass fibre datasheet"
+        },
+        "cte_um_m_k": {
+          "value": 2.9,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), S-glass fibre properties; AGY S-2 Glass fibre datasheet"
+        },
+        "max_service_temp_c": {
+          "value": 650.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: higher softening point than E-glass, but sizing and strength fall first"
+        },
+        "poisson_ratio": {
+          "value": 0.22,
+          "unit": "-",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), S-glass fibre properties; AGY S-2 Glass fibre datasheet"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          10.0,
+          30.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "A magnesium-aluminosilicate fibre: ~20% stiffer and ~35% stronger than E-glass at four to five times the price - pressure vessels, ballistic laminates, rotor blades. A FIBRE property, not a laminate one."
+    },
+    "graphite_isotropic": {
+      "label": "Isostatic graphite (fine grain, isotropic)",
+      "category": "other",
+      "subcategory": "other",
+      "condition": "isostatically pressed, fine grain (~10 um)",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.8,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "SGL Carbon SIGRAFINE isostatic graphite datasheets (R6650 class); POCO EDM-3 datasheet"
+        },
+        "E_gpa": {
+          "value": 11.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "SGL Carbon SIGRAFINE isostatic graphite datasheets (R6650 class); POCO EDM-3 datasheet"
+        },
+        "cte_um_m_k": {
+          "value": 4.8,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "SGL Carbon SIGRAFINE isostatic graphite datasheets (R6650 class); POCO EDM-3 datasheet"
+        },
+        "k_w_m_k": {
+          "value": 105.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "SGL Carbon SIGRAFINE isostatic graphite datasheets (R6650 class); POCO EDM-3 datasheet"
+        },
+        "max_service_temp_c": {
+          "value": 400.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: graphite oxidises in air above ~400 C; in vacuum or inert gas it serves beyond 2500 C"
+        },
+        "cp_j_kg_k": {
+          "value": 710.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "SGL Carbon SIGRAFINE isostatic graphite datasheets (R6650 class); POCO EDM-3 datasheet"
+        },
+        "compressive_mpa": {
+          "value": 100.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "SGL Carbon SIGRAFINE isostatic graphite datasheets (R6650 class); POCO EDM-3 datasheet"
+        },
+        "bending_mpa": {
+          "value": 50.0,
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "SGL SIGRAFINE isostatic graphite datasheets, flexural strength"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          20.0,
+          80.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "process": {
+        "machinability": "excellent",
+        "source": "editorial classification: cuts dry with carbide tooling (dust extraction required); the standard EDM electrode material"
+      },
+      "notes": "Isostatic pressing makes it isotropic and fine grained, unlike extruded graphite - EDM electrodes, continuous-casting dies, crucibles, hot-press tooling, susceptors. Strength RISES with temperature to ~2500 C in an inert atmosphere; in air, oxidation is the limit. Soft and easily chipped at edges."
+    },
+    "carbon_carbon": {
+      "label": "Carbon-carbon composite (2D laminate)",
+      "category": "other",
+      "subcategory": "other",
+      "condition": "2D woven carbon fabric, carbonised and densified",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 1.7,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), carbon-carbon composites; SGL SIGRABOND datasheet"
+        },
+        "E_gpa": {
+          "range": [
+            40.0,
+            80.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), carbon-carbon composites; SGL SIGRABOND datasheet"
+        },
+        "ultimate_mpa": {
+          "range": [
+            150.0,
+            300.0
+          ],
+          "unit": "MPa",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), carbon-carbon composites; SGL SIGRABOND datasheet"
+        },
+        "cte_um_m_k": {
+          "value": 1.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), carbon-carbon composites; SGL SIGRABOND datasheet"
+        },
+        "k_w_m_k": {
+          "range": [
+            20.0,
+            70.0
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "ASM Handbook Vol. 21 (Composites), carbon-carbon composites; SGL SIGRABOND datasheet"
+        },
+        "max_service_temp_c": {
+          "value": 400.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: uncoated C/C oxidises in air above ~400 C; with a SiC coating or in inert atmosphere it serves beyond 2000 C"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          200.0,
+          1000.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "Carbon fibre in a carbon matrix: it keeps its strength to 2000 C+ in an inert atmosphere and has near-zero expansion - brake discs, rocket nozzles, re-entry leading edges, furnace fixturing. Its weakness is oxidation, which is why coated grades exist. In-plane values; through-thickness is much weaker. Ranges reflect how much the densification route changes the result."
+    },
+    "silicon_single_crystal": {
+      "label": "Silicon (single crystal)",
+      "category": "other",
+      "subcategory": "other",
+      "condition": "Czochralski single crystal",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 2.329,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "NIST/CRC Handbook single-crystal silicon reference data"
+        },
+        "E_gpa": {
+          "range": [
+            130.0,
+            188.0
+          ],
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "NIST/CRC Handbook single-crystal silicon reference data"
+        },
+        "cte_um_m_k": {
+          "value": 2.6,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "NIST/CRC Handbook single-crystal silicon reference data"
+        },
+        "k_w_m_k": {
+          "value": 148.0,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Glassbrenner and Slack (1964), thermal conductivity of silicon, as tabulated in NIST/CRC reference data",
+          "T_c": 27.0,
+          "table": [
+            [
+              27.0,
+              148.0
+            ],
+            [
+              127.0,
+              98.9
+            ],
+            [
+              327.0,
+              61.9
+            ],
+            [
+              527.0,
+              42.2
+            ],
+            [
+              727.0,
+              31.2
+            ]
+          ]
+        },
+        "max_service_temp_c": {
+          "value": 300.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: device and packaging limit, far below the 1414 C melting point"
+        },
+        "poisson_ratio": {
+          "value": 0.22,
+          "unit": "-",
+          "basis": "typical",
+          "source": "NIST/CRC Handbook single-crystal silicon reference data"
+        },
+        "cp_j_kg_k": {
+          "value": 700.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "NIST/CRC Handbook single-crystal silicon reference data"
+        }
+      },
+      "notes": "Elastically ANISOTROPIC: Young's modulus runs from ~130 GPa along <100> to ~188 GPa along <111>, which is why MEMS designs specify the wafer orientation. Perfectly brittle at room temperature and it cleaves on {111}. The k table is the classic Glassbrenner-Slack curve - silicon's conductivity halves between room temperature and 150 C, which matters for any die-level thermal model. No cost is quoted: silicon is sold by the polished wafer, not by the kilogram."
+    },
+    "cvd_diamond": {
+      "label": "CVD diamond (polycrystalline, thermal grade)",
+      "category": "other",
+      "subcategory": "other",
+      "condition": "chemical-vapour-deposited polycrystalline",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 3.52,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Element Six CVD diamond (thermal grade) datasheet; NIST reference data"
+        },
+        "E_gpa": {
+          "value": 1050.0,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Element Six CVD diamond (thermal grade) datasheet; NIST reference data"
+        },
+        "cte_um_m_k": {
+          "value": 1.0,
+          "unit": "um/(m*K)",
+          "basis": "typical",
+          "source": "Element Six CVD diamond (thermal grade) datasheet; NIST reference data"
+        },
+        "k_w_m_k": {
+          "range": [
+            1000.0,
+            2000.0
+          ],
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Element Six CVD diamond datasheets, thermal grades (TM100 to DM grades)"
+        },
+        "max_service_temp_c": {
+          "value": 600.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: diamond graphitises in air above ~700 C; in vacuum it is stable far higher"
+        },
+        "poisson_ratio": {
+          "value": 0.1,
+          "unit": "-",
+          "basis": "typical",
+          "source": "Element Six CVD diamond (thermal grade) datasheet; NIST reference data"
+        },
+        "cp_j_kg_k": {
+          "value": 510.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "Element Six CVD diamond (thermal grade) datasheet; NIST reference data"
+        }
+      },
+      "notes": "The highest thermal conductivity of any bulk material - four to five times copper - while being an electrical insulator: laser and RF heat spreaders, X-ray and IR windows, cutting-tool tips, anvils. Cost is not quoted because it is set by grade, area and thickness rather than by weight."
+    },
+    "cork_agglomerate": {
+      "label": "Cork (agglomerated / composition cork)",
+      "category": "other",
+      "subcategory": "other",
+      "condition": "agglomerated granules, medium density",
+      "standards": [],
+      "properties": {
+        "density_g_cm3": {
+          "value": 0.2,
+          "unit": "g/cm3",
+          "basis": "typical",
+          "source": "Gibson and Ashby, Cellular Solids (cork property data); agglomerated cork product datasheets"
+        },
+        "E_gpa": {
+          "value": 0.02,
+          "unit": "GPa",
+          "basis": "typical",
+          "source": "Gibson and Ashby, Cellular Solids (cork property data); agglomerated cork product datasheets"
+        },
+        "k_w_m_k": {
+          "value": 0.045,
+          "unit": "W/(m*K)",
+          "basis": "typical",
+          "source": "Gibson and Ashby, Cellular Solids (cork property data); agglomerated cork product datasheets"
+        },
+        "max_service_temp_c": {
+          "value": 120.0,
+          "unit": "C",
+          "basis": "typical",
+          "source": "editorial estimate: the binder, not the cork, sets the limit"
+        },
+        "poisson_ratio": {
+          "value": 0.0,
+          "unit": "-",
+          "basis": "typical",
+          "source": "Gibson and Ashby, Cellular Solids: cork's closed-cell corrugated walls give a Poisson ratio of essentially zero"
+        },
+        "cp_j_kg_k": {
+          "value": 1700.0,
+          "unit": "J/(kg*K)",
+          "basis": "typical",
+          "source": "Gibson and Ashby, Cellular Solids (cork property data); agglomerated cork product datasheets"
+        }
+      },
+      "cost_usd_kg": {
+        "range": [
+          5.0,
+          20.0
+        ],
+        "unit": "USD/kg",
+        "basis": "typical",
+        "source": "editorial estimate, bulk order-of-magnitude",
+        "as_of": "2025"
+      },
+      "notes": "The one common solid with a Poisson ratio of ~0 - it neither bulges nor necks when compressed, which is why a cork goes into a bottle and a rubber bung fights you. Gaskets, vibration isolation pads, insulation, sandwich cores. Properties scale strongly with density; this card is a medium-density agglomerate."
     }
   }
 }

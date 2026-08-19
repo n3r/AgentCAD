@@ -82,7 +82,7 @@ per commit. Slice 1 is the foundation; 2 and 3 touch disjoint files and run
   engineering.json`, `polymer_high_performance_thermoset_elastomer_foam.json`,
   `composite_ceramic_other.json`, `wood.json`, `masonry.json` — each agent owns
   its file, merges the legacy records of its family (values identical), lints at
-  `--profile library` with `.venv/bin/python -m agentcad.cli materials lint`,
+  `--profile library` with `.venv/bin/agentcad materials lint`,
   and returns the card count per subcategory. Rules of §11 in the spec quoted
   verbatim in every prompt; "omit when unsure"; ≥5 per example-touched leaf.
 - Then one **QA agent**: 20 random records spot-checked against their sources
@@ -102,7 +102,7 @@ per commit. Slice 1 is the foundation; 2 and 3 touch disjoint files and run
 
 ## Slice 6 — acceptance tests + docs + close-out (AC1–AC7)
 - `tests/test_prd028_acceptance.py` per spec §12 (AC6 on a copy of
-  `examples/construction` with `timber_c24` + `concrete_c30_37`).
+  `examples/construction` with `c24` + `concrete_c30_37`).
 - Docs: `docs/materials.md` (new), `docs/agent-api.md`, `docs/user-guide.md`,
   `AGENTS.md` traps, `CLAUDE.md` condensed traps, `docs/roadmap.md` (in progress
   → completed at merge), PRD status.
