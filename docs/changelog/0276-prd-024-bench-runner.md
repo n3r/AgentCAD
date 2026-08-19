@@ -1,4 +1,4 @@
-# 0261 — PRD-024: the bench runner (budgeted `ChatEngine`, transcript, `run.json`, `bench run`)
+# 0276 — PRD-024: the bench runner (budgeted `ChatEngine`, transcript, `run.json`, `bench run`)
 
 - **Commit:** pending
 - **Date:** 2026-08-19

@@ -1,4 +1,4 @@
-# 0262 — PRD-024: `bench report` aggregation, the baseline gate, and `benchmarks/baseline.json`
+# 0277 — PRD-024: `bench report` aggregation, the baseline gate, and `benchmarks/baseline.json`
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -83,7 +83,7 @@ a socket or reads a clock.
 - `agentcad/bench/report.py` — new module (aggregate, gate, exit code, markdown)
 - `benchmarks/baseline.json` — new, unrecorded v1 baseline
 - `tests/test_bench_report.py` — new test module
-- `docs/changelog/0262-prd-024-bench-report.md` — this entry
+- `docs/changelog/0277-prd-024-bench-report.md` — this entry
 
 ## Review round 1 (findings fixed in place)
 

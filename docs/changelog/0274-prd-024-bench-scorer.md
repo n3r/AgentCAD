@@ -1,4 +1,4 @@
-# 0259 — PRD-024: the bench scorer — six subscores, rubric injection, a byte-stable `score.json`
+# 0274 — PRD-024: the bench scorer — six subscores, rubric injection, a byte-stable `score.json`
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -127,7 +127,7 @@ event, no manifest key.
 ## Files
 - `agentcad/bench/scoring.py` — new (the whole scorer).
 - `tests/test_bench_scoring.py` — new, 35 tests.
-- `docs/changelog/0259-prd-024-bench-scorer.md` — this entry.
+- `docs/changelog/0274-prd-024-bench-scorer.md` — this entry.
 
 ## Tests
 ```

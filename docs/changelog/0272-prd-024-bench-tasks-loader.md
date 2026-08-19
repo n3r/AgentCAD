@@ -1,4 +1,4 @@
-# 0257 — PRD-024 slice 1: the bench task format, its loader, the authoring helper, and the first task
+# 0272 — PRD-024 slice 1: the bench task format, its loader, the authoring helper, and the first task
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -106,7 +106,7 @@ manifest key, and no edit to `worker.py` / `tools.py` / `app.py` / `service.py`.
 - `benchmarks/tasks/model_from_drawing/mfd_001_spacer_plate/**` — new; the seed
   task bundle (8 files).
 - `tests/test_bench_tasks.py` — new; 19 tests.
-- `docs/changelog/0257-prd-024-bench-tasks-loader.md` — this entry.
+- `docs/changelog/0272-prd-024-bench-tasks-loader.md` — this entry.
 
 ## Review fixes folded in (round 1, on top of 19388a7)
 - **`assets/drawing.svg`: the right view drew a 20 mm hole pitch, not 30 mm.**

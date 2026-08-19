@@ -1,4 +1,4 @@
-# 0267 — PRD-024: the acceptance suite, the bench CI workflow, the example submission and the docs
+# 0282 — PRD-024: the acceptance suite, the bench CI workflow, the example submission and the docs
 
 - **Commit:** pending
 - **Date:** 2026-08-19

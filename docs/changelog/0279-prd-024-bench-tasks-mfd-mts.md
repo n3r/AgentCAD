@@ -1,4 +1,4 @@
-# 0264 — PRD-024: nine bench tasks (model_from_drawing 2–5, modify_to_spec 1–5) and `author.py drawing`
+# 0279 — PRD-024: nine bench tasks (model_from_drawing 2–5, modify_to_spec 1–5) and `author.py drawing`
 
 - **Commit:** pending
 - **Date:** 2026-08-19

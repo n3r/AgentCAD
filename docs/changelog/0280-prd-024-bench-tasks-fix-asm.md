@@ -1,4 +1,4 @@
-# 0265 — PRD-024 bench tasks: all five `fix_the_broken_part` and all five `assemble_and_clear`
+# 0280 — PRD-024 bench tasks: all five `fix_the_broken_part` and all five `assemble_and_clear`
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -149,7 +149,7 @@ string for the non-greedy/blank-run behaviour.
   `_BLANK_RUN_RE`; `prompt_text` runs the prompt body through it
 - `tests/test_bench_tasks_fix_asm.py` — new
 - `tests/test_bench_tasks.py` — two tests for the comment stripping
-- `docs/changelog/0265-prd-024-bench-tasks-fix-asm.md` — this entry
+- `docs/changelog/0280-prd-024-bench-tasks-fix-asm.md` — this entry
 
 ## Notes
 

@@ -1,4 +1,4 @@
-# 0255 — PRD-024 AgentCAD-Bench: design spec, PRD moved to in-progress
+# 0270 — PRD-024 AgentCAD-Bench: design spec, PRD moved to in-progress
 
 - **Commit:** pending
 - **Date:** 2026-08-19

@@ -1,4 +1,4 @@
-# 0258 — PRD-024: the kernel-internal `iou` handler pack
+# 0273 — PRD-024: the kernel-internal `iou` handler pack
 
 - **Commit:** pending
 - **Date:** 2026-08-19

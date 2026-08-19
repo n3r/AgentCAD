@@ -1,4 +1,4 @@
-# 0256 — PRD-024 AgentCAD-Bench: implementation plan
+# 0271 — PRD-024 AgentCAD-Bench: implementation plan
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -6,7 +6,7 @@
 
 ## Summary
 Adds the 11-task implementation plan for PRD-024, derived from the design spec
-(changelog 0255). Docs only.
+(changelog 0270). Docs only.
 
 ## Changes
 - `docs/superpowers/plans/2026-08-19-agentcad-bench.md` — tasks: (1) bench
@@ -20,6 +20,6 @@ Adds the 11-task implementation plan for PRD-024, derived from the design spec
 - `docs/superpowers/plans/2026-08-19-agentcad-bench.md` — new
 
 ## Notes
-Changelog numbers quoted inside the plan (0256–0266) are one behind after
+Changelog numbers quoted inside the plan (0271–0281) are one behind after
 this entry; the orchestrator assigns the real next number at each commit.
 `make test` baseline on the branch: 4438 passed, 36 skipped.

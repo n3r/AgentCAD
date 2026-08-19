@@ -452,7 +452,7 @@ def export_reference(task_dir: Path, *, service) -> dict:
   **Expected:** all tests pass; `test_every_shipped_task_has_zero_problems` sees
   exactly one task.
 
-- [ ] **Step 10: Changelog + report.** Write `docs/changelog/0256-bench-task-format-and-loader.md`
+- [ ] **Step 10: Changelog + report.** Write `docs/changelog/0271-bench-task-format-and-loader.md`
   from the diff (what the format is, why the rubric is separate from the reference,
   why `turns` is capped at `MAX_TOOL_CALLS_PER_TURN`). Cite the
   `pytest tests/test_bench_tasks.py -q` output. **The orchestrator commits and
@@ -742,7 +742,7 @@ def test_a_boolean_failure_is_a_kernel_error_with_a_stage(kernel):
   **Expected:** `True`, and **no** `warning: handler … shadows a builtin` line on
   stderr (`worker.py:800-803`).
 
-- [ ] **Step 8: Changelog + report.** `docs/changelog/0257-bench-iou-kernel-handler.md`
+- [ ] **Step 8: Changelog + report.** `docs/changelog/0272-bench-iou-kernel-handler.md`
   — why only the intersection is booleaned, the clamp, the mesh short-circuit, and
   that the handler is deliberately not a tool. Cite the
   `pytest tests/test_bench_kernel_iou.py -q` output. **Orchestrator commits.**
@@ -1039,7 +1039,7 @@ def test_an_errored_geometry_subscore_is_excluded_and_weights_renormalise(scorer
   `uv run pytest tests/test_bench_scoring.py -q`
   **Expected:** 9 passed.
 
-- [ ] **Step 10: Changelog + report.** `docs/changelog/0258-bench-scorer.md` —
+- [ ] **Step 10: Changelog + report.** `docs/changelog/0273-bench-scorer.md` —
   the six subscores, the `error`-vs-zero rule and why it exists, rubric
   injection and the re-bind, and the determinism contract. Cite
   `pytest tests/test_bench_scoring.py -q`. **Orchestrator commits.**
@@ -1283,7 +1283,7 @@ def _cmd_score(args) -> int:
   **Expected:** the table prints, `exit=0`, `/tmp/bench-smoke/score.json` has
   `"total": 1.0`.
 
-- [ ] **Step 12: Changelog + report.** `docs/changelog/0259-bench-cli-score.md` —
+- [ ] **Step 12: Changelog + report.** `docs/changelog/0274-bench-cli-score.md` —
   the two `cli.py` edits and why `examples` is a parameter, the exit-code table,
   the work-dir refusal. Cite `pytest tests/test_bench_cli.py -q` and the smoke
   output. **Orchestrator commits.**
@@ -1630,7 +1630,7 @@ def test_bench_run_requires_an_api_key_and_names_the_fix(tmp_path, capsys, monke
   `uv run pytest tests/test_bench_runner.py -q`
   **Expected:** 6 passed.
 
-- [ ] **Step 12: Changelog + report.** `docs/changelog/0260-bench-runner.md` — the
+- [ ] **Step 12: Changelog + report.** `docs/changelog/0275-bench-runner.md` — the
   budgeted client factory and why it needs no `chat.py` change, the one-turn rule,
   over-budget semantics, transcript redaction. Cite
   `pytest tests/test_bench_runner.py -q`. **Orchestrator commits.**
@@ -1821,7 +1821,7 @@ def test_markdown_renders_the_category_table(tmp_path):
 - [ ] **Step 8: Run** `uv run pytest tests/test_bench_report.py -q`.
   **Expected:** 7 passed.
 
-- [ ] **Step 9: Changelog + report.** `docs/changelog/0261-bench-report-and-baseline.md`
+- [ ] **Step 9: Changelog + report.** `docs/changelog/0276-bench-report-and-baseline.md`
   — mean-of-category-means, missing-is-a-regression, why per-task deltas are
   printed and not gated, the incomparable-is-exit-2 rule. Cite the test output.
   **Orchestrator commits.**
@@ -1984,7 +1984,7 @@ def test_rows_are_ordered_by_total_then_id(tmp_path):
 - [ ] **Step 8: Run** `uv run pytest tests/test_bench_publish.py -q`.
   **Expected:** 12 passed.
 
-- [ ] **Step 9: Changelog + report.** `docs/changelog/0262-bench-publish-leaderboard.md`
+- [ ] **Step 9: Changelog + report.** `docs/changelog/0277-bench-publish-leaderboard.md`
   — the five disclosure rules, fail-closed and atomic, the stable ordering, the
   self-contained-page constraint. Cite the test output. **Orchestrator commits.**
 
@@ -2112,7 +2112,7 @@ def render_drawing(task_dir: Path, part_id: str, *, service, views=None) -> Path
 - [ ] **Step 6: Run the loader suite** `uv run pytest tests/test_bench_tasks.py -q`.
   **Expected:** `test_every_shipped_task_has_zero_problems` now covers 10 tasks.
 
-- [ ] **Step 7: Changelog + report.** `docs/changelog/0263-bench-tasks-drawing-and-modify.md`
+- [ ] **Step 7: Changelog + report.** `docs/changelog/0278-bench-tasks-drawing-and-modify.md`
   — the nine tasks, their sources, and the datum each declares. Cite the Step 5
   output verbatim. **Orchestrator commits.**
 
@@ -2175,7 +2175,7 @@ def render_drawing(task_dir: Path, part_id: str, *, service, views=None) -> Path
 - [ ] **Step 6: Run** `uv run pytest tests/test_bench_tasks.py -q`.
   **Expected:** 20 tasks with zero problems.
 
-- [ ] **Step 7: Changelog + report.** `docs/changelog/0264-bench-tasks-fix-and-assemble.md`
+- [ ] **Step 7: Changelog + report.** `docs/changelog/0279-bench-tasks-fix-and-assemble.md`
   — the ten tasks, what each starter breaks, and the starter-is-not-a-solution
   evidence. Cite Steps 4 and 5. **Orchestrator commits.**
 
@@ -2232,7 +2232,7 @@ def render_drawing(task_dir: Path, part_id: str, *, service, views=None) -> Path
       assert dict(counts) == {c: 5 for c in bench_tasks.CATEGORIES}
   ```
 
-- [ ] **Step 7: Changelog + report.** `docs/changelog/0265-bench-tasks-optimize.md`
+- [ ] **Step 7: Changelog + report.** `docs/changelog/0280-bench-tasks-optimize.md`
   — the five tasks, why `geometry` is `not_applicable` for the category, and how
   each objective window was derived. Cite Steps 3–6. **Orchestrator commits.**
 
@@ -2484,7 +2484,7 @@ jobs:
   ```
   **Expected:** all green. Cite the count.
 
-- [ ] **Step 10: Changelog + report.** `docs/changelog/0266-bench-acceptance-ci-docs.md`
+- [ ] **Step 10: Changelog + report.** `docs/changelog/0281-bench-acceptance-ci-docs.md`
   — the acceptance suite, the workflow and why it is separate and secret-gated,
   the example submission, and every doc touched. Cite Step 9's output. **The
   orchestrator runs `make test`, fills the full count, and commits.**
@@ -2506,4 +2506,4 @@ requirement.
 
 **Name consistency.** `HARNESS_VERSION` (1) → used in 3, 6, 7. `canonical_json`/`write_json`/`read_json`/`round_floats` (1) → 3, 5, 6, 7. `Task`/`Frame`/`Budgets`/`MetricWindow`/`load_task`/`load_tasks`/`task_problems`/`prompt_text`/`tasks_root`/`METRIC_KEYS`/`ALIGN_MODES`/`SUBSCORES`/`CATEGORIES` (1) → 3, 4, 5, 8–11. `iou` handler params/result keys (2) → consumed verbatim by `Scorer._geometry` (3) and by the drift test (11). `Scorer`/`inject_rubric`/`total_of`/`refuse_scoring_overlap`/`IOU_TIMEOUT_S` (3) → 4, 5, 11. `add_bench_parser`/`cmd_bench`/`bench_service` (4) → 5, 6, 7; `_build_service(..., examples=)` (4) → 5, and Task 1's `author.py` is retrofitted in Task 4 Step 9. `BudgetedClient`/`BudgetExhausted`/`RunOutcome`/`run_task`/`transcript_payload`/`run_json`/`STOPPED` (5) → 6 reads the `run.json` it writes. `aggregate`/`compare_baseline`/`render_markdown`/`report_exit_code`/`REPORT_SCHEMA` (6) → 7 validates the `report.json` shape 6 produces. `row_problems`/`render_leaderboard`/`publish`/`REQUIRED_ROW_KEYS` (7) → 11 (docs). `export_reference`/`seed_metrics`/`render_drawing` (1, 8) → 8, 9, 10, 11.
 
-**Changelog numbers.** 0256 (T1), 0257 (T2), 0258 (T3), 0259 (T4), 0260 (T5), 0261 (T6), 0262 (T7), 0263 (T8), 0264 (T9), 0265 (T10), 0266 (T11) — contiguous, one per task, each written from the actual diff with the targeted test output cited by the implementer and the full `make test` count filled in by the orchestrator.
+**Changelog numbers.** 0271 (T1), 0272 (T2), 0273 (T3), 0274 (T4), 0275 (T5), 0276 (T6), 0277 (T7), 0278 (T8), 0279 (T9), 0280 (T10), 0281 (T11) — contiguous, one per task, each written from the actual diff with the targeted test output cited by the implementer and the full `make test` count filled in by the orchestrator.

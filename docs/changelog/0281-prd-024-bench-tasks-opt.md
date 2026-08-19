@@ -1,4 +1,4 @@
-# 0266 — PRD-024: the five `optimize_under_constraints` bench tasks
+# 0281 — PRD-024: the five `optimize_under_constraints` bench tasks
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -59,7 +59,7 @@ the evidence that an optimisation objective is graded here rather than a cliff.
   `prompt.md`, `starter/` (a complete project at the example's parameters),
   `reference/project/` (the optimised solution), `reference/metrics.json`,
   `specs/parts/<part>.py` (and `specs/project.py` for `opt_005`).
-- `docs/changelog/0266-prd-024-bench-tasks-opt.md` — this entry.
+- `docs/changelog/0281-prd-024-bench-tasks-opt.md` — this entry.
 
 ## Notes
 

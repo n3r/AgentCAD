@@ -1,4 +1,4 @@
-# 0263 — PRD-024 Task 7: `bench publish`, the leaderboard and the full-disclosure rule as code
+# 0278 — PRD-024 Task 7: `bench publish`, the leaderboard and the full-disclosure rule as code
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -106,7 +106,7 @@ reading, ordered so that republishing the same input produces the same bytes.
 - `benchmarks/leaderboard/rows/.gitkeep` — new: the board layout.
 - `docs/superpowers/specs/2026-08-19-agentcad-bench-design.md` — §17 ledger
   gains **D24**, recording the rule-4 narrowing (row-relative + contained).
-- `docs/changelog/0263-prd-024-bench-publish.md` — this entry.
+- `docs/changelog/0278-prd-024-bench-publish.md` — this entry.
 
 ## Notes
 - `agentcad/bench/cli.py` is **not** touched here (another worker owns it in this

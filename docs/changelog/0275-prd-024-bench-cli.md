@@ -1,4 +1,4 @@
-# 0260 — PRD-024: `agentcad bench` — the CLI, `score`, `report`, `publish`, and the two `cli.py` edits
+# 0275 — PRD-024: `agentcad bench` — the CLI, `score`, `report`, `publish`, and the two `cli.py` edits
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -117,7 +117,7 @@ dispatch arm and the `bench` metavar entry.
 - `tests/test_packages_cli.py` — `test_help_lists_package_beside_the_other_commands`
   now expects `bench` in the metavar (the test is per-command *and* pins the
   literal string, so a new command has to update it — by design).
-- `docs/changelog/0260-prd-024-bench-cli.md` — this entry.
+- `docs/changelog/0275-prd-024-bench-cli.md` — this entry.
 
 ## Verification
 

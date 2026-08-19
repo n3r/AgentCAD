@@ -1,4 +1,4 @@
-# 0268 — PRD-024 final whole-branch review: the write grant, the prompt leak, and fifteen smaller fixes
+# 0283 — PRD-024 final whole-branch review: the write grant, the prompt leak, and fifteen smaller fixes
 
 - **Commit:** pending
 - **Date:** 2026-08-19
