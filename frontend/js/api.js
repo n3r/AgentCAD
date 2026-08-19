@@ -258,6 +258,33 @@ export const api = {
     request("POST", `/api/projects/${enc(proj)}/merge/resolve`, { choices }),
   abortMerge: (proj) => request("POST", `/api/projects/${enc(proj)}/merge/abort`),
 
+  // ---- BOM (PRD-015 FR1-3) ----
+  // Zero-kernel registry passthroughs. `params`: {structure?, config?, ref?}
+  // — `ref` (branch/tag/commit) computes the BOM against a throwaway
+  // materialized worktree (FR5) without touching the working project.
+  getBom: (proj, params) =>
+    request("GET", `/api/projects/${enc(proj)}/bom${query(params)}`),
+  /** Plain download URLs (no X-Agent-Id needed: get_bom/export_bom never
+   *  depend on client identity) — the drawingSvgUrl/drawingPdfUrl pattern. */
+  bomCsvUrl: (proj, params) =>
+    `/api/projects/${enc(proj)}/bom.csv${query(params)}`,
+  bomJsonUrl: (proj, params) =>
+    `/api/projects/${enc(proj)}/bom.json${query(params)}`,
+  /** body: {part_number?, unit_cost_usd?, supplier?, url?, config?} — only
+   *  the fields present are updated. */
+  patchBom: (proj, partId, body) =>
+    request("PATCH", `/api/projects/${enc(proj)}/parts/${enc(partId)}/bom`, body),
+
+  // ---- releases (PRD-015 FR6-9) ----
+  listReleases: (proj) => request("GET", `/api/projects/${enc(proj)}/releases`),
+  getRelease: (proj, rev) =>
+    request("GET", `/api/projects/${enc(proj)}/releases/${enc(rev)}`),
+  /** body: {notes?, waive?: {reason}} -> {rev, proposal, gate, status} */
+  releaseStart: (proj, body) =>
+    request("POST", `/api/projects/${enc(proj)}/releases`, body || {}),
+  releaseFinalize: (proj, rev) =>
+    request("POST", `/api/projects/${enc(proj)}/releases/${enc(rev)}/finalize`),
+
   // ---- change proposals ----
   // Same dual error contract as the merge routes above: POST …/merge answers
   // HTTP 200 with an {"error": {"type": "merge_conflict"}} body, so callers

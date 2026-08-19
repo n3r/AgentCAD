@@ -68,6 +68,10 @@
 
     <button id="sketch-btn" class="tb-btn" title="2D sketch editor (part mode)">✏️ Sketch</button>
 
+    <button id="bom-btn" class="tb-btn" title="Bill of materials (PRD-015)">BOM</button>
+
+    <button id="releases-btn" class="tb-btn" title="Releases: cut and finalize a versioned revision (PRD-015)">Releases</button>
+
     <button id="library-btn" class="tb-btn" title="Parts library — search and insert a package part">Library</button>
 
     <button id="market-btn" class="tb-btn" title="Browse the public marketplace catalog">Market</button>
@@ -304,6 +308,45 @@
     </div>
   </div>
 
+  <!-- The BOM view (PRD-015 FR1-4): one row per rolled-up assembly line,
+       footer totals, CSV/JSON export, inline edits for the manual bom
+       inputs. Bootstrapped by the standalone script at the end of this file
+       (bom.js), not by main.js — see that script's comment. -->
+  <div id="bom-modal" class="modal-overlay hidden">
+    <div class="modal wide">
+      <header class="modal-head">
+        <span id="bom-title" class="modal-title">BOM</span>
+        <div class="modal-actions">
+          <select id="bom-structure" class="tb-btn" title="Line structure">
+            <option value="flat" selected>Flat (rolled up)</option>
+            <option value="indented">Indented (per occurrence)</option>
+          </select>
+          <a id="bom-download-csv" class="tb-btn hidden" download>Download CSV</a>
+          <a id="bom-download-json" class="tb-btn hidden" download>Download JSON</a>
+          <button id="bom-close" class="tb-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div id="bom-body" class="ver-body bom-body"></div>
+      <footer id="bom-foot" class="modal-foot bom-foot"></footer>
+    </div>
+  </div>
+
+  <!-- The releases panel (PRD-015 FR6-9): the draft -> in_review -> released
+       -> superseded revision state machine. Bootstrapped by releases.js at
+       the end of this file — see bom.js's comment for why it is standalone. -->
+  <div id="releases-modal" class="modal-overlay hidden">
+    <div class="modal narrow">
+      <header class="modal-head">
+        <span id="releases-title" class="modal-title">Releases</span>
+        <div class="modal-actions">
+          <button id="releases-cut" class="tb-btn" type="button">Cut release…</button>
+          <button id="releases-close" class="tb-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div id="releases-body" class="ver-body"></div>
+    </div>
+  </div>
+
   <div id="share-modal" class="modal-overlay hidden">
     <div class="modal narrow">
       <header class="modal-head">
@@ -447,5 +490,20 @@
   <div id="toasts"></div>
 
   <script type="module" src="/js/main.js"></script>
+  <!-- PRD-015 Slice 6: bom.js/releases.js are bootstrapped HERE rather than
+       from main.js (out of scope for this slice's edit boundary). Both
+       import the SAME `state.js` module instance main.js already populates
+       (the browser dedupes ES module imports by resolved URL, so there is
+       no second copy of the store) and target the shared #toasts host
+       directly, so no cooperation from main.js's `actions` object is
+       required — only the two toolbar buttons' click wiring lives here. -->
+  <script type="module">
+    import * as bom from "/js/bom.js";
+    import * as releases from "/js/releases.js";
+    bom.init();
+    releases.init();
+    document.getElementById("bom-btn").addEventListener("click", () => bom.open());
+    document.getElementById("releases-btn").addEventListener("click", () => releases.open());
+  </script>
 </body>
 </html>
