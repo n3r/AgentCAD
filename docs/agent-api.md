@@ -126,6 +126,10 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
 Required arguments are **bold**; the rest are optional. Discover the live set
 and exact JSON Schemas at runtime with `GET /api/tools` — that is the source
 of truth, and it omits the FEM tools unless the `[fem]` extra is installed.
+The browser's own ⌘K command palette (PRD-026) reads the exact same
+response for its "Tools" section and generates its argument forms from the
+exact same schemas — there is no second, frontend-side list of tools to keep
+in sync, so a tool this page documents is a tool the palette can already run.
 
 ### Projects and parts
 
@@ -1346,8 +1350,12 @@ the anonymous surface; `market_install` is the agent one-call equivalent.
 
 The FEM tools are registered **only** when `agentcad[fem]` is installed, so
 they never appear in `GET /api/tools` (or to agents) otherwise — the
-philosophy is that agents must not see a tool that cannot run. Without the
-extra, the routes answer 501 with an install hint.
+philosophy is that agents must not see a tool that cannot run. This is the
+same rule the browser's ⌘K palette (PRD-026) inherits for free: its "Tools"
+section is built from `GET /api/tools` at query time, so a server without
+`[fem]` shows a palette without the FEM tools too, with no frontend-side
+enumeration to keep in sync. Without the extra, the routes answer 501 with an
+install hint.
 
 | Tool | Arguments | Returns |
 |---|---|---|
