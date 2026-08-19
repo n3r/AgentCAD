@@ -139,7 +139,7 @@ $ uv run pytest -q tests/test_bench_scoring.py tests/test_bench_kernel_iou.py
 $ uv run ruff check agentcad/bench/scoring.py tests/test_bench_scoring.py
 All checks passed!
 ```
-`make test` — <orchestrator fills>
+`make test` — 4702 passed, 36 skipped (measured at branch tip 1ae80d1, all slices landed)
 
 AC3 is two tests: `score` twice over the same submission is byte-identical
 (and contains no `generated`, no `started`, no `/tmp`, no `/private`), and the

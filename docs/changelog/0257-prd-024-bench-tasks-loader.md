@@ -182,4 +182,4 @@ All checks passed!
 (`ruff format` is not this project's style — it would reformat
 `core/checks.py` and `core/specs.py` too, and the repo ships no ruff config.)
 
-`make test` — <orchestrator fills>
+`make test` — 4702 passed, 36 skipped (measured at branch tip 1ae80d1, all slices landed)

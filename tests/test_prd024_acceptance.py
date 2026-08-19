@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -84,7 +85,11 @@ def test_ac1_every_shipped_reference_scores_one(service_with_kernel, task_id):
     """
     task = bench_tasks.load_task(task_id)
     score = Scorer(service_with_kernel).score(task, task.reference_project)
-    assert score["total"] == pytest.approx(1.0, abs=1e-6), score["subscores"]
+    # Exactly 1.0, not "close to it": `score.json` is rounded to six
+    # decimals before it is written, so a reference that measures right
+    # returns the literal float, and a tolerance here would hide a
+    # rubric that is a hair off from the thing it grades.
+    assert score["total"] == 1.0, score["subscores"]
     # A total of 1.0 with everything excluded would be vacuous.
     assert score["weights_effective"], score
     for name, row in score["subscores"].items():
@@ -332,9 +337,15 @@ def test_the_secret_job_never_runs_on_a_pull_request():
     assert "pull_request_target" not in text
 
     builtin = _workflow()["jobs"]["builtin"]
-    condition = builtin["if"]
-    assert "needs.guard.outputs.has_key == 'true'" in condition
-    assert "github.event_name != 'pull_request'" in condition
+    # The WHOLE condition, not three substring probes: `A || B` contains both
+    # needles and would sail through a membership test while running the paid
+    # job on every event that satisfies either half. The `roadmap` branch is in
+    # `on.push` for `selftest`'s sake, so the ref test is what keeps the spend
+    # on main (design §13).
+    assert builtin["if"] == (
+        "${{ needs.guard.outputs.has_key == 'true'"
+        " && github.event_name != 'pull_request'"
+        " && github.ref == 'refs/heads/main' }}")
     assert builtin["needs"] == "guard"
     assert builtin["env"]["ANTHROPIC_API_KEY"] == \
         "${{ secrets.ANTHROPIC_API_KEY }}"
@@ -401,6 +412,39 @@ def test_the_task_tree_and_the_results_stay_out_of_the_image():
     ignored = (REPO / ".dockerignore").read_text(encoding="utf-8").split()
     assert "benchmarks/" in ignored
     assert "out/" in ignored
+
+
+# ------------------------------------------------------------- the evidence
+
+def test_the_close_out_changelog_cites_a_full_suite_count():
+    """"`make test` green" is a claim about a *run*, so it is an evidence check.
+
+    The house precedent is `tests/test_prd006_acceptance.py`'s
+    `test_ac8_the_full_suite_count_is_cited` (itself the PRD-004/008/011/012
+    one): recomputing the number would mean running the full suite from inside
+    the full suite, and `--collect-only` counts *cases*, which is not what
+    `make test` reports.
+
+    The digits are required **immediately before the word `passed`**, because
+    every entry's own title is a four-digit number and "the file contains a
+    long digit string" would be satisfied by an entry that cites nothing. The
+    literal placeholder is **red on purpose**, so the close-out cannot forget
+    to fill it in.
+
+    The entry is found by its **slug**, never its number: this repo renumbers
+    changelogs when two branches collide at merge, and a hardcoded `0267-`
+    would be a test that fails for a rename it should not care about.
+    """
+    matches = sorted((REPO / "docs" / "changelog").glob(
+        "*-prd-024-bench-acceptance-ci-docs.md"))
+    assert len(matches) == 1, (
+        f"expected exactly one PRD-024 close-out changelog entry, found "
+        f"{[m.name for m in matches]}")
+    text = matches[0].read_text(encoding="utf-8")
+    assert "make test" in text
+    assert re.search(r"\b\d{4,6}\s+passed\b", text.replace(",", "")), (
+        f"{matches[0].name} does not cite a `make test` suite count — fill in "
+        f"the placeholder before committing")
 
 
 # ------------------------------------------------------------------ docs

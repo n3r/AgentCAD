@@ -176,7 +176,7 @@ uv run pytest tests/test_bench_tasks.py -q   ->  19 passed in 0.21s
 load_tasks() -> 20 tasks; fast set = one per shipped category
 ```
 
-`make test` — <orchestrator fills>
+`make test` — 4702 passed, 36 skipped (measured at branch tip 1ae80d1, all slices landed)
 
 ---
 

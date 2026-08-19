@@ -200,4 +200,4 @@ This is PRD-024 AC8: a task that exhausts its budget is stopped, flagged
   **42 passed** (35.5 s); `tests/test_chat.py` — **10 passed** (0.7 s).
 - `uv run ruff check agentcad/bench/runner.py agentcad/bench/cli.py
   tests/test_bench_runner.py tests/test_bench_cli.py` — **All checks passed!**
-- `make test` — <orchestrator fills>
+- `make test` — 4702 passed, 36 skipped (measured at branch tip 1ae80d1, all slices landed)

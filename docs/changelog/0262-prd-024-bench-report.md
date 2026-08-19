@@ -159,4 +159,4 @@ a socket or reads a clock.
   tests/test_bench_report.py` → **All checks passed!**. Run against the
   pre-review module (`git show f3eb7a8:agentcad/bench/report.py`) the review
   round's tests are **10 failed, 19 passed** — every finding is covered by a
-  test that fails without its fix. `make test` — <orchestrator fills>.
+  test that fails without its fix. `make test` — 4702 passed, 36 skipped (measured at branch tip 1ae80d1, all slices landed).

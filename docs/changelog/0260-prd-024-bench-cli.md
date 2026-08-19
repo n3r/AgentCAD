@@ -179,7 +179,7 @@ $ uv run agentcad bench run --report /dev/null    →  exit 2, "not implemented 
 $ uv run agentcad bench                           →  exit 2, "pick a subcommand: run, score, report, publish"
 ```
 
-`make test` — <orchestrator fills>
+`make test` — 4702 passed, 36 skipped (measured at branch tip 1ae80d1, all slices landed)
 
 ## Notes
 

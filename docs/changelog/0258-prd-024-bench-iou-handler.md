@@ -102,7 +102,7 @@ behind it. It is deliberately **not** a model-facing tool.
   tests/test_reference.py tests/test_kernel.py tests/test_tools.py` →
   **58 passed, 5 skipped in 37.99s**; `-n 2 --dist loadscope` over this module
   plus `test_geom_diff.py` → **25 passed**. Full suite:
-  `make test — <orchestrator fills>`.
+  `make test — 4702 passed, 36 skipped (measured at branch tip 1ae80d1, all slices landed)`.
 - Every volume assertion in the test module is analytic (a 10 mm cube is
   1000 mm³; a half overlap is 500, so IoU is 500/1500 = 1/3 exactly), so the
   test checks the handler's arithmetic rather than echoing it.

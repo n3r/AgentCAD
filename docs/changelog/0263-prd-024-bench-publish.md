@@ -128,4 +128,4 @@ reading, ordered so that republishing the same input produces the same bytes.
 - Targeted test evidence: `uv run pytest -q tests/test_bench_publish.py` →
   **32 passed**; `uv run ruff check agentcad/bench/publish.py
   tests/test_bench_publish.py` → clean.
-- Full suite: `make test — <orchestrator fills>`.
+- Full suite: `make test — 4702 passed, 36 skipped (measured at branch tip 1ae80d1, all slices landed)`.

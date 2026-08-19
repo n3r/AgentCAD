@@ -204,7 +204,7 @@ is exactly what "valid but wrong" means. Both are under the 0.95 bar with room.
 problems, `fast` on `fix_001_contract` and `asm_002_lid_on_base` (one per
 category, the quickest in each).
 
-`make test` — <orchestrator fills>
+`make test` — 4702 passed, 36 skipped (measured at branch tip 1ae80d1, all slices landed)
 
 **Follow-ups / known limits.**
 

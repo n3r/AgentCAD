@@ -259,7 +259,7 @@ uv run pytest -q tests/test_bench_tasks.py tests/test_bench_author.py
 35 passed in 7.30s
 ```
 
-`make test` — <orchestrator fills>
+`make test` — 4702 passed, 36 skipped (measured at branch tip 1ae80d1, all slices landed)
 
 ## Notes
 

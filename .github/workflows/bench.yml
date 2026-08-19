@@ -29,7 +29,10 @@ on:
 
 concurrency:
   group: bench-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs only. A push to main can start the PAID `builtin`
+  # job, and cancelling one of those mid-flight burns the API spend and leaves
+  # no result — the opposite of what the group is for.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -103,22 +106,36 @@ jobs:
       - id: k
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
         run: |
           if [ -n "$ANTHROPIC_API_KEY" ]; then
             echo "has_key=true" >> "$GITHUB_OUTPUT"
+          elif [ "$IS_FORK" = "true" ]; then
+            # Not a misconfiguration: GitHub withholds every secret from a fork
+            # pull request by design, and the `builtin` job would refuse this
+            # event anyway. Saying "not configured" here would send a
+            # contributor to look for a setting that is not theirs to set.
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=AgentCAD-Bench::secrets are withheld from fork pull requests, so the built-in agent run was skipped. This is expected; the task-set self-test above is the PR-blocking half."
           else
             echo "has_key=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=AgentCAD-Bench::ANTHROPIC_API_KEY is not configured; the built-in agent run was skipped."
           fi
 
   # -------------------------------------------------------------- agent lane
-  # BOTH conditions are load-bearing. `has_key` keeps the job from starting a
-  # run it cannot finish; `event_name != 'pull_request'` keeps a fork's branch
-  # from ever being the thing that runs while the key is in the environment.
+  # ALL THREE conditions are load-bearing, and they are ANDed. `has_key` keeps
+  # the job from starting a run it cannot finish; `event_name != 'pull_request'`
+  # keeps a fork's branch from ever being the thing that runs while the key is
+  # in the environment; `ref == refs/heads/main` keeps the paid run off the
+  # `roadmap` branch, which `on.push` (and `selftest`) deliberately include —
+  # design §13 says schedule, dispatch and main, and a trigger list wider than
+  # the job's own guard is how a spend leak starts. A scheduled run always
+  # carries the default branch, so the ref test costs nothing there; a manual
+  # `workflow_dispatch` must be launched from main, which is deliberate.
   builtin:
     name: built-in agent (fast set)
     needs: guard
-    if: ${{ needs.guard.outputs.has_key == 'true' && github.event_name != 'pull_request' }}
+    if: ${{ needs.guard.outputs.has_key == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     runs-on: macos-latest
     timeout-minutes: 60
     env:
