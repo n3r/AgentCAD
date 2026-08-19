@@ -8,7 +8,7 @@ for the occasion.
 |---|---|
 | AC1 | `test_ac1_the_malicious_battery_is_named_and_gated` + `test_ac1_a_linux_worker_reports_itself_confined` |
 | AC2 | `test_ac2_the_seatbelt_regressions_survived_the_refactor` |
-| AC3 | `test_ac3_a_confined_kernel_reports_active_with_its_mechanism` + `test_ac3_windows_reports_unsupported_and_names_prd_006b` |
+| AC3 | `test_ac3_a_confined_kernel_reports_active_with_its_mechanism` + `test_ac3_windows_confines_with_an_appcontainer_or_says_why_not` |
 | AC4–AC7 | `test_ac4_to_ac7_are_graded_by_the_supervisor_and_usage_suites` (pointers) |
 | AC8 | `test_ac8_the_opt_out_drops_confinement_and_keeps_the_caps` + `test_ac8_a_kernel_that_cannot_confine_says_unsupported_not_active` + `test_ac8_the_full_suite_count_is_cited` |
 
@@ -17,9 +17,9 @@ Three of them are worth reading before you believe them:
 * **The whole file is gated on `AGENTCAD_EXPECT_SANDBOX`, and that is the
   point** (design spec, Decision 13). Every containment assertion holds *when
   the live status is `active`*, and the environment variable turns "not
-  active" from a skip into a failure. `ci.yml` sets it on the macOS and ubuntu
-  jobs and leaves it empty on Windows, where `unsupported` is the honest
-  answer; `scripts/linux-test.sh` sets it too. Without it, a runner whose
+  active" from a skip into a failure. `ci.yml` sets it on all three jobs —
+  Windows included since PRD-006b landed the AppContainer;
+  `scripts/linux-test.sh` sets it too. Without it, a runner whose
   kernel lost Landlock would go green while confining nothing — which is
   exactly the silent degradation AC8 forbids.
 * **AC4–AC7 are pointers, deliberately.** They are graded by tests that spawn
@@ -108,8 +108,8 @@ def confined(tmp_path_factory):
     only has to be right for that single call.
     """
     if sys.platform == "win32":
-        pytest.skip("Windows confinement is PRD-006b; AC3's Windows clause is "
-                    "its own test below")
+        pytest.skip("Windows is graded by AC3's own Windows clause below and "
+                    "by the live battery in tests/test_sandbox_windows.py")
     root = tmp_path_factory.mktemp("prd006-ac")
     patch = pytest.MonkeyPatch()
     patch.setenv("AGENTCAD_CONFIG", str(root / "no-such-config.json"))
@@ -262,24 +262,23 @@ def test_ac3_a_confined_kernel_reports_active_with_its_mechanism(confined):
         assert report["quotas"]["mechanism"].endswith("supervisor"), report
 
 
-def test_ac3_windows_reports_unsupported_and_names_prd_006b(tmp_path,
-                                                            monkeypatch):
-    """**AC3, the Windows clause** — and the reason this PRD does not close it.
+def test_ac3_windows_confines_with_an_appcontainer_or_says_why_not(tmp_path,
+                                                                    monkeypatch):
+    """**AC3, the Windows clause** — carved out as PRD-006b, and now landed.
 
-    AppContainer with CPython and OCCT is the least-trodden path of the three,
-    cannot be exercised on the box this was built on, and each attempt is a
-    Windows-CI round trip — so it is carved out as **PRD-006b** and health
-    says `unsupported` rather than implying a switch nobody flipped
-    (design spec, Decisions 7 and 12). The Windows *quotas* did ship: the job
-    object is a real tier and `sandbox_windows.py` is exercised live on the
-    windows-latest job.
+    006 shipped the Windows *quotas* (the job object) and reported confinement
+    `unsupported`, because AppContainer with CPython and OCCT was the
+    least-trodden path of the three and each attempt is a Windows-CI round
+    trip. 006b spends those round trips: the worker is created inside an
+    AppContainer with no capabilities, and health reports it — `active` only
+    from the worker's **own** `TokenIsAppContainer`, `off` with a `reason` when
+    a profile/ACL/spawn failed, `unsupported` below Windows 8.
 
-    Runs on every OS: the Win32 entry points live behind `open_job()`, and
-    what is asserted here is the confinement the backend reports before any of
-    them is called. The live job object is exercised by
-    `tests/test_sandbox_windows.py` **on the windows-latest CI job** — gated
-    there, not run here, and not yet observed green: that evidence lands with
-    the first green CI run of this branch's PR.
+    Runs on every OS. Off Windows the Win32 entry points cannot even load, so
+    what is graded here is the shape and the honesty: a status from the three,
+    a `reason` whenever it is not `active`, and the caps published either way.
+    The live container is exercised by `tests/test_sandbox_windows.py` **on
+    the windows-latest CI job** — gated there, not run here.
     """
     from agentcad.kernel import sandbox_windows
 
@@ -289,11 +288,22 @@ def test_ac3_windows_reports_unsupported_and_names_prd_006b(tmp_path,
         BASE_ARGV, [str(tmp_path)], resolve(QUOTAS, env={}, config={}),
         "local", os.getpid())
     try:
-        assert confinement["status"] == "unsupported"
-        assert confinement["mechanism"] is None
-        assert "PRD-006b" in confinement["detail"]["note"]
-        # ...and the caps are published anyway. `unsupported` confinement is
-        # not "nothing is bounded".
+        if sys.platform == "win32" and _expect("SANDBOX") == "active":
+            assert confinement["status"] == "active", confinement
+            assert confinement["mechanism"] == "appcontainer", confinement
+            assert confinement["detail"]["sid"].startswith("S-1-15-2-"), \
+                confinement
+        else:
+            assert confinement["status"] in ("active", "off", "unsupported"), \
+                confinement
+            if confinement["status"] == "active":
+                assert confinement["mechanism"] == "appcontainer", confinement
+            else:
+                # A mechanism named beside `off` claims something is in force,
+                # and a status with no reason reads as a bug in the sandbox.
+                assert confinement["mechanism"] is None, confinement
+                assert confinement["detail"]["reason"], confinement
+        # ...and the caps are published whatever the confinement did.
         assert quotas["limits"]["memory_mb"] == 1024
         if sys.platform == "win32" and _expect("QUOTAS") == "active":
             # Only on Windows is this a claim about a live job object; the
@@ -304,9 +314,12 @@ def test_ac3_windows_reports_unsupported_and_names_prd_006b(tmp_path,
     finally:
         backend.release()
 
-    prd = REPO / "docs" / "prd" / "pending" / "PRD-006b-windows-appcontainer.md"
-    assert prd.is_file(), "the carve-out PRD the note points at does not exist"
-    assert "folder-as-status" in prd.read_text(encoding="utf-8")
+    # Folder-as-status: the PRD moves pending -> in-progress -> completed, and
+    # the evidence is that it exists exactly once, wherever it currently lives.
+    prds = sorted((REPO / "docs" / "prd").glob(
+        "*/PRD-006b-windows-appcontainer.md"))
+    assert len(prds) == 1, prds
+    assert "folder-as-status" in prds[0].read_text(encoding="utf-8")
 
 
 # =============================================================== AC4 – AC7
@@ -488,7 +501,8 @@ def test_ac8_the_ci_matrix_carries_the_honesty_gate():
     assert ci.count("AGENTCAD_EXPECT_SANDBOX") >= 2, \
         "both suites must carry the gate"
     assert ci.count("AGENTCAD_EXPECT_QUOTAS: active") >= 2
-    # macOS and ubuntu expect confinement; windows-latest deliberately does
-    # not, because `unsupported` is 006b's honest answer there.
-    assert ci.count("expect_sandbox: active") == 2, ci
-    assert 'expect_sandbox: ""' in ci
+    # All three rows expect confinement since PRD-006b landed the Windows
+    # AppContainer: a silent degradation to an unconfined worker is red
+    # everywhere, which is the whole point of the gate.
+    assert ci.count("expect_sandbox: active") == 3, ci
+    assert 'expect_sandbox: ""' not in ci

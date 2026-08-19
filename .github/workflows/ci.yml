@@ -29,9 +29,11 @@ jobs:
       matrix:
         # `expect_sandbox` is PRD-006's honesty gate (Decision 13): where it is
         # `active`, a worker that failed to confine itself is a RED test rather
-        # than a skipped one. It is empty on Windows because AppContainer is
-        # carved out as PRD-006b and `unsupported` is the honest answer there —
-        # quotas (job objects + the supervisor) are still expected on all three.
+        # than a skipped one. All three platforms carry it since PRD-006b landed
+        # the Windows AppContainer — a profile, an ACL or a lowbox spawn that
+        # silently degraded to an unconfined worker is exactly what this catches
+        # — and quotas (rlimits/cgroups, job objects, the supervisor) are
+        # expected on all three.
         include:
           # macOS runs every PR-required test; exhaustive examples run nightly.
           # 30 minutes, not 20: PRD-006 put `test_supervisor.py`'s real 1.5 GB
@@ -50,7 +52,7 @@ jobs:
           - os: windows-latest
             suite: portability
             timeout: 20
-            expect_sandbox: ""
+            expect_sandbox: active
     steps:
       - uses: actions/checkout@v4
 

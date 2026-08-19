@@ -32,6 +32,15 @@ _EAGAIN = ("[Errno 11]", "[Errno 35]", "Resource temporarily unavailable")
 #: `connection`, which is how `socket.create_connection` matches.
 _NETWORK_FRAMES = ("socket", "urlopen", "connect", "getaddrinfo")
 
+#: ``WSAEACCES``: what Winsock answers when the process's token carries no
+#: network capability — an AppContainer without ``INTERNET_CLIENT``, which is
+#: how the Windows confinement denies the network (PRD-006b, Decision 2).
+#: CPython renders it as ``PermissionError: [WinError 10013] An attempt was
+#: made to access a socket in a way forbidden by its access permissions``, with
+#: **no** ``[Errno 13]`` and no "Permission denied" in it, so none of the rules
+#: below sees it and an unconfined-looking `None` was the answer.
+_WSAEACCES = "WinError 10013"
+
 
 def _names_a_path(message: str) -> bool:
     """Whether *message* carries the quoted filename ``OSError.__str__``
@@ -137,6 +146,15 @@ def classify(exc_type: str, message: str, *, active, traceback: str = "") -> str
     if exc_type == "MemoryError":
         return "memory" if _claimable(active, "memory") else None
     if exc_type == "PermissionError":
+        if _WSAEACCES in message:
+            # Winsock's own refusal, and the socket-frame rule still applies:
+            # `WSAEACCES` is also what a bind to a reserved port answers, so
+            # the evidence has to be a socket call — which, for this one, the
+            # message itself carries ("access a socket in a way forbidden").
+            frames = f"{message}\n{traceback}"
+            if any(marker in frames for marker in _NETWORK_FRAMES):
+                return "network" if _claimable(active, "network") else None
+            return None
         # EPERM is the kernel refusing the *operation*; EACCES is it refusing
         # the *path*. Only the second one is unambiguous on its own.
         if "[Errno 1]" in message or "Operation not permitted" in message:

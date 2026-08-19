@@ -454,7 +454,7 @@ one is not opting out of the other.
 |---|---|---|---|---|---|
 | **Linux** | Landlock + seccomp, applied by the worker to itself before `import build123d` | `local` posture: anywhere. `hosted` posture (this deployment): an allow-list — `/usr`, `/lib*`, `/bin`, `/sbin`, `/etc`, `/opt`, `/proc`, `/dev`, `/sys`, the interpreter, the app tree, and everything it may write to (the roots in the next column — a write root is readable by construction, which is why `<state-dir>/publications/build` is the one subtree of `AGENTCAD_STATE_DIR` on this list). **Not** the rest of `AGENTCAD_STATE_DIR` (`secret.key`, `auth/`), and **nothing under the server user's home** — the config dir stopped being a write root wholesale, so there is no broader exception to state. The worker's own `HOME` env var points at its private temp dir, so `~` inside a script is not the server user's home at all | the granted roots only — the projects dir, each registered example, the server's one `agentcad-work-*` root, the worker's own private temp dir, and `<state-dir>/publications/build` (PRD-007's shared-pool variant builds — `core/share_build.py`). Nothing else, root included (Landlock beats DAC) | denied: every socket family but `AF_UNIX` | no `ptrace`, no `process_vm_readv/writev`, no `pidfd_open`/`pidfd_send_signal`/`pidfd_getfd`, no `process_madvise`, no `io_uring`, and no signal to pid ≤ 0 or to the server |
 | **macOS** | `sandbox-exec` seatbelt profile (the v3 profile, unchanged) | anywhere (`local` posture only — the narrowed profile is Linux) | the same roots | denied | signals to self only |
-| **Windows** | **none.** Reported `unsupported`, honestly, in health and here — AppContainer is carved out as [PRD-006b](prd/pending/PRD-006b-windows-appcontainer.md) | — | — | — | — |
+| **Windows** | an AppContainer (a package SID with no capabilities), the roots granted to it with `icacls`, the worker spawned through `CreateProcessW` with `SECURITY_CAPABILITIES` | anywhere the SID has an ACE: the interpreter, the venv and the app tree (`RX`), plus everything it may write. `local` posture only — the narrowed hosted allow-list is Landlock | the same roots (`M`), granted per plan; everything else answers `[Errno 13]` | denied: no `INTERNET_CLIENT` capability, so a connect fails with `[WinError 10013]` | the job object caps how many it may start; a child inherits the container |
 
 Both postures are explicit named profiles; the hosted one is what
 `AGENTCAD_MODE=hosted` selects. Forks and `exec`s inherit the confinement, so a
@@ -609,8 +609,9 @@ Nothing new: it is the error contract that already existed.
 ### Still deferred, named so it is not a surprise
 
 No audit log, no per-project ACLs, no organisations, no SSO. No per-account
-compute budget (the caps are per worker per request). Windows confinement is
-[PRD-006b](prd/pending/PRD-006b-windows-appcontainer.md). A narrowed *macOS*
+compute budget (the caps are per worker per request). Windows confinement
+landed as PRD-006b (an AppContainer, above), but hosted mode is still the
+Linux image — a Windows *host* posture is not built. A narrowed *macOS*
 read posture (the seatbelt equivalent of `hosted`) is not built — hosted mode
 is the Linux image. Attribution exists (history trailers, proposal and comment
 records) but is not a queryable per-instance log.

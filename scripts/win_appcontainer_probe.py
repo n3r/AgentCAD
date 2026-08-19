@@ -19,10 +19,15 @@ each, budget ~5 rounds):
    verbatim exception of every battery item. The controller pastes the log
    back and the implementation slice starts from measured facts.
 
-The only thing imported from the product is `agentcad._resources.resource_root`
-(and even that has a fallback), plus the real
-`python -m agentcad.kernel.worker` as the spawned child — the point is to
-prove **the real worker**, not a toy, builds and exports inside the container.
+Since Slice 2 landed, the profile, the ACL grant, the package tree and the
+`CreateProcessW` spawn are **imported from `agentcad.kernel.sandbox_windows`**
+rather than duplicated here: this script proved them, and a probe that drifts
+from the code it is supposed to be probing is worse than no probe. What stays
+local is what only a probe needs — the job object with its own knobs, the
+diagnostics that read ACLs back, and the line-JSON protocol helpers on top of
+the spawned process. The child is the real
+`python -m agentcad.kernel.worker`, because the point is to prove **the real
+worker**, not a toy, builds and exports inside the container.
 
 ## What the steps prove
 
@@ -93,6 +98,28 @@ except Exception:  # noqa: BLE001 - the probe must run even from a broken tree
     def resource_root() -> Path:  # type: ignore[misc]
         return _REPO_ROOT
 
+# The product's own AppContainer plumbing. Imported, not copied: these are the
+# prototypes this probe proved, and they now live in the module the server
+# uses — so a probe run exercises exactly what ships. The module is
+# ctypes-lazy, so this import works on macOS too (where the file is edited).
+from agentcad.kernel.sandbox_windows import (  # noqa: E402
+    JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    READ_RIGHTS,
+    WRITE_RIGHTS,
+    AppContainerProfile,
+    JobObjectBasicProcessIdList,
+    JobObjectExtendedLimitInformation,
+    _process_id_list,
+    acl_grant,
+    make_package_tree,
+)
+from agentcad.kernel.sandbox_windows import (  # noqa: E402
+    ConfinedProcess as _ConfinedProcess,
+)
+
 
 # ------------------------------------------------------------------ reporting
 
@@ -133,125 +160,14 @@ def oneline(text: str, limit: int = 600) -> str:
 
 
 # ------------------------------------------------------------ Win32 constants
+#
+# Only what the PROBE needs beyond the product's own module: the job object is
+# built here with explicit knobs (`--job-memory-mb`), and the profile is
+# deleted at the end, which the product deliberately never does.
 
-PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = 0x00020009
-PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
-
-EXTENDED_STARTUPINFO_PRESENT = 0x00080000
-CREATE_SUSPENDED = 0x00000004
-CREATE_NO_WINDOW = 0x08000000
-CREATE_UNICODE_ENVIRONMENT = 0x00000400
-
-STARTF_USESTDHANDLES = 0x00000100
-HANDLE_FLAG_INHERIT = 0x00000001
-STILL_ACTIVE = 259
-ERROR_INSUFFICIENT_BUFFER = 122
+#: `QueryInformationJobObject` says the id list did not fit.
 ERROR_MORE_DATA = 234
-
-#: `HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)` — the profile survives reboots
-#: and every earlier run of this probe, so this is the *normal* answer on a
-#: second run and means "derive the SID instead".
-HRESULT_ALREADY_EXISTS = 0x800700B7
-
-#: Job object limits (same three the product's `sandbox_windows.build` sets).
-JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
-JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x00000100
-JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
-JobObjectBasicProcessIdList = 3
-JobObjectExtendedLimitInformation = 9
 JOB_PID_CAPACITY = 256
-
-TOKEN_QUERY = 0x0008
-TokenIsAppContainer = 29
-TokenAppContainerSid = 31
-
-
-class SECURITY_ATTRIBUTES(ctypes.Structure):
-    _fields_ = [("nLength", ctypes.c_uint32),
-                ("lpSecurityDescriptor", ctypes.c_void_p),
-                ("bInheritHandle", ctypes.c_int)]
-
-
-class SID_AND_ATTRIBUTES(ctypes.Structure):
-    _fields_ = [("Sid", ctypes.c_void_p),
-                ("Attributes", ctypes.c_uint32)]
-
-
-class SECURITY_CAPABILITIES(ctypes.Structure):
-    _fields_ = [("AppContainerSid", ctypes.c_void_p),
-                ("Capabilities", ctypes.POINTER(SID_AND_ATTRIBUTES)),
-                ("CapabilityCount", ctypes.c_uint32),
-                ("Reserved", ctypes.c_uint32)]
-
-
-class STARTUPINFOW(ctypes.Structure):
-    _fields_ = [("cb", ctypes.c_uint32),
-                ("lpReserved", ctypes.c_wchar_p),
-                ("lpDesktop", ctypes.c_wchar_p),
-                ("lpTitle", ctypes.c_wchar_p),
-                ("dwX", ctypes.c_uint32),
-                ("dwY", ctypes.c_uint32),
-                ("dwXSize", ctypes.c_uint32),
-                ("dwYSize", ctypes.c_uint32),
-                ("dwXCountChars", ctypes.c_uint32),
-                ("dwYCountChars", ctypes.c_uint32),
-                ("dwFillAttribute", ctypes.c_uint32),
-                ("dwFlags", ctypes.c_uint32),
-                ("wShowWindow", ctypes.c_uint16),
-                ("cbReserved2", ctypes.c_uint16),
-                ("lpReserved2", ctypes.c_void_p),
-                ("hStdInput", ctypes.c_void_p),
-                ("hStdOutput", ctypes.c_void_p),
-                ("hStdError", ctypes.c_void_p)]
-
-
-class STARTUPINFOEXW(ctypes.Structure):
-    _fields_ = [("StartupInfo", STARTUPINFOW),
-                ("lpAttributeList", ctypes.c_void_p)]
-
-
-class PROCESS_INFORMATION(ctypes.Structure):
-    _fields_ = [("hProcess", ctypes.c_void_p),
-                ("hThread", ctypes.c_void_p),
-                ("dwProcessId", ctypes.c_uint32),
-                ("dwThreadId", ctypes.c_uint32)]
-
-
-class IO_COUNTERS(ctypes.Structure):
-    _fields_ = [(name, ctypes.c_ulonglong) for name in (
-        "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-        "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
-
-
-class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong),
-                ("PerJobUserTimeLimit", ctypes.c_longlong),
-                ("LimitFlags", ctypes.c_uint32),
-                ("MinimumWorkingSetSize", ctypes.c_size_t),
-                ("MaximumWorkingSetSize", ctypes.c_size_t),
-                ("ActiveProcessLimit", ctypes.c_uint32),
-                ("Affinity", ctypes.c_size_t),
-                ("PriorityClass", ctypes.c_uint32),
-                ("SchedulingClass", ctypes.c_uint32)]
-
-
-class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-    _fields_ = [("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                ("IoInfo", IO_COUNTERS),
-                ("ProcessMemoryLimit", ctypes.c_size_t),
-                ("JobMemoryLimit", ctypes.c_size_t),
-                ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                ("PeakJobMemoryUsed", ctypes.c_size_t)]
-
-
-def _process_id_list(capacity: int):
-    class JOBOBJECT_BASIC_PROCESS_ID_LIST(ctypes.Structure):
-        _fields_ = [("NumberOfAssignedProcesses", ctypes.c_uint32),
-                    ("NumberOfProcessIdsInList", ctypes.c_uint32),
-                    ("ProcessIdList", ctypes.c_size_t * capacity)]
-
-    return JOBOBJECT_BASIC_PROCESS_ID_LIST
-
 
 # --------------------------------------------------------------- Win32 access
 #
@@ -277,21 +193,6 @@ def win_error(call: str) -> OSError:
 
 def hresult_text(hr: int) -> str:
     return f"0x{hr & 0xFFFFFFFF:08X}"
-
-
-def sid_to_string(psid: int) -> str:
-    advapi32 = lib("advapi32")
-    kernel32 = lib("kernel32")
-    advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p,
-                                                ctypes.POINTER(ctypes.c_void_p)]
-    out = ctypes.c_void_p()
-    if not advapi32.ConvertSidToStringSidW(ctypes.c_void_p(psid),
-                                           ctypes.byref(out)):
-        raise win_error("ConvertSidToStringSidW")
-    try:
-        return ctypes.wstring_at(out)
-    finally:
-        kernel32.LocalFree(out)
 
 
 def job_process_ids(job: int) -> list[int]:
@@ -375,207 +276,41 @@ class ProbeError(RuntimeError):
     """A step could not answer. Reported, never fatal."""
 
 
-class ConfinedProcess:
-    """`CreateProcessW` into an AppContainer, with the `Popen` surface the
-    kernel client actually uses (Decision 1's `ConfinedProcess` prototype).
+class ConfinedProcess(_ConfinedProcess):
+    """The product's `ConfinedProcess`, plus what only a probe needs.
 
-    Three pipes with only the child ends inheritable, a two-entry
-    `STARTUPINFOEX` attribute list (`SECURITY_CAPABILITIES` so the process gets
-    the lowbox token, `HANDLE_LIST` so nothing but those three handles crosses
-    over), a suspended start, `AssignProcessToJobObject` **before** the first
-    instruction, then `ResumeThread`.
+    The spawn itself — the pipes, the `SECURITY_CAPABILITIES` attribute list,
+    the suspended start, the job assignment, `ResumeThread` — is
+    `agentcad.kernel.sandbox_windows.ConfinedProcess`, which is where this
+    probe's prototype ended up. What is added here is the line-JSON protocol
+    (`request`/`collect`), the stderr tail and the reader threads: the kernel
+    client has its own, and duplicating the *spawn* is what would let the two
+    drift.
     """
 
     def __init__(self, argv: list[str], env: dict[str, str], cwd: str,
                  sid_ptr: int, job: int | None) -> None:
-        kernel32 = lib("kernel32")
+        super().__init__(argv, env, sid=sid_ptr, job=job, cwd=cwd)
         self.argv = list(argv)
-        self.returncode: int | None = None
-        self.handle: int | None = None
-        self.pid: int | None = None
-        self.job_assigned = False
         self.stderr_tail: deque[str] = deque(maxlen=200)
         self.lines: "queue.Queue[str | None]" = queue.Queue()
-        self._closed = False
-
-        # stdin: the child reads, so the READ end is the inheritable one.
-        stdin_r, stdin_w = self._pipe(child_end="read")
-        stdout_r, stdout_w = self._pipe(child_end="write")
-        stderr_r, stderr_w = self._pipe(child_end="write")
-        child_handles = (stdin_r, stdout_w, stderr_w)
-
-        # Kept as attributes on purpose: `UpdateProcThreadAttribute` stores
-        # POINTERS into the attribute list and does not copy, so every one of
-        # these must outlive the `CreateProcessW` call.
-        self._caps = SECURITY_CAPABILITIES()
-        # The raw address: a `c_void_p` *field* takes an int or None, and
-        # handing it a `c_void_p` instance is a TypeError.
-        self._caps.AppContainerSid = int(sid_ptr)
-        # No capabilities at all. The absence of `INTERNET_CLIENT` IS the
-        # network denial (design spec, Decision 2) — there is nothing to add.
-        self._caps.Capabilities = None
-        self._caps.CapabilityCount = 0
-        self._caps.Reserved = 0
-        self._handle_array = (ctypes.c_void_p * 3)(*child_handles)
-        self._attr_buffer, self._attr_list = self._attribute_list()
-
-        siex = STARTUPINFOEXW()
-        siex.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
-        siex.StartupInfo.dwFlags = STARTF_USESTDHANDLES
-        siex.StartupInfo.hStdInput = stdin_r
-        siex.StartupInfo.hStdOutput = stdout_w
-        siex.StartupInfo.hStdError = stderr_w
-        siex.lpAttributeList = self._attr_list
-
-        cmdline = ctypes.create_unicode_buffer(subprocess.list2cmdline(argv))
-        env_buffer = _environment_block(env)
-        info = PROCESS_INFORMATION()
-        # Explicit argtypes throughout, and POINTER(...) rather than c_void_p
-        # for the two out-structs: `byref()` into a `c_void_p` slot is the
-        # kind of conversion that works until it silently does not.
-        kernel32.CreateProcessW.argtypes = [
-            ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_void_p, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p,
-            ctypes.c_wchar_p, ctypes.POINTER(STARTUPINFOEXW),
-            ctypes.POINTER(PROCESS_INFORMATION)]
-        flags = (EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED
-                 | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT)
-        ok = kernel32.CreateProcessW(
-            None, ctypes.cast(cmdline, ctypes.c_void_p), None, None, True,
-            flags, ctypes.cast(env_buffer, ctypes.c_void_p), cwd,
-            ctypes.byref(siex), ctypes.byref(info))
-        if not ok:
-            error = win_error("CreateProcessW")
-            for handle in (stdin_r, stdin_w, stdout_r, stdout_w,
-                           stderr_r, stderr_w):
-                close_handle(handle)
-            self._free_attribute_list()
-            raise error
-
-        self.handle = int(info.hProcess)
-        self.pid = int(info.dwProcessId)
-
-        # The child ends are the child's now; a parent that keeps them never
-        # sees EOF on stdout.
-        for handle in child_handles:
-            close_handle(handle)
-
-        if job is not None:
-            kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p,
-                                                          ctypes.c_void_p]
-            if not kernel32.AssignProcessToJobObject(
-                    ctypes.c_void_p(job), ctypes.c_void_p(self.handle)):
-                error = win_error("AssignProcessToJobObject")
-                # Never resume a process the job refused: it would run
-                # unquotaed and outlive the probe.
-                kernel32.TerminateProcess(ctypes.c_void_p(self.handle), 9)
-                close_handle(int(info.hThread))
-                for handle in (stdin_w, stdout_r, stderr_r):
-                    close_handle(handle)
-                self.close()
-                raise error
-            self.job_assigned = True
-
-        if kernel32.ResumeThread(ctypes.c_void_p(int(info.hThread))) == -1:
-            raise win_error("ResumeThread")
-        close_handle(int(info.hThread))
-
-        import msvcrt  # Windows-only; imported here so this file loads on macOS
-
-        self.stdin = open(msvcrt.open_osfhandle(stdin_w, 0), "w",
-                          encoding="utf-8", errors="replace", buffering=1,
-                          newline="\n")
-        # `errors="replace"`: the worker's stderr is whatever CPython's stdio
-        # encoding is on this runner, and a mojibake traceback tail is worth
-        # infinitely more than a UnicodeDecodeError in a reader thread.
-        self.stdout = open(msvcrt.open_osfhandle(stdout_r, os.O_RDONLY), "r",
-                           encoding="utf-8", errors="replace", buffering=1)
-        self.stderr = open(msvcrt.open_osfhandle(stderr_r, os.O_RDONLY), "r",
-                           encoding="utf-8", errors="replace", buffering=1)
+        self._next_id = 1
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
-        self._next_id = 1
 
-    # -- construction helpers
+    @property
+    def handle(self) -> int | None:
+        """The product calls it `_handle` (the `Popen` name the client reads);
+        the probe's own steps were written against `handle`."""
+        return self._handle
 
-    def _pipe(self, child_end: str) -> tuple[int, int]:
-        kernel32 = lib("kernel32")
-        attributes = SECURITY_ATTRIBUTES()
-        attributes.nLength = ctypes.sizeof(SECURITY_ATTRIBUTES)
-        attributes.lpSecurityDescriptor = None
-        attributes.bInheritHandle = 1
-        read = ctypes.c_void_p()
-        write = ctypes.c_void_p()
-        kernel32.CreatePipe.argtypes = [
-            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
-            ctypes.POINTER(SECURITY_ATTRIBUTES), ctypes.c_uint32]
-        if not kernel32.CreatePipe(ctypes.byref(read), ctypes.byref(write),
-                                   ctypes.byref(attributes), 0):
-            raise win_error("CreatePipe")
-        parent = write if child_end == "read" else read
-        kernel32.SetHandleInformation.argtypes = [ctypes.c_void_p,
-                                                  ctypes.c_uint32,
-                                                  ctypes.c_uint32]
-        if not kernel32.SetHandleInformation(parent, HANDLE_FLAG_INHERIT, 0):
-            raise win_error("SetHandleInformation")
-        return int(read.value or 0), int(write.value or 0)
-
-    def _attribute_list(self):
-        kernel32 = lib("kernel32")
-        size = ctypes.c_size_t(0)
-        kernel32.InitializeProcThreadAttributeList.argtypes = [
-            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
-            ctypes.POINTER(ctypes.c_size_t)]
-        # The documented two-call form: the first call ALWAYS returns FALSE
-        # with ERROR_INSUFFICIENT_BUFFER and fills in the size.
-        kernel32.InitializeProcThreadAttributeList(None, 2, 0,
-                                                   ctypes.byref(size))
-        if size.value == 0:
-            raise win_error("InitializeProcThreadAttributeList (size)")
-        buffer = (ctypes.c_char * size.value)()
-        # A plain address, carried as an int: it is what a `c_void_p` argtype
-        # accepts unambiguously and what the `STARTUPINFOEXW.lpAttributeList`
-        # field accepts unambiguously. `buffer` is kept by the caller.
-        attr_list = ctypes.addressof(buffer)
-        if not kernel32.InitializeProcThreadAttributeList(attr_list, 2, 0,
-                                                          ctypes.byref(size)):
-            raise win_error("InitializeProcThreadAttributeList")
-        kernel32.UpdateProcThreadAttribute.argtypes = [
-            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_size_t,
-            ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_size_t)]
-        # `addressof`, not `byref`: the slot is typed `c_void_p` and a plain
-        # integer address is the one conversion ctypes cannot get wrong. Both
-        # objects are instance attributes, so they outlive `CreateProcessW` —
-        # which matters, because `UpdateProcThreadAttribute` stores the
-        # pointer and does not copy the value.
-        if not kernel32.UpdateProcThreadAttribute(
-                attr_list, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-                ctypes.addressof(self._caps), ctypes.sizeof(self._caps),
-                None, None):
-            raise win_error("UpdateProcThreadAttribute(SECURITY_CAPABILITIES)")
-        if not kernel32.UpdateProcThreadAttribute(
-                attr_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                ctypes.addressof(self._handle_array),
-                ctypes.sizeof(self._handle_array), None, None):
-            raise win_error("UpdateProcThreadAttribute(HANDLE_LIST)")
-        return buffer, attr_list
-
-    def _free_attribute_list(self) -> None:
-        attr_list = getattr(self, "_attr_list", None)
-        if attr_list is not None:
-            try:
-                kernel32 = lib("kernel32")
-                # Explicit argtypes: without them ctypes marshals a Python int
-                # as a 32-bit C int and truncates a 64-bit address.
-                kernel32.DeleteProcThreadAttributeList.argtypes = [
-                    ctypes.c_void_p]
-                kernel32.DeleteProcThreadAttributeList(attr_list)
-            except Exception:  # noqa: BLE001
-                pass
-            self._attr_list = None
-
-    # -- the Popen surface
+    def wait(self, timeout: float | None = None) -> int | None:
+        """`Popen`-shaped upstream (it raises `TimeoutExpired`); here a
+        deadline that passed is diagnostics, not an exception."""
+        try:
+            return super().wait(timeout)
+        except subprocess.TimeoutExpired:
+            return self.poll()
 
     def _drain_stdout(self) -> None:
         try:
@@ -591,18 +326,6 @@ class ConfinedProcess:
                 self.stderr_tail.append(line.rstrip())
         except Exception as exc:  # noqa: BLE001
             self.stderr_tail.append(f"[probe] stderr reader: {exc}")
-
-    def poll(self) -> int | None:
-        if self.handle is None:
-            return self.returncode
-        code = ctypes.c_uint32(0)
-        if not lib("kernel32").GetExitCodeProcess(ctypes.c_void_p(self.handle),
-                                                  ctypes.byref(code)):
-            return self.returncode
-        if int(code.value) == STILL_ACTIVE:
-            return None
-        self.returncode = int(code.value)
-        return self.returncode
 
     def request(self, method: str, params: dict, timeout: float) -> dict:
         """One line-JSON round trip, with a deadline. Raises `ProbeError` on a
@@ -657,46 +380,8 @@ class ConfinedProcess:
                 return collected
             collected.append(line.rstrip())
 
-    def wait(self, timeout: float) -> int | None:
-        if self.handle is None:
-            return self.returncode
-        lib("kernel32").WaitForSingleObject(ctypes.c_void_p(self.handle),
-                                            int(timeout * 1000))
-        return self.poll()
-
-    def kill(self) -> None:
-        if self.handle is not None and self.poll() is None:
-            try:
-                lib("kernel32").TerminateProcess(ctypes.c_void_p(self.handle), 9)
-            except Exception:  # noqa: BLE001
-                pass
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        for stream in ("stdin", "stdout", "stderr"):
-            handle = getattr(self, stream, None)
-            if handle is not None:
-                try:
-                    handle.close()
-                except Exception:  # noqa: BLE001
-                    pass
-        self._free_attribute_list()
-        close_handle(self.handle)
-        self.handle = None
-
     def stderr_report(self, limit: int = 25) -> None:
         note_block("child stderr tail", "\n".join(self.stderr_tail), limit)
-
-
-def _environment_block(env: dict[str, str]):
-    """`KEY=VALUE\\0...\\0\\0` in UTF-16, sorted case-insensitively — Windows
-    requires the sort, and `CREATE_UNICODE_ENVIRONMENT` requires the encoding."""
-    items = sorted(((str(k), str(v)) for k, v in env.items() if k),
-                   key=lambda kv: kv[0].upper())
-    block = "".join(f"{key}={value}\0" for key, value in items) + "\0"
-    return ctypes.create_unicode_buffer(block)
 
 
 # --------------------------------------------------------- the child programs
@@ -742,14 +427,31 @@ def attempt(name, fn):
                      "error": "%s: %s" % (type(exc).__name__, exc)}
 
 
-def token_flag():
+# Every HANDLE crosses as c_void_p. Round 2 died on exactly this: with no
+# argtypes, `GetCurrentProcess()`'s pseudo-handle (0xFFFFFFFFFFFFFFFF) is
+# marshalled as a 32-bit int and ctypes raises
+# `ArgumentError: argument 1: OverflowError: int too long to convert`.
+def token_api():
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    advapi32.OpenProcessToken.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.GetTokenInformation.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32)]
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
     handle = ctypes.c_void_p()
     if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(),
                                      TOKEN_QUERY, ctypes.byref(handle)):
         raise OSError("OpenProcessToken: %d" % ctypes.get_last_error())
+    return kernel32, advapi32, handle
+
+
+def token_flag():
+    _kernel32, advapi32, handle = token_api()
     value = ctypes.c_uint32(0)
     returned = ctypes.c_uint32(0)
     if not advapi32.GetTokenInformation(handle, TokenIsAppContainer,
@@ -761,13 +463,7 @@ def token_flag():
 
 
 def token_sid():
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
-    handle = ctypes.c_void_p()
-    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(),
-                                     TOKEN_QUERY, ctypes.byref(handle)):
-        raise OSError("OpenProcessToken: %d" % ctypes.get_last_error())
+    kernel32, advapi32, handle = token_api()
     size = ctypes.c_uint32(0)
     # First call sizes the buffer; it is expected to fail.
     advapi32.GetTokenInformation(handle, TokenAppContainerSid, None, 0,
@@ -921,31 +617,16 @@ class Probe:
     # -- 2: profile
 
     def step_profile(self) -> None:
-        userenv = lib("userenv")
-        userenv.CreateAppContainerProfile.restype = ctypes.c_long
-        userenv.CreateAppContainerProfile.argtypes = [
-            ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_wchar_p,
-            ctypes.c_void_p, ctypes.c_uint32,
-            ctypes.POINTER(ctypes.c_void_p)]
-        userenv.DeriveAppContainerSidFromAppContainerName.restype = ctypes.c_long
-        userenv.DeriveAppContainerSidFromAppContainerName.argtypes = [
-            ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_void_p)]
-        sid = ctypes.c_void_p()
-        hr = userenv.CreateAppContainerProfile(
-            self.profile_name, "AgentCAD probe",
-            "PRD-006b AppContainer probe", None, 0, ctypes.byref(sid))
-        origin = "created"
-        if (hr & 0xFFFFFFFF) == HRESULT_ALREADY_EXISTS:
-            origin = "derived (already existed)"
-            hr = userenv.DeriveAppContainerSidFromAppContainerName(
-                self.profile_name, ctypes.byref(sid))
-        if hr != 0 or not sid.value:
-            report("profile", False,
-                   f"{self.profile_name}: HRESULT {hresult_text(hr)}")
+        """The product's own create-or-derive (`AppContainerProfile.ensure`),
+        under the PROBE's name so `cleanup` can delete it."""
+        try:
+            profile = AppContainerProfile.ensure(self.profile_name)
+        except OSError as exc:
+            report("profile", False, f"{self.profile_name}: {exc}")
             return
-        self.sid_ptr = int(sid.value)
-        self.sid_text = sid_to_string(self.sid_ptr)
-        report("profile", True, f"{self.profile_name} {origin} sid={self.sid_text}")
+        self.sid_ptr = profile.sid
+        self.sid_text = profile.sid_str
+        report("profile", True, f"{self.profile_name} sid={self.sid_text}")
 
     # -- 3: acl
 
@@ -964,24 +645,24 @@ class Probe:
                      self.tmpdir, self.other):
             path.mkdir(parents=True, exist_ok=True)
         note(f"scratch: {self.scratch}")
-        self._make_package_tree()
+        self._package_tree()
         if self.sid_text is None:
             report("acl", False, "skipped: no SID")
             return
 
-        grants = [("project", self.project, "(OI)(CI)M"),
-                  ("tmp", self.tmpdir, "(OI)(CI)M"),
-                  ("base_prefix", Path(sys.base_prefix), "(OI)(CI)RX"),
-                  ("prefix", Path(sys.prefix), "(OI)(CI)RX"),
-                  ("resource_root", self.root, "(OI)(CI)RX")]
+        grants = [("project", self.project, WRITE_RIGHTS),
+                  ("tmp", self.tmpdir, WRITE_RIGHTS),
+                  ("base_prefix", Path(sys.base_prefix), READ_RIGHTS),
+                  ("prefix", Path(sys.prefix), READ_RIGHTS),
+                  ("resource_root", self.root, READ_RIGHTS)]
         ok_count = 0
         for label, path, rights in grants:
-            code, output = self._icacls(
-                [str(path), "/grant", f"*{self.sid_text}:{rights}"],
-                f"grant {label} {rights}")
-            ok = code == 0
+            # The product's `acl_grant`, rights included: the probe asks the
+            # same question the plan asks, or it is not answering it.
+            ok, tail = acl_grant(str(path), self.sid_text, rights)
             ok_count += int(ok)
-            report(f"acl.grant.{label}", ok, f"rc={code} {path}")
+            note(f"icacls grant {label} {rights}: {tail}")
+            report(f"acl.grant.{label}", ok, f"{path}")
 
         # The direct evidence, read back from the child that already existed.
         child = self.project / ".cache" / "sub"
@@ -1019,31 +700,23 @@ class Probe:
         return (Path(self.tmpdir) / "Packages" / self.profile_name / "AC"
                 / "Temp")
 
-    def _make_package_tree(self) -> None:
-        """Create the package profile tree Windows expects inside the private
-        temp dir — **before** the ACL grant, so inheritance covers it.
+    def _package_tree(self) -> None:
+        """The package profile tree Windows expects inside the private temp
+        dir — **before** the ACL grant, so inheritance covers it.
 
         Round 1's finding, and it is not obvious: the lowbox token rewrites the
         child's ``TEMP``/``TMP`` to ``%LOCALAPPDATA%\\Packages\\<moniker>\\AC\\
         Temp``. The plan sets ``LOCALAPPDATA`` to the private temp dir, so the
         redirect lands inside it — but nothing had created that path, so
         ``tempfile.gettempdir()`` found no usable directory and raised
-        ``FileNotFoundError`` in the first child that touched it. Windows'
-        own profile creation makes this tree; when the write root is ours, so
-        must we. **Slice 2 puts this in `prepare_tmp()`**, for the same reason
-        and with the same list.
+        ``FileNotFoundError`` in the first child that touched it. The product
+        makes it in `WindowsBackend.prepare_tmp_hook`, with the same list —
+        which is exactly the function called here.
         """
         if self.tmpdir is None:
             return
-        package = Path(self.tmpdir) / "Packages" / self.profile_name
-        made = []
-        for relative in ("AC/Temp", "AC/INetCache", "AC/INetCookies",
-                         "AC/INetHistory", "LocalState", "TempState",
-                         "RoamingState", "Settings"):
-            path = package.joinpath(*relative.split("/"))
-            path.mkdir(parents=True, exist_ok=True)
-            made.append(relative)
-        note(f"appcontainer package tree under {package}: {', '.join(made)}")
+        package = make_package_tree(str(self.tmpdir), self.profile_name)
+        note(f"appcontainer package tree: {package}")
 
     def _icacls(self, arguments: list[str], label: str) -> tuple[int, str]:
         try:

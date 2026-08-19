@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import signal
 import stat
 import subprocess
@@ -96,6 +97,14 @@ def backend(monkeypatch):
 
 def _plan(writable=None, **kwargs):
     return sandbox.plan(BASE_ARGV, [str(w) for w in (writable or [])], **kwargs)
+
+
+def _no_popen(*args, **kwargs):
+    """A `subprocess.Popen` that must never be reached: on Windows it would be
+    an **unconfined** worker, which is the one thing the spawn hook exists to
+    prevent."""
+    raise AssertionError("the client reached subprocess.Popen for a worker the "
+                         "backend had already spawned")
 
 
 # ------------------------------------------------------- the private temp dir
@@ -395,7 +404,13 @@ def test_an_unknown_platform_is_unsupported_rather_than_a_crash(isolated,
 
 @pytest.fixture
 def windows(monkeypatch):
-    """The Windows backend with its Win32 calls stubbed, on any OS."""
+    """The Windows backend with its Win32 calls stubbed, on any OS.
+
+    Both halves are stubbed, and the AppContainer one has to be even when
+    these tests run on Windows CI: a live `CreateAppContainerProfile` would
+    leave a real profile behind and a live `icacls` would rewrite the ACLs of
+    `sys.prefix` on the runner.
+    """
     from agentcad.kernel import sandbox_windows
 
     calls = SimpleNamespace(created=0, info=[], assigned=[], closed=[],
@@ -405,13 +420,47 @@ def windows(monkeypatch):
                             # and the Popen handle is its stub, so these two
                             # are what a real sample reads. Empty by default —
                             # the query failing is the fallback path.
-                            job_pids=[], working_sets={})
+                            job_pids=[], working_sets={},
+                            # -- the AppContainer half
+                            api=True,               # userenv has the symbol
+                            icacls="C:\\Windows\\System32\\icacls.exe",
+                            profile_hr=0,           # S_OK from CreateAppContainerProfile
+                            derived=0,              # ...and how often we fell back
+                            sid=0x5100,             # a plausible PSID
+                            derived_sid=0x5100,     # ...from the derive path
+                            sid_str="S-1-15-2-1-2-3-4",
+                            grants=[],              # (path, sid, rights)
+                            grant_fails={},         # path -> the icacls tail
+                            trees=[], spawned=[])
 
     def _create():
         calls.created += 1
         return 4242                                   # a plausible HANDLE
 
+    def _create_profile(name, display, description):
+        return calls.profile_hr, calls.sid
+
+    def _derive_sid(name):
+        calls.derived += 1
+        return 0, calls.derived_sid
+
+    def _grant(path, sid_str, rights):
+        calls.grants.append((path, sid_str, rights))
+        tail = calls.grant_fails.get(path)
+        return tail is None, tail or "Successfully processed 1 files"
+
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sandbox_windows, "_userenv_symbol",
+                        lambda name: calls.api)
+    monkeypatch.setattr(sandbox_windows, "_icacls", lambda: calls.icacls)
+    monkeypatch.setattr(sandbox_windows, "_userenv_create_profile",
+                        _create_profile)
+    monkeypatch.setattr(sandbox_windows, "_userenv_derive_sid", _derive_sid)
+    monkeypatch.setattr(sandbox_windows, "_sid_to_string",
+                        lambda psid: calls.sid_str)
+    monkeypatch.setattr(sandbox_windows, "acl_grant", _grant)
+    monkeypatch.setattr(sandbox_windows, "make_package_tree",
+                        lambda tmp_dir, name: calls.trees.append((tmp_dir, name)))
     monkeypatch.setattr(sandbox_windows, "_job_create", _create)
     monkeypatch.setattr(sandbox_windows, "_set_information",
                         lambda job, klass, info: calls.info.append((job, klass, info)))
@@ -429,23 +478,46 @@ def windows(monkeypatch):
     return sandbox_windows, calls
 
 
-def test_the_windows_plan_caps_with_a_job_object_and_confines_with_nothing(
+def test_the_windows_plan_caps_with_a_job_object_and_confines_with_an_appcontainer(
         isolated, windows):
-    """Decision 7: the quotas are real, the confinement is `unsupported` and
-    says why. `off` would suggest a switch the operator could flip."""
+    """PRD-006b: the quotas are a job object, the confinement is a package SID.
+
+    The argv is still untouched — a lowbox token is not a wrapper — and the
+    `active` here is an **intent**: the worker's own `TokenIsAppContainer`
+    is what keeps it (Decision 3), which is why the payload declares the two
+    facets the parent really applied.
+    """
     module, calls = windows
     plan = _plan([isolated], quotas={"memory_mb": 1024, "pids": 16})
     try:
         assert plan.argv == BASE_ARGV                # nothing wraps it
-        # The one payload key: Windows has no rlimit for the worker to apply,
-        # but a job object's MemoryError IS a cap being enforced, and
-        # `denials.classify` never names a denial no worker reported.
+        # `quotas`: Windows has no rlimit for the worker to apply, but a job
+        # object's MemoryError IS a cap being enforced, and `denials.classify`
+        # never names a denial no worker reported. `confinement`: the facets
+        # the parent applied before the worker ran, the macOS precedent.
+        # `appcontainer`: the SID the worker checks its own token against.
         assert json.loads(plan.env["AGENTCAD_CONFINE"]) == {
-            "posture": "local", "quotas": ["job_object"]}
+            "posture": "local", "quotas": ["job_object"],
+            "confinement": ["filesystem", "network"],
+            "appcontainer": {"sid": calls.sid_str,
+                             "name": module.profile_name()}}
         assert plan.confinement == {
-            "status": "unsupported", "mechanism": None,
-            "detail": {"posture": "local",
-                       "note": "AppContainer confinement is PRD-006b"}}
+            "status": "active", "mechanism": "appcontainer",
+            "detail": {"posture": "local", "sid": calls.sid_str}}
+        assert plan.posture == "local"
+
+        # Reads before writes, and the write roots are the plan's own — the
+        # projects dir it was given, and the private temp dir it made.
+        reads = [(path, rights) for path, sid, rights in calls.grants
+                 if rights == module.READ_RIGHTS]
+        writes = [(path, rights) for path, sid, rights in calls.grants
+                  if rights == module.WRITE_RIGHTS]
+        assert [path for path, _ in reads] == module._read_roots()
+        assert [path for path, _ in writes] == [os.path.realpath(str(isolated)),
+                                                os.path.realpath(plan.tmp_dir)]
+        assert {sid for _p, sid, _r in calls.grants} == {calls.sid_str}
+        assert calls.grants and len(calls.grants) == len(reads) + len(writes)
+
         assert plan.quotas["status"] == "active"
         assert plan.quotas["mechanism"] == "job_object+supervisor"
 
@@ -524,23 +596,368 @@ def test_a_windows_job_object_that_cannot_be_made_is_not_claimed(isolated,
         assert any("job-object" in warning for warning in plan.warnings)
         assert plan.backend.job is None
         # ...and with no job there is no cap to tell the worker about, so its
-        # MemoryError stays what it is: the machine running out of memory.
-        assert "AGENTCAD_CONFINE" not in plan.env
+        # MemoryError stays what it is: the machine running out of memory. The
+        # payload is still written — the AppContainer is a separate promise,
+        # and the worker has a token to check — but it names no quota tier.
+        assert "quotas" not in json.loads(plan.env["AGENTCAD_CONFINE"])
+        assert json.loads(plan.env["AGENTCAD_CONFINE"])["confinement"] == [
+            "filesystem", "network"]
     finally:
         plan.release()
 
 
-def test_the_windows_opt_out_stays_unsupported(isolated, windows, monkeypatch):
-    """`AGENTCAD_NO_SANDBOX` opts out of a confinement. Windows has none, so
-    there is nothing to opt out of and `off` would be a lie in the other
-    direction — the operator would go looking for the switch."""
-    monkeypatch.setenv("AGENTCAD_NO_SANDBOX", "1")
+def test_a_windows_profile_that_already_exists_has_its_sid_derived(isolated,
+                                                                    windows):
+    """Decision 2: the profile outlives the process that made it (and the
+    reboot), so `ERROR_ALREADY_EXISTS` is the *normal* answer from the second
+    run onwards — and the plan it produces is identical."""
+    module, calls = windows
+    calls.profile_hr = module.HRESULT_ALREADY_EXISTS
+    calls.sid = 0                       # nothing came back from the create
     plan = _plan([isolated])
     try:
+        assert calls.derived == 1
+        assert plan.confinement["status"] == "active"
+        assert plan.confinement["detail"]["sid"] == calls.sid_str
+    finally:
+        plan.release()
+
+
+def test_a_windows_acl_grant_that_fails_leaves_the_confinement_off(isolated,
+                                                                    windows):
+    """Decision 8 on the step most likely to fail on a real machine.
+
+    A root the container cannot reach is a *confinement we cannot vouch for*:
+    the worker would either be unable to run (a read root) or able to write
+    where it should not (a write root). So it is `off`, the warning names the
+    step **and the path**, and — the half that matters — the payload carries
+    no facets, so nothing downstream labels an ordinary `EACCES` a denial.
+    """
+    module, calls = windows
+    calls.grant_fails = {os.path.realpath(str(isolated)):
+                         "Access is denied. Successfully processed 0 files"}
+    plan = _plan([isolated], quotas={"memory_mb": 1024})
+    try:
+        assert plan.confinement["status"] == "off"
+        assert plan.confinement["mechanism"] is None
+        assert str(isolated) in plan.confinement["detail"]["reason"]
+        warning = next(w for w in plan.warnings if "AppContainer" in w)
+        assert os.path.realpath(str(isolated)) in warning
+        assert "Access is denied" in warning
+        assert json.loads(plan.env["AGENTCAD_CONFINE"]) == {
+            "posture": "local", "quotas": ["job_object"]}
+        # ...and the quotas are untouched: a confinement that could not be
+        # prepared is not a reason to stop capping the machine.
+        assert plan.quotas["mechanism"] == "job_object+supervisor"
+        # Nothing to spawn into, so the client falls back to `Popen`.
+        assert plan.backend.profile is None
+        assert plan.backend.spawn(BASE_ARGV, {}) is None
+    finally:
+        plan.release()
+
+
+def test_a_windows_write_root_that_does_not_exist_costs_one_grant(isolated,
+                                                                   windows):
+    """The `landlock_root` precedent (review I2): a root that is not there
+    costs its grant, not the confinement. The container landed and is
+    *narrower* than intended — saying `off` would be the overstatement in
+    reverse — and the write it was meant to permit really will be denied, so
+    it is a warning."""
+    module, calls = windows
+    missing = str(isolated / "not-created-yet")
+    plan = sandbox.plan(BASE_ARGV, [str(isolated), missing])
+    try:
+        assert plan.confinement["status"] == "active"
+        assert os.path.realpath(missing) not in [p for p, _s, _r in calls.grants]
+        assert any("does not exist" in w and "not-created-yet" in w
+                   for w in plan.warnings), plan.warnings
+    finally:
+        plan.release()
+
+
+def test_a_windows_profile_that_cannot_be_made_is_off_with_the_hresult(
+        isolated, windows):
+    module, calls = windows
+    calls.profile_hr = 0x80070005                     # E_ACCESSDENIED
+    calls.sid = 0
+    plan = _plan([isolated])
+    try:
+        assert plan.confinement["status"] == "off"
+        assert "0x80070005" in plan.confinement["detail"]["reason"]
+        assert any("0x80070005" in warning for warning in plan.warnings)
+        assert calls.grants == []          # nothing was granted to nobody
+    finally:
+        plan.release()
+
+
+def test_windows_without_the_appcontainer_api_is_unsupported(isolated, windows):
+    """Below Windows 8 there is no `CreateAppContainerProfile` (and a machine
+    with no `icacls` cannot grant the SID a path). That is `unsupported`, not
+    `off`: there is no switch for the operator to look for — and the payload
+    goes back to the quota-only one PRD-006 shipped."""
+    module, calls = windows
+    calls.api = False
+    plan = _plan([isolated], quotas={"memory_mb": 1024})
+    try:
+        assert module.supported() is False
         assert plan.confinement["status"] == "unsupported"
+        assert plan.confinement["mechanism"] is None
+        assert "Windows 8" in plan.confinement["detail"]["reason"]
+        assert json.loads(plan.env["AGENTCAD_CONFINE"]) == {
+            "posture": "local", "quotas": ["job_object"]}
         assert plan.quotas["mechanism"] == "job_object+supervisor"
     finally:
         plan.release()
+    calls.api, calls.icacls = True, None
+    assert module.supported() is False                # no icacls, no grants
+
+
+def test_the_windows_opt_out_is_off_and_keeps_the_quotas(isolated, windows,
+                                                          monkeypatch):
+    """`AGENTCAD_NO_SANDBOX` opts out of the **confinement**. The job object
+    stays: a runaway script may not take the machine down whether or not the
+    operator trusts it with the filesystem."""
+    monkeypatch.setenv("AGENTCAD_NO_SANDBOX", "1")
+    _module, calls = windows
+    plan = _plan([isolated], quotas={"memory_mb": 1024})
+    try:
+        assert plan.confinement == {"status": "off", "mechanism": None,
+                                    "detail": {"reason": "AGENTCAD_NO_SANDBOX"}}
+        assert plan.quotas["mechanism"] == "job_object+supervisor"
+        assert plan.quotas["limits"]["memory_mb"] == 1024
+        # No profile, no ACLs, no facets: nothing was confined and nothing
+        # says it was.
+        assert calls.grants == [] and plan.backend.profile is None
+        assert json.loads(plan.env["AGENTCAD_CONFINE"]) == {
+            "posture": "local", "quotas": ["job_object"]}
+    finally:
+        plan.release()
+
+
+def test_the_windows_backend_spawns_the_worker_itself_and_skips_the_attach(
+        isolated, windows, monkeypatch):
+    """Decision 1 and Decision 4. `subprocess` cannot pass a lowbox token, so
+    the backend spawns; and because that spawn assigns the job while the
+    process is still **suspended**, `attach()` has nothing left to do — the
+    006 race where a worker ran its first milliseconds unquotaed is closed."""
+    module, calls = windows
+
+    class _Confined:
+        def __init__(self, argv, env, *, sid, job=None, cwd=None):
+            calls.spawned.append(SimpleNamespace(argv=list(argv), env=env,
+                                                 sid=sid, job=job))
+            self.pid, self._handle, self.job_assigned = 99, 7, True
+
+    monkeypatch.setattr(module, "ConfinedProcess", _Confined)
+    plan = _plan([isolated], quotas={"memory_mb": 1024})
+    try:
+        proc = plan.backend.spawn(plan.argv, {"TEMP": plan.tmp_dir})
+        assert isinstance(proc, _Confined)
+        assert calls.spawned[0].argv == BASE_ARGV
+        assert calls.spawned[0].sid == calls.sid          # the PSID, not its text
+        assert calls.spawned[0].job == plan.backend.job
+        plan.backend.attach(proc)
+        assert calls.assigned == []                       # already in the job
+        assert plan.backend.attached is True              # ...and sampling knows
+    finally:
+        plan.release()
+
+
+def test_a_windows_spawn_that_fails_falls_back_and_says_so(isolated, windows,
+                                                            monkeypatch):
+    """A spawn that raised must not take the server down with it: the worker
+    starts the ordinary way, the warning says it is NOT confined, and the
+    worker's own report (which will say `appcontainer: false`) is what turns
+    health from `active` to `off`."""
+    module, _calls = windows
+
+    def _boom(*args, **kwargs):
+        raise OSError("CreateProcessW failed: WinError 5: Access is denied")
+
+    monkeypatch.setattr(module, "ConfinedProcess", _boom)
+    plan = _plan([isolated])
+    try:
+        assert plan.backend.spawn(plan.argv, {}) is None
+        warning = next(w for w in plan.backend.warnings if "spawn" in w)
+        assert "NOT confined" in warning and "WinError 5" in warning
+    finally:
+        plan.release()
+
+
+def test_prepare_tmp_makes_the_package_tree_and_regrants_the_private_dir(
+        isolated, windows):
+    """Round 1's finding, in the product: the lowbox token redirects `%TEMP%`
+    into `%LOCALAPPDATA%\\Packages\\<name>\\AC\\Temp`, the plan points
+    `LOCALAPPDATA` at the private temp dir, and **nothing else creates that
+    path** — so the first `tempfile` call inside the container raised
+    `FileNotFoundError`. Both the tree and the ACE live *in* the directory, so
+    both are redone at every spawn: `stop()` removes it."""
+    _module, calls = windows
+    plan = _plan([isolated])
+    try:
+        assert plan.env["LOCALAPPDATA"] == plan.tmp_dir
+        assert plan.env["TEMP"] == plan.env["TMP"] == plan.tmp_dir
+        assert plan.env["USERPROFILE"] == plan.env["APPDATA"] == plan.tmp_dir
+        before = len(calls.grants)
+        calls.trees.clear()
+        assert plan.prepare_tmp() == plan.tmp_dir
+        assert calls.trees == [(plan.tmp_dir, plan.backend.profile.name)]
+        assert calls.grants[before:] == [(plan.tmp_dir, calls.sid_str,
+                                          "(OI)(CI)M")]
+    finally:
+        plan.release()
+
+
+class _EchoProc:
+    """Just enough of the `Popen` surface for `_ensure_started`'s first ping.
+
+    It answers whatever request it is written with the sandbox report it was
+    built with, which is what lets the client's spawn hook be exercised
+    end-to-end without a Windows box.
+    """
+
+    def __init__(self, sandbox_report: dict) -> None:
+        self._sandbox = sandbox_report
+        self._queue: queue.Queue = queue.Queue()
+        self.stdin = self                     # write()/flush() are below
+        self.stdout = self._reader()
+        self.stderr = iter(())
+        self.pid = 4242
+        self._handle = 7
+        self.returncode = None
+        self.job_assigned = True
+        self.requests: list[dict] = []
+
+    def write(self, line: str) -> None:
+        request = json.loads(line)
+        self.requests.append(request)
+        self._queue.put(json.dumps(
+            {"id": request["id"],
+             "result": {"ok": True, "sandbox": self._sandbox}}) + "\n")
+
+    def flush(self) -> None:
+        pass
+
+    def _reader(self):
+        while True:
+            line = self._queue.get()
+            if line is None:
+                return
+            yield line
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self) -> None:
+        self.returncode = -9
+        self._queue.put(None)                 # EOF for the drain thread
+
+
+def test_the_client_spawns_through_the_backend_before_it_reaches_popen(
+        isolated, windows, monkeypatch):
+    """Decision 1's one line in the client, and Decision 3's honesty on top.
+
+    `subprocess.Popen` is made to raise: reaching it at all would mean an
+    unconfined worker on Windows. What comes back from the hook is used as the
+    process — drained, pinged, killed — and `sandboxed` is decided by the
+    report the *worker* sent, not by the plan that intended it.
+    """
+    from agentcad.kernel import client as client_module
+    from agentcad.kernel.client import KernelClient
+
+    module, calls = windows
+    live = {"posture": "local", "quotas": ["job_object"],
+            "confinement": ["filesystem", "network"], "appcontainer": True,
+            "appcontainer_sid": calls.sid_str, "rlimits": [], "failures": []}
+    proc = _EchoProc(live)
+    monkeypatch.setattr(
+        module, "ConfinedProcess",
+        lambda argv, env, *, sid, job=None, cwd=None: proc)
+    monkeypatch.setattr(client_module.subprocess, "Popen", _no_popen)
+
+    kernel = KernelClient(writable_dirs=[str(isolated)],
+                          quotas={"memory_mb": 1024})
+    try:
+        kernel.start()
+        assert kernel._proc is proc
+        assert proc.requests[0]["method"] == "ping"
+        assert kernel.sandbox_report == live
+        assert kernel.sandboxed is True
+        # The private temp dir was prepared (tree + ACE) before the spawn.
+        assert calls.trees and calls.trees[-1][0] == kernel._plan.tmp_dir
+
+        body = sandbox.report(kernel)
+        assert body["status"] == "active"
+        assert body["mechanism"] == "appcontainer"
+        assert body["confinement"]["detail"]["sid"] == calls.sid_str
+        assert body["confinement"]["detail"]["appcontainer"] is True
+        assert body["quotas"]["mechanism"] == "job_object+supervisor"
+        assert body["warnings"] == []
+    finally:
+        kernel.stop()
+
+
+def test_a_windows_worker_outside_its_container_clears_the_claim(isolated,
+                                                                  windows,
+                                                                  monkeypatch):
+    """The other half of the same rule: the plan intended an AppContainer, the
+    worker looked at its own token and said no. `active` becomes `off`, the
+    mechanism goes with it, and the warning says the check is what failed —
+    the confinement is applied by the parent, so "could not apply" would send
+    the reader to the wrong place."""
+    from agentcad.kernel import client as client_module
+    from agentcad.kernel.client import KernelClient
+
+    module, calls = windows
+    live = {"posture": "local", "confinement": ["filesystem", "network"],
+            "appcontainer": False, "appcontainer_sid": None,
+            "failures": [{"stage": "appcontainer",
+                          "error": "OSError: OpenProcessToken: WinError 5"}]}
+    proc = _EchoProc(live)
+    monkeypatch.setattr(
+        module, "ConfinedProcess",
+        lambda argv, env, *, sid, job=None, cwd=None: proc)
+    monkeypatch.setattr(client_module.subprocess, "Popen", _no_popen)
+
+    kernel = KernelClient(writable_dirs=[str(isolated)],
+                          quotas={"memory_mb": 1024})
+    try:
+        kernel.start()
+        assert kernel.sandboxed is False
+        body = sandbox.report(kernel)
+        assert body["status"] == "off"
+        assert body["mechanism"] is None
+        assert body["confinement"]["detail"]["appcontainer"] is False
+        assert any("could not read its own token" in warning
+                   for warning in body["warnings"]), body["warnings"]
+        # ...and the caps are untouched by any of it.
+        assert body["quotas"]["mechanism"] == "job_object+supervisor"
+    finally:
+        kernel.stop()
+
+
+def test_confinement_holds_on_win32_wants_the_workers_own_token(monkeypatch):
+    """`confinement_holds` is the rule read on its own. On Windows the parent
+    declares the facets only when it really spawned through the AppContainer,
+    so their presence is what makes `appcontainer: true` a *requirement*
+    rather than an extra."""
+    from agentcad.kernel.client import confinement_holds
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    intended = {"posture": "local", "quotas": ["job_object"],
+                "confinement": ["filesystem", "network"]}
+    assert confinement_holds({**intended, "appcontainer": True}) is True
+    assert confinement_holds({**intended, "appcontainer": False}) is False
+    # A preamble that never looked (an old worker, a token that could not be
+    # read) is not evidence either.
+    assert confinement_holds(intended) is False
+    # A quota-only payload claimed no confinement, so there is nothing here to
+    # clear: `client.sandboxed` is already False from the plan.
+    assert confinement_holds({"posture": "local",
+                              "quotas": ["job_object"]}) is True
 
 
 def test_an_unknown_platform_with_the_opt_out_is_still_unsupported(isolated,
@@ -1230,8 +1647,17 @@ def test_supported_answers_for_the_platform_not_for_a_worker(monkeypatch):
     monkeypatch.setattr(_confine, "landlock_abi", lambda: 6)
     monkeypatch.setattr(sandbox.platform, "machine", lambda: "riscv64")
     assert sandbox.supported() is False       # no seccomp syscall table
+    # Windows is a real capability question since PRD-006b: `userenv` has to
+    # export `CreateAppContainerProfile` (Windows 8+) and `icacls` has to be
+    # there to grant the SID its roots. Asserted as *the same answer* rather
+    # than a constant, because this test also runs on the windows-latest job,
+    # where it is `True` and on this dev box it is `False`.
+    from agentcad.kernel import sandbox_windows
+
     monkeypatch.setattr(sys, "platform", "win32")
-    assert sandbox.supported() is False       # Decision 7: PRD-006b
+    assert sandbox.supported() is sandbox_windows.supported()
+    monkeypatch.setattr(sandbox_windows, "_userenv_symbol", lambda name: False)
+    assert sandbox.supported() is False
 
 
 def test_wrap_argv_and_status_keep_their_semantics(monkeypatch, isolated):

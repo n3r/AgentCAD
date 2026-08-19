@@ -70,6 +70,13 @@ def confinement_holds(report: dict) -> bool:
     if sys.platform == "linux" and not report.get("landlock_abi"):
         # On Linux confinement IS Landlock plus seccomp; no ABI, no claim.
         return False
+    if sys.platform == "win32" and report.get("confinement"):
+        # The parent only declares facets when it really spawned through the
+        # AppContainer path, so their presence means the claim was intended —
+        # and the worker's own `TokenIsAppContainer` is the only thing allowed
+        # to keep it. A spawn that fell back to `Popen`, a token that could not
+        # be read, a preamble that never ran: all of them land here as `False`.
+        return report.get("appcontainer") is True
     return True
 
 
@@ -172,7 +179,15 @@ class KernelClient:
             # `import build123d` (review C2).
             self._plan.prepare_tmp()
             env = {**os.environ, **self._plan.spawn_env()}
-        self._proc = subprocess.Popen(
+        # The backend gets first refusal on the spawn itself (design spec,
+        # Decision 1): a Windows AppContainer needs `CreateProcessW` with a
+        # `SECURITY_CAPABILITIES` attribute `subprocess` cannot pass, and what
+        # comes back has exactly the `Popen` surface used below. Every other
+        # backend — and a plan-free client — answers `None` and this is the
+        # historical spawn, byte for byte.
+        spawn = getattr(self._plan.backend, "spawn", None) if self._plan else None
+        confined = spawn(self._argv, env) if spawn is not None else None
+        self._proc = confined or subprocess.Popen(
             self._argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

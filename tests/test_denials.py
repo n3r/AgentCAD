@@ -200,6 +200,44 @@ def test_a_bare_boolean_still_means_all_four_or_none():
     assert classify("PermissionError", "Permission denied", active=False) is None
 
 
+#: What Winsock answers inside an AppContainer with no `INTERNET_CLIENT`
+#: capability, verbatim from the probe run on windows-latest. Note what is NOT
+#: in it: no `[Errno 13]`, no "Permission denied" — so before PRD-006b every
+#: rule in the classifier missed it and the answer was `None`.
+WSAEACCES = ("[WinError 10013] An attempt was made to access a socket in a way "
+             "forbidden by its access permissions")
+
+
+def test_a_winsock_10013_is_the_windows_network_denial():
+    """PRD-006b: the AppContainer denies the network by *not having* the
+    capability, and Winsock says so with `WSAEACCES` rather than an errno the
+    POSIX rules recognise."""
+    assert classify("PermissionError", WSAEACCES,
+                    active=frozenset({"network"}),
+                    traceback=NET_FRAME) == "network"
+    # The parent has to have declared the facet — an unconfined Windows box
+    # answers 10013 for a bind to a reserved port too, and that is a bug in the
+    # script, not a denial.
+    assert classify("PermissionError", WSAEACCES, active=frozenset(),
+                    traceback=NET_FRAME) is None
+    assert classify("PermissionError", WSAEACCES,
+                    active=frozenset({"filesystem"}),
+                    traceback=NET_FRAME) is None
+    # ...and it is never read as a filesystem denial on its way past.
+    assert classify("PermissionError", WSAEACCES,
+                    active=frozenset({"filesystem", "network"})) == "network"
+
+
+def test_a_windows_worker_reads_a_file_denial_the_ordinary_way():
+    """The other half of the container: a write outside the granted roots
+    surfaces as an ordinary `EACCES` with the path in it (measured — the probe
+    saw `[Errno 13]` for `C:\\Users\\Public`), so no new rule is needed."""
+    assert classify("PermissionError",
+                    "[Errno 13] Permission denied: "
+                    "'C:\\\\Users\\\\Public\\\\agentcad-pwned.txt'",
+                    active=frozenset({"filesystem", "network"})) == "filesystem"
+
+
 def test_network_wins_over_filesystem_when_both_read():
     """Both are `PermissionError`; the errno is what separates them, and the
     network check has to come first or every EPERM would read as a write."""
