@@ -70,7 +70,10 @@ Claude Code (MCP) ─┐         Browser UI ─┐        Chat agent ─┐
   goes through: rebuild orchestration, content-hash mesh cache, EventBus),
   `project.py` (filesystem project store, atomic writes), `model.py`
   (dataclasses + `AppError` subclasses), `tools.py` (the ToolRegistry),
-  `materials.py`, `templates.py`.
+  `materials.py` (card schema, loader, `MaterialLibrary`),
+  `materials_query.py` (pure `find_materials`/`filter` engine),
+  `materials_lint.py` (pure card lint), `materials_data/` (the shipped cards),
+  `templates.py`.
 - **`agentcad/server/app.py`** — FastAPI: thin REST wrappers, a WebSocket
   event channel, the generic `/api/tools/{name}` passthrough (what MCP
   proxies), and static frontend hosting.
@@ -2481,6 +2484,100 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
   `test_ac8_the_full_suite_count_is_cited` reads the newest changelog entry and
   requires `make test` and a real `N passed` — the PRD-004/008/011/012
   precedent. Fill the number in; the literal placeholder is red on purpose.
+
+## Materials library gotchas (PRD-028 — read before touching `materials.py`, `materials_query.py`, `materials_lint.py`, `materials_data/`, or the FEM tools' material resolution)
+
+Every item is traceable to a measurement in `docs/changelog/0271`–`0277`.
+User-facing reference: `docs/materials.md` and the Materials/FEM sections of
+`docs/agent-api.md`.
+
+- **Property keys are a closed set, one canonical unit each**
+  (`PROPERTY_UNITS`). A card that spells an unknown key, or the right key with
+  the wrong unit string, is a refusal (`unit_mismatch`/`schema`) — never a
+  silent conversion. `density_g_cm3` is the only required property.
+- **Density is a POINT in the shipped library.** A `range` density is a lint
+  **error** at `--profile library` (`density_must_be_point`) — a warning only
+  in `user`. `service._cache_key` hashes the resolved density; a range that
+  silently resolved to a midpoint in the builtin catalog would make the mesh
+  cache key depend on an averaging convention nobody chose on purpose.
+- **The loader raises at import on any `library`-profile lint error** — a
+  broken shipped card breaks every `import agentcad` (`materials.load_library`
+  names the file/id/property in the `RuntimeError`). Author a family file
+  in progress under a **`_`-prefixed** name (`_draft_ceramics.json`) — the
+  loader skips any `materials_data/*.json` whose name starts with `_` (the
+  same mechanism `_library.json` uses to stay out of the card scan).
+- **The 30 legacy ids and their densities are immutable — forever.** A
+  corrected or re-based material gets a **new id** (or a `condition` suffix);
+  the old id's numbers never change in place. This is not a style preference:
+  `_cache_key` hashes density, so an in-place edit silently invalidates every
+  mesh cached against that id. `tests/test_materials.py`'s
+  `LEGACY_DENSITIES`/`LEGACY_ROWS` pin all 30 — extend them, never edit them.
+- **Two lint profiles, and they disagree on purpose.** `library` (the shipped
+  catalog, and the CLI's default) makes every structural rule an error,
+  including an uncited property (`missing_citation`). `user` (a project/global
+  hand-written entry) accepts a v1 flat entry as-is and reports an uncited
+  property as a **warning** — a hand-typed number genuinely has no citation to
+  give, and pretending otherwise would be worse than saying so. A
+  `project.json`'s `materials` section is *always* linted at `user`, whatever
+  `--profile` was asked for, because it is hand-written, not shipped.
+- **`masonry` is kept, not renamed to `concrete`.** User files already
+  validate against it, and it is the honest parent of
+  concrete/mortar/brick/stone (four leaves, not one).
+- **`characteristic` is a basis, `allowable-linked` is not.** EN 338/EN 1992
+  5%-fractile values are neither a US-style spec minimum nor a datasheet
+  typical, so `characteristic` was added to `BASES` rather than mislabelling
+  them. The PRD's `allowable-linked` basis became the record-level `links`
+  list instead (MMPDS/Prospector referenced, never mirrored, never given a
+  value) — a "basis" on a property with no value is not a basis.
+- **FEM material resolution is entirely service-side; the kernel is
+  unchanged.** `core/tools_analysis.py`'s `resolve_property`/`_elastic` read
+  `service.materials.resolve(...).prop(key).at(T_c)` and hand the solver the
+  same scalar keys it always took (`E_mpa`, `nu`, `k_w_m_k`). Thermal
+  resolution evaluates at the **mean of the two fixed temperatures**
+  (`(t_hot_c + t_cold_c) / 2`) — the one defensible single point for a linear
+  steady-state model. A table read outside its span is clamped to the end row
+  and the result's `warnings` gets an entry that **starts with the literal
+  prefix** `temperature_out_of_table_range:` — match on the prefix, not the
+  whole string (it names the property, the temperature and the table span).
+  `fem_static` with no material E falls back to 210000 MPa, no
+  `poisson_ratio` falls back to 0.3 — both recorded as `{value, basis:
+  "fallback_default"}` in `material_basis`, never silently applied.
+  `fem_modal` keeps its hard refusal on no E (a modal frequency scales with
+  √E — a silent steel default is a wrong answer, not a rough one).
+- **`find_materials`/`filter`: a range qualifies `_min`/`_max` by its
+  conservative bound** (lower bound for `_min`, upper for `_max` — the whole
+  range must clear the bar), and **a material missing the constrained
+  property never qualifies** — a missing value is not a pass. Zero qualifying
+  records is a `validation_error` (`"no material satisfies the
+  constraints"`) carrying `details.nearest_relaxation: {drop, count} | null`
+  (the single constraint whose removal admits the most records, by
+  leave-one-out) — never a bare empty list.
+- **`routes_materials.py` answers 422 for an unknown id or an impossible
+  query, not 404.** Both `GET /materials/{id}` and `POST /materials/find` go
+  through `routes_configs._result` (the house convention: a tool refusal —
+  `{"error": …}`, no `ok` key — raises the mapped `AppError`), and the
+  underlying refusal in both cases is a `ValidationError`; there is no
+  `NotFoundError` in this pack to map to 404 instead. `PUT
+  /projects/{proj}/materials` is the one unchanged exception (still a 200
+  `{"error": …}` body on a validation failure — an existing inconsistency
+  this PRD did not touch).
+- **No aggregator name in any `source`, in any profile.** `DISALLOWED_SOURCE_RE`
+  (MatWeb, MakeItFrom, UL Prospector, Granta — case-insensitive) fires on
+  `properties.*.source`, `process.source` and `cost_usd_kg.source` alike
+  (`disallowed_source`, always an error). A `links` entry pointing a reader
+  *at* one of them is fine — the library never mirrors their numbers, and only
+  cites them by name in a place a lint rule does not scan.
+- **`materials_library` is an additive, atomic-merge manifest key** —
+  `create_project` writes it, `set_project_materials` refreshes it (the
+  entries it just validated were checked against *this* running schema, so
+  the pin has to say so). A stale pin left behind after a hand-edited manifest
+  reports `library_version_newer_than_shipped`/`library_version_unreadable` in
+  `list_materials`'s `warnings`, never a silent mismatch.
+- **The CLI is `.venv/bin/agentcad materials lint <path>…`,
+  not `python -m agentcad.cli`.** `cli.py` carries no `if __name__ ==
+  "__main__":` guard, so `-m` loads the module and does nothing; a subprocess
+  test spawns `[sys.executable, "-c", "from agentcad.cli import main;
+  main()"]` instead (`tests/test_materials_lint.py`'s `_argv()`).
 
 ## Conventions (match these)
 
