@@ -115,7 +115,9 @@ def add_bench_parser(sub) -> None:
                    help="which agent to drive (default: the built-in chat "
                         "agent, the shipped product surface)")
     r.add_argument("--report", required=True, metavar="DIR",
-                   help="the results directory to write")
+                   help="the results directory to write; a previous run's "
+                        "tasks/ is cleared first, and a non-empty directory "
+                        "that is not a results directory is refused untouched")
     r.add_argument("--model", default=None, metavar="NAME",
                    help="model id for the agent (default: the chat engine's)")
     r.add_argument("--work-dir", default=None, metavar="DIR",
@@ -287,6 +289,7 @@ def _cmd_run(args) -> int:
             return 2
         model, api_key, client_factory = _agent_config(args, bench_runner)
         report_dir = Path(args.report).expanduser().resolve()
+        _accept_report_dir(report_dir)
         projects_root = Path(tempfile.mkdtemp(prefix="agentcad-bench-projects-"))
         # Accepted, refused and created BEFORE the kernel spawns (review I1):
         # the work dir is a writable root and a Landlock rule on a missing
@@ -310,7 +313,7 @@ def _cmd_run(args) -> int:
                 task, service=service, scorer=scorer, report_dir=report_dir,
                 work_dir=work_dir, model=model, api_key=api_key,
                 agent=args.agent, client_factory=client_factory,
-                failures=failures)
+                failures=failures, quiet=args.quiet)
         header = {
             "schema": bench_runner.BENCH_SCHEMA,
             "task_set": selected[0].task_set,
@@ -357,6 +360,50 @@ def _cmd_run(args) -> int:
     return 2 if failures else 0
 
 
+#: What makes a directory recognisable as a results directory rather than
+#: someone's Documents folder. `bench run` writes the first two and
+#: `bench report` the last two (design §8.7).
+_RESULTS_ENTRIES = frozenset({"bench.json", "tasks", "report.json",
+                              "report.md"})
+
+
+def _accept_report_dir(report_dir: Path) -> None:
+    """Refuse a `--report` that is not ours; clear the part of it that is.
+
+    **Why clear.** `report.aggregate` reads **every** `score.json` under
+    `<report>/tasks/` (`report._score_paths`), while `bench.json` carries one
+    agent, one model and one roster. A second run into the same directory with
+    a narrower `--tasks` would therefore publish the *union* of two runs under
+    one header — two models reported as one number — so the previous `tasks/`
+    tree goes before the loop starts.
+
+    **Why refuse first.** Removing anything is only defensible once the
+    directory is known to be a results directory: absent, empty, or already
+    carrying one of :data:`_RESULTS_ENTRIES`. Anything else keeps its contents
+    and the run stops (exit 2), because `--report ~/Documents` is a typo and
+    must never be a delete command. This is `refuse_scoring_overlap`'s rule one
+    argument over: refusing beats every cleverer answer.
+    """
+    from ..core.model import ValidationError
+
+    if not report_dir.exists():
+        return
+    if not report_dir.is_dir():
+        raise ValidationError(
+            f"--report {report_dir} is not a directory",
+            {"path": str(report_dir)})
+    entries = {entry.name for entry in report_dir.iterdir()}
+    if entries and not (entries & _RESULTS_ENTRIES):
+        raise ValidationError(
+            f"--report {report_dir} is not empty and does not look like a "
+            f"results directory (no {', '.join(sorted(_RESULTS_ENTRIES))}); "
+            f"nothing was written or removed — pass a new directory",
+            {"path": str(report_dir), "entries": sorted(entries)[:20]})
+    # Ours, so the stale half goes. `report.json`/`report.md` are `bench
+    # report`'s to overwrite and are left alone.
+    shutil.rmtree(report_dir / "tasks", ignore_errors=True)
+
+
 def _budgeted(task, budget_s):
     """*task* with `--budget` substituted for its declared wall clock.
 
@@ -395,8 +442,59 @@ def _agent_config(args, bench_runner):
     return (args.model or DEFAULT_MODEL), api_key, client_factory
 
 
+def _derive_task_service(parent, projects_dir):
+    """A second `AgentCADService` over *projects_dir*, wired like the parent's.
+
+    `checks._ephemeral_service`'s trick — a service over a throwaway tree
+    sharing the parent's **warm kernel**, because a kernel pool per task would
+    cost seconds and ~0.5 GB, 25 times over, to run the same builds. Unlike
+    that one it is deliberately **not muzzled**: it owns the tree it writes
+    into and a bench measures the shipped surface, history snapshots included.
+
+    What is easy to miss, and what this function exists for: a bare
+    `AgentCADService(...)` is **not** the shipped surface. `cli._build_service`
+    attaches five things after construction, and every one of them changes what
+    an agent can do or how it is judged:
+
+    * ``work_root`` — without it `checks.default_work_root` answers ``None``
+      and `run_checks` / `from_step` cut their cells in
+      `tempfile.gettempdir()`, which PRD-006 Decision 1 removed from the
+      writable roots. On Linux the confined worker then gets a
+      ``PermissionError`` and **the agent is scored down for a harness defect**.
+    * ``bundled_indexes`` — the shipped `catalog/` (`cli._register_catalog`).
+      `PackageManager` reads it as ``getattr(service, "bundled_indexes",
+      None)``, so without it `use_part` finds no fasteners and every
+      `assemble_and_clear` task is unsolvable. §8.2 keeps the catalog on for
+      exactly this reason.
+    * ``writable_roots`` — the sandbox grant, kept so a caller can *check* it.
+    * ``store.disk_budget_mb`` — the resolved quota. A bench agent running
+      unbudgeted is measuring a product nobody ships.
+    * ``usage`` — the `UsageMeter`, so a run's kernel cost is accounted the way
+      the product accounts it.
+
+    The **examples are not** carried over: `_register_examples` is the one
+    thing `bench_service` switches off (§8.2), and a task derived from a
+    bundled example must not be solvable by opening that example.
+    """
+    from ..core.service import AgentCADService, EventBus
+
+    service = AgentCADService(Path(projects_dir), parent.kernel, EventBus())
+    service.work_root = getattr(parent, "work_root", None)
+    service.writable_roots = list(getattr(parent, "writable_roots", None) or ())
+    service.store.disk_budget_mb = getattr(parent.store, "disk_budget_mb", None)
+    # Both set only when the parent has one: `AgentCADService` leaves `usage`
+    # at `None` and never defines `bundled_indexes`, and writing `None` over an
+    # absent attribute would turn "no catalog was registered" into "a catalog
+    # was registered and is empty".
+    for name in ("usage", "bundled_indexes"):
+        value = getattr(parent, name, None)
+        if value is not None:
+            setattr(service, name, value)
+    return service
+
+
 def _run_one_task(task, *, service, scorer, report_dir, work_dir, model,
-                  api_key, agent, client_factory, failures) -> dict:
+                  api_key, agent, client_factory, failures, quiet=False) -> dict:
     """Run, copy out, score and write one task. Returns its `bench.json` row.
 
     Never raises: a task that dies takes its own row down and nothing else.
@@ -406,31 +504,32 @@ def _run_one_task(task, *, service, scorer, report_dir, work_dir, model,
     parent and is left exactly as it was.
     """
     from ..core.checks import default_work_root
-    from ..core.service import AgentCADService, EventBus
     from ..core.tools import build_registry
     from . import runner as bench_runner
     from ._json import write_json
     from .scoring import COPY_IGNORE
 
-    out = report_dir / "tasks" / task.category / task.id.split("/")[1]
-    row = {"category": task.category, "total": None, "over_budget": False,
+    # One source for both halves: `task.id` is the key `bench.json`'s roster is
+    # stated in and the key `report._score_paths` reconstructs from these two
+    # directory names, so deriving the path from anything else invites a run
+    # that files a score where the reporter will not look for it.
+    category, name = task.id.split("/")
+    out = report_dir / "tasks" / category / name
+    # `stopped: "error"` and `over_budget: True` are the same statement — the
+    # invariant is `over_budget == (stopped != "model_ended_turn")`, and it has
+    # to hold on the row a task that never returned an outcome leaves behind.
+    row = {"category": category, "total": None, "over_budget": True,
            "stopped": "error"}
     cell = Path(tempfile.mkdtemp(prefix="agentcad-bench-run-",
                                  dir=work_dir or default_work_root(service)))
     try:
         (cell / "projects").mkdir()
-        # A second service over the cell, sharing the run's kernel. NOT
-        # muzzled: `checks._ephemeral_service` nulls the bus hook, the branch
-        # resolver and the write guard because it measures a tree it does not
-        # own — this one owns its tree and is measuring the shipped surface,
-        # so the history snapshots and the branch layer stay live.
-        task_service = AgentCADService(cell / "projects", service.kernel,
-                                       EventBus())
+        task_service = _derive_task_service(service, cell / "projects")
         started = bench_runner._now()
         outcome = bench_runner.run_task(
             task, service=task_service, registry=build_registry(task_service),
             cell=cell, model=model, api_key=api_key,
-            client_factory=client_factory)
+            client_factory=client_factory, quiet=quiet)
         finished = bench_runner._now()
         row.update(over_budget=outcome.over_budget, stopped=outcome.stopped)
 

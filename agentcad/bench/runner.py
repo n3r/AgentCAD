@@ -68,9 +68,17 @@ TRANSCRIPT_SCHEMA = 1
 #: The client wrapper refuses the next *API* call, but it cannot preempt a
 #: **tool** already in flight — a kernel build that hangs is exactly the
 #: limitation `agentcad check --budget` documents (`checks.py:1216-1221`), and
-#: this is its backstop, not its replacement. Big enough that a normal last
-#: kernel call finishes and reports honestly; small enough that a hung one does
-#: not hold a 25-task run open.
+#: this is its backstop, not its replacement.
+#:
+#: **What it actually bounds, stated honestly.** `wait_for` cancels the turn's
+#: task, but a tool call is running in an executor thread that cancellation
+#: cannot reach; `asyncio.run` then joins that thread on the way out. So the
+#: real ceiling on `run_task` is
+#: ``wall_s + WALL_GRACE_S + the in-flight kernel request's own timeout``
+#: (`KernelClient(timeout_s=60.0)`, and `asyncio`'s executor join gives up
+#: after `THREAD_JOIN_TIMEOUT = 300 s` on 3.12). A run is therefore bounded,
+#: but not by this number alone — and a task's `wall_s` is not a hard stop for
+#: the *process*, only for the *conversation*.
 WALL_GRACE_S = 30.0
 
 #: Every value ``run.json``'s ``stopped`` may take (design §8.6).
@@ -179,6 +187,15 @@ class BudgetedClient:
         Order matters and is the order of the design's list: the wall clock is
         the one budget a caller can feel, so it is named first when two are
         spent at once.
+
+        **The tool-call cap is a soft one, by construction.** The check happens
+        between API calls, and one assistant message may carry several
+        ``tool_use`` blocks — `ChatEngine` executes *all* of them before asking
+        for the next response (`chat.py:266-305`). So a round can carry the
+        count past ``max_tool_calls``; what is guaranteed is that no *further*
+        model turn is bought once it is reached. Tightening that would mean
+        interrupting a round mid-flight, which is the one thing that would make
+        the on-disk state unscoreable — the opposite of AC8.
         """
         self.tool_calls = _count_tool_uses(request_messages)
         if self.deadline is not None and time.monotonic() > self.deadline:
@@ -319,7 +336,8 @@ class _RunBus:
 
 
 def run_task(task: Task, *, service, registry, cell, model,
-             api_key: str | None = None, client_factory=None) -> RunOutcome:
+             api_key: str | None = None, client_factory=None,
+             quiet: bool = False) -> RunOutcome:
     """Drive one task through one `ChatEngine` turn and report what happened.
 
     *service* and *registry* are the surface the agent acts through — the
@@ -377,11 +395,24 @@ def run_task(task: Task, *, service, registry, cell, model,
     except (asyncio.TimeoutError, TimeoutError):
         stopped = "wall_clock"
     except Exception as exc:  # noqa: BLE001 — a run never raises; it reports.
-        print(f"bench: {task.id} ended with {type(exc).__name__}: {exc}",
-              file=sys.stderr)
+        if not quiet:
+            print(f"bench: {task.id} ended with {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
         stopped = "error"
 
     transcript = engine.history(project, SESSION)
+    # `wait_for` cancels the turn with a `CancelledError`, which is a
+    # `BaseException` on 3.12 and so slips past `chat.py`'s `except Exception`:
+    # on that path `_repair_history` never ran and the history can end on an
+    # assistant `tool_use` with no `tool_result` — a transcript the Messages
+    # API would reject, in the one artefact that exists to be read and replayed.
+    # `history()` hands back a copy, so this repairs what we are about to write
+    # and leaves the engine's own state alone; it is idempotent (it returns
+    # immediately unless the last message is a dangling assistant turn), which
+    # is why it is not conditioned on `stopped`. A deliberate use of a private
+    # staticmethod: re-implementing its ten lines would be a second definition
+    # of "valid transcript", and `chat.py` may not be edited.
+    ChatEngine._repair_history(transcript)
     # The **history's** count, not the client's: the client counts the blocks
     # in the request it is about to send, so the last round's calls are missing
     # from it whenever no further request follows (a clean end of turn, or the
@@ -465,6 +496,14 @@ def transcript_payload(task: Task, messages, *, cell, projects_root) -> dict:
       spelling of each root is replaced, because `mkdtemp` hands back
       ``/var/…`` where everything downstream says ``/private/var/…``.
     * **image elision** — see :func:`_elide_images`.
+
+    **The task root is deliberately not a needle** (unlike `Scorer.score`'s
+    `<task>`, which redacts it). Nothing a run produces can contain it: assets
+    reach the model as inlined text named by their path *relative* to the task
+    directory (`tasks.prompt_text`), and the agent is never told where the
+    bundle lives. What is left to redact is the machine's own scratch — the
+    cell and the projects root — and redacting a published task's public path
+    on top of that would hide *which* task a transcript belongs to.
     """
     cell = Path(cell)
     projects_root = Path(projects_root)

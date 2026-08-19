@@ -130,8 +130,74 @@ This is PRD-024 AC8: a task that exhausts its budget is stopped, flagged
 - Docs (`docs/bench.md`, `docs/roadmap.md`) and the `bench.yml` workflow are
   Task 11's; nothing here touches them.
 
+## Review round 1 (fixes on top of e366b37)
+
+- **The per-task service is now the shipped surface.** `_cmd_run` built a bare
+  `AgentCADService(cell/"projects", service.kernel, EventBus())`, which lacks
+  the five things `cli._build_service` attaches after construction. New
+  `bench/cli.py::_derive_task_service(parent, projects_dir)` carries them over
+  with a docstring naming each and its failure mode: `work_root` (without it
+  `checks.default_work_root` answers `None` and `run_checks`/`from_step` cut
+  cells in `tempfile.gettempdir()`, which PRD-006 Decision 1 un-granted — on
+  Linux a `PermissionError` scores the agent down for a harness defect),
+  `bundled_indexes` (the shipped `catalog/`; without it `use_part` finds no
+  fastener and every `assemble_and_clear` task is unsolvable, which is exactly
+  what §8.2 keeps the catalog on for), `writable_roots`, `store.disk_budget_mb`
+  and `usage`. `usage`/`bundled_indexes` are copied only when the parent has
+  one, so an absent catalog stays absent rather than becoming an empty one. The
+  examples are deliberately **not** carried (§8.2).
+- **The wall-clock backstop now leaves a valid transcript, and its docstring
+  tells the truth.** `asyncio.wait_for` cancels the turn with a
+  `CancelledError`, a `BaseException` on 3.12 that slips past `chat.py`'s
+  `except Exception`, so `_repair_history` never ran on that path and
+  `transcript.json` could end on an assistant `tool_use` with no
+  `tool_result` — a document the Messages API rejects. `run_task` now calls
+  `ChatEngine._repair_history(transcript)` on the copy `history()` hands back
+  (a documented, deliberate use of a private staticmethod: re-implementing its
+  ten lines would be a second definition of "valid transcript", and `chat.py`
+  may not be edited). It is idempotent, so it is not conditioned on `stopped`.
+  `WALL_GRACE_S`'s docstring now names the real ceiling —
+  `wall_s + WALL_GRACE_S + the in-flight kernel request's own timeout`
+  (`KernelClient(timeout_s=60.0)`, with `asyncio`'s executor join giving up at
+  `THREAD_JOIN_TIMEOUT = 300 s`) — because an executor thread is not something
+  cancellation can reach.
+- **`--report` hygiene** (new `_accept_report_dir`, and the `--report` help
+  says so): `report.aggregate` reads *every* `score.json` under
+  `<report>/tasks/` while `bench.json` carries one agent and one model, so a
+  second run into the same directory would publish the union of two runs as one
+  number. The stale `tasks/` tree is removed before the loop — but only after
+  the directory is established as ours (absent, empty, or already holding
+  `bench.json`/`tasks/`/`report.json`/`report.md`). Anything else is refused
+  with its contents intact: `--report ~/Documents` is a typo, never a delete
+  command.
+- **Smaller corrections.** The `bench.json` row a task that never returned an
+  outcome leaves behind now carries `over_budget: true`, keeping the invariant
+  `over_budget == (stopped != "model_ended_turn")` true on every row. The
+  `bench: <id> ended with …` stderr line is gated on `--quiet` (`run_task` grew
+  a keyword-only `quiet=False`). `BudgetedClient.check` documents that the
+  tool-call cap is **soft**: the check happens between API calls and one
+  assistant message may carry several `tool_use` blocks, all of which run —
+  interrupting a round mid-flight is the one thing that would make the on-disk
+  state unscoreable, which is the opposite of AC8. `transcript_payload`
+  explains why the task root is not a needle (nothing a run produces contains
+  it — assets are inlined by *relative* name — and redacting a published task's
+  public path would hide which task the transcript is of). `out` and the row's
+  `category` now come from one source, `task.id.split("/")`, the key
+  `report._score_paths` reconstructs. The AC8 test asserts
+  `stopped == "tool_calls"` exactly.
+- **New tests**: the per-task service carries kernel/`work_root`/
+  `writable_roots`/disk budget/catalog/`usage` and still has no examples (the
+  old examples test, pointed at `_derive_task_service`); a wall-clock stop
+  landing *inside* a slow tool call yields a transcript whose every `tool_use`
+  has a matching `tool_result` (proved load-bearing: it fails
+  `dangling tool_use: {'t1'}` with the repair removed); a non-results `--report`
+  is refused untouched; a previous run's `tasks/` is cleared while `report.md`
+  survives.
+
 ## Verification
-- `uv run pytest -q tests/test_bench_runner.py` — **13 passed** (17.6 s).
-- `uv run pytest -q tests/test_bench_runner.py tests/test_bench_cli.py
-  tests/test_chat.py -x` — **49 passed** (40.6 s).
+- `uv run pytest -q tests/test_bench_runner.py` — **16 passed** (31.4 s).
+- `uv run pytest -q tests/test_bench_runner.py tests/test_bench_cli.py` —
+  **42 passed** (35.5 s); `tests/test_chat.py` — **10 passed** (0.7 s).
+- `uv run ruff check agentcad/bench/runner.py agentcad/bench/cli.py
+  tests/test_bench_runner.py tests/test_bench_cli.py` — **All checks passed!**
 - `make test` — <orchestrator fills>
