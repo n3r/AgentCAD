@@ -53,6 +53,11 @@ bom-routes/export + 26 checks-ref (LOW-4 unbroken) tests green; the SHIP-modulo-
 MED verdict stands — these are integrity/robustness fixes with no behavior change
 for a clean, approved release.
 
-`make test` — **4630 passed, 40 skipped** (clean run; the full suite measured
-4621 with the 9 self-referential count guards, green once this count lands; +2
-from the MED-1/MED-2 regression tests).
+`make test` — **4630 passed, 40 skipped** on the pre-merge PRD-015 branch. After
+merging main (PRD-024 + PRD-028 landed in parallel; changelogs renumbered
+0295-0303), the combined tree measured **5087 passed** — the only non-passing
+items are contention flakes that pass in isolation (`test_supervisor`,
+`test_sketch_diagnostics`, four `test_simplify` setup-timeouts) and one
+`[fem]`-extra real-solver test (`test_prd028…real_solver_static`) that CI skips
+via `pytest.importorskip('skfem')` — none touch PRD-015 code. CI on the three-OS
+matrix (which runs without the `[fem]` extra) is authoritative.
