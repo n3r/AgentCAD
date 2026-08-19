@@ -1,6 +1,6 @@
 # PRD-024 — AgentCAD-Bench: public agentic-CAD evals
 
-- **Status:** pending
+- **Status:** in-progress
 - **Phase:** v6 — moats
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)

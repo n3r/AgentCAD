@@ -167,7 +167,7 @@ commit. The 031a licensing precondition is closed.
 | [021](prd/pending/PRD-021-dfm-rule-packs-costing.md) | DFM rule packs & costing — open per-process rules run by the kernel with located violations; cost models; `check_dfm` as spec/CI gate | pending | analysis + idea 1b | 003 (soft) |
 | [022](prd/pending/PRD-022-manufacturing-connectors.md) | Manufacturing connectors — instant quotes, slicer pipeline to sliced 3MF, scan-assist, sim burst | pending | analysis + idea 1b | 021 (soft) · 005 |
 | [023](prd/pending/PRD-023-auto-documentation.md) | Auto-documentation — assembly instructions from mate semantics, READMEs, release notes; human-approved | pending | analysis | 013 · 015 |
-| [024](prd/pending/PRD-024-agentcad-bench.md) | AgentCAD-Bench — public, kernel-scored agentic-CAD evals; our release gate | pending | analysis | 003 |
+| [024](prd/in-progress/PRD-024-agentcad-bench.md) | AgentCAD-Bench — public, kernel-scored agentic-CAD evals; our release gate | in-progress | analysis | 003 |
 | [030](prd/pending/PRD-030-motion-dynamics.md) | Motion & dynamics — closed-chain kinematics; MuJoCo rigid-body dynamics (reactions, motor sizing); loads→FEM handoff | pending | idea 6 | 013 |
 | [031](prd/pending/PRD-031-marketplace.md) | Marketplace & community hub — validated parametric components/projects/skills; server-side execution only; provenance & disclosure | pending — **split: 031a seeded read-only catalog (step 4) · 031b open publishing (step 6)** | idea 1e | 031a: 011 · 005a · 007 — 031b: + 006 |
 | [032](prd/pending/PRD-032-universal-cad-import.md) | Universal CAD import — neutral-deep + ODA opt-in + consent-gated cloud conversion; fidelity reports; re-import diffs | pending | idea 7 | 017 |

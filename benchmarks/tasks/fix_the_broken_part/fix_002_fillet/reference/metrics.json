@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 70.05,
+      "metric": "bbox_x_mm",
+      "min": 69.95,
+      "name": "shelf_bracket_bbox_x",
+      "part": "shelf_bracket"
+    },
+    {
+      "max": 40.05,
+      "metric": "bbox_y_mm",
+      "min": 39.95,
+      "name": "shelf_bracket_bbox_y",
+      "part": "shelf_bracket"
+    },
+    {
+      "max": 55.05,
+      "metric": "bbox_z_mm",
+      "min": 54.95,
+      "name": "shelf_bracket_bbox_z",
+      "part": "shelf_bracket"
+    },
+    {
+      "max": 227.293,
+      "metric": "mass_g",
+      "min": 225.031,
+      "name": "shelf_bracket_mass",
+      "part": "shelf_bracket"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "shelf_bracket_solids",
+      "part": "shelf_bracket"
+    },
+    {
+      "max": 28954.463,
+      "metric": "volume_mm3",
+      "min": 28666.359,
+      "name": "shelf_bracket_volume",
+      "part": "shelf_bracket"
+    }
+  ]
+}

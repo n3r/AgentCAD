@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 15.1,
+      "metric": "bbox_z_mm",
+      "min": 14.9,
+      "name": "length",
+      "part": "shaft_collar"
+    },
+    {
+      "max": 105.9,
+      "metric": "mass_g",
+      "min": 101.8,
+      "name": "mass",
+      "part": "shaft_collar"
+    },
+    {
+      "max": 40.15,
+      "metric": "bbox_y_mm",
+      "min": 39.85,
+      "name": "outer_diameter_y",
+      "part": "shaft_collar"
+    },
+    {
+      "max": 39.99,
+      "metric": "bbox_x_mm",
+      "min": 39.85,
+      "name": "slit_opens_the_rim",
+      "part": "shaft_collar"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "solids",
+      "part": "shaft_collar"
+    }
+  ]
+}

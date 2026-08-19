@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "assemble_and_clear/asm_003_bolted_joint",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "assemble_and_clear",
+  "title": "Bolt the clamp plate down without bottoming the screw in its tapped hole",
+  "sets": ["core"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "derived", "example": "fasteners", "parts": ["tapped_plate", "clamp_plate", "cap_screw"]},
+  "prompt": "prompt.md",
+  "assets": [],
+  "starter": "starter",
+  "target": {"project": "bench_asm_003_bolted_joint", "parts": ["tapped_plate", "clamp_plate", "cap_screw"]},
+  "budgets": {"wall_s": 900, "turns": 30},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "world frame, no rotations: the joint axis is Z, the tapped plate's top face is Z = 0 and its body hangs into -Z, and the stack grows into +Z"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": "specs/project.py",
+    "parts": {}
+  },
+  "weights": {
+    "built": 0.10, "valid": 0.05, "specs": 0.35,
+    "geometry": 0.00, "interference": 0.40, "metrics": 0.10
+  }
+}

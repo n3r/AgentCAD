@@ -2482,6 +2482,119 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
   requires `make test` and a real `N passed` — the PRD-004/008/011/012
   precedent. Fill the number in; the literal placeholder is red on purpose.
 
+## Bench gotchas (PRD-024 — read before touching `agentcad/bench/`, `kernel/handlers/bench.py` or `benchmarks/`)
+
+Full documentation: `docs/bench.md`. The design is
+`docs/superpowers/specs/2026-08-19-agentcad-bench-design.md`.
+
+- **`error` means the harness could not measure. `not_applicable` is declared
+  by `task.json` (weight 0) and NEVER by a run.** A candidate that is absent,
+  unbuildable, mesh-only or wrong is *measured*, and it measures **zero**
+  (status `ok` with a `reason` in `detail`). This is the single most important
+  scoring rule and it closes an exploit: excluded subscores renormalise away,
+  so a run-decided exclusion would mean a candidate improves its total by
+  destroying the evidence. If you are tempted to write `except Exception:
+  status = "error"` in a subscore, you are re-opening it — classify with
+  `_blames_harness` instead.
+
+- **The rubric is injected into a COPY and re-binds `SPECS`.** The block is
+  appended to the candidate's part script (last module-level binding wins), and
+  `<copy>/specs.py` is written or **deleted** unconditionally. Only
+  rubric-owned rows count (`<part>:*` for parts the injection touched,
+  `project:*` only when the task ships a project rubric) — otherwise a
+  candidate inflates `specs` with checks it wrote itself. A `skip` leaves the
+  denominator **unless** its reason is candidate-inducible
+  (`CANDIDATE_SKIP_REASONS = ("mesh_only", "no_instances")`), which counts as a
+  fail.
+
+- **The `iou` handler booleans ONLY the intersection.** `union = volA + volB −
+  inter`, never `|` (a `|` on multi-solid Compound operands doubles the OCCT
+  failure surface for arithmetic that is free). Both sides are
+  solids-decomposed and AABB-prefiltered, `inter` is clamped to
+  `min(Σ, volA, volB)` and the ratio to `[0,1]`, volumes come from
+  `shape_volume` (never `.volume`), and a **mesh side short-circuits before any
+  boolean** — an STL operand segfaults OCCT. Alignment moves the *candidate*
+  only; **scale is never normalised**.
+
+- **`agentcad/bench/**` is OCP-free by contract** and a test parses every module
+  with `ast` to prove it. `kernel/handlers/bench.py` is a **handler pack, not a
+  tool pack**: `iou` must stay absent from `build_registry(service).list()` —
+  a tool that answers "how close am I to the reference?" turns the benchmark
+  into a search over its own answer key. There is no `core/tools_bench.py`, no
+  `server/routes_bench.py`, no new event and no manifest key.
+
+- **`score.json` carries no timestamp, host, path, duration or client id** —
+  those live in the sibling `run.json`. It is `sort_keys` + `indent=2` +
+  `allow_nan=False` + recursive `round(x, 6)`, with every path scrubbed to
+  `<cell>`/`<task>`/`<submission>`/`<projects>`, so two scorings of one
+  submission are byte-identical (AC3). Adding one non-deterministic field
+  anywhere in the body ends that.
+
+- **`_build_service(examples=False)` is load-bearing** and is the *only* change
+  `agentcad/cli.py` took for the runner: a task derived from a bundled example
+  must not be solvable by opening that example. It is a keyword-only parameter
+  because `AGENTCAD_EXAMPLES=0` is process-global and would clobber a
+  neighbouring xdist worker. **The catalog stays registered** — an assembly
+  task legitimately reaches for fasteners.
+
+- **`bench.json`'s `tasks` roster is written from the SELECTION, not from the
+  survivors**, and `bench report` takes its denominator from that index. A task
+  that was selected and never scored has to appear there or it quietly leaves
+  the arithmetic — and a baseline task missing from the results is a
+  `coverage` regression, not a smaller mean.
+
+- **`bench report --baseline` exiting 1 IS the release gate**, and it is the
+  only exit 1 in the family besides `publish`'s rejected row. `run` and `score`
+  are 0/2 only: a low score is a measurement, and making it a failing exit
+  would turn the runner and the gate into the same thing. The gate is on the
+  total and the category means; **per-task deltas are printed, never gated**.
+
+- **`--report DIR` refuses a directory that is not a results directory** and
+  clears only `tasks/` when it is. `--report ~/Documents` is a typo and must
+  never be a delete command; the same refusal (`refuse_scoring_overlap`) keeps
+  a work dir from being, holding or sitting inside the submission, the task
+  tree, the results directory or the projects root.
+
+- **`publish` rule 4 is row-relative** (ledger D24), not repo-relative: a
+  non-`https://` link resolves against `<leaderboard>/rows/<row-id>/` and must
+  stay inside it textually **and** after `resolve()`. Only an `https://` link
+  renders as an anchor. A rejected row refuses the **whole** board, exit 1,
+  nothing written, and there is no override flag.
+
+- **The reference script is the solution; the reference STEP is the datum, and
+  STEP is never byte-compared.** Drift is checked by re-exporting and measuring
+  (IoU ≥ 0.9999, volume within 1e-6 relative, bbox within 1e-3 mm) in
+  `tests/test_prd024_acceptance.py`. `asm_*`/`opt_*` ship
+  `reference.steps: {}` with `geometry` weight 0 and have no datum to drift.
+
+- **`benchmarks/` is a read-only input to the test suite.** No test writes into
+  it (the authoring helper does, and every test of it works on a `tmp_path`
+  copy), a reference project is staged under the test's own projects root
+  before it is built, and `benchmarks/` is in `.dockerignore` and out of the
+  wheel.
+
+- **No fan-out, no `--jobs`, and do not re-add them.** The packages build
+  fan-out was deleted after failing a pre-registered speed bar *and* flipping a
+  verdict under `--budget`; a benchmark whose numbers depend on a worker count
+  is not a benchmark.
+
+- **The bench CI job that holds the API key never runs on `pull_request`**, and
+  it lives in `.github/workflows/bench.yml` — its own file, because
+  `tests/test_prd006_acceptance.py` asserts `ci.yml` byte-wise. The `guard` job
+  exists because the `secrets` context is unreadable from a job-level `if:`,
+  and it emits a **visible `::notice::`** when the key is absent: a silently
+  skipped benchmark is indistinguishable from one that scored zero.
+
+- **Two product findings the bench fenced rather than fixed** (both are
+  follow-ups, not bench bugs): `handlers/drawing._view_bounds` samples six
+  points per edge, so a curved silhouette's overall dimensions come out ~5%
+  under — `author.render_drawing(check_dims=True)` refuses to ship a lying
+  sheet. And a swept pipe surface does not survive the STEP round trip as a
+  boolean operand (script-vs-script and STEP-vs-STEP both intersect; script
+  against the checked-in STEP returns nothing), which is why
+  `fix_005_invalid_shell` weights `geometry` 0.00 with the reason argued in its
+  `prompt.md`.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script
@@ -2576,6 +2689,7 @@ Write the changelog from the real diff, not from memory.
 - `docs/architecture.md` — processes, components, ACM1 format, rebuild flow
 - `docs/agent-api.md` — the 85/88 agent tools with schemas + a worked loop
 - `docs/geometry-ci.md` — `agentcad check`, the report schema, the GitHub Action
+- `docs/bench.md` — AgentCAD-Bench: the task bundle, the six subscores, `agentcad bench`, submitting from outside
 - `docs/part-authoring.md` — the script contract, toolkit, mates, sketch solver
 - `docs/user-guide.md` — the UI surface by surface
 - `docs/roadmap.md` — the PRD index with statuses (what we're building and why)

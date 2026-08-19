@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "name": "bench_asm_003_bolted_joint_reference",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "tapped_plate",
+      "label": "Tapped Base Plate",
+      "material": "steel_4340",
+      "params": {
+        "size": 40.0,
+        "thickness": 20.0,
+        "thread_engage": 8.0,
+        "counterbore": 6.0
+      }
+    },
+    {
+      "id": "clamp_plate",
+      "label": "Clamp Plate",
+      "material": "al6061",
+      "params": {
+        "size": 40.0,
+        "thickness": 8.0,
+        "clearance_d": 9.0
+      }
+    },
+    {
+      "id": "cap_screw",
+      "label": "M8 Socket-Head Cap Screw",
+      "material": "steel_4340",
+      "params": {
+        "length": 13.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": [
+      {
+        "id": "tapped_plate_1",
+        "part": "tapped_plate",
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "color": "#5d6d7e"
+      },
+      {
+        "id": "clamp_plate_1",
+        "part": "clamp_plate",
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "color": "#9aa7b8"
+      },
+      {
+        "id": "cap_screw_1",
+        "part": "cap_screw",
+        "position": [
+          0.0,
+          0.0,
+          8.0
+        ],
+        "rotation_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "color": "#4a5560"
+      }
+    ]
+  }
+}

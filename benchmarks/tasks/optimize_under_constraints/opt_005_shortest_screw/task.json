@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "optimize_under_constraints/opt_005_shortest_screw",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "optimize_under_constraints",
+  "title": "Shorten the cap screw until only the joint stops you",
+  "sets": ["core"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "derived", "example": "fasteners", "parts": ["cap_screw", "clamp_plate", "tapped_plate"]},
+  "prompt": "prompt.md",
+  "assets": [],
+  "starter": "starter",
+  "target": {"project": "bench_opt_005_shortest_screw", "parts": ["cap_screw", "clamp_plate", "tapped_plate"]},
+  "budgets": {"wall_s": 900, "turns": 30},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the tapped plate's top face lies on Z = 0 and its body hangs into -Z; the clamp plate sits on it spanning Z = 0 to Z = 8; the cap screw's under-head bearing face is on the clamp plate's top face at Z = 8, its head rises into +Z and its shank runs down -Z. All three are centred on the origin in X and Y. The starter already sits on this datum and the optimisation must not move it"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": "specs/project.py",
+    "parts": {"cap_screw": "specs/parts/cap_screw.py"}
+  },
+  "weights": {
+    "built": 0.10, "valid": 0.05, "specs": 0.45,
+    "geometry": 0.00, "interference": 0.00, "metrics": 0.40
+  }
+}

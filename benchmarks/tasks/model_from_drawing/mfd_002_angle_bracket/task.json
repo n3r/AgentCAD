@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "model_from_drawing/mfd_002_angle_bracket",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "model_from_drawing",
+  "title": "Erection angle bracket from a three-view drawing",
+  "sets": ["core"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "derived", "example": "construction", "parts": ["angle_bracket"]},
+  "prompt": "prompt.md",
+  "assets": ["assets/drawing.svg"],
+  "starter": null,
+  "target": {"project": "bench_mfd_002_angle_bracket", "parts": ["angle_bracket"]},
+  "budgets": {"wall_s": 600, "turns": 24},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the inside corner of the L is at the origin: the horizontal leg runs along +X from X = 0 to X = 90 with its underside on Z = 0, the vertical leg rises along +Z from that same corner, and the bracket is 80 mm wide along -Y, spanning Y = -80 to Y = 0"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {"angle_bracket": "reference/steps/angle_bracket.step"},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": null,
+    "parts": {"angle_bracket": "specs/parts/angle_bracket.py"}
+  },
+  "weights": {
+    "built": 0.15, "valid": 0.10, "specs": 0.10,
+    "geometry": 0.50, "interference": 0.00, "metrics": 0.15
+  }
+}

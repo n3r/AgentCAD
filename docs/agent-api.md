@@ -121,6 +121,17 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
   because "it was removed" would be a claim about a branch the thread was
   never about. See [Review threads](#review-threads).
 
+- **AgentCAD-Bench adds nothing to this surface, on purpose.** PRD-024 ships
+  four CLI subcommands (`agentcad bench run|score|report|publish`) and **no**
+  tool, route, event, error type or manifest key. Its IoU scorer is a kernel
+  handler (`agentcad/kernel/handlers/bench.py`) that `build_registry` never
+  sees — a test asserts `iou` is absent from the registry. A tool that told a
+  model how close its part was to the reference would turn the benchmark into a
+  search over its own answer key, so the measurement stays outside the surface
+  it measures. If you are benchmarking an agent, drive it through these tools
+  exactly as you normally would and score the project directory it leaves
+  behind: see [`docs/bench.md`](bench.md).
+
 ## Tools
 
 Required arguments are **bold**; the rest are optional. Discover the live set

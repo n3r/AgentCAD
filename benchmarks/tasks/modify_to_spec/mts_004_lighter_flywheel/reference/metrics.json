@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 4064.7,
+      "metric": "mass_g",
+      "min": 3905.3,
+      "name": "mass",
+      "part": "flywheel"
+    },
+    {
+      "max": 200.15,
+      "metric": "bbox_x_mm",
+      "min": 199.85,
+      "name": "outside_diameter_x",
+      "part": "flywheel"
+    },
+    {
+      "max": 200.15,
+      "metric": "bbox_y_mm",
+      "min": 199.85,
+      "name": "outside_diameter_y",
+      "part": "flywheel"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "solids",
+      "part": "flywheel"
+    },
+    {
+      "max": 19.1,
+      "metric": "bbox_z_mm",
+      "min": 18.9,
+      "name": "thickness",
+      "part": "flywheel"
+    }
+  ]
+}

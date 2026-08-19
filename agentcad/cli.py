@@ -46,7 +46,7 @@ def _projects_dir(args) -> Path:
 
 
 def _build_service(projects_dir: Path, extra_writable: list[str] | None = None,
-                   *, posture: str | None = None):
+                   *, posture: str | None = None, examples: bool = True):
     """The service every command shares: one warm kernel, no server.
 
     *extra_writable* appends to the sandbox's writable roots and must be known
@@ -71,6 +71,13 @@ def _build_service(projects_dir: Path, extra_writable: list[str] | None = None,
       builds the service owns removing it (`_release_work_root`).
     * the **usage meter** — it is the kernel's ``on_usage`` hook, so it has to
       exist before the kernel does; the service gets it afterwards.
+
+    ``examples=False`` is the bench's (PRD-024): a task derived from a bundled
+    example must not be solvable by opening that example. The default keeps
+    ``check``, ``serve``, ``export`` and ``package`` byte-identical, and it is a
+    parameter rather than ``AGENTCAD_EXAMPLES=0`` because that variable is
+    process-global and a bench run inside a pytest worker would clobber a
+    neighbour.
     """
     import tempfile
 
@@ -120,7 +127,8 @@ def _build_service(projects_dir: Path, extra_writable: list[str] | None = None,
         service.writable_roots = list(writable)
         service.usage = meter
         service.store.disk_budget_mb = quotas.disk_mb or None
-        _register_examples(service)
+        if examples:
+            _register_examples(service)
         _register_catalog(service)
     except BaseException:
         # The workers are already running: anything that raises between here
@@ -1469,7 +1477,7 @@ def main() -> None:
     # metavar hides the internal `worker` subcommand from usage/help.
     sub = parser.add_subparsers(
         dest="command",
-        metavar="{serve,open,mcp,new,export,check,package,publish,admin}")
+        metavar="{serve,open,mcp,new,export,check,bench,package,publish,admin}")
 
     for name in ("serve", "open"):
         p = sub.add_parser(name, help=f"{name} the AgentCAD server")
@@ -1567,6 +1575,11 @@ def main() -> None:
                      help="print nothing; the exit code is the answer")
     out.add_argument("--json", action="store_true",
                      help="print the report to stdout instead of the summary")
+
+    # Lazy: `agentcad serve` pays nothing for a package it never touches, and
+    # `agentcad/bench/` imports neither OCP nor build123d.
+    from .bench.cli import add_bench_parser
+    add_bench_parser(sub)
 
     p = sub.add_parser(
         "package", help="work with parts packages (PRD-011)",
@@ -1724,6 +1737,9 @@ def main() -> None:
         cmd_export(args)
     elif args.command == "check":
         raise SystemExit(cmd_check(args))
+    elif args.command == "bench":
+        from .bench.cli import cmd_bench
+        raise SystemExit(cmd_bench(args))
     elif args.command == "package":
         raise SystemExit(cmd_package(args))
     elif args.command == "publish":

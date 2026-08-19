@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "name": "bench_asm_005_rod_and_piston_reference",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "piston",
+      "label": "Piston",
+      "material": "al7075",
+      "params": {
+        "diameter": 65.4,
+        "comp_height": 28.0,
+        "pin_d": 18.0,
+        "skirt": 22.0
+      }
+    },
+    {
+      "id": "wrist_pin",
+      "label": "Wrist Pin",
+      "material": "steel_4340",
+      "params": {
+        "diameter": 18.0,
+        "length": 48.0,
+        "bore": 10.0
+      }
+    },
+    {
+      "id": "rod_body",
+      "label": "Connecting Rod Body",
+      "material": "ti6al4v",
+      "params": {
+        "length": 110.0,
+        "big_end_bore": 40.5,
+        "small_end_bore": 18.25,
+        "width": 16.0
+      }
+    },
+    {
+      "id": "rod_cap",
+      "label": "Connecting Rod Cap",
+      "material": "ti6al4v",
+      "params": {
+        "big_end_bore": 40.5,
+        "width": 16.0
+      }
+    },
+    {
+      "id": "rod_bolt_pair",
+      "label": "Rod Bolts (2\u00d7 M5)",
+      "material": "steel_4340",
+      "params": {
+        "length": 22.0,
+        "spacing": 22.8
+      }
+    }
+  ],
+  "assembly": {
+    "instances": [
+      {
+        "id": "rod_1",
+        "part": "rod_body",
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "color": "#b0b8c4"
+      },
+      {
+        "id": "rod_cap_1",
+        "part": "rod_cap",
+        "position": [
+          0.0,
+          0.0,
+          -0.05
+        ],
+        "rotation_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "color": "#9aa3b0"
+      },
+      {
+        "id": "rod_bolts_1",
+        "part": "rod_bolt_pair",
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "color": "#6d7681"
+      },
+      {
+        "id": "piston_1",
+        "part": "piston",
+        "position": [
+          0.0,
+          0.0,
+          110.0
+        ],
+        "rotation_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "color": "#c9cdd2"
+      },
+      {
+        "id": "wrist_pin_1",
+        "part": "wrist_pin",
+        "position": [
+          0.0,
+          0.0,
+          110.0
+        ],
+        "rotation_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "color": "#8b939c"
+      }
+    ]
+  }
+}

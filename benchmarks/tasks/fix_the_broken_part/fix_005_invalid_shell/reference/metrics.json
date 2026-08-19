@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 72.05,
+      "metric": "bbox_x_mm",
+      "min": 71.95,
+      "name": "coolant_elbow_bbox_x",
+      "part": "coolant_elbow"
+    },
+    {
+      "max": 24.05,
+      "metric": "bbox_y_mm",
+      "min": 23.95,
+      "name": "coolant_elbow_bbox_y",
+      "part": "coolant_elbow"
+    },
+    {
+      "max": 72.05,
+      "metric": "bbox_z_mm",
+      "min": 71.95,
+      "name": "coolant_elbow_bbox_z",
+      "part": "coolant_elbow"
+    },
+    {
+      "max": 59.207766,
+      "metric": "mass_g",
+      "min": 58.035335,
+      "name": "coolant_elbow_mass",
+      "part": "coolant_elbow"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "coolant_elbow_solids",
+      "part": "coolant_elbow"
+    },
+    {
+      "max": 21928.802049,
+      "metric": "volume_mm3",
+      "min": 21494.568345,
+      "name": "coolant_elbow_volume",
+      "part": "coolant_elbow"
+    }
+  ]
+}

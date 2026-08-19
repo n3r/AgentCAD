@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "name": "bench_mfd_001_spacer_plate",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "spacer_plate",
+      "label": "Spacer Plate",
+      "material": "al6061",
+      "params": {
+        "length": 80.0,
+        "width": 50.0,
+        "thickness": 6.0,
+        "corner_r": 4.0,
+        "hole_d": 6.6,
+        "hole_pitch_x": 60.0,
+        "hole_pitch_y": 30.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}

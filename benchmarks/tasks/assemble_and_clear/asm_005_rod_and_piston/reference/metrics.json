@@ -1,0 +1,215 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 65.45,
+      "metric": "bbox_x_mm",
+      "min": 65.35,
+      "name": "piston_bbox_x",
+      "part": "piston"
+    },
+    {
+      "max": 65.45,
+      "metric": "bbox_y_mm",
+      "min": 65.35,
+      "name": "piston_bbox_y",
+      "part": "piston"
+    },
+    {
+      "max": 50.05,
+      "metric": "bbox_z_mm",
+      "min": 49.95,
+      "name": "piston_bbox_z",
+      "part": "piston"
+    },
+    {
+      "max": 232.80872,
+      "metric": "mass_g",
+      "min": 228.198647,
+      "name": "piston_mass",
+      "part": "piston"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "piston_solids",
+      "part": "piston"
+    },
+    {
+      "max": 82850.078443,
+      "metric": "volume_mm3",
+      "min": 81209.48283,
+      "name": "piston_volume",
+      "part": "piston"
+    },
+    {
+      "max": 52.65,
+      "metric": "bbox_x_mm",
+      "min": 52.55,
+      "name": "rod_body_bbox_x",
+      "part": "rod_body"
+    },
+    {
+      "max": 16.05,
+      "metric": "bbox_y_mm",
+      "min": 15.95,
+      "name": "rod_body_bbox_y",
+      "part": "rod_body"
+    },
+    {
+      "max": 122.875,
+      "metric": "bbox_z_mm",
+      "min": 122.775,
+      "name": "rod_body_bbox_z",
+      "part": "rod_body"
+    },
+    {
+      "max": 81.837539,
+      "metric": "mass_g",
+      "min": 80.216993,
+      "name": "rod_body_mass",
+      "part": "rod_body"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "rod_body_solids",
+      "part": "rod_body"
+    },
+    {
+      "max": 18473.485039,
+      "metric": "volume_mm3",
+      "min": 18107.673454,
+      "name": "rod_body_volume",
+      "part": "rod_body"
+    },
+    {
+      "max": 54.37,
+      "metric": "bbox_x_mm",
+      "min": 54.27,
+      "name": "rod_bolt_pair_bbox_x",
+      "part": "rod_bolt_pair"
+    },
+    {
+      "max": 8.77,
+      "metric": "bbox_y_mm",
+      "min": 8.67,
+      "name": "rod_bolt_pair_bbox_y",
+      "part": "rod_bolt_pair"
+    },
+    {
+      "max": 27.05,
+      "metric": "bbox_z_mm",
+      "min": 26.95,
+      "name": "rod_bolt_pair_bbox_z",
+      "part": "rod_bolt_pair"
+    },
+    {
+      "max": 10.433748,
+      "metric": "mass_g",
+      "min": 10.227139,
+      "name": "rod_bolt_pair_mass",
+      "part": "rod_bolt_pair"
+    },
+    {
+      "max": 60,
+      "metric": "n_solids",
+      "min": 60,
+      "name": "rod_bolt_pair_solids",
+      "part": "rod_bolt_pair"
+    },
+    {
+      "max": 1329.13987,
+      "metric": "volume_mm3",
+      "min": 1302.820269,
+      "name": "rod_bolt_pair_volume",
+      "part": "rod_bolt_pair"
+    },
+    {
+      "max": 52.65,
+      "metric": "bbox_x_mm",
+      "min": 52.55,
+      "name": "rod_cap_bbox_x",
+      "part": "rod_cap"
+    },
+    {
+      "max": 16.05,
+      "metric": "bbox_y_mm",
+      "min": 15.95,
+      "name": "rod_cap_bbox_y",
+      "part": "rod_cap"
+    },
+    {
+      "max": 26.3,
+      "metric": "bbox_z_mm",
+      "min": 26.2,
+      "name": "rod_cap_bbox_z",
+      "part": "rod_cap"
+    },
+    {
+      "max": 28.672847,
+      "metric": "mass_g",
+      "min": 28.105068,
+      "name": "rod_cap_mass",
+      "part": "rod_cap"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "rod_cap_solids",
+      "part": "rod_cap"
+    },
+    {
+      "max": 6472.42602,
+      "metric": "volume_mm3",
+      "min": 6344.259168,
+      "name": "rod_cap_volume",
+      "part": "rod_cap"
+    },
+    {
+      "max": 18.05,
+      "metric": "bbox_x_mm",
+      "min": 17.95,
+      "name": "wrist_pin_bbox_x",
+      "part": "wrist_pin"
+    },
+    {
+      "max": 48.05,
+      "metric": "bbox_y_mm",
+      "min": 47.95,
+      "name": "wrist_pin_bbox_y",
+      "part": "wrist_pin"
+    },
+    {
+      "max": 18.05,
+      "metric": "bbox_z_mm",
+      "min": 17.95,
+      "name": "wrist_pin_bbox_z",
+      "part": "wrist_pin"
+    },
+    {
+      "max": 66.336095,
+      "metric": "mass_g",
+      "min": 65.022509,
+      "name": "wrist_pin_mass",
+      "part": "wrist_pin"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "wrist_pin_solids",
+      "part": "wrist_pin"
+    },
+    {
+      "max": 8450.457987,
+      "metric": "volume_mm3",
+      "min": 8283.122185,
+      "name": "wrist_pin_volume",
+      "part": "wrist_pin"
+    }
+  ]
+}

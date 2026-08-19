@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "name": "bench_asm_005_rod_and_piston_starter",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "piston",
+      "label": "Piston",
+      "material": "al7075",
+      "params": {
+        "diameter": 65.4,
+        "comp_height": 28.0,
+        "pin_d": 18.0,
+        "skirt": 22.0
+      }
+    },
+    {
+      "id": "wrist_pin",
+      "label": "Wrist Pin",
+      "material": "steel_4340",
+      "params": {
+        "diameter": 18.0,
+        "length": 48.0,
+        "bore": 10.0
+      }
+    },
+    {
+      "id": "rod_body",
+      "label": "Connecting Rod Body",
+      "material": "ti6al4v",
+      "params": {
+        "length": 110.0,
+        "big_end_bore": 40.5,
+        "small_end_bore": 18.25,
+        "width": 16.0
+      }
+    },
+    {
+      "id": "rod_cap",
+      "label": "Connecting Rod Cap",
+      "material": "ti6al4v",
+      "params": {
+        "big_end_bore": 40.5,
+        "width": 16.0
+      }
+    },
+    {
+      "id": "rod_bolt_pair",
+      "label": "Rod Bolts (2\u00d7 M5)",
+      "material": "steel_4340",
+      "params": {
+        "length": 22.0,
+        "spacing": 22.8
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}

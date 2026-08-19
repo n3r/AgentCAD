@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 100.05,
+      "metric": "bbox_x_mm",
+      "min": 99.95,
+      "name": "enclosure_base_bbox_x",
+      "part": "enclosure_base"
+    },
+    {
+      "max": 60.05,
+      "metric": "bbox_y_mm",
+      "min": 59.95,
+      "name": "enclosure_base_bbox_y",
+      "part": "enclosure_base"
+    },
+    {
+      "max": 30.05,
+      "metric": "bbox_z_mm",
+      "min": 29.95,
+      "name": "enclosure_base_bbox_z",
+      "part": "enclosure_base"
+    },
+    {
+      "max": 40.636652,
+      "metric": "mass_g",
+      "min": 39.831965,
+      "name": "enclosure_base_mass",
+      "part": "enclosure_base"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "enclosure_base_solids",
+      "part": "enclosure_base"
+    },
+    {
+      "max": 39073.703446,
+      "metric": "volume_mm3",
+      "min": 38299.966744,
+      "name": "enclosure_base_volume",
+      "part": "enclosure_base"
+    }
+  ]
+}
