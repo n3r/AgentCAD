@@ -59,6 +59,9 @@ review flagged): a planar-mated arm exports a `fixed` joint, a `joint_degraded
 
 `make test` — **4182 passed, 1 skipped** (clean run on the committed tree
 after this fix: 4155 in the parallel phase + 27 in the serial bench/drag tail,
-both exit 0). This is 0250's pre-fix 4181 plus the one planar-degrade test
-added here. Nothing here touches the inertia round trip, pattern expansion,
+both exit 0) on the PRD-013-only tree. This is 0250's pre-fix 4181 plus the
+one planar-degrade test added here. **On the merged tree (after bringing in
+PRD-006, which landed on main first): 4417 passed, 30 skipped + 27 serial,
+exit 0** — the +235 and the extra skips are PRD-006's suite (its Linux
+confinement tests skip on macOS). That merged tree is what the PR ships. Nothing here touches the inertia round trip, pattern expansion,
 sub-assembly resolution, or the AC8 no-regression path the reviewers cleared.
