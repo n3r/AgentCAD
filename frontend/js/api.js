@@ -161,6 +161,9 @@ export const api = {
    *  would show a base sheet the POST did not write. */
   drawingSvgUrl: (proj, id, params) =>
     `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing.svg${query(params)}`,
+  /** Same contract as `drawingSvgUrl`, for the PDF twin route (PRD-014 FR11). */
+  drawingPdfUrl: (proj, id, params) =>
+    `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing.pdf${query(params)}`,
 
   // ---- configurations (PRD-012) ----
   // A configuration is a named parameter set declared on the part; `label` is

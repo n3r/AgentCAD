@@ -32,6 +32,15 @@ _EAGAIN = ("[Errno 11]", "[Errno 35]", "Resource temporarily unavailable")
 #: `connection`, which is how `socket.create_connection` matches.
 _NETWORK_FRAMES = ("socket", "urlopen", "connect", "getaddrinfo")
 
+#: ``WSAEACCES``: what Winsock answers when the process's token carries no
+#: network capability — an AppContainer without ``INTERNET_CLIENT``, which is
+#: how the Windows confinement denies the network (PRD-006b, Decision 2).
+#: CPython renders it as ``PermissionError: [WinError 10013] An attempt was
+#: made to access a socket in a way forbidden by its access permissions``, with
+#: **no** ``[Errno 13]`` and no "Permission denied" in it, so none of the rules
+#: below sees it and an unconfined-looking `None` was the answer.
+_WSAEACCES = "WinError 10013"
+
 
 def _names_a_path(message: str) -> bool:
     """Whether *message* carries the quoted filename ``OSError.__str__``
@@ -71,12 +80,17 @@ def active_facets(report) -> frozenset[str]:
       Windows job object, a cgroup's ``pids.max``) whose breach still surfaces
       in here as a plain ``MemoryError``/``BlockingIOError``.
     * ``filesystem``/``network`` are ALSO active when the *parent* declared
-      them in ``report["confinement"]`` — the macOS case: the seatbelt wraps
-      the argv before the worker ever runs, so there is no ``landlock_abi`` or
-      ``seccomp`` for it to self-report, but the confinement is genuinely in
-      force and the parent (``sandbox_macos.build``) knows it. This is a
-      declared fact from the process that actually applied the wrap, never the
-      worker guessing at its own environment.
+      them in ``report["confinement"]`` **and** the worker did not contradict
+      it: on Windows the same declaration accompanies an intended AppContainer,
+      and a lowbox spawn that failed leaves a perfectly ordinary worker holding
+      a payload that says it is confined, so an ``appcontainer`` key that is
+      not ``True`` drops the declaration entirely. The macOS case has no such
+      key: the seatbelt wraps the argv before the worker ever runs, so there is
+      no ``landlock_abi`` or ``seccomp`` for it to self-report, but the
+      confinement is genuinely in force and the parent
+      (``sandbox_macos.build``) knows it. This is a declared fact from the
+      process that actually applied the wrap, never the worker guessing at its
+      own environment.
 
     A consequence worth stating out loud: on **macOS** the seatbelt is applied
     to the argv by the parent, so a seatbelt ``EACCES``/``EPERM`` is labelled
@@ -95,6 +109,17 @@ def active_facets(report) -> frozenset[str]:
     if report.get("rlimits") or report.get("quotas"):
         facets.update(("process_count", "memory"))
     declared = report.get("confinement") or ()
+    if "appcontainer" in report and report.get("appcontainer") is not True:
+        # Windows, and the mirror of `client.confinement_holds`: the parent
+        # declares the two facets when it *intends* to spawn into an
+        # AppContainer, but the lowbox spawn can fail and fall back to a plain
+        # `Popen` — and then an ordinary `[Errno 13]` from a DAC permission bug
+        # would be labelled a sandbox denial by a worker that is not confined
+        # at all. The key exists only where the worker looked at its own token,
+        # so the macOS seatbelt path (which has no such key) is untouched, and
+        # `is not True` covers the token check that failed as well as the one
+        # that said no.
+        declared = ()
     if "filesystem" in declared:
         facets.add("filesystem")
     if "network" in declared:
@@ -137,6 +162,15 @@ def classify(exc_type: str, message: str, *, active, traceback: str = "") -> str
     if exc_type == "MemoryError":
         return "memory" if _claimable(active, "memory") else None
     if exc_type == "PermissionError":
+        if _WSAEACCES in message:
+            # Winsock's own refusal, and the socket-frame rule still applies:
+            # `WSAEACCES` is also what a bind to a reserved port answers, so
+            # the evidence has to be a socket call — which, for this one, the
+            # message itself carries ("access a socket in a way forbidden").
+            frames = f"{message}\n{traceback}"
+            if any(marker in frames for marker in _NETWORK_FRAMES):
+                return "network" if _claimable(active, "network") else None
+            return None
         # EPERM is the kernel refusing the *operation*; EACCES is it refusing
         # the *path*. Only the second one is unambiguous on its own.
         if "[Errno 1]" in message or "Operation not permitted" in message:

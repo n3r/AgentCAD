@@ -454,7 +454,7 @@ one is not opting out of the other.
 |---|---|---|---|---|---|
 | **Linux** | Landlock + seccomp, applied by the worker to itself before `import build123d` | `local` posture: anywhere. `hosted` posture (this deployment): an allow-list — `/usr`, `/lib*`, `/bin`, `/sbin`, `/etc`, `/opt`, `/proc`, `/dev`, `/sys`, the interpreter, the app tree, and everything it may write to (the roots in the next column — a write root is readable by construction, which is why `<state-dir>/publications/build` is the one subtree of `AGENTCAD_STATE_DIR` on this list). **Not** the rest of `AGENTCAD_STATE_DIR` (`secret.key`, `auth/`), and **nothing under the server user's home** — the config dir stopped being a write root wholesale, so there is no broader exception to state. The worker's own `HOME` env var points at its private temp dir, so `~` inside a script is not the server user's home at all | the granted roots only — the projects dir, each registered example, the server's one `agentcad-work-*` root, the worker's own private temp dir, and `<state-dir>/publications/build` (PRD-007's shared-pool variant builds — `core/share_build.py`). Nothing else, root included (Landlock beats DAC) | denied: every socket family but `AF_UNIX` | no `ptrace`, no `process_vm_readv/writev`, no `pidfd_open`/`pidfd_send_signal`/`pidfd_getfd`, no `process_madvise`, no `io_uring`, and no signal to pid ≤ 0 or to the server |
 | **macOS** | `sandbox-exec` seatbelt profile (the v3 profile, unchanged) | anywhere (`local` posture only — the narrowed profile is Linux) | the same roots | denied | signals to self only |
-| **Windows** | **none.** Reported `unsupported`, honestly, in health and here — AppContainer is carved out as [PRD-006b](prd/pending/PRD-006b-windows-appcontainer.md) | — | — | — | — |
+| **Windows** | an AppContainer (a package SID with no capabilities), the roots granted to it with `icacls`, the worker spawned through `CreateProcessW` with `SECURITY_CAPABILITIES` | anywhere the SID has an ACE: the interpreter, the venv and the app tree (`RX`), plus everything it may write. `local` posture only — the narrowed hosted allow-list is Landlock | the same roots (`M`), granted per plan; everything else answers `[Errno 13]` | denied: no `INTERNET_CLIENT` capability, so a connect fails with `[WinError 10013]` | the job object caps how many it may start; a child inherits the container |
 
 Both postures are explicit named profiles; the hosted one is what
 `AGENTCAD_MODE=hosted` selects. Forks and `exec`s inherit the confinement, so a
@@ -476,6 +476,50 @@ which is the CI step's third line) for the version.
 No capability, no `bwrap` binary and no `--privileged` are needed — the
 ruleset is applied through `ctypes` inside the worker, verified in this image
 as uid 10001 under Docker's default seccomp profile, at 0.3 ms.
+
+**Windows requirements, and what the AppContainer leaves behind.** Windows 8 or
+later (`userenv!CreateAppContainerProfile`) and `icacls` on `PATH`; below that,
+health says `unsupported` rather than implying a switch. Two consequences an
+operator should know, because neither is undone by stopping the server:
+
+- **The ACEs are permanent and inheritable.** Each plan grants the package SID
+  `(OI)(CI)M` on the projects dir, an accepted `--work-dir` and
+  `<state-dir>/publications/build`, and `(OI)(CI)RX` on the interpreter, the
+  venv and the whole application tree (`.git/` and `catalog/` included — an
+  AppContainer that cannot read the app cannot run the worker). They stay on
+  those directories until they are removed, and new files under them inherit
+  them.
+- **The profile name is salted, and that is load-bearing.** A package SID is a
+  *hash of the profile name* (`DeriveAppContainerSidFromAppContainerName`), so
+  a name derived only from the install path would be a SID any other local
+  account could derive — create a profile for, run a process as, and reach
+  everything the ACEs above allow. The name therefore mixes a random
+  per-installation salt kept at `<state-dir>/appcontainer.salt` (16 bytes,
+  created on first use beside `secret.key`); it never leaves the server
+  process, since the worker is told the SID and never the name. **Do not copy a
+  state directory between machines** if you also copy the projects tree and
+  care about that boundary, and if the file cannot be written the server still
+  confines — health carries a warning saying the SID is derivable.
+
+**Removing it again.** The profile is per installation and is deliberately
+never deleted by the worker path, so uninstalling is two steps — the profile,
+then the ACEs, which outlive it (an ACE names a SID, and a SID whose profile is
+gone is still that SID):
+
+```powershell
+# 1. the profile. There is no reliable in-box cmdlet, so this is the API call:
+uv run python -c "from agentcad.kernel.sandbox_windows import AppContainerProfile, profile_name; name = profile_name(); AppContainerProfile.delete(name); print('deleted', name)"
+
+# 2. the ACEs, one per granted root (the SID is in `/api/health` ->
+#    sandbox.confinement.detail.sid, or print it before deleting the profile):
+icacls "C:\path\to\projects" /remove "*S-1-15-2-…"
+icacls "C:\path\to\agentcad"  /remove "*S-1-15-2-…"
+```
+
+`agentcad.kernel.sandbox_windows.acl_revoke(path, sid)` is the same `icacls
+/remove` if you would rather script it in Python. Deleting
+`<state-dir>/appcontainer.salt` afterwards is what makes the *next* start use a
+fresh, unrelated SID.
 
 ### What caps a worker
 
@@ -609,8 +653,9 @@ Nothing new: it is the error contract that already existed.
 ### Still deferred, named so it is not a surprise
 
 No audit log, no per-project ACLs, no organisations, no SSO. No per-account
-compute budget (the caps are per worker per request). Windows confinement is
-[PRD-006b](prd/pending/PRD-006b-windows-appcontainer.md). A narrowed *macOS*
+compute budget (the caps are per worker per request). Windows confinement
+landed as PRD-006b (an AppContainer, above), but hosted mode is still the
+Linux image — a Windows *host* posture is not built. A narrowed *macOS*
 read posture (the seatbelt equivalent of `hosted`) is not built — hosted mode
 is the Linux image. Attribution exists (history trailers, proposal and comment
 records) but is not a queryable per-instance log.

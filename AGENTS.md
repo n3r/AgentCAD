@@ -2117,6 +2117,81 @@ per-member isolation. And when you print the sentence, do **not** reach for
   is a disabled stub), ball/gear joints, the interference broad-phase, and
   cylindrical/planar-decomposed URDF. Do not claim these green.
 
+## Drawings-v2 gotchas (PRD-014 — read before touching `kernel/handlers/drawing.py`, `_draw_primitives.py`, `_sheets.py`, `_pdf.py`, `tools_drawing.py` or `routes_drawing.py`)
+
+- **Display-list / backend split.** `_build_display_list` (in `drawing.py`)
+  composes the sheet — frame, title block, views, dims, hatch, tables — as
+  typed primitives from `_draw_primitives.py` (`Line`, `Polyline`, `Circle`,
+  `Arc`, `Text`, `Hatch`, `Rect`, a documented `Raw` escape hatch). `SvgBackend`
+  and `PdfBackend` (`_pdf.py`) render the **same** list — never add a feature to
+  one backend without the other, or SVG/PDF silently diverge. The central
+  **`fmt()`** formatter (round-half-even, 3 dp, strips trailing zeros/dot, never
+  `-0`) is the determinism keystone: every coordinate/width/size on both
+  backends goes through it — never `str()`/`f"{x:.3f}"` a user-visible number
+  any other way.
+- **PDF is a minimal pure-Python writer, no dependency.** `_pdf.py` emits PDF
+  content-stream operators directly (lines/polylines → `m`/`l`/`S`, circles →
+  4 cubic Béziers, text → `BT/Tf/Tm/Tj/ET` with base-14 Helvetica). Fixed
+  5-object numbering/order, **no** `/CreationDate`, **no** `/ID`, **no** `Info`
+  dict, uncompressed content stream — byte-deterministic by construction, not
+  by scrubbing a general-purpose library's output. Base-14 Helvetica is
+  WinAnsi/Latin-1 only: non-Latin-1 glyphs (⌀, GD&T symbols, ↧) render as `?`
+  in PDF; SVG keeps full-fidelity glyphs. This is a documented v1 limit, not a
+  bug to fix by embedding a font.
+- **Section geometry lives in the drawing handler itself**, not a separate
+  `section_outline` analysis-pack handler as the design sketched — deliberately,
+  to avoid a second kernel round-trip (the handler already holds the built
+  shape from `build_shape`). Each solid body is cut and traced separately;
+  loops/bodies are sorted by a geometric key (rounded bbox + point count), never
+  OCCT iteration order, so section hatching stays byte-stable across runs.
+- **DXF is excluded from byte-stability and from the v2 surface entirely.**
+  `ezdxf` stamps timestamps/GUIDs into the file, so the determinism guarantee
+  (FR12) and its test only cover SVG and PDF. DXF also renders no PMI, no
+  dim/hole/config table, and no sections/details — `sections`/`details`/
+  `dim_table`/`tabulate`/`hole_table` are all silently dropped for
+  `format: "dxf"` in `tools_drawing.py`, exactly like PMI already was pre-v2.
+- **The determinism/version subtlety.** The title block renders a version line
+  (`rev <ref> <date>`) derived from git (`_drawing_version`: tag-or-`head[:7]` +
+  commit date, or `"wt-"+content_hash` / `"-"` with no repo) — **never**
+  `datetime.now()`. The geometry-CI determinism stage compares a project
+  against a **git-stripped mirror** copy of it: same geometry, but the mirror
+  has no git, so its version cell would diverge from the project's own. The
+  stage passes ONE fixed `version: {ref, date}` override to `generate_drawing`
+  on **both** sides (the same "fixed-date path" precedent as DXF's
+  `$TDCREATE`/GUIDs) so it certifies geometry, not the version cell. A normal
+  agent/UI call never passes `version` — that argument exists for CI, not for
+  users to "pin a revision".
+- **`hole_table` is opt-in** (`hole_table: true`), not automatic despite FR9's
+  wording — an always-on designation table breaks the pre-v2
+  `test_drawing_holes.py::test_ac5` ⌀-count assertion. Center marks and
+  coaxial centerlines (FR8) stay automatic since they add no conflicting text.
+  **`tabulate` wins over `dim_table`**: both want the sheet's one `table_zone`
+  column, so `tabulate: true` with `dim_table: true` draws the letter-variable
+  table and silently drops the dim table, noted in
+  `result.config_table.warnings` — never both, never an error. `table_zone`
+  (from `_sheets.SheetTemplate`) stacks the dim/config table above the hole
+  table when both are requested together.
+- **No assembly drawings shipped.** The PRD's "omit `part_id` for the assembly
+  sheet" convention (mirroring `render_view`) was **not built** — `part_id` is
+  still required in `generate_drawing`'s schema. FR3 (revision block) and
+  FR4/FR5 (assembly views, balloons, BOM table) are deferred to PRD-015 (BOM
+  lines are the hard dependency). Do not assume an assembly sheet exists;
+  `routes_drawing.py` has no assembly-level route.
+- **The frontend has no detail-view control.** Slice 6 shipped sheet-format,
+  view-subset, section, and PDF-download controls in `drawings.js`; `details`
+  is fully wired end-to-end in the tool/routes (`_validate_details`,
+  `_view_args`'s JSON query param) but there is no UI to compose one — it is
+  agent/API-only until a JS-only follow-up adds the control.
+- **The GET preview routes forward the FULL surface.** Both
+  `GET …/drawing.svg` and `.pdf` accept `sheet`, `views` (CSV), `sections`/
+  `details` (JSON via `_json_query`), `scale`, `dim_table`, `hole_table` —
+  before slice 6 they silently dropped everything but `config`/`dim_table`, so
+  a UI control could send a correct request the route ignored. Malformed
+  `sections`/`details` JSON is a 422 (`_json_query`), not a 500 or a
+  silently-empty section list. `config` is gated with `CONFIG_RE.fullmatch` in
+  the route itself (not only in the tool) because the route joins it into a
+  filename it then reads.
+
 ## Sandboxing & quotas gotchas (PRD-006 — read before touching `kernel/sandbox*.py`, `_confine.py`, `_preamble.py`, `_meter.py`, `quotas.py` or the client's request loop)
 
 Every item is traceable to a decision in
@@ -2230,6 +2305,43 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
   drive the whole sampler from a macOS box — `tests/test_sandbox_windows.py`
   now asserts ≥ 100 MB so a stub-only sample fails loudly instead of passing a
   sanity bound.
+
+- **Windows confinement is an AppContainer, and five things about it are not
+  guessable** (PRD-006b, `kernel/sandbox_windows.py`, changelog 0257 (0242 on the branch)):
+  1. **The client spawns through the backend.** `subprocess` can pass a handle
+     list and nothing else, so a lowbox token needs `CreateProcessW` +
+     `STARTUPINFOEX` (`PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`).
+     `Backend.spawn(argv, env)` returns a `ConfinedProcess` with exactly the
+     `Popen` surface the client uses, or `None` everywhere else —
+     `client._ensure_started` is `backend.spawn(...) or subprocess.Popen(...)`.
+     If you touch that object, it must keep `stdin/stdout/stderr`, `pid`,
+     `_handle`, `poll()`, `wait(timeout)` **raising `subprocess.TimeoutExpired`**,
+     `kill()`, `returncode` and `close()`.
+  2. **The start is suspended.** `CREATE_SUSPENDED` →
+     `AssignProcessToJobObject` → `ResumeThread`, so no instruction runs
+     outside the job; `attach()` is a no-op for a process the backend spawned
+     (it checks `proc.job_assigned`) but still sets `attached`, which is what
+     the psapi sampler reads.
+  3. **`%TEMP%` is rewritten by the token** to
+     `%LOCALAPPDATA%\Packages\<profile name>\AC\Temp`. The plan points
+     `LOCALAPPDATA`/`APPDATA`/`USERPROFILE` at the private temp dir, and
+     `prepare_tmp_hook` **creates that tree** before every spawn — without it
+     the first `tempfile` call in the container raises `FileNotFoundError`
+     (probe round 1).
+  4. **`icacls` grants take `*<SID>`, not a name**
+     (`icacls <path> /grant "*S-1-15-2-…:(OI)(CI)M"`), the `(OI)(CI)` ACE
+     reaches **pre-existing** children so no `/T` is needed (measured), and
+     `icacls` can exit **0** while printing `Failed processing 1 files` — read
+     the summary line, not just the exit code.
+  5. **The profile name is salted** (`<state-dir>/appcontainer.salt`), because
+     `DeriveAppContainerSidFromAppContainerName` is a *hash of the name*: an
+     unsalted name is a SID any other local account could derive and then own,
+     and our ACEs are permanent and inheritable. The salt never leaves the
+     server — the worker is told the SID, never the name.
+  Honesty runs through all of it: the parent only ever *intends*, the worker
+  reports `TokenIsAppContainer` off its own token in `_preamble`, and
+  `confinement_holds`/`sandbox.report` require the flag **and** a matching SID
+  before health may say `active`.
 
 - **`RLIMIT_NPROC` counts tasks (threads), per uid, not processes.** A warm
   worker runs 15–22 threads, so `live_uid_process_count()` sums `Threads:`
@@ -2356,8 +2468,9 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
 - **`AGENTCAD_EXPECT_SANDBOX=active` is the honesty gate, and CI sets it.**
   Every containment test asserts *when the live status is active* and skips
   otherwise, so without the variable a silent degradation to `off` would be
-  green. `ci.yml`'s matrix carries `expect_sandbox` (`active` on macOS and
-  ubuntu, empty on Windows where `unsupported` is the honest answer) and
+  green. `ci.yml`'s matrix carries `expect_sandbox` — `active` on **all three**
+  rows since PRD-006b gave Windows a real AppContainer, so a profile, an ACL or
+  a lowbox spawn that quietly degraded to an unconfined worker is red — and
   `AGENTCAD_EXPECT_QUOTAS=active` on all three; the "Sandbox probe (Linux)"
   step prints `uname -r`, `/sys/kernel/security/lsm` and the ABI so a runner
   change is diagnosable in one red run. If you add a containment test, gate it
@@ -2504,11 +2617,11 @@ Full documentation: `docs/bench.md`. The design is
   Part scripts run as the server user by design, and the confinement bounds
   what they may *reach*, never whose they are (an account on a hosted instance
   still reaches every project, which is why registration is closed). The
-  worker is confined by a deny-by-default `sandbox-exec` profile on macOS and
-  by an in-process Landlock + seccomp preamble on Linux (writes only in
-  project roots + a private temp dir, no network; `AGENTCAD_NO_SANDBOX=1` opts
-  out of the confinement but **not** of the quotas); Windows reports
-  `unsupported`. Per-worker memory/pids/CPU caps and a per-project disk budget
+  worker is confined by a deny-by-default `sandbox-exec` profile on macOS, by
+  an in-process Landlock + seccomp preamble on Linux, and by an **AppContainer**
+  on Windows (writes only in project roots + a private temp dir, no network;
+  `AGENTCAD_NO_SANDBOX=1` opts out of the confinement but **not** of the
+  quotas). Per-worker memory/pids/CPU caps and a per-project disk budget
   ride the same seam — read the sandboxing gotchas. API key from env only,
   never persisted.
 - Comment density and style: match the surrounding file. Comments state

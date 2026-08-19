@@ -7,9 +7,11 @@ worker is spawned under two separate promises:
   the client granted, no network, no signals at anything but itself. On macOS
   that is the seatbelt profile (``sandbox_macos``); on Linux it is the worker
   confining *itself* with Landlock and seccomp before it imports build123d
-  (``sandbox_linux`` -> ``_preamble`` -> ``_confine``). Windows reports
-  ``unsupported`` — AppContainer is carved out as PRD-006b (Decision 7) — and
-  gets the job-object quota tier instead (``sandbox_windows``).
+  (``sandbox_linux`` -> ``_preamble`` -> ``_confine``). On Windows the worker
+  is started inside an **AppContainer** — a package SID with no capabilities,
+  the roots granted by ``icacls``, spawned through ``CreateProcessW`` because
+  ``subprocess`` cannot pass a lowbox token (``sandbox_windows``, PRD-006b) —
+  and capped by a job object.
 * **quotas** — how much of the machine it may take (``quotas.py``). These are
   *tiers*: a knob may be enforced by a cgroup, an rlimit, a job object or the
   parent's supervisor loop, and health names the tier in effect rather than
@@ -96,10 +98,34 @@ class Backend:
         """
         return {}
 
+    def spawn(self, argv: list[str], env: dict[str, str] | None):
+        """Launch the worker **yourself**, or ``None`` to let the client
+        ``subprocess.Popen`` it as it always has.
+
+        It exists for one reason (design spec, Decision 1): a Windows
+        AppContainer needs ``PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`` on
+        the ``STARTUPINFOEX``, and CPython's ``subprocess`` can pass a handle
+        list and nothing else — so the Windows backend spawns through
+        ``CreateProcessW`` and returns an object with the ``Popen`` surface.
+        Every other backend returns ``None`` and the spawn path is unchanged.
+        """
+        return None
+
+    def prepare_tmp_hook(self, tmp_dir: str) -> None:
+        """Called after the private temp dir is (re)created, before each spawn.
+
+        Windows uses it to grant the directory to the package SID and to build
+        the package tree the lowbox token redirects ``%TEMP%`` into; the others
+        have nothing to do — a 0700 directory owned by the same uid is already
+        exactly what the seatbelt and Landlock granted.
+        """
+
     def attach(self, proc) -> None:
-        """Called right after ``Popen``: cgroup placement, job-object
+        """Called right after the spawn: cgroup placement, job-object
         assignment. Never a ``preexec_fn`` — CPython documents it as unsafe in
-        a threaded parent, and the server is threaded."""
+        a threaded parent, and the server is threaded. A backend that spawned
+        the process itself may already have done it (Windows assigns the job
+        while the worker is still suspended)."""
 
     def can_sample(self) -> bool:
         """Whether :meth:`rss_bytes` can actually measure this platform.
@@ -200,8 +226,18 @@ class SandboxPlan:
 
         Called before every spawn: a client that was stopped and started again
         must not hand a worker a ``$TMPDIR`` that no longer exists.
+
+        The backend gets it too (:meth:`Backend.prepare_tmp_hook`), and for the
+        same reason it is re-run rather than done once: on Windows the ACE that
+        makes this directory reachable from inside the AppContainer, and the
+        package tree the container's ``%TEMP%`` is redirected into, both live
+        *in* the directory — so a recreated one arrives without them.
+        `getattr`, because `Backend` is a protocol and not a base class.
         """
         os.makedirs(self.tmp_dir, mode=0o700, exist_ok=True)
+        hook = getattr(self.backend, "prepare_tmp_hook", None)
+        if hook is not None:
+            hook(self.tmp_dir)
         return self.tmp_dir
 
     def wipe_tmp(self) -> None:
@@ -290,6 +326,15 @@ def plan(argv: list[str], writable_dirs: list[str], *,
         # writes there (each would be a denied open + a sandbox log line).
         "PYTHONDONTWRITEBYTECODE": "1",
     }
+    if sys.platform == "win32":
+        # Everything a Windows process reads for "somewhere of my own", pointed
+        # at the one directory an AppContainer worker may write.
+        # `LOCALAPPDATA` is the load-bearing one and not for the obvious
+        # reason: the lowbox token derives the container's own ``%TEMP%`` from
+        # it as ``%LOCALAPPDATA%\Packages\<profile>\AC\Temp``, which is why the
+        # backend's `prepare_tmp_hook` creates exactly that tree in here.
+        env.update({"USERPROFILE": tmp_dir, "APPDATA": tmp_dir,
+                    "LOCALAPPDATA": tmp_dir})
 
     backend: Backend | None = None
     try:
@@ -370,7 +415,7 @@ def default_posture() -> str:
 def supported() -> bool:
     """Platform can confine at all: macOS with the seatbelt CLI, Linux with a
     Landlock ABI this build knows how to use on a machine it has a syscall
-    table for. Windows has no confinement (Decision 7: AppContainer is 006b).
+    table for, Windows 8+ with ``icacls`` (the AppContainer, PRD-006b).
 
     A *capability*, not a claim: this says a newly spawned worker would be
     confined, which is what ``status()``/``available()`` have always meant and
@@ -386,6 +431,10 @@ def supported() -> bool:
         from ._confine import ARCH, LANDLOCK_MIN_ABI, landlock_abi
 
         return landlock_abi() >= LANDLOCK_MIN_ABI and platform.machine() in ARCH
+    if sys.platform == "win32":
+        from . import sandbox_windows
+
+        return sandbox_windows.supported()
     return False
 
 
@@ -456,7 +505,7 @@ def report(kernel) -> dict:
     not apply — an empty ``rlimits`` list under a mechanism naming ``rlimit``
     is a cap nothing is enforcing.
     """
-    from .client import confinement_holds
+    from .client import confinement_holds, sid_mismatch
 
     plan_obj = getattr(kernel, "_plan", None) or getattr(kernel, "plan", None)
     live = getattr(kernel, "sandbox_report", None) or {}
@@ -477,6 +526,14 @@ def report(kernel) -> dict:
     if conf["status"] == "active" and live and not confinement_holds(live):
         conf["status"] = "off"
         conf["mechanism"] = None
+    if conf["status"] == "active" and live:
+        # Windows: the token flag is not enough on its own — the package SID
+        # has to be the one whose ACEs this plan placed (Decision 3).
+        mismatch = sid_mismatch(conf["detail"].get("sid"), live)
+        if mismatch:
+            conf["status"] = "off"
+            conf["mechanism"] = None
+            warnings.append(mismatch)
     # `client.sandboxed` is this same rule applied at ping time, and it is what
     # every other reader in the system consults. Preferring it here (review M1)
     # closes the one gap where the two could disagree: a worker that answered
@@ -491,7 +548,11 @@ def report(kernel) -> dict:
                 "the worker did not report what it applied, so the "
                 "confinement this plan intended cannot be claimed")
     if live:
-        for key in ("landlock_abi", "seccomp", "rlimits"):
+        # `appcontainer`/`appcontainer_sid` are the Windows pair, and they are
+        # the *measured* ones: the plan's detail carries the SID it intended,
+        # this is the SID the worker read off its own token.
+        for key in ("landlock_abi", "seccomp", "rlimits", "appcontainer",
+                    "appcontainer_sid"):
             if key in live:
                 conf["detail"][key] = live[key]
         for failure in live.get("failures") or []:
@@ -504,6 +565,16 @@ def report(kernel) -> dict:
                 warnings.append(
                     f"the worker lost a Landlock grant (the ruleset is in "
                     f"force; writes there will be denied): "
+                    f"{failure.get('error')}")
+            elif stage == "appcontainer":
+                # Not "could not apply": the AppContainer is applied to the
+                # worker by its parent, before its first instruction. What
+                # failed is the *check* — and a confinement nobody could verify
+                # is one nobody may claim, which `confinement_holds` has
+                # already done above.
+                warnings.append(
+                    f"the worker could not read its own token, so the "
+                    f"AppContainer confinement cannot be claimed: "
                     f"{failure.get('error')}")
             else:
                 warnings.append(

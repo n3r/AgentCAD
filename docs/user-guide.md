@@ -447,17 +447,52 @@ before committing to a design. Imported STL instances cannot join the boolean
 check and are listed under `skipped_mesh`, exactly as in `check_interference`.
 
 **2D drawings.** Ask for a drawing of a (script) part and AgentCAD projects
-front/top/right/iso views with overall dimensions and hole callouts detected
-from the geometry, writing `exports/<part>_drawing.svg` (or `.dxf`). A
-server-rendered SVG preview is available at
-`GET /api/projects/<proj>/parts/<part>/drawing.svg`. For a part with
-[configurations](#configurations) the drawing panel adds a **dim table**
-checkbox: the sheet then carries a tabulated **dimension table** in its right
-column — one row per configuration, columns for the configured parameters plus
-the overall X/Y/Z, every number measured from that configuration's own built
-geometry (not echoed back from the parameters you typed). A drawing made while
-a configuration is active is that configuration's, and saves as
-`<part>_<config>_drawing.svg`.
+front/top/right/iso views onto a real drawing **sheet** — frame, title block,
+overall dimensions and hole callouts detected from the geometry — writing
+`exports/<part>_drawing.svg` (or `.pdf`, `.dxf`). A server-rendered preview is
+available at `GET /api/projects/<proj>/parts/<part>/drawing.svg` and the PDF
+twin `…/drawing.pdf`.
+
+*Sheet format and the title block.* The drawing modal's header has a sheet
+picker — nine formats, ISO `A4`–`A0` and ASME `A`–`D`, all landscape, default
+`A3` — and view checkboxes (top/front/right/iso); views auto-scale to a
+standard ratio (2:1, 1:2, 1:5, …) chosen to fit, printed in the title block
+along with part label, material, mass, units, and a version identity (a tag
+name or short commit hash, filled in once you have history — "-" before
+that). The company/author/project-code/approved-by/notes fields that fill the
+rest of the title block are edited **once** per project via "Drawing
+fields…" (agents: `set_drawing_fields`/`get_drawing_fields`) rather than
+per drawing.
+
+*Sections and details.* The "Section…" control cuts the part on a plane
+(XY/XZ/YZ + offset) and draws a hatched, labeled `A-A` view with
+cutting-plane arrows on the parent view — real cross-sections, not a flat
+projection. (A detail-view control — circle a region, get a magnified `A
+(2:1)` view — is agent/API-only for now; the tool supports it, the UI control
+is a follow-up.)
+
+*Hole tables.* Checking hole callouts on isn't automatic — ask for a **hole
+table** and the right-hand column lists tag/X/Y/designation per hole, reading
+real thread/counterbore/countersink designations when the part was drilled
+through the hole toolkit, or plain detected diameters otherwise.
+
+*Config tables.* For a part with [configurations](#configurations) the
+drawing panel offers a **dim table** checkbox (one row per configuration:
+configured parameters plus overall X/Y/Z, every number measured from that
+configuration's own built geometry) or, further along the family workflow,
+**tabulate** — dims on the view get lettered (A, B, C…) and a boxed table
+lists every configuration's value for each letter plus its mass, so one sheet
+documents the whole family. The two share the sheet's one table column
+(tabulate wins if you ask for both). A drawing made while a configuration is
+active is that configuration's, and saves as `<part>_<config>_drawing.<ext>`.
+
+*PDF, and the determinism guarantee.* Every format but DXF renders through
+one shared layout, so SVG and the "Download PDF" export always show the same
+sheet. Regenerating a drawing at the same project state produces
+**byte-identical** SVG and PDF every time — no timestamps, no random ids —
+which is what makes a drawing diffable in a change proposal and checkable in
+CI: a changed drawing means the geometry moved, never that the renderer's
+formatting drifted.
 
 **Geometric analysis.** Ask the agent to measure a cross-section area, the
 minimum wall thickness (optionally against a requirement), the projected
@@ -958,7 +993,9 @@ cost one build, and a second look is served from the cache.
 
 **Configurations reach everything downstream.** An export made while one
 is active writes `<part>_<config>.step`; a drawing writes
-`<part>_<config>_drawing.svg` and can carry the family's dimension table; an
+`<part>_<config>_drawing.svg` and can carry the family's dimension table (or,
+with `tabulate`, a letter-variable table with per-config mass — see
+[2D drawings](#the-v2-capabilities)); an
 assembly instance can be *bound* to a configuration, so two sizes of one part
 stand on the stage with two masses and two meshes; `agentcad check` builds
 every configuration of every configured part, so a change that breaks only
@@ -1181,7 +1218,7 @@ Publishing is also an agent tool (`share_create` / `share_list` /
 | `<project>/.history/` | The project's git repository (snapshots, branches, tags). `git log`/`diff`/`clone` work on it directly. Inside it: `trees/<branch>/` — one working tree per non-default branch — and `agentcad/` — sidecar state (default branch, per-client checkouts, version referrers, any staged merge, and `proposals/`). None of it is ever committed. |
 | `<project>/.history/agentcad/proposals/<id>/` | One change proposal: `proposal.json`, the append-only `audit.jsonl`, the generated `packet.json` and its render PNGs / diff meshes. Shared by every branch and never rewound by a restore. `policy.json` beside them holds the project's merge policy (`approvals_required`, `self_approve`). |
 | `<project>/.history/agentcad/comments/` | Review threads: `<id>/thread.json` plus its append-only `<id>/audit.jsonl`, an `index.json` that can be rebuilt from the directories, a persisted `next_id`, and one `notifications.jsonl` per project. Branch-free like proposals, and never rewound by a restore. |
-| `<project>/exports/` | STEP/STL/3MF part & assembly exports, plus `<part>_drawing.svg`/`.dxf` drawings, from the Export menu, agent tools, or `agentcad export`. |
+| `<project>/exports/` | STEP/STL/3MF part & assembly exports, plus `<part>_drawing.svg`/`.pdf`/`.dxf` drawings, from the Export menu, agent tools, or `agentcad export`. |
 | `examples/` (repo) | The bundled example projects, registered at startup. |
 | `~/.agentcad/config.json` | The persisted port (`AGENTCAD_CONFIG` overrides the path). |
 | `~/.agentcad/state/auth/*.json` | **Hosted mode only.** Accounts, enrolments, sessions and tokens — four atomically-written `0600` documents (`AGENTCAD_STATE_DIR` overrides the directory; in the container it is `/data/state`). Passwords are scrypt digests and session/token secrets are stored only as SHA-256 digests, so the files hold nothing that can be replayed — but back them up as a secret anyway. Never inside a project, and unaffected by `--projects-dir`. |

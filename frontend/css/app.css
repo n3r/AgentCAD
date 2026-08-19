@@ -1380,7 +1380,7 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.modal-actions { display: flex; gap: 8px; flex: none; }
+.modal-actions { display: flex; gap: 8px; flex: none; flex-wrap: wrap; align-items: center; }
 .modal-actions a.tb-btn { text-decoration: none; }
 .modal-foot {
   flex: none;
@@ -2872,6 +2872,16 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
 }
 .drawing-opt input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
 .drawing-opt:hover { color: var(--text); }
+
+/* Sheet select, view checkboxes, and the section mini-form (PRD-014 Slice
+   6). The select/inputs reuse `.tb-btn`'s box model (it is a plain class
+   selector, not scoped to <button>); the section panel's show/hide is the
+   house `.hidden` class, toggled from drawings.js like every other modal
+   control. */
+.drawing-views { display: inline-flex; align-items: center; gap: 8px; }
+.drawing-section-ctl { display: inline-flex; align-items: center; }
+.drawing-section-panel { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; }
+.drawing-section-offset { width: 84px; }
 
 /* ---------------------------------------------------------------- identity
    Hosted mode only (PRD-005a). In local mode #auth-view and #auth-chip stay

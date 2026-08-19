@@ -2470,14 +2470,23 @@ class CheckRunner:
             warnings.append(f"{part_id}: the run's budget ran out before the "
                             f"SVG drawings could be compared")
             return [], False
+        # Pin ONE fixed version identity on both sides: a project carries git
+        # identity (a head/tag ref + commit date) that its git-stripped mirror
+        # cannot, so the title-block version cell would differ for two
+        # byte-identical geometries. This stage certifies the geometry, not the
+        # version — the same reason DXF's $TDCREATE/GUIDs keep it out (see
+        # _DXF_HINT). A constant makes both title blocks identical.
+        _fixed_version = {"ref": "-", "date": "-"}
         left = runner._registry.call("generate_drawing", {
-            "project": proj, "part_id": part_id, "format": "svg"})
+            "project": proj, "part_id": part_id, "format": "svg",
+            "version": _fixed_version})
         if self._cannot_afford():
             warnings.append(f"{part_id}: the run's budget ran out between the "
                             f"two SVG drawings, so they were not compared")
             return [], False
         right = registry.call("generate_drawing", {
-            "project": mirror, "part_id": part_id, "format": "svg"})
+            "project": mirror, "part_id": part_id, "format": "svg",
+            "version": _fixed_version})
         for result in (left, right):
             if not isinstance(result, dict) or result.get("error") \
                     or not result.get("path"):
