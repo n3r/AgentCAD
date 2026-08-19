@@ -126,10 +126,9 @@ def register(toolbox: dict) -> dict:
     def _decompose(shape) -> list:
         return [(s, s.bounding_box()) for s in (shape.solids() or [shape])]
 
-    def _pass(candidate, right) -> tuple[float, list]:
+    def _pass(candidate, right) -> float:
         """One placed candidate against the decomposed reference: the summed
-        pairwise solid intersection, AABB-prefiltered, plus the candidate's own
-        decomposition so the caller can report its solid count.
+        pairwise solid intersection, AABB-prefiltered.
 
         OCCT chatters on stdout and the worker's protocol lives there, so the
         boolean loop borrows ``pairwise_interference``'s redirect."""
@@ -140,7 +139,7 @@ def register(toolbox: dict) -> dict:
                 for solid_b, box_b in right:
                     if _boxes_touch(box_a, box_b):
                         total += _common_volume(solid_a, solid_b)
-        return total, left
+        return total
 
     def handle_iou(params: dict) -> dict:
         align = params.get("align") or "world"
@@ -149,11 +148,16 @@ def register(toolbox: dict) -> dict:
                 ERROR_CONTRACT,
                 f"unknown align mode {align!r}; expected one of "
                 f"{', '.join(ALIGN_MODES)}")
-        rotations = params.get("rotations_deg") or [[0.0, 0.0, 0.0]]
-        if not isinstance(rotations, list) or not rotations:
+        # The raw value is tested BEFORE defaulting: `params.get(...) or
+        # default` would swallow an explicit `[]` into the identity rotation
+        # and score it silently. Only an absent (or null) key defaults.
+        raw = params.get("rotations_deg")
+        if raw is None:
+            raw = [[0.0, 0.0, 0.0]]
+        elif not isinstance(raw, list) or not raw:
             raise WorkerError(ERROR_CONTRACT,
                               "rotations_deg must be a non-empty list")
-        rotations = [_triple(r, "rotations_deg entry") for r in rotations]
+        rotations = [_triple(r, "rotations_deg entry") for r in raw]
 
         cand, cand_kind = _side(params.get("candidate"), "candidate")
         ref, ref_kind = _side(params.get("reference"), "reference")
@@ -189,7 +193,7 @@ def register(toolbox: dict) -> dict:
             # the right-hand Location is applied first.
             placement = (b3d.Location(anchor_r, rot)
                          * b3d.Location(tuple(-v for v in anchor_c)))
-            total, left = _guarded(
+            total = _guarded(
                 lambda: _pass(cand.moved(placement), right), "intersect")
             # The pairwise sum is volume(A & B) only when each side's solids
             # are mutually disjoint; a self-overlapping side over-counts.
@@ -197,9 +201,14 @@ def register(toolbox: dict) -> dict:
             union = vol_a + vol_b - inter
             score = 0.0 if union <= 0.0 else max(0.0, min(1.0, inter / union))
             if best is None or score > best[0]:
-                best = (score, inter, union, list(rot), len(left), len(right))
-        score, inter, union, rot, n_a, n_b = best
-        return {**base, "candidate_solids": n_a, "reference_solids": n_b,
+                best = (score, inter, union, list(rot))
+        score, inter, union, rot = best
+        # `base` already carries the TRUE `len(shape.solids())` for both sides
+        # -- the same number the skipped_mesh path reports. `_decompose`'s
+        # `or [shape]` fallback is a boolean-loop convenience (a solid-less
+        # shape still has to be intersected as itself) and must not be
+        # laundered into the reported count.
+        return {**base,
                 "intersection_mm3": inter, "union_mm3": union, "iou": score,
                 "rotation_deg": rot, "status": "ok"}
 

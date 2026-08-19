@@ -40,6 +40,19 @@ def build(p):
 """
 
 
+# Two 10 mm cubes overlapping each other by 5 mm in X. `shape_volume` sums
+# `shape.solids()`, so this shape's reported volume is 2000 mm3 while the
+# region it actually occupies is 1500 — the exact double-count the handler's
+# clamp exists for.
+OVERLAPPING_PAIR = """
+from build123d import *
+PARAMS = {}
+
+def build(p):
+    return Compound(children=[Box(10, 10, 10), Pos(5, 0, 0) * Box(10, 10, 10)])
+"""
+
+
 @pytest.fixture
 def service(kernel, tmp_path):
     return make_test_service(tmp_path / "projects", kernel)
@@ -121,14 +134,20 @@ def test_alignment_and_rotation_compose_in_that_order(kernel):
     """The one case that arbitrates the ``Location`` composition order.
 
     The candidate is a 30x10x10 slab centred at (25,0,0); the reference is the
-    same slab spun 90 deg about Z at the origin. Only
+    same slab spun 90 deg about Z and parked at (40,0,0). Only
     ``translate(anchor_ref) . rotate(90) . translate(-anchor_cand)`` lands them
-    on each other — rotating first sends the candidate to (0,25,0) and the two
-    never meet.
+    on each other. Both anchors are non-zero and the reference anchor is off
+    the rotation axis, so all three ways of getting it wrong are caught:
+    rotating before the de-centring sends the candidate to (0,25,0); applying
+    ``translate(anchor_ref)`` *before* the rotation sends it to (0,40,0); and
+    composing the two ``Location``s the other way round sends it to (15,25,0).
+    An anchor *on* the Z axis would be invariant under this rotation and would
+    silently pass the middle case — measured, not assumed.
     """
     slab = BOX.replace('"sx": {"default": 10.0}', '"sx": {"default": 30.0}')
     a = {"script": slab, "params": {"dx": 25.0}}
-    b = {"script": slab, "params": {}, "rotation_deg": [0.0, 0.0, 90.0]}
+    b = {"script": slab, "params": {}, "rotation_deg": [0.0, 0.0, 90.0],
+         "position": [40.0, 0.0, 0.0]}
     out = _iou(kernel, a, b, align="com", rotations_deg=[[0.0, 0.0, 90.0]])
     assert out["iou"] == pytest.approx(1.0, abs=1e-6)
     assert out["rotation_deg"] == [0.0, 0.0, 90.0]
@@ -147,14 +166,40 @@ def test_mesh_candidate_is_skipped_never_booleaned(kernel, tmp_path):
                 {"script": BOX, "params": {}})["iou"] == pytest.approx(1.0)
 
 
-def test_multi_solid_candidate_sums_and_clamps(kernel):
+def test_multi_solid_candidate_sums_over_its_solids(kernel):
+    """Two *disjoint* candidate solids: the pairwise sum is exact and the clamp
+    sits harmlessly on its bound. The clamp itself is the next test."""
     two = BOX.replace("Box(p.sx, p.sy, p.sz)",
                       "Box(p.sx, p.sy, p.sz)\n        with Locations((30, 0, 0)):\n"
                       "            Box(p.sx, p.sy, p.sz)")
     out = _iou(kernel, {"script": two, "params": {}}, {"script": BOX, "params": {}})
     assert out["candidate_solids"] == 2
+    assert out["candidate_volume_mm3"] == pytest.approx(2000.0, rel=1e-6)
     assert out["intersection_mm3"] == pytest.approx(1000.0, rel=1e-6)
     assert 0.0 <= out["iou"] <= 1.0
+    assert out["iou"] == pytest.approx(0.5, rel=1e-6)
+
+
+def test_a_self_overlapping_candidate_is_clamped(kernel):
+    """The clamp doing real work.
+
+    The candidate is two 10 mm cubes overlapping each other by 5 mm; the
+    reference is one 10 mm cube coincident with the first. The pairwise sum
+    double-counts the shared 5x10x10 slab and comes to 1000 + 500 = 1500 mm3 —
+    more than the whole reference. Unclamped that is union 1500 and a perfect
+    1.0 for a candidate that is visibly not the reference; clamped to
+    ``min(sum, vol_a, vol_b) = vol_b = 1000`` it is union 2000 and 0.5.
+    """
+    out = _iou(kernel, {"script": OVERLAPPING_PAIR, "params": {}},
+               {"script": BOX, "params": {}})
+    assert out["candidate_solids"] == 2
+    assert out["candidate_volume_mm3"] == pytest.approx(2000.0, rel=1e-6)
+    assert out["reference_volume_mm3"] == pytest.approx(1000.0, rel=1e-6)
+    assert out["intersection_mm3"] == pytest.approx(
+        min(out["candidate_volume_mm3"], out["reference_volume_mm3"]), rel=1e-6)
+    assert out["intersection_mm3"] == pytest.approx(1000.0, rel=1e-6)
+    assert out["union_mm3"] == pytest.approx(2000.0, rel=1e-6)
+    assert out["iou"] <= 1.0
     assert out["iou"] == pytest.approx(0.5, rel=1e-6)
 
 
@@ -182,6 +227,29 @@ def test_an_unknown_align_mode_is_a_contract_error(kernel):
     with pytest.raises(KernelError) as exc:
         _iou(kernel, item, item, align="centroid")
     assert exc.value.type == "contract_error"
+
+
+def test_an_empty_rotation_list_is_a_contract_error_not_the_identity(kernel):
+    """An explicit `[]` must be refused, never quietly defaulted to [[0,0,0]]:
+    a task that declares no permitted rotation and a task that omits the key
+    are different claims, and only one of them is answerable."""
+    item = {"script": BOX, "params": {}}
+    with pytest.raises(KernelError) as exc:
+        _iou(kernel, item, item, rotations_deg=[])
+    assert exc.value.type == "contract_error"
+    with pytest.raises(KernelError) as exc:
+        _iou(kernel, item, item, rotations_deg={"z": 90})
+    assert exc.value.type == "contract_error"
+
+
+def test_an_absent_rotation_list_defaults_to_the_identity(kernel):
+    """...while an omitted (or null) key is the documented default."""
+    item = {"script": BOX, "params": {}}
+    out = kernel.request("iou", {"candidate": item, "reference": item},
+                         timeout_s=120.0)
+    assert out["status"] == "ok"
+    assert out["rotation_deg"] == [0.0, 0.0, 0.0]
+    assert out["iou"] == pytest.approx(1.0, abs=1e-9)
 
 
 def test_a_side_that_is_neither_script_nor_source_is_a_contract_error(kernel):
