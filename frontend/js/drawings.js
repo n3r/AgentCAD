@@ -14,6 +14,7 @@
 
 import { api, ApiError } from "./api.js";
 import { state } from "./state.js";
+import * as dialogs from "./shell/dialogs.js";
 
 let actions = null;
 let overlay, titleEl, viewEl, downloadEl, downloadPdfEl, closeBtn;
@@ -43,6 +44,7 @@ let previewing = null; // {project, partId} — what every control re-renders
 // after it would paint the sheet the user just moved away from. Every new
 // control below reuses this same guard.
 let previewSeq = 0;
+let legacy = null;   // the overlay's seat on the shell's dialog stack
 
 export function init(a) {
   actions = a;
@@ -119,8 +121,14 @@ export function init(a) {
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) close();
   });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !overlay.classList.contains("hidden")) close();
+  // PRD-026 FR2: Esc belongs to the shell's overlay stack, not to this module.
+  legacy = dialogs.attachLegacy(overlay, {
+    view: "drawing", title: "Drawing preview…", onClose: close,
+    description: "A 2D drawing of the selected part",
+    isOpen: () => !overlay.classList.contains("hidden"),
+    open: (args) => previewSvg((args && args.project) || state.projectName,
+                               (args && args.part) || state.selectedPart),
+    when: (c) => !!c.selectedPart,
   });
 }
 
@@ -139,10 +147,12 @@ function drawingArgs() {
 
 function open() {
   overlay.classList.remove("hidden");
+  if (legacy) legacy.notifyOpen();
 }
 
 function close() {
   overlay.classList.add("hidden");
+  if (legacy) legacy.notifyClose();   // idempotent: Esc pops the stack itself
   viewEl.textContent = "";
   previewing = null;
   previewSeq++;             // orphan any preview still in flight

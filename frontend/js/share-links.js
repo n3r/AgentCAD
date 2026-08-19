@@ -7,11 +7,13 @@
 // below lists the owner's live links with coarse counters and a revoke button.
 import { api, ApiError } from "./api.js";
 import { state } from "./state.js";
+import * as dialogs from "./shell/dialogs.js";
 
 const EXPORT_FORMATS = ["step", "stl", "3mf"];
 
 let modal = null;
 let body = null;
+let legacy = null;   // the overlay's seat on the shell's dialog stack
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -22,12 +24,18 @@ function el(tag, cls, text) {
 
 function close() {
   if (modal) modal.classList.add("hidden");
+  if (legacy) legacy.notifyClose();   // idempotent: Esc pops the stack itself
 }
 
 function open() {
   if (!state.selectedPart) return;
   render();
   modal.classList.remove("hidden");
+  if (legacy) legacy.notifyOpen();
+}
+
+function isOpen() {
+  return !!modal && !modal.classList.contains("hidden");
 }
 
 function field(labelText, control) {
@@ -218,5 +226,15 @@ export function setupShare(identity) {
   if (closeBtn) closeBtn.addEventListener("click", close);
   modal.addEventListener("click", (e) => {
     if (e.target === modal) close();
+  });
+  // PRD-026 FR2: this overlay never had an Escape of its own — adoption is
+  // what gives it one, plus the focus trap and the focus restore. Registered
+  // here and not at module scope because `setupShare` returns above in local
+  // mode: /api/share 404s there, so the view genuinely does not exist.
+  legacy = dialogs.attachLegacy(modal, {
+    view: "share", title: "Share a part…", isOpen, onClose: close,
+    description: "Create and manage public share links for the selected part",
+    open: () => open(),
+    when: (c) => !!c.selectedPart,
   });
 }

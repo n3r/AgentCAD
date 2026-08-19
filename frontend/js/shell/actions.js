@@ -119,6 +119,11 @@ export function context() {
     // predicate never has to reach for module state.
     hasInstances: !!(state.project && state.project.assembly
       && state.project.assembly.instances.length),
+    // Whether any branch is deletable at all — the one you are on and the
+    // default one are refused by the server, so "there are branches" is not
+    // the same question as "delete branch… can do anything".
+    hasOtherBranches: (state.branches || [])
+      .some((b) => !b.is_current && !b.is_default),
     inField: doc ? inField(doc.activeElement) : false,
     modalOpen: isModalOpen(),
     sketcherOpen: doc

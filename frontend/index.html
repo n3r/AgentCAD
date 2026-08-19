@@ -365,9 +365,11 @@
   </div>
 
   <!-- Parts library. A plain modal on the proposals/versions pattern, not a
-       native <dialog>: PRD-026's dialog system has not landed, and one modal
-       shape in this app is worth more than one modern element. PRD-026 adopts
-       this along with the other five. -->
+       native <dialog>: one modal shape in this app is worth more than one
+       modern element. PRD-026 slice 2 adopted every `.modal-overlay` on this
+       page onto the shell's overlay stack (`dialogs.attachLegacy`) — the
+       markup below is unchanged; Esc, the focus trap and the focus restore
+       are the stack's. -->
   <div id="library-modal" class="modal-overlay hidden">
     <div class="modal wide">
       <header class="modal-head">
@@ -395,9 +397,10 @@
     </div>
   </div>
 
-  <!-- The configuration matrix. Same `.modal-overlay` shape as the other five
-       (see the library note above): the inspector is 326 px and `flex: none`,
-       so a family's metrics side by side simply do not fit there. -->
+  <!-- The configuration matrix. Same `.modal-overlay` shape as every other
+       overlay on this page (see the library note above): the inspector is
+       326 px and `flex: none`, so a family's metrics side by side simply do
+       not fit there. -->
   <div id="configs-modal" class="modal-overlay hidden">
     <div class="modal wide">
       <header class="modal-head">

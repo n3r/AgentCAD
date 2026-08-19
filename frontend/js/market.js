@@ -14,6 +14,8 @@
 // route, no new anonymous surface.
 import { api, ApiError } from "./api.js";
 import * as vp from "./share-viewport.js";
+import * as dialogs from "./shell/dialogs.js";
+import { ID_RE, bare } from "./patterns.js";
 
 let identity = null; // {mode, principal} from auth.session(); principal gated
 let actions = null; // main.js actions (toast); optional
@@ -40,6 +42,16 @@ export function enter(id, act) {
   }
   root = document.getElementById("market-view");
   root.classList.remove("hidden");
+  // PRD-026 FR3. `boot()` runs `dialogs.init()` BEFORE this early return, so
+  // the host exists; the view is registered here rather than at module scope
+  // because the workbench boot never enters the market and must not carry a
+  // row that would open a page it is not on.
+  dialogs.register("market-add-to-project",
+    () => (cur ? addToLibrary(cur.name, cur.part) : undefined), {
+      title: "Add to a project…",
+      description: "Add the open marketplace part to one of your projects",
+      when: () => !!cur && signedIn(),
+    });
   window.addEventListener("hashchange", route);
   route();
 }
@@ -550,14 +562,31 @@ async function addToLibrary(name, part) {
     return toast("Create a project first, then add this package.", "error");
   }
   const names = projects.map((p) => p.name);
-  const proj = window.prompt(
-    `Add “${name}” to which project?\n\n${names.join(", ")}`,
-    names[0]
-  );
-  if (!proj) return;
+  // One form where there were two prompts, and a SELECT where there was a
+  // free-text project name: the set of projects is known, so a typo in it was
+  // never a legitimate answer.
+  const values = await dialogs.form({
+    view: "market-add-to-project",
+    title: `Add “${name}” to a project`,
+    width: "narrow",
+    fields: [
+      { name: "project", label: "Project", type: "select", required: true,
+        options: names, value: names[0] },
+      { name: "part_id", label: "Part id", required: true,
+        value: part || "part",
+        // `packages/format.PART_ID_RE` IS `core/model.ID_RE`; the literal that
+        // used to sit here was the drift this module now cannot have.
+        pattern: bare(ID_RE),
+        patternMessage: "lowercase letters, digits, _; max 40",
+        help: "The name the package part takes in your project." },
+    ],
+    buttons: [{ id: "cancel", label: "Cancel" },
+              { id: "add", label: "Add", kind: "primary", submits: true }],
+  });
+  if (!values) return;
+  const proj = values.project;
+  const partId = String(values.part_id).trim();
   if (!names.includes(proj)) return toast(`No project named “${proj}”.`, "error");
-  const partId = window.prompt("Part id for the new project part:", part || "part");
-  if (!partId) return;
   try {
     // PRD-011 verbatim: add_package pinned to the public catalog index, then
     // use_part. `index` is left to the server's public-catalog resolution.

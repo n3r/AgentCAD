@@ -11,8 +11,10 @@
 
 import { api, ApiError } from "./api.js";
 import { state, setState } from "./state.js";
+import * as dialogs from "./shell/dialogs.js";
 
 let actions = null;
+let legacy = null;   // the overlay's seat on the shell's dialog stack
 let overlay, titleEl, bodyEl, footEl, progressEl, completeBtn, abortBtn, closeBtn;
 
 // Independent CodeMirror instance (never editor.js's singleton), created once
@@ -43,8 +45,20 @@ export function init(a) {
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) close();
   });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && isOpen()) close();
+  // PRD-026 FR2: Esc belongs to the shell's overlay stack, not to this module.
+  legacy = dialogs.attachLegacy(overlay, {
+    view: "merge", title: "Staged merge…", isOpen, onClose: close,
+    description: "The merge that is staged on this project",
+    open: () => openPicker(),
+    // Offered only while something is staged: `openPicker` on a clean branch
+    // starts a NEW merge, which is not what "open the merge view" means.
+    when: () => !!staged,
+  });
+  dialogs.register("merge-abort", () => abort(), {
+    title: "Discard staged merge…",
+    description: "Throw away the staged merge and its resolutions",
+    agentOpenable: false,
+    when: () => !!staged,
   });
 }
 
@@ -54,10 +68,12 @@ export function isOpen() {
 
 function open() {
   overlay.classList.remove("hidden");
+  if (legacy) legacy.notifyOpen();
 }
 
 function close() {
   overlay.classList.add("hidden");
+  if (legacy) legacy.notifyClose();   // idempotent: Esc pops the stack itself
   detachEditor();
   bodyEl.textContent = "";
   footEl.classList.add("hidden");
@@ -537,9 +553,15 @@ async function complete() {
 
 async function abort() {
   if (!staged || busy) return;
-  if (!confirm(`Discard the staged merge of ${staged.source} into ${staged.target}?`)) {
-    return;
-  }
+  const ok = await dialogs.confirm({
+    view: "merge-abort",
+    title: "Discard the staged merge?",
+    body: `${staged.source} → ${staged.target}. Every resolution you have `
+      + "made in this merge is thrown away; neither branch changes.",
+    danger: true,
+    confirmLabel: "Discard merge",
+  });
+  if (!ok) return;
   busy = true;
   try {
     await api.abortMerge(state.projectName);

@@ -2585,3 +2585,739 @@ def test_an_integer_arg_keeps_its_step_when_the_schema_is_a_type_union():
       out(f.map((x) => [x.name, x.type, x.step === undefined ? null : x.step]));
     """)
     assert got == [["n", "number", 1], ["r", "number", None]]
+
+
+# ============================================================================
+# Slice 2 — every native prompt/confirm is gone; the legacy modals adopt the shell
+# ============================================================================
+#
+# AC1 is a grep, and it is the whole point of the slice: a native `prompt()` is
+# a modal the shell does not know about, cannot theme, cannot trap focus in and
+# cannot let an agent open. The rest of this section grades the two things the
+# grep cannot see — that each replaced site names a *view* (so `ui_open`, the
+# palette and the UX events can reach it) and that the adopted overlays really
+# move the shell's stack.
+
+FRONTEND_JS = Path(__file__).resolve().parents[1] / "frontend" / "js"
+
+# `\b` is not enough: it would match `dialogs.prompt(`. The lookbehind is what
+# makes this a test of NATIVE calls — a member call is somebody's method. All
+# four spellings of the global object are covered, because this regex IS the
+# enforcement of AC1 and `globalThis.confirm(` is the same native dialog.
+NATIVE_DIALOG_RE = re.compile(
+    r"(?<![.\w])(?:(?:window|self|globalThis|top)\.)?(prompt|confirm|alert)\s*\(")
+
+
+def _native_dialog_hits(path: Path) -> list[str]:
+    hits = []
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith(("//", "*", "/*")):
+            continue           # prose about the ban is not a violation of it
+        for match in NATIVE_DIALOG_RE.finditer(line):
+            before = line[:match.start()]
+            # `export function confirm(` in shell/dialogs.js IS the replacement.
+            if re.search(r"function\s+$", before):
+                continue
+            hits.append(f"{path}:{lineno}: {stripped}")
+    return hits
+
+
+def test_no_native_dialogs_remain():
+    """AC1: not one `prompt(`/`confirm(`/`alert(` anywhere in `frontend/js`."""
+    files = sorted(FRONTEND_JS.rglob("*.js"))
+    assert len(files) > 20, "the glob stopped finding the frontend"
+    hits = [hit for path in files for hit in _native_dialog_hits(path)]
+    assert hits == [], "native browser dialogs survived:\n" + "\n".join(hits)
+
+
+# The spec §1.4 mapping, as data: every site the plan names became a dialog and
+# every dialog carries the view name the registry, the palette and the
+# `dialog_opened` event key on.
+SLICE2_VIEWS = {
+    "discard-edits": "main.js",
+    "new-part": "main.js",
+    "delete-part": "main.js",
+    "import-part-id": "main.js",
+    "new-project": "main.js",
+    "open-project": "main.js",
+    "new-branch": "main.js",
+    "delete-branch": "main.js",
+    "new-version": "versions.js",
+    "restore-version": "versions.js",
+    "merge-abort": "merge.js",
+    "review-summary": "proposals.js",
+    "edit-proposal": "proposals.js",
+    "market-add-to-project": "market.js",
+    "sketch-number": "sketcher.js",
+}
+
+# The adopted `.modal-overlay`s (`index.html`), each with the module that owns
+# it. All eight — which is what lets `isModalOpen()` drop its DOM fallback.
+ADOPTED_MODALS = {
+    "drawing": "drawings.js",
+    "versions": "versions.js",
+    "share": "share-links.js",
+    "merge": "merge.js",
+    "proposals": "proposals.js",
+    "library": "library.js",
+    "configs": "configs.js",
+    "notifications": "comments.js",
+}
+
+# Views reachable from the palette's "Open: …" rows and (where flagged) from
+# `ui_open`. A view is registered only when opening it OUT OF CONTEXT is a
+# coherent request — `sketch-number` names an entity you are mid-way through
+# drawing, so it is a dialog with a view and deliberately no registry row.
+REGISTERED_VIEWS = {
+    "new-part": "main.js",
+    "delete-part": "main.js",
+    "new-project": "main.js",
+    "open-project": "main.js",
+    "new-branch": "main.js",
+    "delete-branch": "main.js",
+    "new-version": "versions.js",
+    "new-proposal": "proposals.js",
+    "edit-proposal": "proposals.js",
+    "market-add-to-project": "market.js",
+    "merge-abort": "merge.js",
+}
+
+NOT_REGISTERED = ["discard-edits", "import-part-id", "restore-version",
+                  "review-summary", "sketch-number"]
+
+
+@pytest.mark.parametrize("view,module", sorted(SLICE2_VIEWS.items()))
+def test_every_replaced_call_site_names_its_view(view, module):
+    source = (FRONTEND_JS / module).read_text(encoding="utf-8")
+    assert f'view: "{view}"' in source, f"{module} has no {view} dialog"
+
+
+@pytest.mark.parametrize("view,module", sorted(REGISTERED_VIEWS.items()))
+def test_every_openable_view_is_registered(view, module):
+    source = (FRONTEND_JS / module).read_text(encoding="utf-8")
+    assert f'dialogs.register("{view}"' in source, f"{view} is not registered"
+
+
+@pytest.mark.parametrize("view,module", sorted(ADOPTED_MODALS.items()))
+def test_every_legacy_overlay_is_adopted_and_registered(view, module):
+    """Adoption is three things in one call: the stack entry, the registry row
+    and the deletion of the module's own Escape listener."""
+    source = (FRONTEND_JS / module).read_text(encoding="utf-8")
+    assert "dialogs.attachLegacy(" in source, f"{module} did not adopt"
+    assert f'view: "{view}"' in source, f"{module} adopted under another name"
+    assert "notifyOpen()" in source and "notifyClose()" in source, module
+    # The module-level Escape listener is what adoption REPLACES; an
+    # element-scoped one (comments.js's composer popover) is not a modal.
+    assert 'document.addEventListener("keydown"' not in source, (
+        f"{module} still owns a document-level Escape listener")
+
+
+@pytest.mark.parametrize("view", NOT_REGISTERED)
+def test_a_mid_flow_dialog_is_not_offered_as_an_openable_view(view):
+    """The other half of the rule: a registry row with nothing behind it is a
+    menu that lies, so a dialog that needs context nobody can pass gets none."""
+    for path in FRONTEND_JS.rglob("*.js"):
+        assert f'dialogs.register("{view}"' not in path.read_text(
+            encoding="utf-8"), f"{view} is not openable out of context"
+
+
+def test_the_modal_overlay_dom_fallback_is_gone_now_that_all_eight_are_adopted():
+    """Slice 1 left `isModalOpen()` querying `.modal-overlay:not(.hidden)`
+    because the hand-rolled overlays were not on the stack. They are now, so
+    the fallback would only paper over an adopter that forgot `notifyOpen`."""
+    source = (FRONTEND_JS / "shell" / "dialogs.js").read_text(encoding="utf-8")
+    body = source.split("export function isModalOpen()", 1)[1].split("}", 1)[0]
+    assert ".modal-overlay" not in body
+    assert "stackEntries.some" in body
+    index = INDEX.read_text(encoding="utf-8")
+    assert "has not landed" not in index, "the index.html promise is still there"
+    # And nobody hides an adopted overlay behind the stack's back any more.
+    comments = (FRONTEND_JS / "comments.js").read_text(encoding="utf-8")
+    assert '.modal-overlay:not(.hidden)' not in comments
+    assert "dialogs.closeModals()" in comments
+
+
+def test_the_delete_branch_action_is_registered_now_that_it_has_a_picker():
+    """Slice 1 could not register `model.branches.delete`: an argument-free
+    delete names the branch you are on, which the server always refuses."""
+    main = MAIN.read_text(encoding="utf-8")
+    assert '"model.branches.delete"' in main
+    row = main.split('id: "model.branches.delete"', 1)[1].split("A({", 1)[0]
+    assert "danger: true" in row
+    assert "c.hasOtherBranches" in row, "the row must vanish with nothing to delete"
+    assert "deleteBranchPrompt()" in row
+
+
+def test_the_space_bar_does_not_blow_up_the_global_keydown_listener():
+    """Found in the browser, not in a unit test: `fromEvent` spelled the space
+    bar `" "` (a truthy string), `Table.lookup` handed it to `normalize`, and
+    `parseChord` trimmed it to nothing and threw "empty shortcut chord" out of
+    an untried document listener — on EVERY space keystroke in the app. Same
+    family as the `+` keystroke (0271 review round 1)."""
+    got = run_js("""
+      out({fromEvent: sc.fromEvent({key: " "}, "MacIntel"),
+           shifted: sc.fromEvent({key: " ", metaKey: true}, "MacIntel"),
+           normalize: sc.normalize("space"),
+           macLabel: sc.label("Space", "MacIntel"),
+           pcLabel: sc.label("Mod+Space", "Win32")});
+    """)
+    assert got["fromEvent"] == "Space"
+    assert got["shifted"] == "Mod+Space"
+    assert got["normalize"] == "Space"
+    assert got["macLabel"] == "␣" and got["pcLabel"] == "Ctrl+Space"
+
+
+def test_a_space_keystroke_reaches_the_shipped_listener_without_throwing():
+    """The regression as the user meets it: the shipped `onKeyDown`, a bare
+    space, nothing bound to it — and no exception."""
+    got = run_js("""
+      shortcuts.reset();
+      let threw = null;
+      try {
+        press({key: " "});
+      } catch (err) { threw = String(err && err.message); }
+      out({threw, prevented});
+    """, prelude=DISPATCH)
+    assert got["threw"] is None, got["threw"]
+    assert got["prevented"] == 0, "an unbound space is the browser's"
+
+
+def test_new_part_takes_the_mod_n_chord_the_spec_ruled_on():
+    """Spec ruling 3. It is `when`-gated, not `enabled`-gated: with no project
+    there is nothing to create, so the chord declines and the browser keeps
+    ⌘N rather than us swallowing a keystroke we cannot act on."""
+    main = MAIN.read_text(encoding="utf-8")
+    row = main.split('id: "part.new"', 1)[1].split("A({", 1)[0]
+    assert 'shortcut: "Mod+N"' in row
+    assert "when: hasProject" in row and "enabled:" not in row
+
+
+# ---------------------------------------------- behaviour, against the DOM stub
+
+# Enough of a document for the three things worth driving in node: the delete
+# confirm's blast-radius text, the branch picker's option list, and an adopted
+# overlay moving the stack. Every element records what was written into it, so
+# the assertions read the strings a user would.
+SLICE2_DOM = f"""
+const nodes = [];
+const make = (tag) => {{
+  const el = {{
+    tag, id: "", className: "", value: "", checked: false, disabled: false,
+    dataset: {{}}, attrs: {{}}, children: [], text: "", innerHTML: "",
+    parent: null, listeners: {{}}, offsetParent: {{}},
+    get isConnected() {{ return true; }},
+    set textContent(v) {{ this.text = v; }},
+    get textContent() {{ return this.text; }},
+    setAttribute(k, v) {{ this.attrs[k] = v; }},
+    removeAttribute(k) {{ delete this.attrs[k]; }},
+    appendChild(c) {{ c.parent = this; this.children.push(c); return c; }},
+    addEventListener(n, fn) {{ this.listeners[n] = fn; }},
+    focus() {{ globalThis.document.activeElement = this; }},
+    contains() {{ return false; }},
+    remove() {{
+      if (!this.parent) return;
+      this.parent.children = this.parent.children.filter((c) => c !== this);
+      this.parent = null;
+    }},
+    querySelector() {{ return null; }},
+    querySelectorAll() {{ return []; }},
+    get firstElementChild() {{ return this.children[0] || null; }},
+    classList: {{
+      _s: new Set(),
+      add(c) {{ this._s.add(c); }}, remove(c) {{ this._s.delete(c); }},
+      toggle(c, on) {{ if (on) this._s.add(c); else this._s.delete(c); }},
+      contains(c) {{ return this._s.has(c); }},
+    }},
+  }};
+  nodes.push(el);
+  return el;
+}};
+// `open()` parses its markup string through innerHTML, which this stub cannot
+// do — so the host records the HTML instead and the assertions read THAT.
+const host = make("div");
+let lastHtml = "";
+Object.defineProperty(host, "appendChild", {{
+  value(child) {{ child.parent = host; host.children.push(child); return child; }},
+}});
+const frag = make("div");
+Object.defineProperty(frag, "innerHTML", {{
+  get() {{ return lastHtml; }},
+  set(v) {{ lastHtml = v; this.children = [make("div")]; }},
+}});
+globalThis.document = {{
+  activeElement: null,
+  body: {{ appendChild() {{}} }},
+  getElementById: () => host,
+  createElement: () => frag,
+  addEventListener() {{}},
+  querySelector: () => null,
+}};
+globalThis.setTimeout = (fn, ms) => 1;
+globalThis.clearTimeout = () => {{}};
+const dialogs = await import({_uri("dialogs.js")});
+const out = (v) => process.stdout.write(JSON.stringify(v));
+"""
+
+
+def test_the_delete_part_confirm_names_the_assembly_instances_it_takes():
+    """Spec §1.4: the blast radius is named BEFORE the click, not discovered
+    after it. The dialog is built here exactly the way `main.js` builds it."""
+    got = run_js("""
+      const instances = [{id: "left"}, {id: "right"}, {id: "spare"}];
+      dialogs.confirm({
+        view: "delete-part",
+        title: 'Delete part \\u201cplate\\u201d?',
+        body: "Deletes plate and its script file.",
+        note: `Also removes ${instances.length} assembly instance`
+          + `${instances.length === 1 ? "" : "s"}: `
+          + instances.map((i) => i.id).join(", "),
+        danger: true, confirmLabel: "Delete part",
+      });
+      out({html: lastHtml, stack: dialogs.stack()});
+    """, prelude=SLICE2_DOM)
+    assert "Also removes 3 assembly instances: left, right, spare" in got["html"]
+    assert "Deletes plate and its script file." in got["html"]
+    assert 'class="dlg narrow danger"' in got["html"]
+    assert ">Delete part<" in got["html"]
+    assert [e["view"] for e in got["stack"]] == ["delete-part"]
+
+
+def test_the_branch_picker_offers_every_branch_but_the_current_and_default():
+    """The server refuses both, and a row that can only fail is not a choice."""
+    got = run_js("""
+      const branches = [
+        {name: "main", is_default: true, is_current: false},
+        {name: "wip", is_default: false, is_current: true},
+        {name: "spike", is_default: false, is_current: false},
+        {name: "old", is_default: false, is_current: false},
+      ];
+      const deletable = branches.filter((b) => !b.is_current && !b.is_default);
+      dialogs.form({
+        view: "delete-branch", title: "Delete a branch", danger: true,
+        fields: [{name: "branch", label: "Branch", type: "select",
+                  options: deletable.map((b) => b.name),
+                  value: deletable[0].name, required: true}],
+        buttons: [{id: "cancel", label: "Cancel"},
+                  {id: "delete", label: "Delete branch", kind: "danger",
+                   submits: true}],
+      });
+      out({html: lastHtml});
+    """, prelude=SLICE2_DOM)
+    html = got["html"]
+    assert '<option value="spike" selected>' in html
+    assert '<option value="old">' in html
+    assert ">main<" not in html and ">wip<" not in html
+
+
+def test_an_adopted_overlay_moves_the_stack_and_carries_its_when_predicate():
+    """Adoption is what makes `isModalOpen()` true behind a legacy modal now
+    that the DOM fallback is gone — and the `when` an adopter declares has to
+    reach the registry, or every adopted view is offered unconditionally."""
+    got = run_js("""
+      const overlay = {querySelector: () => null, contains: () => false};
+      let open_ = false;
+      const legacy = dialogs.attachLegacy(overlay, {
+        view: "merge", title: "Staged merge…",
+        isOpen: () => open_, onClose: () => { open_ = false; },
+        open: () => { open_ = true; },
+        when: (c) => !!c.staged,
+      });
+      const before = dialogs.isModalOpen();
+      open_ = true; legacy.notifyOpen();
+      const during = {modal: dialogs.isModalOpen(),
+                      stack: dialogs.stack().map((e) => [e.view, e.kind])};
+      open_ = false; legacy.notifyClose();
+      out({before, during, after: dialogs.isModalOpen(),
+           offered: dialogs.views({staged: true}).map((v) => v.view),
+           hidden: dialogs.views({staged: false}).map((v) => v.view)});
+    """, prelude=SLICE2_DOM)
+    assert got["before"] is False
+    assert got["during"] == {"modal": True, "stack": [["merge", "legacy"]]}
+    assert got["after"] is False
+    assert got["offered"] == ["merge"] and got["hidden"] == []
+
+
+def test_close_modals_pops_a_legacy_entry_through_its_own_close():
+    """`comments.showThread()` used to hide the covering overlay by hand; with
+    the overlay on the stack that stranded the entry — `isModalOpen()` true
+    forever and every global shortcut dead."""
+    got = run_js("""
+      const overlay = {querySelector: () => null, contains: () => false};
+      let closed = 0;
+      const legacy = dialogs.attachLegacy(overlay,
+        {view: "proposals", onClose: () => { closed += 1; }});
+      legacy.notifyOpen();
+      const n = dialogs.closeModals();
+      out({n, closed, stack: dialogs.stack(), modal: dialogs.isModalOpen(),
+           isOpen: legacy.isOpen()});
+    """, prelude=SLICE2_DOM)
+    assert got == {"n": 1, "closed": 1, "stack": [], "modal": False,
+                   "isOpen": False}
+
+
+def test_a_number_prompt_resolves_a_string_so_the_sketcher_coerces_it():
+    """Slice 1 decision 9. `askNumber` in `sketcher.js` is the one place that
+    does the coercion, and `""` (blank = leave the semi-axis free) must survive
+    it as `""` and not become `0`."""
+    sketcher = (FRONTEND_JS / "sketcher.js").read_text(encoding="utf-8")
+    body = sketcher.split("async function askNumber(", 1)[1].split("\n}", 1)[0]
+    assert 'if (answer === "") return "";' in body
+    assert "return Number(answer);" in body
+    # The ellipse is one form with two OPTIONAL fields, not two prompts.
+    ellipse = sketcher.split("Ellipse radii", 1)[1].split("});", 1)[0]
+    assert ellipse.count("required: false") == 2
+    assert '{ name: "a"' in ellipse and '{ name: "b"' in ellipse
+
+
+def test_the_discard_guard_is_awaited_at_every_call_site():
+    """`confirmDiscardEdits` returns a PROMISE now: an un-awaited call is
+    truthy always, which silently discards the user's unsaved script."""
+    main = MAIN.read_text(encoding="utf-8")
+    calls = re.findall(r"[^\s(]*\s*confirmDiscardEdits\(", main)
+    assert calls, "the guard vanished"
+    for line in main.splitlines():
+        if "confirmDiscardEdits(" in line and "async function" not in line:
+            assert "await confirmDiscardEdits(" in line, line.strip()
+
+
+# ============================================================================
+# Slice 2 — fix round 1
+# ============================================================================
+
+# I1. The space-bar fix closed one instance of a family. The family is
+# structural: `fromEvent` builds a chord from whatever the browser called the
+# key, and `Table.lookup` handed that straight back to `normalize` — an
+# AUTHOR-facing parser that throws on shapes only an author could get wrong —
+# from inside an untried document listener. Patching `keyName` one key at a
+# time would have kept finding new ones (`Super` was the next).
+
+# Every UI Events "modifier key" value, plus the grab-bag the reviewer named.
+KEY_SWEEP = [
+    "Alt", "AltGraph", "CapsLock", "Control", "Fn", "FnLock", "Hyper", "Meta",
+    "NumLock", "OS", "ScrollLock", "Shift", "Super", "Symbol", "SymbolLock",
+    "Dead", "Process", "Unidentified", "Spacebar", " ", "+", "=", "?",
+    "Escape", "Tab", "Enter", "Backspace", "Delete", "ArrowUp", "F5",
+    "a", "Z", "1", "ø", "İ", "",
+]
+
+
+def test_no_key_a_browser_can_report_throws_out_of_the_keydown_listener():
+    """I1, the sweep: every key value × every modifier combination, driven
+    through the SHIPPED `fromEvent` → `Table.lookup` with the scope index
+    populated (so `lookup` really reaches the parser). Nothing may throw."""
+    got = run_js("""
+      const table = new sc.Table();
+      table.bind({chord: "Mod+S", id: "part.save-script"});   // the scope exists
+      const keys = %s;
+      const bad = [];
+      const chords = {};
+      for (const key of keys) {
+        for (const mods of [{}, {metaKey: true}, {altKey: true},
+                            {shiftKey: true}, {ctrlKey: true},
+                            {metaKey: true, altKey: true, shiftKey: true}]) {
+          for (const platform of ["MacIntel", "Win32"]) {
+            let chord = null;
+            try {
+              chord = sc.fromEvent({key, ...mods}, platform);
+              table.lookup(chord, "global");
+              table.lookup(chord, "modal-safe");
+            } catch (err) {
+              bad.push([key, JSON.stringify(mods), platform, chord,
+                        String(err && err.message)]);
+            }
+          }
+        }
+        chords[key] = sc.fromEvent({key}, "MacIntel");
+      }
+      out({bad, chords});
+    """ % json.dumps(KEY_SWEEP))
+    assert got["bad"] == [], "these keystrokes throw out of the listener"
+    # And the two that used to: a bare modifier is not a chord at all, the
+    # space bar is `Space`.
+    for modifier in ("Super", "Hyper", "Meta", "Control", "Fn", "CapsLock",
+                     "Dead", "Unidentified"):
+        assert got["chords"][modifier] is None, modifier
+    assert got["chords"][" "] == "Space"
+
+
+def test_lookup_answers_a_miss_where_normalize_would_have_thrown():
+    """The structural half, stated directly: `canonical` is the machine path
+    and a chord it cannot parse is a MISS. `normalize` still throws, because a
+    binding an author wrote wrong must fail the build."""
+    got = run_js("""
+      const table = new sc.Table();
+      const row = table.bind({chord: "mod+s", id: "part.save-script"});
+      let normalizeThrew = null;
+      try { sc.normalize("Mod+Super"); }
+      catch (err) { normalizeThrew = String(err.message); }
+      out({
+        stored: row.chord,
+        hit: (table.lookup("Mod+S") || {}).id,
+        garbage: [table.lookup("Mod+Super"), table.lookup(" "),
+                  table.lookup(""), table.lookup(null), table.lookup("Shift")],
+        canonical: [sc.canonical("mod+s"), sc.canonical("Mod+Super"),
+                    sc.canonical("")],
+        normalizeThrew,
+        unknownScope: table.lookup("Mod+S", "nope"),
+      });
+    """)
+    assert got["stored"] == "Mod+S" and got["hit"] == "part.save-script"
+    assert got["garbage"] == [None, None, None, None, None]
+    assert got["canonical"] == ["Mod+S", None, None]
+    assert got["normalizeThrew"] is not None, "normalize must still throw"
+    assert got["unknownScope"] is None
+
+
+# I2. Adopting `#merge-modal` put the stack's Tab trap over a live CodeMirror
+# (merge.js:409 opens it `readOnly: false` on Python part scripts). The
+# listener is in the CAPTURE phase, so it took Tab before CodeMirror saw it.
+
+TAB_DOM = f"""
+globalThis.document = {{
+  activeElement: null,
+  body: {{ appendChild() {{}} }},
+  getElementById: () => null,
+  createElement: () => ({{ id: "", appendChild() {{}} }}),
+  addEventListener() {{}},
+  querySelector: () => null,
+}};
+const dialogs = await import({_uri("dialogs.js")});
+const out = (v) => process.stdout.write(JSON.stringify(v));
+const focusable = (name) => ({{
+  name, offsetParent: {{}},
+  focus() {{ globalThis.document.activeElement = this; }},
+}});
+const buttons = [focusable("cancel"), focusable("ok")];
+const overlay = {{
+  querySelector: () => null,
+  querySelectorAll: () => buttons,
+  contains: () => true,
+}};
+// A target whose `closest` answers the way the real DOM would for a node
+// inside (or outside) a CodeMirror.
+const target = (sel) => ({{
+  closest: (q) => (q.split(", ").some((s) => sel.includes(s.trim()))
+    ? {{}} : null),
+}});
+const tab = (t, shift) => {{
+  let prevented = 0;
+  dialogs.__dialogsDispatch__.onKeyDown({{
+    key: "Tab", shiftKey: !!shift, target: t,
+    preventDefault() {{ prevented += 1; }}, stopPropagation() {{}},
+  }});
+  return prevented;
+}};
+"""
+
+
+def test_tab_indents_in_a_code_editor_inside_an_adopted_modal():
+    """I2: the merge conflict resolver is Python, where Tab-to-indent is not a
+    nicety. `input`/`textarea` stay trapped — they do not consume Tab, so for
+    them the trap is the only thing keeping focus inside the dialog."""
+    got = run_js("""
+      const legacy = dialogs.attachLegacy(overlay, {view: "merge"});
+      legacy.notifyOpen();
+      out({
+        codemirror: tab(target(".CodeMirror")),
+        contenteditable: tab(target("[contenteditable]")),
+        shiftInCodemirror: tab(target(".CodeMirror"), true),
+        textarea: tab(target("textarea")),
+        button: tab(target("button")),
+        noTarget: tab(null),
+        focused: (globalThis.document.activeElement || {}).name,
+      });
+    """, prelude=TAB_DOM)
+    assert got["codemirror"] == 0, "the trap swallowed Tab in the editor"
+    assert got["contenteditable"] == 0 and got["shiftInCodemirror"] == 0
+    # Everything else still cycles.
+    assert got["textarea"] == 1 and got["button"] == 1 and got["noTarget"] == 1
+    assert got["focused"] in ("cancel", "ok")
+
+
+# I3. `delete-branch` is the one destructive dialog with a field, and it was a
+# stray Enter (the palette runs its rows on keydown) from deleting a working
+# tree. Both halves are fixed: focus, and the form's own validity.
+
+
+# A stub with enough of a selector engine to answer the three queries
+# `focusFirst` makes (`#<field id>`, `[data-submits]`, `[data-btn]:not(…)`).
+# It builds its nodes from the markup string `dialogs_model` produced, so the
+# ids under test are the shipped ones and not a second guess at them.
+FOCUS_DOM = f"""
+const nodes = new Map();
+const node = (id) => {{
+  if (!nodes.has(id)) {{
+    nodes.set(id, {{
+      id, disabled: false, value: "", checked: false, textContent: "",
+      dataset: {{}},
+      setAttribute() {{}}, removeAttribute() {{}},
+      addEventListener() {{}},
+      classList: {{ toggle() {{}}, add() {{}}, remove() {{}},
+                   contains: () => false }},
+      querySelector: () => null, querySelectorAll: () => [],
+      focus() {{ globalThis.document.activeElement = this; }},
+      remove() {{}},
+    }});
+  }}
+  return nodes.get(id);
+}};
+let lastHtml = "";
+const buttonsIn = (html) => [...html.matchAll(/<button[^>]*>/g)].map((m) => ({{
+  id: /id="([^"]+)"/.exec(m[0])[1], submits: m[0].includes("data-submits"),
+}}));
+const makeOverlay = (html) => {{
+  const buttons = buttonsIn(html);
+  const el = {{
+    querySelector(sel) {{
+      if (sel.startsWith("#")) {{
+        const id = sel.slice(1);
+        return html.includes(`id="${{id}}"`) ? node(id) : null;
+      }}
+      if (sel === "[data-submits]") {{
+        const b = buttons.find((x) => x.submits);
+        return b ? node(b.id) : null;
+      }}
+      if (sel === "[data-btn]:not([data-submits])") {{
+        const b = buttons.find((x) => !x.submits);
+        return b ? node(b.id) : null;
+      }}
+      if (sel === "[data-btn]") return buttons.length ? node(buttons[0].id) : null;
+      if (sel === ".dlg") return node("dlg-el");
+      return null;
+    }},
+    querySelectorAll: () => [],
+    addEventListener() {{}},
+    contains: () => false,
+    remove() {{}},
+  }};
+  return el;
+}};
+const frag = {{
+  set innerHTML(v) {{ lastHtml = v; this._el = makeOverlay(v); }},
+  get innerHTML() {{ return lastHtml; }},
+  get firstElementChild() {{ return this._el; }},
+}};
+globalThis.document = {{
+  activeElement: null,
+  body: {{ appendChild() {{}} }},
+  getElementById: () => ({{ appendChild() {{}} }}),
+  createElement: () => frag,
+  addEventListener() {{}},
+  querySelector: () => null,
+}};
+const dialogs = await import({_uri("dialogs.js")});
+const out = (v) => process.stdout.write(JSON.stringify(v));
+const focused = () => (globalThis.document.activeElement || {{}}).id || null;
+"""
+
+
+def test_a_danger_dialog_with_fields_still_opens_on_its_safe_button():
+    got = run_js("""
+      dialogs.form({
+        view: "delete-branch", title: "Delete a branch", danger: true,
+        fields: [{name: "branch", label: "Branch", type: "select",
+                  options: [{value: "", label: "— choose a branch —"}, "old"],
+                  value: "", required: true}],
+        buttons: [{id: "cancel", label: "Cancel"},
+                  {id: "delete", label: "Delete branch", kind: "danger",
+                   submits: true}],
+      });
+      const safe = focused();
+      dialogs.form({
+        view: "new-part", title: "New part",
+        fields: [{name: "id", label: "Part id", required: true}],
+      });
+      out({danger: safe, ordinary: focused()});
+    """, prelude=FOCUS_DOM)
+    assert got["danger"] == "dlg-btn-1-cancel", (
+        "a danger dialog must not open on a submittable field")
+    # An ordinary form still opens on its first field.
+    assert got["ordinary"] == "dlg-f-2-id"
+
+
+def test_the_branch_picker_opens_unchosen_so_enter_cannot_submit_it():
+    """The second half: even with focus elsewhere, the form itself must be
+    invalid until somebody deliberately picks a branch."""
+    main = MAIN.read_text(encoding="utf-8")
+    picker = main.split("view: \"delete-branch\",\n    title: \"Delete a branch\"",
+                        1)[1].split("});", 1)[0]
+    assert 'value: ""' in picker and "required: true" in picker
+    assert "choose a branch" in picker
+    assert "deletable[0].name" not in picker, "the picker is preseeded again"
+    # …and an empty required select really is invalid, so the primary is off.
+    got = run_js("""
+      out(dm.validate(
+        [{name: "branch", type: "select", required: true}], {branch: ""}));
+    """)
+    assert got["valid"] is False and got["errors"]["branch"] == "Required"
+
+
+# M-items.
+
+
+def test_close_modals_counts_what_left_the_stack_and_spares_a_non_modal():
+    """M3: the count is now `before - after`, taken from the stack rather than
+    from inside the loop, so it can only report what actually closed. The
+    non-modal is the discriminating case — a "get this out of the way" verb
+    must not sweep away a floating tool result nobody said was in the way."""
+    got = run_js("""
+      dialogs.open({view: "tool-result", modal: false, title: "Result"});
+      const overlay = {querySelector: () => null, contains: () => false};
+      const a = dialogs.attachLegacy(overlay, {view: "configs", onClose(){}});
+      const b = dialogs.attachLegacy(overlay, {view: "library", onClose(){}});
+      a.notifyOpen(); b.notifyOpen();
+      out({closed: dialogs.closeModals(),
+           left: dialogs.stack().map((e) => e.view),
+           again: dialogs.closeModals()});
+    """, prelude=FOCUS_DOM)
+    assert got["closed"] == 2
+    assert got["left"] == ["tool-result"], "the non-modal was swept away"
+    assert got["again"] == 0, "closing nothing reported closing something"
+
+
+def test_a_non_numeric_step_is_no_step_rather_than_nan_arithmetic():
+    """M7: `step: "any"` is the HTML spelling of "free decimal" (a millimetre
+    field wants it) and it used to reach the multiple-of check and pass by
+    accident — `(num - base) / "any"` is NaN and `NaN > 1e-9` is false."""
+    got = run_js("""
+      const check = (step, v) => dm.validate(
+        [{name: "r", type: "number", min: 0, step}], {r: v}).errors.r || null;
+      out({any: check("any", 12.5), missing: check(undefined, 12.5),
+           zero: check(0, 12.5), junk: check("wat", 12.5),
+           real: check(0.5, 12.25), realOk: check(0.5, 12.5)});
+    """)
+    assert got["any"] is None and got["missing"] is None
+    assert got["zero"] is None and got["junk"] is None
+    # A real step is still enforced.
+    assert got["real"] == "Must be a multiple of 0.5" and got["realOk"] is None
+
+
+def test_the_identifier_rules_have_exactly_one_spelling_in_the_frontend():
+    """M1: `market.js` hand-copied the part-id pattern into a dialog spec —
+    correct by luck, and exactly the drift the slice claimed to have avoided.
+    Every rule now comes from `frontend/js/patterns.js`."""
+    patterns = (FRONTEND_JS / "patterns.js").read_text(encoding="utf-8")
+    for name, source in [("ID_RE", "[a-z][a-z0-9_]{0,39}"),
+                         ("BRANCH_RE", "[a-z0-9][a-z0-9_/-]{0,63}"),
+                         ("TAG_RE", "[a-z0-9][a-z0-9._/-]{0,63}")]:
+        assert f"export const {name} = /^{source}$/;" in patterns, name
+    for module in ("main.js", "market.js", "versions.js"):
+        source = (FRONTEND_JS / module).read_text(encoding="utf-8")
+        assert 'from "./patterns.js"' in source, module
+        # No module re-spells a rule it imports.
+        assert "[a-z][a-z0-9_]{0,39}" not in source, module
+        assert "[a-z0-9][a-z0-9_" not in source, module
+    # `bare()` strips the anchors `dialogs_model.validate` adds back.
+    got = run_js("""
+      out({id: p.bare(p.ID_RE), branch: p.bare(p.BRANCH_RE),
+           tag: p.bare(p.TAG_RE),
+           rejects: dm.validate([{name: "id", pattern: p.bare(p.ID_RE)}],
+                                {id: "Bad Id!"}).valid,
+           accepts: dm.validate([{name: "id", pattern: p.bare(p.ID_RE)}],
+                                {id: "gusset_plate"}).valid});
+    """, prelude=PRELUDE + f'import * as p from {_juri("patterns.js")};\n')
+    assert got["id"] == "[a-z][a-z0-9_]{0,39}"
+    assert got["branch"] == "[a-z0-9][a-z0-9_/-]{0,63}"
+    assert got["tag"] == "[a-z0-9][a-z0-9._/-]{0,63}"
+    assert got["rejects"] is False and got["accepts"] is True

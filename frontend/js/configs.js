@@ -4,9 +4,10 @@
 // It is a modal rather than an inspector block on purpose — the inspector is
 // 326 px and `flex: none`, so six numbers per row for a three-member family
 // simply do not fit there. Same `.modal-overlay` shape as versions/merge/
-// proposals/library/claims (see the library note in index.html): PRD-026's
-// dialog system has not landed, and one modal shape in this app is worth more
-// than one of them being modern.
+// proposals/library (see the library note in index.html): one modal shape in
+// this app is worth more than one of them being modern. PRD-026 slice 2
+// adopted it onto the shell's overlay stack, so Esc and the focus trap are the
+// stack's and this markup is unchanged.
 //
 // **A matrix build is not the part's build.** `build_configs` publishes
 // `rebuild_started/finished/failed` carrying `config`, and main.js hands
@@ -17,6 +18,7 @@
 
 import { api, ApiError } from "./api.js";
 import { state } from "./state.js";
+import * as dialogs from "./shell/dialogs.js";
 
 let actions = null;
 let overlay, titleEl, bodyEl, buildBtn, closeBtn;
@@ -27,6 +29,7 @@ let overlay, titleEl, bodyEl, buildBtn, closeBtn;
 let lastMatrix = null;   // {partId, rows: [...], warnings: []}
 
 let openPartId = null;   // the part the modal is showing, or null when closed
+let legacy = null;       // the overlay's seat on the shell's dialog stack
 let listing = null;      // list_configs' row for openPartId: declared + referrers
 let buildToken = 0;      // guards a response that landed after the user moved on
 let building = false;
@@ -46,8 +49,12 @@ export function init(a) {
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) close();
   });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && isOpen()) close();
+  // PRD-026 FR2: Esc belongs to the shell's overlay stack, not to this module.
+  legacy = dialogs.attachLegacy(overlay, {
+    view: "configs", title: "Configurations…", isOpen, onClose: close,
+    description: "The selected part's configuration matrix",
+    open: (args) => open((args && args.part) || state.selectedPart),
+    when: (c) => !!c.selectedPart,
   });
 }
 
@@ -70,6 +77,7 @@ export async function open(partId) {
   listing = null;
   rowState.clear();
   overlay.classList.remove("hidden");
+  if (legacy) legacy.notifyOpen();
   titleEl.textContent = `${partId} · configurations`;
   render();     // seeded from state — the table never waits on a round trip
 
@@ -95,6 +103,7 @@ export async function open(partId) {
 function close() {
   if (!overlay) return;
   overlay.classList.add("hidden");
+  if (legacy) legacy.notifyClose();   // idempotent: Esc pops the stack itself
   buildToken++;             // orphan any in-flight build's render
   openPartId = null;
   listing = null;

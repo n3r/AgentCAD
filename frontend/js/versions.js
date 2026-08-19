@@ -5,10 +5,11 @@
 
 import { api, ApiError } from "./api.js";
 import { state, setState } from "./state.js";
-
-const TAG_RE = /^[a-z0-9][a-z0-9._/-]{0,63}$/;
+import * as dialogs from "./shell/dialogs.js";
+import { TAG_RE, bare } from "./patterns.js";
 
 let actions = null;
+let legacy = null;   // the overlay's seat on the shell's dialog stack
 let overlay, titleEl, bodyEl, tagBtn, closeBtn;
 
 export function init(a) {
@@ -20,12 +21,23 @@ export function init(a) {
   closeBtn = document.getElementById("versions-close");
 
   closeBtn.addEventListener("click", close);
-  tagBtn.addEventListener("click", tagPrompt);
+  tagBtn.addEventListener("click", () => tagPrompt());
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) close();
   });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && isOpen()) close();
+  // PRD-026 FR2: the overlay stack owns Esc. This module's own `keydown`
+  // listener is gone — with two overlays up, two listeners meant one Esc
+  // closing both.
+  legacy = dialogs.attachLegacy(overlay, {
+    view: "versions", title: "Versions…", isOpen, onClose: close,
+    description: "The project's named versions (annotated tags)",
+    open: () => open(),
+    when: (c) => !!c.branch,
+  });
+  dialogs.register("new-version", (args) => tagPrompt(args), {
+    title: "New version…",
+    description: "Tag the current branch state with a version name",
+    when: (c) => !!c.branch,
   });
 }
 
@@ -39,6 +51,7 @@ export async function open() {
     return;
   }
   overlay.classList.remove("hidden");
+  if (legacy) legacy.notifyOpen();
   titleEl.textContent = `${state.projectName} · versions`;
   bodyEl.textContent = "";
   const status = document.createElement("div");
@@ -50,6 +63,7 @@ export async function open() {
 
 function close() {
   overlay.classList.add("hidden");
+  if (legacy) legacy.notifyClose();   // idempotent: Esc pops the stack itself
   bodyEl.textContent = "";
 }
 
@@ -124,16 +138,36 @@ function render(versions, message) {
   }
 }
 
-async function tagPrompt() {
-  if (!state.projectName) return;
-  let name = prompt("Version name (e.g. v1.2 or shop-rev-a):");
-  if (!name) return;
-  name = name.trim();
-  if (!TAG_RE.test(name)) {
-    actions.toast(`Invalid version name ${JSON.stringify(name)}`, "error");
+async function tagPrompt(args) {
+  if (!state.projectName) {
+    actions.toast("Open a project first", "error");
     return;
   }
-  const message = prompt(`What is “${name}”?`, name) || undefined;
+  // One form where there were two prompts: the message is about the name, and
+  // being asked for it in a second box you cannot see the name from was how
+  // "What is “v1.2”?" got answered "v1.2".
+  const values = await dialogs.form({
+    view: "new-version",
+    title: "New version",
+    width: "narrow",
+    fields: [
+      { name: "name", label: "Version name", required: true,
+        value: (args && args.name) || "",
+        placeholder: "v1.2",
+        pattern: bare(TAG_RE),
+        patternMessage: "lowercase letters, digits, . _ - /; max 64",
+        help: "e.g. v1.2 or shop-rev-a" },
+      { name: "message", label: "What is it?", type: "textarea", rows: 3,
+        value: (args && args.message) || "",
+        placeholder: "Optional description" },
+    ],
+    buttons: [{ id: "cancel", label: "Cancel" },
+              { id: "tag", label: "Create version", kind: "primary",
+                submits: true }],
+  });
+  if (!values) return;
+  const name = String(values.name).trim();
+  const message = values.message ? String(values.message) : undefined;
   let res;
   try {
     res = await api.createVersion(state.projectName, name, message);
@@ -150,7 +184,16 @@ async function tagPrompt() {
 }
 
 async function restoreVersion(version, btn) {
-  if (!confirm(`Restore this branch's files to version “${version.name}”?`)) return;
+  const ok = await dialogs.confirm({
+    view: "restore-version",
+    title: `Restore this branch's files to “${version.name}”?`,
+    body: "Every script, parameter and the assembly go back to the state that "
+      + "version recorded. Your current working state is not kept.",
+    note: version.message || undefined,
+    danger: true,
+    confirmLabel: "Restore",
+  });
+  if (!ok) return;
   btn.disabled = true;
   btn.textContent = "Restoring…";
   let res;

@@ -22,6 +22,9 @@ import * as configs from "./configs.js";
 import * as market from "./market.js";
 import * as auth from "./auth.js";
 import { setupShare } from "./share-links.js";
+// The server's identifier rules, spelled once (`frontend/js/patterns.js`) and
+// fed to every dialog field's `pattern` through `bare()`.
+import { ID_RE, BRANCH_RE, bare } from "./patterns.js";
 // PRD-026 shell. `actions` is the ACTION REGISTRY — the panel DI object that
 // used to own that name is `panelApi` below.
 import * as actions from "./shell/actions.js";
@@ -33,8 +36,6 @@ import * as palette from "./shell/palette.js";
 import * as events from "./shell/events.js";
 import { toast, init as initToasts } from "./shell/toast.js";
 
-const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
-const BRANCH_RE = /^[a-z0-9][a-z0-9_/-]{0,63}$/;
 
 const meshBuffers = new Map(); // partId -> {buffer, key, lod} from api.getMesh
 // Assembly geometry is CONTENT-addressed, not part-addressed: two instances of
@@ -87,7 +88,7 @@ async function refreshProjectsList() {
 }
 
 async function loadProject(name) {
-  if (!confirmDiscardEdits(null)) return; // switching projects drops the editor
+  if (!(await confirmDiscardEdits(null))) return; // switching projects drops the editor
   let detail;
   try {
     detail = await api.getProject(name);
@@ -175,16 +176,28 @@ function partKnown(partId) {
 // True when it is safe to navigate away from the current part's editor.
 // Asks the user before discarding unsaved script edits; a cancelled dialog
 // keeps the current selection.
-function confirmDiscardEdits(nextPartId) {
+// PRD-026 FR2: the native confirm became a dialog, so this is a PROMISE and every
+// caller awaits it. The three fast paths above still answer synchronously
+// (an `async` function returning `true` resolves on the microtask queue), so
+// the common "nothing is dirty" case still costs no frame.
+async function confirmDiscardEdits(nextPartId) {
   if (!state.selectedPart || nextPartId === state.selectedPart) return true;
   if (!state.part || !editor.isDirty()) return true;
   // The edited part no longer exists (deleted): nothing can be saved.
   if (!partKnown(state.selectedPart)) return true;
-  return confirm("Discard unsaved script changes?");
+  return dialogs.confirm({
+    view: "discard-edits",
+    title: "Discard unsaved script changes?",
+    body: `${state.selectedPart} has edits that were never saved. Leaving `
+      + "this part throws them away.",
+    danger: true,
+    confirmLabel: "Discard",
+    cancelLabel: "Keep editing",
+  });
 }
 
 async function selectPart(partId) {
-  if (!confirmDiscardEdits(partId)) return;
+  if (!(await confirmDiscardEdits(partId))) return;
   const seq = ++selectSeq;
   if (faceSel && faceSel.partId !== partId) clearFaceSelection();
   setState({ mode: "part", selectedPart: partId, selectedInstance: null });
@@ -214,7 +227,7 @@ async function selectAssembly(instanceId) {
     // Selecting an instance swaps its part into the inspector below, which
     // would silently drop unsaved edits to the current part's script.
     const next = state.project.assembly.instances.find((i) => i.id === instanceId);
-    if (next && !confirmDiscardEdits(next.part)) return;
+    if (next && !(await confirmDiscardEdits(next.part))) return;
   }
   const entering = state.mode !== "assembly";
   const seq = ++selectSeq;
@@ -493,30 +506,92 @@ function markPartState(partId, st) {
 
 // ----------------------------------------------------------- part CRUD
 
-async function addPart() {
+/** The material field, but ONLY when the catalog is already in hand.
+ *
+ *  `loadMaterials` fetches it per project and parks it in `state.materials`;
+ *  offering a free-text material box when it has not arrived would invite a
+ *  typo that `updatePart` then refuses, so the field is simply absent and the
+ *  inspector's picker (which owns this decision) stays the one place to set it.
+ */
+function materialField() {
+  const catalog = (state.materials && state.materials.materials) || [];
+  if (!catalog.length) return null;
+  return {
+    name: "material",
+    label: "Material",
+    type: "select",
+    value: "",
+    options: [{ value: "", label: "— none —" },
+              // `m.label` is the display name the inspector's picker shows —
+              // the same field, so the two lists read alike.
+              ...catalog.map((m) => ({ value: m.id, label: m.label || m.id }))],
+    help: "Optional; the inspector can change it later.",
+  };
+}
+
+async function addPart(args) {
   if (!state.projectName) {
     toast("Open a project first", "error");
     return;
   }
-  let id = prompt("New part id ([a-z][a-z0-9_]{0,39}):");
-  if (!id) return;
-  id = id.trim();
-  if (!ID_RE.test(id)) {
-    toast(`Invalid part id ${JSON.stringify(id)}`, "error");
-    return;
-  }
+  const prefill = args || {};
+  const values = await dialogs.form({
+    view: "new-part",
+    title: "New part",
+    width: "narrow",
+    fields: [
+      { name: "id", label: "Part id", value: prefill.id || "", required: true,
+        pattern: bare(ID_RE),
+        patternMessage: "lowercase letters, digits, _; max 40",
+        help: "Used for the script file name and every reference to the part." },
+      { name: "label", label: "Label", value: prefill.label || "",
+        placeholder: "Optional display name" },
+      ...[materialField()].filter(Boolean),
+    ],
+    buttons: [{ id: "cancel", label: "Cancel" },
+              { id: "create", label: "Create", kind: "primary", submits: true }],
+  });
+  if (!values) return;
+  const id = String(values.id).trim();
   try {
-    await api.createPart(state.projectName, id);
+    await api.createPart(state.projectName, id, values.label || undefined);
   } catch (err) {
     toast(`Create failed: ${err.message}`, "error");
     return;
+  }
+  if (values.material) {
+    // A second call because `POST /parts` takes id+label only. A refusal here
+    // must not read as "the part was not created" — it was.
+    try {
+      await api.updatePart(state.projectName, id, { material: values.material });
+    } catch (err) {
+      toast(`${id} created, but the material did not stick: ${err.message}`,
+            "error");
+    }
   }
   await refreshProject();
   await selectPart(id);
 }
 
 async function deletePart(partId) {
-  if (!confirm(`Delete part “${partId}”? This removes its script file.`)) return;
+  if (!partId) return;
+  const instances = ((state.project && state.project.assembly
+    && state.project.assembly.instances) || []).filter((i) => i.part === partId);
+  const ok = await dialogs.confirm({
+    view: "delete-part",
+    title: `Delete part “${partId}”?`,
+    body: `Deletes ${partId} and its script file.`,
+    // The blast radius, named before the click and not discovered after it:
+    // deleting a part takes every assembly instance of it with it.
+    note: instances.length
+      ? `Also removes ${instances.length} assembly instance`
+        + `${instances.length === 1 ? "" : "s"}: `
+        + instances.map((i) => i.id).join(", ")
+      : undefined,
+    danger: true,
+    confirmLabel: "Delete part",
+  });
+  if (!ok) return;
   try {
     await api.deletePart(state.projectName, partId);
   } catch (err) {
@@ -689,16 +764,20 @@ async function handleImportFile(file) {
     toast(`Upload failed: ${detail}`, "error");
     return;
   }
-  let id = prompt(
-    `Imported “${upload.source}”. Part id ([a-z][a-z0-9_]{0,39}):`,
-    deriveImportId(file.name)
-  );
-  if (!id) return; // file stays in imports/; user can retry with the same name
-  id = id.trim();
-  if (!ID_RE.test(id)) {
-    toast(`Invalid part id ${JSON.stringify(id)}`, "error");
-    return;
-  }
+  const answer = await dialogs.prompt({
+    view: "import-part-id",
+    title: "Name the imported part",
+    body: `Imported “${upload.source}”.`,
+    label: "Part id",
+    value: deriveImportId(file.name),
+    pattern: bare(ID_RE),
+    patternMessage: "lowercase letters, digits, _; max 40",
+    okLabel: "Import",
+  });
+  // Cancelled: the file stays in imports/ and the user can retry with the
+  // same name.
+  if (answer == null) return;
+  const id = answer.trim();
   let res;
   try {
     res = await api.callTool("import_cad_file", {
@@ -1088,7 +1167,9 @@ function updateEmptyState() {
   const btn = document.createElement("button");
   btn.className = "tb-btn";
   btn.textContent = buttonLabel;
-  btn.addEventListener("click", onClick);
+  // Wrapped, not passed: both openers now take an `args` prefill object and a
+  // MouseEvent is not one.
+  btn.addEventListener("click", () => onClick());
   el.append(p, btn);
 }
 
@@ -1165,14 +1246,18 @@ function setupProjectMenu() {
   });
 }
 
-async function newProjectPrompt() {
-  let name = prompt("Project name ([a-z][a-z0-9_]{0,39}):");
-  if (!name) return;
-  name = name.trim();
-  if (!ID_RE.test(name)) {
-    toast(`Invalid project name ${JSON.stringify(name)}`, "error");
-    return;
-  }
+async function newProjectPrompt(args) {
+  const answer = await dialogs.prompt({
+    view: "new-project",
+    title: "New project",
+    label: "Project name",
+    value: (args && args.name) || "",
+    pattern: bare(ID_RE),
+    patternMessage: "lowercase letters, digits, _; max 40",
+    okLabel: "Create",
+  });
+  if (answer == null) return;
+  const name = answer.trim();
   try {
     await api.createProject(name);
   } catch (err) {
@@ -1183,9 +1268,17 @@ async function newProjectPrompt() {
   await loadProject(name);
 }
 
-async function openProjectPrompt() {
-  const path = prompt("Absolute path to a project directory:");
-  if (!path) return;
+async function openProjectPrompt(args) {
+  const path = await dialogs.prompt({
+    view: "open-project",
+    title: "Open a project by path",
+    label: "Absolute path",
+    value: (args && args.path) || "",
+    placeholder: "/home/you/cad/bracket",
+    help: "The directory that holds project.json.",
+    okLabel: "Open",
+  });
+  if (path == null) return;
   let detail;
   try {
     detail = await api.openProject(path);
@@ -1298,7 +1391,7 @@ function setupBranchMenu() {
     sep.className = "menu-sep";
     menu.appendChild(sep);
     for (const [label, run] of [
-      ["New branch…", newBranchPrompt],
+      ["New branch…", () => newBranchPrompt()],
       ["Merge into…", () => merge.openPicker()],
       ["Versions…", () => versions.open()],
     ]) {
@@ -1317,7 +1410,7 @@ function setupBranchMenu() {
 
 async function switchToBranch(name) {
   if (!state.projectName || name === state.branch) return;
-  if (!confirmDiscardEdits(null)) return; // another branch's scripts differ
+  if (!(await confirmDiscardEdits(null))) return; // another branch's scripts differ
   branchSwitchUntil = Date.now() + 1500;
   try {
     await api.switchBranch(state.projectName, name);
@@ -1373,18 +1466,72 @@ async function reloadBranchContext() {
   }
 }
 
-async function deleteBranch(name) {
+/** The picker behind `model.branches.delete`: the branch menu's per-row `×`
+ *  knows which branch it names, an action reached from the palette or a menu
+ *  does not — and an argument-free delete would name the CURRENT branch, which
+ *  the server always refuses. */
+async function deleteBranchPrompt(args) {
   if (!state.projectName) return;
-  // Same confirm affordance every other destructive action here uses
-  // (restore a version, discard a staged merge).
-  if (
-    !confirm(
-      `Delete branch “${name}” and its working tree?\n\n` +
-        "Versions (tags) made on it survive. This cannot be undone."
-    )
-  ) {
+  const deletable = (state.branches || [])
+    .filter((b) => !b.is_current && !b.is_default);
+  if (!deletable.length) {
+    toast("No other branch to delete", "error");
     return;
   }
+  const preset = args && args.branch;
+  if (deletable.some((b) => b.name === preset)) {
+    await deleteBranch(preset);
+    return;
+  }
+  const values = await dialogs.form({
+    view: "delete-branch",
+    title: "Delete a branch",
+    body: "Deletes the branch and its working tree. Versions (tags) made on "
+      + "it survive. This cannot be undone.",
+    danger: true,
+    fields: [{
+      name: "branch",
+      label: "Branch",
+      type: "select",
+      // The current branch and the default one are absent, not disabled: the
+      // server refuses both, and a row that can only fail is not a choice.
+      //
+      // It opens UNCHOSEN, and the empty option is what makes that a state the
+      // form can be in: `required` then keeps the danger button disabled until
+      // somebody deliberately picks a branch, so an Enter still travelling
+      // from the palette row that opened this cannot land on a valid form.
+      // (`focusFirst` puts focus on Cancel too — belt and braces, because this
+      // is the one dialog in the slice that deletes a working tree.)
+      options: [{ value: "", label: "— choose a branch —" },
+                ...deletable.map((b) => b.name)],
+      value: "",
+      required: true,
+    }],
+    buttons: [{ id: "cancel", label: "Cancel" },
+              { id: "delete", label: "Delete branch", kind: "danger",
+                submits: true }],
+  });
+  if (!values) return;
+  await runDeleteBranch(values.branch);
+}
+
+/** The branch menu's per-row `×`: the branch is already named, so the dialog
+ *  is the plain danger confirm every other destructive action here uses
+ *  (restore a version, discard a staged merge). */
+async function deleteBranch(name) {
+  if (!state.projectName) return;
+  const ok = await dialogs.confirm({
+    view: "delete-branch",
+    title: `Delete branch “${name}” and its working tree?`,
+    body: "Versions (tags) made on it survive. This cannot be undone.",
+    danger: true,
+    confirmLabel: "Delete branch",
+  });
+  if (!ok) return;
+  await runDeleteBranch(name);
+}
+
+async function runDeleteBranch(name) {
   try {
     await api.deleteBranch(state.projectName, name);
   } catch (err) {
@@ -1397,18 +1544,23 @@ async function deleteBranch(name) {
   await loadBranchState();
 }
 
-async function newBranchPrompt() {
+async function newBranchPrompt(args) {
   if (!state.projectName) {
     toast("Open a project first", "error");
     return;
   }
-  let name = prompt("New branch name ([a-z0-9][a-z0-9_/-]{0,63}):");
-  if (!name) return;
-  name = name.trim();
-  if (!BRANCH_RE.test(name)) {
-    toast(`Invalid branch name ${JSON.stringify(name)}`, "error");
-    return;
-  }
+  const answer = await dialogs.prompt({
+    view: "new-branch",
+    title: "New branch",
+    label: "Branch name",
+    value: (args && args.name) || "",
+    pattern: bare(BRANCH_RE),
+    patternMessage: "lowercase letters, digits, _ - /; max 64",
+    help: `Branches off ${state.branch || "the current branch"}.`,
+    okLabel: "Create",
+  });
+  if (answer == null) return;
+  const name = answer.trim();
   try {
     await api.createBranch(state.projectName, name);
   } catch (err) {
@@ -2277,6 +2429,11 @@ function registerActions() {
   A({ id: "project.open-path", title: "Open by path…", group: "Project",
       menu: "file/11", run: () => openProjectPrompt() });
   A({ id: "part.new", title: "New part…", group: "Parts", menu: "file/20",
+      // Spec ruling 3. `when` (not `enabled`) on purpose: with no project open
+      // there is no part to create and the File row genuinely should not be
+      // there, so the chord declines and the browser keeps ⌘N — the one case
+      // where we are not taking a keystroke we cannot act on.
+      shortcut: "Mod+N",
       keywords: ["create", "add"], when: hasProject, run: () => addPart() });
   A({ id: "project.import-cad", title: "Import CAD file…", group: "Project",
       menu: "file/30", keywords: ["step", "stl", "brep"], when: hasProject,
@@ -2368,8 +2525,16 @@ function registerActions() {
       menu: "model/30", when: onBranch, run: () => versions.open() });
   A({ id: "model.branches.new", title: "New branch…", group: "Model",
       menu: "model/31", when: onBranch, run: () => newBranchPrompt() });
+  // Slice 1 could not register this: an argument-free delete would name the
+  // branch you are ON, which the server always refuses. Slice 2's picker is
+  // what makes the row honest, so it is gated on there BEING another branch
+  // (the current one and the default one are never deletable).
+  A({ id: "model.branches.delete", title: "Delete branch…", group: "Model",
+      menu: "model/32", danger: true,
+      when: (c) => !!c.branch && c.hasOtherBranches,
+      run: () => deleteBranchPrompt() });
   A({ id: "model.proposals", title: "Proposals…", group: "Model",
-      menu: "model/32", when: onBranch, run: () => proposals.open() });
+      menu: "model/33", when: onBranch, run: () => proposals.open() });
   A({ id: "model.configs", title: "Configurations…", group: "Model",
       menu: "model/40", when: hasPart,
       run: () => configs.open(state.selectedPart) });
@@ -2394,12 +2559,48 @@ function registerActions() {
   shortcuts.declare({ chord: "Delete", group: "While sketching",
                       title: "Delete the selected sketch entities" });
 
-  // FR3: the one view slice 1 can offer the registry (and, through it,
-  // `ui_open`). The claim dialog is deliberately NOT registered — it is a
-  // response to a 409, and nothing should be able to conjure one.
+  // FR3: the views this module owns. The claim dialog is deliberately NOT
+  // registered — it is a response to a 409, and nothing should be able to
+  // conjure one.
+  //
+  // A view is registered when opening it OUT OF CONTEXT is a coherent thing to
+  // ask for. `discard-edits` (a navigation guard whose "Discard" discards
+  // nothing on its own) and `import-part-id` (it names a file that has already
+  // been uploaded) are dialogs with a `view:` and no registry row for exactly
+  // that reason — a registry row with nothing behind it is a menu that lies.
   dialogs.register("shortcuts", () => openShortcutSheet(), {
     title: "Keyboard shortcuts",
     description: "Every chord this workbench binds, grouped by area",
+  });
+  dialogs.register("new-part", (args) => addPart(args), {
+    title: "New part…",
+    description: "Create a part in the current project",
+    when: (c) => !!c.projectName,
+  });
+  dialogs.register("delete-part", (args) => deletePart(
+    (args && args.part) || state.selectedPart), {
+    title: "Delete part…",
+    description: "Delete a part, its script and every assembly instance of it",
+    // Destructive: an agent may not conjure the confirm that leads to it.
+    agentOpenable: false,
+    when: (c) => !!c.selectedPart,
+  });
+  dialogs.register("new-project", (args) => newProjectPrompt(args), {
+    title: "New project…", description: "Create a project",
+  });
+  dialogs.register("open-project", (args) => openProjectPrompt(args), {
+    title: "Open project by path…",
+    description: "Open a project directory that is not in the list",
+  });
+  dialogs.register("new-branch", (args) => newBranchPrompt(args), {
+    title: "New branch…", description: "Branch the current project",
+    when: (c) => !!c.branch,
+  });
+  dialogs.register("delete-branch", (args) => deleteBranchPrompt(args), {
+    title: "Delete branch…",
+    description: "Delete a branch other than the current or default one",
+    agentOpenable: false,
+    when: (c) => !!c.branch && c.hasOtherBranches,
   });
 }
 

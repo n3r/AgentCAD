@@ -46,6 +46,28 @@ export function normalize(chord) {
   return [...MOD_ORDER.filter((m) => mods.has(m)), key].join("+");
 }
 
+/** `normalize` without the throw: the canonical spelling, or `null` when the
+ *  string is not a chord at all.
+ *
+ *  THIS IS THE MACHINE PATH. `normalize` is an AUTHOR-facing parser: it throws
+ *  on shapes only a human writing `shortcut: "…"` could get wrong (a bare
+ *  modifier, two keys, nothing at all), and throwing is right there — a bad
+ *  binding must fail the build. But `fromEvent` also produces chords, from
+ *  whatever the browser reports for a keystroke, and `Table.lookup` used to
+ *  hand ITS output straight back to the same throwing parser from inside an
+ *  untried document listener. Every key whose DOM name happens to parse badly
+ *  was then an uncaught exception on every press of it: `" "` (the space bar)
+ *  and `"Super"`/`"Hyper"` were the two found, and patching them one at a time
+ *  would only have kept finding more. A lookup miss is a lookup miss.
+ */
+export function canonical(chord) {
+  try {
+    return normalize(chord);
+  } catch {
+    return null;
+  }
+}
+
 /** `{mods: Set, key}` — the one parser `normalize` and `label` share, so a
  *  chord whose key is `+` survives both and not just the first. */
 function parseChord(chord) {
@@ -83,10 +105,26 @@ function parseChord(chord) {
 }
 
 function keyName(raw) {
+  // The DOM spells the space bar `" "`, and a lone space is exactly what a
+  // parser that trims and drops empty parts cannot survive: `fromEvent`
+  // returned the truthy string `" "`, `Table.lookup` handed it to `normalize`,
+  // and `parseChord` threw "empty shortcut chord" out of an untried document
+  // listener — on EVERY press of the space bar, anywhere in the app. The
+  // canonical spelling is `Space`, which `NAMED`, `MAC_KEYS` and `PC_KEYS`
+  // already knew; only this mapping was missing. (Same family as the `+`
+  // keystroke fixed in review round 1.)
+  if (raw === " ") return "Space";
   if (raw.length === 1) return raw.toUpperCase();
   const named = NAMED[raw.toLowerCase()];
   return named || raw;
 }
+
+const MODIFIER_KEYS = new Set([
+  "Alt", "AltGraph", "CapsLock", "Control", "Fn", "FnLock", "Hyper", "Meta",
+  "NumLock", "OS", "ScrollLock", "Shift", "Super", "Symbol", "SymbolLock",
+  // Not a modifier, but never a chord either: a dead key is half of one.
+  "Dead", "Process", "Unidentified",
+]);
 
 /** The chord a keydown event names, or null for a bare modifier press.
  *
@@ -97,11 +135,10 @@ function keyName(raw) {
  */
 export function fromEvent(event, platform) {
   const key = event && event.key;
-  if (!key || key === "Shift" || key === "Control" || key === "Alt"
-      || key === "Meta" || key === "OS" || key === "Dead"
-      || key === "AltGraph") {
-    return null;
-  }
+  // Every UI Events "modifier key" value: pressing one alone is not a chord.
+  // `Super`/`Hyper` are here because `MODS` maps "super" to `Mod`, so without
+  // them the chord handed on was a bare modifier name.
+  if (!key || MODIFIER_KEYS.has(key)) return null;
   const mac = isMac(platform);
   const mods = [];
   if (mac ? event.metaKey : event.ctrlKey) mods.push("Mod");
@@ -192,7 +229,12 @@ export class Table {
 
   lookup(chord, scope = "global") {
     const byChord = this._index.get(scope);
-    return (byChord && byChord.get(normalize(chord))) || null;
+    if (!byChord) return null;
+    // `canonical`, never `normalize`: this is reached from the document
+    // keydown listener with whatever the browser called the key, and an
+    // unparseable one is a MISS, not an exception (see `canonical`).
+    const canon = canonical(chord);
+    return (canon && byChord.get(canon)) || null;
   }
 
   list() {
@@ -202,5 +244,5 @@ export class Table {
 
 // Test seam — the node round-trip imports this and nothing else.
 export const __shortcuts__ = {
-  normalize, fromEvent, label, Table, ShortcutConflictError,
+  normalize, canonical, fromEvent, label, Table, ShortcutConflictError,
 };

@@ -1482,8 +1482,8 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
    The first-party dialog primitive: `shell/dialogs_model.js` writes the
    markup, this styles it. Deliberately the SAME design language as
    `.modal-*` above (one panel, one hairline, one shadow) — a second dialog
-   look would read as a second app. It sits at z-index 90, above the seven
-   legacy `.modal-overlay`s (80) that slice 2 adopts, and below toasts (100),
+   look would read as a second app. It sits at z-index 90, above the eight
+   legacy `.modal-overlay`s (80) that slice 2 adopted, and below toasts (100),
    because a notice raised by a dialog has to stay visible over it. */
 
 .dlg-overlay {

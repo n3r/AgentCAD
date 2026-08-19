@@ -73,16 +73,16 @@ export function stack() {
 
 /** True while anything modal is up.
  *
- *  It ALSO answers true for a legacy `.modal-overlay` that has not been
- *  adopted yet — that is `main.js`'s old `modalOpen()` and it is still what
- *  suppresses bare-key shortcuts behind the seven hand-rolled modals. Slice 2
- *  adopts them onto `attachLegacy` and the DOM query below becomes dead
- *  weight; until then removing it would let `F`/`G`/`R` fire behind them.
+ *  The STACK is the whole answer. Slice 1 also ran a
+ *  `.modal-overlay:not(.hidden)` DOM query here — `main.js`'s old
+ *  `modalOpen()` — because the eight hand-rolled overlays were not on the
+ *  stack yet and `F`/`G`/`R` would have fired behind them. Slice 2 adopted all
+ *  eight through `attachLegacy`, so the query is gone: an overlay that is open
+ *  without a stack entry is now a BUG in its adopter, and a DOM fallback that
+ *  quietly covers for it is how that bug survives.
  */
 export function isModalOpen() {
-  if (stackEntries.some((e) => e.modal)) return true;
-  if (typeof document === "undefined") return false;
-  return document.querySelector(".modal-overlay:not(.hidden)") != null;
+  return stackEntries.some((e) => e.modal);
 }
 
 function top() {
@@ -196,6 +196,7 @@ export function prompt(opts) {
       patternMessage: o.patternMessage,
       required: o.required !== false,
       help: o.help,
+      rows: o.rows,
       min: o.min, max: o.max, step: o.step,
       validate: o.validate,
     }],
@@ -220,6 +221,32 @@ export function close(idOrHandle, result) {
   if (!entry) return false;
   finish(entry, result || { ok: false, values: readValues(entry), button: null });
   return true;
+}
+
+/** Close every MODAL on the stack, top first; returns how many closed.
+ *
+ *  `comments.showThread()` needs it: it reveals a thread in the inspector from
+ *  a row inside a modal that is COVERING the inspector, and it used to do that
+ *  by hiding the first `.modal-overlay:not(.hidden)` by hand — which, now that
+ *  those overlays are on the stack, would strand the entry (`isModalOpen()`
+ *  true forever, every global shortcut dead). Going through the stack runs the
+ *  overlay's own `close()` and pops it.
+ *
+ *  Non-modal panels are left alone: they are not covering anything, and a
+ *  "get this out of the way" verb that also swept away a floating tool result
+ *  would be taking a decision nobody asked for.
+ */
+export function closeModals() {
+  // Counted from the stack AFTER the fact, never from inside the loop: an
+  // adopter whose `onClose` early-returns closes nothing, and a return value
+  // that counted intentions rather than results would say otherwise.
+  const before = stackEntries.length;
+  for (const entry of [...stackEntries].reverse()) {
+    if (!entry.modal) continue;
+    if (entry.kind === "legacy") entry.close();
+    else finish(entry, { ok: false, values: readValues(entry), button: null });
+  }
+  return before - stackEntries.length;
 }
 
 /** Show a submit-time refusal INSIDE the dialog. `handle`, or a dialog id. */
@@ -312,6 +339,11 @@ export function attachLegacy(overlayEl, opts) {
       title: o.title || view,
       description: o.description || "",
       agentOpenable: o.agentOpenable !== false,
+      // Forwarded, not dropped: an adopted modal's precondition (a staged
+      // merge, a selected part) is the same `when` the palette's "Open: …"
+      // rows are filtered by, and without it every adopted view is offered
+      // unconditionally.
+      when: o.when,
     });
   }
   const handle = {
@@ -473,13 +505,24 @@ function finish(entry, result) {
 }
 
 function focusFirst(entry) {
+  // A DANGER dialog opens on its SAFE button — WITH fields or without. The
+  // destructive button is then one Tab (or one deliberate click) away and
+  // never one stray Enter away.
+  //
+  // "danger with no fields" used to be the condition, and `delete-branch` is
+  // the counter-example that shows why it was the wrong one: it is a danger
+  // dialog whose one field is a <select>, so focusing that field put a
+  // filled-in, submittable form under the Enter still travelling from the
+  // palette row that opened it — and its primary button deletes a branch and
+  // its working tree, irreversibly.
+  const safe = entry.el.querySelector("[data-btn]:not([data-submits])");
+  if (entry.spec.danger && safe) {
+    safe.focus();
+    return;
+  }
   const first = entry.fields.length ? controlOf(entry, entry.fields[0].name) : null;
-  // A DANGER dialog with nothing to fill in opens on its SAFE button: the
-  // destructive one is one Tab away and never one stray Enter away.
-  const preferred = entry.spec.danger
-    ? entry.el.querySelector("[data-btn]:not([data-submits])")
-    : entry.el.querySelector("[data-submits]");
-  const target = first || preferred || entry.el.querySelector("[data-btn]");
+  const target = first || entry.el.querySelector("[data-submits]")
+    || entry.el.querySelector("[data-btn]");
   if (target) target.focus();
 }
 
@@ -523,6 +566,22 @@ function onKeyDown(e) {
     return;
   }
   if (e.key === "Tab" && entry.modal) {
+    // An adopted modal can hold a live TEXT EDITOR: `#merge-modal`'s conflict
+    // resolver is a CodeMirror over Python part scripts, where Tab indents and
+    // indentation IS the block structure. This listener runs in the CAPTURE
+    // phase, so trapping here would `preventDefault` the keystroke before
+    // CodeMirror's own handler ever saw it — a regression created by adopting
+    // the overlay, since before adoption the stack was empty and this branch
+    // never ran.
+    //
+    // `input`/`textarea`/`select` are deliberately NOT exempt: they do not
+    // consume Tab, so for them the trap is the only thing keeping focus inside
+    // the dialog.
+    const t = e.target;
+    if (t && typeof t.closest === "function"
+        && t.closest(".CodeMirror, [contenteditable]")) {
+      return;
+    }
     const list = [...entry.dialogEl.querySelectorAll(FOCUSABLE)]
       .filter((el) => el.offsetParent !== null || el === document.activeElement);
     const next = model.focusables(list, list.indexOf(document.activeElement),

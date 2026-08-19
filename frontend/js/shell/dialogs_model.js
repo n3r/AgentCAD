@@ -232,9 +232,15 @@ function validateOne(field, raw, all) {
     if (!Number.isFinite(num)) return "Must be a number";
     if (field.min != null && num < field.min) return `Must be at least ${field.min}`;
     if (field.max != null && num > field.max) return `Must be at most ${field.max}`;
-    if (field.step) {
+    // A NUMERIC step only. `step: "any"` is the HTML spelling of "free
+    // decimal" (a millimetre field wants it, or the browser's spinner snaps to
+    // whole numbers), and it used to reach the arithmetic below and pass by
+    // accident: `(num - base) / "any"` is NaN, `Math.abs(NaN - NaN) > 1e-9` is
+    // false. Right answer, no reason — so the reason is written down instead.
+    const step = Number(field.step);
+    if (Number.isFinite(step) && step > 0) {
       const base = field.min != null ? field.min : 0;
-      const steps = (num - base) / field.step;
+      const steps = (num - base) / step;
       if (Math.abs(steps - Math.round(steps)) > 1e-9) {
         return `Must be a multiple of ${field.step}`;
       }

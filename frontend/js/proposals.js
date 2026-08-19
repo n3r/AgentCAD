@@ -25,6 +25,7 @@ import { relTime } from "./versions.js";
 import * as merge from "./merge.js";
 import * as viewport from "./viewport.js";
 import * as comments from "./comments.js";
+import * as dialogs from "./shell/dialogs.js";
 
 const STATES = [
   "draft", "open", "approved", "changes_requested", "merged", "closed",
@@ -48,6 +49,7 @@ const TABS = [
 ];
 
 let actions = null;
+let legacy = null;      // the overlay's seat on the shell's dialog stack
 let overlayEl, titleEl, listEl, detailEl, newBtn, closeBtn;
 let countEl, buttonEl, legendEl, legendPartEl, legendClearBtn;
 
@@ -78,17 +80,31 @@ export function init(a) {
   legendClearBtn = document.getElementById("diff-legend-clear");
 
   closeBtn.addEventListener("click", close);
-  newBtn.addEventListener("click", () => {
-    selectedId = null;
-    detail = null;
-    renderList();
-    renderCreate();
-  });
+  newBtn.addEventListener("click", () => showCreate());
   overlayEl.addEventListener("click", (e) => {
     if (e.target === overlayEl) close();
   });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && isOpen()) close();
+  // PRD-026 FR2: Esc belongs to the shell's overlay stack, not to this module.
+  legacy = dialogs.attachLegacy(overlayEl, {
+    view: "proposals", title: "Proposals…", isOpen, onClose: close,
+    description: "Review proposals on this project",
+    open: (args) => (args && args.id != null
+      ? openTo(args.id, args.tab)
+      : open()),
+    when: (c) => !!c.branch,
+  });
+  dialogs.register("new-proposal", async () => {
+    await open();
+    if (isOpen()) showCreate();
+  }, {
+    title: "New proposal…",
+    description: "Propose this branch's changes for review",
+    when: (c) => !!c.branch,
+  });
+  dialogs.register("edit-proposal", () => editPrompt(), {
+    title: "Edit proposal…",
+    description: "Change the open proposal's title and description",
+    when: () => isOpen() && !!detail,
   });
   legendClearBtn.addEventListener("click", clearOverlay);
   // The overlay describes one part: clearContent() already dropped the meshes
@@ -116,6 +132,7 @@ export async function open() {
     return;
   }
   overlayEl.classList.remove("hidden");
+  if (legacy) legacy.notifyOpen();
   titleEl.textContent = `${state.projectName} · proposals`;
   renderDetailMessage("Select a proposal.");
   await refresh();
@@ -132,6 +149,7 @@ export async function openTo(id, tab) {
     return;
   }
   overlayEl.classList.remove("hidden");
+  if (legacy) legacy.notifyOpen();
   titleEl.textContent = `${state.projectName} · proposals`;
   await refresh();
   await loadDetail(String(id));
@@ -145,8 +163,19 @@ export async function openTo(id, tab) {
 
 function close() {
   overlayEl.classList.add("hidden");
+  if (legacy) legacy.notifyClose();   // idempotent: Esc pops the stack itself
   listEl.textContent = "";
   detailEl.textContent = "";
+}
+
+/** The "New proposal…" button: clear the selection and show the create pane.
+ *  Named because `new-proposal` is a registered view and both call sites must
+ *  land on exactly the same pane. */
+function showCreate() {
+  selectedId = null;
+  detail = null;
+  renderList();
+  renderCreate();
 }
 
 // ------------------------------------------------------------- the badge
@@ -1031,9 +1060,19 @@ async function review(verdict) {
   if (busy || !detail) return;
   let summary = null;
   if (verdict !== "approve") {
-    summary = prompt(
-      verdict === "comment" ? "Comment:" : "What needs to change?"
-    );
+    summary = await dialogs.prompt({
+      view: "review-summary",
+      title: verdict === "comment" ? "Comment" : "Request changes",
+      label: verdict === "comment" ? "Comment" : "What needs to change?",
+      type: "textarea",
+      rows: 5,
+      // A review with nothing in it is a review nobody can act on, but the
+      // native prompt accepted one, so the field stays optional and only the
+      // cancel path (null) backs out.
+      required: false,
+      help: "⌘/Ctrl + Enter submits.",
+      okLabel: verdict === "comment" ? "Comment" : "Request changes",
+    });
     if (summary === null) return;
   }
   busy = true;
@@ -1067,10 +1106,22 @@ async function setProposalState(next) {
 async function editPrompt() {
   if (busy || !detail) return;
   const proposal = detail.proposal || {};
-  const title = prompt("Title:", proposal.title || "");
-  if (title === null) return;
-  const description = prompt("Description:", proposal.description || "");
-  if (description === null) return;
+  // One form where there were two prompts: the description is written against
+  // the title, and the native pair showed one at a time.
+  const values = await dialogs.form({
+    view: "edit-proposal",
+    title: `Edit proposal #${selectedId}`,
+    fields: [
+      { name: "title", label: "Title", required: true,
+        value: proposal.title || "" },
+      { name: "description", label: "Description", type: "textarea", rows: 6,
+        value: proposal.description || "" },
+    ],
+    buttons: [{ id: "cancel", label: "Cancel" },
+              { id: "save", label: "Save", kind: "primary", submits: true }],
+  });
+  if (!values) return;
+  const { title, description } = values;
   busy = true;
   try {
     await api.updateProposal(state.projectName, selectedId, { title, description });

@@ -24,6 +24,7 @@
 import { api } from "./api.js";
 import { state, onKeys } from "./state.js";
 import * as editor from "./editor.js";
+import * as dialogs from "./shell/dialogs.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const SNAP_PX = 10; // screen px within which a click reuses an existing point
@@ -631,7 +632,32 @@ function deleteSelection() {
 
 // ------------------------------------------------------------ constraints
 
-function applyConstraint(name) {
+/** The sketcher's one numeric dialog (PRD-026 FR2, spec §1.4).
+ *
+ *  The sketcher's own key handling is untouched: the dialog is MODAL, so
+ *  `onKey`'s layered Escape and the Delete binding cannot fire while it is up.
+ *  `dialogs.prompt` resolves a STRING even for `type: "number"` (spec §1.1),
+ *  so every caller coerces here, once.
+ */
+async function askNumber(label, value, opts) {
+  const o = opts || {};
+  const answer = await dialogs.prompt({
+    view: "sketch-number",
+    title: o.title || label,
+    label,
+    type: "number",
+    value: value == null ? "" : String(value),
+    required: o.required !== false,
+    min: o.min,
+    step: "any",
+    help: o.help,
+  });
+  if (answer == null) return null;                 // cancelled
+  if (answer === "") return "";                    // deliberately left blank
+  return Number(answer);
+}
+
+async function applyConstraint(name) {
   if (readOnly) return;
   const pts = selectedOf("point", "handle");
   const lns = selectedOf("line");
@@ -652,8 +678,9 @@ function applyConstraint(name) {
   } else if (name === "distance" && pts.length === 2) {
     const a = refCoords(pts[0]);
     const b = refCoords(pts[1]);
-    const d = parseFloat(prompt("Distance (mm):",
-                                fmtVal(Math.hypot(a.x - b.x, a.y - b.y))));
+    const d = await askNumber("Distance (mm)",
+                             fmtVal(Math.hypot(a.x - b.x, a.y - b.y)),
+                             { min: 0 });
     if (!Number.isFinite(d) || d < 0) return;
     model.constraints.push({ type: "distance", p: pts[0], q: pts[1], d });
   } else if (name === "horizontal" && lns.length === 1) {
@@ -666,17 +693,30 @@ function applyConstraint(name) {
     model.constraints.push({ type: "perpendicular", l1: lns[0], l2: lns[1] });
   } else if (name === "radius" && crv.length === 1) {
     const c = curveOf(crv[0]);
-    const r = parseFloat(prompt("Radius (mm):", fmtVal(c.r)));
+    const r = await askNumber("Radius (mm)", fmtVal(c.r), { min: 0 });
     if (!Number.isFinite(r) || r <= 0) return;
     model.constraints.push({ type: "radius", c: crv[0], r });
   } else if (name === "radius" && ell.length === 1) {
     // Two semi-axes, two constraints on the two scalar handles `e1.a`/`e1.b`.
     // Either prompt may be cancelled or left blank to pin only the other one.
     const e = ellipseOf(ell[0]);
-    const a = parseFloat(prompt("Semi-axis a (mm), blank to leave free:",
-                                fmtVal(e.a)));
-    const b = parseFloat(prompt("Semi-axis b (mm), blank to leave free:",
-                                fmtVal(e.b)));
+    // One form, two optional fields: the two semi-axes are one decision, and
+    // a blank field still means "leave this one free".
+    const values = await dialogs.form({
+      view: "sketch-number",
+      title: "Ellipse radii",
+      width: "narrow",
+      body: "Leave a field blank to leave that semi-axis free.",
+      fields: [
+        { name: "a", label: "Semi-axis a (mm)", type: "number", min: 0,
+          step: "any", required: false, value: fmtVal(e.a) },
+        { name: "b", label: "Semi-axis b (mm)", type: "number", min: 0,
+          step: "any", required: false, value: fmtVal(e.b) },
+      ],
+    });
+    if (!values) return;
+    const a = values.a === "" ? NaN : Number(values.a);
+    const b = values.b === "" ? NaN : Number(values.b);
     if (!Number.isFinite(a) && !Number.isFinite(b)) return;
     if (Number.isFinite(a) && a > 0) {
       model.constraints.push({ type: "radius", c: `${ell[0]}.a`, r: a });
@@ -1095,7 +1135,7 @@ function finishSpline() {
   renderPreview();
 }
 
-function slotClick(x, y) {
+async function slotClick(x, y) {
   let ref = nearRef(x, y);
   if (!ref || ref.includes(".")) ref = addPoint(x, y);
   if (!pending || pending.kind !== "slot") {
@@ -1107,10 +1147,10 @@ function slotClick(x, y) {
   const c1 = refCoords(pending.c1);
   const c2 = refCoords(ref);
   const len = Math.hypot(c2.x - c1.x, c2.y - c1.y);
-  const width = parseFloat(prompt("Slot width (mm):",
-                                  fmtVal(Math.max(2, len * 0.4))));
   const c1Ref = pending.c1;
   pending = null;
+  const width = await askNumber("Slot width (mm)",
+                                fmtVal(Math.max(2, len * 0.4)), { min: 0 });
   if (!Number.isFinite(width) || width <= 0) {
     render();
     return;
