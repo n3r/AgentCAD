@@ -53,9 +53,12 @@ node-importable and the pure halves are unit-tested from pytest.
   Esc listener whose owner is the topmost **modal** (or a non-modal holding
   focus — `escOwner`, pure), focus trap + restore, backdrop cancel, the view
   registry (`register`/`views`/`openView(view, args, {by})` with the "opened
-  by agent" attribution chip), `attachLegacy(overlayEl, …)` for the seven
-  hand-rolled modals (its Esc path always `notifyClose()`s so an adopter can
-  never strand the stack), `setEmitter` (no-op until slice 3).
+  by agent" attribution chip), `attachLegacy(overlayEl, …)` for the
+  hand-rolled modals — nine of them once slice 2 has adopted them all
+  (drawing, versions, share, merge, proposals, library, configs,
+  notifications, and `materials`, which arrived with PRD-028 in the
+  `origin/main` merge); its Esc path always `notifyClose()`s, so an adopter can
+  never strand the stack. Plus `setEmitter` (no-op until slice 3).
   `isModalOpen()` also answers true for a `.modal-overlay:not(.hidden)` until
   slice 2 adopts the legacy modals.
 - **`shell/toast.js`** — `toast(message, kind, {id, timeout, action})`,

@@ -92,8 +92,13 @@ export function markup(t) {
 }
 
 function menuWrapHtml(m) {
-  const btnId = `menubar-${m.menu}-btn`;
-  const menuId = `menubar-${m.menu}-menu`;
+  // `m.menu` reaches an `id=` attribute that `aria-controls`/`aria-labelledby`
+  // point at, so it goes through the same escape as everything else here —
+  // `tree()` sources it from the fixed `MENU_ORDER` today, but "unreachable"
+  // is not the same as "escaped", and this file's contract is that every
+  // interpolation is escaped.
+  const btnId = escapeHtml(`menubar-${m.menu}-btn`);
+  const menuId = escapeHtml(`menubar-${m.menu}-menu`);
   return (
     `<div class="menu-wrap" data-menu="${escapeHtml(m.menu)}">`
     + `<button type="button" class="tb-btn" role="menuitem" id="${btnId}" `

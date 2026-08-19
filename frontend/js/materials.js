@@ -102,6 +102,9 @@ export function init(a) {
     description: "Browse the materials database (filters, compare, detail)",
     open: () => open(),
     when: (c) => !!c.projectName,
+    // The action row that already offers this modal, so the palette shows one
+    // row for it and not two (m4).
+    actionId: "model.materials",
   });
 
   for (const input of Object.values(filterInputs)) {

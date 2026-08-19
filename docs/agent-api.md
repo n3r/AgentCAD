@@ -1512,7 +1512,11 @@ Three things to read it correctly:
   second), so a burst of ten is fine and a loop is not.
 
 **Event.** `ui_open {view, args, by: "agent"}` — the shell opens the named
-view; anything else ignores it.
+view; anything else ignores it. The tool call succeeding means the event was
+*published*, not that a view opened: the browser refuses with a toast when the
+view is unknown, when it is not agent-openable, or when the view's own
+precondition is false right now (no project open, no part selected, no staged
+merge) — a `when` that gates the palette row gates the door too.
 
 **Events from the browser.** `POST /api/ui/events` is the other direction: the
 shell posts fire-and-forget UX telemetry and the server re-publishes it on the

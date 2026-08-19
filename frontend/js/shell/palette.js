@@ -148,7 +148,10 @@ function collect() {
       : row));
   return [
     ...actionRows,
-    ...model.entriesFromViews(deps.dialogs.views(ctx)),
+    // The action rows are passed in so a view that an action already offers
+    // does not appear twice (m4).
+    ...model.entriesFromViews(deps.dialogs.views(ctx),
+                              new Set(actionRows.map((r) => r.action))),
     ...model.entriesFromState({
       projects: deps.state.projects,
       parts: deps.state.project ? deps.state.project.parts : [],
@@ -383,7 +386,12 @@ function execute(row, withOptions) {
     return;
   }
   if (row.view) {
-    deps.dialogs.openView(row.view, {}, { by: "user" });
+    // Same reasoning as the tool path above: `openView` is async and nobody
+    // awaits it, so a throwing opener needs a catch of its own.
+    deps.dialogs.openView(row.view, {}, { by: "user" }).catch((err) => {
+      deps.toast(`${row.title}: ${err && err.message ? err.message : err}`,
+                 "error");
+    });
   } else if (row.nav && row.nav.kind === "project" && deps.loadProject) {
     deps.loadProject(row.nav.name);
   } else if (row.nav && row.nav.kind === "part" && deps.selectPart) {

@@ -1554,6 +1554,10 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   border-radius: 4px;
   padding: 1px 6px;
 }
+/* The same chip inside an ADOPTED legacy overlay's `.modal-head` (I4): the nine
+   `attachLegacy` views do not go through `dialogs.open()`, so `notifyOpen()`
+   inserts this node itself. Tokens above, placement here. */
+.modal-head .dlg-attribution { align-self: center; margin-left: 8px; }
 
 .dlg-body {
   flex: 1;

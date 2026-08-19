@@ -189,14 +189,77 @@ corrected FR2 site count, a "Shipped vs. deferred" section, and an
   the brief ("edit-only on existing files", "no subagents").
 - `make test`:
 
-`make test` — **4826 passed, 44 skipped** (the run reported `4 failed, 4822 passed`: `test_checks_pipeline` asserts a clean tree while this slice was uncommitted, `test_checks_cli`'s 1 ms `--budget` race and the two `test_supervisor` memory-kill tests lost to a machine at load average 14–51 running concurrent suites — all four pass in isolation or on a clean tree; CI is authoritative). A final live-browser pass (Playwright + installed Chrome) verified AC4's drag/reload/toggle persistence and AC6's focus trap/restore end to end: 12/12 checks, zero page errors.
+`make test` on the **merged tree** (this branch after `origin/main` = PRD-024 + PRD-028) — **5286 passed, 48 skipped** (the run reported `3 failed, 5283 passed`: all three were environmental — stray gitignored `.history`/`.cache` dirs inside `examples/*` left by a prior session gave the copied example a git head (sha+dirty) and their git calls consumed the 1 ms `--budget` before stage 1; after removing the derived dirs both checks tests pass, and `test_sketch_drag`'s timing assertion passed on re-run; the final fix-wave count is below). The pre-merge run this entry originally cited (4826 passed, 44 skipped) described a tree that no longer exists — the merged-tree count is the one AC7's evidence rests on, following the PRD-014 precedent (`f8638bc`, "note the merged-tree count in 0267"). A final live-browser pass (Playwright + installed Chrome) verified AC4's drag/reload/toggle persistence and AC6's focus trap/restore end to end: 12/12 checks, zero page errors.
+
+`make test` after the final fix wave — **5303 passed, 48 skipped** (fully green, no exclusions).
+
+- **Merge note** (`90f17ef`, `origin/main` → this branch; the merge commit
+  itself carried no changelog entry, and this paragraph is it). The merge
+  brought in PRD-024 and PRD-028 and changed behaviour in three ways worth
+  recording: `frontend/js/materials.js` **adopted the dialog stack**
+  (`dialogs.attachLegacy` with `view: "materials"`, its own document `keydown`
+  Escape listener deleted), so PRD-028's materials browser is the **ninth**
+  `.modal-overlay` under the shell's contract — one stack, one Esc owner, one
+  focus trap — and `materials.init(actions)` became `materials.init(panelApi)`
+  for the PRD-026 DI rename; this branch's changelog entries were **renumbered
+  0270-0275 → 0295-0300** to clear the collision with `origin/main`'s
+  PRD-024/028 entries (0270-0294), and no reference to the old numbers survives
+  in tracked files; and `.gitignore` gained `.superpowers/`, which keeps the SDD
+  scratch tree from tripping `test_checks_pipeline`'s clean-tree assertion.
+  This entry also covers commit **`4a8bc7c`** (the design spec, the slice plan
+  and the `git mv` of the PRD), which predates the 0295-0300 series and shipped
+  without an entry of its own — docs-only, and the spec is itself the artifact,
+  but CLAUDE.md's rule is unqualified, so it is accounted for here.
 
 - Focused runs from this session:
   `uv run pytest tests/test_prd026_acceptance.py tests/test_frontend_shell.py -q`
-  → **238 passed** (14 new + the 224 already shipped by slices 1–5);
+  → **238 passed** (14 new + the 224 already shipped by slices 1–5); the final
+  fix wave took the same two files to **255 passed** (17 more tests: the
+  sketcher's modal guard, the overlay-adoption closure, `openView`'s `when`,
+  the legacy attribution chip (and a regression test that the shell dialog's
+  own chip survived the `pendingAttribution` narrowing), the Tab trap's owner
+  and four hostile-input interpolation probes);
   `uv run pytest tests/test_prd031a_acceptance.py tests/test_prd012_acceptance.py -q`
   → **29 passed**; `uv run pytest tests/test_tools_ui.py tests/test_routes_ui.py
   tests/test_hosted_surface.py -q` → **69 passed**.
+- **Final fix wave** (the whole-branch review's five Importants, its six
+  Minors and the second verifier's D1/D2), all in this branch's own files:
+  - `frontend/js/sketcher.js` — `onKey` returns early on
+    `dialogs.isModalOpen()`. Delete/Backspace propagate freely (only Escape is
+    swallowed by the stack), and a dialog `<button>` is not an `input`, so
+    Backspace aimed at Cancel ran `deleteSelection()` and destroyed the sketch
+    selection behind the dialog. The `askNumber` docstring that claimed this
+    was already impossible now says which line makes it true.
+  - `frontend/js/shell/dialogs.js` — `setContext(fn)` (injected from `boot()`
+    as `actions.context`; importing `actions.js` would be a cycle) and
+    `openView` refusing `{ok: false, reason: "not_available"}` when the view's
+    own `when` is false: `ui_open {view: "merge"}` on a clean branch used to
+    run `openPicker()`, which *starts* a merge. `attachLegacy.notifyOpen()`
+    now stamps `data-agent-opened` and an "opened by agent" chip into the
+    overlay's `.modal-head`, so the attribution this file, the user guide and
+    `agent-api.md` all promise exists for the nine adopted legacy views too;
+    `pendingAttribution` is cleared as soon as the opener yields (it used to
+    stay live across `materials.open()`'s catalog fetch, stamping whatever
+    unrelated dialog opened next), and the Tab trap belongs to the topmost
+    **modal** (`trapOwner`, mirroring `escOwner`) rather than to `top()`.
+  - `frontend/js/shell/dialogs_model.js` / `menu_model.js` — the four
+    interpolations the second verifier found raw: a button's `id` and `uid`
+    through a new `idToken` (an escaped id is no longer an id), a button's
+    `kind` through a three-value whitelist, the menu name through
+    `escapeHtml`. Latent (every value in the tree is a source literal), but
+    this is the primitive other PRDs compose and the docstring claimed it
+    already.
+  - `main.js` + `frontend/index.html` — the dead `#claim-modal` markup is
+    deleted (slice 2 replaced it with `dialogs.open()`); `model.materials`
+    (`menu: "model/22"`, `when: hasProject`) puts PRD-028's browser on the
+    menu bar and in the palette's *action* section, with `#materials-btn`
+    routed through `actions.run` like every other toolbar button
+    (`panelApi.openMaterials` and the `#materials` deep link untouched); and
+    both fire-and-forget `openView` sites (`case "ui_open"`, `palette.js`'s
+    view row) now `.catch` into a toast.
+  - `palette_model.entriesFromViews(views, shownActionIds)` + an `actionId` on
+    the six adopted modals that have an action row — one palette row per verb
+    instead of an action row and a near-identically titled "Open: …" row.
 - PRD-026 does not claim "done" in this entry — Status stays
   `in progress — acceptance` until the controller's own review/merge pass;
   see the PRD's Acceptance record for exactly which halves of AC1/AC4/AC6/AC7

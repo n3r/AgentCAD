@@ -129,6 +129,7 @@ export function init(a) {
     open: (args) => previewSvg((args && args.project) || state.projectName,
                                (args && args.part) || state.selectedPart),
     when: (c) => !!c.selectedPart,
+    actionId: "model.drawing",   // one palette row, not two (m4)
   });
 }
 

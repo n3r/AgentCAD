@@ -264,11 +264,21 @@ export function entriesFromActions(list) {
   return out;
 }
 
-/** `dialogs.views(ctx)` as "Open: …" rows (section `navigation`). */
-export function entriesFromViews(views) {
+/** `dialogs.views(ctx)` as "Open: …" rows (section `navigation`).
+ *
+ *  `shownActionIds` is the set of action ids the palette is ALREADY showing: a
+ *  view whose `actionId` is in it is dropped, because "Parts library…" (the
+ *  action) and "Open: Parts library" (the view) are the same verb under two
+ *  near-identical titles. The action row wins — it is the one that carries the
+ *  group, the keywords and the shortcut label. */
+export function entriesFromViews(views, shownActionIds) {
   const out = [];
+  const taken = shownActionIds instanceof Set
+    ? shownActionIds
+    : new Set(Array.isArray(shownActionIds) ? shownActionIds : []);
   for (const view of Array.isArray(views) ? views : []) {
     if (!view || typeof view.view !== "string") continue;
+    if (view.actionId && taken.has(view.actionId)) continue;
     out.push({
       id: `view:${view.view}`,
       section: "navigation",

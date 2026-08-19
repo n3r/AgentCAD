@@ -54,6 +54,7 @@ export function init(a) {
     description: "Search the installed packages for a part to use",
     open: () => open(),
     when: (c) => !!c.projectName,
+    actionId: "model.library",   // one palette row, not two (m4)
   });
   searchEl.addEventListener("input", () => {
     clearTimeout(searchTimer);

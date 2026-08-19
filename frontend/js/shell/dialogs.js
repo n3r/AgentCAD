@@ -30,11 +30,25 @@ let host = null;
 let installed = false;
 let seq = 0;
 let emitter = () => {};
-// Set for the duration of ONE `openView` call and consumed by the first
-// `open()` the opener performs — an opener that awaits before opening loses
-// the chip, which is the honest failure (we cannot prove which dialog the
-// agent's request produced).
+// The eligibility context `openView` checks a view's `when` against. Injected
+// (`setContext`, from `boot()`) rather than imported: `actions.js` imports THIS
+// module, so importing it back would be a cycle. Default `{}` is the honest
+// answer for a shell nobody wired — every `when` that reads a project/part is
+// then false, and `openView` refuses rather than guessing.
+let contextFor = () => ({});
+// Set for the SYNCHRONOUS prefix of ONE `openView` call and consumed by the
+// first `open()` the opener performs — an opener that awaits before opening
+// loses the chip, which is the honest failure (we cannot prove which dialog the
+// agent's request produced). Cleared as soon as the opener yields, so an
+// unrelated `dialogs.open()` during a slow opener's network round trip is never
+// falsely stamped "opened by agent".
 let pendingAttribution = null;
+// The view an agent is CURRENTLY opening, live across the whole (possibly
+// awaited) opener call. Adopted legacy modals need this rather than
+// `pendingAttribution`: they do not go through `open()`, and their `notifyOpen`
+// can land after an await (`materials.open()` fetches the catalog). Keyed by
+// view name, so a concurrent open of a DIFFERENT view is not stamped either.
+let agentOpeningView = null;
 
 const stackEntries = [];      // bottom … top
 const registry = new Map();   // view -> {opener, meta}
@@ -62,6 +76,12 @@ export function setEmitter(fn) {
   emitter = typeof fn === "function" ? fn : () => {};
 }
 
+/** Supply the eligibility context `openView` tests a view's `when` against
+ *  (`boot()` passes `actions.context`). Reset with no argument. */
+export function setContext(fn) {
+  contextFor = typeof fn === "function" ? fn : () => ({});
+}
+
 // ------------------------------------------------------------------ the stack
 
 /** The open overlays, bottom first. A copy: nobody mutates the stack but us. */
@@ -75,9 +95,10 @@ export function stack() {
  *
  *  The STACK is the whole answer. Slice 1 also ran a
  *  `.modal-overlay:not(.hidden)` DOM query here — `main.js`'s old
- *  `modalOpen()` — because the eight hand-rolled overlays were not on the
+ *  `modalOpen()` — because the hand-rolled overlays were not on the
  *  stack yet and `F`/`G`/`R` would have fired behind them. Slice 2 adopted all
- *  eight through `attachLegacy`, so the query is gone: an overlay that is open
+ *  of them through `attachLegacy` (eight then; `materials` made NINE when
+ *  PRD-028 merged), so the query is gone: an overlay that is open
  *  without a stack entry is now a BUG in its adopter, and a DOM fallback that
  *  quietly covers for it is how that bug survives.
  */
@@ -290,6 +311,10 @@ export function views(ctx) {
       title: entry.meta.title || view,
       description: entry.meta.description || "",
       agentOpenable: entry.meta.agentOpenable !== false,
+      // The action row that opens this same view, when there is one. The
+      // palette suppresses the "Open: …" row in that case: the two rows ran the
+      // same opener under near-identical titles (m4).
+      actionId: entry.meta.actionId || null,
     });
   }
   return out;
@@ -300,6 +325,12 @@ export function views(ctx) {
  *  An unknown view is refused in the open, not swallowed: the agent asked for
  *  something this shell does not have and the user is the one who can tell
  *  whether that matters.
+ *
+ *  The view's own `when` is a PRECONDITION, not a display filter: `views(ctx)`
+ *  uses it to decide which "Open: …" rows the palette shows, and if the door
+ *  did not check it too, `ui_open {view: "merge"}` on a clean branch would run
+ *  `openPicker()` and start a NEW merge — which is not what "open the merge
+ *  view" means. Refused the same way an unknown view is.
  */
 export async function openView(view, args, opts) {
   const by = (opts && opts.by) || "user";
@@ -313,12 +344,32 @@ export async function openView(view, args, opts) {
     toast(`“${view}” cannot be opened by an agent`, "error");
     return { ok: false, reason: "not_agent_openable", view };
   }
-  pendingAttribution = by === "agent" ? "opened by agent" : null;
+  if (entry.meta.when && !entry.meta.when(contextFor())) {
+    toast(`“${view}” is not available right now`, "error");
+    return { ok: false, reason: "not_available", view };
+  }
+  const attribution = by === "agent" ? "opened by agent" : null;
+  pendingAttribution = attribution;
+  agentOpeningView = attribution ? view : null;
+  let pending;
   try {
-    const result = await entry.opener(args || {});
-    return { ok: true, view, result };
+    // The opener is STARTED inside this try and awaited outside it, so
+    // `pendingAttribution` is cleared the moment the opener yields rather than
+    // when it finally resolves. A legacy opener awaits a network round trip
+    // (`materials.open()` fetches ~0.5 MB of catalog); leaving the slot set
+    // across that window stamped whatever unrelated dialog opened next.
+    pending = entry.opener(args || {});
+  } catch (err) {
+    agentOpeningView = null;   // a synchronous throw must not leave it live
+    throw err;
   } finally {
     pendingAttribution = null;
+  }
+  try {
+    const result = await pending;
+    return { ok: true, view, result };
+  } finally {
+    agentOpeningView = null;
   }
 }
 
@@ -339,6 +390,8 @@ export function attachLegacy(overlayEl, opts) {
       title: o.title || view,
       description: o.description || "",
       agentOpenable: o.agentOpenable !== false,
+      // The action row that already offers this modal, if any (m4).
+      actionId: o.actionId || null,
       // Forwarded, not dropped: an adopted modal's precondition (a staged
       // merge, a selected part) is the same `when` the palette's "Open: …"
       // rows are filtered by, and without it every adopted view is offered
@@ -368,6 +421,11 @@ export function attachLegacy(overlayEl, opts) {
         },
       };
       push(entry);
+      // Same visible attribution a shell dialog gets from `open()`'s
+      // `pendingAttribution` — the user guide, `agent-api.md` and the PRD's
+      // `ui_open` abuse mitigation all promise it, and for the nine adopted
+      // legacy views it did not exist until this line.
+      stampAgentOpened(overlayEl, view);
       emit({ type: "dialog_opened", view });
       return handle;
     },
@@ -375,6 +433,7 @@ export function attachLegacy(overlayEl, opts) {
       if (!entry) return handle;
       const done = entry;
       entry = null;
+      unstampAgentOpened(overlayEl);
       drop(done);
       return handle;
     },
@@ -386,6 +445,30 @@ export function attachLegacy(overlayEl, opts) {
   };
   if (o.isOpen && o.isOpen()) handle.notifyOpen();
   return handle;
+}
+
+/** Mark an adopted overlay as agent-opened — attribute (for tests and CSS) plus
+ *  a chip in its `.modal-head`, reusing `.dlg-attribution`'s tokens. A no-op
+ *  unless the open we are inside is THIS view's agent open. */
+function stampAgentOpened(overlayEl, view) {
+  if (agentOpeningView !== view || !overlayEl) return;
+  overlayEl.setAttribute("data-agent-opened", "1");
+  const head = overlayEl.querySelector(".modal-head");
+  if (!head || head.querySelector(".dlg-attribution")) return;
+  const chip = document.createElement("span");
+  chip.className = "dlg-attribution";
+  chip.textContent = "opened by agent";
+  // Before the button cluster: the chip belongs to the title, not the actions.
+  const actionsEl = head.querySelector(".modal-actions");
+  if (actionsEl) head.insertBefore(chip, actionsEl);
+  else head.appendChild(chip);
+}
+
+function unstampAgentOpened(overlayEl) {
+  if (!overlayEl || typeof overlayEl.removeAttribute !== "function") return;
+  overlayEl.removeAttribute("data-agent-opened");
+  const chip = overlayEl.querySelector(".modal-head .dlg-attribution");
+  if (chip) chip.remove();
 }
 
 // --------------------------------------------------------------------- wiring
@@ -547,6 +630,17 @@ export function escOwner(entries, isFocusInside) {
   return null;
 }
 
+/** Which stack entry owns the Tab focus trap: the topmost MODAL, whatever is
+ *  above it. Same shape as `escOwner` and for the same reason — slice 3's
+ *  non-modal tool-result panel can sit ON TOP of a modal, and a trap that read
+ *  `top()` simply stopped trapping, letting Tab walk out of the modal. */
+export function trapOwner(entries) {
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    if (entries[i].modal) return entries[i];
+  }
+  return null;
+}
+
 function onKeyDown(e) {
   const entry = top();
   if (!entry) return;
@@ -565,7 +659,9 @@ function onKeyDown(e) {
     else finish(owner, { ok: false, values: readValues(owner), button: null });
     return;
   }
-  if (e.key === "Tab" && entry.modal) {
+  if (e.key === "Tab") {
+    // The topmost MODAL owns the trap, even with a non-modal panel above it.
+    //
     // An adopted modal can hold a live TEXT EDITOR: `#merge-modal`'s conflict
     // resolver is a CodeMirror over Python part scripts, where Tab indents and
     // indentation IS the block structure. This listener runs in the CAPTURE
@@ -577,12 +673,14 @@ function onKeyDown(e) {
     // `input`/`textarea`/`select` are deliberately NOT exempt: they do not
     // consume Tab, so for them the trap is the only thing keeping focus inside
     // the dialog.
+    const owner = trapOwner(stackEntries);
+    if (!owner) return;
     const t = e.target;
     if (t && typeof t.closest === "function"
         && t.closest(".CodeMirror, [contenteditable]")) {
       return;
     }
-    const list = [...entry.dialogEl.querySelectorAll(FOCUSABLE)]
+    const list = [...owner.dialogEl.querySelectorAll(FOCUSABLE)]
       .filter((el) => el.offsetParent !== null || el === document.activeElement);
     const next = model.focusables(list, list.indexOf(document.activeElement),
                                   e.shiftKey);
@@ -605,4 +703,4 @@ function onKeyDown(e) {
 
 // Test seam — the node round-trip drives the shipped listener rather than a
 // copy of it (the `shortcuts.__shortcutsDispatch__` precedent).
-export const __dialogsDispatch__ = { onKeyDown, escOwner };
+export const __dialogsDispatch__ = { onKeyDown, escOwner, trapOwner };

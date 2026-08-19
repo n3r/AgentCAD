@@ -1084,7 +1084,13 @@ function handleEvent(ev) {
     // `openView` refuses (and toasts) a view this shell does not have; it
     // never guesses.
     case "ui_open":
-      dialogs.openView(ev.view, ev.args || {}, { by: "agent" });
+      // Nobody awaits this: catch here, or a throwing opener is an unhandled
+      // rejection with no user-visible trace (`palette.js`'s tool path made the
+      // same argument).
+      dialogs.openView(ev.view, ev.args || {}, { by: "agent" })
+        .catch((err) => toast(
+          `Agent could not open “${ev.view}”: ${err && err.message ? err.message : err}`,
+          "error"));
       return;
     // Our own UX telemetry, echoed back to us by the bus. Handling any of
     // these would make `dialog_opened` open a dialog.
@@ -2533,6 +2539,16 @@ function registerActions() {
       run: () => library.open() });
   A({ id: "model.market", title: "Marketplace…", group: "Model",
       menu: "model/21", run: () => enterMarket() });
+  // PRD-028's materials browser was the one adopted modal with no action row:
+  // reachable from the toolbar and from the palette's "Open: …" *view* row, but
+  // absent from the Model menu, which the user guide calls "a true map of what
+  // the app can do". `model/22` is the free slot between Marketplace and
+  // Versions. Same `run` as the toolbar button, and `panelApi.openMaterials`
+  // (PRD-028's inspector Browse… path) is untouched.
+  A({ id: "model.materials", title: "Materials…", group: "Model",
+      menu: "model/22", when: hasProject,
+      keywords: ["material", "steel", "aluminium", "density"],
+      run: () => materials.open() });
   A({ id: "model.versions", title: "Versions…", group: "Model",
       menu: "model/30", when: onBranch, run: () => versions.open() });
   A({ id: "model.branches.new", title: "New branch…", group: "Model",
@@ -2736,6 +2752,12 @@ async function boot() {
   // stack calls it with, so this line IS the wiring.
   events.init({ api });
   dialogs.setEmitter(events.emit);
+  // The same eligibility context the menu and the palette read, injected (not
+  // imported: `actions.js` imports `dialogs.js`) so `openView` can refuse a
+  // view whose own `when` is false instead of running its opener out of
+  // context — `ui_open {view: "merge"}` on a clean branch would otherwise start
+  // a NEW merge.
+  dialogs.setContext(actions.context);
   // One `palette_executed` per palette run, emitted from the registry's run
   // listener so that a menu/toolbar/shortcut run of the same action is never
   // recorded as a palette one. Rows the palette runs WITHOUT the registry
@@ -2778,10 +2800,11 @@ async function boot() {
   setupPaletteButton();
   // Unlike Market, the materials browser is a MODAL inside the workbench
   // (PRD-028 Decision 10's ruling) — no navigation, no reload, assign mode
-  // needs the workbench alive underneath it.
-  document.getElementById("materials-btn")?.addEventListener("click", () => {
-    materials.open();
-  });
+  // needs the workbench alive underneath it. Routed through the registry like
+  // every other toolbar button, so the Model menu, the palette and this click
+  // are the same verb (`setupLibrary()`'s shape).
+  document.getElementById("materials-btn")?.addEventListener("click",
+    () => actions.run("model.materials", null, { source: "toolbar" }));
   setupUndo();
   setupGizmoSnapKeys();
   setupRepMode();

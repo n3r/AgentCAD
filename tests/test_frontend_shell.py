@@ -2653,7 +2653,10 @@ SLICE2_VIEWS = {
 }
 
 # The adopted `.modal-overlay`s (`index.html`), each with the module that owns
-# it. All eight — which is what lets `isModalOpen()` drop its DOM fallback.
+# it. All NINE — which is what lets `isModalOpen()` drop its DOM fallback.
+# `materials` is the ninth: PRD-028 landed it on `main` while this branch was in
+# flight, the merge adopted it by hand, and nothing here graded that until the
+# closure test below existed (final review, I2).
 ADOPTED_MODALS = {
     "drawing": "drawings.js",
     "versions": "versions.js",
@@ -2663,7 +2666,18 @@ ADOPTED_MODALS = {
     "library": "library.js",
     "configs": "configs.js",
     "notifications": "comments.js",
+    "materials": "materials.js",
 }
+
+# `<div id="…" class="modal-overlay …">` — the ten-overlay sweep the reviewer
+# did by hand, as a test.
+MODAL_OVERLAY_RE = re.compile(r'<div\s+id="([\w-]+)"\s+class="modal-overlay')
+
+# Overlay ids that are deliberately NOT on the stack, each with its reason.
+# EMPTY today (`#claim-modal`, the last one, was dead markup and is deleted),
+# and the mechanism is kept exactly for that reason: the next overlay someone
+# adds must either adopt or be named here on purpose.
+OVERLAY_EXEMPT: dict[str, str] = {}
 
 # Views reachable from the palette's "Open: …" rows and (where flagged) from
 # `ui_open`. A view is registered only when opening it OUT OF CONTEXT is a
@@ -2722,7 +2736,28 @@ def test_a_mid_flow_dialog_is_not_offered_as_an_openable_view(view):
             encoding="utf-8"), f"{view} is not openable out of context"
 
 
-def test_the_modal_overlay_dom_fallback_is_gone_now_that_all_eight_are_adopted():
+def test_every_modal_overlay_in_index_html_is_adopted_or_named_exempt():
+    """The CLOSURE of `ADOPTED_MODALS` — the invariant `isModalOpen()`'s deleted
+    DOM fallback rests on.
+
+    Without this, the list is hand-maintained: PRD-028 added a tenth overlay on
+    `main`, the merge adopted it correctly by hand, and nothing in the suite
+    would have complained if it hadn't — an unadopted overlay is silently
+    `isModalOpen() === false`, so `F`/`G`/`R`/`?` fire behind it.
+    """
+    ids = set(MODAL_OVERLAY_RE.findall(INDEX.read_text(encoding="utf-8")))
+    assert len(ids) >= 9, f"the overlay sweep stopped finding them: {ids}"
+    adopted = {f"{view}-modal" for view in ADOPTED_MODALS}
+    unknown = sorted(ids - adopted - set(OVERLAY_EXEMPT))
+    assert unknown == [], (
+        "these `.modal-overlay`s are on no dialog stack — adopt them with "
+        f"`dialogs.attachLegacy` or name them in OVERLAY_EXEMPT: {unknown}")
+    missing = sorted(adopted - ids)
+    assert missing == [], f"ADOPTED_MODALS names overlays index.html lacks: {missing}"
+    assert "claim-modal" not in ids, "the dead claim modal markup is back"
+
+
+def test_the_modal_overlay_dom_fallback_is_gone_now_that_all_nine_are_adopted():
     """Slice 1 left `isModalOpen()` querying `.modal-overlay:not(.hidden)`
     because the hand-rolled overlays were not on the stack. They are now, so
     the fallback would only paper over an adopter that forgot `notifyOpen`."""
@@ -3321,3 +3356,412 @@ def test_the_identifier_rules_have_exactly_one_spelling_in_the_frontend():
     assert got["branch"] == "[a-z0-9][a-z0-9_/-]{0,63}"
     assert got["tag"] == "[a-z0-9][a-z0-9._/-]{0,63}"
     assert got["rejects"] is False and got["accepts"] is True
+
+
+# =====================================================================
+# The final whole-branch review's fix wave (I1, I3, I4, m2, m3, m4, m5, D1).
+# =====================================================================
+
+def test_the_sketchers_delete_binding_is_dead_behind_a_modal():
+    """I1 — the one real data-loss path the branch shipped with.
+
+    `onKey` is a document-level listener that returned early only on `!open`
+    and on an `input`/`textarea`/`.CodeMirror` target. `dialogs.onKeyDown`
+    swallows Escape (capture + `stopPropagation`) but has NO Delete/Backspace
+    branch, and a dialog `<button>` is not an `input` — so open the sketcher,
+    select two entities, run the `distance` constraint, Tab to Cancel, press
+    Backspace, and `deleteSelection()` silently destroyed the selection behind
+    a dialog the user was about to cancel. Backspace-on-a-button is a reflex.
+    """
+    source = (FRONTEND_JS / "sketcher.js").read_text(encoding="utf-8")
+    body = source.split("function onKey(e) {", 1)[1].split("\n}\n", 1)[0]
+    guard = body.index("dialogs.isModalOpen()")
+    assert guard < body.index('e.key === "Escape"'), (
+        "the modal guard must come before every key branch")
+    assert guard < body.index('e.key === "Delete"')
+    assert "return" in body[guard:guard + 60], "the guard must RETURN"
+    # And the docstring that claimed this was already true is now honest.
+    assert "the Delete binding cannot fire" not in source
+    assert "dialogs.isModalOpen()" in source.split(
+        "async function askNumber", 1)[0].rsplit("/**", 1)[1]
+
+
+# A DOM stub with enough of a browser to run BOTH dialog paths at once: the
+# `open()` primitive (its markup is captured, so the attribution chip is
+# readable) and an adopted legacy overlay (its `.modal-head` collects the chip
+# `notifyOpen` inserts). `getElementById` answers null, so `toast()` no-ops and
+# a refusal costs no timer.
+ATTRIB_DOM = f"""
+const htmls = [];
+const parsed = (html) => {{
+  const el = makeNode("div");
+  el.querySelector = (sel) => {{
+    if (sel === ".dlg") return makeNode("div");
+    if (sel.startsWith("#")) {{
+      return html.includes(`id="${{sel.slice(1)}}"`) ? makeNode("div") : null;
+    }}
+    return null;
+  }};
+  return el;
+}};
+function makeNode(tag) {{
+  const n = {{
+    tag, id: "", className: "", textContent: "", value: "", disabled: false,
+    dataset: {{}}, attrs: {{}}, children: [], parent: null, _el: null,
+    classList: {{ add() {{}}, remove() {{}}, toggle() {{}},
+                 contains: () => false }},
+    setAttribute(k, v) {{ n.attrs[k] = v; }},
+    removeAttribute(k) {{ delete n.attrs[k]; }},
+    addEventListener() {{}}, focus() {{}},
+    appendChild(c) {{ c.parent = n; n.children.push(c); return c; }},
+    insertBefore(c) {{ c.parent = n; n.children.unshift(c); return c; }},
+    remove() {{
+      if (!n.parent) return;
+      n.parent.children = n.parent.children.filter((c) => c !== n);
+      n.parent = null;
+    }},
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    contains: () => false,
+    get firstElementChild() {{ return n._el; }},
+    set innerHTML(v) {{ htmls.push(v); n._el = parsed(v); }},
+    get innerHTML() {{ return ""; }},
+  }};
+  return n;
+}}
+globalThis.document = {{
+  activeElement: null,
+  body: {{ appendChild() {{}} }},
+  getElementById: () => null,
+  createElement: (tag) => makeNode(tag),
+  addEventListener() {{}},
+  querySelector: () => null,
+}};
+const dialogs = await import({_uri("dialogs.js")});
+const out = (v) => process.stdout.write(JSON.stringify(v));
+// An adopted `.modal-overlay`: `.modal-head` is where the chip lands.
+const legacyOverlay = () => {{
+  const head = makeNode("header");
+  head.querySelector = (sel) => (sel === ".dlg-attribution"
+    ? (head.children[0] || null) : null);
+  const ov = makeNode("div");
+  ov.head = head;
+  ov.querySelector = (sel) => {{
+    if (sel === ".modal-head") return head;
+    if (sel === ".modal-head .dlg-attribution") return head.children[0] || null;
+    return null;
+  }};
+  return ov;
+}};
+const chipsOf = (ov) => ov.head.children.map((c) => [c.className, c.textContent]);
+"""
+
+
+def test_open_view_refuses_a_view_whose_own_when_is_false():
+    """I3 — `when` gated the menu but not the door.
+
+    `views(ctx)` filtered the palette's "Open: …" rows on it; `openView` checked
+    the registry and `agentOpenable` and nothing else, so `ui_open {view:
+    "merge"}` on a clean branch ran `merge.openPicker()` — which STARTS a new
+    merge, as merge.js's own comment says.
+    """
+    got = run_js("""
+      let ran = 0;
+      dialogs.register("merge", () => { ran += 1; return "picker"; },
+                       {title: "Staged merge…", when: (c) => !!c.staged});
+      dialogs.register("plain", () => { ran += 1; return "plain"; },
+                       {title: "No precondition"});
+      dialogs.setContext(() => ({}));
+      const refusedAgent = await dialogs.openView("merge", {}, {by: "agent"});
+      const refusedUser = await dialogs.openView("merge", {}, {by: "user"});
+      const plain = await dialogs.openView("plain", {}, {by: "agent"});
+      const ranWhileForbidden = ran;
+      dialogs.setContext(() => ({staged: true}));
+      const allowed = await dialogs.openView("merge", {}, {by: "agent"});
+      out({refusedAgent, refusedUser, plain, ranWhileForbidden, allowed, ran});
+    """, prelude=ATTRIB_DOM)
+    assert got["refusedAgent"] == {"ok": False, "reason": "not_available",
+                                  "view": "merge"}
+    # A USER route (the palette's own view branch) is refused identically.
+    assert got["refusedUser"] == got["refusedAgent"]
+    assert got["ranWhileForbidden"] == 1, "only `plain` should have run"
+    assert got["plain"]["ok"] is True
+    assert got["allowed"] == {"ok": True, "view": "merge", "result": "picker"}
+    assert got["ran"] == 2
+
+
+def test_a_view_with_no_context_injected_is_still_refused_rather_than_guessed():
+    """The default context is `{}` — every `when` reading a project or a part is
+    false, so an un-wired shell refuses instead of opening blind."""
+    got = run_js("""
+      dialogs.register("configs", () => "opened",
+                       {when: (c) => !!c.selectedPart});
+      const refused = await dialogs.openView("configs", {}, {by: "agent"});
+      dialogs.setContext();                      // reset to the default
+      const still = await dialogs.openView("configs", {}, {by: "agent"});
+      out({refused, still});
+    """, prelude=ATTRIB_DOM)
+    assert got["refused"]["reason"] == "not_available"
+    assert got["still"]["reason"] == "not_available"
+
+
+def test_an_adopted_legacy_modal_shows_the_opened_by_agent_chip():
+    """I4 — the attribution the user guide, `agent-api.md` and PRD-026's
+    `ui_open` abuse mitigation all promise did not exist for ANY of the nine
+    adopted legacy views: `pendingAttribution` is consumed by the `open()`
+    primitive, and a legacy overlay never goes through it.
+
+    Note the opener AWAITS before `notifyOpen()` — `materials.open()` fetches
+    the catalog first — so a synchronously-scoped flag would have missed it.
+    """
+    got = run_js("""
+      const ov = legacyOverlay();
+      let handle;
+      handle = dialogs.attachLegacy(ov, {
+        view: "materials", title: "Materials…",
+        open: async () => { await Promise.resolve(); handle.notifyOpen();
+                            return "opened"; },
+        onClose: () => handle.notifyClose(),
+      });
+      const res = await dialogs.openView("materials", {}, {by: "agent"});
+      const opened = {res, attr: ov.attrs["data-agent-opened"] || null,
+                      chips: chipsOf(ov)};
+      handle.notifyClose();
+      out({opened, attrAfter: ov.attrs["data-agent-opened"] || null,
+           chipsAfter: chipsOf(ov)});
+    """, prelude=ATTRIB_DOM)
+    assert got["opened"]["res"] == {"ok": True, "view": "materials",
+                                   "result": "opened"}
+    assert got["opened"]["attr"] == "1"
+    assert got["opened"]["chips"] == [["dlg-attribution", "opened by agent"]]
+    # The chip is a property of THIS open, not of the overlay.
+    assert got["attrAfter"] is None and got["chipsAfter"] == []
+
+
+def test_a_user_opened_legacy_modal_carries_no_agent_chip():
+    got = run_js("""
+      const ov = legacyOverlay();
+      let handle;
+      handle = dialogs.attachLegacy(ov, {
+        view: "library", open: async () => { handle.notifyOpen(); },
+        onClose: () => handle.notifyClose(),
+      });
+      await dialogs.openView("library", {}, {by: "user"});
+      const viaOpenView = {attr: ov.attrs["data-agent-opened"] || null,
+                           chips: chipsOf(ov)};
+      handle.notifyClose();
+      // …and neither does the toolbar button's direct call.
+      handle.notifyOpen();
+      out({viaOpenView, direct: {attr: ov.attrs["data-agent-opened"] || null,
+                                 chips: chipsOf(ov)}});
+    """, prelude=ATTRIB_DOM)
+    assert got["viaOpenView"] == {"attr": None, "chips": []}
+    assert got["direct"] == {"attr": None, "chips": []}
+
+
+def test_an_unrelated_dialog_opened_during_a_slow_agent_opener_is_not_stamped():
+    """m10, whose window the merge widened from "a synchronous opener" to "a
+    ~0.5 MB catalog fetch": `pendingAttribution` used to be cleared in a
+    `finally` AFTER the awaited opener, so any unrelated `dialogs.open()` in
+    that window was falsely stamped "opened by agent"."""
+    got = run_js("""
+      let release;
+      const gate = new Promise((r) => { release = r; });
+      const ov = legacyOverlay();
+      let handle;
+      handle = dialogs.attachLegacy(ov, {
+        view: "materials",
+        open: async () => { await gate; handle.notifyOpen(); return "late"; },
+        onClose: () => handle.notifyClose(),
+      });
+      const pending = dialogs.openView("materials", {}, {by: "agent"});
+      // The agent's opener is still awaiting its fetch. Something the user did
+      // opens a dialog of its own.
+      dialogs.open({view: "new-part", title: "New part"});
+      const unrelated = htmls[htmls.length - 1];
+      release();
+      const res = await pending;
+      out({res, unrelatedStamped: unrelated.includes("opened by agent"),
+           legacyStamped: ov.attrs["data-agent-opened"] || null,
+           chips: chipsOf(ov)});
+    """, prelude=ATTRIB_DOM)
+    assert got["unrelatedStamped"] is False, (
+        "an unrelated dialog was credited to the agent")
+    # The view the agent really did ask for is still stamped, awaited opener
+    # and all.
+    assert got["res"]["ok"] is True
+    assert got["legacyStamped"] == "1"
+    assert got["chips"] == [["dlg-attribution", "opened by agent"]]
+
+
+def test_a_shell_dialog_opened_by_an_agent_still_gets_its_chip():
+    """The other side of the m10 narrowing: `pendingAttribution` is cleared as
+    soon as the opener YIELDS, so an opener that opens its dialog synchronously
+    — every `dialogs.register` view in the tree — must still be stamped."""
+    got = run_js("""
+      dialogs.register("new-part", () => dialogs.open({view: "new-part",
+                                                       title: "New part"}));
+      // Not awaited: `open()`'s promise settles only when the dialog CLOSES,
+      // and the stamp is decided in the opener's synchronous prefix.
+      dialogs.openView("new-part", {}, {by: "agent"});
+      const agent = htmls[htmls.length - 1];
+      dialogs.openView("new-part", {}, {by: "user"});
+      const user = htmls[htmls.length - 1];
+      out({agent: agent.includes("opened by agent"),
+           user: user.includes("opened by agent")});
+    """, prelude=ATTRIB_DOM)
+    assert got["agent"] is True, "the shell dialog lost its attribution chip"
+    assert got["user"] is False
+
+
+def test_the_tab_trap_belongs_to_the_topmost_modal_not_the_topmost_overlay():
+    """m5 — with slice 3's non-modal tool-result panel above a modal, the Tab
+    branch read `top()`, found `modal: false` and simply stopped trapping, so
+    Tab walked straight out of the modal underneath. Mirrors `escOwner`."""
+    got = run_js("""
+      const owner = (entries) => dialogs.__dialogsDispatch__.trapOwner(entries);
+      const modal = {id: "m", modal: true};
+      const panel = {id: "p", modal: false};
+      out({panelOnTop: (owner([modal, panel]) || {}).id,
+           modalOnTop: (owner([panel, modal]) || {}).id,
+           onlyPanel: owner([panel]), empty: owner([])});
+    """, prelude=ATTRIB_DOM)
+    assert got["panelOnTop"] == "m", "the modal underneath still owns Tab"
+    assert got["modalOnTop"] == "m"
+    assert got["onlyPanel"] is None and got["empty"] is None
+
+
+def test_the_materials_modal_is_on_the_map_like_every_other_workbench_modal():
+    """m2 — Materials was the one adopted modal with no action row: absent from
+    the Model menu and from the palette's *action* section, while the user guide
+    calls the menu "always a true map of what the app can do"."""
+    main = MAIN.read_text(encoding="utf-8")
+    row = main.split('id: "model.materials"', 1)[1].split("A({", 1)[0]
+    assert 'menu: "model/22"' in row, "Materials is not in the Model menu"
+    assert "when: hasProject" in row
+    assert "materials.open()" in row
+    # …and the toolbar button goes through the registry, like `setupLibrary()`.
+    assert 'actions.run("model.materials", null, { source: "toolbar" })' in main
+    button = main.split('getElementById("materials-btn")', 1)[1][:220]
+    assert "materials.open()" not in button, (
+        "the toolbar button still calls the module directly")
+    # The `#materials` deep link is deliberately NOT routed: it runs after the
+    # project load settles and is PRD-028's own entry point.
+    # PRD-028's inspector Browse… path is untouched.
+    assert "panelApi.openMaterials" in main
+
+
+def test_the_two_fire_and_forget_open_view_sites_catch_their_rejection():
+    """m3 — `openView` is `async` with a `try/finally` and no `catch`, so a
+    throwing opener rejected into nobody at both call sites. `palette.js`
+    already made this argument for the tool path."""
+    main = MAIN.read_text(encoding="utf-8")
+    ui_open = main.split('case "ui_open":', 1)[1].split("case ", 1)[0]
+    assert ".catch(" in ui_open, "`ui_open` still drops a rejection"
+    palette = (SHELL / "palette.js").read_text(encoding="utf-8")
+    view_branch = palette.split("if (row.view) {", 1)[1].split("} else if", 1)[0]
+    assert ".catch(" in view_branch, "the palette's view row drops a rejection"
+
+
+def test_a_view_an_action_already_offers_gets_no_second_palette_row():
+    """m4 — `library`, `versions`, `configs`, `proposals`, `drawing` and now
+    `materials` each had an action row AND an "Open: …" view row: the same verb
+    twice, under near-identical titles. The action row wins (it carries the
+    group, the keywords and the shortcut label)."""
+    got = run_palette("""
+      const views = [
+        {view: "library", title: "Parts library…", actionId: "model.library"},
+        {view: "merge", title: "Staged merge…", actionId: null},
+        {view: "share", title: "Share a part…"},
+      ];
+      out({filtered: pm.entriesFromViews(views, new Set(["model.library"]))
+             .map((r) => r.view),
+           asArray: pm.entriesFromViews(views, ["model.library"])
+             .map((r) => r.view),
+           noActions: pm.entriesFromViews(views).map((r) => r.view),
+           junk: pm.entriesFromViews(views, "model.library").map((r) => r.view)});
+    """)
+    assert got["filtered"] == ["merge", "share"]
+    assert got["asArray"] == ["merge", "share"]
+    # With no action rows passed, nothing is suppressed — the old behaviour.
+    assert got["noActions"] == ["library", "merge", "share"]
+    assert got["junk"] == ["library", "merge", "share"]
+
+
+def test_every_modal_with_an_action_row_declares_its_action_id():
+    """The other half of m4: the suppression is only as good as the pairing."""
+    for module, action in [("library.js", "model.library"),
+                           ("versions.js", "model.versions"),
+                           ("configs.js", "model.configs"),
+                           ("proposals.js", "model.proposals"),
+                           ("drawings.js", "model.drawing"),
+                           ("materials.js", "model.materials")]:
+        source = (FRONTEND_JS / module).read_text(encoding="utf-8")
+        assert f'actionId: "{action}"' in source, module
+        assert f'id: "{action}"' in MAIN.read_text(encoding="utf-8"), action
+
+
+def test_a_hostile_button_id_or_kind_cannot_break_out_of_its_attribute():
+    """D1 (second verifier) — `b.id` reached an `id=` attribute and `b.kind` a
+    `class=` attribute unescaped, while the SAME `b.id` was escaped two lines
+    down in `data-btn=`. Unreachable today (every `buttons[]` value in the tree
+    is a source literal), but this is the primitive the PRD advertises for other
+    PRDs to compose, and the module's docstring claims everything is escaped."""
+    got = run_js(r"""
+      const m = dm.markup({uid: 1, title: "T", buttons: [
+        {id: 'x" onclick="alert(1)', kind: 'y" onmouseover="alert(1)',
+         label: "L"},
+        {id: "ok", kind: "primary", label: "OK", submits: true},
+      ]});
+      out({html: m.html, ids: m.ids.buttons});
+    """)
+    # The measurement is whether the payload survives with its QUOTES intact —
+    # `onclick=&quot;` inside an attribute value is text, not a handler.
+    assert 'onclick="alert(1)"' not in got["html"], got["html"]
+    assert 'onmouseover="alert(1)"' not in got["html"], got["html"]
+    assert "&quot;" in got["html"], "nothing was escaped at all"
+    # The id is COERCED, not escaped: an escaped id is no longer an id, and
+    # `dialogs.js` looks these up with `querySelector("#…")`.
+    assert got["ids"]['x" onclick="alert(1)'] == "dlg-btn-1-xonclickalert1"
+    # The label and `data-btn` are still escaped, and the legitimate button is
+    # untouched: `primary` is one of the three kinds the stylesheet has.
+    assert 'class="dlg-btn primary"' in got["html"]
+    assert 'id="dlg-btn-1-ok"' in got["html"]
+    # The hostile kind is dropped entirely rather than escaped into a class.
+    assert 'class="dlg-btn"' in got["html"]
+
+
+def test_a_hostile_uid_cannot_break_out_of_the_ids_it_seeds():
+    """Same shape: `uid` seeds `dlg-overlay-`, `dlg-`, `dlg-title-` and the
+    `aria-labelledby`/`aria-describedby` that point at them. `dialogs.js` only
+    ever passes its own `seq`, so this is defence in depth — and an id is
+    coerced to an id, because an ESCAPED id is no longer an id."""
+    got = run_js(r"""
+      const hostile = dm.markup({uid: '1" onload="alert(1)', title: "T"});
+      const ok = dm.markup({uid: 7, title: "T"});
+      out({hostile: hostile.html, ids: hostile.ids, ok: ok.ids.dialog});
+    """)
+    assert "onload=" not in got["hostile"], got["hostile"]
+    assert got["ids"]["dialog"] == "dlg-1onloadalert1"
+    assert f'id="{got["ids"]["dialog"]}"' in got["hostile"]
+    assert f'aria-labelledby="{got["ids"]["title"]}"' in got["hostile"]
+    # The normal path is byte-identical to before.
+    assert got["ok"] == "dlg-7"
+
+
+def test_a_hostile_menu_name_cannot_break_out_of_the_menu_ids():
+    """D1's fourth site: `menu_model.markup`'s `m.menu` reached `id=`,
+    `aria-controls=` and `aria-labelledby=` raw. `tree()` sources names from the
+    fixed `MENU_ORDER`, so this too is defence in depth."""
+    got = run_js(r"""
+      const html = mm.markup([
+        {menu: 'f" onmouseover="alert(1)', label: "File", items: []},
+        {menu: "view", label: "View", items: []},
+      ]);
+      out({html});
+    """)
+    assert 'onmouseover="alert(1)"' not in got["html"], got["html"]
+    assert "&quot;" in got["html"], "the menu name was not escaped"
+    # A real menu name is unchanged, ids and all.
+    assert 'id="menubar-view-btn"' in got["html"]
+    assert 'aria-controls="menubar-view-menu"' in got["html"]

@@ -55,6 +55,7 @@ export function init(a) {
     description: "The selected part's configuration matrix",
     open: (args) => open((args && args.part) || state.selectedPart),
     when: (c) => !!c.selectedPart,
+    actionId: "model.configs",   // one palette row, not two (m4)
   });
 }
 

@@ -33,6 +33,7 @@ export function init(a) {
     description: "The project's named versions (annotated tags)",
     open: () => open(),
     when: (c) => !!c.branch,
+    actionId: "model.versions",   // one palette row, not two (m4)
   });
   dialogs.register("new-version", (args) => tagPrompt(args), {
     title: "New version…",

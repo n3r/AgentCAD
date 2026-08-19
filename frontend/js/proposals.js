@@ -92,6 +92,7 @@ export function init(a) {
       ? openTo(args.id, args.tab)
       : open()),
     when: (c) => !!c.branch,
+    actionId: "model.proposals",   // one palette row, not two (m4)
   });
   dialogs.register("new-proposal", async () => {
     await open();

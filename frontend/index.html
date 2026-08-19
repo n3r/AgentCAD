@@ -481,22 +481,11 @@
     </div>
   </div>
 
-  <!-- The claim conflict. Shown ONLY for a 409 whose details carry
-       overridable:true (a soft per-part claim); a plain turn-lock 409 keeps
-       today's banner and is offered no override, because there is nothing
-       here that could grant one. -->
-  <div id="claim-modal" class="modal-overlay hidden">
-    <div class="modal narrow">
-      <header class="modal-head">
-        <span id="claim-title" class="modal-title">Someone is editing this part</span>
-        <div class="modal-actions">
-          <button id="claim-cancel" class="tb-btn" type="button">Cancel</button>
-          <button id="claim-override" class="tb-btn" type="button">Override</button>
-        </div>
-      </header>
-      <div id="claim-body" class="conflict-body"></div>
-    </div>
-  </div>
+  <!-- The claim conflict used to be a hand-rolled `#claim-modal` here. PRD-026
+       slice 2 replaced it with `dialogs.open()` (`main.js`'s claim-conflict
+       dialog), so the markup is gone: an unadopted `.modal-overlay` in this file
+       is now a stack-invariant violation, and the closure test in
+       `tests/test_frontend_shell.py` grades every one of them. -->
 
   <div id="notifications-modal" class="modal-overlay hidden">
     <div class="modal narrow">

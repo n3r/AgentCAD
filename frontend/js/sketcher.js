@@ -634,8 +634,12 @@ function deleteSelection() {
 
 /** The sketcher's one numeric dialog (PRD-026 FR2, spec §1.4).
  *
- *  The sketcher's own key handling is untouched: the dialog is MODAL, so
- *  `onKey`'s layered Escape and the Delete binding cannot fire while it is up.
+ *  The sketcher's own key handling is untouched: the dialog is MODAL, and
+ *  `onKey` returns early on `dialogs.isModalOpen()`, so neither its layered
+ *  Escape nor its Delete/Backspace binding can fire while the dialog is up.
+ *  (Escape alone was not enough: `dialogs.onKeyDown` stops Escape from ever
+ *  reaching `onKey`, but Delete/Backspace propagate freely, so the guard in
+ *  `onKey` — not the stack's listener — is what makes this sentence true.)
  *  `dialogs.prompt` resolves a STRING even for `type: "number"` (spec §1.1),
  *  so every caller coerces here, once.
  */
@@ -1313,6 +1317,13 @@ function onWheel(e) {
 
 function onKey(e) {
   if (!open) return;
+  // The dialog stack owns the keyboard while a modal is up. `dialogs.onKeyDown`
+  // swallows Escape (capture + stopPropagation) but has no Delete/Backspace
+  // branch, so without this guard a Backspace aimed at a dialog's *button* (a
+  // button is not an `input`, so the target test below lets it through) reached
+  // `deleteSelection()` and silently destroyed the sketch selection behind a
+  // dialog the user was about to cancel.
+  if (dialogs.isModalOpen()) return;
   const target = e.target instanceof Element ? e.target : document.body;
   if (target.closest("input, textarea, .CodeMirror")) return;
   if (e.key === "Escape") {

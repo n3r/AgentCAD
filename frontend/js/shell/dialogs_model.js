@@ -13,7 +13,13 @@ let counter = 0;
 
 /** HTML-escape. Every interpolation below goes through it — a dialog's title
  *  can be a part id, a branch name or a server error message, none of which
- *  this module is allowed to trust. */
+ *  this module is allowed to trust.
+ *
+ *  Three values reach an attribute where escaping is not the right tool and are
+ *  therefore CONSTRAINED instead, which is stricter: `width` and a button's
+ *  `kind` are whitelisted (they land in `class`), and `uid`/a button's `id` go
+ *  through `idToken` (they land in `id`, and an escaped id is no longer an id).
+ *  Nothing is interpolated raw. */
 export function escapeHtml(value) {
   return String(value == null ? "" : value)
     .replace(/&/g, "&amp;")
@@ -24,6 +30,18 @@ export function escapeHtml(value) {
 }
 
 const WIDTHS = new Set(["narrow", "default", "wide"]);
+// The only three button kinds the stylesheet has (`app.css`'s `.dlg-btn.primary`
+// / `.dlg-btn.danger`). Whitelisted, not escaped, for the same reason `width` is:
+// the value lands inside a `class` attribute.
+const BUTTON_KINDS = new Set(["default", "primary", "danger"]);
+
+/** An id-safe token. `uid` and a button `id` are interpolated into `id=`
+ *  attributes that `aria-labelledby`/`aria-describedby` and dialogs.js's own
+ *  `querySelector("#…")` point at, so escaping is not enough on its own — the
+ *  value has to still BE an id. Everything outside `[A-Za-z0-9_-]` is dropped. */
+function idToken(value) {
+  return String(value == null ? "" : value).replace(/[^\w-]/g, "");
+}
 
 const DEFAULT_BUTTONS = [
   { id: "cancel", label: "Cancel", kind: "default" },
@@ -39,7 +57,9 @@ const DEFAULT_BUTTONS = [
  */
 export function markup(spec) {
   const s = spec || {};
-  const uid = s.uid == null ? (counter += 1) : s.uid;
+  // `uid` is dialogs.js's internal `seq` today, but this module is the primitive
+  // other PRDs compose, so it is coerced rather than trusted.
+  const uid = s.uid == null ? (counter += 1) : (idToken(s.uid) || (counter += 1));
   const fields = Array.isArray(s.fields) ? s.fields : [];
   const buttons = Array.isArray(s.buttons) && s.buttons.length
     ? s.buttons
@@ -93,9 +113,14 @@ export function markup(spec) {
     .join("");
 
   const foot = buttons.map((b) => {
-    const bid = `dlg-btn-${uid}-${b.id}`;
+    // `id` through `idToken` (it is an id, and `data-btn` two lines down was
+    // already escaped — the asymmetry was the bug), `kind` through the
+    // whitelist (it is a class name).
+    const bid = `dlg-btn-${uid}-${idToken(b.id)}`;
     ids.buttons[b.id] = bid;
-    const kind = b.kind && b.kind !== "default" ? ` ${b.kind}` : "";
+    const kind = BUTTON_KINDS.has(b.kind) && b.kind !== "default"
+      ? ` ${b.kind}`
+      : "";
     return `<button type="button" class="dlg-btn${kind}" id="${bid}" `
       + `data-btn="${escapeHtml(b.id)}"${b.submits ? ' data-submits="1"' : ""}>`
       + `${escapeHtml(b.label || b.id)}</button>`;
