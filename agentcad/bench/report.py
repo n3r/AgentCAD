@@ -18,9 +18,9 @@ Four rules carry the whole design:
   it is named as a `coverage` regression in its own right. Without that a
   release could be gated green by not running the hard half.
 * **The roster is read, never assumed.** `expected` names the ids the report
-  must cover; in its absence `aggregate` takes the roster from
-  `bench.json`'s per-task index, then from a `tasks_root`, and only then from
-  the ids that happen to be on disk (`_expected_ids`).
+  must cover; in its absence `aggregate` takes the roster from a
+  `tasks_root`, then from `bench.json`'s per-task index (`_index_ids`), and
+  only then from the ids that happen to be on disk.
 * **The gate is `total`, each category and coverage, never a single task.** One task
   under a stochastic agent is noise, and gating on noise makes the release gate
   a coin flip. Per-task deltas are computed and printed anyway -- this is the
