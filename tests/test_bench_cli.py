@@ -255,14 +255,23 @@ def test_bench_with_no_subcommand_is_exit_two(capsys):
     assert "pick a subcommand" in capsys.readouterr().err
 
 
-def test_run_refuses_honestly_for_now(tmp_path, capsys):
-    """A stub that exited 0 would read to CI as 'the suite ran'.
+def test_run_without_an_agent_it_can_drive_is_exit_two(tmp_path, capsys,
+                                                       monkeypatch):
+    """`run` refuses before it spawns anything, and names the fix.
 
-    `publish` was wired by Task 7 and has its own exit-code tests below; `run`
-    is Task 5's.
+    The rest of `bench run`'s contract — the results layout, the budgets, the
+    over-budget flag — is pinned in `tests/test_bench_runner.py`, where a
+    scripted client makes the whole path offline. What belongs *here* is the
+    process boundary: a run that cannot reach an agent is a **harness** error
+    (exit 2, never 1), and it costs no kernel to discover.
     """
+    from agentcad.bench import runner as bench_runner
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(bench_runner, "CLIENT_FACTORY", None)
     assert _run(["bench", "run", "--report", str(tmp_path / "out")]) == 2
-    assert "not implemented in this slice" in capsys.readouterr().err
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
 
 
 # ----------------------------------------------------------- bench report

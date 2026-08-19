@@ -31,6 +31,7 @@ wrong" (`cmd_check`'s note, `cli.py:1132-1137`).
 """
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import tempfile
@@ -41,13 +42,14 @@ from pathlib import Path
 #: claims a lock a person is holding.
 CLIENT_ID = "bench"
 
-#: What `run` answers until Task 5 wires it. A stub that printed nothing and
-#: exited 0 would be worse than absent: a CI job would read it as "the suite
-#: ran".
-_NOT_IMPLEMENTED = "not implemented in this slice"
+#: What `bench run` selects when the caller names neither `--tasks` nor
+#: `--set` (design §9.2). Not "everything": a task set grows over time and a
+#: bare `bench run` must keep meaning the same suite.
+DEFAULT_SET = "core"
 
 _SCORE_ROW = "  {:<13} {:<16} {:>7} {:>7} {:>9}"
 _REPORT_ROW = "  {:<30} {:>8} {:>6} {:>8}"
+_RUN_ROW = "  {:<30} {:>8} {:>18} {:>7}"
 
 
 # ------------------------------------------------------------- the service
@@ -78,10 +80,9 @@ def _tasks_root(args):
 def add_bench_parser(sub) -> None:
     """Add `bench` and its four sub-subcommands to *sub*.
 
-    All four are registered from this slice on, `run` and `publish` included:
-    `agentcad bench --help` is a promise about the surface, and a help text that
-    grows a subcommand per merge teaches a reader to re-read it every week.
-    `run`'s handler refuses honestly (exit 2) until Task 5 lands.
+    All four are registered together: `agentcad bench --help` is a promise
+    about the surface, and a help text that grows a subcommand per merge
+    teaches a reader to re-read it every week.
     """
     from ..cli import _finite_arg
 
@@ -231,8 +232,267 @@ def cmd_bench(args) -> int:
 
 
 def _cmd_run(args) -> int:
-    print(f"agentcad bench run: {_NOT_IMPLEMENTED}", file=sys.stderr)
-    return 2
+    """`agentcad bench run` — drive the agent over a task set and score it all.
+
+    `_cmd_score`'s skeleton, one loop wider. The shape worth knowing:
+
+    **One kernel, one cell per task.** Starting a kernel pool per task would
+    cost seconds and half a gigabyte 25 times over to run the same builds, so
+    the run builds **one** service (`bench_service`, examples off) and every
+    task gets a throwaway *cell* under the work root, holding its own
+    `projects/` and its own `AgentCADService` over the **shared** kernel —
+    `checks._ephemeral_service`'s trick, unmuzzled. Unmuzzled is the point: a
+    run measures the product surface as it ships, history snapshots included,
+    and the tree it writes into is one this process made and removes.
+
+    **A task's failure is that task's.** Anything a single task raises is
+    caught, recorded as its row and printed; the loop goes on. The exit code
+    is 0 only when **every selected task produced a score** — and it is never
+    1, because a low score or an over-budget task is a *measurement* (§9.3).
+
+    **`bench.json` is written from the selection, not from the survivors.**
+    `bench report` takes its roster from that index (`report._index_ids`), so
+    a task that was selected and never scored has to appear there or it would
+    quietly leave the denominator — which is the one arithmetic a benchmark
+    may not get wrong.
+    """
+    import agentcad
+
+    from ..cli import _accept_work_dir, _release_work_root
+    from ..core import locks
+    from ..core.model import AppError
+    from ..core.tools import build_registry
+    from . import HARNESS_VERSION
+    from . import runner as bench_runner
+    from ._json import write_json
+    from .scoring import Scorer, refuse_scoring_overlap
+    from .tasks import load_tasks, tasks_root
+
+    service = None
+    projects_root = None
+    rows: dict = {}
+    failures: list = []
+    try:
+        tasks_base = _tasks_root(args) or tasks_root()
+        set_name = args.set
+        if args.tasks is None and set_name is None:
+            set_name = DEFAULT_SET
+        selected = [_budgeted(task, args.budget)
+                    for task in load_tasks(tasks_base, glob=args.tasks,
+                                           set_name=set_name)]
+        if not selected:
+            print(f"agentcad bench run: no task matched "
+                  f"--tasks {args.tasks!r} / --set {set_name!r} under "
+                  f"{tasks_base}", file=sys.stderr)
+            return 2
+        model, api_key, client_factory = _agent_config(args, bench_runner)
+        report_dir = Path(args.report).expanduser().resolve()
+        projects_root = Path(tempfile.mkdtemp(prefix="agentcad-bench-projects-"))
+        # Accepted, refused and created BEFORE the kernel spawns (review I1):
+        # the work dir is a writable root and a Landlock rule on a missing
+        # path is ENOENT, which loses the grant silently. The results
+        # directory stands in for `bench score`'s submission here — it is the
+        # tree a run writes and must never materialize a cell inside.
+        work_dir = _accept_work_dir(
+            args.work_dir,
+            lambda root: refuse_scoring_overlap(root, report_dir, tasks_base,
+                                                projects_root))
+        # The task tree is granted because **scoring** reads a reference STEP
+        # from it inside the confined worker. The results directory is not: a
+        # submission is copied out by this process, never written by a worker.
+        extra = [str(tasks_base)] + ([work_dir] if work_dir else [])
+        service = bench_service(projects_root, extra_writable=extra)
+        locks.set_client_id(CLIENT_ID)
+        scorer = Scorer(service, build_registry(service))
+        started = bench_runner._now()
+        for task in selected:
+            rows[task.id] = _run_one_task(
+                task, service=service, scorer=scorer, report_dir=report_dir,
+                work_dir=work_dir, model=model, api_key=api_key,
+                agent=args.agent, client_factory=client_factory,
+                failures=failures)
+        header = {
+            "schema": bench_runner.BENCH_SCHEMA,
+            "task_set": selected[0].task_set,
+            "harness": HARNESS_VERSION,
+            "agentcad": agentcad.__version__,
+            "agent": args.agent,
+            "model": model,
+            "started": started,
+            "finished": bench_runner._now(),
+            "n": len(selected),
+            "tasks": rows,
+        }
+        write_json(report_dir / "bench.json", header)
+    except AppError as exc:
+        print(f"agentcad bench run: {exc.message}", file=sys.stderr)
+        _print_problems(exc)
+        return 2
+    except Exception as exc:  # noqa: BLE001 — any harness failure is exit 2
+        print(f"agentcad bench run: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return 2
+    finally:
+        # Tolerant of a partial construction, exactly as `_cmd_score` is: setup
+        # may have failed before there was a kernel to stop, and a kernel that
+        # will not stop must not replace the verdict with its own traceback.
+        if service is not None:
+            try:
+                service.kernel.stop()
+            except Exception as exc:  # noqa: BLE001
+                print(f"agentcad bench run: the kernel did not stop cleanly: "
+                      f"{exc}", file=sys.stderr)
+            _release_work_root(service)
+        if projects_root is not None:
+            shutil.rmtree(projects_root, ignore_errors=True)
+
+    # Printing is under the SAME mapping as the run: a traceback out of here
+    # would be exit 1, the code reserved for "the model is wrong".
+    try:
+        _print_run(args, header, failures)
+    except Exception as exc:  # noqa: BLE001
+        print(f"agentcad bench run: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return 2
+    return 2 if failures else 0
+
+
+def _budgeted(task, budget_s):
+    """*task* with `--budget` substituted for its declared wall clock.
+
+    Only the **wall** budget moves: the tool-call ceiling is what keeps a run
+    inside one engine turn (`MAX_TOOL_CALLS_PER_TURN`, §8.3) and a flag that
+    could raise it would let one invocation measure something the task set does
+    not describe. The override lands in the `Task`, so `run.json`'s `budgets`
+    block reports the budget that was actually enforced rather than the one
+    `task.json` declares.
+    """
+    import dataclasses
+
+    from .tasks import Budgets
+
+    if budget_s is None:
+        return task
+    return dataclasses.replace(task, budgets=Budgets(
+        wall_s=float(budget_s), turns=task.budgets.turns,
+        api_turns=task.budgets.api_turns))
+
+
+def _agent_config(args, bench_runner):
+    """`(model, api_key, client_factory)` for the agent `--agent` names.
+
+    The factory is `runner.CLIENT_FACTORY`, the one test seam: with it set,
+    the whole `main()` → argparse → `cmd_bench` → `_cmd_run` path runs offline
+    against a scripted client, and with it unset a run with no
+    `ANTHROPIC_API_KEY` is **refused before the kernel spawns** rather than
+    discovered as a 401 three minutes in.
+    """
+    from ..agent.chat import DEFAULT_MODEL
+
+    client_factory = bench_runner.CLIENT_FACTORY
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    bench_runner.require_agent(api_key, client_factory)
+    return (args.model or DEFAULT_MODEL), api_key, client_factory
+
+
+def _run_one_task(task, *, service, scorer, report_dir, work_dir, model,
+                  api_key, agent, client_factory, failures) -> dict:
+    """Run, copy out, score and write one task. Returns its `bench.json` row.
+
+    Never raises: a task that dies takes its own row down and nothing else.
+    The cell is removed in a `finally` — and it is a directory **this process
+    created** with `mkdtemp`, so removing it breaks nobody's "never delete a
+    directory it did not create" contract; the caller's `--work-dir` is its
+    parent and is left exactly as it was.
+    """
+    from ..core.checks import default_work_root
+    from ..core.service import AgentCADService, EventBus
+    from ..core.tools import build_registry
+    from . import runner as bench_runner
+    from ._json import write_json
+    from .scoring import COPY_IGNORE
+
+    out = report_dir / "tasks" / task.category / task.id.split("/")[1]
+    row = {"category": task.category, "total": None, "over_budget": False,
+           "stopped": "error"}
+    cell = Path(tempfile.mkdtemp(prefix="agentcad-bench-run-",
+                                 dir=work_dir or default_work_root(service)))
+    try:
+        (cell / "projects").mkdir()
+        # A second service over the cell, sharing the run's kernel. NOT
+        # muzzled: `checks._ephemeral_service` nulls the bus hook, the branch
+        # resolver and the write guard because it measures a tree it does not
+        # own — this one owns its tree and is measuring the shipped surface,
+        # so the history snapshots and the branch layer stay live.
+        task_service = AgentCADService(cell / "projects", service.kernel,
+                                       EventBus())
+        started = bench_runner._now()
+        outcome = bench_runner.run_task(
+            task, service=task_service, registry=build_registry(task_service),
+            cell=cell, model=model, api_key=api_key,
+            client_factory=client_factory)
+        finished = bench_runner._now()
+        row.update(over_budget=outcome.over_budget, stopped=outcome.stopped)
+
+        submission = out / "submission"
+        shutil.rmtree(submission, ignore_errors=True)
+        shutil.copytree(cell / "projects" / task.target_project, submission,
+                        ignore=shutil.ignore_patterns(*COPY_IGNORE))
+        write_json(out / "transcript.json", bench_runner.transcript_payload(
+            task, outcome.transcript, cell=cell,
+            projects_root=cell / "projects"))
+        write_json(out / "run.json", bench_runner.run_json(
+            task, outcome, agent=agent, model=model, started=started,
+            finished=finished))
+
+        score = scorer.score(task, submission, work_dir=work_dir)
+        write_json(out / "score.json", score)
+        row["total"] = score.get("total")
+        if not score.get("weights_effective"):
+            # §4.8's harness lane: every subscore excluded is no verdict at
+            # all, which is a failure of the run and not a zero.
+            failures.append(f"{task.id}: every subscore was excluded")
+    except Exception as exc:  # noqa: BLE001 — one task's failure is its own
+        row["error"] = f"{type(exc).__name__}: {exc}"
+        failures.append(f"{task.id}: {row['error']}")
+    finally:
+        shutil.rmtree(cell, ignore_errors=True)
+    return row
+
+
+def _run_lines(header: dict, failures: list) -> list:
+    """The per-task table, then whatever went wrong, for a human on stderr."""
+    lines = [f"task set {header.get('task_set')} · agent "
+             f"{header.get('agent')} · model {header.get('model')} · "
+             f"{header.get('n', 0)} task(s)",
+             _RUN_ROW.format("task", "score", "stopped", "budget")]
+    for task_id, row in (header.get("tasks") or {}).items():
+        total = row.get("total")
+        lines.append(_RUN_ROW.format(
+            str(task_id)[:30], "—" if total is None else f"{float(total):.4f}",
+            str(row.get("stopped")), "over" if row.get("over_budget") else "ok"))
+    if failures:
+        lines.append("not scored:")
+        lines += [f"  - {str(line).splitlines()[0][:200]}"
+                  for line in failures[:20]]
+    return lines
+
+
+def _print_run(args, header: dict, failures: list) -> None:
+    """stdout is a contract, stderr is for humans (`_print_score`'s rule)."""
+    from ._json import canonical_json
+
+    if args.quiet:
+        return
+    if args.json:
+        sys.stdout.write(canonical_json(header).decode())
+        return
+    for line in _run_lines(header, failures):
+        print(line, file=sys.stderr)
+    scored = sum(1 for row in (header.get("tasks") or {}).values()
+                 if row.get("total") is not None)
+    print(f"bench run: {scored}/{header.get('n', 0)} task(s) scored → "
+          f"{Path(args.report).expanduser()}")
 
 
 #: Where the leaderboard lands when `-o` is not given (design §12). Relative,
