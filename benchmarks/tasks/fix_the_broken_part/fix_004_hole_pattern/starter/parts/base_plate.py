@@ -1,9 +1,4 @@
-# Copied from examples/construction/parts/base_plate.py for bench task
-# fix_the_broken_part/fix_004_hole_pattern.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer. The starter is this script
-# with ONE edited line; the rubric is injected from ../../../specs/parts/, so
-# this script declares no SPECS of its own.
+# Copied from examples/construction/parts/base_plate.py into this project.
 """Column base plate with anchor slots and a column footprint marking.
 
 A rectangular steel base plate (plate_w x plate_l x plate_t, corner

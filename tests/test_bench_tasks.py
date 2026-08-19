@@ -144,6 +144,41 @@ def test_prompt_text_inlines_every_asset_as_text():
     assert "<svg" in text
 
 
+def test_prompt_text_strips_the_reviewer_html_comment():
+    """A weight-override argument is grading rationale, not prompt.
+
+    Design §7.6 tells a task that overrides its category weights to argue it
+    "in a comment at the top of its `prompt.md`", and two shipped bundles do.
+    That text names which subscore carries which weight, and an agent that
+    reads "geometry is 0.00 here" spends its budget differently — so the
+    comment stays in the file for the reviewer and is stripped on the way to
+    the model. The stripping is the prompt BODY's only mutation: an asset is
+    attached verbatim, because an SVG's own comments are part of the drawing.
+    """
+    task = bench_tasks.load_task("fix_the_broken_part/fix_005_invalid_shell")
+    raw = task.prompt_path.read_text(encoding="utf-8")
+    assert raw.lstrip().startswith("<!--") and "Weight override" in raw
+
+    text = bench_tasks.prompt_text(task)
+    assert "<!--" not in text and "-->" not in text
+    assert "Weight override" not in text and "geometry` is 0.00" not in text
+    # ... and the prompt itself is intact, first line to last.
+    assert text.startswith("The project holds one part, `coolant_elbow`")
+    assert "24 mm centre-line bend radius" in text
+    assert text.rstrip().endswith("the fix must not move it.")
+
+
+def test_strip_reviewer_comments_is_non_greedy_and_closes_the_hole():
+    # Two comments, not one span from the first `<!--` to the last `-->`, and
+    # no three-newline crater where they were.
+    text = bench_tasks.strip_reviewer_comments(
+        "<!-- one\nspans lines -->\n\nkeep me\n\n<!-- two -->\n\nand me\n")
+    assert text == "keep me\n\nand me"
+    assert "spans lines" not in text and "\n\n\n" not in text
+    # A prompt with no comment is returned stripped and otherwise untouched.
+    assert bench_tasks.strip_reviewer_comments("a\n\nb\n") == "a\n\nb"
+
+
 def test_canonical_json_is_byte_identical_and_refuses_nan():
     from agentcad.bench._json import canonical_json
     payload = {"b": 1 / 3, "a": [3.0000000001, 2]}

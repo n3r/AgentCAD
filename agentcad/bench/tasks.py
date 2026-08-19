@@ -74,6 +74,13 @@ TASK_ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,47}$")
 #: refused **by name**, in the loader, before anything spawns.
 FORBIDDEN_SPEC_CALL = "check_fem_static"
 
+#: A reviewer-facing HTML comment in a `prompt.md` — see
+#: :func:`strip_reviewer_comments`.
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+#: Three or more consecutive newlines, i.e. the hole a removed comment leaves.
+_BLANK_RUN_RE = re.compile(r"\n{3,}")
+
 #: `SPECS +=` in a rubric block. `specs.declares_specs` accepts it -- it is a
 #: legitimate binding for a part script -- but it is exactly wrong here: the
 #: block is appended to the CANDIDATE's script, so `+=` **extends** whatever
@@ -641,14 +648,38 @@ def load_windows(path) -> list[MetricWindow]:
     return sorted(out, key=lambda window: window.name)
 
 
+def strip_reviewer_comments(text: str) -> str:
+    """*text* with every HTML comment removed and the blank it leaves closed.
+
+    Design §7.6 asks a task that overrides its category weights to argue the
+    override "in a comment at the top of its `prompt.md`", and `mts_005` and
+    `fix_005` do. That argument is written for a REVIEWER: it says which
+    subscore carries which weight and why, and handing an agent "geometry is
+    not scored on this task" changes what the agent spends its budget on —
+    the prompt would be telling it how it is marked. So the comment stays in
+    the file, where a reviewer reads it in the diff, and never reaches the
+    model.
+
+    Non-greedy and DOTALL: the comments are multi-line and a prompt may carry
+    more than one, and a greedy match would swallow everything between the
+    first `<!--` and the last `-->`.
+    """
+    return _BLANK_RUN_RE.sub("\n\n", _HTML_COMMENT_RE.sub("", text)).strip()
+
+
 def prompt_text(task: Task) -> str:
     """The prompt handed to the agent: `prompt.md`, then every asset inline.
 
     Assets are attached as **text**, fenced and named by their path relative to
     the task directory — the model reads an SVG drawing as markup, which is
     the whole reason the asset set is text-only.
+
+    Reviewer-facing HTML comments are stripped from the prompt body
+    (:func:`strip_reviewer_comments`); assets are attached verbatim, because an
+    SVG's own comments are part of the drawing.
     """
-    parts = [task.prompt_path.read_text(encoding="utf-8").strip()]
+    parts = [strip_reviewer_comments(
+        task.prompt_path.read_text(encoding="utf-8"))]
     for asset in task.asset_paths:
         rel = asset.relative_to(task.root).as_posix()
         body = asset.read_text(encoding="utf-8").strip()

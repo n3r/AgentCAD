@@ -14,12 +14,13 @@ Requirements:
 
 - `base_1` sits at the **origin**, unrotated. Its underside is **Z = 0** and
   its rim is at **Z = 30**.
-- `lid_1` seats on that rim, on the same axis and unrotated. The lid's local
-  origin is the **underside of its top plate** — the face that lands on the
-  rim — and its lip hangs 3 mm below that, into the base's cavity.
-- The two mouldings must stay **clear of each other by at least 0.05 mm**.
-  This is a snap fit, not an interference fit: the lip has to drop into the
-  cavity, so the shipped design leaves a **0.1 mm** all-round allowance.
+- `lid_1` sits **0.1 mm above that rim (Z = 30.1)**, on the same axis and
+  unrotated — a snap fit, not an interference fit. The lid's local origin is
+  the **underside of its top plate**, the face that faces the rim, and its lip
+  hangs 3 mm below that, into the base's cavity.
+- With the lid there, the two mouldings must stay **clear of each other by at
+  least 0.05 mm**: the lip has to drop into the cavity, and the shipped
+  design's 0.1 mm gives that allowance all round.
 - **No two instances may overlap** by any volume.
 
 Do not change any part script and do not change any part's parameters — this

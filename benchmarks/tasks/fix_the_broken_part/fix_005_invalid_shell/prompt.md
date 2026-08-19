@@ -25,8 +25,7 @@ The elbow, as it should be:
 - an **Ø24 mm** tube with a uniform **3 mm** wall (Ø18 bore);
 - two straight legs of **60 mm** centre-line each, meeting at a right angle;
 - a **24 mm centre-line bend radius** at the corner — one tube diameter, the
-  shop's minimum for this section. (A bend radius smaller than the tube's
-  *outside radius* cannot be swept at all: the shell crosses itself.)
+  shop's minimum for this section.
 
 Material: 6061 aluminium (unchanged).
 

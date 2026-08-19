@@ -23,7 +23,7 @@ Requirements:
 - `injector_plate_1` caps the stack on the same axis, unrotated, its
   **underside 0.2 mm above** the chamber head face — the head gasket.
 - **No two instances may touch.** This is a bolted, gasketed joint: every
-  stacked face keeps a 0.15-0.5 mm allowance, and an overlap of any volume is
+  stacked face keeps a 0.2-0.5 mm allowance, and an overlap of any volume is
   a failure.
 
 Do not change any part script and do not change any part's parameters — this

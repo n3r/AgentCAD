@@ -1,10 +1,4 @@
-# Copied from examples/prototyping/parts/enclosure_base.py for bench task
-# fix_the_broken_part/fix_003_wall_red.
-# A derived task copies the script INTO the bundle: the runner registers no
-# examples, so a run can never read the answer, and the starter and the
-# reference are the SAME script at different parameters — the breakage is a
-# stored parameter, not a rewrite. The rubric is injected from
-# ../../../specs/parts/, so this script declares no SPECS of its own.
+# Copied from examples/prototyping/parts/enclosure_base.py into this project.
 """Snap-fit electronics enclosure -- base shell.
 
 Open-top shelled box with four corner screw bosses (pilot-holed, running

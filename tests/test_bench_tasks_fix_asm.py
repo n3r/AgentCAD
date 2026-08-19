@@ -147,3 +147,69 @@ def test_every_fix_task_scores_geometry_or_says_why_in_its_prompt():
         prompt = task.prompt_path.read_text(encoding="utf-8")
         assert prompt.lstrip().startswith("<!--"), task.id
         assert "geometry" in prompt.split("-->")[0], task.id
+
+
+#: Text a `fix_the_broken_part` **starter** may never contain, per task.
+#:
+#: The runner copies `starter/` verbatim into the agent's scratch project, so
+#: every byte of it is prompt. A starter that names its own defect — or that
+#: still carries the reference's docstring — is not a diagnosis task, it is a
+#: typing exercise, and the failure is silent: the bundle still loads, the
+#: reference still scores 1.0 and the starter still scores low.
+#:
+#: The entries are prose that NAMES the defect, never a number or an
+#: identifier the script legitimately declares: `enclosure_base` really does
+#: default `wall` to 2.5 and `coolant_elbow` really does default `bend_r` to
+#: 24, because in both tasks the defect is the value STORED in the manifest,
+#: and noticing that the stored value disagrees with the script's own default
+#: is the diagnosis rather than a leak of it. Nor is a parameter's own
+#: `description` ("Centre-line bend radius at the corner") a leak: it names the
+#: parameter, which the reference declares identically, and not the defect.
+FIX_STARTER_FORBIDDEN = {
+    "fix_001_contract": ("misspel", "AttributeError", "SimpleNamespace"),
+    "fix_002_fillet": ("safe_fillet", "max_fillet", "exceeds"),
+    "fix_003_wall_red": ("breakage", "stored parameter", "SAME script",
+                         "too thin"),
+    "fix_004_hole_pattern": ("edited line", "off-by-one", "grid(2, 2"),
+    "fix_005_invalid_shell": ("self-intersect", "crosses itself",
+                              "folds through", "one tube diameter",
+                              "tightest bend"),
+}
+
+#: Text NO starter may contain, whatever the task.
+STARTER_FORBIDDEN_ANYWHERE = ("Reference solution", "the rubric",
+                              "The rubric", "specs/parts/", "consequence 3",
+                              "the reference")
+
+
+def test_no_fix_starter_script_leaks_its_own_defect():
+    tasks = {task.id.split("/")[1]: task for task in _tasks(FIX)}
+    assert set(tasks) == set(FIX_STARTER_FORBIDDEN), sorted(tasks)
+    for name, task in sorted(tasks.items()):
+        for script in sorted((task.starter_dir / "parts").glob("*.py")):
+            text = script.read_text(encoding="utf-8")
+            forbidden = (FIX_STARTER_FORBIDDEN[name]
+                         + STARTER_FORBIDDEN_ANYWHERE + (name, task.id))
+            hits = [token for token in forbidden if token in text]
+            assert not hits, f"{task.id}: {script.name} leaks {hits}"
+
+
+def test_no_starter_script_is_byte_identical_to_its_reference():
+    # The narrow, load-bearing half of `..._differs_from_its_reference`: a
+    # starter copied wholesale from the reference carries the reference's
+    # docstring, which is written for a reviewer and reads as an answer key.
+    for category in (FIX, ASM):
+        for task in _tasks(category):
+            for part in task.target_parts:
+                starter = (task.starter_dir / "parts" / f"{part}.py")
+                reference = (task.reference_project / "parts" / f"{part}.py")
+                if category == ASM:
+                    # An `asm` task changes no script at all, so its two sides
+                    # are meant to match; what must not match is a REFERENCE
+                    # docstring, and these carry the provenance header instead.
+                    assert "Reference solution" not in \
+                        starter.read_text(encoding="utf-8"), task.id
+                    continue
+                assert starter.read_text(encoding="utf-8") != \
+                    reference.read_text(encoding="utf-8"), \
+                    f"{task.id}: {part}.py is the reference verbatim"

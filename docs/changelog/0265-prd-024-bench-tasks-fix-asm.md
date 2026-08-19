@@ -28,7 +28,12 @@ every starter scores **well under 0.95**, both numbers taken from
 | `fix_005_invalid_shell` | stored `bend_r` is 6 mm against a 12 mm tube outer radius, so the swept shell folds through itself: the build succeeds and `shape.is_valid` is `False` | authored (`coolant_elbow`) | `bend_r` = 24 (one tube diameter) |
 
 - Each `prompt.md` states the **symptom** and what "fixed" means, never the
-  fix; each states the datum in words that agree with `frame.datum`.
+  fix; each states the datum in words that agree with `frame.datum`. A
+  **starter carries no diagnosis**: its part script's docstring is the
+  symptom only (`"… -- AS SHIPPED, AND IT DOES NOT BUILD."`), a derived
+  starter's header is the provenance line alone, and neither names the task
+  id, the defect or the rubric — the runner copies `starter/` verbatim into
+  the agent's project, so every byte of it is prompt.
 - Rubrics are `specs/parts/<part>.py`, re-binding `SPECS` with `_bench_`
   aliases. Two carry measured arguments a reader needs:
   - `fix_003` has **no `check_wall`**, and says why: this shell's four corner
@@ -37,6 +42,14 @@ every starter scores **well under 0.95**, both numbers taken from
     12, at (-46.67, 27.5, 3.65)**, at wall 2.5 *and* at wall 1.2. The 2.5 mm
     requirement is therefore stated as a mass window (measured 21.7708 /
     33.3084 / 40.2343 g at wall 1.2 / 2.0 / 2.5).
+  - `fix_002` adds `end_breaks`, a `check_mass` row at ±0.5 %, because the
+    obvious wrong fix is to **delete** the offending fillet rather than reduce
+    it: that answer builds, is valid, keeps the 6 mm legs and the
+    70 × 40 × 55 envelope, and differs from the reference only in mass —
+    **226.1617 g** with both R4 breaks against **228.5086 g** with none. The
+    same two metric windows are tightened from the seeded ±1 % to ±0.5 %,
+    because at ±1 % the wrong answer missed by 0.085 g (0.04 %), which is a
+    coincidence and not a measurement.
   - `fix_004` states its requirement as geometry: a `check_that` predicate
     pushes a 4 × 4 mm probe column down the Z axis at each of the four nominal
     slot centres (±100, ±100) and fails if it meets material. The intersection
@@ -80,6 +93,24 @@ intersection between two solids of *identical* volume, so the reference scored
 submission zero on shape; `metrics` measures the same fact through its mass,
 volume and bbox windows and carries the 0.15 instead.
 
+The comment is written for a reviewer and **does not reach the agent** — see
+the `prompt_text()` change below.
+
+### `prompt_text()` no longer hands the agent its grading rationale
+
+`agentcad/bench/tasks.py` gains `strip_reviewer_comments(text)` and calls it on
+the prompt **body** inside `prompt_text`. Design §7.6 asks a task that
+overrides its category weights to argue the override "in a comment at the top
+of its `prompt.md`", and `mts_005` and `fix_005` do — but that argument names
+which subscore carries which weight, and an agent that reads "geometry is 0.00
+here" spends its budget differently. The comment stays in the file, where a
+reviewer reads it in the diff, and never reaches the model. The regex is
+non-greedy and `DOTALL` (a prompt may carry more than one multi-line comment,
+and a greedy match would swallow everything between the first `<!--` and the
+last `-->`), and the blank run it leaves is closed to one paragraph break.
+**Assets are attached verbatim** — an SVG's own comments are part of the
+drawing.
+
 ### Tests
 
 `tests/test_bench_tasks_fix_asm.py` (new, 10 tests, no kernel, no writes into
@@ -91,6 +122,19 @@ places at least two (fewer than two and `interference_free` skips
 `check_clearance` names is one the reference places **and** one the prompt
 names; no shipped starter or reference part script declares its own `SPECS`;
 and a `fix` task with `geometry` 0.00 must argue it in its prompt front matter.
+Two more pin the starter-leakage rule: no `fix` starter script may contain its
+own task id, `Reference solution`, a rubric path, or a per-task list of words
+that name its defect (`safe_fillet`, `off-by-one`, `self-intersect`, …), and no
+starter script may be its reference's file verbatim. Numbers and parameter
+descriptions are deliberately **not** on the forbidden list: `enclosure_base`
+really does default `wall` to 2.5 and `coolant_elbow` really does default
+`bend_r` to 24, and noticing that the *stored* value disagrees with the
+script's own default is the diagnosis rather than a leak of it.
+
+`tests/test_bench_tasks.py` gains two for the comment stripping: the shipped
+`fix_005` prompt loses its `<!-- Weight override … -->` block and keeps every
+other line, and `strip_reviewer_comments` is exercised directly on a two-comment
+string for the non-greedy/blank-run behaviour.
 
 ## Files
 
@@ -101,7 +145,10 @@ and a `fix` task with `geometry` 0.00 must argue it in its prompt front matter.
 - `benchmarks/tasks/assemble_and_clear/{asm_001_thrust_chamber,asm_002_lid_on_base,asm_003_bolted_joint,asm_004_truss_node,asm_005_rod_and_piston}/`
   — `task.json`, `prompt.md`, `starter/`, `reference/project/`,
   `reference/metrics.json`, `specs/project.py`
+- `agentcad/bench/tasks.py` — `strip_reviewer_comments`, `_HTML_COMMENT_RE`,
+  `_BLANK_RUN_RE`; `prompt_text` runs the prompt body through it
 - `tests/test_bench_tasks_fix_asm.py` — new
+- `tests/test_bench_tasks.py` — two tests for the comment stripping
 - `docs/changelog/0265-prd-024-bench-tasks-fix-asm.md` — this entry
 
 ## Notes
@@ -141,13 +188,19 @@ asm_004_truss_node     0.25    same shape
 asm_005_rod_and_piston 0.25    same shape
 ```
 
+**The named plausible wrong fix**, scored under its own task: `fix_002` with
+the offending fillet **deleted** rather than reduced measures **0.877626**
+(specs 0.75 `[end_breaks]` · geometry 0.9897 · metrics 0.6667). Before the
+`end_breaks` row it measured **0.965126** — a clean sweep of the `specs`
+channel, with only two metric windows and IoU moving.
+
 `fix_003` and `fix_004` are the least discriminating of the ten at ~0.78, and
 the reason is structural rather than a loose rubric: the `fix` weights hand
 `built` + `valid` = 0.40 to any starter that builds into a valid solid, which
 is exactly what "valid but wrong" means. Both are under the 0.95 bar with room.
 
 `uv run pytest -q tests/test_bench_tasks.py tests/test_bench_tasks_fix_asm.py`
-→ **29 passed in 0.27s**; `load_tasks()` now returns **25 tasks** with zero
+→ **34 passed in 0.31s**; `load_tasks()` now returns **25 tasks** with zero
 problems, `fast` on `fix_001_contract` and `asm_002_lid_on_base` (one per
 category, the quickest in each).
 
@@ -156,11 +209,15 @@ category, the quickest in each).
 **Follow-ups / known limits.**
 
 1. An `asm` rubric is built from *minimum* clearances, so a candidate that
-   places every instance far apart satisfies it. The prompts state the seating
-   in words and a reviewer reads them, but the scorer does not penalise it.
-   `check_stackup` cannot close this — it measures worst-case tolerance
-   accumulation along a mate chain, not the nominal distance, and these
-   instances are placed rather than mated.
+   places every instance 500 mm apart satisfies all five bundles and scores
+   1.0. The prompts state the seating numerically and a reviewer reads them,
+   but the scorer does not penalise it: `check_clearance` is one-sided and the
+   metric windows are part-keyed, so nothing in the current toolkit can see a
+   placement. **Ruled a design §7.4 limitation and disclosed rather than
+   patched.** `check_stackup` does not close it — it measures worst-case
+   tolerance accumulation along a mate chain, not the nominal distance, and
+   these instances are placed rather than mated. Closing it needs a two-sided
+   clearance or a placement window, i.e. a `toolkit/specs.py` change.
 2. `fix_005`'s IoU finding is a product observation worth raising separately:
    a swept (pipe) surface exported to STEP and re-imported no longer booleans
    against the shape it came from. It is not specific to the bench.

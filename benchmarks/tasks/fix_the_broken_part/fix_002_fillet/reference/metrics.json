@@ -23,9 +23,9 @@
       "part": "shelf_bracket"
     },
     {
-      "max": 228.423342,
+      "max": 227.293,
       "metric": "mass_g",
-      "min": 223.900108,
+      "min": 225.031,
       "name": "shelf_bracket_mass",
       "part": "shelf_bracket"
     },
@@ -37,9 +37,9 @@
       "part": "shelf_bracket"
     },
     {
-      "max": 29098.514923,
+      "max": 28954.463,
       "metric": "volume_mm3",
-      "min": 28522.306706,
+      "min": 28666.359,
       "name": "shelf_bracket_volume",
       "part": "shelf_bracket"
     }
