@@ -13,6 +13,7 @@ Key space (every leaf merges independently)::
       parts.<id>.active_config                                  whole value
       parts.<id>.params.<name>                                  per parameter
       parts.<id>.solid_materials.<key>                          per key
+      parts.<id>.bom.<field>                                    per field
       parts.<id>.configs.<name>      entry add/remove, else field-wise:
         …<name>.label|description                               whole value
         …<name>.params.<param>                                  per parameter
@@ -77,7 +78,7 @@ CONFLICT_KEYS = ("kind", "key", "path", "base", "ours", "theirs")
 
 _MISSING = object()
 
-_PART_SUBDICTS = ("params", "solid_materials")
+_PART_SUBDICTS = ("params", "solid_materials", "bom")
 
 # Part fields that are a MAP of name -> entry, each entry merged field-wise
 # with the listed fields merged key-wise (PRD-012 configs).
