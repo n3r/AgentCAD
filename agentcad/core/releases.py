@@ -106,7 +106,8 @@ def _releases_map(service, project: str) -> dict:
 def list_releases(service, project: str) -> dict:
     """Every release of ``project``, rev order (``A`` before ``AA``)."""
     records = _releases_map(service, project)
-    rows = [copy.deepcopy(rec) for rev, rec in records.items()
+    rows = [_hydrate_bundle(service, project, copy.deepcopy(rec))
+            for rev, rec in records.items()
             if _is_rev(rev) and isinstance(rec, dict)]
     rows.sort(key=lambda r: (len(r.get("rev") or ""), r.get("rev") or ""))
     return {"project": project, "releases": rows}
@@ -120,7 +121,7 @@ def get_release(service, project: str, rev: str) -> dict:
         raise NotFoundError(
             f"release {rev!r} not found in project {project!r}",
             {"project": project, "rev": rev})
-    record = copy.deepcopy(record)
+    record = _hydrate_bundle(service, project, copy.deepcopy(record))
     return {"project": project, "release": record, "gate": record.get("gate")}
 
 
@@ -278,7 +279,7 @@ def release_finalize(service, project: str, rev: str) -> dict:
 
     status = record.get("status")
     if status == "released":
-        return copy.deepcopy(record)          # idempotent no-op
+        return _hydrate_bundle(service, project, copy.deepcopy(record))  # idempotent no-op
     _ensure_mutable(record)                    # superseded / terminal -> refuse
     if status != "in_review":
         raise ValidationError(
@@ -299,10 +300,44 @@ def release_finalize(service, project: str, rev: str) -> dict:
             "'approve' by a reviewer other than the author)",
             {"project": project, "rev": rev, "proposal": pid})
 
-    # Create the immutable tag at the approved head, then register the referrer.
+    # The tag must be the APPROVED state, not whatever the branch drifted to
+    # after approval — `branches.tag` auto-commits the working tree, so an
+    # uncommitted edit or a new commit past the approved head would be tagged
+    # (and immutable) while carrying the approval. Re-gate at finalize (review
+    # MED-2): refuse a dirty tree, and refuse a head that moved past every
+    # approved review's `source_head`.
+    source = proposal.get("source")
+    clean = _clean_tree_check(service, project, source)
+    if clean.get("status") != "pass":
+        raise ConflictError(
+            f"the release branch {source!r} has uncommitted changes since "
+            "approval; commit or discard them and re-approve before finalizing",
+            {"project": project, "rev": rev, "gate": clean})
+    self_approve = bool(policy.get("self_approve"))
+    author = proposal.get("author")
+    approved_heads = {
+        r.get("source_head") for r in (proposal.get("reviews") or [])
+        if r.get("verdict") == "approve" and (self_approve or r.get("actor") != author)
+        and r.get("source_head")}
+    head = service.history.head(service.store.path_of(project))
+    if head and approved_heads and head not in approved_heads:
+        raise ConflictError(
+            f"the release branch {source!r} moved since approval (head "
+            f"{head[:7]} was not the approved state); re-approve the proposal "
+            "then finalize",
+            {"project": project, "rev": rev, "head": head})
+
+    # Create the immutable tag, then register the referrer. If a prior finalize
+    # died AFTER tagging but BEFORE the record transitioned (the tag+RMW are not
+    # one atomic op), the tag already exists — treat that as an idempotent RESUME
+    # rather than a permanent wedge (there is no tag-delete tool), and keep the
+    # already-created tag (which pinned the approved state) — review MED-1.
     tag_name = f"release/{rev.lower()}"
-    branches.tag(project, tag_name, message=record.get("notes")
-                 or record.get("name") or tag_name)
+    try:
+        branches.tag(project, tag_name, message=record.get("notes")
+                     or record.get("name") or tag_name)
+    except ConflictError:
+        pass                                   # tag exists: resume the transition
     branches.add_referrer(project, tag_name, {"release": rev})
 
     # Transition the record (RMW the live branch manifest) and supersede the
@@ -345,7 +380,7 @@ def release_finalize(service, project: str, rev: str) -> dict:
         _persist_bundle(service, project, rev, {"error": str(exc)})
     # Re-read so the returned record carries the bundle the build just persisted.
     current = _releases_map(service, project).get(rev)
-    return copy.deepcopy(current)
+    return _hydrate_bundle(service, project, copy.deepcopy(current))
 
 
 # --------------------------------------------------------------- the bundle
@@ -441,6 +476,21 @@ def _zip_dir(src: Path, zip_path: Path) -> None:
                 zf.write(child, child.name)
 
 
+def _hydrate_bundle(service, project: str, record: dict) -> dict:
+    """Resolve a record's persisted project-relative bundle ``dir``/``zip``
+    (review LOW-5) back to absolute paths for the caller. Mutates + returns the
+    already-deepcopied ``record`` — the manifest keeps the portable relatives,
+    the API hands back runtime-usable absolutes."""
+    bundle = record.get("bundle") if isinstance(record, dict) else None
+    if isinstance(bundle, dict):
+        root = Path(service.store.path_of(project))
+        for key in ("dir", "zip"):
+            val = bundle.get(key)
+            if isinstance(val, str) and val and not Path(val).is_absolute():
+                bundle[key] = str(root / val)
+    return record
+
+
 def _persist_bundle(service, project: str, rev: str, bundle: dict) -> None:
     """RMW the manifest to stamp ``releases[rev].bundle``. This writes
     generation-owned output onto the record (the bundle pointer), so it does NOT
@@ -452,7 +502,20 @@ def _persist_bundle(service, project: str, rev: str, bundle: dict) -> None:
     releases = releases if isinstance(releases, dict) else {}
     record = releases.get(rev)
     if isinstance(record, dict):
-        record["bundle"] = bundle
+        # Store PROJECT-RELATIVE paths in the committed manifest (review LOW-5);
+        # the caller keeps the absolute summary it was handed.
+        root = Path(service.store.path_of(project)).resolve()
+
+        def _rel(value):
+            try:
+                return Path(str(value)).resolve().relative_to(root).as_posix()
+            except (ValueError, OSError):
+                return value
+        persisted = dict(bundle)
+        for key in ("dir", "zip"):
+            if key in persisted:
+                persisted[key] = _rel(persisted[key])
+        record["bundle"] = persisted
         manifest["releases"] = releases
         service.store.save_manifest(project, manifest)
         # Snapshot the bundle stamp (and any exports the build wrote) so the
@@ -614,6 +677,10 @@ def build_bundle(service, project: str, rev: str) -> dict:
     zip_path = dest.parent / f"{rev}.zip"
     _zip_dir(dest, zip_path)
 
+    # The RETURNED summary carries absolute paths (convenient for the immediate
+    # caller); `_persist_bundle` stores PROJECT-RELATIVE paths into the manifest
+    # (review LOW-5 — an absolute, machine-specific path in a git-tracked
+    # manifest is non-portable and invites cross-machine merge churn).
     summary = {
         "dir": str(dest),
         "zip": str(zip_path),

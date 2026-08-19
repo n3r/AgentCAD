@@ -111,12 +111,13 @@ def materialized_service(service, project: str, ref: str):
     root = default_work_root(service)
     cell = Path(tempfile.mkdtemp(prefix=f"agentcad-bom-{os.getpid()}-",
                                  dir=root)).resolve()
-    # Belt and braces (checks.py's W1 bug): the CELL — not the broad work root,
-    # which may legitimately contain the projects tree — must not be, hold or
-    # sit inside the project it materializes.
-    refuse_work_dir_overlap(cell, canonical, service.store.root)
     tree = cell / canonical.name
     try:
+        # Belt and braces (checks.py's W1 bug): the CELL — not the broad work
+        # root, which may legitimately contain the projects tree — must not be,
+        # hold or sit inside the project it materializes. INSIDE the try so a
+        # refusal still tears the freshly-mkdtemp'd cell down (review LOW-4).
+        refuse_work_dir_overlap(cell, canonical, service.store.root)
         history._run(canonical, "worktree", "prune", check=False)
         added = history._run(canonical, "worktree", "add", "--detach",
                              str(tree), sha, check=False)

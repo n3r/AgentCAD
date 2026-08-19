@@ -322,3 +322,36 @@ def test_release_finalize_over_the_registry(demo):
     assert "error" not in result, result
     assert result["status"] == "released"
     assert result["tag"] == "release/a"
+
+
+# --------------------------------------------- review fixes (MED-1, MED-2)
+
+def test_finalize_refuses_a_branch_that_moved_since_approval(demo):
+    """Review MED-2: `branches.tag` auto-commits the working tree, so finalizing
+    after the branch drifts past the approved head would tag (immutably) a state
+    nobody reviewed while carrying the approval. Finalize re-gates: a moved head
+    is a conflict, and no tag is created."""
+    service, registry = demo
+    pid = _start_green(service, registry)
+    _approve(service, registry, pid)
+    _set_wall(service, registry, 12.0)          # a new commit past the approved head
+    _on(service, "agent_a", "rel")
+    with pytest.raises(ConflictError):
+        releases.release_finalize(service, "demo", "A")
+    assert _tag_commit(service, "release/a") is None   # nothing tagged
+
+
+def test_finalize_resumes_when_the_tag_already_exists(demo):
+    """Review MED-1: the tag and the record transition are not one atomic op, so
+    a crash after tagging but before the record flips must be a resumable no-op,
+    not a permanent wedge (there is no tag-delete tool). Simulate the partial
+    state by pre-creating the tag, then finalize completes the transition."""
+    service, registry = demo
+    pid = _start_green(service, registry)
+    _approve(service, registry, pid)
+    _on(service, "agent_a", "rel")
+    service.branches.tag("demo", "release/a", message="a prior partial finalize")
+    record = releases.release_finalize(service, "demo", "A")   # resumes, not wedged
+    assert record["status"] == "released"
+    assert record["tag"] == "release/a"
+    assert _tag_commit(service, "release/a") is not None

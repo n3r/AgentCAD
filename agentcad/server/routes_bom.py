@@ -13,10 +13,13 @@ ordinary house types — this pack reuses ``routes_configs``'s strict ``_json``/
 ``_result``/``_body_keys`` rather than growing a second copy of the split (the
 ``routes_drawing`` precedent).
 
-The two export routes mirror how ``routes_drawing`` streams a regenerated
-drawing: call the tool (which writes ``exports/bom.<ext>``), then read those
-exact bytes back off disk and stream them with the right content-type and
-``Cache-Control: no-store`` — never the JSON envelope ``export_bom`` returns.
+The two export routes render the download IN-MEMORY from ``get_bom`` via the
+pure ``bom.to_csv``/``to_json`` (byte-identical to what the ``export_bom`` tool
+writes), streamed with the right content-type and ``Cache-Control: no-store``.
+They deliberately do NOT re-read the tool's shared ``exports/bom.<ext>`` file —
+two concurrent downloads with different params would clobber/half-read it
+(review MED-3). The ``export_bom`` tool still writes that one canonical file for
+agents.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
+from ..core import bom as _bom
 from .routes_configs import _body_keys, _json, _result
 
 
@@ -53,16 +57,21 @@ def build_router(service, registry) -> APIRouter:
 
     def _export(proj: str, fmt: str, structure: str | None, config: str | None,
                ref: str | None) -> Response:
-        args = _query_args(proj, structure, config, ref)
-        args["format"] = fmt
-        result = _result(registry.call("export_bom", args))
-        # export_bom always lands the file in the REAL project's exports/ (a
-        # ref is torn down with its throwaway worktree before this returns),
-        # so `result["path"]` is a path this process can read right back.
-        data = service.store.exports_dir(proj) / f"bom.{fmt}"
-        content_type = "text/csv" if fmt == "csv" else "application/json"
+        # Render the download IN-MEMORY from `get_bom` (review MED-3): the
+        # `export_bom` tool writes the ONE canonical `exports/bom.<fmt>` for
+        # agents, so reading that shared file back would let two concurrent
+        # downloads with different params (`?structure=flat` vs `indented`, a
+        # `?ref=` pin vs the live tree) clobber or half-read each other's bytes.
+        # The pure `to_csv`/`to_json` renderers over the `get_bom` result are
+        # byte-identical to what the tool writes, with no shared file.
+        bom = _result(registry.call("get_bom",
+                                    _query_args(proj, structure, config, ref)))
+        if fmt == "csv":
+            content, content_type = _bom.to_csv(bom), "text/csv"
+        else:
+            content, content_type = _bom.to_json(bom), "application/json"
         return Response(
-            content=data.read_bytes(),
+            content=content,
             media_type=content_type,
             headers={"Cache-Control": "no-store"},
         )
