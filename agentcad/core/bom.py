@@ -25,11 +25,23 @@ indented BOM of the same project carry byte-identical totals.
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 from dataclasses import dataclass
 
 from .model import NotFoundError, ValidationError
 
 STRUCTURES = ("flat", "indented")
+
+#: The CSV column order (design Decision 4). ``cost_source`` is its own column
+#: so a material estimate is never read as a quote (the PRD cost-honesty risk),
+#: and ``mass_source`` so an unbuilt/stale mass is visible in the artifact.
+CSV_HEADER = (
+    "item", "qty", "part_number", "name", "config", "material",
+    "unit_mass_g", "unit_cost_usd", "ext_cost_usd", "source",
+    "cost_source", "mass_source",
+)
 
 
 @dataclass
@@ -112,7 +124,8 @@ def _source_name(service, ref) -> str:
 
 
 def build_bom(service, proj: str, structure: str = "flat",
-              config: str | None = None) -> dict:
+              config: str | None = None,
+              generated_ref: str | None = None) -> dict:
     """Build the BOM for ``proj``.
 
     ``structure="flat"`` groups leaves by ``(origin_project, part_id, config)``
@@ -124,6 +137,11 @@ def build_bom(service, proj: str, structure: str = "flat",
     leaf only when the leaf's instance binds no configuration of its own AND the
     part actually declares ``config`` (an instance binding always wins, and a
     part that does not declare it is untouched).
+
+    ``generated_ref`` is provenance only — the branch/tag/commit *proj* was
+    materialized at when the caller built the BOM against a ref-pinned ephemeral
+    service (FR5), or ``None`` for the live working tree. It is recorded
+    verbatim in the result; the walk is identical either way.
     """
     if structure not in STRUCTURES:
         raise ValidationError(
@@ -168,6 +186,7 @@ def build_bom(service, proj: str, structure: str = "flat",
         "lines": lines,
         "totals": _totals(groups, unit),
         "warnings": warnings,
+        "generated_ref": generated_ref,
     }
 
 
@@ -221,6 +240,61 @@ def _totals(groups: dict[tuple, int], unit: dict[tuple, dict]) -> dict:
         if info["unit_cost_usd"] is not None:
             cost += info["unit_cost_usd"] * qty
     return {"mass_g": mass, "cost_usd": cost}
+
+
+# ------------------------------------------------------------------- exports
+
+
+def _cell(value):
+    """A CSV cell: ``None`` → empty string; a value → itself (``csv.writer``
+    stringifies it, and ``str(float)`` is the shortest round-tripping repr)."""
+    return "" if value is None else value
+
+
+def to_csv(bom: dict) -> bytes:
+    """A BOM rendered as RFC-4180 CSV bytes (UTF-8, ``\\r\\n`` terminator).
+
+    ``csv.writer``'s default ``QUOTE_MINIMAL`` quotes any field containing a
+    comma, a double quote or a newline and doubles embedded quotes, so a label
+    like ``Bracket, "L" type`` round-trips through ``csv.reader`` unchanged
+    (AC3). One header row, one row per line, then a **totals row** carrying the
+    total mass (under ``unit_mass_g``) and total cost (under ``ext_cost_usd``)
+    — the same totals the JSON export reports.
+    """
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer)          # default lineterminator is "\r\n"
+    writer.writerow(CSV_HEADER)
+    for line in bom["lines"]:
+        writer.writerow([
+            _cell(line.get("item")), _cell(line.get("qty")),
+            _cell(line.get("part_number")), _cell(line.get("label")),
+            _cell(line.get("config")), _cell(line.get("material")),
+            _cell(line.get("unit_mass_g")), _cell(line.get("unit_cost_usd")),
+            _cell(line.get("ext_cost_usd")), _cell(line.get("source")),
+            _cell(line.get("cost_source")), _cell(line.get("mass_source")),
+        ])
+    totals = bom["totals"]
+    writer.writerow([
+        "TOTAL", "", "", "", "", "",
+        _cell(totals.get("mass_g")), "", _cell(totals.get("cost_usd")),
+        "", "", "",
+    ])
+    return buffer.getvalue().encode("utf-8")
+
+
+def to_json(bom: dict) -> bytes:
+    """A BOM rendered as deterministic JSON bytes — mirrors FR2: ``lines``,
+    ``totals``, ``warnings``, ``structure`` and ``generated_ref``. ``sort_keys``
+    and no wall-clock, so two exports of one BOM are byte-identical."""
+    payload = {
+        "structure": bom.get("structure"),
+        "lines": bom["lines"],
+        "totals": bom["totals"],
+        "warnings": bom.get("warnings", []),
+        "generated_ref": bom.get("generated_ref"),
+    }
+    return (json.dumps(payload, sort_keys=True, indent=2)
+            + "\n").encode("utf-8")
 
 
 # ----------------------------------------------------------- unit resolution

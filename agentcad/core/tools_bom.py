@@ -7,11 +7,13 @@ is the agent surface and the manifest write.
 
 from __future__ import annotations
 
-from .bom import build_bom
+from .bom import build_bom, to_csv, to_json
 from .model import NotFoundError, ValidationError
 from .tools import Tool, schema
 
 _MAX_FIELD_LEN = 200
+#: The export formats and the extension each writes.
+_EXPORT_FORMATS = ("csv", "json")
 #: The string fields set_bom_fields writes into parts[i]["bom"].
 _STRING_FIELDS = ("part_number", "supplier", "url")
 
@@ -31,12 +33,45 @@ def _clean_str(name: str, value) -> str:
 
 def register(registry, service) -> None:
 
+    def _bom_at(project: str, structure: str, config: str | None,
+                ref: str | None) -> dict:
+        """The BOM for *project*, at *ref* when given (FR5) else the working
+        tree. A ref materializes a throwaway detached worktree and computes the
+        BOM against an ephemeral service rooted there, so a released tag's BOM
+        reproduces after the fact without touching the user's project."""
+        if ref is None:
+            return build_bom(service, project, structure=structure,
+                             config=config)
+        from ._worktree import materialized_service
+        with materialized_service(service, project, ref) as (eph, _reg, name):
+            return build_bom(eph, name, structure=structure, config=config,
+                             generated_ref=ref)
+
     def get_bom(project: str, config: str | None = None,
                 structure: str = "flat", ref: str | None = None) -> dict:
-        # `ref` (a reproducible ref-pinned BOM) is a Slice 2 feature — accepted
-        # here so the tool signature is stable, ignored until the tag-capable
-        # ephemeral service lands.
-        return build_bom(service, project, structure=structure, config=config)
+        return _bom_at(project, structure, config, ref)
+
+    def export_bom(project: str, format: str = "csv",
+                   config: str | None = None, structure: str = "flat",
+                   ref: str | None = None) -> dict:
+        if format not in _EXPORT_FORMATS:
+            raise ValidationError(
+                f"format must be one of {_EXPORT_FORMATS}", {"got": format})
+        bom = _bom_at(project, structure, config, ref)
+        data = to_csv(bom) if format == "csv" else to_json(bom)
+        # The artifact lands in the REAL project's exports/ even for a ref
+        # (the throwaway worktree is torn down); exports_dir resolves the
+        # user's tree, never the ephemeral service's.
+        out = service.store.exports_dir(project) / f"bom.{format}"
+        out.write_bytes(data)
+        return {
+            "path": str(out),
+            "size_bytes": len(data),
+            "format": format,
+            "lines": len(bom["lines"]),
+            "totals": bom["totals"],
+            "warnings": bom["warnings"],
+        }
 
     def set_bom_fields(project: str, part_id: str,
                        part_number: str | None = None,
@@ -94,12 +129,40 @@ def register(registry, service) -> None:
                            "description": "Assembly-wide configuration to apply "
                                           "where an instance binds none"},
                 "ref": {"type": "string",
-                        "description": "Branch or tag for a reproducible BOM "
-                                       "(reserved; not yet honored)"},
+                        "description": "Branch, tag or commit for a "
+                                       "reproducible BOM as of that ref"},
             },
             ["project"],
         ),
         get_bom,
+    ))
+
+    registry.register(Tool(
+        "export_bom",
+        "Write the project's BOM to exports/bom.csv or exports/bom.json. "
+        "CSV is RFC-4180 (a header row, one row per line, a TOTAL row with the "
+        "total mass and cost; cost_source and mass_source are their own "
+        "columns so a material estimate is never read as a quote). JSON mirrors "
+        "get_bom (lines, totals, warnings, structure, generated_ref) with "
+        "sorted keys. ref pins the BOM to a branch/tag/commit but the file "
+        "always lands in the real project's exports/. structure and config "
+        "behave as in get_bom.",
+        schema(
+            {
+                "project": {"type": "string", "description": "Project name"},
+                "format": {"type": "string",
+                           "description": "csv (default) or json"},
+                "structure": {"type": "string",
+                              "description": "flat (default) or indented"},
+                "config": {"type": "string",
+                           "description": "Assembly-wide configuration to apply "
+                                          "where an instance binds none"},
+                "ref": {"type": "string",
+                        "description": "Branch, tag or commit to pin the BOM"},
+            },
+            ["project"],
+        ),
+        export_bom,
     ))
 
     registry.register(Tool(
