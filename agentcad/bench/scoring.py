@@ -24,13 +24,18 @@ is a rule about *honesty*, not about arithmetic:
    therefore guarded by :func:`_blames_harness`, and every candidate-caused
    failure names itself in `detail["reason"]` instead.
 
-3. **The rubric is injected into the copy, it RE-BINDS `SPECS`, and only its
-   own rows are scored.** Whatever the candidate declared for itself is
-   discarded, because the last module-level binding wins; `<copy>/specs.py` is
-   replaced or **deleted** so a candidate-authored project block never scores;
+3. **The rubric is injected into the copy, it RE-BINDS `SPECS`, only its own
+   rows are scored, and a skip the candidate induced is a failure.**
+   Whatever the candidate declared for itself is discarded, because the last
+   module-level binding wins; `<copy>/specs.py` is replaced or **deleted** so
+   a candidate-authored project block never scores;
    and the `specs` denominator counts only the rows the injected blocks own, so
    a candidate cannot dilute a failing rubric with ten filler parts that each
-   declare a trivially-true check of their own.
+   declare a trivially-true check of their own. A `skip` normally leaves the
+   denominator ("we did not measure"), but :data:`CANDIDATE_SKIP_REASONS` — a
+   `clearance` check skipped `mesh_only`, an `interference_free` check skipped
+   `no_instances` — is the candidate making a declared check unmeasurable, and
+   it is scored as a failure for the same reason rule 2 exists.
 
 The module is OCP-free by contract: it never imports build123d or OCP, and the
 one mesh question it has to ask (`is this side an STL?`) is answered by suffix
@@ -83,6 +88,30 @@ _MIN_CALL_S = 1.0
 
 SUBSCORE_STATUSES = ("ok", "skipped_mesh", "error", "not_applicable")
 
+#: `specs` skip reasons the **candidate** induced, which the bench scores as
+#: failures (design §4.3's skip rule, narrowed by an orchestrator ruling).
+#:
+#: A `skip` is normally "we did not measure", and PRD-003 keeps such rows out
+#: of every fraction — right, when the reason is the machine. Two of
+#: `core/specs.py`'s reasons are not about the machine at all:
+#:
+#: * ``mesh_only`` (`specs.py:1170`) — a `clearance` check whose side is an
+#:   imported mesh. The candidate chose to hand back a mesh.
+#: * ``no_instances`` (`specs.py:1120`) — a project-scope `interference_free`
+#:   or `clearance` check with fewer than two instances placed. The candidate
+#:   chose not to build the assembly the rubric measures.
+#:
+#: Left out of the fraction, either one **pays** a candidate for making a
+#: declared check unmeasurable — the same exploit `_blames_harness` closes one
+#: level up. So they are counted, and counted as failures.
+#:
+#: The rest stay out, because none of them is the candidate's doing:
+#: ``fem_extra_missing`` is this machine without the `[fem]` extra,
+#: ``unsupported_scope`` is the *rubric author* declaring a part-scope check at
+#: project scope, and ``deferred`` is a rebuild-tier row a full run never
+#: emits. (A budget row is an `error`, not a skip — `specs._budget_row`.)
+CANDIDATE_SKIP_REASONS = ("mesh_only", "no_instances")
+
 #: The kernel failures that are **ours**. A timeout is the budget or a hung
 #: worker; a crash is a worker that is gone. Everything else a worker reports —
 #: a script that raised, a contract the item did not meet, an OCCT failure
@@ -105,13 +134,28 @@ COPY_IGNORE = (".cache", "exports", ".history")
 #: cell knows immediately which half they authored.
 BLOCK_HEADER = "# --- agentcad-bench: task rubric (appended by the scorer) ---"
 
-#: Everything a candidate's own files can throw on the way into the cell. A
-#: non-UTF-8 byte in a part script raises `UnicodeDecodeError` (a `ValueError`,
-#: **not** an `OSError`), a `parts/<id>.py` that is a directory or a dangling
-#: symlink comes out of `copytree` as `shutil.Error`, and a submission that is
-#: not a project at all is an `AppError`. All four are the candidate's doing,
-#: so all four are a zeroed score rather than a traceback out of `score()`.
-_PREPARE_FAILURES = (AppError, OSError, UnicodeDecodeError, shutil.Error)
+#: Everything a candidate's own files can throw on the way into the cell —
+#: **and it is a wide net on purpose**, because every one of these was measured
+#: escaping `score()` as a traceback:
+#:
+#: * a non-UTF-8 byte in a part script is a `UnicodeDecodeError`, which is a
+#:   `ValueError` and **not** an `OSError`;
+#: * a `parts/<id>.py` that is a directory or a dangling symlink comes out of
+#:   `copytree` as `shutil.Error`;
+#: * a submission that is not a project at all is an `AppError`;
+#: * a `project.json` that is valid JSON but structurally wrong throws from
+#:   whichever reader trusts it first — `parts: [{"label": "a"}]` is a
+#:   `KeyError` out of `store.part_ids`, `assembly: "nope"` an `AttributeError`
+#:   inside `store.open`. `ProjectStore` validates that the document parses and
+#:   names a project; it does not validate the shape of everything under it.
+#:
+#: The width costs us the ability to tell a harness bug in `_prepare` from a
+#: malformed submission, and that trade is deliberate: it buys the guarantee
+#: that no manifest a candidate can author is worth an `error` — which,
+#: renormalised away, is worth points (rule 2). The net covers `_prepare`
+#: only; the measurement itself still classifies with `_blames_harness`.
+_PREPARE_FAILURES = (AppError, OSError, shutil.Error, KeyError, TypeError,
+                     AttributeError, ValueError)
 
 #: The subscores that read a build result. Nothing outside this tuple can make
 #: the scorer build a part.
@@ -239,7 +283,9 @@ def metric_of(metrics: dict, key: str):
         index = _COM_AXES[key]
         return None if len(com) <= index else float(com[index])
     value = metrics.get(key)
-    return value if value is None or _finite(value) else value
+    # A non-finite measurement is not a number, and "we have no number" is the
+    # honest answer — `allow_nan=False` would refuse to serialise the other.
+    return value if value is None or _finite(value) else None
 
 
 def window_satisfied(window, measured) -> bool:
@@ -434,6 +480,12 @@ class Scorer:
         # the copy, and `write_guard` would materialise a branch tree.
         service, _registry, proj = _ephemeral_service(cell, tree,
                                                       self.service.kernel)
+        # Probe the manifest's SHAPE once, here, inside the guard. `store.open`
+        # only checks that `project.json` parses and carries a name, so a
+        # structurally wrong document survives it and detonates in the first
+        # reader that trusts it — historically at `_build_all`'s `part_ids`,
+        # which sits outside every guard there is.
+        service.store.part_ids(proj)
         return service, proj, injected
 
     def _measure(self, service, task: Task, proj: str, injected: list,
@@ -532,7 +584,14 @@ class Scorer:
         which as a bare `except Exception` marked four subscores `error` and
         renormalised the candidate's whole score onto the one subscore left.
         """
-        present = set(service.store.part_ids(proj))
+        try:
+            present = set(service.store.part_ids(proj))
+        except Exception as exc:  # noqa: BLE001 — belt and braces behind
+            # `_prepare`'s probe: a manifest we cannot even enumerate is a
+            # candidate with no parts, never a subscore nobody scores.
+            return {part_id: {"state": "failed", "result": None,
+                              "reason": _error(exc)["type"]}
+                    for part_id in task.target_parts}
         out: dict[str, dict] = {}
         for part_id in task.target_parts:
             if part_id not in present:
@@ -684,8 +743,16 @@ class Scorer:
         rows = self._owned_rows(report, task, injected)
         buckets: dict[str, list] = {"pass": [], "fail": [], "skip": [],
                                     "error": []}
+        induced: list = []
         for row in rows:
-            buckets.setdefault(row.get("status"), []).append(row.get("id"))
+            status = row.get("status")
+            if status == "skip" and \
+                    row.get("reason") in CANDIDATE_SKIP_REASONS:
+                # The candidate made a declared check unmeasurable: a failure,
+                # not a row that quietly leaves the denominator.
+                status = "fail"
+                induced.append(row.get("id"))
+            buckets.setdefault(status, []).append(row.get("id"))
         # `filter(None, …)`: `assign_ids` stamps every row, but a `None` in a
         # list being sorted against strings is a TypeError, and one malformed
         # row may not be the end of a whole score.
@@ -696,6 +763,10 @@ class Scorer:
             "errors": sorted(filter(None, buckets["error"])),
             "total": len(rows),
         }
+        if induced:
+            # Named separately so a reader can tell a measured failure from a
+            # check the candidate made unmeasurable.
+            detail["skipped_as_failed"] = sorted(filter(None, induced))
         # A skip is "we did not measure", so it is out of the denominator
         # entirely: scoring it as a pass would launder a machine-specific gap
         # into a green, and scoring it as a fail would punish a candidate for
@@ -932,6 +1003,7 @@ class Scorer:
 
 
 __all__ = ["SCORE_SCHEMA", "IOU_TIMEOUT_S", "SUBSCORE_STATUSES",
+           "CANDIDATE_SKIP_REASONS",
            "BLOCK_HEADER", "Scorer", "inject_rubric", "interference_fraction",
            "metric_of", "refuse_scoring_overlap", "total_of",
            "window_satisfied"]

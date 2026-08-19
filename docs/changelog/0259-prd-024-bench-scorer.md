@@ -58,9 +58,11 @@ event, no manifest key.
     measure". Ownership is read off `report["parts"][pid]["checks"]` for the
     parts `inject_rubric` returned and `report["project_checks"]["checks"]`
     only when the task ships `specs/project.py`, never parsed out of an id
-    prefix (a part legitimately named `project` would collide). The report is
-    **never embedded**: `specs._report` stamps a `generated` timestamp and one
-    timestamp anywhere in the body would end AC3.
+    prefix (a part legitimately named `project` would collide). A `skip` whose
+    reason is in `CANDIDATE_SKIP_REASONS` — `mesh_only`, `no_instances` — is
+    counted as a **failure** rather than left out of the denominator. The
+    report is **never embedded**: `specs._report` stamps a `generated`
+    timestamp and one timestamp anywhere in the body would end AC3.
   - `geometry` — **per part**, `value = mean` over every `target.parts` entry,
     one `iou` kernel call each with `timeout_s=IOU_TIMEOUT_S` (300 s;
     **explicitly**, because the client's own default is a 60 s build timeout)
@@ -124,15 +126,14 @@ event, no manifest key.
 
 ## Files
 - `agentcad/bench/scoring.py` — new (the whole scorer).
-- `tests/test_bench_scoring.py` — new, 30 tests.
+- `tests/test_bench_scoring.py` — new, 35 tests.
 - `docs/changelog/0259-prd-024-bench-scorer.md` — this entry.
 
 ## Tests
 ```
-$ uv run pytest -q tests/test_bench_scoring.py tests/test_bench_tasks.py \
-      tests/test_bench_kernel_iou.py
-..................................................................       [100%]
-66 passed in 4.52s
+$ uv run pytest -q tests/test_bench_scoring.py tests/test_bench_kernel_iou.py
+....................................................                     [100%]
+52 passed in 4.21s
 ```
 ```
 $ uv run ruff check agentcad/bench/scoring.py tests/test_bench_scoring.py
@@ -206,7 +207,7 @@ failure classified as `error`, therefore **excluded**, therefore
 | C4 | the `specs` denominator counted every check in the project — nine filler parts moved 0.667 → 0.917 — and a candidate's own `specs.py` scored | R3: rubric-owned rows only, and `<copy>/specs.py` is deleted when the task ships none |
 | I5 | a non-UTF-8 byte in a part script (or a `parts/<id>.py` that is a directory) crashed `score()` | the copy **and** the injection moved inside the guard; `_PREPARE_FAILURES` adds `UnicodeDecodeError` (a `ValueError`, not an `OSError`) and `shutil.Error` |
 | I6 | only the cell path was scrubbed; the task tree, submission and projects root could still reach `detail.error.message` | four labelled needles, longest first |
-| I7 | no tests for arithmetic with no reference task yet | 14 kernel-free unit tests over `interference_fraction`, `metric_of`, `window_satisfied`, `_metrics`, `_timeout`/`_budget_broke`, `_scrub`, and the zero-weight/zero-build short-circuits |
+| I7 | no tests for arithmetic with no reference task yet | 13 kernel-free unit tests over `interference_fraction`, `metric_of`, `window_satisfied`, `_metrics`, `_timeout`/`_budget_broke`, `_scrub`, and the zero-weight/zero-build short-circuits |
 
 Also taken: `C(n,2)` is `n*(n-1)//2` rather than `len(list(combinations(…)))`,
 and `_assert_statuses` checks every emitted status against
@@ -218,3 +219,52 @@ deleted-script test measures `specs` at `0.0 / "ok" / "spec_run_refused"`
 rather than 1.0 for the intact part's rubric. That is the candidate's doing
 and it costs them the subscore at **full weight** — no exclusion, no
 renormalisation — which is exactly R1's point.
+
+## Review round 2 (fixes in this same entry)
+
+**One new Important, from the round-1 diff.** A candidate-authored
+`project.json` that is *valid JSON but structurally wrong* escaped `score()`
+entirely, and would have been classified as a harness failure if it had been
+caught — the C2 exploit in a new spelling. `ProjectStore` validates that the
+document parses and names a project; it validates nothing under that. Measured:
+`parts: [{"label": "a"}]` is a `KeyError 'id'` at `_build_all`'s
+`store.part_ids`, which sat **outside** every guard; `assembly: "nope"` is an
+`AttributeError` (`'str' object has no attribute 'setdefault'`) inside
+`store.open`, i.e. inside `_prepare` but past a `_PREPARE_FAILURES` tuple that
+caught neither.
+
+- `_PREPARE_FAILURES` is now
+  `(AppError, OSError, shutil.Error, KeyError, TypeError, AttributeError,
+  ValueError)`. Deliberately wide, and the docstring says why: it costs the
+  ability to tell a harness bug *in `_prepare`* from a malformed submission,
+  and it buys the guarantee that **no manifest a candidate can author is worth
+  an `error`** — which, renormalised away, is worth points. The net covers
+  `_prepare` only; the measurement still classifies with `_blames_harness`.
+- `_prepare` **probes the manifest's shape once**, inside the guard
+  (`service.store.part_ids(proj)` right after `_ephemeral_service`), so a
+  structurally wrong document is an unopenable submission — a zeroed score with
+  a note — instead of a traceback out of a reader that trusted it.
+- `_build_all` guards its own `part_ids` too (belt and braces behind the
+  probe): a manifest we cannot enumerate is a candidate with no parts.
+
+**Orchestrator ruling — a `skip` the candidate induced is a failure.** New
+module constant `CANDIDATE_SKIP_REASONS = ("mesh_only", "no_instances")`,
+enumerated from `core/specs.py:1170` (a `clearance` check whose side is an
+imported mesh) and `:1120` (a project-scope `interference_free`/`clearance`
+check with fewer than two instances placed). Both are choices the candidate
+made, and leaving them out of the denominator **pays** a candidate for making a
+declared check unmeasurable — `_blames_harness`'s exploit one level down. They
+now count, and count as failures, named separately in
+`detail["skipped_as_failed"]` so a reader can still tell a measured failure
+from an induced skip. Everything else stays out, because it is not the
+candidate's: `fem_extra_missing` is this machine without the `[fem]` extra,
+`unsupported_scope` is the *rubric author* declaring a part-scope check at
+project scope, and `deferred` is a rebuild-tier row a full run never emits. (A
+budget row is an `error`, not a skip — `specs._budget_row`.)
+
+Minors taken: `metric_of`'s no-op ternary (`else value` → `else None`, so a
+non-finite measurement really is "no number"); the changelog's I7 count
+corrected 14 → 13; and two tests that were missing branch coverage —
+`inject_rubric`'s project-block **write** branch and `_owned_rows`'
+project-scope branch, exercised together by a tmp task fixture that ships
+`specs/project.py`.

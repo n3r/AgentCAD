@@ -788,3 +788,118 @@ def test_an_unreadable_window_document_names_the_task_root_as_a_token(
     cleaned = _scrub(row, ((task.root, "<task>"),))
     assert str(task.root) not in cleaned["detail"]["error"]["message"]
     assert "<task>" in cleaned["detail"]["error"]["message"]
+
+
+# --------------------------- a manifest a candidate authored is not trusted
+# `ProjectStore` validates that `project.json` parses and names a project. It
+# does not validate the shape of everything under it, so a structurally wrong
+# document detonates in the first reader that trusts it — and an exception
+# escaping `score()` (or classified as harness) is rule 2 all over again.
+
+@pytest.mark.parametrize("manifest,where", [
+    ('{"schema_version": 1, "name": "p1", "units": "mm",'
+     ' "parts": [{"label": "a"}]}', "a part entry with no id"),
+    ('{"schema_version": 1, "name": "p2", "units": "mm", "parts": [],'
+     ' "assembly": "nope"}', "an assembly that is a string"),
+])
+def test_a_structurally_wrong_manifest_is_a_zeroed_score(scorer, tmp_path,
+                                                         manifest, where):
+    task = bench_tasks.load_task(SEED)
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "project.json").write_text(manifest)
+
+    score = scorer.score(task, broken)      # must not raise
+    _assert_statuses(score)
+    assert score["total"] == 0.0, where
+    for name in ("built", "valid", "specs", "geometry", "metrics"):
+        assert score["subscores"][name]["status"] == "ok", (where, name)
+        assert score["subscores"][name]["value"] == 0.0, (where, name)
+    # Nothing excluded, so nothing renormalised: the declared weights stand.
+    assert score["weights_effective"] == pytest.approx(
+        {"built": 0.15, "valid": 0.1, "specs": 0.1, "geometry": 0.5,
+         "metrics": 0.15})
+    # It took the unopenable-submission path, not four coincidental zeros.
+    assert any("could not be opened" in note for note in score["notes"]), where
+
+
+# ------------------------------- a skip the candidate induced is a failure
+
+def test_a_candidate_induced_skip_is_a_fail_and_a_machine_skip_is_not(
+        bare_scorer):
+    """`mesh_only` and `no_instances` are the candidate's choices, not this
+    machine's limits. Out of the denominator they PAY a candidate for making a
+    declared check unmeasurable; `fem_extra_missing` and `unsupported_scope`
+    genuinely are not the candidate's and stay out."""
+    report = {"checks": [
+        {"id": "p:a", "status": "pass"},
+        {"id": "p:b", "status": "skip", "reason": "no_instances"},
+        {"id": "p:c", "status": "skip", "reason": "mesh_only"},
+        {"id": "p:d", "status": "skip", "reason": "fem_extra_missing"},
+        {"id": "p:e", "status": "skip", "reason": "unsupported_scope"},
+    ], "parts": {"p": {"checks": ["p:a", "p:b", "p:c", "p:d", "p:e"]}}}
+    task = _weighted(bench_tasks.load_task(SEED), specs=1.0)
+    service = SimpleNamespace(
+        specs=SimpleNamespace(run=lambda *a, **k: report))
+
+    row = bare_scorer._specs(service, task, "proj", ["p"], None, [])
+    assert row["status"] == "ok"
+    # One pass over a denominator of three: the two induced skips are failures.
+    assert row["value"] == pytest.approx(1 / 3)
+    assert row["detail"]["failed"] == ["p:b", "p:c"]
+    assert row["detail"]["skipped_as_failed"] == ["p:b", "p:c"]
+    # The machine's two are still skips, still out of the denominator.
+    assert row["detail"]["skipped"] == ["p:d", "p:e"]
+    assert row["detail"]["passed"] == 1
+    assert row["detail"]["total"] == 5
+
+
+_PROJECT_RUBRIC = '''from agentcad.toolkit.specs import (
+    check_interference_free as _bench_check_interference_free,
+)
+
+SPECS = [_bench_check_interference_free(name="no_overlap",
+                                        requirement="MFD-001")]
+'''
+
+
+def test_a_project_rubric_is_written_and_its_rows_are_owned(scorer, tmp_path):
+    """Covers `inject_rubric`'s project-block WRITE branch, `_owned_rows`'
+    project-scope branch, and the `no_instances` ruling end to end.
+
+    The seed's reference project places no instances, so the injected
+    project-scope `interference_free` check skips with `no_instances` — and
+    that is the candidate's assembly, so it scores as a failure: 3 of 4.
+    """
+    root, bundle = _bundle(tmp_path, specs={
+        "project": "specs/project.py",
+        "parts": {"spacer_plate": "specs/parts/spacer_plate.py"}})
+    (bundle / "specs" / "project.py").write_text(_PROJECT_RUBRIC)
+    task = bench_tasks.load_task(SEED, root=root)
+    assert task.specs_project_path is not None
+
+    score = scorer.score(task, task.reference_project)
+    _assert_statuses(score)
+    specs = score["subscores"]["specs"]
+    assert specs["status"] == "ok"
+    assert specs["detail"]["total"] == 4          # 3 part rows + 1 project row
+    assert specs["detail"]["skipped_as_failed"] == ["project:no_overlap"]
+    assert specs["detail"]["failed"] == ["project:no_overlap"]
+    assert specs["value"] == pytest.approx(3 / 4)
+
+
+def test_a_candidates_project_rows_are_not_owned_without_a_task_block(
+        bare_scorer):
+    """The mirror image: the seed ships no `specs/project.py`, so even if a
+    project row somehow exists it is not the rubric's and is not scored."""
+    report = {"checks": [{"id": "spacer_plate:a", "status": "pass"},
+                         {"id": "project:self_awarded", "status": "pass"}],
+              "parts": {"spacer_plate": {"checks": ["spacer_plate:a"]}},
+              "project_checks": {"checks": ["project:self_awarded"]}}
+    task = _weighted(bench_tasks.load_task(SEED), specs=1.0)
+    assert task.specs_project_path is None
+    service = SimpleNamespace(
+        specs=SimpleNamespace(run=lambda *a, **k: report))
+    row = bare_scorer._specs(service, task, "proj", ["spacer_plate"], None, [])
+    assert row["detail"]["total"] == 1
+    assert row["detail"]["passed"] == 1
