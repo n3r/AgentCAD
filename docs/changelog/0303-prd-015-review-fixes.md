@@ -1,4 +1,4 @@
-# 0278 — 2026-08-20 — PRD-015 review fixes: atomic-resume finalize, approved-state tag, race-free BOM downloads
+# 0303 — 2026-08-20 — PRD-015 review fixes: atomic-resume finalize, approved-state tag, race-free BOM downloads
 
 ## Summary
 

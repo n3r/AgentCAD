@@ -1,4 +1,4 @@
-# 0276 — 2026-08-20 — PRD-015 slice 5: the reproducible release bundle
+# 0301 — 2026-08-20 — PRD-015 slice 5: the reproducible release bundle
 
 ## Summary
 

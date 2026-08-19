@@ -1,4 +1,4 @@
-# 0274 — 2026-08-20 — PRD-015 slice 4: release_finalize, tag pinning, immutability
+# 0299 — 2026-08-20 — PRD-015 slice 4: release_finalize, tag pinning, immutability
 
 ## Summary
 

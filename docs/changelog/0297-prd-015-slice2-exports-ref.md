@@ -1,4 +1,4 @@
-# 0272 — 2026-08-20 — PRD-015 slice 2: BOM exports + ref-pinned BOM via a tag-capable worktree
+# 0297 — 2026-08-20 — PRD-015 slice 2: BOM exports + ref-pinned BOM via a tag-capable worktree
 
 ## Summary
 

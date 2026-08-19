@@ -1,4 +1,4 @@
-# 0271 — 2026-08-19 — PRD-015 slice 1: the zero-kernel BOM builder
+# 0296 — 2026-08-19 — PRD-015 slice 1: the zero-kernel BOM builder
 
 ## Summary
 

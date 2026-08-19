@@ -1,4 +1,4 @@
-# 0273 — 2026-08-20 — PRD-015 slice 3: release records, the gate, and release_start
+# 0298 — 2026-08-20 — PRD-015 slice 3: release records, the gate, and release_start
 
 ## Summary
 

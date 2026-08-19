@@ -1,4 +1,4 @@
-# 0270 — 2026-08-19 — PRD-015 BOM & release management: design spec + implementation plan
+# 0295 — 2026-08-19 — PRD-015 BOM & release management: design spec + implementation plan
 
 ## Summary
 

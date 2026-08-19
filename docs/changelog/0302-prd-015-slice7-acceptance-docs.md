@@ -1,4 +1,4 @@
-# 0277 — 2026-08-20 — PRD-015 slice 7: acceptance suite + documentation
+# 0302 — 2026-08-20 — PRD-015 slice 7: acceptance suite + documentation
 
 ## Summary
 

@@ -1,4 +1,4 @@
-# 0275 — 2026-08-20 — PRD-015 slice 6: BOM/release HTTP routes + the browser UI
+# 0300 — 2026-08-20 — PRD-015 slice 6: BOM/release HTTP routes + the browser UI
 
 ## Summary
 
