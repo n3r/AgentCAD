@@ -28,6 +28,43 @@ from .model import (
 
 SCHEMA_VERSION = 2  # v2 adds part kind/source (reference imports) and instance mates
 
+_PATTERN_KINDS = ("linear", "polar")
+
+
+def _validate_pattern(iid: str, pattern) -> None:
+    """A pattern spec: {kind, count>=1, step_mm? (linear), angle_step_deg?
+    (polar), axis?, center?}. Kept in one place so set_instances and the
+    focused set_pattern verb refuse the same bad specs (PRD-013 Decision 1)."""
+    if not isinstance(pattern, dict):
+        raise ValidationError(f"instance {iid!r}: pattern must be an object")
+    kind = pattern.get("kind")
+    if kind not in _PATTERN_KINDS:
+        raise ValidationError(
+            f"instance {iid!r}: pattern.kind must be one of {_PATTERN_KINDS}"
+        )
+    count = pattern.get("count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValidationError(
+            f"instance {iid!r}: pattern.count must be an integer >= 1"
+        )
+    if kind == "linear" and pattern.get("step_mm") is None:
+        raise ValidationError(
+            f"instance {iid!r}: a linear pattern needs step_mm"
+        )
+    if kind == "polar" and pattern.get("angle_step_deg") is None:
+        raise ValidationError(
+            f"instance {iid!r}: a polar pattern needs angle_step_deg"
+        )
+
+
+def _validate_assembly_ref(iid: str, ref) -> None:
+    """A sub-assembly reference: {project, version?, config?}. `version`/`config`
+    are reserved (Phase 3); MVP only requires a project name/path."""
+    if not isinstance(ref, dict) or not ref.get("project"):
+        raise ValidationError(
+            f"instance {iid!r}: assembly reference needs a project"
+        )
+
 #: "this keyword was not passed", for a field whose ``None`` is a real value.
 #: ``active_config=None`` MEANS "return to base" (pop the key), so it cannot
 #: double as "leave it alone" the way ``label=None`` does.
@@ -320,8 +357,10 @@ class ProjectStore:
     def instances(self, proj: str) -> list[InstanceSpec]:
         return [
             InstanceSpec(
+                # A sub-assembly instance (PRD-013) carries no `part` — default
+                # to "" so an `assembly` reference loads without a KeyError.
                 id=i["id"],
-                part=i["part"],
+                part=i.get("part", ""),
                 position=[float(v) for v in i.get("position", [0, 0, 0])],
                 rotation_deg=[float(v) for v in i.get("rotation_deg", [0, 0, 0])],
                 color=i.get("color"),
@@ -331,6 +370,8 @@ class ProjectStore:
                 # drag read-all/write-all — a field the dataclass does not
                 # carry is destroyed by the next mate edit.
                 config=i.get("config"),
+                pattern=i.get("pattern"),
+                assembly=i.get("assembly"),
             )
             for i in self.manifest(proj)["assembly"]["instances"]
         ]
@@ -344,10 +385,23 @@ class ProjectStore:
             if inst.id in seen:
                 raise ValidationError(f"duplicate instance id {inst.id!r}")
             seen.add(inst.id)
-            if inst.part not in known_parts:
+            # PRD-013: an instance is EITHER a part instance (optionally
+            # patterned) OR a sub-assembly reference. The two never combine —
+            # an `assembly` reference has no part of its own, and a part
+            # instance names no source project.
+            if inst.assembly is not None:
+                if inst.part:
+                    raise ValidationError(
+                        f"instance {inst.id!r}: a sub-assembly reference "
+                        "(assembly) carries no part"
+                    )
+                _validate_assembly_ref(inst.id, inst.assembly)
+            elif inst.part not in known_parts:
                 raise ValidationError(
                     f"instance {inst.id!r} references unknown part {inst.part!r}"
                 )
+            if inst.pattern is not None:
+                _validate_pattern(inst.id, inst.pattern)
             # A configuration binding is validated HERE because three writers
             # reach the store (service.set_assembly, tools_mates and the
             # instance PATCH) and only the store sees all three.
@@ -385,6 +439,41 @@ class ProjectStore:
                 if target == inst.id:
                     raise ValidationError(f"instance {inst.id!r}: mate to itself")
         manifest["assembly"]["instances"] = [i.to_manifest() for i in instances]
+        self.save_manifest(proj, manifest)
+
+    def assembly_interface(self, proj: str) -> dict:
+        """The project's exported connector interface (PRD-013 FR3): a map
+        ``name -> {instance, connector}``. Only exported connectors are matable
+        from a parent assembly; internal connectors are unreachable."""
+        return dict((self.manifest(proj)["assembly"].get("interface")) or {})
+
+    def set_assembly_interface(self, proj: str, exports: dict) -> None:
+        """Replace the exported interface. Each export must name an existing
+        instance (referential check at write time). An emptied map pops the key
+        so a project with no interface is byte-identical to one that never had
+        one."""
+        manifest = self.manifest(proj)
+        ids = {i["id"] for i in manifest["assembly"]["instances"]}
+        if not isinstance(exports, dict):
+            raise ValidationError("interface exports must be an object")
+        for name, spec in exports.items():
+            validate_id(name, "interface name")
+            if not isinstance(spec, dict) or not spec.get("connector"):
+                raise ValidationError(
+                    f"interface {name!r}: needs {{instance, connector}}"
+                )
+            if spec.get("instance") not in ids:
+                raise ValidationError(
+                    f"interface {name!r}: instance {spec.get('instance')!r} "
+                    "is not an instance in this assembly"
+                )
+        if exports:
+            manifest["assembly"]["interface"] = {
+                n: {"instance": s["instance"], "connector": s["connector"]}
+                for n, s in exports.items()
+            }
+        else:
+            manifest["assembly"].pop("interface", None)
         self.save_manifest(proj, manifest)
 
     # ------------------------------------------------------------ manifests

@@ -45,8 +45,8 @@ def register(registry, service) -> None:
                 f"samples must be an integer in 2..{MAX_SAMPLES}"
             )
 
-        instances = service.store.instances(project)
-        driven = next((i for i in instances if i.id == instance), None)
+        raw = service.store.instances(project)
+        driven = next((i for i in raw if i.id == instance), None)
         if driven is None:
             raise NotFoundError(f"instance {instance!r} not found")
         if not driven.mate:
@@ -60,13 +60,21 @@ def register(registry, service) -> None:
             start + (end - start) * i / (samples - 1) for i in range(samples)
         ]
 
+        # PRD-013: sweep the EXPANDED assembly — a swept assembly that contains
+        # a pattern (or a sub-assembly) sweeps all N members, not the one
+        # authored instance. `mates.expand` is the same single expansion point
+        # every other consumer reads; the kernel re-resolves the mate graph per
+        # sample from these flattened items.
+        from . import mates
+        flat, _warn = mates.expand(service, project, raw)
         items = []
-        for inst in instances:
+        for inst in flat:
+            owner = getattr(inst, "origin_project", None) or project
             # A bound instance sweeps at its configuration's size — the
             # kernel re-resolves the mate graph from these items, so the
             # derived record is what puts the connector where it belongs.
-            record = service._record_for(project, inst.part, inst.config)
-            item = service._shape_item(project, record, inst)
+            record = service._record_for(owner, inst.part, inst.config)
+            item = service._shape_item(owner, record, inst)
             item["id"] = inst.id
             if inst.mate:
                 item["mate"] = inst.mate

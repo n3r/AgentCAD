@@ -88,6 +88,15 @@ _PART_ENTRY_DICTS = {"configs": ("params",)}
 # flat key (``"packages.iso4762"``) instead of into the map.
 _ENTRY_DICTS = ("materials", "packages", "packages_lock")
 
+# `assembly` sub-maps (PRD-013) whose ENTRIES merge key-wise and are atomic per
+# name — exactly the `_ENTRY_DICTS` discipline, one level down. An interface
+# export or a coupling is a small content-determined record; merging one side's
+# `instance` with another's `connector` is a record nobody authored, so two
+# branches adding DIFFERENT names merge clean and a same-name edit conflicts on
+# the whole record. `_write_path` must know the same set or a resolution of
+# `assembly.interface.<name>` falls through to a bogus flat key.
+_ASSEMBLY_ENTRY_DICTS = ("interface", "couplings")
+
 
 def merge_manifests(base: dict, ours: dict, theirs: dict) -> tuple[dict, list[dict]]:
     """Three-way merge of project.json at CAD key granularity.
@@ -180,6 +189,9 @@ def _merge_assembly(base, ours, theirs, conflicts):
                 ("assembly", "instances"), b, o, t, conflicts, subdicts=(),
                 entry_dicts={},
             )
+        elif sub in _ASSEMBLY_ENTRY_DICTS and _keyed(b, o, t):
+            # interface/couplings: a map of NAME -> atomic record (PRD-013).
+            value = _merge_entry_dict(("assembly", sub), b, o, t, conflicts)
         else:
             value = _merge_atomic(("assembly", sub), b, o, t, conflicts)
         if value is not _MISSING:
@@ -418,6 +430,14 @@ def _write_path(manifest, segs, value, present, key) -> None:
             assembly.setdefault("instances", []), segs[2], segs[3:],
             value, present, (), {}, key,
         )
+        return
+    if (head == "assembly" and len(segs) == 3
+            and segs[1] in _ASSEMBLY_ENTRY_DICTS):
+        # assembly.interface.<name> / assembly.couplings.<name>: into the map,
+        # never a flat "assembly.interface.name" key (the module's docstring
+        # warning) — the per-name-atomic sibling of the packages branch.
+        assembly = manifest.setdefault("assembly", {})
+        _write_slot(assembly.setdefault(segs[1], {}), segs[2], value, present)
         return
     if head in ("assembly", *_ENTRY_DICTS) and len(segs) == 2:
         _write_slot(manifest.setdefault(head, {}), segs[1], value, present)
@@ -668,6 +688,63 @@ def config_problems(manifest: dict) -> list[dict]:
                            f"with set_instance_config or restore the "
                            f"configuration",
             })
+    return problems
+
+
+def structure_problems(manifest: dict) -> list[dict]:
+    """Post-merge referential damage in the PRD-013 assembly maps (Decision 1.5).
+
+    The key-wise merge of ``assembly.interface`` / ``assembly.couplings`` is
+    correct but blind to cross-key references: one branch deleting an instance
+    while the other exports (or couples) it touches no common key, so the merge
+    is clean and the export now names nothing. Both kinds are **warnings** —
+    the export/coupling resolves to nothing but the project still loads (the
+    PRD-012 blocking/warning split; a pattern is one instance field and is
+    covered by the ordinary instance merge, so there is no ``pattern_conflict``).
+
+    Silent on a project with no interface/couplings, on ``{}``, and on a healthy
+    assembly.
+    """
+    assembly = manifest.get("assembly") if isinstance(manifest, dict) else None
+    if not isinstance(assembly, dict):
+        return []
+    instances = assembly.get("instances")
+    ids = {
+        i.get("id") for i in (instances if isinstance(instances, list) else [])
+        if isinstance(i, dict)
+    }
+    problems: list[dict] = []
+
+    interface = assembly.get("interface")
+    for name, spec in (interface.items()
+                       if isinstance(interface, dict) else []):
+        inst = spec.get("instance") if isinstance(spec, dict) else None
+        if inst not in ids:
+            problems.append({
+                "kind": "dangling_interface", "interface": name,
+                "instance": inst,
+                "message": f"interface export {name!r} names instance "
+                           f"{inst!r}, which the merged project no longer has: "
+                           f"one branch removed the instance and the other kept "
+                           f"the export, so it resolves to nothing — re-point "
+                           f"or remove it with set_assembly_interface",
+            })
+
+    couplings = assembly.get("couplings")
+    for name, spec in (couplings.items()
+                       if isinstance(couplings, dict) else []):
+        if not isinstance(spec, dict):
+            continue
+        for side in ("a_instance", "b_instance"):
+            inst = spec.get(side)
+            if inst is not None and inst not in ids:
+                problems.append({
+                    "kind": "dangling_coupling", "coupling": name,
+                    "instance": inst,
+                    "message": f"coupling {name!r} names instance {inst!r} "
+                               f"({side}), which the merged project no longer "
+                               f"has: re-point or remove it",
+                })
     return problems
 
 

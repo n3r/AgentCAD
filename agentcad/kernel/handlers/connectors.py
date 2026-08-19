@@ -9,7 +9,9 @@ contract.
 
 from __future__ import annotations
 
-from .._mates_resolver import eval_connectors, resolve_mates
+import build123d as b3d
+
+from .._mates_resolver import eval_connectors, resolve_assembly, resolve_mates
 
 
 def register(toolbox: dict) -> dict:
@@ -21,7 +23,15 @@ def register(toolbox: dict) -> dict:
 
     def handle_resolve_mates(params: dict) -> dict:
         items = params["items"]
-        return {"transforms": resolve_mates(items, _build_with_ns)}
+        warnings: list = []
+        transforms = resolve_mates(items, _build_with_ns, warnings=warnings)
+        return {"transforms": transforms, "warnings": warnings}
+
+    def handle_resolve_assembly(params: dict) -> dict:
+        # Shape-free: pattern/sub-assembly members are placed by composing
+        # build123d ``Location``s, never by building geometry (a 1000-member
+        # bolt strip is 1000 µs-cheap Locations, one mesh via the cache path).
+        return {"transforms": resolve_assembly(params["operators"])}
 
     def handle_connectors(params: dict) -> dict:
         shape, values, ns = _build_with_ns(params["script"], params.get("params", {}))
@@ -32,4 +42,6 @@ def register(toolbox: dict) -> dict:
             }
         }
 
-    return {"resolve_mates": handle_resolve_mates, "connectors": handle_connectors}
+    return {"resolve_mates": handle_resolve_mates,
+            "resolve_assembly": handle_resolve_assembly,
+            "connectors": handle_connectors}

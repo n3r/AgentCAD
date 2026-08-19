@@ -14,10 +14,11 @@ this pass outlive its whole budget.
 from __future__ import annotations
 
 import copy
+import math
 from pathlib import Path
 
 from ..kernel.client import KernelError
-from .model import ValidationError
+from .model import InstanceSpec, ValidationError
 
 
 #: Ceiling for one ``resolve_mates`` round trip. A *caller working under a
@@ -26,8 +27,228 @@ from .model import ValidationError
 RESOLVE_TIMEOUT_S = 120.0
 
 
+# ============================================================ expansion
+#
+# PRD-013 Assembly v2. `expand` is the SINGLE point where a pattern (repeat a
+# part N times) or a sub-assembly (instance another project) is flattened into
+# concrete instances. `_resolved_instances` (via the tools_structure wrapper)
+# runs `expand` THEN the mate pass, so every consumer — mass roll-up,
+# interference, export, stackup, specs, checks, the packet — reads N members
+# from one place and can never double- or under-count.
+#
+# The load-bearing invariant: expansion REPLACES a patterned base id `<id>`
+# with `<id>[0..count-1]` and NEVER emits the base alongside its members; a
+# member is never itself re-expanded. Geometry (polar re-aim, sub-assembly
+# rigid placement) is composed in the kernel via build123d `Location`, the one
+# rotation convention — the server never implements a second Euler.
+
+
+def _member(base: InstanceSpec, index: int, position, rotation_deg):
+    """One concrete pattern/sub-assembly member: id `<base>[i]`, inheriting the
+    base's part/color/config/mate template, at a composed transform. `pattern`
+    and `assembly` are cleared — a member is a leaf, never re-expanded."""
+    return InstanceSpec(
+        id=f"{base.id}[{index}]",
+        part=base.part,
+        position=[float(v) for v in position],
+        rotation_deg=[float(v) for v in rotation_deg],
+        color=base.color,
+        mate=copy.deepcopy(base.mate) if base.mate else None,
+        config=base.config,
+    )
+
+
+def _unit(vec):
+    length = math.sqrt(sum(float(c) ** 2 for c in vec))
+    if length < 1e-12:
+        return (1.0, 0.0, 0.0)
+    return tuple(float(c) / length for c in vec)
+
+
+def resolve_project(service, proj: str, timeout_s: float | None = None,
+                    _stack: list | None = None):
+    """Fully resolve a project's assembly into a flat, world-placed instance
+    list: expand patterns + sub-assemblies, then run the mate pass over the
+    project's OWN instances. Returns ``(flat_instances, warnings)``.
+
+    This is the recursion primitive: a sub-assembly resolves its source with
+    exactly this call, one stack level deeper (cross-project cycle detection
+    threads the ``_stack``). The ``tools_structure`` wrapper on
+    ``_resolved_instances`` is a thin adapter over it.
+    """
+    stack = _stack or [(proj, str(service.store.canonical_path_of(proj)))]
+    instances = service.store.instances(proj)
+    if not any((i.mate or i.pattern or i.assembly) for i in instances):
+        return instances, []
+    warnings: list[dict] = []
+    flat = expand(service, proj, instances, timeout_s, stack)
+    warnings.extend(flat[1])
+    flat = flat[0]
+    # The mate pass runs only over this project's OWN (native) instances — a
+    # sub-assembly member is already world-final in its parent's frame and
+    # carries no parent-level mate. Skipping it when nothing is mated preserves
+    # the "an unmated 1000-member pattern builds no shapes" property.
+    native = [m for m in flat if m.origin_project is None]
+    if any(m.mate for m in native):
+        resolved = {m.id: m for m in resolve(service, proj, native, timeout_s,
+                                             warnings_out=warnings)}
+        flat = [resolved.get(m.id, m) for m in flat]
+    return flat, warnings
+
+
+def expand(service, proj: str, instances: list, timeout_s: float | None = None,
+           stack: list | None = None):
+    """Flatten patterns and sub-assemblies into a concrete instance list.
+
+    Returns ``(flat_instances, warnings)``. Linear patterns compose entirely
+    server-side (pure translation); polar patterns (a per-member rotation about
+    an axis) and sub-assembly rigid placement are composed in the kernel via
+    ``Location`` in ONE ``resolve_assembly`` round trip.
+    """
+    if stack is None:
+        stack = [(proj, str(service.store.canonical_path_of(proj)))]
+    flat: list[InstanceSpec] = []
+    warnings: list[dict] = []
+    # Members whose transform needs kernel Location composition, collected so a
+    # whole assembly's polar / sub-assembly members ride ONE round trip.
+    ops: list[dict] = []
+    op_targets: dict[str, InstanceSpec] = {}
+
+    for inst in instances:
+        if inst.assembly is not None:
+            _expand_subassembly(service, proj, inst, timeout_s,
+                                 flat, warnings, ops, op_targets, stack)
+            continue
+        pattern = inst.pattern
+        if pattern is None:
+            flat.append(inst)
+            continue
+        kind = pattern["kind"]
+        count = int(pattern["count"])
+        if kind == "linear":
+            unit = _unit(pattern.get("axis", [[0, 0, 0], [1, 0, 0]])[1]
+                         if pattern.get("axis") else [1, 0, 0])
+            step = float(pattern["step_mm"])
+            for i in range(count):
+                pos = [inst.position[a] + i * step * unit[a] for a in range(3)]
+                flat.append(_member(inst, i, pos, inst.rotation_deg))
+        elif kind == "polar":
+            axis = pattern.get("axis") or [[0, 0, 0], [0, 0, 1]]
+            center = pattern.get("center") or axis[0]
+            angle_step = float(pattern["angle_step_deg"])
+            if inst.mate:
+                # An anchored polar base has ONE anchor connector; we cannot
+                # re-solve the mate per member, so members fall back to the
+                # rigid polar image and we say so (spec §2.4).
+                warnings.append({"kind": "pattern_polar_offaxis",
+                                 "instance": inst.id})
+            for i in range(count):
+                member = _member(inst, i, inst.position, inst.rotation_deg)
+                flat.append(member)
+                ops.append({
+                    "id": member.id, "kind": "polar",
+                    "base_position": list(inst.position),
+                    "base_rotation_deg": list(inst.rotation_deg),
+                    "angle_deg": i * angle_step,
+                    "axis": [list(axis[0]), list(axis[1])],
+                    "center": list(center),
+                })
+                op_targets[member.id] = member
+        else:  # pragma: no cover — set_instances validates kind first
+            raise ValidationError(f"unknown pattern kind {kind!r}")
+
+    if ops:
+        result = service.kernel.request(
+            "resolve_assembly", {"operators": ops},
+            timeout_s=RESOLVE_TIMEOUT_S if timeout_s is None
+            else min(RESOLVE_TIMEOUT_S, timeout_s),
+        )
+        for oid, t in result["transforms"].items():
+            member = op_targets[oid]
+            member.position = [float(v) for v in t["position"]]
+            member.rotation_deg = [float(v) for v in t["rotation_deg"]]
+    return flat, warnings
+
+
+def _source_name(service, ref: str) -> str:
+    """Resolve a sub-assembly reference (a known project NAME or an absolute
+    path) to a project name, opening an external directory READ-ONLY. ``open``
+    installs no write hook — only read accessors are ever used on a source."""
+    from ..kernel.client import KernelError  # noqa: F401 (parity import)
+    from .model import NotFoundError
+
+    try:
+        service.store.manifest(ref)          # a known name resolves directly
+        return ref
+    except NotFoundError:
+        return service.store.open(ref)       # register an external path, read-only
+
+
+def _expand_subassembly(service, proj, inst, timeout_s, flat, warnings, ops,
+                        op_targets, stack):
+    """Depth-first, READ-ONLY sub-assembly resolution (PRD-013 Decision 3).
+
+    Opens the source read-only, recurses to resolve its own structure into
+    source-local members, rigid-places each at ``parent * member_local`` (kernel
+    ``Location``), and namespaces ids ``<parent>/<child>`` so two nesting levels
+    read ``stand/engine/piston[0]``. ``write_guard`` is structurally unreachable
+    — only read accessors touch the source (a store-spy asserts zero authored
+    writes).
+    """
+    ref = inst.assembly.get("project")
+    source = _source_name(service, ref)
+    spath = str(service.store.canonical_path_of(source))
+
+    # Cross-project cycle: identity is the canonical path; the payload names the
+    # readable chain (mirrors the intra-project mate-cycle payload).
+    if any(p == spath for _, p in stack):
+        names = [n for n, _ in stack] + [source]
+        raise ValidationError("assembly cycle: " + " -> ".join(names),
+                              {"cycle": names})
+
+    # Interface: only exported connectors are matable from outside. A mate on a
+    # sub-assembly instance must name one, or it is unreachable by construction.
+    if inst.mate:
+        exported = service.store.assembly_interface(source)
+        cname = inst.mate.get("connector")
+        if cname not in exported:
+            raise ValidationError(
+                f"instance {inst.id!r}: connector {cname!r} is not an exported "
+                f"interface of sub-assembly {source!r} "
+                f"(exports: {sorted(exported) or 'none'})",
+                {"interface": cname},
+            )
+
+    # Parent placement of the whole unit. MVP: the instance's explicit
+    # transform (a mate on the unit is validated above; its geometric
+    # resolution via the interface frame is a documented follow-up).
+    parent_pos = list(inst.position)
+    parent_rot = list(inst.rotation_deg)
+
+    # Recurse: the source's members in ITS OWN local frame (read-only).
+    sub_flat, sub_warns = resolve_project(
+        service, source, timeout_s, stack + [(source, spath)])
+    warnings.extend(sub_warns)
+
+    for m in sub_flat:
+        child = copy.copy(m)
+        child.id = f"{inst.id}/{m.id}"
+        # A member built from a deeper source keeps that source; a leaf member
+        # of THIS source is built from `source`.
+        child.origin_project = m.origin_project or source
+        flat.append(child)
+        ops.append({
+            "id": child.id, "kind": "rigid",
+            "base_position": list(m.position),
+            "base_rotation_deg": list(m.rotation_deg),
+            "parent_position": parent_pos,
+            "parent_rotation_deg": parent_rot,
+        })
+        op_targets[child.id] = child
+
+
 def resolve(service, proj: str, instances: list,
-            timeout_s: float | None = None):
+            timeout_s: float | None = None, warnings_out: list | None = None):
     ids = {inst.id for inst in instances}
     kinds = {inst.id: service.store.get_part(proj, inst.part).kind for inst in instances}
     items = []
@@ -81,6 +302,8 @@ def resolve(service, proj: str, instances: list,
                               exc.details) from exc
 
     transforms = result["transforms"]
+    if warnings_out is not None:
+        warnings_out.extend(result.get("warnings") or [])
     resolved = []
     for inst in instances:
         t = transforms.get(inst.id)

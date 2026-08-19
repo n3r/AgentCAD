@@ -635,6 +635,12 @@ class MergeOrchestrator:
                 if p["kind"] in ("dangling_active_config",
                                  "malformed_configuration")
             ]
+            # PRD-013 assembly maps: a dangling interface export or coupling is
+            # the same clean-merge damage — both warn (the export resolves to
+            # nothing but the project still loads).
+            report["warnings"] += [
+                p["message"] for p in manifest_merge.structure_problems(merged)
+            ]
             if not report["integrity"] and not report["failures"]:
                 try:
                     self.service._resolved_instances(proj)

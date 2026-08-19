@@ -46,7 +46,7 @@ import build123d as b3d
 from .protocol import ERROR_CONTRACT, WorkerError
 
 
-VALID_TYPES = ("rigid", "revolute", "cylindrical")
+VALID_TYPES = ("rigid", "revolute", "cylindrical", "slider", "planar")
 
 
 # ------------------------------------------------------------ spec coercion
@@ -110,7 +110,20 @@ def eval_connectors(ns: dict, values: dict, shape) -> dict[str, dict]:
             norm["location"] = _to_location(
                 spec.get("location", ((0, 0, 0), (0, 0, 0))), f"connector {name!r}"
             )
-        else:
+        elif ctype == "planar":
+            # No native build123d PlanarJoint — the DOF is composed as a
+            # Location post-multiply on a rigid frame (see resolve_mates). The
+            # connector's `location` defines the plane frame (local x/y in the
+            # plane, local z the normal).
+            norm["location"] = _to_location(
+                spec.get("location", ((0, 0, 0), (0, 0, 0))), f"connector {name!r}"
+            )
+            if "u_range" in spec:
+                norm["u_range"] = tuple(spec["u_range"])
+            if "v_range" in spec:
+                norm["v_range"] = tuple(spec["v_range"])
+            norm["spin"] = bool(spec.get("spin", True))
+        else:  # revolute / cylindrical / slider — axis-carried DOF
             if "axis" not in spec:
                 raise WorkerError(
                     ERROR_CONTRACT, f"connector {name!r}: {ctype} needs an 'axis'"
@@ -120,7 +133,64 @@ def eval_connectors(ns: dict, values: dict, shape) -> dict[str, dict]:
                 norm["range"] = tuple(spec["range"])
             if "linear_range" in spec:
                 norm["linear_range"] = tuple(spec["linear_range"])
+            if ctype == "slider" and "linear_range" not in norm:
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"connector {name!r}: slider needs a 'linear_range'",
+                )
         out[name] = norm
+    return out
+
+
+# -------------------------------------------------- pattern / sub-assembly
+
+def _rigid_place(op) -> b3d.Location:
+    """Compose ONE member's world Location from a pattern/sub-assembly operator.
+
+    All in the intrinsic-XYZ-Euler build123d convention (the one AgentCAD uses
+    everywhere), so orientation round-trips through ``service._apply_transform``.
+    ``linear`` is a pure world translation of the base placement; ``polar`` is a
+    rotation of ``angle_deg`` about ``axis`` through ``center`` applied to the
+    base placement (so a member re-aims — a bolt keeps pointing radially); a
+    ``rigid`` operator (sub-assembly placement) left-multiplies the parent
+    placement onto the member's local placement.
+    """
+    base = b3d.Location(
+        tuple(float(v) for v in op.get("base_position", [0, 0, 0])),
+        tuple(float(v) for v in op.get("base_rotation_deg", [0, 0, 0])),
+    )
+    kind = op["kind"]
+    if kind == "linear":
+        offset = op.get("offset", [0, 0, 0])
+        return b3d.Location(tuple(float(v) for v in offset)) * base
+    if kind == "polar":
+        (cx, cy, cz) = (float(v) for v in op["center"])
+        direction = tuple(float(v) for v in op["axis"][1])
+        angle = float(op["angle_deg"])
+        rot = (
+            b3d.Location((cx, cy, cz))
+            * b3d.Location((0, 0, 0), direction, angle)
+            * b3d.Location((-cx, -cy, -cz))
+        )
+        return rot * base
+    if kind == "rigid":
+        parent = b3d.Location(
+            tuple(float(v) for v in op.get("parent_position", [0, 0, 0])),
+            tuple(float(v) for v in op.get("parent_rotation_deg", [0, 0, 0])),
+        )
+        return parent * base
+    raise WorkerError(ERROR_CONTRACT, f"unknown placement operator {kind!r}")
+
+
+def resolve_assembly(operators: list[dict]) -> dict[str, dict]:
+    """Place pattern/sub-assembly members by pure ``Location`` composition —
+    no shapes built. Returns ``{id: {position, rotation_deg}}``."""
+    out: dict[str, dict] = {}
+    for op in operators:
+        loc = _rigid_place(op)
+        p, o = loc.position, loc.orientation
+        out[op["id"]] = {"position": [p.X, p.Y, p.Z],
+                         "rotation_deg": [o.X, o.Y, o.Z]}
     return out
 
 
@@ -192,14 +262,30 @@ def order_mates(items: list[dict]) -> list[dict]:
 
 # --------------------------------------------------------------- resolution
 
-def _make_joint(label: str, shape, spec: dict):
-    if spec["type"] == "rigid":
+def _clamp(value: float, rng) -> float:
+    lo, hi = min(rng), max(rng)
+    return max(lo, min(hi, value))
+
+
+def _make_joint(label: str, shape, spec: dict, location=None):
+    ctype = spec["type"]
+    if ctype == "rigid":
         return b3d.RigidJoint(label, shape, spec["location"])
-    if spec["type"] == "revolute":
+    if ctype == "planar":
+        # Composed, not native: the effective anchor frame (base location
+        # post-multiplied by the DOF) is passed in as `location`.
+        return b3d.RigidJoint(label, shape,
+                              location if location is not None
+                              else spec["location"])
+    if ctype == "revolute":
         kw = {}
         if "range" in spec:
             kw["angular_range"] = spec["range"]
         return b3d.RevoluteJoint(label, shape, axis=spec["axis"], **kw)
+    if ctype == "slider":
+        # A pure prismatic DOF along the axis (build123d LinearJoint).
+        return b3d.LinearJoint(label, shape, axis=spec["axis"],
+                               linear_range=spec["linear_range"])
     kw = {}
     if "range" in spec:
         kw["angular_range"] = spec["range"]
@@ -208,12 +294,16 @@ def _make_joint(label: str, shape, spec: dict):
     return b3d.CylindricalJoint(label, shape, axis=spec["axis"], **kw)
 
 
-def resolve_mates(items: list[dict], build_shape_fn) -> dict[str, dict]:
+def resolve_mates(items: list[dict], build_shape_fn,
+                  warnings: list | None = None) -> dict[str, dict]:
     """items: [{id, script, params, position, rotation_deg, mate?}]
     build_shape_fn(script, params) -> (shape, values, ns)  # worker.build_shape+ns
 
     Returns {instance_id: {"position": [x,y,z], "rotation_deg": [rx,ry,rz]}}
-    with mates resolved and roots passed through.
+    with mates resolved and roots passed through. An out-of-range DOF value is
+    **clamped** to the connector's declared range (not raised) and a
+    ``dof_clamped`` record is appended to ``warnings`` when provided
+    (PRD-013 FR11).
     """
     ordered = order_mates(items)
 
@@ -268,45 +358,68 @@ def resolve_mates(items: list[dict], build_shape_fn) -> dict[str, dict]:
         # location-proxies: fresh copies so cached shapes are never mutated
         anchor_proxy = anchor_shape.located(b3d.Location())
         child_proxy = child_shape.located(b3d.Location())
-        anchor_joint = _make_joint(
-            "anchor", anchor_proxy, anchor_conns[mate["to_connector"]]
-        )
         child_joint = _make_joint("child", child_proxy, child_spec)
-        anchor_proxy.location = world[mate["to_instance"]]
 
         mparams = dict(mate.get("params") or {})
-        atype = anchor_conns[mate["to_connector"]]["type"]
+        anchor_spec = anchor_conns[mate["to_connector"]]
+        atype = anchor_spec["type"]
+
+        def _clamped(dof: str, requested: float, rng) -> float:
+            value = _clamp(requested, rng)
+            if warnings is not None and abs(requested - value) > 1e-12:
+                warnings.append({
+                    "kind": "dof_clamped", "instance": iid, "dof": dof,
+                    "requested": requested, "clamped": value,
+                })
+            return value
+
+        # Planar composes its DOF into the anchor frame (no native joint);
+        # every other type carries the DOF through connect_to.
+        if atype == "planar":
+            u = float(mparams.pop("u", 0.0))
+            v = float(mparams.pop("v", 0.0))
+            spin = (float(mparams.pop("spin", 0.0))
+                    if anchor_spec.get("spin", True) else 0.0)
+            if "u_range" in anchor_spec:
+                u = _clamped("u", u, anchor_spec["u_range"])
+            if "v_range" in anchor_spec:
+                v = _clamped("v", v, anchor_spec["v_range"])
+            eff = anchor_spec["location"] * b3d.Location(
+                (u, v, 0.0), (0.0, 0.0, spin))
+            anchor_joint = _make_joint("anchor", anchor_proxy, anchor_spec,
+                                       location=eff)
+        else:
+            anchor_joint = _make_joint("anchor", anchor_proxy, anchor_spec)
+        anchor_proxy.location = world[mate["to_instance"]]
+
         try:
-            if atype == "rigid":
-                if mparams:
-                    raise WorkerError(
-                        ERROR_CONTRACT,
-                        f"instance {iid!r}: rigid mate takes no params",
-                    )
+            if atype in ("rigid", "planar"):
                 anchor_joint.connect_to(child_joint)
             elif atype == "revolute":
-                anchor_joint.connect_to(
-                    child_joint, angle=float(mparams.pop("angle", 0.0))
-                )
-                if mparams:
-                    raise WorkerError(
-                        ERROR_CONTRACT,
-                        f"instance {iid!r}: unknown mate params {sorted(mparams)}",
-                    )
+                angle = float(mparams.pop("angle", 0.0))
+                if "range" in anchor_spec:
+                    angle = _clamped("angle", angle, anchor_spec["range"])
+                anchor_joint.connect_to(child_joint, angle=angle)
+            elif atype == "slider":
+                pos = _clamped("position", float(mparams.pop("position", 0.0)),
+                               anchor_spec["linear_range"])
+                anchor_joint.connect_to(child_joint, position=pos)
             else:  # cylindrical
-                anchor_joint.connect_to(
-                    child_joint,
-                    position=float(mparams.pop("position", 0.0)),
-                    angle=float(mparams.pop("angle", 0.0)),
+                pos = float(mparams.pop("position", 0.0))
+                angle = float(mparams.pop("angle", 0.0))
+                if "linear_range" in anchor_spec:
+                    pos = _clamped("position", pos, anchor_spec["linear_range"])
+                if "range" in anchor_spec:
+                    angle = _clamped("angle", angle, anchor_spec["range"])
+                anchor_joint.connect_to(child_joint, position=pos, angle=angle)
+            if mparams:
+                raise WorkerError(
+                    ERROR_CONTRACT,
+                    f"instance {iid!r}: unknown mate params {sorted(mparams)}",
                 )
-                if mparams:
-                    raise WorkerError(
-                        ERROR_CONTRACT,
-                        f"instance {iid!r}: unknown mate params {sorted(mparams)}",
-                    )
         except WorkerError:
             raise
-        except Exception as exc:  # joint range violations etc.
+        except Exception as exc:  # unexpected joint failures
             raise WorkerError(
                 ERROR_CONTRACT, f"instance {iid!r}: mate failed: {exc}"
             ) from exc
