@@ -338,7 +338,7 @@ def test_network_is_denied(battery):
     assert _build(client, BOX, root / ".cache" / "after-net.acm")["metrics"]
 
 
-@pytest.mark.parametrize("where", ["/app/pwned", "/usr/pwned", "home"])
+@pytest.mark.parametrize("where", ["/etc/pwned", "/usr/pwned", "home"])
 def test_write_outside_roots_is_denied(battery, where):
     client, root = battery
     target = str(Path.home() / "pwned") if where == "home" else where

@@ -2147,6 +2147,23 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
 - **`ru_maxrss` is bytes on macOS and KiB on Linux.** Branch on the platform;
   `tests/test_meter.py` asserts both.
 
+- **Windows: the venv `python.exe` is a launcher; the supervisor samples the
+  job's processes, not the `Popen` handle.** A venv `python.exe` (uv-managed
+  ones included) starts the real interpreter as a **child** and stays behind as
+  a stub, so `GetProcessMemoryInfo(proc._handle)` measured 3.9 MB for a worker
+  with build123d imported (Windows CI, changelog 0238) while the quota tier
+  worked perfectly — the child *inherits* the job object, which is why the
+  commit limit still produced its `MemoryError`. `WindowsBackend.rss_bytes`
+  therefore walks `QueryInformationJobObject(JobObjectBasicProcessIdList)` and
+  reports the **largest** working set in the job: the max, never the sum, since
+  the launcher and the interpreter share their mapped pages. The `Popen` handle
+  is only the fallback (no job, or a refused query). Every Win32 entry point
+  stays a module-level seam (`_job_process_ids`, `_open_process`,
+  `_memory_counters`, `_close_handle`) so `tests/test_sandbox_plan.py` can
+  drive the whole sampler from a macOS box — `tests/test_sandbox_windows.py`
+  now asserts ≥ 100 MB so a stub-only sample fails loudly instead of passing a
+  sanity bound.
+
 - **`RLIMIT_NPROC` counts tasks (threads), per uid, not processes.** A warm
   worker runs 15–22 threads, so `live_uid_process_count()` sums `Threads:`
   from `/proc/*/status`; a per-process count under-measured a multi-worker

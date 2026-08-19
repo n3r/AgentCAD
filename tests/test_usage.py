@@ -16,6 +16,7 @@ proves two projects come back as two rows.
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -174,12 +175,22 @@ def test_identity_comes_from_the_client_id_var():
     assert len(meter.by_project()) == 1
 
 
-def test_since_filters_to_the_recent_window():
+def test_since_filters_to_the_recent_window(monkeypatch):
+    """A controlled clock, not a sleep.
+
+    `record()` stamps `at` from `time.time()`, whose resolution on Windows is
+    the ~15.6 ms system tick — so `sleep(0.01)` moved it not at all, both
+    records landed on the same side of `cut`, and the filter looked broken when
+    it was the clock that had not ticked (Windows CI, changelog 0238). Two
+    explicit stamps make the window exact on every OS.
+    """
+    stamps = iter([1_000.0, 2_000.0])
+    monkeypatch.setattr(usage, "time",
+                        SimpleNamespace(time=lambda: next(stamps)))
     meter = usage.UsageMeter()
     with usage.scoped("old"):
         meter.record(_event(cpu_ms=100.0))
-    cut = time.time()
-    time.sleep(0.01)
+    cut = 1_500.0
     with usage.scoped("new"):
         meter.record(_event(cpu_ms=1.0))
 

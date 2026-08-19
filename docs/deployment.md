@@ -489,6 +489,18 @@ promising a mechanism:
 | `supervisor` | everywhere | the parent samples the child's RSS every `sample_interval_s` and kills on breach — the only memory tier macOS has | wall clock (the existing timeouts) | — | `kernel_crash`, `details.reason: "memory_cap"`, `observed_rss_mb`, `tier: "supervisor"` |
 | `job_object` | Windows | commit limit → `MemoryError` in the script | CPU rate hard cap | active-process limit | `script_error` with `details.denied: "memory"` |
 
+**On Windows the supervisor samples the job, not the process it spawned.** A
+venv `python.exe` (uv-managed ones included) is a *launcher*: it starts the
+real interpreter as a **child** and stays behind as a ~4 MB stub. The child
+inherits the job object, so the commit limit and the CPU cap apply to the
+interpreter — but the handle the server holds is the stub's, and measuring it
+reported ~4 MB for a worker with build123d imported. So the sampler walks the
+job's process list and reports the **largest** working set in it (the max, not
+the sum: the two processes share their mapped pages). With no job object — the
+`supervisor`-only line in `mechanism` — there is nothing to walk, and the
+sample falls back to that stub handle and under-reports; the memory tier that
+bites on Windows is the job object's commit limit either way.
+
 `RLIMIT_AS`/`RLIMIT_DATA`/`RLIMIT_RSS` are `EINVAL` on Darwin (measured), which
 is why macOS has no in-process memory cap and the supervisor exists.
 

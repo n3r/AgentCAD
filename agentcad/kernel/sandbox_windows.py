@@ -26,6 +26,18 @@ exists with its limits written or the tier reports itself off (Decision 8).
 The assignment race is benign and recorded: the worker does nothing but import
 until its first request.
 
+**The handle ``Popen`` hands back is not the interpreter.** A Windows venv's
+``python.exe`` — uv-managed ones included — is a *launcher*: it starts the real
+interpreter as a **child** and stays around as a thin stub. The child inherits
+the job object (which is why the commit limit bites the interpreter and a
+balloon still gets its ``MemoryError``), but ``GetProcessMemoryInfo`` on
+``proc._handle`` measures the stub, and answered ~3.9 MB for a worker with
+build123d imported (Windows CI, changelog 0238). So :meth:`WindowsBackend.rss_bytes`
+samples **the job's own process list** and reports the **largest** working set
+in it — the interpreter dominates, and a sum would double-count the pages the
+two share. The ``Popen`` handle stays as the fallback for a worker with no job
+(``attach`` failed) or a query Windows refused.
+
 Every ``ctypes.WinDLL`` lookup is inside a function, so this module imports
 cleanly on macOS and Linux — which is what lets the plan-shape test run on
 every OS with these entry points stubbed. No ``OCP``/build123d here either.
@@ -48,8 +60,23 @@ JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x100
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 
 #: ``JOBOBJECTINFOCLASS``.
+JobObjectBasicProcessIdList = 3
 JobObjectExtendedLimitInformation = 9
 JobObjectCpuRateControlInformation = 15
+
+#: ``OpenProcess`` access masks. ``GetProcessMemoryInfo`` is documented as
+#: wanting ``PROCESS_VM_READ`` too, so it is asked for first and dropped if the
+#: open is refused: on every Windows since Vista the query alone is enough.
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_VM_READ = 0x0010
+
+#: ``QueryInformationJobObject`` says the id list did not fit.
+ERROR_MORE_DATA = 234
+
+#: How many pids the first id-list buffer has room for. A worker's job holds
+#: the launcher stub and the interpreter; 256 is slack, and a job that somehow
+#: holds more says so through ``ERROR_MORE_DATA`` and is asked once more.
+JOB_PID_CAPACITY = 256
 
 #: ``JOBOBJECT_CPU_RATE_CONTROL_INFORMATION.ControlFlags``.
 JOB_OBJECT_CPU_RATE_CONTROL_ENABLE = 0x1
@@ -90,6 +117,21 @@ class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
 class JOBOBJECT_CPU_RATE_CONTROL_INFORMATION(ctypes.Structure):
     _fields_ = [("ControlFlags", ctypes.c_uint32),
                 ("CpuRate", ctypes.c_uint32)]
+
+
+def _process_id_list(capacity: int):
+    """``JOBOBJECT_BASIC_PROCESS_ID_LIST`` with room for *capacity* pids.
+
+    The real structure ends in a variable-length ``ULONG_PTR ProcessIdList[1]``,
+    so the type has to be made per call site; ``ctypes`` gets the alignment
+    (two ``DWORD``s, then a pointer-sized array) right on its own.
+    """
+    class JOBOBJECT_BASIC_PROCESS_ID_LIST(ctypes.Structure):
+        _fields_ = [("NumberOfAssignedProcesses", ctypes.c_uint32),
+                    ("NumberOfProcessIdsInList", ctypes.c_uint32),
+                    ("ProcessIdList", ctypes.c_size_t * capacity)]
+
+    return JOBOBJECT_BASIC_PROCESS_ID_LIST
 
 
 class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
@@ -155,6 +197,12 @@ class WindowsBackend:
         #: The job handle, or ``None`` when it could not be created or
         #: configured — in which case the tier is not named at all.
         self.job: int | None = None
+        #: Whether a process was actually assigned to :attr:`job`. Sampling the
+        #: job's process list is only worth anything once something is in it,
+        #: and this is what `rss_bytes` reads to decide (the handle `Popen`
+        #: returned is a launcher stub, not the interpreter — see the module
+        #: docstring).
+        self.attached: bool = False
 
     def open_job(self) -> bool:
         """Create the job and write its limits. ``False``, with a warning and
@@ -219,6 +267,10 @@ class WindowsBackend:
                 f"{getattr(proc, 'pid', '?')} to the job: {exc}")
             _close_handle(self.job)
             self.job = None
+            return
+        # Remembered, not re-derived: from here `rss_bytes` measures the job's
+        # processes rather than the launcher stub `Popen` handed us.
+        self.attached = True
 
     def can_sample(self) -> bool:
         """psapi is part of the OS; a failing call degrades per sample."""
@@ -226,12 +278,53 @@ class WindowsBackend:
 
     def rss_bytes(self, proc) -> int | None:
         """Working-set size, for one supervisor sample; ``None`` if psapi
-        could not answer (the process is gone)."""
+        could not answer (the process is gone).
+
+        The *job's* largest working set where there is a job with something in
+        it, because a venv ``python.exe`` is a launcher and the ``Popen``
+        handle is its stub (module docstring). The stub's own working set is
+        the fallback — an under-report, but the only number available when the
+        job is absent or Windows refused the query, and a supervisor that
+        sampled ``None`` forever would enforce nothing at all.
+        """
+        sample = self._job_working_set()
+        if sample is not None:
+            return sample
         handle = getattr(proc, "_handle", None)
         if handle is None:
             return None
         counters = _memory_counters(int(handle))
         return None if counters is None else int(counters.WorkingSetSize)
+
+    def _job_working_set(self) -> int | None:
+        """The largest working set among the job's processes, or ``None``.
+
+        The **max**, never the sum: the launcher and the interpreter share
+        their mapped pages, so adding them double-counts, and it is the
+        interpreter — the one with build123d in it — that the memory cap is
+        about. Every failure here answers ``None`` so the caller can fall back;
+        a sampler must not raise into the supervisor's loop.
+        """
+        if self.job is None or not self.attached:
+            return None
+        pids = _job_process_ids(self.job)
+        if not pids:
+            return None
+        largest: int | None = None
+        for pid in pids:
+            handle = _open_process(pid)
+            if handle is None:
+                continue                  # exited between the query and now
+            try:
+                counters = _memory_counters(handle)
+            finally:
+                _close_handle(handle)
+            if counters is None:
+                continue
+            size = int(counters.WorkingSetSize)
+            if largest is None or size > largest:
+                largest = size
+        return largest
 
     def explain_exit(self, proc, returncode: int | None) -> dict | None:
         """Nothing to read: a job-object memory breach is an allocation failure
@@ -243,6 +336,7 @@ class WindowsBackend:
     def release(self) -> None:
         """Close the job handle, which kills anything still inside it."""
         job, self.job = self.job, None
+        self.attached = False
         if job is not None:
             _close_handle(job)
 
@@ -250,11 +344,29 @@ class WindowsBackend:
 # ------------------------------------------------------------- the Win32 calls
 #
 # One function per entry point, module-level, so a test on another OS can
-# stub the boundary instead of the behaviour. Each raises `OSError` with the
-# Win32 error attached; nothing above this line touches `ctypes.WinDLL`.
+# stub the boundary instead of the behaviour. The plan-time ones raise
+# `OSError` with the Win32 error attached (a tier that cannot be installed must
+# not be named); the sampling ones — `_job_process_ids`, `_open_process`,
+# `_memory_counters` — answer empty instead, because a refused query is a
+# sample that falls back, not a failed build. Nothing above this line touches
+# `ctypes.WinDLL`.
+
+#: Loaded ``WinDLL``s, by name. Cached because the sampling path runs several
+#: times a second per worker and every ``WinDLL(...)`` is a fresh
+#: ``LoadLibraryW`` whose module reference ctypes never drops.
+_LIBRARIES: dict = {}
+
+
+def _library(name: str):
+    library = _LIBRARIES.get(name)
+    if library is None:
+        # A race here costs one extra load and nothing else.
+        library = _LIBRARIES[name] = ctypes.WinDLL(name, use_last_error=True)
+    return library
+
 
 def _kernel32():
-    return ctypes.WinDLL("kernel32", use_last_error=True)
+    return _library("kernel32")
 
 
 def _job_create() -> int:
@@ -282,16 +394,68 @@ def _assign(job: int, handle: int) -> None:
         raise ctypes.WinError(ctypes.get_last_error())
 
 
-def _close_handle(job: int) -> None:
+def _close_handle(handle: int) -> None:
     try:
-        _kernel32().CloseHandle(ctypes.c_void_p(job))
+        _kernel32().CloseHandle(ctypes.c_void_p(handle))
     except OSError:                       # pragma: no cover - defensive
         pass
 
 
+def _job_process_ids(job: int) -> list[int]:
+    """The pids currently assigned to *job*; ``[]`` when it cannot be asked.
+
+    Never raises — this is on the supervisor's sampling path, and a query that
+    Windows refused is a sample that falls back, not a failed build.
+    """
+    try:
+        kernel32 = _kernel32()
+    except (OSError, AttributeError):     # pragma: no cover - non-Windows
+        return []
+    capacity = JOB_PID_CAPACITY
+    for _ in range(2):                    # one grow, then give up
+        buffer = _process_id_list(capacity)()
+        returned = ctypes.c_uint32(0)
+        ok = kernel32.QueryInformationJobObject(
+            ctypes.c_void_p(job), JobObjectBasicProcessIdList,
+            ctypes.byref(buffer), ctypes.sizeof(buffer), ctypes.byref(returned))
+        if ok:
+            count = min(int(buffer.NumberOfProcessIdsInList), capacity)
+            return [int(buffer.ProcessIdList[index]) for index in range(count)]
+        if ctypes.get_last_error() != ERROR_MORE_DATA:
+            return []
+        # ERROR_MORE_DATA still fills in the assigned count; grow to it once.
+        assigned = int(buffer.NumberOfAssignedProcesses)
+        if assigned <= capacity:
+            return []
+        capacity = assigned
+    return []                             # pragma: no cover - defensive
+
+
+def _open_process(pid: int) -> int | None:
+    """A query handle for *pid*, or ``None`` if it cannot be opened.
+
+    ``PROCESS_VM_READ`` is asked for first because ``GetProcessMemoryInfo`` is
+    documented as wanting it, and dropped on refusal because in practice the
+    query right alone answers on every supported Windows. The caller closes it.
+    """
+    try:
+        kernel32 = _kernel32()
+    except (OSError, AttributeError):     # pragma: no cover - non-Windows
+        return None
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int,
+                                     ctypes.c_uint32]
+    for access in (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+                   PROCESS_QUERY_LIMITED_INFORMATION):
+        handle = kernel32.OpenProcess(access, 0, pid)
+        if handle:
+            return int(handle)
+    return None
+
+
 def _memory_counters(handle: int) -> PROCESS_MEMORY_COUNTERS | None:
     try:
-        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        psapi = _library("psapi")
     except (OSError, AttributeError):     # pragma: no cover - non-Windows
         return None
     counters = PROCESS_MEMORY_COUNTERS()

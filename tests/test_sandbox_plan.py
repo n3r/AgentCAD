@@ -399,7 +399,13 @@ def windows(monkeypatch):
     from agentcad.kernel import sandbox_windows
 
     calls = SimpleNamespace(created=0, info=[], assigned=[], closed=[],
-                            working_set=321 * 1024 * 1024)
+                            working_set=321 * 1024 * 1024,
+                            # The job's process list, and a working set per
+                            # OPENED handle: a venv `python.exe` is a launcher
+                            # and the Popen handle is its stub, so these two
+                            # are what a real sample reads. Empty by default —
+                            # the query failing is the fallback path.
+                            job_pids=[], working_sets={})
 
     def _create():
         calls.created += 1
@@ -412,9 +418,14 @@ def windows(monkeypatch):
     monkeypatch.setattr(sandbox_windows, "_assign",
                         lambda job, handle: calls.assigned.append((job, handle)))
     monkeypatch.setattr(sandbox_windows, "_close_handle", calls.closed.append)
+    monkeypatch.setattr(sandbox_windows, "_job_process_ids",
+                        lambda job: list(calls.job_pids))
+    monkeypatch.setattr(sandbox_windows, "_open_process",
+                        lambda pid: 1000 + pid)       # a handle per pid
     monkeypatch.setattr(
         sandbox_windows, "_memory_counters",
-        lambda handle: SimpleNamespace(WorkingSetSize=calls.working_set))
+        lambda handle: SimpleNamespace(
+            WorkingSetSize=calls.working_sets.get(handle, calls.working_set)))
     return sandbox_windows, calls
 
 
@@ -461,6 +472,38 @@ def test_the_windows_plan_caps_with_a_job_object_and_confines_with_nothing(
     finally:
         plan.release()
     assert calls.closed == [job]     # KILL_ON_JOB_CLOSE takes survivors with it
+
+
+def test_a_windows_sample_measures_the_job_not_the_launcher_stub(isolated,
+                                                                 windows):
+    """The bug Windows CI found (changelog 0238): a venv `python.exe` is a
+    *launcher* that starts the real interpreter as a CHILD. The child inherits
+    the job — which is why the commit limit bites and a balloon still gets its
+    `MemoryError` — but `GetProcessMemoryInfo` on the `Popen` handle measures
+    the stub, and answered ~3.9 MB for a worker with build123d imported. So the
+    sample walks the job's process list and takes the **largest** working set:
+    the max, never the sum, because the two share their mapped pages."""
+    _module, calls = windows
+    plan = _plan([isolated], quotas={"memory_mb": 1024})
+    try:
+        plan.backend.attach(SimpleNamespace(pid=99, _handle=7))
+        calls.job_pids = [1, 2]
+        calls.working_sets = {1001: 4 * 1024 * 1024,      # the launcher stub
+                              1002: 480 * 1024 * 1024}    # the interpreter
+        assert plan.backend.rss_bytes(SimpleNamespace(_handle=7)) == \
+            480 * 1024 * 1024
+        assert calls.closed == [1001, 1002]   # every opened handle, every sample
+
+        # A pid that exits between the query and the open is skipped, not fatal
+        # ...and a job with nothing in it falls back to the Popen handle, which
+        # under-reports but is never `None` — a sampler that always answered
+        # `None` would enforce nothing at all.
+        calls.job_pids = []
+        assert plan.backend.rss_bytes(SimpleNamespace(_handle=7)) == \
+            calls.working_set
+        assert plan.backend.rss_bytes(SimpleNamespace(_handle=None)) is None
+    finally:
+        plan.release()
 
 
 def test_a_windows_job_object_that_cannot_be_made_is_not_claimed(isolated,

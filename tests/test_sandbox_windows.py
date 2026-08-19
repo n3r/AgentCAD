@@ -88,11 +88,20 @@ def test_the_plan_caps_with_a_job_object_and_confines_with_nothing(capped):
 
 def test_the_supervisor_can_sample_a_windows_worker(capped):
     """psapi's working set, through the same `Backend.rss_bytes` seam the
-    supervisor calls on every sample."""
+    supervisor calls on every sample.
+
+    The bound is 100 MB and it is the point of the test: a venv `python.exe`
+    (uv-managed ones included) is a **launcher** that starts the real
+    interpreter as a child, so `GetProcessMemoryInfo` on the `Popen` handle
+    measures a ~3.9 MB stub — which is exactly what this asserted before
+    (changelog 0238). The worker here has build123d imported and is several
+    hundred MB; sampling the job's processes is what makes that visible, and a
+    stub-only sample now fails loudly instead of passing a sanity bound.
+    """
     client, _root = capped
     rss = client._plan.backend.rss_bytes(client._proc)
     assert isinstance(rss, int)
-    assert 4 * 1024 * 1024 < rss < 8 * 1024 ** 3    # a CPython, not a fantasy
+    assert 100 * 1024 * 1024 < rss < 8 * 1024 ** 3    # a CPython with OCCT in it
 
 
 def test_a_balloon_over_the_commit_limit_is_a_recoverable_script_error(capped):
