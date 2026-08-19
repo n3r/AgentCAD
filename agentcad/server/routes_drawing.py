@@ -60,17 +60,30 @@ def _drawing_result(payload: dict) -> dict:
     return _result(payload)
 
 
+#: A JSON query parameter longer than this is refused before parsing — a
+#: sections/details list is a handful of small objects, and a megabyte of
+#: brackets is only ever an attempt to make `json.loads` recurse (see below).
+_MAX_JSON_QUERY = 16_384
+
+
 def _json_query(value: str | None, name: str):
     """Parse a JSON-encoded query parameter (the browser preview sends
     ``sections``/``details`` as ``JSON.stringify(...)``). A malformed value is a
     422 here, not a 500 in the tool — and the tool's own structural validator
     (``_validate_sections``/``_validate_details``) is the second gate on shape.
+
+    ``json.loads`` on a deeply-nested value raises **``RecursionError``**, which
+    is *not* a ``ValueError`` (the CLAUDE.md packages trap) — so it is caught
+    explicitly, and the raw string is size-capped *before* parsing so the
+    recursion never starts.
     """
     if value is None or value == "":
         return None
+    if len(value) > _MAX_JSON_QUERY:
+        raise ValidationError(f"{name} is too large")
     try:
         return json.loads(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         raise ValidationError(f"{name} must be a JSON value")
 
 

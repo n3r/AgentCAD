@@ -43,10 +43,38 @@ _SECTION_TIMEOUT_S = 30.0
 _SECTION_PLANES = ("xy", "xz", "yz")
 _DETAIL_VIEWS = ("top", "front", "right", "iso")
 
+#: The valid projected views. An unknown name used to reach `_VIEW_DIRS[name]`
+#: in the worker as a bare `KeyError`, which `_dispatch` wraps as `ERROR_KERNEL`
+#: and the route answers 502 (a retryable server fault) — for what is a bad
+#: request. Gated here so it is a 422 `ValidationError` like every other spec.
+_VIEWS = ("top", "front", "right", "iso")
+
+#: A generous but finite cap on section/detail count. Each section is one
+#: `b3d.section` per solid and adds to the request timeout (`_SECTION_TIMEOUT_S`
+#: · len), so an unbounded list is a self-inflicted slow build; 26 is also where
+#: the A–Z section lettering stops being clean.
+_MAX_EXTRA_VIEWS = 26
+
 
 def _is_number(value) -> bool:
     """A JSON number, excluding ``bool`` (which is an ``int`` in Python)."""
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _validate_views(views):
+    """Validate the ``views`` subset (a 422, not a 502 KernelError from a bare
+    ``_VIEW_DIRS[name]`` in the worker). ``None`` means all four."""
+    if views is None:
+        return None
+    if not isinstance(views, list):
+        raise ValidationError("views must be an array of view names")
+    unknown = [v for v in views if v not in _VIEWS]
+    if unknown:
+        raise ValidationError(
+            f"unknown view(s): {', '.join(map(repr, unknown))}; "
+            f"one of: {', '.join(_VIEWS)}",
+            details={"declared": list(_VIEWS)})
+    return views
 
 
 def _validate_sections(sections) -> list:
@@ -57,6 +85,10 @@ def _validate_sections(sections) -> list:
     if not isinstance(sections, list):
         raise ValidationError("sections must be an array of "
                               "{plane, offset_mm, label?} objects")
+    if len(sections) > _MAX_EXTRA_VIEWS:
+        raise ValidationError(
+            f"too many sections ({len(sections)}); the cap is "
+            f"{_MAX_EXTRA_VIEWS}")
     out: list = []
     for i, entry in enumerate(sections):
         if not isinstance(entry, dict):
@@ -86,6 +118,10 @@ def _validate_details(details) -> list:
     if not isinstance(details, list):
         raise ValidationError("details must be an array of "
                               "{view, center_mm, radius_mm, scale} objects")
+    if len(details) > _MAX_EXTRA_VIEWS:
+        raise ValidationError(
+            f"too many details ({len(details)}); the cap is "
+            f"{_MAX_EXTRA_VIEWS}")
     out: list = []
     for i, entry in enumerate(details):
         if not isinstance(entry, dict):
@@ -235,6 +271,7 @@ def register(registry, service) -> None:
                          tabulate: bool = False) -> dict:
         if format not in ("svg", "dxf", "pdf"):
             raise ValidationError("drawing format must be svg, pdf, or dxf")
+        _validate_views(views)
         # Section/detail specs are validated SERVICE-side (naming a bad entry's
         # index); the geometry itself happens in the kernel handler, which
         # already holds the built shape — no second kernel round-trip. DXF

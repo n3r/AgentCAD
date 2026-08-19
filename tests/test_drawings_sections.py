@@ -267,3 +267,49 @@ def test_the_get_routes_forward_sheet_views_and_sections(demo):
     # a bare GET (no new params) is unchanged
     plain = http.get("/api/projects/demo/parts/box/drawing.svg")
     assert plain.status_code == 200
+
+
+# ------------------------------------------------ review fixes (MED-1/2, LOW)
+
+def test_an_unknown_view_is_a_validation_error_not_a_kernel_502(demo):
+    """Review MED-1: an unknown view name used to reach `_VIEW_DIRS[name]` in
+    the worker as a bare KeyError, wrapped as ERROR_KERNEL and answered 502 (a
+    retryable server fault) for what is a bad request. It is a 422 now."""
+    registry = build_registry(demo)
+    out = registry.call("generate_drawing",
+                        {"project": "demo", "part_id": "box", "views": ["banana"]})
+    assert out.get("error", {}).get("type") == "invalid_arguments" \
+        or "unknown view" in str(out.get("error", {}).get("message", "")).lower()
+    # and through HTTP it is a 422, not a 502
+    from fastapi.testclient import TestClient
+
+    from agentcad.server.app import create_app
+    app = create_app(demo, registry, extra_allowed_hosts={"testserver"})
+    http = TestClient(app, base_url="http://127.0.0.1")
+    r = http.get("/api/projects/demo/parts/box/drawing.svg", params={"views": "banana"})
+    assert r.status_code == 422, r.text
+
+
+def test_a_deeply_nested_sections_json_is_a_422_not_a_500(demo):
+    """Review MED-2: `json.loads` on deep nesting raises RecursionError, which is
+    not a ValueError — the query parser must catch it (and cap the size) so the
+    route keeps its documented 422-not-500 promise."""
+    from fastapi.testclient import TestClient
+
+    from agentcad.server.app import create_app
+    registry = build_registry(demo)
+    app = create_app(demo, registry, extra_allowed_hosts={"testserver"})
+    http = TestClient(app, base_url="http://127.0.0.1")
+    bomb = "[" * 9998 + "]" * 9998
+    r = http.get("/api/projects/demo/parts/box/drawing.svg", params={"sections": bomb})
+    assert r.status_code == 422, r.status_code
+
+
+def test_too_many_sections_is_refused(demo):
+    """Review LOW: an unbounded sections list is a self-inflicted slow build
+    (one b3d.section per solid each, scaling the timeout); the count is capped."""
+    registry = build_registry(demo)
+    many = [{"plane": "xz", "offset_mm": float(i)} for i in range(40)]
+    out = registry.call("generate_drawing",
+                        {"project": "demo", "part_id": "box", "sections": many})
+    assert "too many sections" in str(out.get("error", {}).get("message", "")).lower()
