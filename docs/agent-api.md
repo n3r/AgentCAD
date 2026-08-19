@@ -1451,6 +1451,46 @@ a global in-flight semaphore (`AGENTCAD_SHARE_MAX_INFLIGHT`). Over the limit the
 visitor endpoints answer `quota_exceeded` with `retry_after_s`; a disabled export
 format or a `customizer:false` link answers `not_found` before any build.
 
+### Workbench shell — `ui_open` and UX events (PRD-026)
+
+Put a view in front of the human instead of describing where to click.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `ui_open` | **view**, args | `{ok, view, args, delivered_to, note}`. `view` is a shell view id matching `[a-z][a-z0-9-]{0,39}` (`part-settings`, `export`, …); `args` is an object forwarded verbatim, JSON ≤ 4096 bytes. Both refuse with `validation_error`. |
+
+Three things to read it correctly:
+
+- **It is a broadcast, not a message.** The bus has no per-client routing
+  (every `/ws` client receives every event), so `ui_open` reaches *every*
+  connected browser and the shell shows "opened by agent" attribution. There
+  is no way to address one person; that is PRD-025/005 scope, not this.
+- **`delivered_to` is capability-honest.** It is the number of subscribers the
+  publish actually reached. `0` is a success *and* a warning — the note reads
+  `no browser is connected; nothing will open`, otherwise `published to N
+  connected client(s)`. A bare `{"ok": true}` cannot tell an agent "done" from
+  "there was nobody there" (the `project_history` `available: false`
+  precedent).
+- **10 opens per 10 s, per server process.** Over the limit the refusal is
+  `validation_error` with message `ui_open rate limit: 10 per 10 s` and
+  `details.retry_after_s`. The bucket refills continuously (one token a
+  second), so a burst of ten is fine and a loop is not.
+
+**Event.** `ui_open {view, args, by: "agent"}` — the shell opens the named
+view; anything else ignores it.
+
+**Events from the browser.** `POST /api/ui/events` is the other direction: the
+shell posts fire-and-forget UX telemetry and the server re-publishes it on the
+bus, so an agent watching `/ws` can see what a human just did. The body is an
+object with `type` ∈ {`dialog_opened`, `dialog_submitted`, `palette_executed`}
+plus any of `view` / `action` / `tool` — strings, ≤ 80 characters. Anything
+else (an unknown type, an extra key, a non-string, a non-object body) is a
+**422**; there is no tool for this route. What goes out on the bus is
+`{type, view?, action?, tool?, by: "browser", client}`, where `by` and
+`client` are set by the server — `client` is the request's `X-Agent-Id` (or
+`null`) — so a browser cannot claim to be an agent. Member-only in hosted
+mode.
+
 ## A worked loop
 
 The canonical agent workflow — create, hit an error, read it, fix, verify,

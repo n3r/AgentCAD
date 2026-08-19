@@ -87,6 +87,20 @@ class EventBus:
             if q in self._subscribers:
                 self._subscribers.remove(q)
 
+    def subscriber_count(self) -> int:
+        """How many subscribers a publish would fan out to right now.
+
+        The `/ws` endpoint subscribes exactly one queue per connected client,
+        so this is "how many browsers are listening" — which is what makes
+        `ui_open` able to say `delivered_to: 0` instead of a bare `ok`
+        (PRD-026, Decision 7). Under the lock, like every other reader of the
+        list: `len()` of a list another thread is appending to is not a crash,
+        but the lock is what makes the answer a real instant rather than an
+        arbitrary one.
+        """
+        with self._lock:
+            return len(self._subscribers)
+
     def publish(self, event: dict) -> None:
         hook = self.on_publish
         if hook is not None:
