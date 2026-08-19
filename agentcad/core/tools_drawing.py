@@ -230,7 +230,8 @@ def register(registry, service) -> None:
                          scale: float | None = None,
                          version: dict | None = None,
                          sections: list | None = None,
-                         details: list | None = None) -> dict:
+                         details: list | None = None,
+                         hole_table: bool = False) -> dict:
         if format not in ("svg", "dxf", "pdf"):
             raise ValidationError("drawing format must be svg, pdf, or dxf")
         # Section/detail specs are validated SERVICE-side (naming a bad entry's
@@ -298,6 +299,11 @@ def register(registry, service) -> None:
                 request["sections"] = clean_sections
             if clean_details:
                 request["details"] = clean_details
+            # FR9: the hole table renders from the built shape's records (or the
+            # detected circles), on the sheet path only — DXF has no annotation
+            # layer. Opt-in, like the dimension table.
+            if hole_table:
+                request["hole_table"] = True
         timeout = 120.0
         # Each section is one build-shaped kernel op per solid body — scale the
         # request timeout by it, the same reasoning as the dim-table rows below.
@@ -343,6 +349,11 @@ def register(registry, service) -> None:
         table = (result.get("detected") or {}).get("dim_table")
         if table is not None:
             result["dim_table"] = table
+        # FR9: surface the hole table at the top level too (Decision 10), so an
+        # agent can check "is every hole tabled?" without parsing `detected`.
+        hole_table = (result.get("detected") or {}).get("hole_table")
+        if hole_table is not None:
+            result["hole_table"] = hole_table
         return result
 
     registry.register(Tool(
@@ -371,6 +382,12 @@ def register(registry, service) -> None:
                               "Draw a per-configuration dimension table (SVG/"
                               "PDF; ignored for DXF and when the part has no "
                               "configurations)"},
+                "hole_table": {"type": "boolean", "description":
+                               "Draw a hole table (SVG/PDF): tag, X/Y from the "
+                               "top-view datum, and the standard designation "
+                               "from PRD-010 hole metadata — or the detected "
+                               "diameters when the part has no metadata. Prints "
+                               "a tag at each hole"},
                 "sheet": {"type": "string", "description":
                           "Sheet format: iso_a4|iso_a3|iso_a2|iso_a1|iso_a0|"
                           "ansi_a|ansi_b|ansi_c|ansi_d (landscape; default "

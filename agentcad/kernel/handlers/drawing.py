@@ -327,6 +327,65 @@ def _dim_table(rows, columns, x=_TABLE_X, y_top=_TABLE_Y, row_h=_TABLE_ROW_H):
     return els, dropped, warnings
 
 
+# ---- hole table (PRD-014 FR9) ---------------------------------------------
+
+
+def _hole_table(rows, from_metadata: bool, x, y_top, y_limit,
+                row_h=_TABLE_ROW_H):
+    """The boxed hole table as primitives: ``(elements, capped_rows, warnings)``.
+
+    A caption (``HOLE TABLE`` / ``HOLE TABLE (detected)``), a header, then one
+    row per hole. **With metadata** the columns are ``tag | X | Y | designation``
+    (the record's standard callout); **without**, ``tag | X | Y | ⌀`` (a
+    measured diameter — a projected circle cannot be given a designation it did
+    not earn). X/Y are the datum offsets the caller already put on each row.
+
+    The table shares ``table_zone`` with the dimension table by stacking below
+    it, so ``y_top`` is already past the dim table and ``y_limit`` is the zone's
+    bottom. Rows that would run past ``y_limit`` are **capped** and named in a
+    warning — never silently truncated (the ``_MAX_TABLE_ROWS`` contract, made
+    format-parametric). Every number goes through ``fmt`` (determinism).
+    """
+    warnings: list[str] = []
+    caption_h = 4.0
+    # How many DATA rows fit under the caption + header before y_limit.
+    room = max(0, int((y_limit - y_top - caption_h - row_h) / row_h))
+    if len(rows) > room:
+        warnings.append(
+            f"the hole table has {len(rows)} holes but only {room} fit the "
+            f"sheet's table zone; it prints the first {room} — widen the sheet "
+            f"to table them all")
+        rows = rows[:room]
+    header = (["tag", "X", "Y", "designation"] if from_metadata
+              else ["tag", "X", "Y", "⌀"])
+
+    def _row_cells(r):
+        last = (r.get("designation") if from_metadata
+                else f"⌀{fmt(r.get('diameter_mm'))}")
+        return [r["tag"], fmt(r["x_mm"]), fmt(r["y_mm"]), str(last)]
+
+    lines = [header] + [_row_cells(r) for r in rows]
+    widths = [max(14.0, 2.2 * max(len(line[i]) for line in lines) + 4.0)
+              for i in range(len(lines[0]))]
+    if sum(widths) > _TABLE_W:
+        warnings.append(
+            f"the hole table is {sum(widths):.0f} mm wide and overflows the "
+            f"sheet's {_TABLE_W:g} mm column")
+    caption = "HOLE TABLE" if from_metadata else "HOLE TABLE (detected)"
+    els: list = [Text(x, y_top + 2.6, caption, Style.TEXT, anchor="start",
+                      size=3.0)]
+    y = y_top + caption_h
+    for line in lines:
+        cx = x
+        for width, text in zip(widths, line):
+            els.append(Rect(cx, y, width, row_h, style=Style.DIM, fill="white"))
+            els.append(Text(cx + width / 2, y + row_h / 2 + 1.0, text,
+                            Style.DIM, anchor="middle", size=3.5))
+            cx += width
+        y += row_h
+    return els, rows, warnings
+
+
 def _tol_suffix(plus, minus):
     if abs(plus - minus) < 1e-9:
         return f" ±{plus:.2f}"
@@ -413,6 +472,73 @@ def _view_bounds(edges):
 def _detect_circles(vis_edges):
     return [(e.arc_center, e.radius) for e in vis_edges
             if e.geom_type.name == "CIRCLE" and e.is_closed]
+
+
+# ---- center marks & centerlines (FR8) --------------------------------------
+#
+# Circles are detected in EVERY rendered view now, not the top view alone
+# (drawing.py's inherited limitation): each view's own projected visible edges
+# yield the closed CIRCLE edges seen face-on there, and a small cross (a "center
+# mark") lands at each. A coaxial run of holes seen edge-on in a side view — a
+# row sharing an axis — shows no circle at all, so it gets a CHAIN centerline
+# spanning the run instead. Both are sorted and every coordinate goes through
+# the backend's `fmt`, so two runs give identical bytes (FR12).
+
+#: How near two circle centres must be (in a view's own 2D coords, mm) to count
+#: as the same feature. A through hole projects BOTH rims to the same centre, so
+#: without a dedup one hole would draw two coincident marks.
+_MARK_DEDUP_MM = 0.05
+
+#: |axis · view-direction| below this is "edge-on" (the circular face is seen as
+#: a line), above `1 - this` is "face-on". A hole axis is unit length.
+_EDGE_ON_TOL = 0.02
+
+
+def _project_to_view(name: str, p) -> tuple[float, float]:
+    """A world point in a view's own 2D (projected) coordinates.
+
+    Reproduces build123d's ``project_to_viewport`` frame analytically from
+    ``_VIEW_DIRS`` so a hole record's world centre can be placed in a view
+    without re-projecting geometry: forward ``f = normalize(look_at - origin)``
+    with ``look_at`` at the world origin, right ``r = normalize(f × up)``, and
+    the orthogonalized up ``u = r × f``; the 2D coords are ``(p·r, p·u)``. This
+    is the identity ``(X, Y)`` for the top view, ``(X, Z)`` for the front and
+    ``(Y, Z)`` for the right — the mappings ``_top_xy`` and ``_cutting_marks``
+    already assume.
+    """
+    origin = _VIEW_DIRS[name]["viewport_origin"]
+    up = _VIEW_DIRS[name]["viewport_up"]
+    f = _normalized([-float(o) for o in origin])
+    r = _normalized(_cross(f, [float(u) for u in up]))
+    u = _cross(r, f)
+    pv = [float(p[0]), float(p[1]), float(p[2])]
+    return (sum(pv[k] * r[k] for k in range(3)),
+            sum(pv[k] * u[k] for k in range(3)))
+
+
+def _edge_on(name: str, axis) -> bool:
+    """Is a feature of this axis seen EDGE-ON in this view (its round face a
+    line)? True when the axis is perpendicular to the view direction."""
+    origin = _VIEW_DIRS[name]["viewport_origin"]
+    f = _normalized([-float(o) for o in origin])
+    a = _normalized([float(v) for v in axis])
+    return abs(sum(a[k] * f[k] for k in range(3))) < _EDGE_ON_TOL
+
+
+def _center_mark(cx: float, cy: float, arm: float = 1.5) -> list:
+    """A center mark: two short crossing THIN lines centred on ``(cx, cy)``."""
+    return [Line(cx - arm, cy, cx + arm, cy, Style.THIN),
+            Line(cx, cy - arm, cx, cy + arm, Style.THIN)]
+
+
+def _dedup_centers(centers) -> list:
+    """The distinct circle centres in a view (a through hole projects both rims
+    to one spot), sorted by rounded ``(x, y)`` so the marks are order-stable."""
+    seen: list = []
+    for c in sorted(centers, key=lambda c: (round(c.X, 3), round(c.Y, 3))):
+        if all(math.hypot(c.X - s.X, c.Y - s.Y) > _MARK_DEDUP_MM for s in seen):
+            seen.append(c)
+    return seen
 
 
 # ---- section views (FR6) ---------------------------------------------------
@@ -972,7 +1098,7 @@ def _title_block(dl, template, scale_str, title, fallback_label):
 def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
                         dim_table=None, sheet=DEFAULT_SHEET,
                         scale_override=None, title=None, sections=(),
-                        details=()):
+                        details=(), hole_table=False):
     """Build the ordered display list for one sheet — the SINGLE composition
     both backends render (Slice 2, Decision 1/7). Returns
     ``(display_list, width_mm, height_mm, meta)``; ``detected_out`` is filled in
@@ -984,6 +1110,7 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
             for name in views}
     hole_warnings: list[str] = []
     warnings: list[str] = []
+    hole_table_data = None   # filled in the top-view branch (FR9)
 
     # PMI callout state. `pmi` is the normalized section from core/pmi.py.
     pmi = pmi or {}
@@ -1044,6 +1171,13 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
                 dl.append(_edge_prim(e, ox, oy, scale, Style.HID))
         for e in vis:
             dl.append(_edge_prim(e, ox, oy, scale, Style.VIS))
+        # Center marks (FR8) at every circle detected IN THIS VIEW — not the
+        # top view alone. A hole on a side face is a circle in the front/right
+        # view and marks there; iso shows ellipses, not CIRCLE edges, so it
+        # yields none. Deduped (a through hole projects both rims to one spot)
+        # and sorted, so the marks are byte-stable.
+        for c in _dedup_centers([c for c, _r in _detect_circles(vis)]):
+            dl.extend(_center_mark(ox + scale * c.X, oy - scale * c.Y))
         # overall dimensions on front/top (width along X, height along Y).
         # PMI linear dims tolerance the overall extents: "width" = X in both
         # views, "height" = front-view Y (world Z), "depth" = top-view Y.
@@ -1066,6 +1200,34 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
         # view label, just above the view's projected bbox
         dl.append(Text(cx, oy - scale * by1 - 4, name.upper(), Style.TEXT,
                        anchor="middle", size=4))
+
+    # Coaxial-run centerlines (FR8): a record's holes share an axis, and in a
+    # view where that axis is seen EDGE-ON (a side view) the run is a row of
+    # holes with no circle to mark — so a CHAIN line spans the run. Records are
+    # taken in their own stable order and each run's projected centres are
+    # sorted, so the lines are byte-stable. iso is skipped (it never shows an
+    # honest edge-on row).
+    for record in hole_records:
+        if not isinstance(record, dict):
+            continue  # a residue carrier is reported by the callout loop below
+        centers = record.get("centers") or []
+        axis = record.get("axis")
+        if len(centers) < 2 or not axis:
+            continue
+        for name in order:
+            if name == "iso" or name not in placements or not _edge_on(name, axis):
+                continue
+            ox, oy, sc, _bb = placements[name]
+            pts = sorted((_project_to_view(name, c) for c in centers),
+                         key=lambda q: (round(q[0], 6), round(q[1], 6)))
+            (ax, ay), (bx, by) = pts[0], pts[-1]
+            if math.hypot(bx - ax, by - ay) < 1e-6:
+                continue  # a stack projecting to one point is no row to span
+            dx, dy = _unit((bx - ax, by - ay))
+            margin = 3.0 / sc            # ~3 mm of sheet overrun past the ends
+            a = (ox + sc * (ax - dx * margin), oy - sc * (ay - dy * margin))
+            b = (ox + sc * (bx + dx * margin), oy - sc * (by + dy * margin))
+            dl.append(Line(a[0], a[1], b[0], b[1], Style.CHAIN))
 
     # diameter callouts from top-view circles (distinct radii)
     dia_dims = [d for d in pmi_dims if d.get("kind") == "diameter"]
@@ -1092,6 +1254,15 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
         pmi_drawn: set = set()      # group diameters PMI already annotated
         ox_t, oy_t, sc_t, _bounds = placements["top"]
         slot = 0
+        # Hole-table rows (FR9). One letter per matched record, one row per
+        # matched instance (`A1, A2, …`), with X/Y measured from the top view's
+        # DATUM: the lower-left corner of its projected bounding box, in model
+        # mm. A tag is printed at each hole so the table cross-references the
+        # sheet. Letters are assigned only to records that draw, so the run has
+        # no gaps.
+        datum_x, datum_y = _bounds[0], _bounds[1]
+        hole_table_rows: list = []
+        hole_letter_i = 0
 
         def _leader(centers, text):
             """One callout: a leader from the column to a circle, and the text.
@@ -1258,6 +1429,24 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
                               "seat_present": seat_present})
             if dia not in pmi_drawn:
                 _leader(centers, _callout_text(text, drawn))
+            # Hole-table rows for this record (FR9): one letter, one row per
+            # matched circle, tagged at the hole. `text` is the FINAL callout —
+            # a degraded seat/depth is tabled exactly as it is drawn. Opt-in
+            # (`hole_table`), like the dimension table, so a plain drawing is
+            # unchanged and does not sprout tags on every hole.
+            if hole_table:
+                letter = _letter(hole_letter_i)
+                hole_letter_i += 1
+                for j, c in enumerate(sorted(
+                        centers,
+                        key=lambda c: (round(c.X, 3), round(c.Y, 3))), 1):
+                    tag = f"{letter}{j}"
+                    hole_table_rows.append(
+                        {"tag": tag, "x_mm": round(c.X - datum_x, 3),
+                         "y_mm": round(c.Y - datum_y, 3), "designation": text})
+                    dl.append(Text(ox_t + sc_t * c.X + 2.0,
+                                   oy_t - sc_t * c.Y - 2.0, tag, Style.TEXT,
+                                   anchor="start", size=2.5))
 
         # Whatever is left is a hole we can only measure: same callout shape,
         # measured text, and `from_metadata: false` says which is which.
@@ -1272,6 +1461,30 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
         detected_out["hole_groups"] = sorted(
             hole_groups, key=lambda g: g["diameter_mm"])
         detected_out["hole_warnings"] = hole_warnings
+
+        # The hole table (FR9). WITH metadata: the record rows above. WITHOUT:
+        # fall back to the detected diameter groups — one row per detected
+        # circle, `detected: true`, DIAMETER ONLY (a projected circle cannot
+        # tell a drilled hole from a tap, so nothing is fabricated). Either way
+        # a caller can ask "is every hole tabled?" against `rows`.
+        if hole_table and hole_table_rows:
+            hole_table_data = {"rows": hole_table_rows, "from_metadata": True}
+        elif hole_table:
+            det_rows: list = []
+            for gi, (dia, cs) in enumerate(groups):
+                letter = _letter(gi)
+                for j, c in enumerate(sorted(
+                        cs, key=lambda c: (round(c.X, 3), round(c.Y, 3))), 1):
+                    tag = f"{letter}{j}"
+                    det_rows.append(
+                        {"tag": tag, "x_mm": round(c.X - datum_x, 3),
+                         "y_mm": round(c.Y - datum_y, 3),
+                         "diameter_mm": dia, "detected": True})
+                    dl.append(Text(ox_t + sc_t * c.X + 2.0,
+                                   oy_t - sc_t * c.Y - 2.0, tag, Style.TEXT,
+                                   anchor="start", size=2.5))
+            hole_table_data = ({"rows": det_rows, "from_metadata": False}
+                               if det_rows else None)
     else:
         for d in dia_dims:
             pmi_warnings.append(
@@ -1307,6 +1520,25 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
             "placement": "right-column",
             "warnings": list(dim_table.get("warnings") or []) + table_warnings,
         }
+
+    # The hole table (FR9), stacked BELOW the dimension table in the same
+    # `table_zone` — they share the zone, and a larger sheet has more room. Rows
+    # that overflow the zone are capped with a warning, never silently dropped.
+    if hole_table_data:
+        zone = template.table_zone
+        dim_rows = len(dim_table["rows"]) + 1 if dim_table else 0
+        y_top = zone.y + dim_rows * _TABLE_ROW_H + (4.0 if dim_rows else 0.0)
+        table_els, capped, ht_warnings = _hole_table(
+            hole_table_data["rows"], hole_table_data["from_metadata"],
+            x=zone.x, y_top=y_top,
+            y_limit=zone.y + zone.h)
+        dl.extend(table_els)
+        hole_table_data["datum"] = (
+            "top-view lower-left of the projected bounding box (model X, Y mm)")
+        hole_table_data["rows"] = capped
+        if ht_warnings:
+            hole_table_data["warnings"] = ht_warnings
+        detected_out["hole_table"] = hole_table_data
 
     # Data-driven title block (FR2), drawn from the template's title-block zone.
     _title_block(dl, template, scale_str, title,
@@ -1455,24 +1687,24 @@ def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
 
 def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
                dim_table=None, sheet=DEFAULT_SHEET, scale_override=None,
-               title=None, sections=(), details=()):
+               title=None, sections=(), details=(), hole_table=False):
     """Render the sheet to an SVG string (thin wrapper over the shared list)."""
     dl, W, H, meta = _build_display_list(
         part, views, detected_out, pmi=pmi, hole_records=hole_records,
         dim_table=dim_table, sheet=sheet, scale_override=scale_override,
-        title=title, sections=sections, details=details)
+        title=title, sections=sections, details=details, hole_table=hole_table)
     return SvgBackend().render(dl, W, H), meta
 
 
 def _build_pdf(part, views, detected_out, pmi=None, hole_records=(),
                dim_table=None, sheet=DEFAULT_SHEET, scale_override=None,
-               title=None, sections=(), details=()):
+               title=None, sections=(), details=(), hole_table=False):
     """Render the sheet to PDF bytes (the SAME list, a different backend —
     FR11). Deterministic: see :mod:`agentcad.kernel.handlers._pdf`."""
     dl, W, H, meta = _build_display_list(
         part, views, detected_out, pmi=pmi, hole_records=hole_records,
         dim_table=dim_table, sheet=sheet, scale_override=scale_override,
-        title=title, sections=sections, details=details)
+        title=title, sections=sections, details=details, hole_table=hole_table)
     return PdfBackend().render(dl, W, H), meta
 
 
@@ -1526,7 +1758,8 @@ def register(toolbox: dict):
                 sheet=sheet, scale_override=params.get("scale"),
                 title=params.get("title"),
                 sections=params.get("sections") or (),
-                details=params.get("details") or ())
+                details=params.get("details") or (),
+                hole_table=bool(params.get("hole_table")))
             # SVG is a str, PDF is already bytes.
             atomic_write(out_path,
                          payload.encode() if isinstance(payload, str)
