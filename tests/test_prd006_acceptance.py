@@ -82,6 +82,22 @@ def _defines(source: str, function: str) -> bool:
                      re.MULTILINE) is not None
 
 
+def _numbered(directory: Path) -> list[tuple[int, Path]]:
+    """`(number, path)` for every numbered changelog entry, any prefix width.
+
+    `max()` over the *filenames* orders lexically, so a five-digit sequence
+    would sort below a four-digit one the day the repo needs one. The number
+    is what "newest" means here, so parse it.
+    """
+    entries = []
+    for path in directory.glob("*.md"):
+        match = re.match(r"(\d+)-", path.name)
+        if match:
+            entries.append((int(match.group(1)), path))
+    assert entries, f"no numbered changelog entries under {directory}"
+    return entries
+
+
 @pytest.fixture(scope="module")
 def confined(tmp_path_factory):
     """A real kernel worker, planned and confined the way the app plans one.
@@ -175,8 +191,10 @@ def test_ac2_the_seatbelt_regressions_survived_the_refactor():
     exactly the shape of change that quietly loses coverage: the tests still
     pass because they no longer test the same thing, or because they are no
     longer there. So this pins the eight pre-PRD tests **by name** — the set
-    `git show 78efcb4^:tests/test_sandbox.py` defines — and requires the file
-    to have grown rather than shrunk.
+    `git show 78efcb4^:tests/test_sandbox.py` defines — and pins the file's
+    current size as the floor: PRD-006 added four (the private-temp-dir
+    coverage and the preamble-inside-the-seatbelt check), so twelve is what
+    must still be there, not eight.
 
     Whether they pass is `tests/test_sandbox.py`'s job, on macOS, on every
     run; a deletion is what no passing suite can report.
@@ -192,7 +210,9 @@ def test_ac2_the_seatbelt_regressions_survived_the_refactor():
                  "test_health_reports_active_for_sandboxed_kernel"):
         assert _defines(source, name), f"a pre-PRD seatbelt test is gone: {name}"
     defined = len(re.findall(r"^def test_", source, re.MULTILINE))
-    assert defined >= 8, f"tests/test_sandbox.py shrank to {defined} tests"
+    assert defined >= 12, (
+        f"tests/test_sandbox.py defines {defined} tests; it had 8 before "
+        f"PRD-006 and 12 after, and this floor is the deletion guard")
 
 
 # ==================================================================== AC3
@@ -256,7 +276,10 @@ def test_ac3_windows_reports_unsupported_and_names_prd_006b(tmp_path,
 
     Runs on every OS: the Win32 entry points live behind `open_job()`, and
     what is asserted here is the confinement the backend reports before any of
-    them is called.
+    them is called. The live job object is exercised by
+    `tests/test_sandbox_windows.py` **on the windows-latest CI job** — gated
+    there, not run here, and not yet observed green: that evidence lands with
+    the first green CI run of this branch's PR.
     """
     from agentcad.kernel import sandbox_windows
 
@@ -423,15 +446,25 @@ def test_ac8_the_full_suite_count_is_cited():
     four-digit number, so "the file contains a long digit string" is satisfied
     by an entry that cites nothing. The literal placeholder ("N passed") is red
     here on purpose, so the close-out cannot forget to fill it in.
+
+    Neither the entry nor "the newest entry" is addressed by its **number**:
+    this repo renumbers changelogs when two branches collide at merge
+    (`b24ef66` moved 0188-0197 to 0200-0209), so a hardcoded `0219-` would be
+    a test that fails for a rename it should not care about. The entry is
+    found by its **slug**, and the newest one by the numeric value of whatever
+    prefix it has, at any width.
     """
-    entry = CHANGELOG / "0219-prd-006-ci-docs-acceptance.md"
-    assert entry.is_file(), "the PRD-006 close-out changelog entry is missing"
+    matches = sorted(CHANGELOG.glob("*-prd-006-ci-docs-acceptance.md"))
+    assert len(matches) == 1, (
+        f"expected exactly one PRD-006 close-out changelog entry, found "
+        f"{[m.name for m in matches]}")
+    entry = matches[0]
     text = entry.read_text(encoding="utf-8")
     assert "make test" in text
     assert re.search(r"\b\d{4,6}\s+passed\b", text.replace(",", "")), \
         "the close-out entry does not cite a `make test` suite count"
 
-    latest = max(CHANGELOG.glob("0[0-9][0-9][0-9]-*.md"))
+    latest = max(_numbered(CHANGELOG))[1]
     if latest != entry:
         recent = latest.read_text(encoding="utf-8")
         assert "make test" in recent and "passed" in recent, (

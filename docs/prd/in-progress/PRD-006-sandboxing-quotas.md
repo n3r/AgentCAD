@@ -3,10 +3,13 @@
 - **Status:** in-progress — the build is complete on branch
   `prd-006-sandboxing-quotas` (changelogs `0213`–`0219`). Moves to
   `completed/` in the close-out commit on `main` after the PR merges, per the
-  house rule. AC1–AC8 verified as recorded below, **except AC3's Windows
-  clause** — that clause and G2/FR2's Windows confinement half are carved out
-  as [PRD-006b](../pending/PRD-006b-windows-appcontainer.md), and Windows
-  reports `unsupported` here rather than closing on an unverified claim.
+  house rule. AC1–AC8 verified as recorded below, with two named exceptions:
+  **AC3's Windows clause** — that clause and G2/FR2's Windows confinement half
+  are carved out as
+  [PRD-006b](../pending/PRD-006b-windows-appcontainer.md), and Windows reports
+  `unsupported` here rather than closing on an unverified claim — and **AC8's
+  "green on the three-OS matrix" half**, which is gated on the ubuntu and
+  windows CI jobs and closes with the first green CI run of the PR.
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026) — promoted from v3 residual to cloud prerequisite
@@ -21,7 +24,9 @@
 > and no `--privileged` (bubblewrap was ruled out with evidence: it is absent
 > from the image and `unshare -Ur` is denied under Docker's default seccomp
 > profile). Two named read postures ship: `local` (global read, the v1 stance)
-> and `hosted` (an allow-list excluding the state dir and `HOME`), so a
+> and `hosted` (an allow-list excluding the state dir and leaving nothing
+> under the server user's home reachable but the config dir `~/.agentcad`,
+> which is a write root), so a
 > hosted member's script can no longer read the session signing key. Quotas
 > ship as honest **tiers** — a delegated cgroup v2 subtree, POSIX rlimits
 > where they are real, Windows job objects, and a parent-side RSS supervisor
@@ -30,24 +35,46 @@
 > per project and per identity behind `/api/health` and `get_usage`; disk
 > budgets refuse a write before the worker makes it.
 >
+> **One deliberate deviation from FR8.** FR8 asks for a *pids* kill reported
+> as `kernel_crash` with `details.reason: "pids_cap"`. The build does better
+> and therefore differently: both process-count mechanisms (`RLIMIT_NPROC`
+> and the cgroup's `pids.max`) make the script's own `fork()` return `EAGAIN`,
+> so the breach arrives as an ordinary `script_error` with
+> `details.denied: "process_count"`, a traceback and a line number — **and the
+> warm worker survives**, which a kill would not have allowed. `pids_cap`
+> stays reserved vocabulary in the docs so an agent's handler can be written
+> once; nothing emits it. The same is true of `cpu_cap`: the CPU tiers
+> throttle rather than kill, and the branch that would emit it needs a
+> `SIGXCPU` from an `RLIMIT_CPU` AgentCAD never sets (it is
+> lifetime-cumulative — the per-request wall-clock timeout is the CPU
+> backstop). `memory_cap` is the one reason the shipped tiers produce.
+>
 > **The residual, stated rather than implied:** a member's script still runs
 > as the server user and the **whole projects tree** is readable and writable
 > to it, across every project on the instance. Per-project isolation is
 > PRD-005. So "an account is a shell" is no longer literally true on Linux —
-> no network, no writes outside the projects tree and its private temp dir, no
-> reads of the state dir or `HOME`, capped memory/pids/CPU — but accounts
+> no network, no writes outside the granted roots, no reads of the state dir
+> and nothing under the server user's home but the config dir, capped
+> memory/pids/CPU — but accounts
 > remain for people you trust and registration stays closed.
 >
-> **Acceptance, per platform.** AC1 (the malicious battery contained on Linux)
-> — `tests/test_sandbox_linux.py`, run in `agentcad:local` and on the ubuntu
-> CI job with `AGENTCAD_EXPECT_SANDBOX=active`, so a degradation is red rather
+> **Acceptance, per platform.** Everything below was run and is cited in
+> changelog `0219`; what is **gated but not yet observed** is the CI matrix
+> itself — the ubuntu and windows jobs run on push, so their evidence lands
+> with the first green CI run of this branch's PR, and the controller records
+> the run there. AC1 (the malicious battery contained on Linux)
+> — `tests/test_sandbox_linux.py`, run locally in `agentcad:local` (96 passed,
+> 2 skipped) and **gated** on the ubuntu CI job with
+> `AGENTCAD_EXPECT_SANDBOX=active`, so a degradation there is red rather
 > than skipped. AC2 (macOS seatbelt regressions still pass) —
-> `tests/test_sandbox.py`. AC3 — `active` on macOS and Linux; **Windows
-> reports `unsupported`**, which is this PRD's honest answer and 006b's
-> subject. AC4/AC5/AC6 — `tests/test_supervisor.py`, real workers and real
-> allocations. AC7 — `tests/test_usage.py`. AC8 — the three-OS matrix, the
-> `AGENTCAD_NO_SANDBOX=1` opt-out and the unconfinable-environment case, in
-> `tests/test_prd006_acceptance.py`. Also deferred and named: the
+> `tests/test_sandbox.py`. AC3 — `active` measured on macOS and Linux;
+> **Windows reports `unsupported`**, which is this PRD's honest answer and
+> 006b's subject. AC4/AC5/AC6 — `tests/test_supervisor.py`, real workers and
+> real allocations. AC7 — `tests/test_usage.py`. AC8 — the
+> `AGENTCAD_NO_SANDBOX=1` opt-out and the unconfinable-environment case are
+> in `tests/test_prd006_acceptance.py` and were run; its "full suite green on
+> the **three-OS** matrix" half is gated on the ubuntu and windows jobs and is
+> the part that closes with that first green CI run. Also deferred and named: the
 > `systemd-run --scope` tier (unverified), the per-principal audit log
 > (PRD-005), a narrowed macOS read posture, and FEM under confinement.
 

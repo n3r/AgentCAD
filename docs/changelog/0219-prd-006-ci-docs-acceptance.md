@@ -181,24 +181,90 @@ Portability- and slow-marked, ten tests, AC1–AC8:
 
 ### One latent order dependency, found by adding a test module
 
-`tests/test_usage.py` gains an autouse `_reset_identity` fixture pinning
-`locks.client_id_var` to its default. Three of its tests assert that an
-unattributed usage record bills `local` — the ContextVar's default — and a
-ContextVar set at a test's top level is **never restored**, so it survives for
-the rest of that worker process. Several modules leave one set: every
-in-process `agentcad check` / `agentcad package …` calls
-`locks.set_client_id("ci")` inside `cli.py`. Measured with a `pytest_
-sessionfinish` probe: `tests/test_checks_cli.py` alone ends with
-`client_id_var = 'ci'`, and so do `tests/test_packages_cli.py` +
-`tests/test_prd004_acceptance.py`; `tests/test_checks_gate.py` (which calls
-`set_client_id` directly) does not.
+`tests/conftest.py` gains an autouse `_restore_client_identity` fixture that
+snapshots `locks.client_id_var` before every test and resets it after.
+
+`client_id_var` is a ContextVar defaulting to `"local"`, and one set at a
+test's top level is **never restored** — it survives for the rest of that
+xdist worker's process. Every in-process CLI run leaves one: `cmd_check` and
+the two package commands call `locks.set_client_id("ci")` inside `cli.py`,
+which is correct for a real `agentcad check` and has nowhere to be undone.
+Measured with a `pytest_sessionfinish` probe: `tests/test_checks_cli.py` alone
+ended the session at `'ci'`, and so did `tests/test_packages_cli.py` and
+`tests/test_prd004_acceptance.py`. (`tests/test_checks_gate.py` calls
+`set_client_id` directly but does **not** leak — it was the first suspect and
+the wrong one.)
 
 Under `-n auto --dist loadscope`, which of those shares a worker with
-`test_usage.py` is a scheduling detail — so adding **one unrelated test
-module** (the acceptance file) moved a leaker onto gw2 and turned three
-`local` assertions into `ci`. The file was order-dependent before this branch;
-it had simply never been re-shuffled. `tests/test_branches.py::_reset_context`
-is the same fixture for the same reason, and is cited in the docstring.
+`tests/test_usage.py` is a scheduling detail — so adding **one unrelated test
+module** (the acceptance file) moved a leaker onto gw2 and turned that file's
+three "an unattributed record bills `local`" assertions into `ci`. Those tests
+had been order-dependent since they were written.
+
+The fix is in `conftest.py` rather than in `cli.py` because **the CLI's call is
+right**: a real `agentcad check` process *is* `ci` from that point on, and
+scoping it there would change product behaviour to suit a harness. It is a
+snapshot-and-restore rather than a pin, so a test that sets an identity on
+purpose still sees it for its own duration (`tests/test_branches.py` switches
+between `agent_a`/`agent_b` many times inside one test) and only the escape is
+closed — which closes the whole class, not just this one module. Re-measured
+with the same probe: `tests/test_checks_cli.py` now ends at `'local'`.
+
+### Review round 1 — five documentation claims the code does not support
+
+Found by the task review; each was a sentence a reader would have acted on.
+
+- **`pids_cap` and `cpu_cap` were documented as live `details.reason` values.
+  They are not.** The shipped tiers emit exactly one reason, **`memory_cap`**
+  (the supervisor's kill, or a delegated cgroup's OOM counter). A *pids*
+  breach never kills the worker: both mechanisms (`RLIMIT_NPROC` and the
+  cgroup's `pids.max`) make the script's own `fork()` return `EAGAIN`, so it
+  arrives as a `script_error` with `details.denied: "process_count"` — better
+  than a kill, and why nothing needs to emit `pids_cap`. `cpu_cap` is emitted
+  only for a worker killed by `SIGXCPU`, which needs an `RLIMIT_CPU` AgentCAD
+  never sets (it is lifetime-cumulative; the wall-clock timeout is the CPU
+  backstop), so the branch exists for an *operator's* own limit. Both are now
+  documented as **reserved vocabulary** — kept in the docs so an agent's
+  handler can be written once — in `docs/agent-api.md` (the conventions
+  bullet and the pre-existing `get_usage` line), `docs/deployment.md` and
+  `docs/user-guide.md`. The PRD header records this as a **deliberate
+  deviation from FR8**, which asked for a pids *kill*.
+- **"Ubuntu ≥ 22.04" contradicted the ABI ≥ 3 floor three lines above it**
+  (22.04 GA is kernel 5.15 = Landlock ABI 1). `docs/deployment.md` now names
+  the **kernel**: 6.2+, so Ubuntu 24.04 or 22.04 with the HWE kernel, and says
+  to check both halves — `/sys/kernel/security/lsm` for the list and the
+  probe's ABI for the version, because either alone explains an `off`.
+- **"no reads of `HOME`" was wrong.** `sandbox_linux._read_roots` appends the
+  **write** roots to the hosted read allow-list, so `~/.agentcad` — a write
+  root — is readable; and the worker's own `HOME` is its private temp dir, so
+  `~` inside a part script is not the server user's home at all. Corrected in
+  the `Dockerfile` and `compose.yaml` headers, `docs/deployment.md`'s
+  blockquote and confinement table, `docs/architecture.md`, `AGENTS.md` and
+  the PRD-006 header to: *nothing under the server user's home except the
+  config dir (`~/.agentcad`, which is a write root)*.
+  - Following from it, one caveat that was not documented anywhere: because a
+    write root is readable, **`AGENTCAD_STATE_DIR` must not be left at its
+    `<config-dir>/state` default on a hosted instance** — it would sit inside
+    `~/.agentcad` and be readable by a part script. Compose already sets
+    `/data/state`; the env table now says why that is load-bearing rather than
+    tidy, and `docs/architecture.md` repeats it.
+- **The PRD header and one test comment credited CI runs that have not
+  happened.** Both now say the ubuntu/windows evidence is *gated* and lands
+  with the first green CI run of the PR; the PRD's Status line names AC8's
+  three-OS half as the second open item beside AC3's Windows clause.
+- **`tests/test_geometry_ci_action.py`'s "unconfined Linux runner" comment**
+  now matches the corrected `docs/geometry-ci.md`: the worker does confine
+  itself, the runner's kernel decides whether it can, and a runner that cannot
+  reports `off` without failing the check — so confinement is a second line
+  there, never the argument for `pull_request`.
+
+Two smaller ones in `tests/test_prd006_acceptance.py`: AC2's docstring claimed
+"grown" while the assertion was `>= 8` on a 12-test file (the floor is now
+**12**, with the four PRD-006 additions named), and the evidence check no
+longer addresses changelog entries by **number** — it finds its own entry by
+**slug** and "the newest entry" by the numeric value of whatever prefix it
+has, at any width, because this repo renumbers changelogs when two branches
+collide at merge (`b24ef66` moved 0188–0197 to 0200–0209).
 
 ### Deferred minors from earlier reviews
 
@@ -242,7 +308,8 @@ is the same fixture for the same reason, and is cited in the docstring.
 - `docs/prd/in-progress/PRD-006-sandboxing-quotas.md` — status header
 - `docs/prd/pending/PRD-006b-windows-appcontainer.md` — new
 - `tests/test_prd006_acceptance.py` — new
-- `tests/test_usage.py` — the autouse `_reset_identity` fixture
+- `tests/conftest.py` — the autouse `_restore_client_identity` fixture
+- `tests/test_geometry_ci_action.py` — the corrected trust comment
 - `scripts/linux-test.sh` — the acceptance file in the default list
 - `agentcad/kernel/sandbox_macos.py`, `agentcad/core/project.py`,
   `agentcad/cli.py`, `agentcad/core/appmode.py`, `tests/test_sandbox.py`,
@@ -264,6 +331,17 @@ is the same fixture for the same reason, and is cited in the docstring.
   and one meter case.
   `docker compose -f compose.yaml config --quiet` is clean and
   `uv run ruff check` passes on every file this entry touches.
+- **What the 4170 was measured on.** Review round 1 changed only documentation
+  and test files afterwards; the one that reaches the whole suite is
+  `conftest.py`'s autouse snapshot/restore, which cannot change a verdict
+  except by removing the order dependency it exists to remove. Rather than
+  assert that, the modules that set an identity were re-run against it —
+  `test_usage` + `test_checks_cli` + `test_branches` (113 passed), and
+  `test_checks_gate` + `test_checks_api` + `test_packages_cli` +
+  `test_packages_publish` + `test_prd004_acceptance` + `test_prd011_acceptance`
+  — plus `test_prd006_acceptance` + `test_geometry_ci_action` (46 passed, 1
+  skipped) and `test_deploy_config` + `test_prd005a_acceptance` +
+  `test_cli_admin` (85 passed) for the docs and compose edits.
 - **The gate is the point, and it cuts both ways.** `AGENTCAD_EXPECT_SANDBOX`
   exists because every containment assertion in this branch is conditional on
   the live status — that is what keeps a developer on an old kernel from seeing

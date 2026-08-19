@@ -10,8 +10,10 @@
 > itself before it imports any geometry, so a script gets **no network**,
 > writes only inside the granted roots (the projects tree, the config dir,
 > the server's work root and its own private temp dir), and —
-> under `AGENTCAD_MODE=hosted` — cannot read the state directory or `HOME`
-> at all. Memory, process count and CPU are capped
+> under `AGENTCAD_MODE=hosted` — cannot read the state directory, nor
+> anything under the server user's home except the config dir (`~/.agentcad`,
+> which is a write root and so is readable by construction). Memory, process
+> count and CPU are capped
 > ([below](#confinement-and-quotas)); a breach kills that one worker and
 > comes back as an ordinary build error.
 >
@@ -70,7 +72,7 @@ container ships.
 | `AGENTCAD_MODE` | `local` | `local` or `hosted`. **Never inferred** — an unrecognised value refuses to start, because defaulting would fail open. |
 | `AGENTCAD_PUBLIC_ORIGIN` | — | Required in hosted mode. Scheme + host (+ port), no path, no trailing slash. Host and Origin checks compare against it; enrolment URLs are built from it. |
 | `AGENTCAD_SECRET_KEY` | generated | ≥32 characters. **Leave it unset — that is the recommended path**: one is generated and persisted `0600` at `$AGENTCAD_STATE_DIR/secret.key`, where it is readable only by the server's own user. An explicit value is process environment, so it is visible to `docker inspect`, to anything that can read `/proc/<pid>/environ`, and to whatever shell history or CI log the value passed through. Set it only when you have a reason the file cannot serve (several instances sharing one key), and then treat it as a secret in the orchestrator rather than in `.env`. |
-| `AGENTCAD_STATE_DIR` | `<config-dir>/state` | Identity state (`auth/`, `secret.key`). Created `0700` and repaired to `0700` at startup — it holds the session secret and the password hashes. Compose sets `/data/state`. |
+| `AGENTCAD_STATE_DIR` | `<config-dir>/state` | Identity state (`auth/`, `secret.key`). Created `0700` and repaired to `0700` at startup — it holds the session secret and the password hashes. Compose sets `/data/state`, and **keeping it out of the config dir is load-bearing**: the hosted read allow-list is the read roots plus the *write* roots, and `~/.agentcad` is a write root — so a state dir left at the `<config-dir>/state` default sits inside one and is readable by a part script. Set it explicitly on any hosted instance. |
 | `AGENTCAD_PROJECTS_DIR` | `~/AgentCAD/projects` | Where projects and their `.history` git repos live. Compose sets `/data/projects`. |
 | `AGENTCAD_HOST` | `127.0.0.1` | Listen address. A non-loopback bind **requires** `AGENTCAD_MODE=hosted`. |
 | `AGENTCAD_TRUSTED_PROXY` | `127.0.0.1` | Hosted mode only. The immediate peer(s) allowed to set `X-Forwarded-For`, passed to uvicorn's `forwarded_allow_ips` (IPs or CIDRs, comma-separated). Default matches the local proxy above. **`*` is refused** — it would let any client forge the address the login limiter keys on. |
@@ -413,7 +415,7 @@ one is not opting out of the other.
 
 | | mechanism | reads | writes | network | other processes |
 |---|---|---|---|---|---|
-| **Linux** | Landlock + seccomp, applied by the worker to itself before `import build123d` | `local` posture: anywhere. `hosted` posture (this deployment): an allow-list — `/usr`, `/lib*`, `/bin`, `/sbin`, `/etc`, `/opt`, `/proc`, `/dev`, `/sys`, the interpreter, the app tree, and everything it may write to (the roots in the next column). **Not** `AGENTCAD_STATE_DIR`, **not** `HOME` | the granted roots only — the projects dir, each registered example, the config dir (`~/.agentcad`, `/data/home/.agentcad` in the image), the server's one `agentcad-work-*` root, and the worker's own private temp dir. Nothing else, root included (Landlock beats DAC) | denied: every socket family but `AF_UNIX` | no `ptrace`, no `process_vm_readv/writev`, no `pidfd_open`, no `io_uring`, and no signal to pid ≤ 0 or to the server |
+| **Linux** | Landlock + seccomp, applied by the worker to itself before `import build123d` | `local` posture: anywhere. `hosted` posture (this deployment): an allow-list — `/usr`, `/lib*`, `/bin`, `/sbin`, `/etc`, `/opt`, `/proc`, `/dev`, `/sys`, the interpreter, the app tree, and everything it may write to (the roots in the next column — a write root is readable by construction). **Not** `AGENTCAD_STATE_DIR`, and **nothing else under the server user's home**: of `$HOME` only `~/.agentcad` is reachable, because it is a write root. The worker's own `HOME` env var points at its private temp dir, so `~` inside a script is not the server user's home at all | the granted roots only — the projects dir, each registered example, the config dir (`~/.agentcad`, `/data/home/.agentcad` in the image), the server's one `agentcad-work-*` root, and the worker's own private temp dir. Nothing else, root included (Landlock beats DAC) | denied: every socket family but `AF_UNIX` | no `ptrace`, no `process_vm_readv/writev`, no `pidfd_open`, no `io_uring`, and no signal to pid ≤ 0 or to the server |
 | **macOS** | `sandbox-exec` seatbelt profile (the v3 profile, unchanged) | anywhere (`local` posture only — the narrowed profile is Linux) | the same roots | denied | signals to self only |
 | **Windows** | **none.** Reported `unsupported`, honestly, in health and here — AppContainer is carved out as [PRD-006b](prd/pending/PRD-006b-windows-appcontainer.md) | — | — | — | — |
 
@@ -425,10 +427,16 @@ script cannot escape by delegating.
 5.13 but lacks `TRUNCATE`, without which every truncating `open(path, "w")`
 inside a write root would be a false denial — so below ABI 3 the worker
 applies no ruleset and reports `off` rather than shipping a profile that
-lies). Landlock is a boot-time LSM: it must be in the kernel's `lsm=` list.
-Ubuntu ≥ 22.04 and the kernels behind Docker's Linux VMs are; check with
-`cat /sys/kernel/security/lsm`. No capability, no `bwrap` binary and no
-`--privileged` are needed — the ruleset is applied through `ctypes` inside the
+lies). Landlock is a boot-time LSM: it must also be in the kernel's `lsm=`
+list. So the requirement is a **kernel**, not a distribution release: 6.2 or
+newer — Ubuntu 24.04, or 22.04 with the HWE kernel (22.04 GA is 5.15, which is
+Landlock ABI 1 and therefore below the floor). Check **both** halves, because
+either alone can be the reason confinement is `off`:
+`cat /sys/kernel/security/lsm` for the list, and the ABI the probe prints
+(`python -c "from agentcad.kernel import _confine; print(_confine.landlock_abi())"`,
+which is the CI step's third line) for the version.
+
+No capability, no `bwrap` binary and no `--privileged` are needed — the ruleset is applied through `ctypes` inside the
 worker, verified in this image as uid 10001 under Docker's default seccomp
 profile, at 0.3 ms.
 
@@ -529,8 +537,16 @@ Nothing new: it is the error contract that already existed.
   and a line number, plus `details.denied` ∈ `network` | `filesystem` |
   `process_count` | `memory` and an Error Doctor `details.hint`. The previous
   good geometry stays, the worker stays warm.
-- A **kill** is `kernel_crash` with `details.reason` ∈ `memory_cap` |
-  `pids_cap` | `cpu_cap` when it is attributable, and `details.usage` always.
+- A **kill** is `kernel_crash` with `details.usage` always, and
+  `details.reason` when it is attributable. **The shipped tiers emit exactly
+  one reason, `memory_cap`** — from the supervisor's kill or from a delegated
+  cgroup's OOM counter — with `details.tier` naming which. `pids_cap` and
+  `cpu_cap` are reserved vocabulary, documented so an agent's handler can be
+  written once: a **pids** breach does not kill the worker at all (the
+  `fork()` gets `EAGAIN` and the script sees the `script_error` above), and
+  `cpu_cap` needs a `SIGXCPU` from an `RLIMIT_CPU` that AgentCAD never sets —
+  the CPU tiers throttle (`cpu.max`, the job-object rate cap) and the
+  wall-clock timeout is the backstop.
 - A **timeout** is `timeout`, exactly as before, now carrying `details.usage`.
 - An over-budget project is `diskbudget_error` (HTTP 507) raised *before* the
   worker writes.

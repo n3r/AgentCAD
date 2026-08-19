@@ -29,30 +29,6 @@ from .conftest import BOX_SCRIPT, make_test_service
 pytestmark = pytest.mark.portability
 
 
-@pytest.fixture(autouse=True)
-def _reset_identity():
-    """Pin `client_id_var` to its default for every test in this module.
-
-    Three tests here assert that an unattributed record bills `local`, which
-    is the ContextVar's default — and a ContextVar set at a test's top level
-    is never restored, so it survives for the rest of that process. Several
-    modules leave one set: `tests/test_checks_gate.py` calls
-    `locks.set_client_id("ci")` directly, and every in-process
-    `agentcad check` / `agentcad package …` does the same inside `cli.py`.
-    Under `-n auto --dist loadscope` which of them shares a worker with this
-    module is a scheduling detail, so without this fixture the file passes or
-    fails depending on what else was collected — measured: adding one
-    unrelated test module moved `test_checks_gate` onto the same worker and
-    turned three assertions here from `local` into `ci`.
-
-    `tests/test_branches.py::_reset_context` is the same fixture for the same
-    reason.
-    """
-    token = locks.client_id_var.set("local")
-    yield
-    locks.client_id_var.reset(token)
-
-
 def _event(method="build", cpu_ms=10.0, wall_ms=20.0, peak_rss_mb=100.0,
            ok=True, worker="kernel-0") -> dict:
     """One `on_usage` payload, exactly as the client emits it."""

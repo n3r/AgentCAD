@@ -31,12 +31,23 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
   when nothing was confining the worker, so its presence means the OS refused,
   not that the script had a permissions bug.
 - **A worker that was *killed* is a different answer from a script that
-  raised.** `kernel_crash` carries `details.reason` ∈ `memory_cap` |
-  `pids_cap` | `cpu_cap` whenever the kill is attributable, with
-  `details.tier` (which quota mechanism answered — `cgroup`, `rlimit`,
-  `supervisor`, `job_object`), `details.limit_mb` and `details.observed_rss_mb`
-  where they are known, plus `stderr_tail`. `timeout` is unchanged in every
-  other respect. **Both carry `details.usage`**, as does every other path that
+  raised.** `kernel_crash` carries `details.reason` whenever the kill is
+  attributable, with `details.tier` (which quota mechanism answered —
+  `cgroup`, `rlimit`, `supervisor`, `job_object`), `details.limit_mb` and
+  `details.observed_rss_mb` where they are known, plus `stderr_tail`.
+  **The shipped tiers produce exactly one reason: `memory_cap`** — from the
+  parent-side supervisor's kill, or from a delegated cgroup's OOM counter.
+  `pids_cap` and `cpu_cap` are **reserved vocabulary**: they are documented so
+  a handler can be written once and not revisited, but no shipped
+  configuration emits them. A *pids* breach never kills the worker at all — it
+  surfaces inside the script as an ordinary `script_error` with
+  `details.denied: "process_count"` (the `fork()` gets `EAGAIN`, from
+  `RLIMIT_NPROC` or the cgroup's `pids.max`), which is the better outcome and
+  is why nothing needs to. `cpu_cap` is emitted only for a worker killed by
+  `SIGXCPU`, which needs an `RLIMIT_CPU` that AgentCAD never sets (it is
+  lifetime-cumulative, so the per-request wall-clock timeout is the CPU
+  backstop instead); the branch exists for a worker an *operator's* own
+  `RLIMIT_CPU` kills. `timeout` is unchanged in every other respect. **Both carry `details.usage`**, as does every other path that
   ends without the worker answering. That stub is what the *parent* saw —
   `{cpu_ms: null, wall_ms, peak_rss_mb, peak_rss_is_lifetime: false}` — and
   `cpu_ms: null` means "not measurable from here", never "no CPU was spent";
@@ -45,9 +56,9 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
   worker-reported `script_error` deliberately carries no `details.usage`: the
   worker answered, so its cost is on the usage roll-ups instead
   ([`get_usage`](#kernel-usage--get_usage)).
-  Read `reason` to decide *what to do*: `memory_cap` and `pids_cap` mean shrink
-  the job or fix the script, a bare `kernel_crash` with no `reason` means the
-  worker died on its own. In every case the previous good geometry is kept and
+  Read `reason` to decide *what to do*: `memory_cap` means shrink the job or
+  fix the script, a bare `kernel_crash` with no `reason` means the worker died
+  on its own. In every case the previous good geometry is kept and
   the worker respawns warm.
 - Mutating tools return the post-state you need next (metrics, warnings,
   status), so a create → inspect → fix loop converges in few turns.
@@ -1267,9 +1278,13 @@ per-request peak RSS); the server meters them as they arrive.
 Three things to read it correctly:
 
 - **These are measurements, not limits.** What refuses work is the kernel's
-  quotas (a breach arrives as `kernel_crash` with `details.reason` ∈
-  `memory_cap` / `pids_cap` / `cpu_cap`, and every kernel error carries
-  `details.usage`) and the per-project **disk budget** — an over-budget
+  quotas — a memory breach arrives as `kernel_crash` with
+  `details.reason: "memory_cap"` (the only reason the shipped tiers emit; see
+  the [conventions](#conventions) for why `pids_cap`/`cpu_cap` are reserved
+  vocabulary), a process-count breach as a `script_error` with
+  `details.denied: "process_count"`, and every kernel error that ends without
+  the worker answering carries `details.usage` — and the per-project
+  **disk budget** — an over-budget
   project answers `diskbudget_error` (HTTP 507) with
   `details: {project, used_mb, budget_mb}`, raised *before* the worker writes,
   so nothing is half-written. A rebuild that lands after a write reports it as

@@ -880,8 +880,15 @@ package gate materialize their cells under. The shared system temp dir is
 deliberately **not** granted: it let every worker read and write every other
 worker's scratch. Reads follow a *posture*: `local` reads anywhere (the v1
 stance), and `hosted` — Linux only, selected by `AGENTCAD_MODE=hosted` —
-narrows reads to an allow-list that excludes `AGENTCAD_STATE_DIR` and `HOME`,
-so a member's script can no longer read the session signing key. Forks and
+narrows reads to an allow-list that excludes `AGENTCAD_STATE_DIR` and leaves
+nothing under the server user's home reachable except the config dir
+(`~/.agentcad`, which is a write root and so readable by construction), so a
+member's script can no longer read the session signing key. Note that the
+allow-list is the read roots **plus the write roots**, which is why a write
+root is always readable — and why `AGENTCAD_STATE_DIR` must not be left at its
+`<config-dir>/state` default in hosted mode (compose sets `/data/state`).
+The worker's own `HOME` is its private temp dir, so `~` inside a part script
+is never the server user's home. Forks and
 `exec`s inherit the confinement.
 
 A script can still compute anything, and under `local` read world-readable
@@ -927,7 +934,8 @@ authentication is real — invite-only accounts, server-side sessions, revocable
 bearer tokens, default-deny on every route — but **it is not isolation between
 the people using the instance**. Since PRD-006 the Linux worker *is* confined
 (the table above, `hosted` posture: no network, no writes outside the projects
-tree, no reads of the state dir or `HOME`, capped memory/pids/CPU), which is
+tree, no reads of the state dir and nothing under the server user's home but
+the config dir, capped memory/pids/CPU), which is
 what makes the session key unreachable from a part script. What confinement
 does not do is separate one member from another: the script runs as the server
 user and the **whole projects tree** is readable and writable to it.

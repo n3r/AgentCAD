@@ -5,8 +5,9 @@
 # arbitrary Python, and since PRD-006 the Linux worker confines itself before
 # it imports any geometry: Landlock + seccomp — no network, writes only under
 # /data/projects, /data/home/.agentcad, the server's work root and its own
-# private temp dir, and in hosted mode no reads of /data/state or HOME — with
-# memory, process-count and CPU caps around it.
+# private temp dir, and in hosted mode no reads of /data/state and nothing
+# under /data/home except /data/home/.agentcad (a write root, so readable by
+# construction) — with memory, process-count and CPU caps around it.
 #
 # What that does NOT change, and is why the sentence above still stands: the
 # script runs as the server user, and the WHOLE projects tree is readable and

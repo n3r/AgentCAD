@@ -1680,8 +1680,10 @@ Changelogs `0188`–`0197`. Operator-facing reference: `docs/deployment.md`.
 instance is for someone you trust.** A part script is arbitrary Python
 (`kernel/worker.py`). PRD-006 changed *half* of what that used to mean — the
 Linux worker now confines itself (Landlock + seccomp, `hosted` read posture:
-no network, no writes outside the projects tree, no reads of the state dir or
-`HOME`), so "an account is a shell" is no longer literally true and the docs
+no network, no writes outside the granted roots, no reads of the state dir and
+nothing under the server user's home but the config dir — a write root is
+always readable, because `_read_roots` appends the write roots), so "an account
+is a shell" is no longer literally true and the docs
 no longer say it that way. What it did **not** change: the script still runs
 as the server user and the **whole projects tree** is readable and writable to
 it, across every project on the instance. So `member` and `admin` are still

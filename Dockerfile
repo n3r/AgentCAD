@@ -7,8 +7,9 @@
 # seccomp applied through ctypes, needing no capability and no bwrap binary
 # (verified as uid 10001 under Docker's default seccomp profile): no network,
 # writes only under /data/projects, /data/home/.agentcad, the server's work
-# root and its own private temp dir, no reads of /data/state or HOME in hosted
-# mode, and memory/pids/CPU caps around it.
+# root and its own private temp dir, in hosted mode no reads of /data/state
+# and nothing under /data/home except /data/home/.agentcad (a write root, so
+# readable by construction), and memory/pids/CPU caps around it.
 #
 # It is still a single-purpose box, not a multi-tenant one: every project on
 # the instance is readable and writable to every member's script, which runs
