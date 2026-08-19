@@ -979,6 +979,42 @@ own packages is `docs/packages.md`; the short version is
 `agentcad package validate ./pkg` until it is green, then
 `agentcad publish ./pkg --index <name>`.
 
+## Browsing the catalog (the Marketplace)
+
+The **Market** button on the toolbar opens the marketplace — a full-page,
+read-only view over the same seeded, kernel-validated catalog the Library
+searches, but built for **browsing and customizing without an account**. On a
+hosted instance you can even reach it before signing in (the URL is `/#market`):
+browsing, customizing and downloads need no session; only *adding to a project*
+does.
+
+- **Browse.** A grid of listing cards — name, summary, license, a disclosure
+  badge (`agent`/`human`), a `validated ✓` correctness badge, and a preview
+  thumbnail. The search box filters by name, keyword, standard, license or
+  parameter range, deterministically, as you type.
+- **A listing.** Open a card for its metadata (license, standards, disclosure,
+  the validated-gate detail and the `signatures` slot — `unsigned` today), a
+  preview strip, a versions selector, the read-only script, and the **customizer**:
+  a viewport with sliders. Drag `body_length` and the server rebuilds a bounded
+  variant and shows the new mass and bounding box; the part's script runs only in
+  our server-side kernel, never on your machine.
+- **Download.** STEP, STL or 3MF of the variant you configured — a fixed set for
+  every listing.
+- **Add to library** (signed-in). Adds the package to one of your projects
+  (`add_package`, pinning the public catalog index) and materialises the part
+  (`use_part`); the lockfile pins the exact version so it rebuilds byte-identically
+  forever. Agents do the same in one call with `market_install`.
+
+The catalog is **seeded and read-only** in this release — the customizer is
+PRD-007's exact containment (rate-shaped, concurrency-capped, param-validated),
+so a busy instance may briefly show "the customizer is busy" and degrade to
+view-only; it recovers on its own. Open publishing, remix and an economy are a
+later phase.
+
+> **Packages are still code.** Adding a listing to your project installs a script
+> that runs in your kernel with your privileges; the validated badge is a
+> **correctness** gate, not a security boundary, and the listing says so.
+
 ## Working with the bundled examples
 
 Pick them from the project switcher:

@@ -345,6 +345,93 @@ export const api = {
     `/api/packages/${enc(name)}/versions/${enc(version)}/preview${query({
       path, index })}`,
 
+  // ---- public marketplace catalog (PRD-031a; anonymous, scope: public) ----
+  // These read the pre-generated `index.json` digest and shipped assets over
+  // the ANONYMOUS `/api/public/packages` surface — no session, no kernel except
+  // the one customizer variant build. A private index never surfaces here (the
+  // dual `scope: public` filter), and every miss is one name-free 404.
+  /** The whole public catalog, latest version per package, in name order. */
+  marketList: () => request("GET", "/api/public/packages"),
+  /** `filters`: {q?, keyword?[], standard?[], license?, param?, param_min?,
+   *  param_max?, limit?}. Refresh-free, deterministic, `why` per hit. */
+  marketSearch: (filters) => {
+    const f = filters || {};
+    const qs = new URLSearchParams();
+    if (f.q) qs.set("q", f.q);
+    if (f.license) qs.set("license", f.license);
+    for (const k of f.keyword || []) qs.append("keyword", k);
+    for (const s of f.standard || []) qs.append("standard", s);
+    if (f.param) qs.set("param", f.param);
+    if (f.param_min != null) qs.set("param_min", f.param_min);
+    if (f.param_max != null) qs.set("param_max", f.param_max);
+    if (f.limit != null) qs.set("limit", f.limit);
+    const s = qs.toString();
+    return request("GET", `/api/public/packages/search${s ? `?${s}` : ""}`);
+  },
+  /** Listing summary + all version names. */
+  marketPackage: (name) => request("GET", `/api/public/packages/${enc(name)}`),
+  /** The full version `_document`: parts digest, previews, gate, license,
+   *  disclosure, standards, signatures. */
+  marketVersion: (name, version) =>
+    request("GET", `/api/public/packages/${enc(name)}/versions/${enc(version)}`),
+  /** The digest param list for one part — the slider spec, zero-kernel. */
+  marketParams: (name, version, part) =>
+    request(
+      "GET",
+      `/api/public/packages/${enc(name)}/versions/${enc(version)}/params/${enc(part)}`
+    ),
+  /** A shipped preview image URL, resolved inside the version directory. */
+  marketPreviewUrl: (name, version, path) =>
+    `/api/public/packages/${enc(name)}/versions/${enc(version)}/preview${query({ path })}`,
+  /** The read-only part script, as text (not JSON) — hand-rolled like getMesh.
+   *  Resolves the plain text; throws ApiError on a miss. */
+  async marketScript(name, version, part) {
+    const url =
+      `/api/public/packages/${enc(name)}/versions/${enc(version)}/script/${enc(part)}`;
+    let res;
+    // A public, anonymous read: no per-profile identity header is sent (the
+    // server ignores it on the public surface, and an anonymous browse must
+    // not carry a browser fingerprint). Keeps the PRD-008 identity count tight.
+    try {
+      res = await fetch(url);
+    } catch {
+      throw new ApiError(0, {
+        error: { type: "network_error", message: "server unreachable", details: {} },
+      });
+    }
+    if (!res.ok) throw new ApiError(res.status, await res.json().catch(() => null));
+    return res.text();
+  },
+  /** Build one bounded variant of a listing part (the ONE market kernel path).
+   *  `params` is a plain object of slider values. Resolves {mesh_key, metrics,
+   *  warnings, lods, cached}; 429/503/422 throw ApiError (the page degrades). */
+  marketVariant: (name, version, part, params) =>
+    request(
+      "GET",
+      `/api/public/packages/${enc(name)}/versions/${enc(version)}/parts/${enc(part)}/variant${query(params)}`
+    ),
+  /** The `.acm` bytes for a variant already built (never builds). Resolves
+   *  {buffer, key}; throws ApiError on an absent/miss key. */
+  async marketMesh(name, version, part, key) {
+    const url =
+      `/api/public/packages/${enc(name)}/versions/${enc(version)}/parts/${enc(part)}/mesh/${enc(key)}`;
+    let res;
+    // Public anonymous read — no browser identity attached (see marketScript).
+    try {
+      res = await fetch(url);
+    } catch {
+      throw new ApiError(0, {
+        error: { type: "network_error", message: "server unreachable", details: {} },
+      });
+    }
+    if (!res.ok) throw new ApiError(res.status, await res.json().catch(() => null));
+    return { buffer: await res.arrayBuffer(), key: res.headers.get("X-Mesh-Key") || key };
+  },
+  /** A plain download URL for a variant export (a fixed set {step,stl,3mf}); a
+   *  plain navigation lets the browser handle Content-Disposition. */
+  marketDownloadUrl: (name, version, part, fmt, params) =>
+    `/api/public/packages/${enc(name)}/versions/${enc(version)}/parts/${enc(part)}/download/${enc(fmt)}${query(params)}`,
+
   // ---- generic tool passthrough (used by import) ----
   callTool: (name, body) => request("POST", `/api/tools/${enc(name)}`, body),
 

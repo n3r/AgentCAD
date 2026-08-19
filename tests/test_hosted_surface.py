@@ -43,6 +43,30 @@ EXPECTED_PUBLIC = {
     ("GET", "/api/public/packages/{name}"),
     ("GET", "/api/public/packages/{name}/versions/{version}"),
     ("GET", "/api/public/packages/{name}/versions/{version}/preview"),
+    # PRD-031a slice 1 — the kernel-free market data routes. Added to
+    # `routes_public.py` (whose zero-kernel invariant they keep literally true)
+    # in the SAME change that mounts them. `search` is declared BEFORE `{name}`
+    # so Starlette does not bind `{name} == "search"`; all three read only the
+    # pre-generated `index.json` digest, `scope: public` filtered, refresh-free.
+    ("GET", "/api/public/packages/search"),
+    ("GET", "/api/public/packages/{name}/versions/{version}/script/{part}"),
+    ("GET", "/api/public/packages/{name}/versions/{version}/params/{part}"),
+    # PRD-031a slice 2 — the two customizer routes that DO reach exec(), in the
+    # new `routes_market.py` pack. Added here in the SAME change that mounts
+    # them (never staged through NOT_YET_BUILT, which stays `== set()`). Both
+    # flow through PRD-007's containment reused verbatim via
+    # `ShareBuilder.build_catalog_variant` and the shared
+    # `service.customizer_guard`; the fixed export set `{step,stl,3mf}` gates
+    # download before the builder.
+    ("GET", "/api/public/packages/{name}/versions/{version}/parts/{part}/variant"),
+    ("GET",
+     "/api/public/packages/{name}/versions/{version}/parts/{part}/download/{fmt}"),
+    # PRD-031a slice 4 — the market mesh read, KERNEL-FREE (it serves a `.acm`
+    # already in the build cache and 404s an absent one, never building — the
+    # `/s/{token}/mesh/{key}` discipline). Also in `routes_market.py`, beside the
+    # `/variant` route it completes; it closes the browser-viewport mesh-fetch gap
+    # slice 2 flagged. Swept by the kernel-silence positive-control test.
+    ("GET", "/api/public/packages/{name}/versions/{version}/parts/{part}/mesh/{key}"),
     # PRD-007 share links (design Decision 2). These SIX viewer routes make
     # ZERO kernel calls. The two customizer routes that DO reach exec()
     # (/variant, /download) join this set in PRD-007 slice 4, mounted in the

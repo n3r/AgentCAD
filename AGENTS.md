@@ -1980,6 +1980,64 @@ it lower-cases "Python".
   build-then-migrate churn. **Only `agentcad/kernel/` imports OCP/build123d** —
   nothing in the share path does.
 
+## Marketplace gotchas (PRD-031a — read before touching `server/routes_market.py`, the public catalog read, `core/tools_market.py` or the market frontend)
+
+- **One shared kernel path, never a second wall.** The market listing customizer
+  is PRD-007's containment *scoped to a catalog `content_id`*, not a new one. It
+  reaches `exec()` only through `ShareBuilder.build_catalog_variant` →
+  `export_catalog_variant`, which run the **same** `_variant`/`_export` tail as
+  the `/s/` path: `require_customizer_capacity` (the `pool_size-1` reservation,
+  503 on a single-worker pool), the process-global in-flight `BoundedSemaphore`,
+  `normalize_params` parity, the `paramclamp` clamp *before* the cache key, and
+  the content-addressed variant cache. Do **not** add a second set of limits.
+- **`service.customizer_guard` is one object, shared.** The per-IP `TokenBucket`
+  + hourly login gate live in one `CustomizerGuard` installed once by
+  `ensure_share`; both `routes_share_public` (`/s/`) and `routes_market`
+  (`/market`) read it, so a visitor cannot double their per-address allowance
+  across the two anonymous kernel paths. The per-*listing* / per-*link* bucket
+  stays route-local (keyed `catalog:<name>@<version>/<part>` vs `share:<pub_id>`)
+  — that one shapes a single subject and has no double-allowance to close. AC4
+  asserts the shared identity.
+- **`scope: public` on every route, dual filter.** The market reuses
+  `routes_public._public_indexes` (both `configured_scope == "public"` AND the
+  document's `scope == "public"` — the M2 lesson) and `_find`/`_miss`. A private
+  or nonexistent listing (search, detail, script, params, variant, download,
+  mesh) is one name-free 404 — byte-identical, no existence oracle. `market_install`
+  applies the same dual filter, so it can only pin the seeded public catalog.
+- **The digest is the param spec — browse stays zero-kernel.** The customizer's
+  typed spec comes from the pre-generated `index.json` `parts[part].params`, not
+  a kernel `inspect`, so `/search`, `/script`, `/params`, `/preview` and the mesh
+  read reach **zero kernel**; a variant is the ONE kernel call. Proven with the
+  `kernel_counter` fixture and a **positive control** that does build.
+- **The mesh route is kernel-free and NEVER builds.** `.../parts/{part}/mesh/{key}`
+  serves a `.acm` *already in the build cache* (via `mesh_path`, keyed by the
+  pinned `script_sha` computed with `share_build.script_sha_for` — no build
+  registered) and 404s an absent one; `key` is hex-gated (`_is_cache_key`)
+  against traversal. It lives in `routes_market.py` beside `/variant` (the exact
+  `/s/{token}/mesh/{key}` layout), is **not** guarded/throttled, and is what the
+  browser viewport fetches after a `/variant` returns a `mesh_key`.
+- **Fixed export set `{step, stl, 3mf}`.** A catalog listing has no owner to carry
+  a per-link mask, so every listing offers `ALLOWED_EXPORTS = EXPORT_FORMATS`; a
+  format outside it 404s **before** the builder (and before the listing resolves).
+- **`market_install` (`core/tools_market.py`, load order `mar` < `pac`).** Read
+  `service.packages` **inside** the function, never in `register` — `tools_packages`
+  installs it later. It is `add_package(index=<public catalog>)` + `use_part`,
+  seeded-catalog-scoped; the PRD-011 lockfile pins `version`+`content_id`. The
+  browser "Add to library" reuses the existing authenticated package routes — no
+  new route, not on the anonymous surface. There is **no** new `market_search`
+  tool — anonymous callers use `GET /api/public/packages/search`, agents keep
+  `search_packages`.
+- **`search`-before-`{name}` route order.** `GET /api/public/packages/search`
+  MUST be declared before `/{name}` or Starlette binds `{name} == "search"`. The
+  public search passes `refresh=False` (no network on the anonymous path — M2)
+  and the dual-scope index list.
+- **`routes_public.py` stays zero-kernel; `routes_market.py` is the K pack.** The
+  three kernel-free data routes are added into `routes_public.py` (keeping its
+  invariant literally true); the two kernel routes + the kernel-free mesh read
+  live in the separate, separately-reviewable `routes_market.py`. Only
+  `agentcad/kernel/` imports OCP/build123d — the market modules are OCP-free
+  (asserted in a fresh interpreter with OCP blocked).
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script

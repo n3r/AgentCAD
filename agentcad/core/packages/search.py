@@ -51,14 +51,22 @@ NO_SEMANTIC = "no_embedding_provider"
 
 
 def search(indexes, *, query=None, index=None, keywords=None, standards=None,
-           param=None, limit=DEFAULT_LIMIT) -> dict:
+           param=None, license=None, limit=DEFAULT_LIMIT,
+           refresh=True) -> dict:
     """``{hits, semantic, semantic_reason, indexes, warnings}``.
 
     ``index`` pins one configured index by name; ``keywords`` and
-    ``standards`` are **AND** filters (case-insensitive); ``param`` is
-    ``{name, min?, max?}`` and matches a part whose declared range for that
-    parameter *overlaps* the interval — the facet that makes the published
-    parts digest worth carrying.
+    ``standards`` are **AND** filters (case-insensitive); ``license`` is a
+    single case-insensitive AND filter on the entry's declared licence (the
+    PRD-031a licence facet); ``param`` is ``{name, min?, max?}`` and matches a
+    part whose declared range for that parameter *overlaps* the interval — the
+    facet that makes the published parts digest worth carrying.
+
+    ``refresh`` (default ``True``, the authenticated behaviour) is set
+    **False** by the anonymous public catalog read: PRD-005a forbids a network
+    fetch on the anonymous path (review finding M2), so the public route reads
+    the already-checked-out ``index.json`` and never calls ``refresh()``. The
+    default preserves every existing caller byte-for-byte.
 
     A broken or unreachable index is a **warning**, never an exception: one
     bad index must not make the others unsearchable, which is the same rule
@@ -69,13 +77,15 @@ def search(indexes, *, query=None, index=None, keywords=None, standards=None,
     hits: list[dict] = []
     wanted_keywords = _lower(keywords)
     wanted_standards = _lower(standards)
+    wanted_license = str(license).lower() if license else None
     param = _param(param)
     for candidate in indexes or []:
         if index is not None and candidate.name != index:
             continue
         names.append(candidate.name)
         try:
-            candidate.refresh()
+            if refresh:
+                candidate.refresh()
             doc = candidate.entries()
         except (NotFoundError, ValidationError) as exc:
             warnings.append(f"index {candidate.name!r}: {exc}")
@@ -92,7 +102,8 @@ def search(indexes, *, query=None, index=None, keywords=None, standards=None,
             if version is None:      # every version is yanked, or none parses
                 continue
             hit = _score(candidate, name, version, versions[version], query,
-                         wanted_keywords, wanted_standards, param)
+                         wanted_keywords, wanted_standards, param,
+                         wanted_license)
             if hit is not None:
                 hit["stale"] = stale
                 hits.append(hit)
@@ -107,7 +118,8 @@ def search(indexes, *, query=None, index=None, keywords=None, standards=None,
 # ---------------------------------------------------------------- scoring
 
 
-def _score(index, name, version, entry, query, keywords, standards, param):
+def _score(index, name, version, entry, query, keywords, standards, param,
+           license=None):
     """One hit, or ``None`` when a filter excludes the package.
 
     Filters are absolute (a package that does not carry the keyword is not a
@@ -126,6 +138,10 @@ def _score(index, name, version, entry, query, keywords, standards, param):
         if not all(word in entry_standards for word in standards):
             return None
         why += [f"standard:{word}" for word in standards]
+    if license is not None:
+        if str(entry.get("license") or "").lower() != license:
+            return None
+        why += [f"license:{entry.get('license')}"]
     if param is not None:
         matched = _param_match(entry, param)
         if not matched:

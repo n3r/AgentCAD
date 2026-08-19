@@ -70,6 +70,8 @@
 
     <button id="library-btn" class="tb-btn" title="Parts library — search and insert a package part">Library</button>
 
+    <button id="market-btn" class="tb-btn" title="Browse the public marketplace catalog">Market</button>
+
     <button id="import-btn" class="tb-btn" title="Import a CAD file (.step / .stp / .brep / .stl)">Import</button>
     <input id="import-input" type="file" accept=".step,.stp,.brep,.stl" hidden>
 
@@ -112,6 +114,12 @@
   <!-- Hosted mode only: the sign-in / enrolment view. main.js renders into it
        when nobody is signed in and hides the toolbar and workspace behind it. -->
   <div id="auth-view" class="hidden"></div>
+
+  <!-- The marketplace (PRD-031a). A full-page view market.js renders into,
+       entered on the `#market` hash BEFORE the auth gate so a logged-out
+       visitor can browse, customize and download; the "Market" toolbar button
+       navigates here. Add-to-library appears only when signed in. -->
+  <div id="market-view" class="hidden"></div>
 
   <div id="workspace">
     <aside id="sidebar">

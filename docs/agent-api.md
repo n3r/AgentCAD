@@ -1184,6 +1184,7 @@ or runs package code repeats that sentence.
 | `use_part` | **project, package, part, part_id**, preset, params | Materialise a package part into the project as an ordinary part, under an immutable provenance header. **Never touches an index or the network**; re-verifies the whole cached tree **against `packages_lock[name].content_id`** every time — the git-tracked authority, not the cache's own receipt, because two indexes can publish the same `name@version` with different bytes — and stamps the id it *measured* into the header. Re-materialising is byte-identical. Overrides are validated against the part's inspected PARAMS spec **before** anything is written, so a refused `use_part` writes nothing; a successful one with overrides is **two** history snapshots (create + set_params), so undo is two steps. Returns the ordinary `get_part` payload plus `package_provenance`. |
 | `validate_package` | **path**, strict, stages, work_dir, budget_s | Run the nine-stage gate over a package directory and return the PRD-004-shaped report — no publish, no install, no side effect outside its own throwaway cell. **This is the authoring loop**: read `stages[].items[]`, fix, validate again. A stage that produced **no rows** blocks `publishable` unless it names a legitimate absence, the gate measures the package's **inventory** (a declared part the content id ignores, or an undeclared `parts/*.py` that ships, is a red `format` row), and the tree is snapshotted into the cell before the stages run so the reported content id is the id of the bytes they read. |
 | `package_from_step` | **source, dest, name, part, vendor**, version, part_number, url, terms, summary, license, disclosure, keywords, standards, work_dir | Wrap a vendor STEP/BREP as a **reference-part** package with `provenance.vendor.redistributable: false` (which the publisher enforces against `public` indexes). Reports the solid's planar and cylindrical faces as connector **candidates** — placement is *not* automated. STL is refused. |
+| `market_install` | **project, package, part, part_id**, version_req, preset, params | Install from the seeded **public** marketplace catalog and materialise one part, in one call (PRD-031a) — `add_package(index=<public catalog>)` + `use_part`, **scoped to the seeded catalog**: a package resolvable only from a private index is a `notfound_error` *before* anything installs (dual `scope: public` filter), so it can never pull private content. The lockfile pins `version`+`content_id` (PRD-011 AC3 inherited). Returns `{project, package, index, lock, requirement_change, part}`. Package code runs in your kernel with your privileges. There is **no** `market_search` tool — anonymous callers use `GET /api/public/packages/search`; agents keep `search_packages`. |
 
 `publish` is **CLI-only** in this feature — a `publish_package` tool that can
 write only to a local directory is a tool an agent cannot usefully call, and
@@ -1212,6 +1213,50 @@ Routes: `GET /api/packages/search` · `GET|POST
 /api/packages/{name}/versions/{version}/preview`. The **gate is deliberately
 not routed** — a browser request must not start a dozen kernel builds on the
 shared pool.
+
+### Marketplace catalog (PRD-031a) — the anonymous public read
+
+The marketplace is a **web front over the public catalog read** (PRD-005a),
+scoped to indexes whose `configured_scope` **and** document `scope` are both
+`"public"`. Every route below is anonymous (no session, hosted or local), reads
+only the pre-generated `index.json` digest + shipped assets, and answers one
+name-free 404 for a private or nonexistent listing (no existence oracle). All
+join the `EXPECTED_PUBLIC` equality test.
+
+**Kernel-free** (in `server/routes_public.py`, whose zero-kernel invariant they
+keep literally true):
+
+- `GET /api/public/packages` — every public package, latest version.
+- `GET /api/public/packages/search` — refresh-free, deterministic, `why`-per-hit
+  search with `q`, repeatable `keyword`/`standard`, single `license`, and the
+  `param`/`param_min`/`param_max` range facet. **Declared before `/{name}`.**
+- `GET /api/public/packages/{name}` · `.../versions/{version}` — the listing
+  summary and the full version `_document` (parts digest, previews, `gate`,
+  `license`, `disclosure`, `standards`, `signatures`).
+- `GET .../versions/{version}/preview?path=` — a shipped PNG.
+- `GET .../versions/{version}/script/{part}` — the read-only part `.py` text.
+- `GET .../versions/{version}/params/{part}` — the digest param list (the slider
+  spec, no `inspect`).
+- `GET .../versions/{version}/parts/{part}/mesh/{key}` — the rebuilt `.acm` bytes
+  for a variant **already in the cache**; **never builds**, 404-if-absent, `key`
+  hex-gated against traversal. This is what the browser viewport fetches after a
+  `/variant` returns a `mesh_key`.
+
+**The one kernel path** (in `server/routes_market.py`, isolated and
+separately-reviewable) — PRD-007's containment reused verbatim
+(`require_customizer_capacity` 503, the process-global in-flight semaphore, the
+per-IP `TokenBucket` + login gate **shared with `/s/`** via
+`service.customizer_guard`, `normalize_params` parity, the `paramclamp` clamp
+before the content-addressed cache key):
+
+- `GET .../versions/{version}/parts/{part}/variant?<params>` — rebuild a bounded
+  variant; returns `{mesh_key, metrics, warnings, lods, cached}`.
+- `GET .../versions/{version}/parts/{part}/download/{fmt}?<params>` — export it;
+  `fmt` outside the fixed `{step, stl, 3mf}` set 404s **before** the builder.
+
+Add-to-library is the **existing authenticated** package routes above
+(`POST /api/projects/{proj}/packages` + `.../use`), session-required and not on
+the anonymous surface; `market_install` is the agent one-call equivalent.
 
 ### FEM — present only with the `[fem]` extra
 

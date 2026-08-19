@@ -517,6 +517,24 @@ number of turns (M3 × 100 takes 5.17 s).
 The catalog is **data**: delete it and the product degrades to "no packages
 configured" with a warning, breaking no code path.
 
+### The public marketplace read (PRD-031a)
+
+Any index whose operator-configured `scope` **and** whose document `scope` are
+both `"public"` — the bundled `agentcad-core` is — is also served **anonymously**
+over `/api/public/packages/…`: browse, search (`refresh`-free, network-free),
+per-version metadata, the read-only part script, the digest param spec, shipped
+previews, and a **listing customizer** that rebuilds a bounded variant and
+exports STEP/STL/3MF. That customizer is the *only* anonymous route that reaches
+the kernel, and it does so through PRD-007's containment reused verbatim — the
+`pool_size-1` worker reservation, a per-IP `TokenBucket` + login gate shared with
+`/s/`, `normalize_params` parity, the `paramclamp` clamp and the content-addressed
+variant cache. A private index never surfaces (the dual `scope: public` filter),
+and every private/nonexistent miss is one name-free 404. Add-to-library from the
+marketplace is the ordinary authenticated `add_package` + `use_part` (or the
+`market_install` tool) — the seeded catalog is a registry index with a web front,
+not a second code path. See the [user guide](user-guide.md#browsing-the-catalog-the-marketplace)
+and [agent API](agent-api.md#marketplace-catalog-prd-031a--the-anonymous-public-read).
+
 ---
 
 ## Vendor STEP files — `package_from_step`
