@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 90.3,
+      "metric": "bbox_x_mm",
+      "min": 89.5,
+      "name": "leg_reach_x",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 90.3,
+      "metric": "bbox_z_mm",
+      "min": 89.5,
+      "name": "leg_reach_z",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 663.06,
+      "metric": "mass_g",
+      "name": "objective_mass",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 757.78,
+      "metric": "mass_g",
+      "name": "objective_mass_relaxed",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "solids",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 80.3,
+      "metric": "bbox_y_mm",
+      "min": 79.5,
+      "name": "width_y",
+      "part": "angle_bracket"
+    }
+  ]
+}

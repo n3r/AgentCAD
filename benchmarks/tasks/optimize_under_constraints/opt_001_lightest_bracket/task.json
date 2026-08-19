@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "optimize_under_constraints/opt_001_lightest_bracket",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "optimize_under_constraints",
+  "title": "Take mass out of the erection bracket without losing the connection",
+  "sets": ["core", "fast"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "derived", "example": "construction", "parts": ["angle_bracket"]},
+  "prompt": "prompt.md",
+  "assets": [],
+  "starter": "starter",
+  "target": {"project": "bench_opt_001_lightest_bracket", "parts": ["angle_bracket"]},
+  "budgets": {"wall_s": 900, "turns": 30},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the inside corner of the L is at the origin: the horizontal leg runs +X, the vertical leg runs +Z, both outer faces lie on Z = 0 and X = 0, and the 80 mm width runs along -Y (the bracket spans y in [-80, 0]). The starter already sits on this datum and the optimisation must not move it"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": null,
+    "parts": {"angle_bracket": "specs/parts/angle_bracket.py"}
+  },
+  "weights": {
+    "built": 0.10, "valid": 0.05, "specs": 0.45,
+    "geometry": 0.00, "interference": 0.00, "metrics": 0.40
+  }
+}

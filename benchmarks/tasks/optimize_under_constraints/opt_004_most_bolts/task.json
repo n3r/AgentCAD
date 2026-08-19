@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "optimize_under_constraints/opt_004_most_bolts",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "optimize_under_constraints",
+  "title": "Get as many bolts as will fit onto the chamber-head flange",
+  "sets": ["core"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "derived", "example": "rocketry", "parts": ["flange"]},
+  "prompt": "prompt.md",
+  "assets": [],
+  "starter": "starter",
+  "target": {"project": "bench_opt_004_most_bolts", "parts": ["flange"]},
+  "budgets": {"wall_s": 900, "turns": 30},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the flange's bottom face lies on Z = 0 and the ring rises into +Z; the bore axis is the Z axis and the ring is centred on the origin in X and Y. The starter already sits on this datum and the optimisation must not move it"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": null,
+    "parts": {"flange": "specs/parts/flange.py"}
+  },
+  "weights": {
+    "built": 0.10, "valid": 0.05, "specs": 0.45,
+    "geometry": 0.00, "interference": 0.00, "metrics": 0.40
+  }
+}

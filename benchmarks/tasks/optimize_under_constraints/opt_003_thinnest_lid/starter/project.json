@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "name": "bench_opt_003_thinnest_lid_starter",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "enclosure_lid",
+      "label": "Enclosure Lid",
+      "material": "abs",
+      "params": {
+        "length": 100.0,
+        "width": 60.0,
+        "wall": 2.5,
+        "lid_t": 3.0,
+        "lip_h": 3.0,
+        "lip_t": 2.0,
+        "corner_r": 3.0,
+        "boss_d": 6.0,
+        "screw_d": 3.0,
+        "emboss": 1.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}
