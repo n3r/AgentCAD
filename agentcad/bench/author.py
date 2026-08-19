@@ -147,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     scratch = Path(tempfile.mkdtemp(prefix="agentcad-bench-author-"))
     service = None
     try:
-        service = _build_service(scratch)
+        service = _build_service(scratch, examples=False)
         if args.command == "step":
             for part_id, path in sorted(export_reference(
                     task_dir, service=service).items()):
