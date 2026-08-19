@@ -104,4 +104,26 @@ def build_router(service, registry) -> APIRouter:
         return Response(content=svg, media_type="image/svg+xml",
                         headers={"Cache-Control": "no-store"})
 
+    @router.get("/projects/{proj}/parts/{part_id}/drawing.pdf")
+    def get_drawing_pdf(proj: str, part_id: str, config: str | None = None,
+                        dim_table: bool = False):
+        # Mirrors the .svg route (PRD-014 Slice 2, FR11): regenerate the sheet
+        # server-side through the SAME tool, then stream the deterministic PDF
+        # bytes. The configuration name is gated HERE with `fullmatch` for the
+        # same reason as the SVG route — this endpoint joins it into a filename
+        # it then reads, and must not depend on the tool's ordering three
+        # modules away — and a refusal is an HTTP error, not a 200 whose body
+        # is JSON masquerading as a PDF.
+        if config is not None and not CONFIG_RE.fullmatch(config):
+            raise ValidationError(
+                f"configuration name {config!r} must match {CONFIG_RE.pattern}")
+        _drawing_result(registry.call("generate_drawing", {
+            "project": proj, "part_id": part_id, "format": "pdf",
+            "config": config, "dim_table": dim_table}))
+        suffix = f"_{config}" if config else ""
+        pdf = (service.store.exports_dir(proj) /
+               f"{part_id}{suffix}_drawing.pdf").read_bytes()
+        return Response(content=pdf, media_type="application/pdf",
+                        headers={"Cache-Control": "no-store"})
+
     return router

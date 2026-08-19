@@ -148,8 +148,8 @@ def register(registry, service) -> None:
                          dim_table: bool = False, sheet: str = DEFAULT_SHEET,
                          scale: float | None = None,
                          version: dict | None = None) -> dict:
-        if format not in ("svg", "dxf"):
-            raise ValidationError("drawing format must be svg or dxf")
+        if format not in ("svg", "dxf", "pdf"):
+            raise ValidationError("drawing format must be svg, pdf, or dxf")
         if sheet not in SHEETS:
             raise ValidationError(
                 f"unknown sheet {sheet!r}; one of: {', '.join(sorted(SHEETS))}",
@@ -210,7 +210,7 @@ def register(registry, service) -> None:
         # and a DXF request (DXF discards the table exactly as it discards
         # PMI, so measuring the family for it would buy a minute of builds per
         # eight members and throw every one of them away).
-        if dim_table and declared and format == "svg":
+        if dim_table and declared and format in ("svg", "pdf"):
             names = list(declared)                       # family order
             columns: list[str] = []                      # union, first-seen
             for name in names:
@@ -250,25 +250,26 @@ def register(registry, service) -> None:
         "Generate a 2D engineering drawing (projected front/top/right/iso views "
         "with overall dimensions and hole callouts detected from geometry). "
         "Renders the part's PMI section (set_part_pmi) as toleranced dims, "
-        "datum flags, and feature control frames — SVG only; DXF ignores PMI. "
-        "With config, draws that configuration (pure resolution) and writes "
-        "exports/<part>_<config>_drawing.<ext>. With dim_table, adds a boxed "
-        "table of every configuration — its configured parameters and the "
-        "overall X/Y/Z extents measured from each built shape (SVG only, up to "
-        "8 rows). Formats: svg, dxf. Writes to exports/<part>_drawing.<ext>.",
+        "datum flags, and feature control frames — SVG and PDF; DXF ignores "
+        "PMI. With config, draws that configuration (pure resolution) and "
+        "writes exports/<part>_<config>_drawing.<ext>. With dim_table, adds a "
+        "boxed table of every configuration — its configured parameters and the "
+        "overall X/Y/Z extents measured from each built shape (SVG/PDF, up to "
+        "8 rows). Formats: svg, pdf (deterministic vector), dxf. Writes to "
+        "exports/<part>_drawing.<ext>.",
         schema(
             {
                 "project": {"type": "string"},
                 "part_id": {"type": "string"},
                 "views": {"type": "array", "description":
                           "subset of [top, front, right, iso]; default all"},
-                "format": {"type": "string", "description": "svg | dxf"},
+                "format": {"type": "string", "description": "svg | pdf | dxf"},
                 "config": {"type": "string", "description":
                            "Configuration to draw (pure resolution); omit for "
                            "the current state"},
                 "dim_table": {"type": "boolean", "description":
-                              "Draw a per-configuration dimension table (SVG "
-                              "only; ignored when the part has no "
+                              "Draw a per-configuration dimension table (SVG/"
+                              "PDF; ignored for DXF and when the part has no "
                               "configurations)"},
                 "sheet": {"type": "string", "description":
                           "Sheet format: iso_a4|iso_a3|iso_a2|iso_a1|iso_a0|"

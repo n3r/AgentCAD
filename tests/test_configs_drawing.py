@@ -420,6 +420,7 @@ def test_the_table_truncates_beyond_eight_rows_with_a_warning():
 
 def test_a_member_that_will_not_build_is_one_row_of_em_dashes():
     from agentcad.kernel.handlers import drawing as handler
+    from agentcad.kernel.handlers._draw_primitives import Text
 
     sizes = {1: 1.0, 2: 0.0}
     table = {"columns": ["size"],
@@ -434,13 +435,17 @@ def test_a_member_that_will_not_build_is_one_row_of_em_dashes():
     assert "not buildable" in measured["rows"][1]["error"]
     assert any("'bad' did not build" in w for w in measured["warnings"])
     assert dropped == [] and warnings == []
-    # Header + 2 rows, 5 columns each, one <rect> and one <text> per cell.
+    # PRD-014 Slice 2: `_dim_table` now emits typed primitives (a Rect + a
+    # Text per cell) instead of SVG strings, so BOTH backends render it. Header
+    # + 2 rows, 5 columns each, two primitives per cell.
     assert len(els) == 2 * 5 * 3
-    assert sum(el.count(">—<") for el in els) == 4   # size + X + Y + Z
+    assert sum(1 for el in els
+               if isinstance(el, Text) and el.s == "—") == 4  # size + X + Y + Z
 
 
 def test_trailing_columns_are_dropped_until_the_table_fits_the_sheet():
     from agentcad.kernel.handlers import drawing as handler
+    from agentcad.kernel.handlers._draw_primitives import Text
 
     columns = [f"parameter_number_{n}" for n in range(12)]
     rows = [{"config": "s", "label": "Small", "ok": True,
@@ -456,8 +461,9 @@ def test_trailing_columns_are_dropped_until_the_table_fits_the_sheet():
     assert len(warnings) == len(dropped)
     assert all("was dropped" in w for w in warnings)
     # `config` and the measured extents are never dropped: they are the point.
-    assert sum(el.count(">X<") + el.count(">Z<") + el.count(">config<")
-               for el in els) == 3
+    # (One Text primitive each in the header row — Slice 2 primitives.)
+    assert sum(1 for el in els
+               if isinstance(el, Text) and el.s in ("X", "Z", "config")) == 3
 
 
 # --------------- PRD-012 follow-up 2: one `_drawing_result` for both routes --
@@ -522,7 +528,8 @@ class TestDrawingRouteFailureClasses:
                              json={"format": "gif"})
         assert response.status_code == 422, response.text
         assert response.json()["error"]["type"] == "ValidationError"
-        assert "svg or dxf" in response.json()["error"]["message"]
+        # PRD-014 Slice 2 added `pdf` to the accepted formats.
+        assert "svg, pdf, or dxf" in response.json()["error"]["message"]
 
     def test_both_routes_404_an_unknown_part(self, http):
         posted = http.post("/api/projects/demo/parts/nosuch/drawing", json={})

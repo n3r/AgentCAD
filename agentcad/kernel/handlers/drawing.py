@@ -100,29 +100,24 @@ from ._draw_primitives import (
     Circle,
     Line,
     Polyline,
-    Raw,
     Rect,
     Style,
     SvgBackend,
     Text,
     fmt,
 )
+from ._pdf import PdfBackend
 from ._sheets import DEFAULT_SHEET, SCALE_LADDER, SHEETS, scale_label
 
 # ---- dimension / callout geometry (sheet coords, mm, y-down) ----------------
 #
 # The composition below builds an ordered **display list** of the typed
 # primitives from ``_draw_primitives`` and hands it to a backend
-# (``SvgBackend`` today, a PDF backend in Slice 2). The functions here return
-# lists of primitives, never SVG strings. The one exception is the
-# per-configuration dimension table (``_dim_table`` and its ``_text`` helper
-# below), whose exact SVG bytes are locked by direct-call unit tests
-# (``tests/test_configs_drawing.py``); it stays string-based and is spliced in
-# through the ``Raw`` primitive.
+# (``SvgBackend`` or, since Slice 2, ``PdfBackend``). Every function here
+# returns lists of primitives, never SVG strings — the byte-locked ``_text``
+# helper the dimension table used is gone: the table is typed primitives too
+# (Slice 2), so BOTH backends render it from the one list.
 
-#: A dimension-text colour string, kept only for the byte-locked ``_text``
-#: helper that ``_dim_table`` uses.
-_TXT = 'font-family="Helvetica, Arial, sans-serif" font-size="3.5" fill="#1a56db"'
 _ARROW_L, _ARROW_W = 3.0, 1.0
 
 
@@ -138,16 +133,6 @@ def _arrow(tip, direction):
     b1 = (tip[0] - _ARROW_L * d[0] + _ARROW_W * p[0], tip[1] - _ARROW_L * d[1] + _ARROW_W * p[1])
     b2 = (tip[0] - _ARROW_L * d[0] - _ARROW_W * p[0], tip[1] - _ARROW_L * d[1] - _ARROW_W * p[1])
     return Polyline((tip, b1, b2), style=Style.DIM, closed=True, fill=True)
-
-
-def _text(pos, s, angle=0.0, anchor="middle"):
-    """A dimension-table text element, as an SVG **string** (byte-locked).
-
-    ``_dim_table`` and its unit tests depend on this returning a string; the
-    rest of the composition uses the ``Text`` primitive directly.
-    """
-    tr = f' transform="rotate({angle:.2f} {pos[0]:.3f} {pos[1]:.3f})"' if abs(angle) > 1e-9 else ""
-    return f'<text x="{pos[0]:.3f}" y="{pos[1]:.3f}" text-anchor="{anchor}" {_TXT}{tr}>{s}</text>'
 
 
 def _linear_dim(pa, pb, offset, text):
@@ -178,9 +163,7 @@ def _linear_dim(pa, pb, offset, text):
 
 # ---- PMI callout primitives (sheet coords, mm, y-down) ---------------------
 
-_BOX = 'fill="white" stroke="#1a56db" stroke-width="0.3"'
-
-# Standard Unicode GD&T characteristic symbols (rendered as SVG text).
+# Standard Unicode GD&T characteristic symbols (rendered as text).
 _FCF_SYMBOLS = {
     "flatness": "⏥",
     "position": "⌖",
@@ -188,10 +171,6 @@ _FCF_SYMBOLS = {
     "parallelism": "∥",
     "cylindricity": "⌭",
 }
-
-
-def _esc(s):
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 # ---- dimension table (PRD-012) --------------------------------------------
@@ -254,7 +233,7 @@ def _measure_table(build_shape, script, table):
         name = entry.get("config")
         params = entry.get("params") or {}
         # `str(...)`: a hand-edited or merged manifest can put anything in
-        # `label`, and a non-string would TypeError the whole sheet in `_esc`.
+        # `label`, and a non-string would TypeError the backend's escape.
         row = {"config": name, "label": str(entry.get("label") or name),
                "values": {}, "ok": True}
         try:
@@ -290,7 +269,7 @@ def _row_label(row) -> str:
 
 
 def _dim_table(rows, columns, x=_TABLE_X, y_top=_TABLE_Y, row_h=_TABLE_ROW_H):
-    """``(elements, dropped, warnings)`` — the boxed table itself.
+    """``(elements, dropped, warnings)`` — the boxed table as **primitives**.
 
     Header (``config``, the configured parameters, ``X``/``Y``/``Z``) then one
     row per configuration. Column widths follow ``_fcf_frame``'s rule
@@ -300,8 +279,10 @@ def _dim_table(rows, columns, x=_TABLE_X, y_top=_TABLE_Y, row_h=_TABLE_ROW_H):
     measured extents are never dropped — they are what the table is for, and
     *dropped* names what came off so a caller can say why a column is missing.
 
-    Every string goes through :func:`_esc`. A label is author-supplied text and
-    a single ``&`` in one would otherwise make the whole sheet unparseable.
+    Slice 2 (PRD-014): this returns typed ``Rect``/``Text`` primitives, not SVG
+    strings, so BOTH backends render the table from one display list (the SVG
+    backend escapes ``&``/``<``/``>`` on the way out, so the raw label text is
+    handed through unescaped here — pre-escaping would double it).
     """
     warnings: list[str] = []
     columns = list(columns)
@@ -337,9 +318,9 @@ def _dim_table(rows, columns, x=_TABLE_X, y_top=_TABLE_Y, row_h=_TABLE_ROW_H):
     for line in lines:
         cx = x
         for width, text in zip(widths, line):
-            els.append(f'<rect x="{cx:.3f}" y="{y:.3f}" width="{width:.3f}" '
-                       f'height="{row_h:.3f}" {_BOX}/>')
-            els.append(_text((cx + width / 2, y + row_h / 2 + 1.0), _esc(text)))
+            els.append(Rect(cx, y, width, row_h, style=Style.DIM, fill="white"))
+            els.append(Text(cx + width / 2, y + row_h / 2 + 1.0, text,
+                            Style.DIM, anchor="middle", size=3.5))
             cx += width
         y += row_h
     return els, dropped, warnings
@@ -824,9 +805,14 @@ def _title_block(dl, template, scale_str, title, fallback_label):
         y += 2.9
 
 
-def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
-               dim_table=None, sheet=DEFAULT_SHEET, scale_override=None,
-               title=None):
+def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
+                        dim_table=None, sheet=DEFAULT_SHEET,
+                        scale_override=None, title=None):
+    """Build the ordered display list for one sheet — the SINGLE composition
+    both backends render (Slice 2, Decision 1/7). Returns
+    ``(display_list, width_mm, height_mm, meta)``; ``detected_out`` is filled in
+    place. ``_build_svg`` / ``_build_pdf`` are thin wrappers that hand the list
+    to :class:`SvgBackend` / :class:`PdfBackend`."""
     template = SHEETS.get(sheet) or SHEETS[DEFAULT_SHEET]
     W, H = template.w_mm, template.h_mm
     proj = {name: part.project_to_viewport(look_at=(0, 0, 0), **_VIEW_DIRS[name])
@@ -1140,12 +1126,12 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
     if dim_table:
         # The table zone comes from the sheet template now (Decision 2). For
         # iso_a3 it is (264, 18) — the pre-v2 clear rectangle — so the table
-        # renders in the same place. Byte-locked SVG strings, spliced through
-        # the `Raw` primitive (see `_draw_primitives.Raw`).
+        # renders in the same place. Slice 2: typed primitives, extended into
+        # the display list so both the SVG and the PDF backend render it.
         table_els, table_dropped, table_warnings = _dim_table(
             dim_table["rows"], dim_table["columns"],
             x=template.table_zone.x, y_top=template.table_zone.y)
-        dl.append(Raw("\n".join(table_els)))
+        dl.extend(table_els)
         detected_out["dim_table"] = {
             # `columns` is what was ASKED for, and `dropped` what did not fit:
             # a caller comparing the echo to its own request should not have to
@@ -1211,8 +1197,30 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
         }
         detected_out["pmi_warnings"] = pmi_warnings
 
-    svg = SvgBackend().render(dl, W, H)
-    return svg, {"scale": scale_str, "views": order, "warnings": warnings}
+    return dl, W, H, {"scale": scale_str, "views": order, "warnings": warnings}
+
+
+def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
+               dim_table=None, sheet=DEFAULT_SHEET, scale_override=None,
+               title=None):
+    """Render the sheet to an SVG string (thin wrapper over the shared list)."""
+    dl, W, H, meta = _build_display_list(
+        part, views, detected_out, pmi=pmi, hole_records=hole_records,
+        dim_table=dim_table, sheet=sheet, scale_override=scale_override,
+        title=title)
+    return SvgBackend().render(dl, W, H), meta
+
+
+def _build_pdf(part, views, detected_out, pmi=None, hole_records=(),
+               dim_table=None, sheet=DEFAULT_SHEET, scale_override=None,
+               title=None):
+    """Render the sheet to PDF bytes (the SAME list, a different backend —
+    FR11). Deterministic: see :mod:`agentcad.kernel.handlers._pdf`."""
+    dl, W, H, meta = _build_display_list(
+        part, views, detected_out, pmi=pmi, hole_records=hole_records,
+        dim_table=dim_table, sheet=sheet, scale_override=scale_override,
+        title=title)
+    return PdfBackend().render(dl, W, H), meta
 
 
 def _build_dxf(part, out_path):
@@ -1247,21 +1255,27 @@ def register(toolbox: dict):
         shape, _values, _warnings = build_shape(params["script"], params.get("params", {}))
         detected: dict = {"label": params.get("label", "part")}
         meta = {"scale": scale_label(1.0), "views": list(views), "warnings": []}
-        if out_format == "svg":
+        if out_format in ("svg", "pdf"):
             # One extra `build_shape` per configuration — measured here, in the
             # process that owns the kernel, because a drawing prints geometry.
             # DXF ignores the table exactly as it ignores PMI (v1), so nothing
-            # is measured for a format that cannot draw it.
+            # is measured for a format that cannot draw it. SVG and PDF render
+            # the SAME display list (PRD-014 Slice 2), so both draw the table
+            # and PMI; only the backend differs.
             table = params.get("dim_table")
             measured = (_measure_table(build_shape, params["script"], table)
                         if isinstance(table, dict) and table.get("rows")
                         else None)
-            svg, meta = _build_svg(
+            build = _build_svg if out_format == "svg" else _build_pdf
+            payload, meta = build(
                 shape, views, detected, pmi=params.get("pmi"),
                 hole_records=_records_on(shape), dim_table=measured,
                 sheet=sheet, scale_override=params.get("scale"),
                 title=params.get("title"))
-            atomic_write(out_path, svg.encode())
+            # SVG is a str, PDF is already bytes.
+            atomic_write(out_path,
+                         payload.encode() if isinstance(payload, str)
+                         else payload)
         elif out_format == "dxf":
             _build_dxf(shape, out_path)  # DXF ignores PMI and the table (v1)
             meta = {"scale": scale_label(1.0),  # DXF is real-scale geometry
