@@ -1,4 +1,4 @@
-# 0237 — 2026-08-19 — PRD-013 slice 7: structure route pack + grouped tree rows
+# 0248 — 2026-08-19 — PRD-013 slice 7: structure route pack + grouped tree rows
 
 - **Commit:** pending
 - **Date:** 2026-08-19

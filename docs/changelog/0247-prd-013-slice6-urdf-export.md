@@ -1,4 +1,4 @@
-# 0236 — 2026-08-19 — PRD-013 slice 6: URDF export + inertia-frame correction
+# 0247 — 2026-08-19 — PRD-013 slice 6: URDF export + inertia-frame correction
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -73,4 +73,4 @@ positive-but-WRONG tensor about the COM (its eigenvalues go negative — caught 
   unaffected, and no internal code consumes that tensor.
 - Measured: `tests/test_urdf.py` 8 passed; `tests/test_analysis.py` green with
   the frame change. Prior tree 4135 passed, 1 skipped after slices 1–3
-  (changelog 0233).
+  (changelog 0244).

@@ -1,4 +1,4 @@
-# 0238 — 2026-08-19 — PRD-013 slice 8: pattern editor + DOF fields + explode stub
+# 0249 — 2026-08-19 — PRD-013 slice 8: pattern editor + DOF fields + explode stub
 
 - **Commit:** pending
 - **Date:** 2026-08-19

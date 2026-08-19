@@ -1,4 +1,4 @@
-# 0232 — 2026-08-19 — PRD-013 slice 2: cross-project sub-assemblies (read-only)
+# 0243 — 2026-08-19 — PRD-013 slice 2: cross-project sub-assemblies (read-only)
 
 - **Commit:** pending
 - **Date:** 2026-08-19

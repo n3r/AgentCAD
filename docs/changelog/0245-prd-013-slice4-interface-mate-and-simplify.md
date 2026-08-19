@@ -1,4 +1,4 @@
-# 0234 — 2026-08-19 — PRD-013 slice 4: interface-mate geometry + simplified_rep
+# 0245 — 2026-08-19 — PRD-013 slice 4: interface-mate geometry + simplified_rep
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -71,4 +71,4 @@ Fourth slice of Assembly v2. Two pieces:
   (`test_mesh_lod test_mesh test_configs test_configs_assembly`) 93 passed; the
   structure/mates set (`test_structure_subassembly test_structure_patterns
   test_mates_joints test_mates`) 32 passed. Prior tree measured 4135 passed,
-  1 skipped after slices 1–3 (changelog 0233).
+  1 skipped after slices 1–3 (changelog 0244).

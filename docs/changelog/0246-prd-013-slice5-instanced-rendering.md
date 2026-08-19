@@ -1,4 +1,4 @@
-# 0235 — 2026-08-19 — PRD-013 slice 5: instanced rendering + rep-mode + scale
+# 0246 — 2026-08-19 — PRD-013 slice 5: instanced rendering + rep-mode + scale
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -65,4 +65,4 @@ id round-trip and the `len(flat)==1000` resolution.
   (`test_frontend_instancing test_structure_scale test_structure_patterns
   test_structure_subassembly test_structure_interface_mate test_simplify`)
   29 passed. `node --check` clean on the four edited JS files. Prior tree 4135
-  passed, 1 skipped after slices 1–3 (changelog 0233).
+  passed, 1 skipped after slices 1–3 (changelog 0244).

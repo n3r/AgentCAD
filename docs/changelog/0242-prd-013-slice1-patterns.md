@@ -1,4 +1,4 @@
-# 0231 — 2026-08-19 — PRD-013 slice 1: instance patterns + the single expansion point
+# 0242 — 2026-08-19 — PRD-013 slice 1: instance patterns + the single expansion point
 
 - **Commit:** pending
 - **Date:** 2026-08-19

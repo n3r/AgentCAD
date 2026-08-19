@@ -1,4 +1,4 @@
-# 0230 — 2026-08-19 — PRD-013 (Assembly v2) design: structure, patterns, joints, URDF
+# 0241 — 2026-08-19 — PRD-013 (Assembly v2) design: structure, patterns, joints, URDF
 
 ## Summary
 
@@ -65,7 +65,7 @@ fps number honest) on the 005a/007/031a precedent.
 - `docs/superpowers/specs/2026-08-19-assembly-v2-design.md` — 15 decisions
 - `docs/superpowers/plans/2026-08-19-assembly-v2.md` — 9 TDD slices
 - `docs/prd/in-progress/PRD-013-assembly-v2.md` — moved from `pending/`
-- `docs/changelog/0230-prd-013-design.md` — this entry
+- `docs/changelog/0241-prd-013-design.md` — this entry
 
 ## Notes
 

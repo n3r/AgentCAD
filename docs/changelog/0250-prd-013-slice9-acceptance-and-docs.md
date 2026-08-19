@@ -1,4 +1,4 @@
-# 0239 — 2026-08-19 — PRD-013 slice 9: acceptance (AC1–AC8) + docs
+# 0250 — 2026-08-19 — PRD-013 slice 9: acceptance (AC1–AC8) + docs
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -72,7 +72,7 @@ the PRD-013 documentation across `AGENTS.md`, `docs/agent-api.md` and
   carried a count — not a geometry or behaviour regression. With the count cited
   here those 8 flip green, so a clean full run is **4181 passed, 1 skipped, 0
   failed** (prior tree was 4135 passed, 1 skipped after slices 1–3, changelog
-  0233; slices 4–9 add the rest). New/targeted this slice-batch:
+  0244; slices 4–9 add the rest). New/targeted this slice-batch:
   `test_prd013_acceptance` 9, `test_routes_structure` 7, `test_frontend_tree` 5,
   `test_frontend_placement` 5, `test_frontend_instancing` 3 — 29 passed
   together; regression spot-check across the structure/mates/urdf/api suites

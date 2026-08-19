@@ -1,4 +1,4 @@
-# 0240 — 2026-08-19 — PRD-013 review fixes: planar URDF degrades, not a wrong-normal joint
+# 0251 — 2026-08-19 — PRD-013 review fixes: planar URDF degrades, not a wrong-normal joint
 
 ## Summary
 
@@ -53,12 +53,12 @@ review flagged): a planar-mated arm exports a `fixed` joint, a `joint_degraded
 - `agentcad/core/tools_urdf.py` — planar → fixed + warning (the `_JOINT_MAP`)
 - `tests/test_urdf.py` — the planar-degrade test
 - `docs/agent-api.md` — the corrected `export_urdf` mapping line
-- `docs/changelog/0240-prd-013-review-fixes.md` — this entry
+- `docs/changelog/0251-prd-013-review-fixes.md` — this entry
 
 ## Notes
 
 `make test` — **4182 passed, 1 skipped** (clean run on the committed tree
 after this fix: 4155 in the parallel phase + 27 in the serial bench/drag tail,
-both exit 0). This is 0239's pre-fix 4181 plus the one planar-degrade test
+both exit 0). This is 0250's pre-fix 4181 plus the one planar-degrade test
 added here. Nothing here touches the inertia round trip, pattern expansion,
 sub-assembly resolution, or the AC8 no-regression path the reviewers cleared.
