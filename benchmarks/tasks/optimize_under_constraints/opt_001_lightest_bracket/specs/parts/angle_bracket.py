@@ -18,12 +18,25 @@
 # be made unbuildable. `bolt_pattern` counts the Ø14 hole edges directly (two
 # circular edges per through hole, four holes) rather than trusting a
 # parameter: at hole_d = 10 it reads 0 matching edges and fails.
+#
+# `material_density` is the row that stops the cheapest wrong answer of all.
+# The objective is a mass, `mass_g = volume x density`, and the density comes
+# from the manifest's material — which `update_part_script(material=...)` or
+# `set_project_materials` changes in one call, no geometry touched. Measured:
+# the starter re-materialled to `al6061` weighs 352.2 g and would clear both
+# mass rungs. So the rubric measures the density the part is made of (A36 steel
+# is 0.00785 g/mm³, 1% tolerance) AND reference/metrics.json carries a
+# `volume_mm3` twin of each mass rung at the same ratios, which is
+# density-invariant by construction. Either alone would leave the hole open.
 from agentcad.toolkit.specs import (
     check_bbox as _bench_check_bbox,
     check_that as _bench_check_that,
     check_valid as _bench_check_valid,
     check_wall as _bench_check_wall,
 )
+
+#: A36 structural steel, g/mm³. The material the mass budget is written against.
+_BENCH_DENSITY = 0.00785
 
 
 def _bench_bolt_pattern(part, metrics):
@@ -41,6 +54,15 @@ def _bench_footprint(part, metrics):
                 and high[2] - low[2] >= 89.5)
 
 
+def _bench_material_density(part, metrics):
+    """Still made of A36 steel — mass over volume, to 1%."""
+    volume = float(metrics["volume_mm3"])
+    if volume <= 0.0:
+        return False
+    density = float(metrics["mass_g"]) / volume
+    return bool(abs(density - _BENCH_DENSITY) <= _BENCH_DENSITY * 0.01)
+
+
 SPECS = [
     _bench_check_valid(name="valid", requirement="OPT-001"),
     _bench_check_wall(min_mm=4.0, grid=4, name="leg_thickness",
@@ -48,6 +70,8 @@ SPECS = [
     _bench_check_that(_bench_bolt_pattern, name="bolt_pattern",
                       requirement="OPT-001"),
     _bench_check_that(_bench_footprint, name="footprint",
+                      requirement="OPT-001"),
+    _bench_check_that(_bench_material_density, name="material_density",
                       requirement="OPT-001"),
     _bench_check_bbox(within_mm=(90.3, 80.3, 90.3), name="envelope",
                       requirement="OPT-001"),

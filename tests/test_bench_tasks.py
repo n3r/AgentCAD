@@ -40,6 +40,22 @@ def test_every_shipped_task_has_zero_problems():
         assert raw["id"] == f"{path.parent.parent.name}/{path.parent.name}"
 
 
+def test_the_shipped_set_is_five_per_category():
+    """The v1 task set is 25 tasks, five in each of the five categories.
+
+    Equality, not membership, and deliberately so: this lands with the last
+    authored bundle, so from here on a task added, removed or filed under the
+    wrong category is a red test rather than a quiet change to what
+    `bench-v1` means. `load_tasks` is used rather than a glob because it is
+    the loader every consumer goes through, so a bundle that globs but does
+    not LOAD fails here too.
+    """
+    from collections import Counter
+    counts = Counter(task.category for task in bench_tasks.load_tasks())
+    assert dict(counts) == {name: 5 for name in bench_tasks.CATEGORIES}
+    assert sum(counts.values()) == 25
+
+
 def _seed_raw(tmp_path: Path) -> tuple[dict, Path]:
     """A copy of the seed bundle a test may mutate."""
     import shutil

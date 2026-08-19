@@ -21,10 +21,23 @@
        starter   (3.0 / 3.0 / 2.0)  19086.9343 mm³ -> 0.84   (fails both rungs)
        half-way  (2.0 / 3.0 / 2.0)  13122.9343 mm³ -> 0.92   (fails the tight rung)
 
-     DEVIATION from the design table, argued: the table lists
-     `check_wall(min_mm=1.6)`. Measured on this part at grid=4 the sampler
-     reports **0.200 mm on every variant in range** — it lands on the 0.2 mm
-     BOSS_RELIEF recess in the plate underside, not on a wall — so a 1.6 mm
+     TWO DEVIATIONS from the design table (section 7.5), both argued.
+
+     (1) The table's envelope is `check_bbox(within_mm=[100, 60, 10])`;
+     shipped is `(100.3, 60.3, 6.3)`. X and Y are the same 100 x 60 footprint
+     with 0.3 mm of measurement slack — `within_mm` is a ceiling and a bbox
+     that reads exactly 100.000 against a 100.0 limit is a row decided by
+     floating point. Z is tightened from 10 to 6.3 because 10 mm is not an
+     envelope this part can reach: the starter, the thickest lid in the
+     declared parameter range that still matches the base, reads 6.0 mm
+     (`lid_t` 3.0 + `lip_h` 3.0), so a 10 mm ceiling could not fail any
+     candidate and would be a row that neither passes nor discriminates. 6.3
+     admits the starter with 0.3 mm to spare and refuses a lid grown past it.
+
+     (2) The table lists `check_wall(min_mm=1.6)`. Measured on this part at
+     grid=4 the sampler reports **0.200 mm on every variant in range** — it
+     lands on the 0.2 mm BOSS_RELIEF recess in the plate underside, not on a
+     wall — so a 1.6 mm
      floor would be red on the reference itself and a row that can neither
      pass nor discriminate. It is not shipped. The 1.6 mm lip wall is stated
      in the prompt as a design rule and is worth 228 mm³ over its whole range
@@ -48,11 +61,12 @@ Constraints, all of them graded:
 - The seating lip must still reach at least **1.5 mm** below the plate's
   underside.
 - The lid plate must stay at least **2.0 mm** thick above its underside.
-- The four Ø3 mm countersunk screw holes stay, on the base's boss centres.
+- The four Ø3 mm countersunk screw holes stay.
 - The result must be one valid solid.
 
-Not graded, but part of the design: the lip wall must not go below 1.6 mm —
-below that it will not survive a 0.4 mm nozzle.
+Not graded, but part of the design: the screw holes stay on the base's boss
+centres (only their count and diameter are measured), and the lip wall must not
+go below 1.6 mm — below that it will not survive a 0.4 mm nozzle.
 
 Datum: unchanged. The lid plate's underside lies on Z = 0 and the plate rises
 into +Z; the seating lip hangs into -Z; the 100 mm length runs along X, the

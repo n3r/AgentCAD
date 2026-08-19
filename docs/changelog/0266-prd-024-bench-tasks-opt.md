@@ -17,16 +17,21 @@ the evidence that an optimisation objective is graded here rather than a cliff.
 
 - **`opt_001_lightest_bracket`** (derived `construction/angle_bracket`, and the
   category's one `fast`-set task). Objective: minimise `mass_g`. Reference
-  `thk` 6.0 → **631.4818 g**. Constraints: `check_wall(min_mm=4.0, grid=4)`,
-  the two Ø14 holes per leg counted as circular edges, the 90 × 80 × 90 mm
-  footprint held from both sides.
+  `thk` 6.0 → **631.4818 g / 80443.5403 mm³**; the objective ships in *both*
+  units at the same ratios (`objective_mass` ≤ 663.06 g and `objective_volume`
+  ≤ 84465.72 mm³, plus relaxed rungs at 1.20). Constraints:
+  `check_wall(min_mm=4.0, grid=4)`, the two Ø14 holes per leg counted as
+  circular edges, the 90 × 80 × 90 mm footprint held from both sides, and a
+  `material_density` row (A36 steel, 0.00785 g/mm³ ± 1%).
 - **`opt_002_stiffest_gusset`** (derived `construction/gusset_plate`).
   Objective: maximise `bbox_z_mm` (plate thickness). Reference — outline
   trimmed to `chord_w` 50 / `diag_w` 40 / `edge_dist` 27, then thickened until
   the budget binds — **17.0 mm at 2917.0270 g** (18 mm reads 3088.6168 g and
-  breaks the 3000 g `check_mass` row). Constraints: the mass budget, a
-  234.5 × 142.2 mm reach floor (the code end distance restated as something a
-  bounding box can see), and a 273.2 × 176.8 × 25.2 mm envelope.
+  breaks the 3000 g `check_mass` row). Constraints: the mass budget, its
+  density-invariant twin `check_volume(max_mm3=382165.6)` (= 3000 g / 0.00785),
+  a `material_density` row, a 234.5 × 142.2 mm reach floor (the code end
+  distance restated as something a bounding box can see), and a
+  273.2 × 176.8 × 25.2 mm envelope.
 - **`opt_003_thinnest_lid`** (derived `prototyping/enclosure_lid`). Objective:
   minimise `volume_mm3`. Reference `lid_t` 2.0 / `lip_h` 1.5 / `lip_t` 1.6 →
   **12207.5183 mm³**. Constraints: the 100 × 60 mm footprint, the lip still
@@ -90,14 +95,22 @@ task's `prompt.md` so a reviewer can reproduce it.
 
 | task | reference | starter | half-way |
 |---|---|---|---|
-| `opt_001_lightest_bracket` | **1.0** | 0.866667 (`thk` 10, 1024.1152 g) | 0.933333 (`thk` 7, 731.5241 g) |
+| `opt_001_lightest_bracket` | **1.0** | 0.8 (`thk` 10, 1024.1152 g) | 0.9 (`thk` 7, 731.5241 g) |
 | `opt_002_stiffest_gusset` | **1.0** | 0.84 (t 10, 80/60/30) | 0.92 (t 15, trimmed) |
 | `opt_003_thinnest_lid` | **1.0** | 0.84 (3.0/3.0/2.0, 19086.9343 mm³) | 0.92 (2.0/3.0/2.0, 13122.9343 mm³) |
 | `opt_004_most_bolts` | **1.0** | 0.866667 (`n_bolts` 8, 16 faces) | 0.933333 (`n_bolts` 21, 29 faces) |
 | `opt_005_shortest_screw` | **1.0** | 0.641667 (`length` 20) | 0.933333 (`length` 13) |
 
 Every reference also reports `subscores.geometry.status == "not_applicable"`
-and `subscores.interference.status == "not_applicable"`. The half-way projects
+and `subscores.interference.status == "not_applicable"`.
+
+The material-swap exploit, scored (fix round 1 — see below):
+
+| project | total |
+|---|---|
+| `opt_001` starter re-materialled to `al6061`, geometry untouched | **0.825** |
+| `opt_002` starter re-materialled to `al6061`, geometry untouched | **0.765** |
+| `opt_002` reference re-materialled to `al6061` and taken to `plate_t` 25 | **0.85** | The half-way projects
 are scratch artefacts (the starter with the obvious first improvement applied)
 and are not shipped; the parameters are recorded in each `prompt.md`'s comment
 block so the numbers can be reproduced.
@@ -141,13 +154,12 @@ predicate body runs inside the confined worker (`handlers/specs._eval_that`),
 which is the only place `OCP`/build123d is importable, and it must return a
 real `bool`.
 
-**Not done, deliberately:** the brief's Step 6 assertion
-`test_the_shipped_set_is_five_per_category` is **not** added to
-`tests/test_bench_tasks.py`. `assemble_and_clear` is still being authored in a
-parallel slice, so the assertion would be red on arrival; the file's own
-comment ("Membership, not equality: ... must not turn this into a failing test
-about how many tasks are shipped") is the same argument. It belongs with the
-slice that lands the 25th task.
+**`test_the_shipped_set_is_five_per_category`** is added to
+`tests/test_bench_tasks.py` in fix round 1, now that all 25 bundles are on
+disk. It asserts equality — five per `CATEGORIES` entry and 25 in total — and
+goes through `load_tasks()` rather than a glob, so a bundle that globs but does
+not load fails here too. It was deliberately withheld from the first pass
+because `assemble_and_clear` was still being authored in a parallel slice.
 
 **Verification.**
 
@@ -165,3 +177,108 @@ load_tasks() -> 20 tasks; fast set = one per shipped category
 ```
 
 `make test` — <orchestrator fills>
+
+---
+
+## Fix round 1 (review of `b33a36c`)
+
+**Critical — the mass-based objectives were defeated by changing the
+material.** `opt_001`'s objective rungs are on `mass_g` and `opt_002`'s binding
+constraint was `check_mass(max_g=3000)`. `mass_g = volume × density` and the
+density comes from `project.json`'s material, which `update_part_script(
+material=…)` / `set_project_materials` change in one call; nothing in either
+bundle measured it, and `DEFAULT_MATERIAL = "al6061"` makes the swap reachable
+by accident on a delete + `create_part`. Measured before the fix: the `opt_001`
+starter re-materialled to `al6061` weighs **352.24 g**, clears both mass rungs
+with all five spec rows green, and scores **1.0** for a submission that changed
+no geometry. Fixed with both halves of the belt-and-braces the reviewer asked
+for, because either alone leaves a hole:
+
+- **Density-invariant twins of the measurement.** `opt_001` gains
+  `objective_volume` (`max = 1.05 × 80443.5403 = 84465.72 mm³`) and
+  `objective_volume_relaxed` (`1.20 × = 96532.25`) beside the two mass rungs —
+  same reference, same ratios, a unit no material can move. `opt_002` gains
+  `check_volume(max_mm3=382165.6)` (`= 3000 g / 0.00785 g/mm³`) beside
+  `check_mass(max_g=3000.0)`; it binds identically on steel (17 mm reads
+  371595.7903 mm³ and passes, 18 mm reads 393454.3662 mm³ and is red) and it
+  keeps binding when the material changes.
+- **A `material_density` spec row in both rubrics** — a `check_that` over
+  `metrics["mass_g"] / metrics["volume_mm3"]` against A36 steel's
+  0.00785 g/mm³ with a 1% tolerance, guarded against a zero volume.
+- **Both prompts name the material** in the opening sentence and list "the
+  material stays A36 steel" under the graded constraints; both comment blocks
+  carry the derivation and the 352.2 g measurement.
+
+Re-proved (`uv run agentcad bench score … --json`):
+
+```
+opt_001  reference 1.0 · starter 0.8   · half-way 0.9   · al6061 starter 0.825
+opt_002  reference 1.0 · starter 0.84  · half-way 0.92  · al6061 starter 0.765
+                                       · al6061 reference at plate_t 25: 0.85
+```
+
+`opt_001`'s starter and half-way moved (0.866667 → 0.8, 0.933333 → 0.9) because
+the metrics denominator went from 6 windows to 8; the ordering the task needs —
+reference 1.0, starter well under 0.95, half-way strictly between — is
+unchanged. The `al6061` starter loses `angle_bracket:material_density` and both
+`objective_volume` rungs. The `al6061` gusset at `plate_t` 25 — the exploit the
+new rows exist for, which clears *every* objective window — loses
+`gusset_plate:material_budget` and `gusset_plate:material_density` and lands at
+0.85.
+
+`opt_003` (`volume_mm3`), `opt_004` (`n_faces`) and `opt_005` (`bbox_z_mm`)
+were already density-invariant in their objectives and needed no change;
+`opt_005`'s two `mass_g` windows are *"this part was not touched"* rows, which
+a material swap is supposed to fail.
+
+**Important — `opt_002`'s objective metric departs from §7.5** ("maximise the
+throat section area (`check_that` on metrics; window on `volume_mm3`)"; shipped:
+a window on `bbox_z_mm`). The `prompt.md` DEVIATION block now names it as
+deviation (1) and argues it: the throat section is `chord_w × plate_t`, and
+`chord_w` is not recoverable from either argument a `check_that` predicate is
+given — the plate's Y extent is the convex hull of the chord band *and* both
+diagonal strips, so it moves when the diagonals move, and sectioning the solid
+would need a boolean inside a spec predicate, which the kernel's spec tier does
+not do. `plate_t` is the other factor, is the one that actually drives buckling
+stiffness, and is directly measurable as `bbox_z_mm`. A `volume_mm3` objective
+was rejected on a second ground: the table pairs it with `mass_g <= Y`, and on
+a single material those are the same axis — a contradiction, not a trade.
+`volume_mm3` is still measured, as `material_budget`, in the role that works.
+The old `plate_t <= 12` argument is now deviation (2).
+
+**Minors, all taken:**
+
+1. **Unmeasured bullets moved out of "all of them graded".** `opt_001`'s R6
+   fillet and `opt_002`'s Ø18 holes / two rows / 45° diagonals now sit under a
+   "Not graded, but part of the design:" heading, as `opt_003` already did.
+   `opt_003`'s "on the base's boss centres" moved there too — the rubric counts
+   the holes, it does not locate them.
+2. **`opt_003`'s envelope deviation is now named.** `(100.3, 60.3, 6.3)` vs the
+   design's `[100, 60, 10]`: X and Y are the same footprint with 0.3 mm of
+   measurement slack (a bbox reading exactly 100.000 against a 100.0 ceiling is
+   a row decided by floating point), and Z is tightened because 6.0 mm is the
+   thickest lid in the declared parameter range — a 10 mm ceiling could not
+   fail any candidate.
+3. **`test_the_shipped_set_is_five_per_category` added** to
+   `tests/test_bench_tasks.py` (see above).
+4. **`opt_005`'s prompt now pins the instance ids** — `tapped_plate_1`,
+   `clamp_plate_1`, `cap_screw_1` — because `specs/project.py`'s
+   `check_clearance` names two of them, and renaming one is the same as
+   deleting the check.
+
+**Fix-round verification.**
+
+```
+uv run pytest tests/test_bench_tasks.py -q          ->  20 passed in 0.24s
+task_problems([]) for all five bundles; 20 .py files parse;
+the six rubric files are the only ones declares_specs accepts;
+no check_fem_static, no 'SPECS +=', no __pycache__ under benchmarks/.
+
+reference / starter / half-way, all five:
+  opt_001  1.0 / 0.8       / 0.9
+  opt_002  1.0 / 0.84      / 0.92
+  opt_003  1.0 / 0.84      / 0.92
+  opt_004  1.0 / 0.866667  / 0.933333
+  opt_005  1.0 / 0.641667  / 0.933333
+every reference: geometry and interference == "not_applicable".
+```

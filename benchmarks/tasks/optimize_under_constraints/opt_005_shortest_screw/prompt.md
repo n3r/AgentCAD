@@ -63,6 +63,10 @@ Constraints, all of them graded:
   point — it may enter the plain counterbore, never the thread.
 - Change `cap_screw` only. `clamp_plate` and `tapped_plate` keep every
   parameter they have, and no instance moves.
+- Keep the three instance ids exactly as they are — `tapped_plate_1`,
+  `clamp_plate_1` and `cap_screw_1`. The clearance requirement above is
+  measured between the named instances `cap_screw_1` and `tapped_plate_1`, so
+  renaming or re-creating one is the same as deleting the check.
 - It stays an M8 socket-head cap screw: the head keeps its Ø13.27 mm outside
   diameter, and the screw is one valid solid.
 

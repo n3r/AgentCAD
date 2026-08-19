@@ -28,6 +28,18 @@
       "part": "angle_bracket"
     },
     {
+      "max": 84465.72,
+      "metric": "volume_mm3",
+      "name": "objective_volume",
+      "part": "angle_bracket"
+    },
+    {
+      "max": 96532.25,
+      "metric": "volume_mm3",
+      "name": "objective_volume_relaxed",
+      "part": "angle_bracket"
+    },
+    {
       "max": 1,
       "metric": "n_solids",
       "min": 1,

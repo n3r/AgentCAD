@@ -18,6 +18,16 @@
 # reference measures 234.7595 x 142.3797 mm, and dropping `edge_dist` from
 # 27 mm to 26 mm reads 231.931 x 140.9655 mm and fails it.
 #
+# `material_budget` and `material_density` exist because `mass_budget` alone
+# does not bind. `mass_g = volume x density`, the density comes from the
+# manifest material, and `update_part_script(material=...)` changes it in one
+# call with no geometry touched: in `al6061` the plate could be taken to the
+# parameter's 25 mm maximum and still weigh under 3000 g. `material_budget` is
+# the same budget in the density-invariant unit — 3000 g / 0.00785 g/mm³ =
+# 382165.6 mm³ — and it binds identically on A36 steel (17 mm reads
+# 371595.7903 mm³ and passes, 18 mm reads 393454.3662 mm³ and is red), while
+# `material_density` measures the steel itself.
+#
 # No `check_wall` here: on a flat plate the minimum wall IS the thickness, so
 # a floor under it would restate the objective's own metric as a pass/fail row.
 from agentcad.toolkit.specs import (
@@ -25,7 +35,11 @@ from agentcad.toolkit.specs import (
     check_mass as _bench_check_mass,
     check_that as _bench_check_that,
     check_valid as _bench_check_valid,
+    check_volume as _bench_check_volume,
 )
+
+#: A36 structural steel, g/mm³. The material the mass budget is written against.
+_BENCH_DENSITY = 0.00785
 
 
 def _bench_reach(part, metrics):
@@ -34,9 +48,22 @@ def _bench_reach(part, metrics):
     return bool(high[0] - low[0] >= 234.5 and high[1] - low[1] >= 142.2)
 
 
+def _bench_material_density(part, metrics):
+    """Still made of A36 steel — mass over volume, to 1%."""
+    volume = float(metrics["volume_mm3"])
+    if volume <= 0.0:
+        return False
+    density = float(metrics["mass_g"]) / volume
+    return bool(abs(density - _BENCH_DENSITY) <= _BENCH_DENSITY * 0.01)
+
+
 SPECS = [
     _bench_check_valid(name="valid", requirement="OPT-002"),
     _bench_check_mass(max_g=3000.0, name="mass_budget", requirement="OPT-002"),
+    _bench_check_volume(max_mm3=382165.6, name="material_budget",
+                        requirement="OPT-002"),
+    _bench_check_that(_bench_material_density, name="material_density",
+                      requirement="OPT-002"),
     _bench_check_that(_bench_reach, name="reach", requirement="OPT-002"),
     _bench_check_bbox(within_mm=(273.2, 176.8, 25.2), name="envelope",
                       requirement="OPT-002"),
