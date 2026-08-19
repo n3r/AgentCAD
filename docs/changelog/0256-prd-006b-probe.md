@@ -1,4 +1,4 @@
-# 0241 — PRD-006b Slice 1: the Windows AppContainer probe, and the meter bug it found
+# 0256 — PRD-006b Slice 1: the Windows AppContainer probe, and the meter bug it found
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -107,7 +107,7 @@ kernel or the tests.
 - `.github/workflows/windows-probe.yml` — new
 - `agentcad/kernel/_meter.py` — the Windows sampler no longer raises
 - `tests/test_meter.py` — two regression tests for it
-- `docs/changelog/0241-prd-006b-probe.md` — this entry
+- `docs/changelog/0256-prd-006b-probe.md` — this entry (0241 on the branch; renumbered at close-out because PRD-013 took 0241–0254)
 
 ## Notes
 

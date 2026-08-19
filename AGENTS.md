@@ -2232,7 +2232,7 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
   sanity bound.
 
 - **Windows confinement is an AppContainer, and five things about it are not
-  guessable** (PRD-006b, `kernel/sandbox_windows.py`, changelog 0242):
+  guessable** (PRD-006b, `kernel/sandbox_windows.py`, changelog 0257 (0242 on the branch)):
   1. **The client spawns through the backend.** `subprocess` can pass a handle
      list and nothing else, so a lowbox token needs `CreateProcessW` +
      `STARTUPINFOEX` (`PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`).

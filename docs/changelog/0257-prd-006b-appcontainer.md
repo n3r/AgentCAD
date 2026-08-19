@@ -1,4 +1,4 @@
-# 0242 — PRD-006b slice 2: the Windows worker runs inside an AppContainer
+# 0257 — PRD-006b slice 2: the Windows worker runs inside an AppContainer
 
 - **Commit:** pending
 - **Date:** 2026-08-19

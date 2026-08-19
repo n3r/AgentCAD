@@ -1,7 +1,7 @@
 # PRD-006b — Windows AppContainer confinement: design
 
 - **Date:** 2026-08-19
-- **PRD:** [PRD-006b](../../prd/in-progress/PRD-006b-windows-appcontainer.md)
+- **PRD:** [PRD-006b](../../prd/completed/PRD-006b-windows-appcontainer.md)
 - **Builds on (completed):** PRD-006 — the `sandbox.plan()` seam and the
   `Backend` protocol (`kernel/sandbox.py`), the Windows backend with its job
   object and psapi sampler (`kernel/sandbox_windows.py`), the worker preamble

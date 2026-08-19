@@ -2,11 +2,12 @@
 
 - **Status:** completed — merged to main in PR #22 (`69fc968`, 2026-08-19).
   Changelogs `0230`–`0238` (renumbered at merge from `0213`–`0220`; `0238` is
-  the merge with PRD-007/031a). AC1–AC8 verified as recorded below, with one
-  named carve-out: **AC3's Windows clause** — that clause and G2/FR2's Windows
-  confinement half are
-  [PRD-006b](../pending/PRD-006b-windows-appcontainer.md), and Windows reports
-  `unsupported` here rather than closing on an unverified claim. The three-OS
+  the merge with PRD-007/031a). AC1–AC8 verified as recorded below. **AC3's Windows clause** and G2/FR2's
+  Windows confinement half were carved out as
+  [PRD-006b](PRD-006b-windows-appcontainer.md) and **closed by it** (PR #24,
+  2026-08-19): Windows workers now run inside an AppContainer and report
+  `active`/`appcontainer` from their own token — all three OSes report a
+  confinement mechanism. The three-OS
   CI matrix that AC8 asks for ran green on the PR: ubuntu (Landlock **ABI 7**
   live on x86_64, `AGENTCAD_EXPECT_SANDBOX=active`), windows (the job-object
   tier, sampling the interpreter behind the venv launcher), macOS (the real
@@ -17,7 +18,7 @@
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026) — promoted from v3 residual to cloud prerequisite
 - **Depends on:** — (none hard; must land before PRD-005 hosts untrusted tenants)
-- **Related:** PRD-005 (tenant isolation + metering consumer), PRD-006b (the Windows confinement carve-out), PRD-007 (customizer rebuild rate limits), PRD-011 (third-party package scripts run confined), PRD-020 (fleet quotas ride this metering), PRD-004 (headless CI runs sandboxed)
+- **Related:** PRD-005 (tenant isolation + metering consumer), PRD-006b (the Windows confinement carve-out — completed), PRD-007 (customizer rebuild rate limits), PRD-011 (third-party package scripts run confined), PRD-020 (fleet quotas ride this metering), PRD-004 (headless CI runs sandboxed)
 - **Design:** [2026-08-18 sandboxing & quotas](../../superpowers/specs/2026-08-18-sandboxing-quotas-design.md)
   · **Plan:** [five slices](../../superpowers/plans/2026-08-18-sandboxing-quotas.md)
 
@@ -69,9 +70,8 @@
 > 2 skipped) **and** on the ubuntu job with `AGENTCAD_EXPECT_SANDBOX=active`
 > (Landlock ABI 7, `lsm=…landlock…`), so a degradation there is red rather
 > than skipped. AC2 (macOS seatbelt regressions still pass) —
-> `tests/test_sandbox.py`. AC3 — `active` measured on macOS and Linux;
-> **Windows reports `unsupported`**, which is this PRD's honest answer and
-> 006b's subject. AC4/AC5/AC6 — `tests/test_supervisor.py`, real workers and
+> `tests/test_sandbox.py`. AC3 — `active` measured on macOS and Linux,
+> and — since PRD-006b (PR #24) — on Windows too (`appcontainer`). AC4/AC5/AC6 — `tests/test_supervisor.py`, real workers and
 > real allocations. AC7 — `tests/test_usage.py`. AC8 — the
 > `AGENTCAD_NO_SANDBOX=1` opt-out and the unconfinable-environment case are
 > in `tests/test_prd006_acceptance.py`; the "full suite green on the

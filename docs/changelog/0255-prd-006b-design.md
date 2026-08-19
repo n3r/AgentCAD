@@ -1,4 +1,4 @@
-# 0240 — PRD-006b design: Windows AppContainer confinement, probe-first
+# 0255 — PRD-006b design: Windows AppContainer confinement, probe-first
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -30,7 +30,7 @@ PRD-006): the PRD moves to `docs/prd/in-progress/`, its stale link to the
 - `docs/superpowers/specs/2026-08-19-windows-appcontainer-design.md` — new
 - `docs/superpowers/plans/2026-08-19-windows-appcontainer.md` — new
 - `docs/prd/in-progress/PRD-006b-windows-appcontainer.md` — moved
-- `docs/changelog/0240-prd-006b-design.md` — this entry
+- `docs/changelog/0255-prd-006b-design.md` — this entry (0240 on the branch; renumbered at close-out)
 
 ## Notes
 Branch `prd-006b-windows-appcontainer`. Every verification of this PRD is a

@@ -1,6 +1,20 @@
 # PRD-006b — Windows AppContainer: the confinement half of the Windows story
 
-- **Status:** in-progress — build on branch `prd-006b-windows-appcontainer`; probe 28/28 and PR #24 windows job green
+- **Status:** completed — merged to main in PR #24 (`970e534`, 2026-08-19).
+  Changelogs `0255`–`0257` (renumbered at close-out from `0240`–`0242`;
+  PRD-013 took `0241`–`0254` in the meantime). Built probe-first: the
+  dispatch-only `windows-probe.yml` proved the design on `windows-latest`
+  (run 3: 28/28 — OCCT imports, builds and exports inside the container; the
+  seven denials; ACE propagation to pre-existing children; the worker's own
+  `TokenIsAppContainer` self-report with the matching SID; job peak 529 MB),
+  then the implementation landed and PR #24's windows job ran the battery
+  green under `AGENTCAD_EXPECT_SANDBOX=active`. AC1–AC5 verified: AC1/AC2 in
+  `tests/test_sandbox_windows.py` on the windows job, AC3/AC4 there and in
+  `tests/test_prd006_acceptance.py`, AC5 by PRD-006's header losing its
+  Windows asterisk in the same close-out commit. Two findings along the way
+  are recorded in `0256`/`0257`: a latent PRD-006 bug (the Windows meter raised
+  inside the container and killed the worker per request) and a POSIX-only
+  `cli._is_path` that never granted a `--project C:\…` write root.
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-18
 - **Origin:** carved out of [PRD-006](../completed/PRD-006-sandboxing-quotas.md)
@@ -17,7 +31,7 @@
 > read postures, all quota tiers including Windows job objects, breach
 > handling, metering, health, disk budgets and layered configuration. What
 > moved here is exactly **FR2's confinement half** and **AC3's Windows
-> clause**. PRD-006 closes with Windows confinement reporting `unsupported`,
+> clause**. PRD-006 closed with Windows confinement reporting `unsupported`,
 > in `/api/health` and in the docs, rather than closing on a claim it did not
 > verify.
 
