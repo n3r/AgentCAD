@@ -1,4 +1,4 @@
-# 0268 — PRD-024 final whole-branch review: the write grant, the prompt leak, and eleven smaller fixes
+# 0268 — PRD-024 final whole-branch review: the write grant, the prompt leak, and fifteen smaller fixes
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -7,15 +7,15 @@
 ## Summary
 
 The final whole-branch review of PRD-024 (two independent reviewers, one fix
-pass) found two Critical defects and eleven smaller ones. The Criticals: `bench
+pass) found two Critical defects and fifteen smaller ones (17 in total). The Criticals: `bench
 run`/`bench score` handed the confined worker a **write** grant on the task
 tree and on the submission — the worker that executes candidate-authored Python
 — and the external-submission walkthrough in `docs/bench.md` told evaluators to
 `cat prompt.md`, which leaks the reviewer-only HTML comments (reference
 parameters, threshold rationale) that the built-in runner strips. Both are
 closed, along with a NaN that could have scored a degenerate shape `iou: 1.0`, a
-build timeout that was indistinguishable from a build failure, harness meta in
-20 task starters, a task id printed on two shipped drawings, and the missing
+build timeout and a build crash that were indistinguishable from a build
+failure, harness meta in 29 task starters, a task id printed on two shipped drawings, and the missing
 disclosures.
 
 ## Changes
@@ -49,16 +49,26 @@ disclosures.
 
 ### Important
 
-- **A2 — a build timeout is named, and budget truncation is separated**
-  (`agentcad/bench/scoring.py`). `_build_all` now takes the deadline and the
-  notes list and classifies a not-`ok` build result from its error payload:
-  `timeout` → `state: "failed", reason: "build_timeout"` (a measured zero,
-  weights **not** renormalised), or `state: "error"` when a `--budget` has
-  already expired (our truncation, noted); `kernel_crash` → `state: "error"`,
-  which is what rule 2 of the module docstring has always said ("a kernel that
-  is gone"). Everything else stays `failed`/`build_failed`. `_geometry_part`
-  now returns a harness failure for a build whose state is `error`, so
-  `built`, `valid`, `geometry` and `metrics` agree on one row.
+- **A2 — a build timeout and a build crash are named, and budget truncation is
+  separated** (`agentcad/bench/scoring.py`). `_build_all` now takes the
+  deadline and the notes list, and `_failed_build` classifies a not-`ok` build
+  result from its error payload against `_NAMED_BUILD_FAILURES`:
+  `timeout` → `state: "failed", reason: "build_timeout"` and
+  `kernel_crash` → `state: "failed", reason: "build_crash"` — both measured
+  zeros with the weights **not** renormalised — or `state: "error"` plus a note
+  when a `--budget` has already expired, which is our truncation. Everything
+  else stays `failed`/`build_failed`. `_geometry_part` returns a harness
+  failure for a build whose state is `error`, so `built`, `valid`, `geometry`
+  and `metrics` agree on one row.
+  The crash lane is the one place rule 2's "a kernel that is gone" is decided
+  the other way, and the orchestrator ruled it so: nothing else stops measuring
+  when a build kills the worker — `core/specs.py` treats a mid-measurement
+  `KernelError` as a row payload, so `SpecRunner.run` survives and returns real
+  rows for every other part — so as an `error` a candidate with one
+  reliably-crashing part and an otherwise-passing rubric banked a renormalised
+  specs-heavy score (0.24 → 0.60 on an `mts`-weighted task). `_blames_harness`
+  is unchanged and still answers `iou`/`check_interference` the other way,
+  where a dead worker really does mean *that* measurement did not happen.
   Note for the record: a build **never** raises a `KernelError` —
   `service._build_with` catches it and answers `{"ok": False, "error": …}` —
   so the reviewer's premise that `_blames_harness` was classifying build
@@ -166,16 +176,15 @@ disclosures.
 - B5's headers change no geometry, re-proved by scoring three touched starters:
   `mts_001_thin_the_nozzle` **0.7582**, `opt_001_lightest_bracket` **0.8000**,
   `asm_003_bolted_joint` **0.2500** — all well under the 0.95 bar.
-- `make test` — <orchestrator fills>.
+- `make test` — 4725 passed, 36 skipped in 10m20s (branch tip).
 
-**Two behaviour changes worth flagging.** A build that takes the worker down
-(`kernel_crash`) is now an `error` rather than a measured zero, and a build
-whose result errored now excludes `geometry` instead of scoring it 0.0. Both
-follow the module's own stated rule ("a kernel that is gone" is ours) and match
-what `_blames_harness` already did for `iou` and `check_interference`; the
-residual risk — a candidate crashing the worker deliberately to have subscores
-renormalised away — is the same one §4.4's budget-truncation rule already
-carries, and a crashed worker fails the remaining subscores too.
+**The behaviour change worth flagging.** A build whose result is a harness
+`error` — today only budget truncation, plus an exception class
+`_blames_harness` did not anticipate — now excludes `geometry` instead of
+scoring it 0.0, so all four build-derived subscores answer one row the same
+way. Timeouts and crashes no longer reach that lane at all: they are the
+candidate's measured zeros, which is what closes the renormalisation exploit
+rather than leaving it to the note it used to carry.
 
 **Deliberately not done.** The reviewer's suggested `Scorer(…,
 build_timeout_s=…)` test hook was not added: the build ceiling is

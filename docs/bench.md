@@ -270,7 +270,7 @@ in a `finally`.
 
 | subscore | value |
 |---|---|
-| `built` | `passed / len(target.parts)`, where a part passes when the service builds it. A part missing from the manifest counts as failed, never as an error — and so does a build that **timed out** (`reason: "build_timeout"`), unless a `--budget` had already expired, which is our truncation and an `error`. A build that took the worker down (`kernel_crash`) is an `error`: the kernel is gone, so nothing was measured. |
+| `built` | `passed / len(target.parts)`, where a part passes when the service builds it. A part missing from the manifest counts as failed, never as an error — and so does a build that **timed out** (`reason: "build_timeout"`) or one that **took the worker down** (`reason: "build_crash"`). Either becomes an `error` only when a `--budget` had already expired, which is our truncation. |
 | `valid` | `valid_parts / len(target.parts)` over `metrics.is_valid`. A part that did not build is invalid. `check`'s imported-geometry escape is deliberately absent: a bench candidate that imports a mesh is measured, not forgiven. |
 | `specs` | `passed / (passed + failed + errors)` over the rubric-owned rows of one `SpecRunner.run`. A `skip` leaves the denominator — *unless* the candidate induced it (`mesh_only`, `no_instances`), in which case it counts as a **fail** and is named under `detail.skipped_as_failed`. A machine-specific skip (a missing extra) is neither a pass nor a fail. **A zero denominator is `0.0` with `status: "ok"`, never a division and never an exclusion**: `reason: "no_rubric_attached"` when the task ships a rubric and none of it could be appended (the candidate deleted the part, or handed back a mesh reference), `reason: "nothing_measured"` when it attached and every row skipped or the part did not build. Both are the candidate's doing, and an exclusion would renormalise the weight onto whatever is left — the exploit rule 2 exists for. |
 | `geometry` | The mean over the target parts of the kernel's IoU against that part's reference STEP. A part with no datum is not scored; a part that resolves mesh-only contributes `0.0` and is named. |
@@ -728,13 +728,22 @@ the server-side code it measures.
     overall dimensions can come out under the truth. `author.py drawing`
     refuses to write such a sheet (`check_dims=True`), because a bench asset
     that contradicts its own part is a task nobody can solve.
-* **A build that times out is the candidate's, and it is a zero.** Nothing in
-  the scorer shortens a build's own ceiling, so with no `--budget` a `timeout`
-  is a fact about how long the candidate's script runs: `built` scores it 0.0
-  with `status: "ok"` and `reason: "build_timeout"`, and the weights are not
-  renormalised. Only a `--budget` that has already expired makes it a harness
-  `error`. A slow-but-correct part is therefore scored against wall clock the
-  bench never declared — the honest lever is the task's own `budgets`.
+* **A build that times out or crashes is the candidate's, and it is a zero.**
+  Nothing in the scorer shortens a build's own ceiling, so with no `--budget` a
+  `timeout` is a fact about how long the candidate's script runs, and a worker
+  the build killed is a fact about the geometry the script asked OCCT for:
+  `built` scores each 0.0 with `status: "ok"` and `reason: "build_timeout"` /
+  `"build_crash"`, and the weights are **not** renormalised. Only a `--budget`
+  that has already expired makes either one a harness `error`.
+  The crash lane is the one place the harness/candidate split (`error` means
+  *we* could not measure) is decided the other way, and deliberately: nothing
+  else stops measuring when a worker dies — `SpecRunner.run` treats a
+  mid-measurement `KernelError` as a row payload and returns real rows for
+  every other part — so an excluded `built`/`valid`/`geometry`/`metrics` would
+  renormalise a candidate with one reliably-crashing part onto its passing
+  rubric (measured: 0.24 → 0.60 on an `mts`-weighted task). A
+  slow-but-correct part is, in exchange, scored against a wall clock the bench
+  never declared — the honest lever there is the task's own `budgets`.
 * **Per-task deltas are not gated** — see above.
 * **A stochastic agent against a per-category gate.** `--epsilon` is the only
   knob and 0.05 on a five-task category mean is loose. The gate is advisory on

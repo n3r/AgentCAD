@@ -756,20 +756,56 @@ def test_a_build_timeout_after_the_budget_expired_is_harness_truncation(
     assert any("budget ran out" in note for note in notes)
 
 
-def test_a_worker_that_crashed_building_is_the_harness_not_the_candidate(
+#: A build result whose worker died. `details` is present on purpose: the
+#: classification has to drop it, because a traceback names files and a file
+#: name in `score.json` is both a path leak and a determinism break.
+_CRASHED = {"ok": False,
+            "error": {"type": "kernel_crash", "message": "worker gone",
+                      "details": {"traceback": "/home/me/x.py"}}}
+
+
+def test_a_worker_that_crashed_building_is_the_candidates_measured_zero(
         bare_scorer):
-    """Rule 2 names "a kernel that is gone" as ours, and `_blames_harness`
-    already answers it that way for `iou` and `check_interference`."""
+    """The one place rule 2's "a kernel that is gone" does NOT apply.
+
+    Nothing else stops measuring when a build kills the worker:
+    `core/specs.py` treats a mid-measurement `KernelError` as a row payload, so
+    `SpecRunner.run` survives and returns real rows for every other part. As an
+    `error` here, a candidate shipping one reliably-crashing part and an
+    otherwise-passing rubric had `built`, `valid`, `geometry` and `metrics`
+    renormalised away and banked a specs-heavy score — 0.24 -> 0.60 on an
+    `mts`-weighted task. Crashing OCCT is something a script chooses, and
+    being paid for it is the exploit rule 2 exists to close.
+    """
+    from agentcad.bench.scoring import total_of
+
     task = _built_only(bench_tasks.load_task(SEED))
-    builds = bare_scorer._build_all(
-        _build_service({"ok": False,
-                        "error": {"type": "kernel_crash", "message": "worker gone",
-                                  "details": {"traceback": "/home/me/x.py"}}}),
-        task, "proj", None, [])
-    assert builds["spacer_plate"]["state"] == "error"
-    # `details` is dropped: a traceback names files, and a file name in
-    # `score.json` is both a path leak and a determinism break.
+    notes = []
+    builds = bare_scorer._build_all(_build_service(_CRASHED), task, "proj",
+                                    None, notes)
+    assert builds["spacer_plate"]["state"] == "failed"
+    assert builds["spacer_plate"]["reason"] == "build_crash"
     assert set(builds["spacer_plate"]["error"]) == {"type", "message"}
+    assert notes == []
+
+    row = bare_scorer._built(task, builds)
+    assert (row["status"], row["value"]) == ("ok", 0.0)
+    assert row["detail"]["reasons"] == {"spacer_plate": "build_crash"}
+    # The whole point: nothing is renormalised away.
+    assert total_of({"built": row}) == (0.0, {"built": 1.0})
+
+
+def test_a_build_crash_after_the_budget_expired_is_harness_truncation(
+        bare_scorer):
+    """The `build_timeout` exception, restated: with the deadline already
+    spent, a crash is our budget cutting the measurement short."""
+    task = _built_only(bench_tasks.load_task(SEED))
+    notes = []
+    builds = bare_scorer._build_all(_build_service(_CRASHED), task, "proj",
+                                    time.monotonic() - 5.0, notes)
+    assert builds["spacer_plate"]["state"] == "error"
+    assert bare_scorer._built(task, builds)["status"] == "error"
+    assert any("budget ran out" in note for note in notes)
 
 
 def test_every_other_build_failure_is_still_the_candidates(bare_scorer):
@@ -790,11 +826,12 @@ def test_geometry_excludes_itself_when_the_build_was_a_harness_error(
     answering 0.0 would report a measurement nobody took."""
     task = _weighted(bench_tasks.load_task(SEED), geometry=1.0)
     builds = {"spacer_plate": {"state": "error", "result": None,
-                               "error": {"type": "kernel_crash", "message": "gone"}}}
+                               "error": {"type": "timeout",
+                                         "message": "budget spent"}}}
     row, failure = bare_scorer._geometry_part(_Explodes(), task, "proj",
                                               builds, "spacer_plate", None, [])
     assert row is None
-    assert failure["type"] == "kernel_crash"
+    assert failure["type"] == "timeout"
     assert failure["stage"] == "build"
 
 

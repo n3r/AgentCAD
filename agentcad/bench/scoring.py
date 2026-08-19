@@ -592,14 +592,26 @@ class Scorer:
           rather than folded into `build_failed`. Nothing here shortens the
           build's own ceiling, so with no ``--budget`` in force the timeout is
           a fact about how long the candidate's script takes to run — a
-          measured zero, exactly like a script that raises. The one exception
-          is a ``--budget`` that has already expired: that timeout is *our*
-          deadline truncating the measurement (`checks._budget_broke`'s rule,
-          restated for a call whose ceiling we do not own), and truncation is
-          an `error` everywhere else in this module.
-        * **a crash is ours**: rule 2 names "a kernel that is gone" as a
-          harness failure, and `_blames_harness` already answers it that way
-          for `iou` and `check_interference`.
+          measured zero, exactly like a script that raises.
+        * **a crash is the candidate's too**, named `build_crash`. This is the
+          one place rule 2's "a kernel that is gone" does **not** apply, and
+          the reason is that nothing else stops measuring when a build takes
+          the worker down: `core/specs.py` treats a mid-measurement
+          `KernelError` as a row payload, so `SpecRunner.run` survives a dead
+          worker and returns real rows for every *other* part. A candidate
+          shipping one reliably-crashing part and an otherwise-passing rubric
+          would therefore have had `built`, `valid`, `geometry` and `metrics`
+          renormalised away and banked a specs-heavy score — measured at
+          0.24 → 0.60 on an `mts`-weighted task. Crashing OCCT is something a
+          script chooses; being paid for it is the exploit rule 2 exists to
+          close, and it outranks the symmetry with `_blames_harness` (which
+          still answers `iou` and `check_interference` the other way, because
+          there a dead worker means *that* measurement did not happen).
+        * **either one becomes an `error`** — budget truncation, with a note —
+          when a ``--budget`` has already expired. That timeout or crash is
+          *our* deadline cutting the measurement short
+          (`checks._budget_broke`'s rule, restated for a call whose ceiling we
+          do not own), and truncation is an `error` everywhere in this module.
         """
         try:
             present = set(service.store.part_ids(proj))
@@ -635,10 +647,17 @@ class Scorer:
                 out[part_id] = {"state": "ok", "result": result,
                                 "reason": None}
                 continue
-            out[part_id] = self._failed_build(result, part_id, deadline, notes)
+            out[part_id] = self._failed_build(result, deadline, notes)
         return out
 
-    def _failed_build(self, result: dict, part_id: str, deadline,
+    #: The build-result error types that name themselves in ``reason`` instead
+    #: of being folded into ``build_failed``. Both are the CANDIDATE's — see
+    #: :meth:`_build_all` — and both become budget truncation, and only then an
+    #: `error`, when a deadline is already spent.
+    _NAMED_BUILD_FAILURES = {ERROR_TIMEOUT: "build_timeout",
+                             ERROR_CRASH: "build_crash"}
+
+    def _failed_build(self, result: dict, deadline,
                       notes: list | None) -> dict:
         """One not-``ok`` build result, classified. See :meth:`_build_all`."""
         error = result.get("error") or {}
@@ -647,19 +666,19 @@ class Scorer:
         # `score.json` is both a path leak and a determinism break.
         payload = {"type": error.get("type"),
                    "message": error.get("message") or ""}
-        if error.get("type") == ERROR_CRASH:
-            return {"state": "error", "result": None, "error": payload}
-        if error.get("type") == ERROR_TIMEOUT:
-            remaining = self._remaining(deadline)
-            if remaining is not None and remaining <= 0.0:
-                if notes is not None:
-                    notes.append("the budget ran out while a target part was "
-                                 "building; the build-derived subscores are "
-                                 "excluded")
-                return {"state": "error", "result": None, "error": payload}
+        reason = self._NAMED_BUILD_FAILURES.get(error.get("type"))
+        if reason is None:
             return {"state": "failed", "result": result,
-                    "reason": "build_timeout", "error": payload}
-        return {"state": "failed", "result": result, "reason": "build_failed"}
+                    "reason": "build_failed"}
+        remaining = self._remaining(deadline)
+        if remaining is not None and remaining <= 0.0:
+            if notes is not None:
+                notes.append("the budget ran out while a target part was "
+                             "building; the build-derived subscores are "
+                             "excluded")
+            return {"state": "error", "result": None, "error": payload}
+        return {"state": "failed", "result": result, "reason": reason,
+                "error": payload}
 
     def _built(self, task: Task, builds: dict) -> dict:
         if not self._scored(task, "built"):
@@ -893,8 +912,10 @@ class Scorer:
             return {"iou": 0.0, "reason": "no_reference_step"}, None
         build = builds.get(part_id) or {}
         if build.get("state") == "error":
-            # The build was a HARNESS failure (a dead worker, or a deadline
-            # that expired mid-build): there is no candidate shape, and 0.0
+            # The build was a HARNESS failure — a deadline that expired
+            # mid-build, or an exception class `_blames_harness` did not
+            # anticipate. (A crash is NOT one: `_failed_build` scores it as the
+            # candidate's `build_crash`.) There is no candidate shape, and 0.0
             # would report a measurement nobody took. `built`, `valid` and
             # `metrics` all answer `error` for the same row.
             error = build.get("error") or {}
