@@ -1,6 +1,6 @@
 # PRD-031a — Marketplace catalog: seeded, read-only, add-to-library
 
-- **Status:** implemented — step 4 of the marketplace chain, all six slices landed (TDD, see the plan). The API acceptance criteria (AC1–AC8) are machine-checked in `tests/test_prd031a_acceptance.py`; AC9 (and AC1's visual half) is **graded as evidence** — the pages were **never rendered by a browser** (`list_connected_browsers` → `[]`, the PRD-005a/007 precedent).
+- **Status:** completed — merged to main in PR #21. Step 4 of the marketplace chain, all six slices landed (TDD, see the plan). The API acceptance criteria (AC1–AC8) are machine-checked in `tests/test_prd031a_acceptance.py`; AC9 (and AC1's visual half) is **graded as evidence** — the pages were **never rendered by a browser** (`list_connected_browsers` → `[]`, the PRD-005a/007 precedent).
 - **Phase:** v6 — moats
 - **Created:** 2026-08-18
 - **Origin:** carved out of [PRD-031](../pending/PRD-031-marketplace.md) by the founder decision recorded in [roadmap.md](../../roadmap.md), "Sequencing decision — the marketplace chain (16 Aug 2026)": *"Public read-only catalog we seed, with add-to-library. Needs 011 + 005a + 007. The browse payload is already pre-generated: 005a serves `catalog/index.json`'s metadata and shipped previews anonymously, filtered to indexes whose `scope` is `public`; add-to-library is the existing authenticated `add_package`/`use_part` path."*
