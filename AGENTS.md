@@ -2038,6 +2038,73 @@ it lower-cases "Python".
   `agentcad/kernel/` imports OCP/build123d — the market modules are OCP-free
   (asserted in a fresh interpreter with OCP blocked).
 
+## Assembly-v2 gotchas (PRD-013 — read before touching `core/mates.py` expansion, `kernel/handlers/connectors.py`, `handlers/simplify.py`, `core/urdf.py`, `tools_structure.py`/`tools_urdf.py`, `routes_structure.py` or the assembly frontend)
+
+- **ONE expansion point, and expansion REPLACES the base.** Patterns +
+  sub-assemblies are flattened in exactly one place — `mates.expand` /
+  `mates.resolve_project`, reached through the `service._resolved_instances`
+  wrapper `tools_structure` installs. Every consumer (mass rollup, interference,
+  export, stackup, specs, checks, the packet) reads that one flat list, so a
+  pattern of `count` members shows up as N **everywhere** from a single edit.
+  A patterned base id is **absent** from the flat list — `b` becomes
+  `b[0..count-1]` and is never counted alongside them. Do not add a second
+  place that re-expands; that is the double-/under-count trap (`test_structure_patterns`).
+- **Sub-assembly resolution is READ-ONLY on the source, structurally — not by a
+  runtime check.** `write_guard` fires only inside `write_script` /
+  `save_manifest` / `imports_dir(write=True)`, keyed by the *mutated* project.
+  Resolution opens a source with `store.open` (no write hook) and touches only
+  read accessors, so the source is never the guarded argument — the guard is
+  *unreachable*, not merely un-triggered. The one write that can happen is a
+  derived, content-addressed `.cache/<key>.acm` (identical to any read-triggered
+  build), never authored state. A store-spy test asserts zero
+  `save_manifest`/`write_script` against a source; install a raising guard on the
+  sources and resolution still succeeds (`test_structure_subassembly`).
+- **DOFs CLAMP, they do not raise** (the divergence from pre-013 behaviour).
+  An out-of-range slider/planar/revolute DOF is clamped to the connector's
+  declared range and a `dof_clamped {instance, dof, requested, clamped}` warning
+  is recorded in the resolved assembly's `warnings` — never an exception. AC4:
+  80 mm on a `(0,50)` slider → 50 + warning. Existing mate tests drive in-range
+  values, so they are unaffected; a test that asserted a *raise* would need
+  reconciling.
+- **Interface: only exported connectors are matable from outside.** A source
+  declares `assembly.interface {name → {instance, connector}}` via
+  `set_assembly_interface`; a parent mates the sub-assembly by naming an
+  interface NAME. A non-exported name is a `ValidationError` with
+  `details.interface`; a cross-project cycle is a `ValidationError` with
+  `details.cycle` (`["A","B","A"]`). The interface member must be a plain,
+  un-patterned part in the MVP (a patterned/sub-assembly interface member raises
+  a clear Phase-2 error); the interface-mate GEOMETRY resolves through the source
+  and places the whole unit at the mated pose (`handlers/connectors.mate_subassembly`).
+- **The inertia-frame trap (URDF correctness).** OCCT's `matrix_of_inertia` is
+  expressed about the **centre of mass**, not the origin — so the analysis
+  handler's old "about the global origin" note was FALSE for off-origin parts.
+  `handlers/analysis._inertia` now parallel-axis-shifts the tensor **forward to
+  the origin** (making the documented contract true), and `core/urdf` shifts it
+  **back to each link's COM** via `I_com = I_origin − m(‖c‖²E − c cᵀ)` — the
+  round trip URDF `<inertial>` requires. Skip either half and an off-origin
+  link's inertia is a positive-but-WRONG tensor whose eigenvalues about the COM
+  go negative — caught by `validate_urdf`'s SPD check (`test_urdf`,
+  negation-tested).
+- **`simplified_rep` is DISPLAY-ONLY.** The convex-hull proxy tier
+  (`handlers/simplify`, `<key>.simplified.acm`, produced lazily on a
+  `?lod=simplified` miss by the `tools_structure` `mesh_info` wrapper) is never a
+  metrics input — mass and interference always measure the real B-rep. It is a
+  distinct build kind, NOT a coarser LOD tolerance, and rides the existing tier
+  probe/serve path (no `service.py`/`worker.py` edit).
+- **Load order + naming.** `tools_structure`/`tools_urdf` sort **before**
+  `tools_versioning`, so read any cross-pack seam (`service.branches`,
+  `store.write_guard`) **lazily in methods**, never in `register()`; neither pack
+  adds a merge gate. The route pack is `routes_structure.py` (the name
+  `routes_assembly2` is taken by the single-instance PATCH); it is a route pack,
+  no `app.py` edit. Rotations stay intrinsic-XYZ Euler everywhere — expansion
+  composes transforms in the kernel via build123d `Location`, never a second
+  server-side Euler.
+- **Phase 2 (schema/seams reserved, NOT built):** `assembly.couplings` (schema +
+  merge land now; resolution + URDF `<mimic>` are Phase 2 — no
+  `set_coupling`/`clear_coupling` tool), `explode_assembly` (the frontend slider
+  is a disabled stub), ball/gear joints, the interference broad-phase, and
+  cylindrical/planar-decomposed URDF. Do not claim these green.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script

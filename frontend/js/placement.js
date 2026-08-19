@@ -8,6 +8,7 @@
 import { api } from "./api.js";
 import { state, setState, onKeys } from "./state.js";
 import * as viewport from "./viewport.js";
+import { dofEditor, patternSpec, patternDraft } from "./placement_model.js";
 
 let actions = null;
 let panel = null;
@@ -39,6 +40,26 @@ function currentInstance() {
   return list.find((i) => i.id === state.selectedInstance) || null;
 }
 
+// The base id owning a resolved member: a pattern member is `<base>[i]`, a
+// sub-assembly member `<base>/...`. A plain instance is its own base.
+function baseIdOf(id) {
+  const br = id.indexOf("[");
+  if (br >= 0) return id.slice(0, br);
+  const sl = id.indexOf("/");
+  if (sl >= 0) return id.slice(0, sl);
+  return id;
+}
+
+// The RAW (un-expanded) instance the current selection belongs to — where a
+// pattern lives. Patterns/sub-assemblies are edited on this base, not on the
+// derived member the tree selected.
+function rawBaseInstance() {
+  const inst = currentInstance();
+  if (!inst) return null;
+  const raw = (state.project && state.project.assembly.instances) || [];
+  return raw.find((r) => r.id === baseIdOf(inst.id)) || null;
+}
+
 function render() {
   const inst = currentInstance();
   if (!inst) {
@@ -48,16 +69,22 @@ function render() {
   }
   panel.classList.remove("hidden");
   const mated = !!inst.mate;
+  const base = rawBaseInstance();
+  const derived = !!(base && base.id !== inst.id);
+  const patSig = base && base.pattern
+    ? `${base.pattern.kind}:${base.pattern.count}` : "";
   // `config` is in the signature because the picker below is rebuilt with the
   // panel: a binding changed elsewhere (the agent, another tab) has to move
-  // this <select>, and nothing else in the panel would notice.
+  // this <select>, and nothing else in the panel would notice. `patSig` +
+  // `derived` are here so adding/clearing a pattern rebuilds the card.
   const nextSig =
-    `${inst.id}|${mated}|${mated ? "" : state.gizmoMode}|${inst.config || ""}`;
+    `${inst.id}|${mated}|${mated ? "" : state.gizmoMode}|${inst.config || ""}` +
+    `|${derived}|${patSig}`;
   if (nextSig !== sig) {
     sig = nextSig;
     build(inst, mated);
   }
-  if (!mated) syncValues(inst);
+  if (!mated && !derived) syncValues(inst);
 }
 
 function build(inst, mated) {
@@ -77,9 +104,14 @@ function build(inst, mated) {
 
   // BEFORE the mated early-return: a mate positions an instance, it does not
   // choose which configuration of the part is instanced, and the two questions
-  // are independent. A mated instance can still be bound.
-  const config = configRow(inst);
-  if (config) bodyEl.appendChild(config);
+  // are independent. A mated instance can still be bound. A DERIVED member
+  // (a pattern copy / sub-assembly internal) is not a raw instance, so binding
+  // it would 404 — the config picker belongs to the base, not the member.
+  const isDerived = !!(rawBaseInstance() && rawBaseInstance().id !== inst.id);
+  if (!isDerived) {
+    const config = configRow(inst);
+    if (config) bodyEl.appendChild(config);
+  }
 
   if (mated) {
     const note = document.createElement("div");
@@ -94,7 +126,25 @@ function build(inst, mated) {
       `<div class="placement-hint">Its transform is derived from the mate. ` +
       `Clear the mate to place it by hand.</div>`;
     bodyEl.appendChild(note);
-    bodyEl.appendChild(motionRow(inst));
+    // A slider/planar mate exposes editable DOF fields (offset; u/v/spin),
+    // committed via set_mate {dof} with clamp-on-out-of-range. A revolute keeps
+    // the angle sweep it always had.
+    const editor = dofEditor(inst.mate);
+    if (editor && (editor.kind === "slider" || editor.kind === "planar")) {
+      bodyEl.appendChild(dofFields(inst, editor));
+    } else {
+      bodyEl.appendChild(motionRow(inst));
+    }
+    return;
+  }
+
+  // A derived member (a pattern copy, or a sub-assembly's internal member): its
+  // transform is not directly editable. Show what drives it, and — for a
+  // pattern — the pattern editor bound to the owning base.
+  const base = rawBaseInstance();
+  if (base && base.id !== inst.id) {
+    bodyEl.appendChild(derivedNote(base, inst));
+    if (base.pattern) bodyEl.appendChild(patternEditor(base));
     return;
   }
 
@@ -143,6 +193,164 @@ function build(inst, mated) {
     `<span class="placement-scale-glyph" aria-hidden="true">⇲</span>` +
     `<span>No scale handle — resize via the part's <b>Parameters</b>.</span>`;
   bodyEl.appendChild(scale);
+
+  // A plain part instance can grow a repeat pattern (a sub-assembly instance
+  // can too, but sub-assemblies are added/edited from the tree, not here).
+  if (inst.part) bodyEl.appendChild(patternEditor(inst));
+}
+
+// A short note for a derived (pattern / sub-assembly) member, mirroring the
+// mate note: its pose comes from the base, not from a gizmo.
+function derivedNote(base, member) {
+  const note = document.createElement("div");
+  note.className = "placement-mate";
+  const kind = base.pattern ? `${base.pattern.kind} pattern`
+    : base.assembly ? "sub-assembly" : "group";
+  note.innerHTML =
+    `<span class="placement-mate-tag">member of ${escapeHtml(base.id)}</span>` +
+    `<div class="placement-mate-detail">${escapeHtml(kind)}</div>` +
+    `<div class="placement-hint">${escapeHtml(member.id)}'s transform is ` +
+    `derived. ${base.pattern ? "Edit the pattern below."
+      : "Sub-assembly internals are read-only here."}</div>`;
+  return note;
+}
+
+// The pattern editor: linear/polar, count, spacing (mm) / angle (deg). Commits
+// via set_pattern; "Clear" removes the pattern (the base reverts to one body).
+function patternEditor(base) {
+  const draft = patternDraft(base);
+  const wrap = document.createElement("div");
+  wrap.className = "placement-pattern";
+  wrap.appendChild(rowLabel("Pattern", draft.active ? draft.kind : "off"));
+
+  const row = document.createElement("div");
+  row.className = "placement-pattern-row";
+
+  const kindSel = document.createElement("select");
+  kindSel.className = "cfg-select";
+  kindSel.setAttribute("aria-label", "pattern kind");
+  for (const k of ["linear", "polar"]) {
+    const opt = document.createElement("option");
+    opt.value = k;
+    opt.textContent = k;
+    if (k === draft.kind) opt.selected = true;
+    kindSel.appendChild(opt);
+  }
+
+  const countInp = motionInput("pattern count", String(draft.count));
+  countInp.min = "1";
+  countInp.step = "1";
+  const spaceInp = motionInput("pattern spacing", String(draft.spacing));
+
+  const spaceUnit = () =>
+    (kindSel.value === "polar" ? "deg" : "mm");
+  const spaceLabel = document.createElement("span");
+  spaceLabel.className = "placement-unit";
+  spaceLabel.textContent = spaceUnit();
+  kindSel.addEventListener("change", () => {
+    spaceLabel.textContent = spaceUnit();
+  });
+
+  row.append(kindSel, countInp, spaceInp, spaceLabel);
+  wrap.appendChild(row);
+
+  const btns = document.createElement("div");
+  btns.className = "placement-pattern-btns";
+  const apply = document.createElement("button");
+  apply.type = "button";
+  apply.className = "placement-sweep-btn";
+  apply.textContent = draft.active ? "Update" : "Add pattern";
+  apply.addEventListener("click", () =>
+    commitPattern(base.id,
+      patternSpec(kindSel.value, countInp.value, spaceInp.value)));
+  btns.appendChild(apply);
+  if (draft.active) {
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "placement-pattern-clear";
+    clear.textContent = "Clear";
+    clear.addEventListener("click", () => commitPattern(base.id, null));
+    btns.appendChild(clear);
+  }
+  wrap.appendChild(btns);
+  return wrap;
+}
+
+async function commitPattern(baseId, pattern) {
+  const proj = state.projectName;
+  if (!proj) return;
+  try {
+    const res = await api.callTool("set_pattern",
+      { project: proj, instance: baseId, pattern });
+    if (res && res.error) throw new Error(res.error.message || "error");
+  } catch (err) {
+    actions.toast(`Could not set pattern: ${err.message}`, "error");
+    return;
+  }
+  sig = null;                     // force a rebuild from the new resolved state
+  actions.refreshProject();
+  actions.toast(pattern ? `${baseId} × ${pattern.count}` : `${baseId} pattern cleared`);
+}
+
+// Editable DOF fields for a slider/planar mate. Each field carries its set_mate
+// `dof` key; "Apply" sends them and surfaces a clamp warning honestly.
+function dofFields(inst, editor) {
+  const wrap = document.createElement("div");
+  wrap.className = "placement-dof";
+  wrap.appendChild(rowLabel(`${editor.kind} DOF`, ""));
+
+  const row = document.createElement("div");
+  row.className = "placement-dof-row";
+  for (const f of editor.fields) {
+    const cell = document.createElement("div");
+    cell.className = "placement-dof-cell";
+    const lab = document.createElement("span");
+    lab.className = "placement-dof-label";
+    lab.textContent = `${f.label} (${f.unit})`;
+    const inp = motionInput(`${f.label} ${f.unit}`, String(f.value));
+    inp.dataset.dof = f.key;
+    cell.append(lab, inp);
+    row.appendChild(cell);
+  }
+  wrap.appendChild(row);
+
+  const apply = document.createElement("button");
+  apply.type = "button";
+  apply.className = "placement-sweep-btn";
+  apply.textContent = "Apply";
+  apply.addEventListener("click", () => commitDof(inst, wrap));
+  wrap.appendChild(apply);
+  return wrap;
+}
+
+async function commitDof(inst, wrap) {
+  const proj = state.projectName;
+  const m = inst.mate;
+  if (!proj || !m) return;
+  const dof = {};
+  for (const inp of wrap.querySelectorAll("input[data-dof]")) {
+    const v = parseFloat(inp.value);
+    if (Number.isFinite(v)) dof[inp.dataset.dof] = v;
+  }
+  let res;
+  try {
+    res = await api.callTool("set_mate", {
+      project: proj, instance: inst.id, connector: m.connector,
+      to_instance: m.to_instance, to_connector: m.to_connector, dof });
+    if (res && res.error) throw new Error(res.error.message || "error");
+  } catch (err) {
+    actions.toast(`Could not set DOF: ${err.message}`, "error");
+    return;
+  }
+  const clamps = (res.warnings || []).filter((w) => w.kind === "dof_clamped");
+  actions.refreshProject();
+  if (clamps.length) {
+    const c = clamps[0];
+    actions.toast(`Clamped ${c.dof} to ${c.clamped} (asked ${c.requested})`,
+      "error");
+  } else {
+    actions.toast(`${inst.id} DOF updated`);
+  }
 }
 
 // The instance's configuration binding. The declared family comes from
