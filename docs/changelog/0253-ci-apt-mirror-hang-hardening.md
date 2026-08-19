@@ -42,7 +42,12 @@ fast path).
   -o Acquire::https::Timeout=30`, wrapped in a 3-attempt loop. A stalled mirror
   connection now aborts after 30 s and retries instead of hanging to the
   30-minute job cancel. The two steps are kept in sync (as their library list
-  already is).
+  already is). The options are placed **after** `--no-install-recommends` (apt
+  accepts `-o` anywhere) so the contiguous `apt-get install -y
+  --no-install-recommends` string that
+  `test_geometry_ci_action.test_occt_system_libraries_match_the_pytest_workflow`
+  parses to prove the two lib lists match is preserved — that guardrail passes
+  unchanged.
 - **`.github/workflows/geometry-ci.yml`** — the 0252 diagnostic scaffolding
   (`budget: 1200`, `PYTHONUNBUFFERED`/`PYTHONFAULTHANDLER`, the serial-thread
   A/B matrix legs) is **reverted**; it had served its purpose. The `examples`

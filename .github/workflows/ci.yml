@@ -77,7 +77,7 @@ jobs:
             echo "::warning::apt-get update failed (attempt $attempt/3); retrying"
             sleep 5
           done
-          sudo apt-get "${apt_opts[@]}" install -y --no-install-recommends \
+          sudo apt-get install -y --no-install-recommends "${apt_opts[@]}" \
             libgl1 libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1
 
       - name: Sync dependencies (locked)
