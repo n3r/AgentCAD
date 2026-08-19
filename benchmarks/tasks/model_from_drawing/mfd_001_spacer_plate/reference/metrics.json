@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 6.05,
+      "metric": "bbox_z_mm",
+      "min": 5.95,
+      "name": "height",
+      "part": "spacer_plate"
+    },
+    {
+      "max": 63.9,
+      "metric": "mass_g",
+      "min": 61.4,
+      "name": "mass",
+      "part": "spacer_plate"
+    },
+    {
+      "max": 23250.0,
+      "metric": "volume_mm3",
+      "name": "material",
+      "part": "spacer_plate"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "solids",
+      "part": "spacer_plate"
+    }
+  ]
+}
