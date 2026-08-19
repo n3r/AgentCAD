@@ -44,9 +44,13 @@ def _row(row_id, **over):
 
 def _board(tmp_path, rows):
     for row in rows:
+        # `_total` is fixture scaffolding, not part of the row document: pop it
+        # *before* the write so `row.json` on disk is exactly what a submitter
+        # would hand in.
+        total = row.pop("_total", 0.6)
         out = tmp_path / "rows" / row["id"]
         write_json(out / "row.json", row)
-        write_json(out / "report.json", _report(row.pop("_total", 0.6)))
+        write_json(out / "report.json", _report(total))
     return tmp_path
 
 
@@ -59,8 +63,15 @@ def test_three_rows_render_a_self_contained_page(tmp_path):
                                    expected_tasks=TASKS)
     html = out.read_text()
     assert result["rows"] == 3
-    assert "<script" not in html
-    assert "https://fonts." not in html and "cdn" not in html.lower()
+    lower = html.lower()
+    # Self-contained: nothing here can make the browser fetch anything. The
+    # only absolute URLs on the page are the rows' own evidence links.
+    assert "<script" not in lower and "<link" not in lower
+    assert "@import" not in lower and "url(" not in lower
+    assert "http://" not in lower and "cdn" not in lower
+    assert "https://fonts." not in lower
+    # 3 rows x 2 links, each rendered as an anchor (href + text).
+    assert lower.count("https://") == 12
     assert html.count("<tr") >= 4                      # header + 3 rows
     for row_id in ("builtin", "claude-mcp", "kcl"):
         assert row_id in html
@@ -193,6 +204,58 @@ def test_a_relative_link_must_exist_and_stay_inside_the_row(tmp_path):
 def test_a_link_that_is_neither_https_nor_a_contained_path_is_refused(
         tmp_path, value):
     board = _board(tmp_path, [_row("builtin", submission=value)])
+    with pytest.raises(Exception) as exc:
+        bench_publish.publish(board, tmp_path / "out.html", title="T",
+                              expected_tasks=TASKS)
+    assert "submission" in str(exc.value)
+
+
+def test_an_id_that_disagrees_with_its_directory_is_rejected(tmp_path):
+    """The directory is the identity; a document may not carry a second one."""
+    board = _board(tmp_path, [_row("builtin")])
+    row = _row("builtin", id="somebody-elses-run")
+    write_json(board / "rows" / "builtin" / "row.json", row)
+    with pytest.raises(Exception) as exc:
+        bench_publish.publish(board, tmp_path / "out.html", title="T",
+                              expected_tasks=TASKS)
+    assert "somebody-elses-run" in str(exc.value) and "builtin" in str(exc.value)
+    assert not (tmp_path / "out.html").exists()
+
+
+def test_an_unreadable_row_document_is_a_problem_not_a_raise(tmp_path):
+    """Exit 1 (nothing disclosed), never exit 2 (the caller named a bad input)."""
+    board = _board(tmp_path, [_row("builtin")])
+    (board / "rows" / "builtin" / "row.json").write_text("{not json")
+    rows, problems = bench_publish.load_rows(board, TASKS)
+    assert rows == []
+    assert any("builtin" in problem and "row.json" in problem
+               for problem in problems)
+
+
+def test_one_bad_row_stops_the_whole_board(tmp_path):
+    """All-or-nothing with more than one row: the good row is not published."""
+    board = _board(tmp_path, [_row("good"), _row("bad", submission="")])
+    with pytest.raises(Exception) as exc:
+        bench_publish.publish(board, tmp_path / "out.html", title="T",
+                              expected_tasks=TASKS)
+    assert "bad" in str(exc.value) and "submission" in str(exc.value)
+    assert not (tmp_path / "out.html").exists()
+
+
+def test_a_degenerate_https_link_names_no_host(tmp_path):
+    board = _board(tmp_path, [_row("builtin", submission="https://")])
+    with pytest.raises(Exception) as exc:
+        bench_publish.publish(board, tmp_path / "out.html", title="T",
+                              expected_tasks=TASKS)
+    assert "submission" in str(exc.value)
+
+
+def test_a_symlink_out_of_the_row_directory_is_refused(tmp_path):
+    """The textual check cannot see this one; `resolve()` can."""
+    board = _board(tmp_path, [_row("builtin", submission="s.tar.gz")])
+    outside = tmp_path / "outside.tar.gz"
+    outside.write_bytes(b"x")
+    (board / "rows" / "builtin" / "s.tar.gz").symlink_to(outside)
     with pytest.raises(Exception) as exc:
         bench_publish.publish(board, tmp_path / "out.html", title="T",
                               expected_tasks=TASKS)

@@ -1460,6 +1460,7 @@ No test imports `gmsh`/`skfem`/`meshio`, so the suite is green without `[fem]`
 | D21 | **No parallel task execution and no `--jobs`.** | The packages lesson: the build fan-out was deleted after failing a pre-registered bar and flipping a verdict under `--budget` (§16). |
 | D22 | `benchmarks/` is resolved through `resource_root()` like `examples/`/`catalog/` (no `pyproject.toml` change, not in the wheel) and is added to `.dockerignore`. | Matches the shipped precedent; without the `.dockerignore` entry the tasks land in the multi-GB image (§1.4). |
 | D23 | Scoring identity is `locks.set_client_id("bench")`. | One lane over from `cmd_check`'s `"ci"` (`cli.py:1089`), so a bench run never collides with a human's checkout (§9.2). |
+| D24 | **`publish` rule 4, narrowed:** a non-`https://` link is read as a path **relative to the row's own directory** and must stay inside it (textually — no `..` component, no absolute path, no scheme — *and* after `resolve()`, so a symlink cannot walk out either) and must exist there. Only an `https://` link renders as an anchor; a relative one renders as `<code>` text. | §12 says "repo-relative paths that exist", which leaves `../../../etc/passwd` publishable and makes the rendered link depend on where the page was written. The row directory is the only base that is the same fact for the validator and for the reader (Task 7 review, round 1; `docs/bench.md` states it for submitters). |
 
 ---
 

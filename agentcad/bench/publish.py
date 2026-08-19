@@ -18,11 +18,22 @@ The five rules a row must satisfy, each naming the key it failed on:
    non-empty (`notes` may be empty; `config` may be `{}` but must be present);
 2. `report.json` validates against the design-§10 report schema;
 3. the row's `task_set` / `harness` / `agentcad` equal the report's;
-4. `submission` and `transcript` are absolute `https://` URLs, or paths that
-   stay inside the row's own directory and exist there;
+4. `submission` and `transcript` are absolute `https://` URLs, or paths
+   **relative to the row's own directory** (`<leaderboard>/rows/<row-id>/`)
+   that stay inside it and exist there;
 5. the report covers **every** task of the declared set -- a partial run is not
    a leaderboard row, and a task the report itself flags `missing: true` is a
    partial run just as much as an absent one.
+
+**Rule 4 is narrower than design §12's wording, deliberately** (ledger D24).
+§12 says "repo-relative paths that exist"; this module resolves a relative link
+against the **row's own directory** and refuses anything that leaves it --
+textually (no `..`, no absolute path, no scheme) *and* after `resolve()`, so a
+symlink cannot walk out either. `../../../etc/passwd` is not a submission, and
+the row directory is the only base that means the same thing to the validator
+and to a reader of the page. Only an `https://` link renders as an anchor; a
+relative one renders as text, because it points inside the leaderboard
+directory and not inside wherever the page was written.
 
 **The row's identity is its directory name, never the document's `id`.** That
 is `report._score_paths`' ruling one level up: the directory is the one thing a
@@ -110,31 +121,55 @@ def _nonempty_str(value) -> bool:
 # ------------------------------------------------------------- the rules
 
 def _link_problem(key: str, value, base: Path) -> str | None:
-    """Rule 4 over one link, or `None` if it holds.
+    """Rule 4 over one link, or `None` if it holds (ledger D24).
 
     An `https://` URL is taken as stated -- this module resolves nothing over
-    the network, ever. Anything else is read as a path **relative to the row's
-    own directory**, must stay inside it, and must exist. That containment
-    check is what stops a row publishing `../../../etc/passwd` as its
-    "submission", and it is why an absolute path is refused outright rather
-    than resolved.
+    the network, ever; it only insists the URL actually has an authority, since
+    a bare `https://` names no artefact. Anything else is read as a path
+    **relative to the row's own directory** (`<leaderboard>/rows/<row-id>/`),
+    which must stay inside it and must exist there.
+
+    Containment is checked twice, and both checks are load-bearing. The textual
+    one refuses a `..` component, an absolute path and any scheme before
+    touching the filesystem, so a hostile value is never resolved. The
+    `resolve().is_relative_to()` one then refuses what the text cannot see: a
+    symlink inside the row directory pointing out of it, and the Windows
+    spellings (`..\\..`) `PurePosixPath` reads as one innocent component. That
+    pair is what stops a row publishing `../../../etc/passwd` as its
+    "submission".
+
+    Design §12 says "repo-relative"; the message says "relative to the row
+    directory" so a submitter who followed §12 literally can see the narrowing
+    rather than guess at it.
     """
     if not isinstance(value, str) or value.strip() == "":
         return (f"{key} is empty; a leaderboard row must name the artefact "
                 f"that reproduces it")
     if value.startswith(_URL_PREFIX):
+        if value[len(_URL_PREFIX):].strip("/") == "":
+            return (f"{key} {value!r} names no host; an https:// link must "
+                    f"carry an authority")
         return None
     if "://" in value or value.startswith("/") or ":" in value.split("/")[0]:
         return (f"{key} {value!r} is neither an absolute https:// URL nor a "
-                f"path inside the row's directory")
+                f"path relative to the row directory "
+                f"(<leaderboard>/rows/<row-id>/)")
     parts = PurePosixPath(value).parts
     if not parts or ".." in parts:
-        return (f"{key} {value!r} leaves the row's directory; a relative link "
-                f"must stay inside it")
+        return (f"{key} {value!r} leaves the row directory; a link relative to "
+                f"the row directory must stay inside it")
     target = base / Path(*parts)
+    try:
+        contained = target.resolve().is_relative_to(base.resolve())
+    except OSError:                       # a broken symlink loop, a dead mount
+        contained = False
+    if not contained:
+        return (f"{key} {value!r} resolves outside the row directory; a link "
+                f"relative to the row directory must stay inside it")
     if not target.exists():
-        return (f"{key} {value!r} does not exist beside row.json; a link that "
-                f"cannot be fetched is not a disclosure")
+        return (f"{key} {value!r} does not exist beside row.json; a link "
+                f"relative to the row directory that cannot be fetched is not "
+                f"a disclosure")
     return None
 
 
@@ -584,6 +619,13 @@ def publish(leaderboard_dir: Path, out_path: Path, *, title: str,
     all-or-nothing property is what makes the disclosure rule mean something,
     because a half-written board is a board that published the good rows and
     quietly dropped the rest.
+
+    **`details["problems"]` is the exit-1 discriminator.** A `ValidationError`
+    carrying that key is "a row was rejected for incomplete disclosure" (design
+    §9.3's exit 1); every other `AppError` out of here -- an unreadable
+    leaderboard directory, an unwritable output -- is the harness lane (exit 2).
+    A CLI handler that catches `ValidationError` should branch on it rather
+    than on the message text.
 
     The write goes through `ProjectStore._atomic_write` (staged under a random
     name, then `os.replace`), so a concurrent publisher loses rather than

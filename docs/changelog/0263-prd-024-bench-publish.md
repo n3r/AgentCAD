@@ -24,8 +24,9 @@ reading, ordered so that republishing the same input produces the same bytes.
      strings, integer `harness`/`n`, finite `total`, finite per-category and
      per-task totals, list `warnings`);
   3. the row's `task_set` / `harness` / `agentcad` equal the report's;
-  4. `submission` and `transcript` are absolute `https://` URLs, or relative
-     paths that stay inside the row's own directory **and exist there**;
+  4. `submission` and `transcript` are absolute `https://` URLs (with an
+     authority — a bare `https://` names no artefact), or paths **relative to
+     the row's own directory** that stay inside it **and exist there**;
   5. the report covers every task of the declared roster.
 - **Rulings written into the module, not just the tests:**
   - *A task the report flags `missing: true` is a partial run just as much as an
@@ -45,6 +46,18 @@ reading, ordered so that republishing the same input produces the same bytes.
   - *Plain `http://` is refused with every other scheme* (so is `javascript:`,
     an absolute path, and any `..` traversal): evidence fetched over a channel
     anyone can rewrite is not evidence.
+  - *Rule 4 is deliberately narrower than design §12's "repo-relative paths
+    that exist"* — recorded as **ledger D24** in the design spec by this round.
+    A relative link resolves against the **row's own directory**
+    (`<leaderboard>/rows/<row-id>/`) and must stay inside it, checked twice:
+    textually (no `..` component, no absolute path, no scheme — so a hostile
+    value is never resolved) and then via
+    `target.resolve().is_relative_to(base.resolve())`, which catches what the
+    text cannot see — a symlink inside the row directory pointing out of it,
+    and the Windows spellings `PurePosixPath` reads as one innocent component.
+    Every refusal message says "relative to the row directory
+    (<leaderboard>/rows/<row-id>/)" so a submitter who followed §12 literally
+    sees the narrowing instead of guessing at it.
 - **The page.** Inline `<style>` (light/dark via `prefers-color-scheme`, system
   font stack, no web font, no remote asset, no `<script>`), an `<h1>`, three
   lede paragraphs stating *what is measured* (build, per-solid validity, PRD-003
@@ -73,14 +86,19 @@ reading, ordered so that republishing the same input produces the same bytes.
 ## Files
 - `agentcad/bench/publish.py` — new: the five rules, the loader, the renderer,
   `publish`.
-- `tests/test_bench_publish.py` — new: 26 tests (self-contained page, the
+- `tests/test_bench_publish.py` — new: 31 tests (self-contained page, the
   measured/not-measured statement, byte-identical republish, ordering, escaping,
   the six parametrized rule rejections, partial run by absence and by
   `missing: true`, report schema mismatch, absent report, relative-link
-  existence and containment, four refused link forms, `load_rows` returning
-  problems instead of raising, the checked-in layout, an absent leaderboard
-  directory, and the three direct-API tests).
+  existence and containment, four refused link forms, a symlink out of the row
+  directory, a degenerate `https://`, an `id` disagreeing with its directory,
+  an unreadable `row.json` becoming a problem rather than a raise, a mixed
+  `[good, bad]` board writing nothing at all, `load_rows` returning problems
+  instead of raising, the checked-in layout, an absent leaderboard directory,
+  and the three direct-API tests).
 - `benchmarks/leaderboard/rows/.gitkeep` — new: the board layout.
+- `docs/superpowers/specs/2026-08-19-agentcad-bench-design.md` — §17 ledger
+  gains **D24**, recording the rule-4 narrowing (row-relative + contained).
 - `docs/changelog/0263-prd-024-bench-publish.md` — this entry.
 
 ## Notes
@@ -94,6 +112,13 @@ reading, ordered so that republishing the same input produces the same bytes.
 - `REQUIRED_ROW_KEYS` is the **disclosure** list; `schema` and `id` are the
   envelope and are checked separately (they identify the document, they disclose
   nothing about the run).
-- Targeted test evidence: `uv run pytest -q tests/test_bench_publish.py
-  tests/test_bench_report.py -x` → **55 passed**.
+- **`details["problems"]` is the exit-1 discriminator**, and `publish()`'s
+  docstring now says so: a `ValidationError` carrying that key is "a row was
+  rejected for incomplete disclosure" (§9.3 exit 1); every other `AppError` out
+  of `publish` — an unreadable leaderboard directory, an unwritable output — is
+  the harness lane (exit 2). A handler should branch on the key, not on the
+  message text.
+- Targeted test evidence: `uv run pytest -q tests/test_bench_publish.py` →
+  **31 passed**; `uv run ruff check agentcad/bench/publish.py
+  tests/test_bench_publish.py` → clean.
 - Full suite: `make test — <orchestrator fills>`.
