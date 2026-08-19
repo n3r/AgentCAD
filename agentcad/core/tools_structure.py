@@ -194,6 +194,36 @@ def _install_expansion(service) -> None:
         setattr(_check_interference, _WRAPPED, True)
         service.check_interference = _check_interference
 
+    mesh_info = service.mesh_info
+    if not getattr(mesh_info, _WRAPPED, False):
+
+        @functools.wraps(mesh_info)
+        def _mesh_info(proj, part_id, lod=None, *, config=None):
+            # simplified_rep (PRD-013 FR7): a proxy-mesh tier produced LAZILY on
+            # a `?lod=simplified` miss and served through the ordinary tier
+            # probe. DISPLAY-ONLY — the proxy is never a metrics input; the
+            # underlying build (and its full/lod1 tiers) is untouched. Content-
+            # addressed by the part's cache key, so it is computed once per
+            # (part, config) — a 1000-instance pattern is one hull.
+            info = mesh_info(proj, part_id, lod=lod, config=config)
+            if lod == "simplified" and info.get("lod") != "simplified":
+                key = info["key"]
+                out = service.store.cache_dir(proj) / f"{key}.simplified.acm"
+                if not out.is_file():
+                    record = service._record_for(proj, part_id, config)
+                    if record.kind == "script":
+                        service.kernel.request("simplify_rep", {
+                            "script": service.store.read_script(proj, part_id),
+                            "params": record.effective_params,
+                            "mode": "convex", "mesh_path": str(out),
+                        }, timeout_s=120.0)
+                if out.is_file():
+                    return {"path": out, "key": key, "lod": "simplified"}
+            return info
+
+        setattr(_mesh_info, _WRAPPED, True)
+        service.mesh_info = _mesh_info
+
     export_assembly = service.export_assembly
     if not getattr(export_assembly, _WRAPPED, False):
 

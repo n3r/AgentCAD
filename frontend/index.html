@@ -144,6 +144,12 @@
            vendored. comments.js projects each open face thread's world point
            with camera.project() inside the existing render loop. -->
       <div id="pins"></div>
+      <!-- Rep-mode toggle (PRD-013 FR8): Full = exact per-instance meshes;
+           Simplified = one convex-hull proxy per part, instanced for scale. -->
+      <div id="repmode" class="hidden">
+        <button id="repmode-full" class="repmode-btn" data-rep="full">Full</button>
+        <button id="repmode-simplified" class="repmode-btn" data-rep="simplified">Simplified</button>
+      </div>
       <div id="hud" class="hidden"></div>
       <div id="viewport-empty" class="hidden"></div>
       <div id="placement" class="hidden">

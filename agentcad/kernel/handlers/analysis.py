@@ -156,11 +156,26 @@ def _inertia(shape, density_g_cm3: float = 1.0) -> dict:
     mat = props.MatrixOfInertia()
     # unit-density tensor (mm^5); scale to g*mm^2 with density g/cm^3 = 1e-3 g/mm^3
     scale = density_g_cm3 * 1e-3
-    tensor = [[mat.Value(r, c) * scale for c in range(1, 4)] for r in range(1, 4)]
+    com_tensor = [[mat.Value(r, c) * scale for c in range(1, 4)]
+                  for r in range(1, 4)]
+    # OCCT's MatrixOfInertia is expressed about the CENTRE OF MASS. Callers
+    # (and this handler's contract) want it about the GLOBAL ORIGIN, so apply
+    # the parallel-axis theorem forward: I_origin = I_com + m*(||c||^2 E - c c^T)
+    # with c the COM (mm) and m the mass (g). URDF export then shifts it back to
+    # each link's COM — the round trip that made this reference frame matter.
+    cx, cy, cz = com.X(), com.Y(), com.Z()
+    mass_g = props.Mass() * density_g_cm3 * 1e-3
+    c = (cx, cy, cz)
+    nc2 = cx * cx + cy * cy + cz * cz
+    tensor = [
+        [com_tensor[i][j] + mass_g * ((nc2 if i == j else 0.0) - c[i] * c[j])
+         for j in range(3)]
+        for i in range(3)
+    ]
     return {
         "kind": "inertia",
         "volume_mm3": props.Mass(),
-        "center_of_mass": [com.X(), com.Y(), com.Z()],
+        "center_of_mass": [cx, cy, cz],
         "inertia_tensor_g_mm2": tensor,
         "note": "tensor about the global origin; density in g/cm^3",
     }

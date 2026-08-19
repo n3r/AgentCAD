@@ -17,6 +17,7 @@ export const state = {
   materials: null,       // GET /api/materials?project= payload {materials,caveat,...}
   partKinds: {},         // partId -> {kind, source} learned lazily from get_part
   gizmoMode: "translate",// assembly gizmo: "translate" | "rotate"
+  repMode: "full",       // assembly display: "full" | "simplified" (PRD-013 FR8)
   branch: null,          // this client's checked-out branch (null = no branching)
   branches: null,        // branch_list payload's branches[], null when stale
   clientId: null,        // branch_list's `you` — our identity in branch events

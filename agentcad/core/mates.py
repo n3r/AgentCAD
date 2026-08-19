@@ -184,6 +184,86 @@ def _source_name(service, ref: str) -> str:
         return service.store.open(ref)       # register an external path, read-only
 
 
+def _interface_mate_placement(service, proj, inst, source, iface, sub_flat,
+                              timeout_s, warnings):
+    """Compute a sub-assembly unit's world placement by mating its exported
+    interface connector to the anchor (PRD-013 FR3/FR4).
+
+    The exported connector resolves to an internal ``(instance, connector)`` in
+    the source; that member's source-local placement (``member_local``, already
+    resolved incl. the source's own mates) plus its connector frame define the
+    interface frame. The kernel mates the interface member to the anchor part
+    (reusing ``resolve_mates`` — DOF drivers, clamping, the rigid rule) and
+    returns the unit placement that carries every source member. Returns
+    ``(position, rotation_deg)``.
+    """
+    member = next((m for m in sub_flat if m.id == iface["instance"]), None)
+    if member is None:
+        raise ValidationError(
+            f"instance {inst.id!r}: interface names source instance "
+            f"{iface['instance']!r}, which is not a resolvable member of "
+            f"{source!r} (patterned/sub-assembly interface members are Phase 2)",
+            {"interface": inst.mate.get("connector")},
+        )
+    member_owner = getattr(member, "origin_project", None) or source
+    member_record = service._record_for(member_owner, member.part, member.config)
+    if member_record.kind != "script":
+        raise ValidationError(
+            f"instance {inst.id!r}: interface member {iface['instance']!r} is a "
+            "reference/imported part and has no connectors")
+
+    to_id = inst.mate.get("to_instance")
+    anchor_inst = next(
+        (i for i in service.store.instances(proj) if i.id == to_id), None)
+    if anchor_inst is None:
+        raise ValidationError(
+            f"instance {inst.id!r}: mate.to_instance {to_id!r} not found")
+    if (anchor_inst.assembly is not None or anchor_inst.pattern is not None
+            or not anchor_inst.part):
+        raise ValidationError(
+            f"instance {inst.id!r}: an interface mate anchor must be a plain "
+            f"part instance (got {to_id!r}); mating to a pattern or "
+            "sub-assembly is Phase 2")
+    anchor_record = service._record_for(proj, anchor_inst.part,
+                                        anchor_inst.config)
+    if anchor_record.kind != "script":
+        raise ValidationError(
+            f"instance {inst.id!r}: anchor {to_id!r} is a reference/imported "
+            "part and has no connectors")
+
+    payload = {
+        "anchor": {
+            "script": service.store.read_script(proj, anchor_inst.part),
+            "params": anchor_record.effective_params,
+            "position": list(anchor_inst.position),
+            "rotation_deg": list(anchor_inst.rotation_deg),
+        },
+        "unit": {
+            "script": service.store.read_script(member_owner, member.part),
+            "params": member_record.effective_params,
+            "connector": iface["connector"],
+            "member_position": list(member.position),
+            "member_rotation_deg": list(member.rotation_deg),
+        },
+        "mate": {
+            "to_connector": inst.mate.get("to_connector"),
+            "params": inst.mate.get("params") or {},
+        },
+    }
+    try:
+        result = service.kernel.request(
+            "mate_subassembly", payload,
+            timeout_s=RESOLVE_TIMEOUT_S if timeout_s is None
+            else min(RESOLVE_TIMEOUT_S, timeout_s),
+        )
+    except KernelError as exc:
+        raise ValidationError(
+            f"instance {inst.id!r}: interface mate failed: {exc.message}",
+            exc.details) from exc
+    warnings.extend(result.get("warnings") or [])
+    return result["position"], result["rotation_deg"]
+
+
 def _expand_subassembly(service, proj, inst, timeout_s, flat, warnings, ops,
                         op_targets, stack):
     """Depth-first, READ-ONLY sub-assembly resolution (PRD-013 Decision 3).
@@ -208,6 +288,7 @@ def _expand_subassembly(service, proj, inst, timeout_s, flat, warnings, ops,
 
     # Interface: only exported connectors are matable from outside. A mate on a
     # sub-assembly instance must name one, or it is unreachable by construction.
+    iface = None
     if inst.mate:
         exported = service.store.assembly_interface(source)
         cname = inst.mate.get("connector")
@@ -218,17 +299,24 @@ def _expand_subassembly(service, proj, inst, timeout_s, flat, warnings, ops,
                 f"(exports: {sorted(exported) or 'none'})",
                 {"interface": cname},
             )
+        iface = exported[cname]
 
-    # Parent placement of the whole unit. MVP: the instance's explicit
-    # transform (a mate on the unit is validated above; its geometric
-    # resolution via the interface frame is a documented follow-up).
-    parent_pos = list(inst.position)
-    parent_rot = list(inst.rotation_deg)
-
-    # Recurse: the source's members in ITS OWN local frame (read-only).
+    # Recurse: the source's members in ITS OWN local frame (read-only). Done
+    # BEFORE the interface mate — the mate needs the exported connector's frame
+    # in the resolved source's local coordinates.
     sub_flat, sub_warns = resolve_project(
         service, source, timeout_s, stack + [(source, spath)])
     warnings.extend(sub_warns)
+
+    # Parent placement of the whole unit. An interface mate resolves the unit's
+    # pose geometrically (the exported connector mated to the anchor, FR3/FR4);
+    # otherwise the instance's explicit transform.
+    if iface is not None:
+        parent_pos, parent_rot = _interface_mate_placement(
+            service, proj, inst, source, iface, sub_flat, timeout_s, warnings)
+    else:
+        parent_pos = list(inst.position)
+        parent_rot = list(inst.rotation_deg)
 
     for m in sub_flat:
         child = copy.copy(m)

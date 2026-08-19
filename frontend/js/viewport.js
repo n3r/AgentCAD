@@ -5,6 +5,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "/vendor/OrbitControls.js";
 import { TransformControls } from "/vendor/TransformControls.js";
+import { groupInstances, instanceCounts } from "./instancing.js";
 
 const DEG = Math.PI / 180;
 const DEFAULT_PART_COLOR = "#98a2ad";
@@ -328,6 +329,16 @@ function pick(event) {
   if (!hits.length) return null;
   const hit = hits[0];
   const ud = hit.object.userData;
+  // Instanced assembly mode: a hit carries the local `instanceId`; map it back
+  // to the expanded assembly id via this mesh's id table (FR8). No B-rep face
+  // map for a proxy/instanced mesh — a selected instance re-renders full-res.
+  if (ud.instanced && hit.instanceId != null) {
+    return {
+      instanceId: ud.instanceIds[hit.instanceId] ?? null,
+      partId: ud.partId ?? null,
+      faceIndex: null,
+    };
+  }
   // Part mode: map the hit triangle to its B-rep face via the cache entry's
   // faceMap (set lazily from the mesh's .faces.u32 sidecar). null when the
   // map isn't loaded (LOD tier on stage, reference part, stale cache).
@@ -441,6 +452,54 @@ export function showAssembly(items) {
   current = { mode: "assembly", partId: null, key: null, items };
   applySelection();
   fitGridToContent();
+}
+
+/** Instanced assembly mode (PRD-013 FR8): ONE geometry upload per (part,
+ *  rep-tier) group, N transforms via THREE.InstancedMesh. Used for the
+ *  "Simplified" rep-mode and at scale (1000s of members). Picking maps a hit's
+ *  `instanceId` back to the expanded assembly id via the per-mesh id table, so
+ *  the click-select contract is preserved. Selection/gizmo editing stays in the
+ *  per-mesh `showAssembly` path (Full mode); this path is for display + pick.
+ *  items: [{instanceId, partId, buffer, key, position, rotationDeg, color}]. */
+export function showAssemblyInstanced(items) {
+  clearContent();
+  const groups = groupInstances(items);
+  displayedKeys = new Set(groups.map((g) => `${g.partId}:${g.key}`));
+  const dummy = new THREE.Object3D();
+  groups.forEach((group) => {
+    const first = group.members[0];
+    const entry = getGeometry(group.partId, group.key, first.buffer);
+    const material = makeMaterial(DEFAULT_PART_COLOR);
+    const mesh = new THREE.InstancedMesh(
+      entry.geometry, material, group.members.length);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    group.members.forEach((m, li) => {
+      const [rx, ry, rz] = m.rotationDeg || [0, 0, 0];
+      dummy.rotation.set(rx * DEG, ry * DEG, rz * DEG, "XYZ");
+      const [x, y, z] = m.position || [0, 0, 0];
+      dummy.position.set(x, y, z);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(li, dummy.matrix);
+      if (m.color) mesh.setColorAt(li, new THREE.Color(m.color));
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    // The id table: local instanceId -> expanded assembly id.
+    mesh.userData = {
+      instanced: true,
+      partId: group.partId,
+      instanceIds: group.members.map((m) => m.instanceId),
+    };
+    contentGroup.add(mesh);
+  });
+  current = { mode: "assembly", partId: null, key: null, items };
+  fitGridToContent();
+}
+
+/** HUD counts for the current assembly items: total instances + distinct
+ *  geometry uploads. */
+export function assemblyCounts(items) {
+  return instanceCounts(items || current.items || []);
 }
 
 export function setSelectedInstance(instanceId) {

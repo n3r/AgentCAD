@@ -1,0 +1,103 @@
+<robot name="rocket">
+  <link name="world" />
+  <link name="base">
+    <inertial>
+      <origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+      <mass value="0.02592" />
+      <inertia ixx="3.53376e-06" ixy="0.0" ixz="0.0" iyy="3.53376e-06" iyz="0.0" izz="6.912e-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/base.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/base.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="top">
+    <inertial>
+      <origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+      <mass value="0.002916" />
+      <inertia ixx="1.7496e-08" ixy="0.0" ixz="0.0" iyy="2.27448e-07" iyz="0.0" izz="2.27448e-07" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/top.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/top.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="flap">
+    <inertial>
+      <origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+      <mass value="0.002916" />
+      <inertia ixx="1.7496e-08" ixy="0.0" ixz="0.0" iyy="2.27448e-07" iyz="0.0" izz="2.27448e-07" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/flap.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/flap.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="car">
+    <inertial>
+      <origin xyz="0.0 0.0 0.0" rpy="0 0 0" />
+      <mass value="0.002916" />
+      <inertia ixx="1.7496e-08" ixy="0.0" ixz="0.0" iyy="2.27448e-07" iyz="0.0" izz="2.27448e-07" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/car.stl" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/car.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="top" type="fixed">
+    <origin xyz="0.0 0.0 0.003" rpy="0.0 0.0 0.0" />
+    <parent link="base" />
+    <child link="top" />
+  </joint>
+  <joint name="flap" type="revolute">
+    <origin xyz="0.015 0.0 0.003" rpy="0.0 0.0 0.0" />
+    <parent link="base" />
+    <child link="flap" />
+    <axis xyz="0.0 0.0 1.0" />
+    <limit lower="0.0" upper="1.570796326795" effort="0.0" velocity="0.0" />
+  </joint>
+  <joint name="car" type="prismatic">
+    <origin xyz="-0.015 0.0 0.003" rpy="0.0 0.0 0.0" />
+    <parent link="base" />
+    <child link="car" />
+    <axis xyz="1.0 0.0 0.0" />
+    <limit lower="0.0" upper="0.02" effort="0.0" velocity="0.0" />
+  </joint>
+  <joint name="base__world" type="fixed">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+    <parent link="world" />
+    <child link="base" />
+  </joint>
+</robot>

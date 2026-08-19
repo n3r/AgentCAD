@@ -412,6 +412,37 @@ input, textarea { font: inherit; color: inherit; }
 #hud .hud-state.error { color: var(--err); }
 #hud .hud-state.building { color: var(--accent); }
 
+/* Rep-mode toggle (PRD-013 FR8): bottom-right, mirroring #hud. */
+#repmode {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 6px;
+  background: var(--overlay);
+  border: 1px solid var(--hairline-soft);
+  user-select: none;
+  z-index: 6;
+}
+#repmode.hidden { display: none; }
+#repmode .repmode-btn {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+#repmode .repmode-btn:hover { color: var(--text); }
+#repmode .repmode-btn.active {
+  color: var(--text);
+  background: var(--hairline-soft);
+}
+
 #viewport-empty {
   position: absolute;
   inset: 0;
