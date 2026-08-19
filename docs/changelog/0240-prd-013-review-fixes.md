@@ -57,9 +57,8 @@ review flagged): a planar-mated arm exports a `fixed` joint, a `joint_degraded
 
 ## Notes
 
-`make test` — the authoritative full run is measured on the committed tree
-after this fix; changelog 0239 cited **4181 passed, 1 skipped** for the tree
-before this fix (which added one test, so the count moves by +1). CI on clean
-runners is the authoritative validation. Nothing here touches the inertia
-round trip, pattern expansion, sub-assembly resolution, or the AC8
-no-regression path the reviewers cleared.
+`make test` — **4182 passed, 1 skipped** (clean run on the committed tree
+after this fix: 4155 in the parallel phase + 27 in the serial bench/drag tail,
+both exit 0). This is 0239's pre-fix 4181 plus the one planar-degrade test
+added here. Nothing here touches the inertia round trip, pattern expansion,
+sub-assembly resolution, or the AC8 no-regression path the reviewers cleared.
