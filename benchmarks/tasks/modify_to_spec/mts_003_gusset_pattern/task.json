@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "modify_to_spec/mts_003_gusset_pattern",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "modify_to_spec",
+  "title": "Re-detail the gusset plate's bolt pattern",
+  "sets": ["core"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "derived", "example": "construction", "parts": ["gusset_plate"]},
+  "prompt": "prompt.md",
+  "assets": [],
+  "starter": "starter",
+  "target": {"project": "bench_mts_003_gusset_pattern", "parts": ["gusset_plate"]},
+  "budgets": {"wall_s": 600, "turns": 24},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the plate lies flat with its back face on Z = 0 and its front face at Z = plate_t; the panel work point is the origin in X, the bottom chord band runs along X, and the plate extends into +Y only (Y = 0 is the bottom edge of the chord band). The starter already sits on this datum and the modification must not move it"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {"gusset_plate": "reference/steps/gusset_plate.step"},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": null,
+    "parts": {"gusset_plate": "specs/parts/gusset_plate.py"}
+  },
+  "weights": {
+    "built": 0.10, "valid": 0.05, "specs": 0.40,
+    "geometry": 0.30, "interference": 0.00, "metrics": 0.15
+  }
+}

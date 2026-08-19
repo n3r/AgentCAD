@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "modify_to_spec/mts_004_lighter_flywheel",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "modify_to_spec",
+  "title": "Bring the flywheel under a 4.2 kg mass budget",
+  "sets": ["core"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "derived", "example": "engine", "parts": ["flywheel"]},
+  "prompt": "prompt.md",
+  "assets": [],
+  "starter": "starter",
+  "target": {"project": "bench_mts_004_lighter_flywheel", "parts": ["flywheel"]},
+  "budgets": {"wall_s": 600, "turns": 24},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the friction (clutch) face lies on Z = 0 and the disc extends into +Z; the pilot-bore axis is the Z axis and the wheel is centred on the origin. The starter already sits on this datum and the modification must not move it"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {"flywheel": "reference/steps/flywheel.step"},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": null,
+    "parts": {"flywheel": "specs/parts/flywheel.py"}
+  },
+  "weights": {
+    "built": 0.10, "valid": 0.05, "specs": 0.40,
+    "geometry": 0.30, "interference": 0.00, "metrics": 0.15
+  }
+}

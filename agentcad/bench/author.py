@@ -2,10 +2,16 @@
 
     uv run python -m agentcad.bench.author step    benchmarks/tasks/<c>/<id>
     uv run python -m agentcad.bench.author metrics benchmarks/tasks/<c>/<id>
+    uv run python -m agentcad.bench.author drawing benchmarks/tasks/<c>/<id> \
+        --part <part_id>
 
 ``step`` copies ``reference/project`` into a throwaway projects root, builds
 every part named in ``task.json``'s ``target.parts`` and exports each to
 ``reference/steps/<part>.step``.
+``drawing`` renders one of those parts through the product's **own** drawing
+path and drops the SVG into ``assets/`` — a bench drawing is exactly the
+drawing AgentCAD produces, so the task can be neither easier nor harder than
+the tool it measures.
 ``metrics`` measures the same parts and seeds ``reference/metrics.json`` with a
 +/-1% band on mass and volume and a +/-0.05 mm band on each bbox extent — a
 **starting point** the author then hand-edits and argues in the PR, never a
@@ -19,6 +25,8 @@ worker, on the far side of the service, exactly as it does for the product.
 from __future__ import annotations
 
 import argparse
+import math
+import re
 import shutil
 import sys
 import tempfile
@@ -80,6 +88,130 @@ def export_reference(task_dir, *, service) -> dict:
     return out
 
 
+#: The views a bench drawing carries. Three orthographic views and no `iso`:
+#: the isometric adds no dimension an agent can read, and it is the one view
+#: whose projection is not a plane a draughtsman would dimension against.
+DEFAULT_VIEWS = ("top", "front", "right")
+
+
+#: How far a dropped path vertex may sit off the segment that replaces it, in
+#: SVG user units. The drawing handler prints every coordinate with **three**
+#: decimals on a 420 x 297 sheet, so 0.002 is twice the printed resolution and
+#: below anything a renderer can show: the compaction is lossless *at the
+#: precision the file itself carries*.
+PATH_EPSILON = 0.002
+
+_PATH_RE = re.compile(r'd="M ([-0-9. L]+)"')
+
+
+def _compact_path(points, epsilon: float) -> list:
+    """Douglas–Peucker over one polyline. Iterative: a 700-point path recurses
+    ~10 deep on average and 700 deep in the worst case, and a RecursionError
+    inside an authoring helper is not a useful sentence."""
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        lo, hi = stack.pop()
+        if hi - lo < 2:
+            continue
+        (x0, y0), (x1, y1) = points[lo], points[hi]
+        dx, dy = x1 - x0, y1 - y0
+        norm = math.hypot(dx, dy)
+        worst, index = -1.0, lo
+        for i in range(lo + 1, hi):
+            px, py = points[i]
+            if norm < 1e-12:
+                dist = math.hypot(px - x0, py - y0)
+            else:
+                dist = abs(dy * (px - x0) - dx * (py - y0)) / norm
+            if dist > worst:
+                worst, index = dist, i
+        if worst > epsilon:
+            keep[index] = True
+            stack.append((lo, index))
+            stack.append((index, hi))
+    return [point for point, flag in zip(points, keep) if flag]
+
+
+def compact_svg(text: str, epsilon: float = PATH_EPSILON) -> str:
+    """Collapse the drawing handler's tessellated polylines, losslessly.
+
+    ``handlers/drawing._edge_svg`` discretizes **every** non-circular edge —
+    a dead-straight 90 mm line included — into up to 256 points, which makes a
+    three-view sheet a 150-250 KB file whose straight edges are 99% redundant.
+    An asset is attached to the prompt as **text, verbatim** (design §8.4), so
+    those bytes are the agent's context window, and a task whose drawing costs
+    50 000 tokens before the first tool call is measuring the wrong thing.
+
+    Douglas-Peucker at :data:`PATH_EPSILON` removes only vertices that are
+    already indistinguishable from the segment replacing them at the file's own
+    three-decimal precision: the sheet **renders identically**, so the task is
+    neither easier nor harder than the drawing the product produces. Nothing
+    else in the document is touched — every `<circle>`, `<text>`, dimension
+    line and arrowhead survives byte-for-byte.
+    """
+    def _rewrite(match: re.Match) -> str:
+        try:
+            pairs = [tuple(float(value) for value in chunk.split())
+                     for chunk in match.group(1).split(" L ")]
+        except ValueError:                       # not a plain "M x y L x y" path
+            return match.group(0)
+        if len(pairs) < 3 or any(len(pair) != 2 for pair in pairs):
+            return match.group(0)
+        kept = _compact_path(pairs, epsilon)
+        body = " L ".join(f"{x:.3f} {y:.3f}" for x, y in kept)
+        return f'd="M {body}"'
+
+    return _PATH_RE.sub(_rewrite, text)
+
+
+def render_drawing(task_dir, part_id: str, *, service, views=None,
+                   out=None) -> Path:
+    """Render ``reference/project``'s *part_id* as a three-view SVG asset.
+
+    Uses the product's own drawing path (``generate_drawing``,
+    ``core/tools_drawing.py``, ``format="svg"``), through
+    :meth:`ToolRegistry.call` rather than by reaching into the service, so a
+    bench drawing is exactly the drawing an agent would get from
+    ``generate_drawing`` on its own project — the task cannot be easier or
+    harder than the tool it measures.
+
+    SVG only. The prompt attaches an asset as **text** (design §8.4) and the
+    loader's `ASSET_SUFFIXES` refuses anything else, so a DXF option here
+    would only be a way to author a bundle the loader then rejects.
+    """
+    from ..core.tools import build_registry
+
+    task_dir = Path(task_dir).resolve()
+    raw = read_json(task_dir / "task.json")
+    if part_id not in raw["target"]["parts"]:
+        raise ValidationError(
+            f"{part_id!r} is not one of this task's target.parts "
+            f"({', '.join(raw['target']['parts'])}); a drawing of a part the "
+            f"task does not score is not this task's drawing",
+            {"part": part_id, "parts": list(raw["target"]["parts"])})
+    proj = _stage_reference(task_dir, raw, service)
+    registry = build_registry(service)
+    result = registry.call("generate_drawing", {
+        "project": proj, "part_id": part_id, "format": "svg",
+        "views": list(views or DEFAULT_VIEWS)})
+    # `registry.call` answers a refusal as an `{"error": ...}` PAYLOAD rather
+    # than by raising (tools.py's contract), so an unchecked result would copy
+    # nothing and report success.
+    if "error" in result:
+        raise ValidationError(
+            f"generate_drawing refused to draw {part_id!r}: "
+            f"{result['error'].get('message')}",
+            {"part": part_id, "error": result["error"]})
+    target = Path(out) if out else task_dir / "assets" / "drawing.svg"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        compact_svg(Path(result["path"]).read_text(encoding="utf-8")),
+        encoding="utf-8")
+    return target
+
+
 def _bbox_extents(metrics: dict) -> tuple[float, float, float]:
     bbox = metrics["bbox"]
     low, high = bbox["min"], bbox["max"]
@@ -129,11 +261,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m agentcad.bench.author",
         description="Regenerate a bench task's reference artefacts.")
-    parser.add_argument("command", choices=("step", "metrics"))
+    parser.add_argument("command", choices=("step", "metrics", "drawing"))
     parser.add_argument("task_dir", help="benchmarks/tasks/<category>/<id>")
     parser.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE,
                         help="relative band on mass and volume (default 0.01)")
+    parser.add_argument("--part", help="drawing: which target part to draw")
+    parser.add_argument("--views", help="drawing: comma-separated subset of "
+                                        "top,front,right,iso "
+                                        f"(default {','.join(DEFAULT_VIEWS)})")
+    parser.add_argument("--out", help="drawing: where to write the SVG "
+                                      "(default <task_dir>/assets/drawing.svg)")
     args = parser.parse_args(argv)
+    if args.command == "drawing" and not args.part:
+        parser.error("drawing needs --part <part_id>")
 
     from ..cli import _build_service, _release_work_root
 
@@ -152,6 +292,11 @@ def main(argv: list[str] | None = None) -> int:
             for part_id, path in sorted(export_reference(
                     task_dir, service=service).items()):
                 print(f"{part_id}: {path}")
+        elif args.command == "drawing":
+            views = ([name.strip() for name in args.views.split(",")
+                      if name.strip()] if args.views else None)
+            print(render_drawing(task_dir, args.part, service=service,
+                                 views=views, out=args.out))
         else:
             print(seed_metrics(task_dir, service=service,
                                tolerance=args.tolerance))

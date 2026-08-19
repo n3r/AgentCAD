@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "name": "bench_mfd_004_shaft_collar_reference",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "shaft_collar",
+      "label": "Shaft Collar",
+      "material": "steel_a36",
+      "params": {
+        "outer_d": 40.0,
+        "bore_d": 20.0,
+        "length": 15.0,
+        "slit_w": 3.0,
+        "screw_d": 5.0,
+        "screw_offset": 15.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}

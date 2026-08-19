@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 478.5,
+      "metric": "bbox_x_mm",
+      "min": 477.5,
+      "name": "chord_span",
+      "part": "gusset_plate"
+    },
+    {
+      "max": 279.5,
+      "metric": "bbox_y_mm",
+      "min": 278.5,
+      "name": "diagonal_span",
+      "part": "gusset_plate"
+    },
+    {
+      "max": 7606.5,
+      "metric": "mass_g",
+      "min": 7308.2,
+      "name": "mass",
+      "part": "gusset_plate"
+    },
+    {
+      "max": 10.1,
+      "metric": "bbox_z_mm",
+      "min": 9.9,
+      "name": "plate_t",
+      "part": "gusset_plate"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "solids",
+      "part": "gusset_plate"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "model_from_drawing/mfd_005_vee_block",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "model_from_drawing",
+  "title": "Toolmaker's vee block from a three-view drawing",
+  "sets": ["core"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "authored"},
+  "prompt": "prompt.md",
+  "assets": ["assets/drawing.svg"],
+  "starter": null,
+  "target": {"project": "bench_mfd_005_vee_block", "parts": ["vee_block"]},
+  "budgets": {"wall_s": 600, "turns": 24},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the block's base lies on Z = 0 and the block is centred on the origin in X and Y, so it spans X = -30 to +30, Y = -30 to +30 and Z = 0 to 40; the vee groove runs the full 60 mm length along X and the two clamp holes run through along Y"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {"vee_block": "reference/steps/vee_block.step"},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": null,
+    "parts": {"vee_block": "specs/parts/vee_block.py"}
+  },
+  "weights": {
+    "built": 0.15, "valid": 0.10, "specs": 0.10,
+    "geometry": 0.50, "interference": 0.00, "metrics": 0.15
+  }
+}

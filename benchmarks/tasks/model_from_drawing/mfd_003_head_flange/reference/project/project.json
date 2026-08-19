@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "name": "bench_mfd_003_head_flange_reference",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "flange",
+      "label": "Head Flange",
+      "material": "stainless_316",
+      "params": {
+        "outer_d": 140.0,
+        "inner_d": 87.0,
+        "flange_t": 14.0,
+        "n_bolts": 8.0,
+        "bolt_d": 9.0,
+        "bolt_circle_d": 118.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}
