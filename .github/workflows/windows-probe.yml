@@ -1,0 +1,72 @@
+# PRD-006b's Windows dev loop: the only way to observe AppContainer + CPython
+# + OCCT from a machine that is not Windows (design spec, Decision 5).
+#
+# It runs `scripts/win_appcontainer_probe.py`, which performs the whole
+# experiment and prints one structured `PROBE <step> OK|FAIL <detail>` report.
+# The probe always exits 0 — a red step would hide the report behind a failed
+# job in the Actions UI, and the report IS the product of this workflow.
+#
+# The `push` trigger is deliberate and narrow. This workflow is not on the
+# default branch, so `workflow_dispatch` cannot reach it until it merges;
+# scoping a push trigger to `prd-006b-**` and to the two files that make up
+# the probe means pushing a fix starts the next round by itself, and costs
+# nothing on any other branch or PR.
+name: Windows AppContainer probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      args:
+        description: >-
+          Extra probe arguments, e.g. `--job-memory-mb 2048 --keep-scratch`.
+        required: false
+        default: ""
+        type: string
+  push:
+    branches:
+      - "prd-006b-**"
+    paths:
+      - scripts/win_appcontainer_probe.py
+      - .github/workflows/windows-probe.yml
+
+concurrency:
+  group: windows-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: AppContainer probe (windows-latest)
+    runs-on: windows-latest
+    # The probe's own budget is ~4 minutes (a cold `uv sync` dominates); 20 is
+    # the ceiling the slice brief sets, and every internal deadline (180 s for
+    # the first ping, 120 s per request) is well inside it.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Sync dependencies (locked)
+        run: uv sync --locked
+        shell: pwsh
+
+      # `$env:PROBE_ARGS`, never `${{ inputs.args }}` inline: a dispatch input
+      # interpolated straight into a shell line is a script-injection seam.
+      - name: Run the AppContainer probe
+        run: |
+          $extra = @()
+          if ($env:PROBE_ARGS) {
+            $extra = $env:PROBE_ARGS -split '\s+' | Where-Object { $_ -ne '' }
+          }
+          Write-Host "probe args: $($extra -join ' ')"
+          uv run python scripts/win_appcontainer_probe.py @extra
+        shell: pwsh
+        env:
+          PROBE_ARGS: ${{ inputs.args }}

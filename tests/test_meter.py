@@ -93,3 +93,53 @@ def test_the_linux_peak_comes_from_proc_status():
     # does not, so compare to the kilobyte rather than exactly.
     assert _meter.proc_status_mb("VmHWM") == pytest.approx(usage["peak_rss_mb"],
                                                            abs=0.002)
+
+
+def test_a_windows_sampler_that_cannot_answer_is_not_fatal(monkeypatch):
+    """`_memory_mb` tolerates a `None` from the Windows sampler, and
+    `finish()` still returns a complete usage object.
+
+    The contract this pins is PRD-006b's round-1 finding: inside an
+    AppContainer `psapi.GetProcessMemoryInfo` was reached with a truncated
+    pseudo-handle, strict handle checking turned that into a structured
+    `STATUS_INVALID_HANDLE`, ctypes re-raised it as `OSError`, and it escaped
+    `Meter.finish()` — which runs after EVERY request, so the worker died on
+    the way out of a build that had already succeeded. The sampler now answers
+    `None` instead of raising, and `None` has to mean "no number", never "no
+    response line". Runs on every platform: `sys.platform` is what selects the
+    branch, so faking it is enough.
+    """
+    from agentcad.kernel import _meter
+
+    monkeypatch.setattr(_meter.sys, "platform", "win32")
+    monkeypatch.setattr(_meter, "_windows_memory_counters", lambda: None)
+
+    assert _meter._memory_mb(False) == (None, None, True)
+
+    meter = Meter()
+    meter.start()
+    usage = meter.finish()
+    assert set(usage) == KEYS
+    assert usage["peak_rss_mb"] is None and usage["rss_mb"] is None
+    assert usage["peak_rss_is_lifetime"] is True
+    assert usage["wall_ms"] > 0
+
+
+def test_the_windows_sampler_swallows_a_raising_psapi(monkeypatch):
+    """The guard is the point: a psapi call that RAISES must still be `None`.
+
+    Asserted against `_windows_memory_counters` itself (with the platform
+    faked and the inner call replaced by the exception the container really
+    produced), because that is the function whose old contract — "raise" —
+    was the bug.
+    """
+    from agentcad.kernel import _meter
+
+    def boom():
+        raise OSError(-1073741816, "Windows Error 0xc0000008")
+
+    monkeypatch.setattr(_meter.sys, "platform", "win32")
+    monkeypatch.setattr(_meter, "_psapi_counters", boom)
+
+    assert _meter._windows_memory_counters() is None
+    assert _meter._memory_mb(False) == (None, None, True)

@@ -1,9 +1,9 @@
 # PRD-006b — Windows AppContainer: the confinement half of the Windows story
 
-- **Status:** pending
+- **Status:** in-progress — build on branch `prd-006b-windows-appcontainer`; probe 28/28 and PR #24 windows job green
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-18
-- **Origin:** carved out of [PRD-006](../in-progress/PRD-006-sandboxing-quotas.md)
+- **Origin:** carved out of [PRD-006](../completed/PRD-006-sandboxing-quotas.md)
   on 2026-08-18 by the orchestrator under the founder's `/goal` (build PRD-006
   without pausing), on the 005a / 031a letter-suffix precedent so
   folder-as-status stays truthful for both halves. **The founder can fold it
