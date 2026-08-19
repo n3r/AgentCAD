@@ -30,15 +30,52 @@ permissions:
 
 jobs:
   # The light examples run on every push and pull request.
+  #
+  # TEMPORARY (PRD-013 branch diagnostic — revert before merge): on ubuntu the
+  # `construction` and `fasteners` legs hang for the full 30 min and get
+  # cancelled (rocketry/prototyping pass in ~2 min), a Linux-only symptom that
+  # appeared only after PRD-013 was combined with PRD-006's Linux self-
+  # confinement. PRD-013 is functionally inert for these two flat, mate-less
+  # examples (they take the byte-identical v1 fast path), so the prime suspect
+  # is an RLIMIT_NPROC / OCCT-TBB thread-starvation interaction inside 006's
+  # confinement. This block localizes it WITHOUT touching any kernel/006 code:
+  #   * budget 1200  — a silent 30-min cancel becomes a written report naming
+  #     the exact stage/part that overran (budget is read before every item and
+  #     every kernel call), so the verdict is legible instead of "no output".
+  #   * PYTHONUNBUFFERED + PYTHONFAULTHANDLER — the worker prints its
+  #     `[agentcad-sandbox] ... rlimits=... failures=N` line to stderr *before*
+  #     it imports build123d; unbuffered, that line survives even if the import
+  #     then hangs, so we learn whether the stall is BEFORE it (confinement
+  #     itself) or AFTER it (build123d/OCCT import under the caps), and a
+  #     fatal-signal traceback is dumped if a worker dies.
+  #   * the `serial` matrix legs (construction/fasteners only) pin OCCT/TBB/BLAS
+  #     to one thread — an A/B probe: if they go green while the default legs
+  #     hang, the thread-starvation hypothesis is confirmed and the fix belongs
+  #     in 006's confinement (relax the fork budget or force serial OCCT).
   examples:
     if: github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.engine)
-    name: check (${{ matrix.example }})
+    name: check (${{ matrix.example }}${{ matrix.threads == 'serial' && ' serial' || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         example: [construction, prototyping, rocketry, fasteners]
+        threads: [default]
+        include:
+          - example: construction
+            threads: serial
+          - example: fasteners
+            threads: serial
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+      # Empty on the default legs (OpenMP/TBB/BLAS treat "" as unset); "1" on
+      # the serial A/B legs. Inherited by the kernel worker subprocess.
+      OMP_NUM_THREADS: ${{ matrix.threads == 'serial' && '1' || '' }}
+      TBB_NUM_THREADS: ${{ matrix.threads == 'serial' && '1' || '' }}
+      OPENBLAS_NUM_THREADS: ${{ matrix.threads == 'serial' && '1' || '' }}
+      MKL_NUM_THREADS: ${{ matrix.threads == 'serial' && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,6 +85,7 @@ jobs:
           project: examples/${{ matrix.example }}
           agentcad: .
           pool-size: "1"
+          budget: "1200"
 
   # The engine example is minutes of kernel time, so it runs nightly — the same
   # split ci.yml already makes for its exhaustive suite.
