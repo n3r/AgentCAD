@@ -1,4 +1,4 @@
-# 0255 — 2026-08-19 — PRD-014 Drawings v2: design spec + implementation plan
+# 0259 — 2026-08-19 — PRD-014 Drawings v2: design spec + implementation plan
 
 ## Summary
 

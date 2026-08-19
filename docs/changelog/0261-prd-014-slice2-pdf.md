@@ -1,4 +1,4 @@
-# 0257 — PRD-014 Drawings v2, Slice 2: deterministic PDF backend
+# 0261 — PRD-014 Drawings v2, Slice 2: deterministic PDF backend
 
 - **Commit:** pending
 - **Date:** 2026-08-19

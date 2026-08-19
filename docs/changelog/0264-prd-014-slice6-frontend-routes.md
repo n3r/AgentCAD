@@ -1,4 +1,4 @@
-# 0260 — 2026-08-19 — PRD-014 slice 6: drawing UI controls + the HTTP surface they need
+# 0264 — 2026-08-19 — PRD-014 slice 6: drawing UI controls + the HTTP surface they need
 
 ## Summary
 

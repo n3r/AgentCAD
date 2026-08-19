@@ -1,4 +1,4 @@
-# 0259 — 2026-08-19 — PRD-014 slice 4: center marks, coaxial centerlines, hole tables
+# 0263 — 2026-08-19 — PRD-014 slice 4: center marks, coaxial centerlines, hole tables
 
 ## Summary
 
@@ -44,5 +44,5 @@ stays green; OCP boundary clean.
 
 `make test` — **4496 passed, 30 skipped** (measured on the combined slice-4 +
 slice-6 working tree in one run — this commit lands slice 4, the route/frontend
-work follows in 0260; the run showed 4487 passed with the 9 self-referential
+work follows in 0264; the run showed 4487 passed with the 9 self-referential
 `*_cites_a_make_test_count` guards, green once the counts land).

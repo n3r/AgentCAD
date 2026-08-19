@@ -1,4 +1,4 @@
-# 0263 — 2026-08-19 — PRD-014 review fixes: honest 422s on the drawing surface
+# 0267 — 2026-08-19 — PRD-014 review fixes: honest 422s on the drawing surface
 
 ## Summary
 

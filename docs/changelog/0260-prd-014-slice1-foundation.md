@@ -1,4 +1,4 @@
-# 0256 — 2026-08-19 — PRD-014 slice 1: display-list foundation, sheet formats, data-driven title block
+# 0260 — 2026-08-19 — PRD-014 slice 1: display-list foundation, sheet formats, data-driven title block
 
 ## Summary
 

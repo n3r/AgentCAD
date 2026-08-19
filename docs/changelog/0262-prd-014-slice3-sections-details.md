@@ -1,4 +1,4 @@
-# 0258 — 2026-08-19 — PRD-014 slice 3: section views and detail views
+# 0262 — 2026-08-19 — PRD-014 slice 3: section views and detail views
 
 ## Summary
 

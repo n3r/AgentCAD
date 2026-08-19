@@ -1,4 +1,4 @@
-# 0261 — 2026-08-19 — PRD-014 slice 5: configuration tabulation with letter variables
+# 0265 — 2026-08-19 — PRD-014 slice 5: configuration tabulation with letter variables
 
 ## Summary
 
