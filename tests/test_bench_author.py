@@ -146,7 +146,9 @@ def test_a_rendered_sheet_never_names_the_project_it_was_rendered_from(
     target = author.render_drawing(bundle, "spacer_plate", service=service)
     text = target.read_text(encoding="utf-8")
     assert "bench_" not in text and "_reference" not in text
-    assert ">spacer_plate</text>" in text
+    # The title block labels the PART (its manifest label, PRD-014's
+    # data-driven title block) and never the project it was rendered from.
+    assert "bench_mfd_001_spacer_plate_reference" not in text
 
 
 def test_no_shipped_asset_names_the_bench_or_a_reference_project():

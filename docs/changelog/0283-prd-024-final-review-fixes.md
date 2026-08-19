@@ -193,3 +193,16 @@ so the classification is unit-tested against a stubbed `_ensure_built` instead,
 which is the seam that actually decides it. `core/tools_drawing.py`'s
 `f"{project} / {part_id}"` label was not changed either — it is correct for a
 product user, and only a bench asset has to be anonymous.
+
+## Merge with main (PRD-006b + PRD-014)
+
+`origin/main` moved under the branch (PRD-006b Windows AppContainer, PRD-014
+Drawings v2); changelogs 0255–0268 were renumbered to 0270–0283 and main was
+merged in conflict-free. Two assertions went stale and were fixed: PRD-014's
+data-driven title block labels the **part** (its manifest label), not
+`<project> / <part>`, so `neutral_title` is now a no-op safety net and the
+author test asserts only that no `bench_`/`_reference` reaches a sheet; and
+`ci.yml` gained a third `expect_sandbox: active` matrix entry, so
+`test_ci_yml_is_untouched_by_the_bench` asserts `>= 2`. Merged tree:
+`make test` — 4831 passed, 44 skipped in 15m22s.
+

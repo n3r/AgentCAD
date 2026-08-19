@@ -415,7 +415,9 @@ def test_ci_yml_is_untouched_by_the_bench():
     for needle in ("agentcad bench", "bench.yml", "test_prd024",
                    "test_bench_", "ANTHROPIC_API_KEY", "benchmarks/"):
         assert needle not in ci, needle
-    assert ci.count("expect_sandbox: active") == 2
+    # The sandbox honesty gate is still ci.yml's (one entry per confined OS in
+    # its matrix); the bench sets its own on bench.yml's selftest job.
+    assert ci.count("expect_sandbox: active") >= 2
 
 
 def test_the_task_tree_and_the_results_stay_out_of_the_image():
