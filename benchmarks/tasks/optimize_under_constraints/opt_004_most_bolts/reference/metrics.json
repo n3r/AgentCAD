@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "metric": "n_faces",
+      "min": 30.48,
+      "name": "objective_bolt_faces",
+      "part": "flange"
+    },
+    {
+      "metric": "n_faces",
+      "min": 26.67,
+      "name": "objective_bolt_faces_relaxed",
+      "part": "flange"
+    },
+    {
+      "max": 140.3,
+      "metric": "bbox_x_mm",
+      "min": 139.85,
+      "name": "outer_diameter_x",
+      "part": "flange"
+    },
+    {
+      "max": 140.3,
+      "metric": "bbox_y_mm",
+      "min": 139.85,
+      "name": "outer_diameter_y",
+      "part": "flange"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "solids",
+      "part": "flange"
+    },
+    {
+      "max": 14.2,
+      "metric": "bbox_z_mm",
+      "min": 13.9,
+      "name": "thickness",
+      "part": "flange"
+    }
+  ]
+}

@@ -22,3 +22,9 @@ node_modules/
 .env.*
 !.env.example
 .superpowers/
+
+# PRD-024: `agentcad bench run --report out/` is the documented invocation, and
+# what it writes is one run's transcripts, submissions and scores — evidence to
+# publish deliberately (a leaderboard row links an archive), never a tree to
+# commit by accident.
+out/

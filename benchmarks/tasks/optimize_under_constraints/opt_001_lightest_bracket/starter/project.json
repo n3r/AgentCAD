@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "name": "bench_opt_001_lightest_bracket_starter",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "angle_bracket",
+      "label": "Erection Angle Bracket",
+      "material": "steel_a36",
+      "params": {
+        "leg_a": 90.0,
+        "leg_b": 90.0,
+        "width": 80.0,
+        "thk": 10.0,
+        "hole_d": 14.0,
+        "fillet_r": 6.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}

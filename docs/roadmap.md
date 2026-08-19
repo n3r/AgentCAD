@@ -106,8 +106,9 @@ format's proving ground.
 | 6 | **031b** | Open publishing, verified tiers, moderation, economy. |
 
 Demoted behind that chain: **015, 017** (daily-driver depth —
-they buy credibility but do not compound); **013 (PR #23) and 014 (PR #25) are
-now DONE** — the first two of that depth tier to ship, ahead of the rest. **026/027** stay early-v5 movable:
+they buy credibility but do not compound); **013 (PR #23), 014 (PR #25) and
+028 (PR #27) are now DONE** — the first three of that depth tier to ship, ahead
+of the rest. **026/027** stay early-v5 movable:
 if we are inviting an audience, the shell is the shop window.
 
 Success metric for the catalog is **usefulness, not contributors**. We will
@@ -154,7 +155,7 @@ commit. The 031a licensing precondition is closed.
 | [025](prd/pending/PRD-025-workspaces-ia.md) | Workspaces — Build · Test · Produce · Library · Market over one model; process profiles as the "swappable modules" | pending | idea 1 | 026 |
 | [026](prd/in-progress/PRD-026-workbench-shell.md) | Workbench shell revamp — dialog system (no native prompts), ⌘K palette over the registry, menus, resizable panels, shortcuts | in progress — acceptance (six slices landed; AC1–AC7 recorded in the PRD) | idea 8 | — |
 | [027](prd/pending/PRD-027-project-navigation-scale.md) | Navigation at scale — folders, tags, search, thumbnails, bulk ops, project dashboard, virtualized trees | pending | idea 5 | 026 (soft) |
-| [028](prd/pending/PRD-028-materials-database.md) | Materials database — 300–1,000 cited generic materials, basis labels, temperature tables, process metadata, community cards | pending | idea 2 | — |
+| [028](prd/completed/PRD-028-materials-database.md) | Materials database — 300–1,000 cited generic materials, basis labels, temperature tables, process metadata, community cards | completed (PR #27, MVP + Phase 2: 434 cited cards across 30 leaves, schema v2 with per-value basis/source and 80 temperature tables, `find_materials`/`get_material`, FEM resolves E/ν/k at temperature, `agentcad materials lint`, Materials browser; community repo + package distribution + FreeCAD import + 600+ records → `docs/materials.md` Deferred) | idea 2 | — |
 | [029](prd/pending/PRD-029-agent-skills.md) | Agent skills & knowledge packs — loadable, versioned craft (core/org/project layers), bench-measured | pending | idea 4 | — |
 
 ### v6 — generative engineering, manufacturing & community
@@ -167,7 +168,7 @@ commit. The 031a licensing precondition is closed.
 | [021](prd/pending/PRD-021-dfm-rule-packs-costing.md) | DFM rule packs & costing — open per-process rules run by the kernel with located violations; cost models; `check_dfm` as spec/CI gate | pending | analysis + idea 1b | 003 (soft) |
 | [022](prd/pending/PRD-022-manufacturing-connectors.md) | Manufacturing connectors — instant quotes, slicer pipeline to sliced 3MF, scan-assist, sim burst | pending | analysis + idea 1b | 021 (soft) · 005 |
 | [023](prd/pending/PRD-023-auto-documentation.md) | Auto-documentation — assembly instructions from mate semantics, READMEs, release notes; human-approved | pending | analysis | 013 · 015 |
-| [024](prd/pending/PRD-024-agentcad-bench.md) | AgentCAD-Bench — public, kernel-scored agentic-CAD evals; our release gate | pending | analysis | 003 |
+| [024](prd/completed/PRD-024-agentcad-bench.md) | AgentCAD-Bench — public, kernel-scored agentic-CAD evals; our release gate | completed (PR #26, MVP + FR10–FR12: harness `bench run\|score\|report\|publish\|prompt`, `iou` kernel handler, 25 tasks 5 × 5 all references 1.0, baseline gate, leaderboard renderer, MCP walkthrough; launch results / `fem/` / rotation policy / PRD-018 wiring → Phase 2/3) | analysis | 003 |
 | [030](prd/pending/PRD-030-motion-dynamics.md) | Motion & dynamics — closed-chain kinematics; MuJoCo rigid-body dynamics (reactions, motor sizing); loads→FEM handoff | pending | idea 6 | 013 |
 | [031](prd/pending/PRD-031-marketplace.md) | Marketplace & community hub — validated parametric components/projects/skills; server-side execution only; provenance & disclosure | pending — **split: 031a seeded read-only catalog (step 4) · 031b open publishing (step 6)** | idea 1e | 031a: 011 · 005a · 007 — 031b: + 006 |
 | [032](prd/pending/PRD-032-universal-cad-import.md) | Universal CAD import — neutral-deep + ODA opt-in + consent-gated cloud conversion; fidelity reports; re-import diffs | pending | idea 7 | 017 |

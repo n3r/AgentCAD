@@ -70,7 +70,10 @@ Claude Code (MCP) ─┐         Browser UI ─┐        Chat agent ─┐
   goes through: rebuild orchestration, content-hash mesh cache, EventBus),
   `project.py` (filesystem project store, atomic writes), `model.py`
   (dataclasses + `AppError` subclasses), `tools.py` (the ToolRegistry),
-  `materials.py`, `templates.py`.
+  `materials.py` (card schema, loader, `MaterialLibrary`),
+  `materials_query.py` (pure `find_materials`/`filter` engine),
+  `materials_lint.py` (pure card lint), `materials_data/` (the shipped cards),
+  `templates.py`.
 - **`agentcad/server/app.py`** — FastAPI: thin REST wrappers, a WebSocket
   event channel, the generic `/api/tools/{name}` passthrough (what MCP
   proxies), and static frontend hosting.
@@ -2482,6 +2485,216 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
   requires `make test` and a real `N passed` — the PRD-004/008/011/012
   precedent. Fill the number in; the literal placeholder is red on purpose.
 
+## Materials library gotchas (PRD-028 — read before touching `materials.py`, `materials_query.py`, `materials_lint.py`, `materials_data/`, or the FEM tools' material resolution)
+
+Every item is traceable to a measurement in `docs/changelog/0286`–`0292`.
+User-facing reference: `docs/materials.md` and the Materials/FEM sections of
+`docs/agent-api.md`.
+
+- **Property keys are a closed set, one canonical unit each**
+  (`PROPERTY_UNITS`). A card that spells an unknown key, or the right key with
+  the wrong unit string, is a refusal (`unit_mismatch`/`schema`) — never a
+  silent conversion. `density_g_cm3` is the only required property.
+- **Density is a POINT in the shipped library.** A `range` density is a lint
+  **error** at `--profile library` (`density_must_be_point`) — a warning only
+  in `user`. `service._cache_key` hashes the resolved density; a range that
+  silently resolved to a midpoint in the builtin catalog would make the mesh
+  cache key depend on an averaging convention nobody chose on purpose.
+- **The loader raises at import on any `library`-profile lint error** — a
+  broken shipped card breaks every `import agentcad` (`materials.load_library`
+  names the file/id/property in the `RuntimeError`). Author a family file
+  in progress under a **`_`-prefixed** name (`_draft_ceramics.json`) — the
+  loader skips any `materials_data/*.json` whose name starts with `_` (the
+  same mechanism `_library.json` uses to stay out of the card scan).
+- **The 30 legacy ids and their densities are immutable — forever.** A
+  corrected or re-based material gets a **new id** (or a `condition` suffix);
+  the old id's numbers never change in place. This is not a style preference:
+  `_cache_key` hashes density, so an in-place edit silently invalidates every
+  mesh cached against that id. `tests/test_materials.py`'s
+  `LEGACY_DENSITIES`/`LEGACY_ROWS` pin all 30 — extend them, never edit them.
+- **Two lint profiles, and they disagree on purpose.** `library` (the shipped
+  catalog, and the CLI's default) makes every structural rule an error,
+  including an uncited property (`missing_citation`). `user` (a project/global
+  hand-written entry) accepts a v1 flat entry as-is and reports an uncited
+  property as a **warning** — a hand-typed number genuinely has no citation to
+  give, and pretending otherwise would be worse than saying so. A
+  `project.json`'s `materials` section is *always* linted at `user`, whatever
+  `--profile` was asked for, because it is hand-written, not shipped.
+- **`masonry` is kept, not renamed to `concrete`.** User files already
+  validate against it, and it is the honest parent of
+  concrete/mortar/brick/stone (four leaves, not one).
+- **`characteristic` is a basis, `allowable-linked` is not.** EN 338/EN 1992
+  5%-fractile values are neither a US-style spec minimum nor a datasheet
+  typical, so `characteristic` was added to `BASES` rather than mislabelling
+  them. The PRD's `allowable-linked` basis became the record-level `links`
+  list instead (MMPDS/Prospector referenced, never mirrored, never given a
+  value) — a "basis" on a property with no value is not a basis.
+- **FEM material resolution is entirely service-side; the kernel is
+  unchanged.** `core/tools_analysis.py`'s `resolve_property`/`_elastic` read
+  `service.materials.resolve(...).prop(key).at(T_c)` and hand the solver the
+  same scalar keys it always took (`E_mpa`, `nu`, `k_w_m_k`). Thermal
+  resolution evaluates at the **mean of the two fixed temperatures**
+  (`(t_hot_c + t_cold_c) / 2`) — the one defensible single point for a linear
+  steady-state model. A table read outside its span is clamped to the end row
+  and the result's `warnings` gets an entry that **starts with the literal
+  prefix** `temperature_out_of_table_range:` — match on the prefix, not the
+  whole string (it names the property, the temperature and the table span).
+  `fem_static` with no material E falls back to 210000 MPa, no
+  `poisson_ratio` falls back to 0.3 — both recorded as `{value, basis:
+  "fallback_default"}` in `material_basis`, never silently applied.
+  `fem_modal` keeps its hard refusal on no E (a modal frequency scales with
+  √E — a silent steel default is a wrong answer, not a rough one).
+- **`find_materials`/`filter`: a range qualifies `_min`/`_max` by its
+  conservative bound** (lower bound for `_min`, upper for `_max` — the whole
+  range must clear the bar), and **a material missing the constrained
+  property never qualifies** — a missing value is not a pass. Zero qualifying
+  records is a `validation_error` (`"no material satisfies the
+  constraints"`) carrying `details.nearest_relaxation: {drop, count} | null`
+  (the single constraint whose removal admits the most records, by
+  leave-one-out; with one constraint, that one) — never a bare empty list.
+  A **standalone `basis`** means "carries at least one value on that basis"
+  (it used to be a silent match-everything). `links[].url` must be `https://`
+  — validated on write and refused again by the renderer.
+- **`routes_materials.py` answers 422 for an unknown id or an impossible
+  query, not 404.** Both `GET /materials/{id}` and `POST /materials/find` go
+  through `routes_configs._result` (the house convention: a tool refusal —
+  `{"error": …}`, no `ok` key — raises the mapped `AppError`), and the
+  underlying refusal in both cases is a `ValidationError`; there is no
+  `NotFoundError` in this pack to map to 404 instead. `PUT
+  /projects/{proj}/materials` is the one unchanged exception (still a 200
+  `{"error": …}` body on a validation failure — an existing inconsistency
+  this PRD did not touch).
+- **No aggregator name in any `source`, in any profile.** `DISALLOWED_SOURCE_RE`
+  (MatWeb, MakeItFrom, UL Prospector, Granta — case-insensitive) fires on
+  `properties.*.source`, `process.source` and `cost_usd_kg.source` alike
+  (`disallowed_source`, always an error). A `links` entry pointing a reader
+  *at* one of them is fine — the library never mirrors their numbers, and only
+  cites them by name in a place a lint rule does not scan.
+- **`materials_library` is an additive, atomic-merge manifest key** —
+  `create_project` writes it, `set_project_materials` refreshes it (the
+  entries it just validated were checked against *this* running schema, so
+  the pin has to say so). A stale pin left behind after a hand-edited manifest
+  reports `library_version_newer_than_shipped`/`library_version_unreadable` in
+  `list_materials`'s `warnings`, never a silent mismatch.
+- **The CLI is `.venv/bin/agentcad materials lint <path>…`,
+  not `python -m agentcad.cli`.** `cli.py` carries no `if __name__ ==
+  "__main__":` guard, so `-m` loads the module and does nothing; a subprocess
+  test spawns `[sys.executable, "-c", "from agentcad.cli import main;
+  main()"]` instead (`tests/test_materials_lint.py`'s `_argv()`).
+
+## Bench gotchas (PRD-024 — read before touching `agentcad/bench/`, `kernel/handlers/bench.py` or `benchmarks/`)
+
+Full documentation: `docs/bench.md`. The design is
+`docs/superpowers/specs/2026-08-19-agentcad-bench-design.md`.
+
+- **`error` means the harness could not measure. `not_applicable` is declared
+  by `task.json` (weight 0) and NEVER by a run.** A candidate that is absent,
+  unbuildable, mesh-only or wrong is *measured*, and it measures **zero**
+  (status `ok` with a `reason` in `detail`). This is the single most important
+  scoring rule and it closes an exploit: excluded subscores renormalise away,
+  so a run-decided exclusion would mean a candidate improves its total by
+  destroying the evidence. If you are tempted to write `except Exception:
+  status = "error"` in a subscore, you are re-opening it — classify with
+  `_blames_harness` instead.
+
+- **The rubric is injected into a COPY and re-binds `SPECS`.** The block is
+  appended to the candidate's part script (last module-level binding wins), and
+  `<copy>/specs.py` is written or **deleted** unconditionally. Only
+  rubric-owned rows count (`<part>:*` for parts the injection touched,
+  `project:*` only when the task ships a project rubric) — otherwise a
+  candidate inflates `specs` with checks it wrote itself. A `skip` leaves the
+  denominator **unless** its reason is candidate-inducible
+  (`CANDIDATE_SKIP_REASONS = ("mesh_only", "no_instances")`), which counts as a
+  fail.
+
+- **The `iou` handler booleans ONLY the intersection.** `union = volA + volB −
+  inter`, never `|` (a `|` on multi-solid Compound operands doubles the OCCT
+  failure surface for arithmetic that is free). Both sides are
+  solids-decomposed and AABB-prefiltered, `inter` is clamped to
+  `min(Σ, volA, volB)` and the ratio to `[0,1]`, volumes come from
+  `shape_volume` (never `.volume`), and a **mesh side short-circuits before any
+  boolean** — an STL operand segfaults OCCT. Alignment moves the *candidate*
+  only; **scale is never normalised**.
+
+- **`agentcad/bench/**` is OCP-free by contract** and a test parses every module
+  with `ast` to prove it. `kernel/handlers/bench.py` is a **handler pack, not a
+  tool pack**: `iou` must stay absent from `build_registry(service).list()` —
+  a tool that answers "how close am I to the reference?" turns the benchmark
+  into a search over its own answer key. There is no `core/tools_bench.py`, no
+  `server/routes_bench.py`, no new event and no manifest key.
+
+- **`score.json` carries no timestamp, host, path, duration or client id** —
+  those live in the sibling `run.json`. It is `sort_keys` + `indent=2` +
+  `allow_nan=False` + recursive `round(x, 6)`, with every path scrubbed to
+  `<cell>`/`<task>`/`<submission>`/`<projects>`, so two scorings of one
+  submission are byte-identical (AC3). Adding one non-deterministic field
+  anywhere in the body ends that.
+
+- **`_build_service(examples=False)` is load-bearing** and is the *only* change
+  `agentcad/cli.py` took for the runner: a task derived from a bundled example
+  must not be solvable by opening that example. It is a keyword-only parameter
+  because `AGENTCAD_EXAMPLES=0` is process-global and would clobber a
+  neighbouring xdist worker. **The catalog stays registered** — an assembly
+  task legitimately reaches for fasteners.
+
+- **`bench.json`'s `tasks` roster is written from the SELECTION, not from the
+  survivors**, and `bench report` takes its denominator from that index. A task
+  that was selected and never scored has to appear there or it quietly leaves
+  the arithmetic — and a baseline task missing from the results is a
+  `coverage` regression, not a smaller mean.
+
+- **`bench report --baseline` exiting 1 IS the release gate**, and it is the
+  only exit 1 in the family besides `publish`'s rejected row. `run` and `score`
+  are 0/2 only: a low score is a measurement, and making it a failing exit
+  would turn the runner and the gate into the same thing. The gate is on the
+  total and the category means; **per-task deltas are printed, never gated**.
+
+- **`--report DIR` refuses a directory that is not a results directory** and
+  clears only `tasks/` when it is. `--report ~/Documents` is a typo and must
+  never be a delete command; the same refusal (`refuse_scoring_overlap`) keeps
+  a work dir from being, holding or sitting inside the submission, the task
+  tree, the results directory or the projects root.
+
+- **`publish` rule 4 is row-relative** (ledger D24), not repo-relative: a
+  non-`https://` link resolves against `<leaderboard>/rows/<row-id>/` and must
+  stay inside it textually **and** after `resolve()`. Only an `https://` link
+  renders as an anchor. A rejected row refuses the **whole** board, exit 1,
+  nothing written, and there is no override flag.
+
+- **The reference script is the solution; the reference STEP is the datum, and
+  STEP is never byte-compared.** Drift is checked by re-exporting and measuring
+  (IoU ≥ 0.9999, volume within 1e-6 relative, bbox within 1e-3 mm) in
+  `tests/test_prd024_acceptance.py`. `asm_*`/`opt_*` ship
+  `reference.steps: {}` with `geometry` weight 0 and have no datum to drift.
+
+- **`benchmarks/` is a read-only input to the test suite.** No test writes into
+  it (the authoring helper does, and every test of it works on a `tmp_path`
+  copy), a reference project is staged under the test's own projects root
+  before it is built, and `benchmarks/` is in `.dockerignore` and out of the
+  wheel.
+
+- **No fan-out, no `--jobs`, and do not re-add them.** The packages build
+  fan-out was deleted after failing a pre-registered speed bar *and* flipping a
+  verdict under `--budget`; a benchmark whose numbers depend on a worker count
+  is not a benchmark.
+
+- **The bench CI job that holds the API key never runs on `pull_request`**, and
+  it lives in `.github/workflows/bench.yml` — its own file, because
+  `tests/test_prd006_acceptance.py` asserts `ci.yml` byte-wise. The `guard` job
+  exists because the `secrets` context is unreadable from a job-level `if:`,
+  and it emits a **visible `::notice::`** when the key is absent: a silently
+  skipped benchmark is indistinguishable from one that scored zero.
+
+- **Two product findings the bench fenced rather than fixed** (both are
+  follow-ups, not bench bugs): `handlers/drawing._view_bounds` samples six
+  points per edge, so a curved silhouette's overall dimensions come out ~5%
+  under — `author.render_drawing(check_dims=True)` refuses to ship a lying
+  sheet. And a swept pipe surface does not survive the STEP round trip as a
+  boolean operand (script-vs-script and STEP-vs-STEP both intersect; script
+  against the checked-in STEP returns nothing), which is why
+  `fix_005_invalid_shell` weights `geometry` 0.00 with the reason argued in its
+  `prompt.md`.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script
@@ -2576,6 +2789,7 @@ Write the changelog from the real diff, not from memory.
 - `docs/architecture.md` — processes, components, ACM1 format, rebuild flow
 - `docs/agent-api.md` — the 85/88 agent tools with schemas + a worked loop
 - `docs/geometry-ci.md` — `agentcad check`, the report schema, the GitHub Action
+- `docs/bench.md` — AgentCAD-Bench: the task bundle, the six subscores, `agentcad bench`, submitting from outside
 - `docs/part-authoring.md` — the script contract, toolkit, mates, sketch solver
 - `docs/user-guide.md` — the UI surface by surface
 - `docs/roadmap.md` — the PRD index with statuses (what we're building and why)

@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 40.15,
+      "metric": "bbox_z_mm",
+      "min": 39.85,
+      "name": "height",
+      "part": "vee_block"
+    },
+    {
+      "max": 60.15,
+      "metric": "bbox_x_mm",
+      "min": 59.85,
+      "name": "length",
+      "part": "vee_block"
+    },
+    {
+      "max": 996.6,
+      "metric": "mass_g",
+      "min": 957.5,
+      "name": "mass",
+      "part": "vee_block"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "solids",
+      "part": "vee_block"
+    },
+    {
+      "max": 60.15,
+      "metric": "bbox_y_mm",
+      "min": 59.85,
+      "name": "width",
+      "part": "vee_block"
+    }
+  ]
+}

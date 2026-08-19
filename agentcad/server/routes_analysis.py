@@ -50,7 +50,7 @@ def build_router(service, registry) -> APIRouter:
         return await _fem_call(
             "fem_static",
             ("fixed_face", "load_face", "load_N", "load_dir",
-             "E_mpa", "nu", "mesh_size_mm"),
+             "E_mpa", "nu", "mesh_size_mm", "temperature_c"),
             proj, part_id, request,
         )
 
@@ -58,7 +58,7 @@ def build_router(service, registry) -> APIRouter:
     async def fem_modal(proj: str, part_id: str, request: Request):
         return await _fem_call(
             "fem_modal",
-            ("n_modes", "fixed_face", "E_mpa", "nu"),
+            ("n_modes", "fixed_face", "E_mpa", "nu", "temperature_c"),
             proj, part_id, request,
         )
 

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "name": "bench_opt_002_stiffest_gusset_reference",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "gusset_plate",
+      "label": "Truss Gusset Plate",
+      "material": "steel_a36",
+      "params": {
+        "plate_t": 17.0,
+        "diag_angle_deg": 45.0,
+        "chord_w": 50.0,
+        "diag_w": 40.0,
+        "hole_d": 18.0,
+        "pitch": 45.0,
+        "n_rows": 2.0,
+        "edge_dist": 27.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}

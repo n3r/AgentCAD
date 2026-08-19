@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "fix_the_broken_part/fix_003_wall_red",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "fix_the_broken_part",
+  "title": "An enclosure shell moulded at 1.2 mm instead of its 2.5 mm wall",
+  "sets": ["core"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "derived", "example": "prototyping", "parts": ["enclosure_base"]},
+  "prompt": "prompt.md",
+  "assets": [],
+  "starter": "starter",
+  "target": {"project": "bench_fix_003_wall_red", "parts": ["enclosure_base"]},
+  "budgets": {"wall_s": 600, "turns": 24},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the shell's underside lies on Z = 0, it is centred on the origin in X and Y, and it opens upward into +Z; the starter already sits on this datum and the fix must not move it"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {"enclosure_base": "reference/steps/enclosure_base.step"},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": null,
+    "parts": {"enclosure_base": "specs/parts/enclosure_base.py"}
+  },
+  "weights": {
+    "built": 0.25, "valid": 0.15, "specs": 0.35,
+    "geometry": 0.15, "interference": 0.00, "metrics": 0.10
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "name": "bench_asm_001_thrust_chamber_reference",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "nozzle",
+      "label": "Thrust Chamber & Nozzle",
+      "material": "inconel718",
+      "params": {
+        "chamber_d": 80.0,
+        "chamber_l": 100.0,
+        "throat_d": 30.0,
+        "expansion_ratio": 4.9,
+        "wall": 3.0
+      }
+    },
+    {
+      "id": "flange",
+      "label": "Chamber Head Flange",
+      "material": "stainless_316",
+      "params": {
+        "outer_d": 140.0,
+        "inner_d": 87.0,
+        "flange_t": 14.0,
+        "n_bolts": 8.0,
+        "bolt_d": 9.0,
+        "bolt_circle_d": 118.0
+      }
+    },
+    {
+      "id": "injector_plate",
+      "label": "Injector Plate",
+      "material": "stainless_316",
+      "params": {
+        "plate_d": 132.0,
+        "plate_t": 12.0,
+        "n_orifices": 24.0,
+        "orifice_d": 1.5,
+        "pattern_r": 38.0,
+        "igniter_d": 6.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": [
+      {
+        "id": "nozzle_1",
+        "part": "nozzle",
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "color": "#b87333"
+      },
+      {
+        "id": "flange_1",
+        "part": "flange",
+        "position": [
+          0.0,
+          0.0,
+          -14.2
+        ],
+        "rotation_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "color": "#8a93a6"
+      },
+      {
+        "id": "injector_plate_1",
+        "part": "injector_plate",
+        "position": [
+          0.0,
+          0.0,
+          0.2
+        ],
+        "rotation_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "color": "#c2cbd6"
+      }
+    ]
+  }
+}

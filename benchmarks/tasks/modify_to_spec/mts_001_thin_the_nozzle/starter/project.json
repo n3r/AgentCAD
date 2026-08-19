@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "name": "bench_mts_001_thin_the_nozzle_starter",
+  "units": "mm",
+  "parts": [
+    {
+      "id": "nozzle",
+      "label": "Thrust Chamber",
+      "material": "inconel718",
+      "params": {
+        "chamber_d": 80.0,
+        "chamber_l": 100.0,
+        "throat_d": 30.0,
+        "expansion_ratio": 4.9,
+        "wall": 3.0
+      }
+    }
+  ],
+  "assembly": {
+    "instances": []
+  }
+}

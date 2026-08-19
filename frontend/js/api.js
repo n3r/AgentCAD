@@ -146,8 +146,31 @@ export const api = {
   redo: (proj) => request("POST", `/api/projects/${enc(proj)}/redo`),
 
   // ---- materials v2 ----
-  listMaterials: (proj) =>
-    request("GET", `/api/materials${proj ? `?project=${enc(proj)}` : ""}`),
+  /** `listMaterials(proj)` is the original call and stays byte-compatible;
+   *  `opts` is `{category?, subcategory?, filter?}` — exactly the shape
+   *  `materials_model.js::filterToQuery` returns, minus `filter` when it has
+   *  no keys (an empty constraint object and no `filter` param mean the same
+   *  thing server-side, so this never sends `filter={}`). `filter` is
+   *  JSON-encoded here; `routes_materials.py` reads it back with
+   *  `json.loads`. */
+  listMaterials: (proj, opts) => {
+    const o = opts || {};
+    const hasFilter = o.filter && Object.keys(o.filter).length > 0;
+    return request("GET", `/api/materials${query({
+      project: proj || null,
+      category: o.category || null,
+      subcategory: o.subcategory || null,
+      filter: hasFilter ? JSON.stringify(o.filter) : null,
+    })}`);
+  },
+  /** The full record (`properties` included) — the detail pane's call. */
+  getMaterial: (id, proj) =>
+    request("GET", `/api/materials/${enc(id)}${query({ project: proj || null })}`),
+  /** body: {require?, prefer?, category?, limit?, project?} ->
+   *  {materials, count, constraints}. Zero qualifying records is the tool
+   *  refusal envelope surfaced as a 422 ApiError (routes_materials.py's
+   *  `_result` convention) — callers catch it like any other 422. */
+  findMaterials: (body) => request("POST", "/api/materials/find", body || {}),
 
   // ---- analysis (tier 1) ----
   analyzePart: (proj, id, body) =>

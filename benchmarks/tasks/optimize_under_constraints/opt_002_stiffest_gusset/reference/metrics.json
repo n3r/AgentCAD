@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "metric": "bbox_z_mm",
+      "min": 16.19,
+      "name": "objective_thickness",
+      "part": "gusset_plate"
+    },
+    {
+      "metric": "bbox_z_mm",
+      "min": 14.17,
+      "name": "objective_thickness_relaxed",
+      "part": "gusset_plate"
+    },
+    {
+      "metric": "bbox_x_mm",
+      "min": 234.5,
+      "name": "reach_x",
+      "part": "gusset_plate"
+    },
+    {
+      "metric": "bbox_y_mm",
+      "min": 142.2,
+      "name": "reach_y",
+      "part": "gusset_plate"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "solids",
+      "part": "gusset_plate"
+    }
+  ]
+}

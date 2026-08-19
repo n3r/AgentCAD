@@ -20,6 +20,7 @@ import * as comments from "./comments.js";
 import * as library from "./library.js";
 import * as configs from "./configs.js";
 import * as market from "./market.js";
+import * as materials from "./materials.js";
 import * as auth from "./auth.js";
 import { setupShare } from "./share-links.js";
 // The server's identifier rules, spelled once (`frontend/js/patterns.js`) and
@@ -74,6 +75,12 @@ const panelApi = {
   // other panel uses rather than importing proposals.js and closing a cycle.
   openProposal: (id, tab) => proposals.openTo(id, tab),
   handleWriteConflict,
+  // Materials modal (PRD-028 slice 5): routed through `actions` both ways —
+  // inspector.js's Browse… button opens it, its "Use for part" button writes
+  // back through `inspector.setPartMaterial` — the same "don't import each
+  // other, go through actions" idiom `openProposal` above uses.
+  openMaterials: (opts) => materials.open(opts),
+  assignMaterial: (partId, id) => inspector.setPartMaterial(partId, id),
 };
 
 // ------------------------------------------------------------------ project
@@ -139,9 +146,14 @@ async function refreshProject() {
   } catch {
     return;
   }
+  const materialsMoved = JSON.stringify((state.project || {}).materials || null)
+    !== JSON.stringify(detail.materials || null);
   setState({ project: detail });
   updateEmptyState();
-  loadMaterials(state.projectName); // keep the material picker in sync after edits
+  // Keep the material picker in sync after edits — but only when the
+  // project's materials map actually moved: the full catalog is ~0.5 MB for
+  // 434 cards and `project_changed` fires after every write.
+  if (materialsMoved || !state.materials) loadMaterials(state.projectName);
   const stillThere = detail.parts.some((p) => p.id === state.selectedPart);
   if (state.mode === "part") {
     if (!stillThere) {
@@ -2747,6 +2759,7 @@ async function boot() {
   proposals.init(panelApi);
   library.init(panelApi);
   configs.init(panelApi);
+  materials.init(panelApi);
   presence.init();
   // After inspector.init: comments.js registers inspector's param decorator
   // and subscribes to `part` behind it, so a badge is applied to rows the
@@ -2763,6 +2776,12 @@ async function boot() {
   document.getElementById("market-btn")?.addEventListener("click",
     () => actions.run("model.market", null, { source: "toolbar" }));
   setupPaletteButton();
+  // Unlike Market, the materials browser is a MODAL inside the workbench
+  // (PRD-028 Decision 10's ruling) — no navigation, no reload, assign mode
+  // needs the workbench alive underneath it.
+  document.getElementById("materials-btn")?.addEventListener("click", () => {
+    materials.open();
+  });
   setupUndo();
   setupGizmoSnapKeys();
   setupRepMode();
@@ -2791,6 +2810,14 @@ async function boot() {
     await loadProject(initial.name);
   } else {
     updateEmptyState();
+  }
+
+  // The `#materials` hash opens the modal AFTER the workbench inits — unlike
+  // `#market` above (a full-page takeover entered BEFORE the auth gate, which
+  // needs no project), this just opens an overlay on top of the workbench
+  // boot() just built, so it waits for that project load to settle first.
+  if (window.location.hash.startsWith("#materials")) {
+    materials.open();
   }
 }
 

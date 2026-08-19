@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "modify_to_spec/mts_002_bigger_pcb",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "modify_to_spec",
+  "title": "Grow the enclosure base to take a larger PCB",
+  "sets": ["core", "fast"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "derived", "example": "prototyping", "parts": ["enclosure_base"]},
+  "prompt": "prompt.md",
+  "assets": [],
+  "starter": "starter",
+  "target": {"project": "bench_mts_002_bigger_pcb", "parts": ["enclosure_base"]},
+  "budgets": {"wall_s": 600, "turns": 24},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the shell's outside floor lies on Z = 0 and the box is centred on the origin in X and Y; the open top faces +Z and the length runs along X. The starter already sits on this datum and the modification must not move it"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {"enclosure_base": "reference/steps/enclosure_base.step"},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": null,
+    "parts": {"enclosure_base": "specs/parts/enclosure_base.py"}
+  },
+  "weights": {
+    "built": 0.10, "valid": 0.05, "specs": 0.40,
+    "geometry": 0.30, "interference": 0.00, "metrics": 0.15
+  }
+}

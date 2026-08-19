@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 300.05,
+      "metric": "bbox_x_mm",
+      "min": 299.95,
+      "name": "base_plate_bbox_x",
+      "part": "base_plate"
+    },
+    {
+      "max": 300.05,
+      "metric": "bbox_y_mm",
+      "min": 299.95,
+      "name": "base_plate_bbox_y",
+      "part": "base_plate"
+    },
+    {
+      "max": 20.05,
+      "metric": "bbox_z_mm",
+      "min": 19.95,
+      "name": "base_plate_bbox_z",
+      "part": "base_plate"
+    },
+    {
+      "max": 13517.240729,
+      "metric": "mass_g",
+      "min": 13249.572595,
+      "name": "base_plate_mass",
+      "part": "base_plate"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "base_plate_solids",
+      "part": "base_plate"
+    },
+    {
+      "max": 1721941.494105,
+      "metric": "volume_mm3",
+      "min": 1687843.642736,
+      "name": "base_plate_volume",
+      "part": "base_plate"
+    }
+  ]
+}

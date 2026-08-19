@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "windows": [
+    {
+      "max": 85.1,
+      "metric": "bbox_x_mm",
+      "min": 84.9,
+      "name": "barrel_outside_diameter_x",
+      "part": "nozzle"
+    },
+    {
+      "max": 85.1,
+      "metric": "bbox_y_mm",
+      "min": 84.9,
+      "name": "barrel_outside_diameter_y",
+      "part": "nozzle"
+    },
+    {
+      "max": 910.0,
+      "metric": "mass_g",
+      "min": 874.2,
+      "name": "chamber_mass",
+      "part": "nozzle"
+    },
+    {
+      "max": 199.4,
+      "metric": "bbox_z_mm",
+      "min": 199.0,
+      "name": "overall_length",
+      "part": "nozzle"
+    },
+    {
+      "max": 1,
+      "metric": "n_solids",
+      "min": 1,
+      "name": "solids",
+      "part": "nozzle"
+    }
+  ]
+}

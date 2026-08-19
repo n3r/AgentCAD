@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "modify_to_spec/mts_005_m10_clamp",
+  "task_set": "bench-v1",
+  "version": 1,
+  "category": "modify_to_spec",
+  "title": "Re-size the clamp plate for an M10 bolt without touching the tapped plate",
+  "sets": ["core"],
+  "authored_against": "0.1.0",
+  "source": {"kind": "derived", "example": "fasteners", "parts": ["clamp_plate", "tapped_plate"]},
+  "prompt": "prompt.md",
+  "assets": [],
+  "starter": "starter",
+  "target": {"project": "bench_mts_005_m10_clamp", "parts": ["clamp_plate"]},
+  "budgets": {"wall_s": 600, "turns": 24},
+  "frame": {
+    "align": "world",
+    "rotations_deg": [],
+    "datum": "the clamp plate's underside lies on Z = 0 and it extends into +Z, centred on the origin in X and Y, so it stacks straight onto the tapped plate whose top face is also Z = 0 and whose body hangs into -Z. The starter already sits on this datum and the modification must not move it"
+  },
+  "reference": {
+    "project": "reference/project",
+    "steps": {"clamp_plate": "reference/steps/clamp_plate.step"},
+    "metrics": "reference/metrics.json"
+  },
+  "specs": {
+    "project": null,
+    "parts": {"clamp_plate": "specs/parts/clamp_plate.py"}
+  },
+  "weights": {
+    "built": 0.10, "valid": 0.05, "specs": 0.40,
+    "geometry": 0.20, "interference": 0.10, "metrics": 0.15
+  }
+}
