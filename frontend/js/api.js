@@ -389,8 +389,11 @@ export const api = {
     const url =
       `/api/public/packages/${enc(name)}/versions/${enc(version)}/script/${enc(part)}`;
     let res;
+    // A public, anonymous read: no per-profile identity header is sent (the
+    // server ignores it on the public surface, and an anonymous browse must
+    // not carry a browser fingerprint). Keeps the PRD-008 identity count tight.
     try {
-      res = await fetch(url, { headers: { "X-Agent-Id": clientId } });
+      res = await fetch(url);
     } catch {
       throw new ApiError(0, {
         error: { type: "network_error", message: "server unreachable", details: {} },
@@ -413,8 +416,9 @@ export const api = {
     const url =
       `/api/public/packages/${enc(name)}/versions/${enc(version)}/parts/${enc(part)}/mesh/${enc(key)}`;
     let res;
+    // Public anonymous read — no browser identity attached (see marketScript).
     try {
-      res = await fetch(url, { headers: { "X-Agent-Id": clientId } });
+      res = await fetch(url);
     } catch {
       throw new ApiError(0, {
         error: { type: "network_error", message: "server unreachable", details: {} },

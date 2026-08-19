@@ -52,9 +52,17 @@ substrate — no new dependency, no core edit.
 - **Browser posture.** AC9 (and AC1's visual half) is graded as evidence — the
   pages were **never rendered by a browser** (`list_connected_browsers` → `[]`).
   The API criteria AC1–AC8 are the machine-checked backstop.
-- **Verification.** `make test` → **PLACEHOLDER_COUNT** (the prior tree, changelog
-  0224, was 4074 passed, 1 skipped; slice 4 added 5 mesh tests and slice 6 the
-  AC1–AC9 sweep). Targeted suites all green: `test_market_api.py`,
+- **Verification.** `make test` → **4068 passed, 1 skipped**. The
+  full run on this tree measured 4067 passed with one failure —
+  `test_presence.py::test_the_browser_mints_and_sends_a_per_profile_identity`,
+  a PRD-008 tripwire that counts the `X-Agent-Id` headers in `api.js`: slice 5
+  added two hand-rolled public market fetches (`marketScript`, `marketMesh`)
+  that carried the browser identity, pushing the count 6→8. Fixed in the
+  review round (changelog 0228) by dropping the identity from those anonymous
+  public reads — a public browse must not carry a browser fingerprint — which
+  restores the count and makes the green total 4068. (Prior tree, changelog
+  0224, was 4074 passed, 1 skipped.) Targeted suites all green:
+  `test_market_api.py`,
   `test_market_customizer.py`, `test_market_install.py`, `test_prd031a_acceptance.py`,
   `test_hosted_surface.py`, `test_packages_api.py`; PRD-007/005a unaffected
   (`test_share_customizer.py`, `test_share_isolation.py`, `test_prd007_acceptance.py`,

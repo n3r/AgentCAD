@@ -22,6 +22,7 @@ bug that cost PR #20 a CI round.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -389,7 +390,13 @@ def test_the_newest_changelog_cites_a_make_test_count():
     count is on the record in the newest PRD-031a changelog (the close-out)."""
     latest = max(CHANGELOG.glob("0[0-9][0-9][0-9]-*.md"))
     body = latest.read_text(encoding="utf-8")
-    assert "make test" in body and "passed" in body, latest.name
-    assert any(tok.isdigit() and len(tok) >= 4
-               for tok in body.replace(",", " ").split()), \
-        f"{latest.name} cites no suite count"
+    assert "make test" in body, latest.name
+    # A real count, not merely the words: require an actual "<N> passed" with a
+    # 3+-digit number somewhere in the entry. The first close-out draft shipped
+    # `make test → PLACEHOLDER_COUNT` and still passed the old check because it
+    # quoted the PRIOR tree's "4074 passed" as provenance (review finding); a
+    # placeholder is not a measurement. Matching a real digit-count is the
+    # teeth — and, unlike a substring scan for "PLACEHOLDER", it does not
+    # false-positive on an entry that *discusses* a placeholder fix in prose.
+    assert re.search(r"\b\d{3,}\s+passed\b", body), \
+        f"{latest.name} cites no real 'N passed' suite count"
