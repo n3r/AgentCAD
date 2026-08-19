@@ -1,7 +1,7 @@
 # PRD-006 — Cross-platform sandboxing and resource quotas: design
 
 - **Date:** 2026-08-18
-- **PRD:** [PRD-006](../../prd/in-progress/PRD-006-sandboxing-quotas.md)
+- **PRD:** [PRD-006](../../prd/completed/PRD-006-sandboxing-quotas.md)
 - **Builds on (completed):** PRD-005a (hosted mode, `AGENTCAD_MODE`, the
   state dir, `docs/deployment.md`'s trust statement), the v3 macOS seatbelt
   (`agentcad/kernel/sandbox.py`, `tests/test_sandbox.py`), the kernel
