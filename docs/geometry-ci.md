@@ -84,7 +84,7 @@ agentcad check [--project PATH|NAME] [--projects-dir DIR]
 | `--verify-determinism` | Build every part a second time on a cold cache and compare the artefacts byte for byte. |
 | `--budget` | A wall-clock deadline in seconds, read before each item and each kernel call. Must be **finite and non-negative** — `nan`/`inf` are refused with exit 2 before the kernel starts, because a NaN deadline is never in the past and so bounds nothing. |
 | `--min-volume` | The overlap volume below which an interference is noise (default `0.001` mm³). Finite and non-negative, for the same reason: every comparison with NaN is false, so a NaN threshold reports a genuinely interfering assembly as green. |
-| `--work-dir` | Where `--ref` materializes its worktree. Default: a temp dir, deleted afterwards. A dir you pass keeps everything in it — the run works inside a unique subdirectory it creates and deletes only that. A work dir that **is, holds or sits inside** the project (or the projects root) is refused, exit 2. |
+| `--work-dir` | Where `--ref` materializes its worktree. Default: a temp dir the run owns, deleted afterwards (under the server's granted work root, so a confined worker can write into it). A dir you pass keeps everything in it — the run works inside a unique subdirectory it creates and deletes only that. A work dir that **is, holds or sits inside** the project (or the projects root) is refused, exit 2. |
 | `--proposal` / `--auto-proposal` | Post the report to a change proposal (below). Mutually exclusive. |
 | `--sha` / `--ref-label` | **Provenance only.** The host VCS commit and ref name (`$GITHUB_SHA`, `$GITHUB_REF_NAME`). They are recorded; they resolve nothing. |
 | `--quiet` / `--json` | `--quiet` prints nothing (a harness failure still names itself on stderr — an exit 2 with no diagnosis is unactionable). `--json` puts the report **alone** on stdout, so `agentcad check --json \| jq` works. Exit codes are identical in all three modes. |
@@ -617,10 +617,14 @@ in the host repository; all three are rebuilt by the check.
 ### Trust model
 
 **A check executes the project's part scripts.** They are arbitrary Python, run
-with the permissions of the workflow. On macOS the kernel worker is confined by
-a deny-by-default `sandbox-exec` profile; **on Linux there is no seatbelt** —
-that is PRD-006 — so Linux CI runs under the same trust model as `pytest` on
-the same repository.
+with the permissions of the workflow. Since PRD-006 the kernel worker confines
+itself on Linux too (Landlock + seccomp: no network, writes only in the
+checkout's project roots and a private temp dir), as it already did on macOS
+through a `sandbox-exec` profile — **but the runner's kernel decides whether it
+can**. A runner image without Landlock in its boot `lsm=` list, or below ABI 3,
+confines nothing and reports `off`; you would not see that in a green check.
+So treat Linux CI as running under the same trust model as `pytest` on the same
+repository, with the confinement as a second line rather than the argument.
 
 Therefore: use **`pull_request`, never `pull_request_target`**, hand the job no
 secrets, and keep `permissions` read-only. A fork's pull request otherwise runs

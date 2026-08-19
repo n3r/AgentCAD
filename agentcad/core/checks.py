@@ -167,6 +167,41 @@ def _within(inner: Path, outer: Path) -> bool:
         return False
 
 
+def refuse_work_dir_overlap(root, canonical, projects_root) -> None:
+    """Refuse a work dir that is, holds, or lives inside the project — or the
+    projects root.
+
+    This is the guard behind the one catastrophic bug this feature could have:
+    the throwaway tree is named after the project, so from the projects root
+    ``<work-dir>/<project>`` **is** the live project directory. A check that
+    materializes there is a check that deletes the user's work. Refusing beats
+    every cleverer answer, and the message names both paths because a refusal a
+    user cannot act on is not one.
+
+    Module-level, taking its three paths explicitly, because the CLI has to ask
+    the same question **before** it builds a service (review I1): a
+    ``--work-dir`` is added to the sandbox's writable roots, and a Landlock
+    grant on a path that does not exist is ENOENT — so the CLI has to *create*
+    an accepted one before the workers spawn, and it may only create one it has
+    already accepted. :meth:`CheckRunner._refuse_overlap` asks it again inside
+    the run, which is where the authoritative canonical path is known.
+    """
+    root = Path(root).resolve()
+    canonical = Path(canonical).resolve()
+    projects = Path(projects_root).resolve()
+    for label, path in (("the project directory", canonical),
+                        ("the projects root", projects)):
+        if root == path or _within(path, root) or _within(root, path):
+            raise ValidationError(
+                f"--work-dir {root} overlaps {label} {path}: a check "
+                f"materializes a throwaway worktree under the work dir and "
+                f"deletes it afterwards, so it must not be, contain or sit "
+                f"inside the project it is measuring — pass a directory "
+                f"elsewhere, or omit --work-dir for a temp dir",
+                {"work_dir": str(root), "project_dir": str(canonical),
+                 "projects_root": str(projects)})
+
+
 def _finite(value, label: str, flag: str) -> float:
     """*value* as a float that a comparison can actually be made against.
 
@@ -796,6 +831,34 @@ _INTERFERENCE_CEILING_S = 600.0
 #: the product guarantee is "same script + params ⇒ identical output", and a
 #: tolerance would quietly redefine it.
 _METRIC_KEYS = ("volume_mm3", "mass_g", "area_mm2")
+
+
+def default_work_root(service) -> str | None:
+    """Where a work cell lands when the caller named no ``--work-dir``.
+
+    The server-wide ``agentcad-work-*`` directory `cli._build_service` created
+    and **granted to the workers**, when the runner's service has one;
+    otherwise ``None``, which is `mkdtemp`'s own default (the system temp dir)
+    — the library and test path, where nobody granted anything and nothing is
+    confined.
+
+    It matters because of PRD-006 Decision 1: the shared temp dir is no longer
+    a writable root, so a cell materialized under `tempfile.gettempdir()` is a
+    directory a confined worker cannot write its `.cache/` into, and every
+    part in the run would fail with a PermissionError instead of a verdict.
+    An explicit ``--work-dir`` is granted by the CLI at spawn and is not
+    affected — nor is the "never delete a directory it did not create"
+    contract: this only chooses the *parent* a run's own `mkdtemp` cell is
+    created under.
+    """
+    root = getattr(service, "work_root", None)
+    if root is None:
+        return None
+    try:
+        os.makedirs(root, exist_ok=True)
+    except OSError:
+        return None      # unwritable: fall back to the default temp dir
+    return str(root)
 
 
 def _ephemeral_service(work_dir: Path, tree: Path, kernel):
@@ -1964,30 +2027,8 @@ class CheckRunner:
         return root
 
     def _refuse_overlap(self, root: Path, canonical: Path) -> None:
-        """Refuse a work dir that is, holds, or lives inside the project — or
-        the projects root.
-
-        This is the guard behind the one catastrophic bug this feature could
-        have: the throwaway tree is named after the project, so from the
-        projects root ``<work-dir>/<project>`` **is** the live project
-        directory. A check that materializes there is a check that deletes the
-        user's work. Refusing beats every cleverer answer, and the message
-        names both paths because a refusal a user cannot act on is not one.
-        """
-        root = Path(root).resolve()
-        canonical = Path(canonical).resolve()
-        projects = Path(self.service.store.root).resolve()
-        for label, path in (("the project directory", canonical),
-                            ("the projects root", projects)):
-            if root == path or _within(path, root) or _within(root, path):
-                raise ValidationError(
-                    f"--work-dir {root} overlaps {label} {path}: a check "
-                    f"materializes a throwaway worktree under the work dir and "
-                    f"deletes it afterwards, so it must not be, contain or sit "
-                    f"inside the project it is measuring — pass a directory "
-                    f"elsewhere, or omit --work-dir for a temp dir",
-                    {"work_dir": str(root), "project_dir": str(canonical),
-                     "projects_root": str(projects)})
+        """:func:`refuse_work_dir_overlap` against this runner's projects root."""
+        refuse_work_dir_overlap(root, canonical, self.service.store.root)
 
     def _run_ref(self, proj: str, ref: str, selected: set[str], seen: set,
                  warnings: list[str], errors: list[dict], *, sha: str | None,
@@ -2015,7 +2056,8 @@ class CheckRunner:
         # `_work_dir` has already resolved and vetted a caller's path; without
         # one this is a temp dir we own outright.
         root = Path(work_dir) if work_dir is not None else Path(
-            tempfile.mkdtemp(prefix="agentcad-check-")).resolve()
+            tempfile.mkdtemp(prefix="agentcad-check-",
+                             dir=default_work_root(self.service))).resolve()
         root.mkdir(parents=True, exist_ok=True)
         # The pid names whoever left a cell behind after a kill; `mkdtemp`
         # supplies the uniqueness (and creates it 0700, which is why a
@@ -2299,7 +2341,8 @@ class CheckRunner:
         tree = Path(service.store.path_of(proj))
         root = Path(tempfile.mkdtemp(
             prefix="agentcad-determinism-",
-            dir=str(work_dir) if work_dir is not None else None)).resolve()
+            dir=(str(work_dir) if work_dir is not None
+                 else default_work_root(service)))).resolve()
         try:
             copy = root / tree.name
             shutil.copytree(tree, copy, ignore=shutil.ignore_patterns(

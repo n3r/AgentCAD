@@ -332,6 +332,22 @@ The failure loop is the core workflow:
 **×** dismisses the banner; it will not resurrect for the same error, only
 for a new one. Switching parts clears it.
 
+**When the sandbox or a resource cap is what stopped you**, the banner is the
+same banner and reads the same way — that is deliberate. A script that opens a
+socket, writes outside the project, forks past the process cap or asks for more
+memory than the worker may have fails as an ordinary `script_error`, with the
+traceback and the failing line, plus a hint naming the refusal in words
+("network access is blocked in the kernel sandbox…"). Your script is saved and
+the last good geometry stays on screen, exactly as for a typo. If the worker
+was *killed* instead — a runaway allocation is the one case that does that —
+the title is `kernel_crash`, the details say `memory_cap` and which mechanism
+answered, and they carry what the request had cost; the worker restarts by
+itself and the next rebuild works. Running out of *processes* never kills it:
+that one comes back as the ordinary `script_error` above. A project that has filled its disk budget is refused *before* anything
+is written, with the used and allowed megabytes in the message. None of this
+needs configuring for local use; the operator-facing knobs are in
+[deployment.md](deployment.md#confinement-and-quotas).
+
 ### Metrics
 
 Real measurements from the B-rep, refreshed on every successful rebuild:

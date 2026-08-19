@@ -29,6 +29,7 @@ make test-fast    # parallel suite (workers auto-scale, cap 8) minus slow tests
 make test-pr      # required PR gate; defers exhaustive bundled-engine coverage
 make test         # full parallel suite; needs the kernel (PYTEST_PARALLEL to override)
 make test-portability  # OS-sensitive filesystem/process/kernel smoke suite
+make test-linux   # Linux worker confinement, inside the agentcad:local image
 make run          # start the server AND open the browser UI (port 8630)
 make serve        # headless server only
 make app          # build dist/AgentCAD.app (macOS launcher)
@@ -1676,17 +1677,28 @@ Every item is traceable to a decision in
 Changelogs `0188`–`0197`. Operator-facing reference: `docs/deployment.md`.
 
 **The defining fact, stated before anything else: an account on a hosted
-instance is a shell.** A part script is arbitrary Python
-(`kernel/worker.py:57-59`) and Linux has no worker confinement until PRD-006
-(`kernel/sandbox.py` gates the whole module on `sys.platform == "darwin"`).
-So `member` and `admin` are **not** a security boundary between each other, a
-per-project ACL would be a label rather than a boundary, registration is
+instance is for someone you trust.** A part script is arbitrary Python
+(`kernel/worker.py`). PRD-006 changed *half* of what that used to mean — the
+Linux worker now confines itself (Landlock + seccomp, `hosted` read posture:
+no network, no writes outside the granted roots, no reads of the state dir —
+except the one `publications/build` subtree PRD-007's shared-pool variant
+builds need, which is both a write root and (by construction) readable — and
+nothing else under the server user's home at all — remember that a write root
+is always readable, because `_read_roots` appends the write roots, which is
+why the config dir stopped being one wholesale and why a hosted start refuses
+a state dir inside one), so "an account
+is a shell" is no longer literally true and the docs
+no longer say it that way. What it did **not** change: the script still runs
+as the server user and the **whole projects tree** is readable and writable to
+it, across every project on the instance. So `member` and `admin` are still
+**not** a security boundary between each other, a per-project ACL would still
+be a label rather than a boundary (that is PRD-005), registration is still
 closed by construction (there is no self-registration route), and the trust
-sentence is repeated in four places (FR17: `docs/deployment.md`, the
+sentence is still repeated in four places (FR17: `docs/deployment.md`, the
 `compose.yaml` header, `agentcad admin … --help`, and the output of
 `agentcad admin user add`). Do not add a feature whose safety argument assumes
-otherwise. And when you print it, do **not** reach for `str.capitalize()` —
-it lower-cases "Python".
+per-member isolation. And when you print the sentence, do **not** reach for
+`str.capitalize()` — it lower-cases "Python".
 
 - **`actor_kind` must classify `user:` as human** (`core/proposals.py`). A
   composed principal `user:nikita/browser:7f3a1b2c` does not start with
@@ -2105,6 +2117,258 @@ it lower-cases "Python".
   is a disabled stub), ball/gear joints, the interference broad-phase, and
   cylindrical/planar-decomposed URDF. Do not claim these green.
 
+## Sandboxing & quotas gotchas (PRD-006 — read before touching `kernel/sandbox*.py`, `_confine.py`, `_preamble.py`, `_meter.py`, `quotas.py` or the client's request loop)
+
+Every item is traceable to a decision in
+`docs/superpowers/specs/2026-08-18-sandboxing-quotas-design.md`, to a spike
+measurement quoted there, or to a test. Changelogs `0230`–`0237` (numbered `0213`–`0220` on the branch; renumbered at merge because PRD-007 took `0213`–`0220` and PRD-031a `0221`–`0229`).
+Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
+
+- **No `preexec_fn`, anywhere.** CPython documents it as unsafe in a threaded
+  parent and the server *is* threaded. Rlimits are applied by the worker to
+  itself in `_preamble.apply_from_env()`; cgroup placement is the parent
+  writing `proc.pid` into `cgroup.procs` **after** `Popen`. If you find
+  yourself reaching for it, you want the preamble or `backend.attach`.
+
+- **Never grant bare `/tmp` or `tempfile.gettempdir()`.** Linux `/tmp` is
+  shared, so a wholesale grant lets one worker's script read and overwrite a
+  sibling's scratch — the leak the **private per-worker** `mkdtemp(prefix=
+  "agentcad-worker-")` closes. `TMPDIR`/`TEMP`/`TMP`/`XDG_CACHE_HOME`/`HOME`
+  all point at it. What `agentcad check` and the package gate materialize
+  their cells under is the *server's* one `agentcad-work-*` root
+  (`cli._build_service` → `service.work_root` → `checks.default_work_root`),
+  which is granted by name. Two different directories; do not merge them.
+
+- **`plan()` must NOT create the roots it is handed.** It also receives
+  caller-supplied `--work-dir` paths whose acceptance is decided elsewhere, and
+  creating them there resurrects `test_a_refused_work_dir_is_never_created`
+  ("a refused path leaves nothing behind"). Creation belongs to whoever *owns*
+  the directory: `cli._writable_roots` makes the projects dir, and
+  `cli._accept_work_dir` makes an accepted `--work-dir` — accept first
+  (`checks.refuse_work_dir_overlap` / `gate.refuse_work_dir_overlap`, hoisted
+  to module level for exactly this), create second, **both before
+  `_build_service`**. Why it matters at all: on Linux a Landlock rule on a
+  missing path is ENOENT, and the grant is lost with it, so every part then
+  fails with a `PermissionError` instead of producing a verdict. Pinned in
+  `tests/test_sandbox_plan.py` and `tests/test_checks_cli.py`.
+
+- **`~/.agentcad` is NOT a writable root — wholesale.** Nothing in
+  `agentcad/kernel/` or `agentcad/toolkit/` reads or writes the config dir,
+  every `load_config()` caller is server-side, and the worker's `HOME` is its
+  private temp dir — so granting it wholesale bought nothing and cost the
+  sentence the docs most want to be able to say: a part script can write
+  **nothing under the server user's home**. It also carries the index
+  definitions and the quota knobs, so a script that could rewrite it could
+  raise its own caps. The one state-dir subtree a worker MAY write is
+  `<state-dir>/publications/build` — PRD-007's shared-pool variant builds
+  (`core/share_build.py`'s `self._store.build_root()`, which is exactly
+  `appmode.state_dir() / "publications" / "build"`) go through the SAME
+  confined kernel pool, so `cli._writable_roots` carves out that one subtree
+  by name (merged from main, PRD-007 × PRD-006). Never grant the state dir
+  itself — `secret.key` and `auth/` are siblings of `publications/`, not
+  beneath it, and must stay ungranted and off the hosted read allow-list.
+
+- **A hosted `agentcad serve` refuses to start when `AGENTCAD_STATE_DIR` lies
+  inside a kernel-writable root** (`cli._refuse_state_dir_in_a_write_root`,
+  exit 2 naming both paths). The hosted read allow-list is the read roots
+  **plus the write roots**, so a state dir inside one is readable *and*
+  writable however narrow the allow-list is, and whoever reads `secret.key`
+  forges any session. Fatal rather than a warning — unlike
+  `_warn_if_unconfined`, which reports a platform that cannot confine, this is
+  one misplaced path with an exact remedy. `_build_service` records
+  `service.writable_roots` for it; nothing else reads that.
+
+- **The `seccomp(2)` operation constant is `1`** (`SECCOMP_SET_MODE_FILTER`).
+  `2` is `SECCOMP_GET_ACTION_AVAIL` and answers `EOPNOTSUPP`; the spike lost
+  time to exactly that. The `prctl(PR_SET_SECCOMP, 2, …)` fallback is a
+  different `2` (that one *is* `SECCOMP_MODE_FILTER`) and covers the calling
+  thread only.
+
+- **A signal's pid argument is tested on its LOW word, unsigned
+  (`JGE 0x80000000`).** The high word of an `int` argument is unspecified on
+  both arches: on arm64 `mov w0, #-1` zeroes the top half, so a negative
+  `pid_t` arrives zero-extended and a high-word test never fires —
+  `os.kill(-1, SIGKILL)` escaped the filter in the shipped image (measured:
+  `ESRCH`, not `EPERM`). The low word is what the kernel truncates the
+  argument to. `tests/test_confine_unit.py` pins both encodings by
+  **interpreting the BPF program's bytes** on every OS, because a wrong jump
+  offset is a silently permissive sandbox and a macOS box cannot install the
+  filter to find out.
+
+- **The Landlock handled-access mask comes from the probed ABI, never a
+  constant** — a bit the running kernel does not know makes `create_ruleset`
+  EINVAL and takes the whole ruleset with it. And **`LANDLOCK_ACCESS_FS_TRUNCATE`
+  (bit 14, ABI 3) must be in every write root's grant**: `open(path, "w")`
+  sets `O_TRUNC`, so a write root without it is EACCES on every truncating
+  open. That is why `LANDLOCK_MIN_ABI = 3` and why below it the preamble
+  applies no ruleset and reports `off` rather than shipping false denials.
+  `/dev/null` and `/proc/self/clear_refs` are **file** rules with `FS_FILE`
+  only — a directory right on a file rule is EINVAL.
+
+- **`clear_refs` is what makes `peak_rss_mb` a per-request number on Linux**
+  (`_meter` writes `5` to `/proc/self/clear_refs`, which resets `VmHWM` *and*
+  `ru_maxrss`). It needs its own Landlock file rule; without it the peak
+  silently falls back to a lifetime high-water mark. Elsewhere it *is* the
+  lifetime mark and `peak_rss_is_lifetime: true` says so — read the flag.
+
+- **`ru_maxrss` is bytes on macOS and KiB on Linux.** Branch on the platform;
+  `tests/test_meter.py` asserts both.
+
+- **Windows: the venv `python.exe` is a launcher; the supervisor samples the
+  job's processes, not the `Popen` handle.** A venv `python.exe` (uv-managed
+  ones included) starts the real interpreter as a **child** and stays behind as
+  a stub, so `GetProcessMemoryInfo(proc._handle)` measured 3.9 MB for a worker
+  with build123d imported (Windows CI, changelog 0238) while the quota tier
+  worked perfectly — the child *inherits* the job object, which is why the
+  commit limit still produced its `MemoryError`. `WindowsBackend.rss_bytes`
+  therefore walks `QueryInformationJobObject(JobObjectBasicProcessIdList)` and
+  reports the **largest** working set in the job: the max, never the sum, since
+  the launcher and the interpreter share their mapped pages. The `Popen` handle
+  is only the fallback (no job, or a refused query). Every Win32 entry point
+  stays a module-level seam (`_job_process_ids`, `_open_process`,
+  `_memory_counters`, `_close_handle`) so `tests/test_sandbox_plan.py` can
+  drive the whole sampler from a macOS box — `tests/test_sandbox_windows.py`
+  now asserts ≥ 100 MB so a stub-only sample fails loudly instead of passing a
+  sanity bound.
+
+- **`RLIMIT_NPROC` counts tasks (threads), per uid, not processes.** A warm
+  worker runs 15–22 threads, so `live_uid_process_count()` sums `Threads:`
+  from `/proc/*/status`; a per-process count under-measured a multi-worker
+  pool by ~20 tasks per live worker and killed the second module-scoped worker
+  inside `import build123d` with a `pthread_create` EAGAIN.
+
+- **The fork budget is `live task count (measured at EVERY spawn) +
+  pids_headroom × pool_size`.** Both halves are load-bearing, because the limit
+  is per-*uid* but the kernel checks it against the **calling** process's own
+  ceiling. Computed once in `KernelClient.__init__` and handed identically to
+  three pool slots, the third worker forked into a budget its siblings had
+  already spent and died inside `import build123d` (verified). So:
+  `sandbox.plan(..., pool_size=)` (`KernelPool` passes its `size`), and
+  `client._ensure_started` merges **`plan.spawn_env()`**, not `plan.env` —
+  `plan.env` stays the construction-time snapshot that health and the tests
+  read, while `Backend.refresh()` re-measures the rlimit payload at every spawn
+  and every respawn. What the cap bounds is at most `headroom × pool_size`
+  *extra* tasks across the pool; the hard per-worker process cap is `pids`,
+  and that one is the cgroup's. macOS runs the same formula (its count is
+  processes, which is the right measure there).
+
+- **`AGENTCAD_NO_SANDBOX=1` (and `{"sandbox": false}`) opts out of
+  confinement, not of the caps.** The argv is unwrapped, the preamble applies
+  no ruleset, confinement reports `off` *with the reason* — and the quotas and
+  rlimits still apply. A runaway script may not take the machine down whether
+  or not the operator trusts it with the filesystem.
+
+- **`AGENTCAD_CGROUP_DIR` is opt-in twice over.** Unset ⇒ nothing is probed at
+  all (the shipped container and every laptop). A path ⇒ the operator
+  delegated a subtree (Model 2). `auto` ⇒ the own-cgroup/systemd
+  `Delegate=yes` route, which **refuses root** (`os.access` answers `W_OK` for
+  uid 0 almost everywhere, so a root server would "discover" a subtree on any
+  machine — that is activation by capability), refuses a subtree it does not
+  own, and refuses the root cgroup. `off` ⇒ not even `auto`. Every failure of
+  a probe that was *asked for* reaches `plan.warnings`; never fall back
+  silently. `memory.swap.max=0` is load-bearing beside every `memory.max` —
+  with swap at `max` a 400 MB allocation under a 200 MB cap swapped instead of
+  dying.
+
+- **With a cgroup in force the supervisor can never fire** (the kernel kills at
+  the charge, so sampled RSS never crosses the cap), which is why
+  `tests/test_supervisor.py` sets `AGENTCAD_CGROUP_DIR=off` and
+  `address_space_mb="off"` to pin the tier it is testing. Three tiers share one
+  `memory_mb` knob; a test that does not pin the tier tests whichever one the
+  host happens to have.
+
+- **`KernelClient()` with no `writable_dirs` and no `quotas` is the historical
+  client** — no plan, no private temp dir, no supervisor, historical argv and
+  a 0.5 s poll. The session-scoped `kernel` fixture depends on that, and
+  `sandbox.report()` reads everything through `getattr` so a plan-free client
+  answers the health object instead of raising. Do not "simplify" the branch
+  away.
+
+- **Confinement status is measured, never inferred.** `active` comes only from
+  the worker's own `ping` report; a plan that *intended* to confine and whose
+  preamble failed is `off` with the failure in `warnings`. Conversely only a
+  `landlock`/`seccomp` stage failure clears the claim (`client.
+  confinement_holds`) — a refused *rlimit* is a quota that did not apply, and
+  saying `off` for it understates the confinement as badly as claiming
+  `active` on intent overstates it. A **lost root grant** is the same kind of
+  thing and has its own stage, **`landlock_root`** (`_preamble._landlock`): the
+  ruleset landed and the process is confined, one path out of it was not
+  granted. Filing that under `landlock` made one missing directory a red
+  ubuntu CI job under `AGENTCAD_EXPECT_SANDBOX=active`. It is still a failure —
+  it is in `failures` and health shows it in `warnings` — and
+  `CONFINEMENT_STAGES` stays `("landlock", "seccomp")`.
+
+- **`sandbox.report()` never contradicts `client.sandboxed`,** and it drops a
+  quota tier the worker did not apply. Two corollaries of the same honesty
+  rule: the kernel's own flag wins wherever it is present (a worker that
+  answered `ping` with no `sandbox` object left `live` empty, so the plan's
+  `active` used to stand while `sandboxed` was already False), and an empty
+  `rlimits` list removes `rlimit` from `quotas.mechanism` — `mechanism` is read
+  as a promise.
+
+- **`denials.classify` needs the traceback, and an unattributed EPERM is
+  `None`.** The seccomp filter answers EPERM for a refused `kill` too, and
+  labelling that `network` sends an agent to fix a socket that is not in the
+  script. A `network` answer requires a frame naming `socket`/`urlopen`/
+  `connect`/`getaddrinfo`.
+
+- **What may be classified is per FACET, not one boolean** — `denials.
+  active_facets(_preamble.REPORT)`: `filesystem` needs `landlock_abi`,
+  `network` needs `seccomp`, `process_count`/`memory` need an applied rlimit or
+  a parent-installed `quotas` tier. "Something is in force" is not evidence for
+  all four: an `AGENTCAD_NO_SANDBOX` worker still gets its caps, and used to
+  label an ordinary DAC `EACCES` a sandbox denial. The consequence to know
+  (F1, shipped): **on macOS the seatbelt is applied to the argv by the
+  PARENT**, before the worker ever runs, so `landlock_abi`/`seccomp` are
+  always `None`/`None` there — but `sandbox_macos.build()` declares the two
+  facets it genuinely enforces in `payload["confinement"]`, and
+  `_preamble.apply_from_env` copies that claim through verbatim, so a real
+  seatbelt `EACCES`/`EPERM` DOES carry `details.denied` (`tests/test_sandbox.py`
+  proves it against the real seatbelt). **Linux does the opposite on purpose**
+  (independent re-review, post-F1): `sandbox_linux.build()` does NOT declare
+  `payload["confinement"]`, even though it could — the Linux worker applies
+  Landlock/seccomp to itself and self-reports `landlock_abi`/`seccomp`
+  directly, so a parent-declared claim there would be a second, unconditional
+  one that survives a stage failing *inside* the worker after the parent
+  already decided (at plan time) to request it, which is exactly the false
+  positive M3 exists to close.
+
+- **Every kill, timeout and crash reaches the `on_usage` hook** (`ok: False`,
+  `cpu_ms: None`), not just answered requests. The requests that cost the most
+  are exactly the ones that never answer; emitting only on the success path
+  left `core/usage.py`'s `errors` at zero and a 60 s timeout out of the wall
+  clock entirely.
+
+- **`details.usage` is the kill paths' contract, not every error's.** A
+  worker-reported `script_error` deliberately carries none: its usage travels
+  on `last_usage` and through the `on_usage` hook. Copying a per-run `cpu_ms`
+  into the error body breaks the invariant that both drawing routes render an
+  **identical** error (`tests/test_configs_drawing.py`).
+
+- **The Linux loop on a macOS box is `make test-linux`, and it COPIES the
+  tree.** Docker Desktop's `fakeowner` virtiofs bind mounts are not
+  Landlock-coherent — grants have no effect and even *reads* fail — so a
+  `-v "$PWD":/app` run proves nothing. `scripts/linux-test.sh` copies into the
+  image's overlayfs, shadows the baked-in package with `PYTHONPATH`, and sets
+  `AGENTCAD_EXPECT_SANDBOX=active`. This is a dev-box artifact, not a
+  deployment concern (overlayfs/ext4/tmpfs are correct).
+
+- **`AGENTCAD_EXPECT_SANDBOX=active` is the honesty gate, and CI sets it.**
+  Every containment test asserts *when the live status is active* and skips
+  otherwise, so without the variable a silent degradation to `off` would be
+  green. `ci.yml`'s matrix carries `expect_sandbox` (`active` on macOS and
+  ubuntu, empty on Windows where `unsupported` is the honest answer) and
+  `AGENTCAD_EXPECT_QUOTAS=active` on all three; the "Sandbox probe (Linux)"
+  step prints `uname -r`, `/sys/kernel/security/lsm` and the ABI so a runner
+  change is diagnosable in one red run. If you add a containment test, gate it
+  the same way — never with a bare `skipif`.
+
+- **`tests/test_prd006_acceptance.py` grades AC1–AC8, and one of them is an
+  evidence check.** "Full suite green" is a claim about a *run*, so
+  `test_ac8_the_full_suite_count_is_cited` reads the newest changelog entry and
+  requires `make test` and a real `N passed` — the PRD-004/008/011/012
+  precedent. Fill the number in; the literal placeholder is red on purpose.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script
@@ -2124,11 +2388,15 @@ it lower-cases "Python".
   replaced by the default-deny request guard in `server/security.py`: every
   request is an authenticated principal or one of nine enumerated anonymous
   paths. Read the hosted-core gotchas before assuming either half.
-  Part scripts run with user privileges by design (an account on a hosted
-  instance is therefore a shell, which is why registration is closed);
-  on macOS the kernel worker is additionally confined by a deny-by-default
-  `sandbox-exec` profile (`kernel/sandbox.py`: writes only in project roots,
-  no network; `AGENTCAD_NO_SANDBOX=1` opts out). API key from env only,
+  Part scripts run as the server user by design, and the confinement bounds
+  what they may *reach*, never whose they are (an account on a hosted instance
+  still reaches every project, which is why registration is closed). The
+  worker is confined by a deny-by-default `sandbox-exec` profile on macOS and
+  by an in-process Landlock + seccomp preamble on Linux (writes only in
+  project roots + a private temp dir, no network; `AGENTCAD_NO_SANDBOX=1` opts
+  out of the confinement but **not** of the quotas); Windows reports
+  `unsupported`. Per-worker memory/pids/CPU caps and a per-project disk budget
+  ride the same seam — read the sandboxing gotchas. API key from env only,
   never persisted.
 - Comment density and style: match the surrounding file. Comments state
   constraints the code can't, not narration.

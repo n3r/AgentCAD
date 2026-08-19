@@ -41,6 +41,7 @@ from pathlib import Path
 
 import pytest
 
+from agentcad.core import checks as checks_module
 from agentcad.core.checks import (
     CheckRunner,
     _byte_diff,
@@ -254,6 +255,43 @@ def test_the_default_work_dir_is_a_temp_dir_and_is_deleted(stack, monkeypatch):
 
     assert seen and seen[0].name.startswith("agentcad-check-")
     assert not seen[0].exists()
+
+
+def test_the_default_work_dir_lands_under_the_services_work_root(
+        stack, tmp_path, monkeypatch):
+    """PRD-006 Decision 1: `cli._build_service` stopped granting the shared
+    temp dir and grants ONE server-wide work root instead, so a cell made
+    under `gettempdir()` is a directory the confined worker cannot write its
+    `.cache/` into — every part in the run would fail with a PermissionError
+    rather than a verdict. The runner defaults into the granted root when its
+    service has one, and still owns (and deletes) the cell it made."""
+    service, _registry, runner = stack
+    proj = _tiny(service)
+    branch = service.branches.default_branch(proj)
+    granted = tmp_path / "granted"
+    granted.mkdir()
+    service.work_root = granted
+    seen: list[Path] = []
+    original = CheckRunner._materialized
+
+    def spy(self, canonical, sha, work_dir, warnings):
+        seen.append(Path(work_dir))
+        return original(self, canonical, sha, work_dir, warnings)
+
+    monkeypatch.setattr(CheckRunner, "_materialized", spy)
+    runner.run(proj, ref=branch, stages=("build",))
+
+    assert seen and str(seen[0]).startswith(str(granted.resolve()))
+    assert not seen[0].exists()
+    assert list(granted.iterdir()) == [], "the run's own root went too"
+
+
+def test_a_service_without_a_work_root_keeps_the_system_default(stack):
+    """The library and test path: no server, nothing granted, nothing
+    confined — `mkdtemp`'s own default is the honest answer."""
+    service, _registry, _runner = stack
+    assert getattr(service, "work_root", None) is None
+    assert checks_module.default_work_root(service) is None
 
 
 def test_a_work_dir_that_holds_the_project_is_refused_and_nothing_is_deleted(

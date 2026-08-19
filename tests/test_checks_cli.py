@@ -32,6 +32,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -244,7 +245,9 @@ def test_a_refused_work_dir_is_never_created(tmp_path):
     changelog made ("a refused path leaves nothing behind") was false on the
     surface most people use.
 
-    Creating the directory is the runner's job, after it has accepted it.
+    Creating the directory is `cli._accept_work_dir`'s job now — accept (or
+    refuse) first, `mkdir(parents=True, exist_ok=True)` second, both before
+    `_build_service` spawns the confined workers (review I1).
     """
     proj = _copy_example(tmp_path / "refused", "cli_refused")
     inside = proj / "scratch"
@@ -450,9 +453,13 @@ def test_an_unwritable_work_dir_is_exit_two_not_a_traceback(wired, tmp_path,
     code reserved for "the model is wrong", which automation reads as red
     geometry.
 
-    Since F3 the ``mkdir`` is the runner's, inside ``run()`` — later, but under
-    the same mapping, so the contract is unchanged: exit 2 and a named message.
-    The kernel is up by then, and the ``finally`` stops it.
+    The ``mkdir`` is back before ``_build_service`` since review I1 — an
+    accepted work dir must EXIST before the confined workers spawn, or the
+    Landlock grant is ENOENT and every part fails with a ``PermissionError``
+    instead of producing a verdict. C8's contract is unchanged, because the
+    move was *into* the try/except, not out of it: exit 2 and a named message.
+    What differs is that the kernel was never started, so there is none to
+    stop.
     """
     blocked = tmp_path / "blocked"
     blocked.mkdir()
@@ -464,8 +471,9 @@ def test_an_unwritable_work_dir_is_exit_two_not_a_traceback(wired, tmp_path,
 
     err = capsys.readouterr().err
     assert "agentcad check" in err and "PermissionError" in err
-    # The failure is now inside the run, so the kernel was up — and stopped.
-    assert wired.stopped is True
+    # It failed before the workers spawned, so nothing was left running.
+    assert wired.stopped is False
+    assert wired.projects_dir is None, "the service was built anyway"
 
 
 def test_a_failure_after_the_kernel_starts_does_not_leak_workers(fake_kernel,
@@ -547,12 +555,115 @@ def test_build_service_without_extra_writable_is_unchanged(fake_kernel,
                                                            tmp_path):
     projects = tmp_path / "projects"
     service = cli._build_service(projects)
-    assert service.kernel.writable_dirs == cli._writable_roots(projects)
+    try:
+        assert service.kernel.writable_dirs == (
+            cli._writable_roots(projects) + [str(service.work_root)])
+    finally:
+        cli._release_work_root(service)
 
 
 def test_build_service_appends_extra_writable_roots(fake_kernel, tmp_path):
     projects = tmp_path / "projects"
     work = tmp_path / "work"
     service = cli._build_service(projects, extra_writable=[str(work)])
-    assert service.kernel.writable_dirs == (
-        cli._writable_roots(projects) + [str(work)])
+    try:
+        assert service.kernel.writable_dirs == (
+            cli._writable_roots(projects)
+            + [str(service.work_root), str(work)])
+    finally:
+        cli._release_work_root(service)
+
+
+# ------------------------------------- PRD-006: the work root, not bare temp
+
+
+def test_the_granted_roots_are_the_work_root_and_never_the_shared_temp_dir(
+        fake_kernel, tmp_path):
+    """Decision 1. Granting `tempfile.gettempdir()` gave every worker read and
+    write access to every other worker's scratch — the exact thing the private
+    per-worker dir exists to prevent. The one shared scratch a *run* still
+    needs is this server's own `agentcad-work-*` directory, granted by name.
+    """
+    service = cli._build_service(tmp_path / "projects")
+    try:
+        roots = service.kernel.writable_dirs
+        assert tempfile.gettempdir() not in roots
+        assert str(service.work_root) in roots
+        assert Path(service.work_root).is_dir()
+        assert Path(service.work_root).name.startswith("agentcad-work-")
+    finally:
+        cli._release_work_root(service)
+
+
+def test_the_work_root_is_removed_with_the_service(fake_kernel, tmp_path):
+    service = cli._build_service(tmp_path / "projects")
+    root = Path(service.work_root)
+
+    cli._release_work_root(service)
+
+    assert not root.exists()
+    cli._release_work_root(service)          # idempotent
+    # ...and a service that never had one is not an AttributeError.
+    cli._release_work_root(SimpleNamespace())
+
+
+def test_a_named_work_dir_is_still_the_callers_and_is_granted(wired, tmp_path):
+    """The work root is the *default*, never an override: an explicit
+    `--work-dir` is still resolved, still granted to the sandbox before the
+    workers spawn, and still handed to the runner untouched."""
+    work_dir = tmp_path / "wd"
+    assert cli.cmd_check(_args(work_dir=str(work_dir))) == 0
+
+    assert wired.extra_writable == [str(work_dir.resolve())]
+    assert wired.runner.seen["work_dir"] == str(work_dir.resolve())
+
+
+def test_an_accepted_work_dir_exists_before_the_workers_spawn(wired, tmp_path,
+                                                              monkeypatch):
+    """Review I1. A `--work-dir` is a **writable root**, and on Linux a
+    Landlock rule on a path that does not exist is ENOENT: the grant is
+    silently lost, the worker reports the failure, and every part then fails
+    with a `PermissionError` instead of producing a verdict. So an accepted
+    work dir has to be a directory by the time `_build_service` spawns them —
+    and it may only be created once it has been accepted, which is why the
+    overlap guard moved here too.
+    """
+    work_dir = tmp_path / "nested" / "wd"
+    seen: dict = {}
+
+    # The `wired` fixture already stubbed `_build_service`; this wraps that
+    # stub, so the observation costs no kernel.
+    wired_build = cli._build_service
+
+    def _build(projects_dir, extra_writable=None):
+        seen["existed"] = work_dir.is_dir()
+        seen["granted"] = list(extra_writable or [])
+        return wired_build(projects_dir, extra_writable)
+
+    monkeypatch.setattr(cli, "_build_service", _build)
+
+    assert cli.cmd_check(_args(work_dir=str(work_dir))) == 0
+    assert seen["existed"] is True, "the grant would have been ENOENT"
+    assert seen["granted"] == [str(work_dir.resolve())]
+
+
+def test_a_work_dir_inside_the_project_is_refused_before_any_worker(wired,
+                                                                     tmp_path,
+                                                                     capsys):
+    """The other half of I1: creating it early is only safe because it is
+    accepted early. A refused path still leaves nothing behind — and now costs
+    no worker spawn at all.
+    """
+    project = tmp_path / "projects" / "widget"
+    project.mkdir(parents=True)
+    inside = project / "scratch"
+
+    code = cli.cmd_check(_args(project=str(project),
+                               projects_dir=str(tmp_path / "projects"),
+                               work_dir=str(inside)))
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "overlaps" in err and str(inside.resolve()) in err
+    assert not inside.exists(), "the refused work dir was created anyway"
+    assert wired.projects_dir is None, "a refused run still spawned workers"

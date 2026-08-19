@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from agentcad.core import locks
 from agentcad.core.service import AgentCADService, EventBus
 from agentcad.kernel.client import KernelClient
 
@@ -128,6 +129,40 @@ def clone_test_service(source_projects, dest_projects, kernel, bus=None):
     """Copy a prepared project tree so mutating tests retain isolation."""
     shutil.copytree(source_projects, dest_projects)
     return make_test_service(dest_projects, kernel, bus)
+
+
+@pytest.fixture(autouse=True)
+def _restore_client_identity():
+    """Undo any `client_id_var` a test leaves set, for **every** test.
+
+    `locks.client_id_var` is a ContextVar with a default of `"local"`, and a
+    ContextVar set at a test's top level is never restored — it survives for
+    the rest of that xdist worker's process. Two kinds of test set one and do
+    not put it back: a few set it directly (`tests/test_checks_gate.py`), and
+    every in-process CLI run does it inside `cli.py` itself (`cmd_check` and
+    the two package commands call `locks.set_client_id("ci")`, which is
+    correct for a real `agentcad check` and has nowhere to be undone).
+    Measured with a `pytest_sessionfinish` probe: `tests/test_checks_cli.py`
+    alone ends the session with `client_id_var == "ci"`, and so do
+    `tests/test_packages_cli.py` and `tests/test_prd004_acceptance.py`.
+
+    That leaks into whatever module `--dist loadscope` happens to schedule
+    next on the same worker, and "happens to" is the problem: adding one
+    unrelated test module moved a leaker onto the worker running
+    `tests/test_usage.py`, whose three identity tests assert the default and
+    got `"ci"` instead. They had been order-dependent since they were written.
+
+    This is a *snapshot and restore*, not a pin: a test that sets an identity
+    on purpose still sees it for its own duration (`tests/test_branches.py`
+    switches between `agent_a`/`agent_b` many times inside one test), and only
+    the escape is closed. It is here rather than in `cli.py` because the CLI's
+    call is right — a real `agentcad check` process *is* `ci` from that point
+    on — so the fix belongs to the harness that reuses one process for
+    thousands of tests, not to the product.
+    """
+    token = locks.client_id_var.set(locks.client_id_var.get())
+    yield
+    locks.client_id_var.reset(token)
 
 
 @pytest.fixture(scope="session")

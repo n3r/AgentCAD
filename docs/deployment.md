@@ -5,20 +5,36 @@
 > give a shell to.
 >
 > A part script *is* arbitrary Python — that is the product
-> (`agentcad/kernel/worker.py`) — and on Linux the kernel worker has no
-> confinement until PRD-006 lands. So:
+> (`agentcad/kernel/worker.py`). Since PRD-006 that Python runs **confined**
+> on Linux: the worker applies a Landlock ruleset and a seccomp filter to
+> itself before it imports any geometry, so a script gets **no network**,
+> writes only inside the granted roots (the projects tree, the server's work
+> root and its own private temp dir), and —
+> under `AGENTCAD_MODE=hosted` — cannot read the state directory, nor
+> **anything under the server user's home**. Memory, process
+> count and CPU are capped
+> ([below](#confinement-and-quotas)); a breach kills that one worker and
+> comes back as an ordinary build error.
 >
+> That is a real improvement and it is **not** isolation between the people
+> using the instance. What has not changed:
+>
+> - **A member's script still runs as the server user, and the whole projects
+>   tree is readable and writable to it.** Every project on the instance, not
+>   just theirs. Per-project ACLs are PRD-005 and are not built.
 > - **Registration is closed.** Accounts exist only because an administrator
 >   minted an enrolment link over the CLI. There is no sign-up form and there
 >   will not be one in this release.
 > - **`admin` and `member` are not a security boundary between each other.**
 >   The role governs who may manage accounts and tokens. Every member can
->   already read, write and execute as the server user.
+>   already read and write every project as the server user.
 > - **Put it on a single-purpose VM**, with nothing else you care about on it,
 >   and back the volume up.
 >
-> What *is* enforced: the internet cannot reach anything but nine enumerated
-> anonymous routes, none of which touch the geometry kernel.
+> So: accounts are still for people you trust. What *is* enforced: the
+> internet cannot reach anything but nine enumerated anonymous routes, none of
+> which touch the geometry kernel — and what the worker is actually doing is
+> measured, not assumed, at `GET /api/health` → `sandbox`.
 
 ---
 
@@ -55,7 +71,7 @@ container ships.
 | `AGENTCAD_MODE` | `local` | `local` or `hosted`. **Never inferred** — an unrecognised value refuses to start, because defaulting would fail open. |
 | `AGENTCAD_PUBLIC_ORIGIN` | — | Required in hosted mode. Scheme + host (+ port), no path, no trailing slash. Host and Origin checks compare against it; enrolment URLs are built from it. |
 | `AGENTCAD_SECRET_KEY` | generated | ≥32 characters. **Leave it unset — that is the recommended path**: one is generated and persisted `0600` at `$AGENTCAD_STATE_DIR/secret.key`, where it is readable only by the server's own user. An explicit value is process environment, so it is visible to `docker inspect`, to anything that can read `/proc/<pid>/environ`, and to whatever shell history or CI log the value passed through. Set it only when you have a reason the file cannot serve (several instances sharing one key), and then treat it as a secret in the orchestrator rather than in `.env`. |
-| `AGENTCAD_STATE_DIR` | `<config-dir>/state` | Identity state (`auth/`, `secret.key`). Created `0700` and repaired to `0700` at startup — it holds the session secret and the password hashes. Compose sets `/data/state`. |
+| `AGENTCAD_STATE_DIR` | `<config-dir>/state` | Identity state (`auth/`, `secret.key`). Created `0700` and repaired to `0700` at startup — it holds the session secret and the password hashes. Compose sets `/data/state`. **Keep it outside every kernel-writable root that isn't `publications/build`**: the hosted read allow-list is the read roots plus the *write* roots, so a state dir inside one is readable (and writable) by a part script, and whoever reads `secret.key` can forge any session. A hosted `agentcad serve` **refuses to start** if the state dir itself lies inside a write root, naming both paths and exiting 2. The one designed exception is `<state-dir>/publications/build` — PRD-007's share-link/customizer variant builds go through the shared kernel pool and need to write there, so that one subtree (and only that subtree) *is* a granted write root and *is* on the hosted read allow-list; `secret.key` and `auth/` are siblings of `publications/`, not beneath it, and stay out of both. Since the config dir is no longer a write root wholesale the `<config-dir>/state` default is otherwise safe, but set it explicitly on any hosted instance anyway. |
 | `AGENTCAD_PROJECTS_DIR` | `~/AgentCAD/projects` | Where projects and their `.history` git repos live. Compose sets `/data/projects`. |
 | `AGENTCAD_HOST` | `127.0.0.1` | Listen address. A non-loopback bind **requires** `AGENTCAD_MODE=hosted`. |
 | `AGENTCAD_TRUSTED_PROXY` | `127.0.0.1` | Hosted mode only. The immediate peer(s) allowed to set `X-Forwarded-For`, passed to uvicorn's `forwarded_allow_ips` (IPs or CIDRs, comma-separated). Default matches the local proxy above. **`*` is refused** — it would let any client forge the address the login limiter keys on. |
@@ -66,7 +82,9 @@ container ships.
 | `AGENTCAD_EXAMPLES` | `1` | `0` skips registering the bundled examples. Compose sets `0`: in a container they live in a read-only image layer, so edits vanish on redeploy. |
 | `AGENTCAD_CONFIG` | `~/.agentcad/config.json` | User config path; also the root the packages/indexes/state defaults derive from. |
 | `AGENTCAD_PACKAGES_DIR` / `AGENTCAD_INDEXES_DIR` | under the config dir | PRD-011 package cache and index checkouts. |
-| `AGENTCAD_NO_SANDBOX` | unset | Disables the macOS seatbelt profile. Do not set it on a hosted instance. |
+| `AGENTCAD_QUOTA_<KNOB>` | see [Confinement and quotas](#confinement-and-quotas) | Per-worker caps: `MEMORY_MB`, `ADDRESS_SPACE_MB`, `PIDS`, `PIDS_HEADROOM`, `CPU_PERCENT`, `SAMPLE_INTERVAL_S`, `DISK_MB`. Env beats the config file's `{"quotas": {…}}`, which beats the built-in defaults. `off` switches a knob off, and so does `0` — **except on `ADDRESS_SPACE_MB`, where `0` means *auto*** (3 × `MEMORY_MB`) and only the literal `off` disables it. A value that is not a number **refuses to start** (`error: …`, exit 2) and names both the knob and the layer it came from. |
+| `AGENTCAD_CGROUP_DIR` | unset | A cgroup v2 subtree the operator **delegated** to this container, which is the only tier that OOM-kills rather than sampling. Unset means nothing is probed at all. A path is the compose recipe below; `auto` opts into the own-cgroup (systemd `Delegate=yes`) route, which refuses root and any subtree it does not own; `off` means "not even `auto`". Any failure falls back to rlimit + supervisor **with a health warning**, never silently. |
+| `AGENTCAD_NO_SANDBOX` | unset | Opts out of **confinement** — the seatbelt on macOS, Landlock + seccomp on Linux — and reports `off` with the reason. It does **not** opt out of the quotas: the caps and the rlimits still apply. Do not set it on a hosted instance. |
 | `AGENTCAD_URL` | `http://127.0.0.1:<port>` | **Client-side.** Which instance the MCP proxy talks to. |
 | `AGENTCAD_TOKEN` | unset | **Client-side.** Bearer token the MCP proxy sends. |
 | `AGENTCAD_AGENT_ID` | `mcp` | **Client-side.** Names this agent for turn locking and presence. |
@@ -175,12 +193,41 @@ bug.
 - **4 vCPU / 8 GB** for `AGENTCAD_KERNEL_POOL_SIZE=3`, which is what a handful
   of concurrent editors wants.
 - Disk is projects plus their `.history` git repos. Mesh caches live under each
-  project's `.cache/` and rebuild on demand, so they are not precious.
+  project's `.cache/` and rebuild on demand, so they are not precious — which
+  is what lets a **per-project disk budget** (`AGENTCAD_QUOTA_DISK_MB`,
+  default 2048) cover `.cache/`, `exports/` and `imports/`: an over-budget
+  project is refused *before* the worker writes (`diskbudget_error`, HTTP 507),
+  and a janitor trims the oldest unreferenced meshes once the cache passes
+  75 % of the budget.
+- `GET /api/health` (with a principal) publishes `usage` — kernel CPU ms, wall
+  ms and peak RSS rolled up per project and per client identity — beside
+  `sandbox`, the measured confinement/quota object. The `get_usage` tool
+  answers the same numbers with a `since` window. Both are in-memory and
+  per-process: a restart starts from zero, and there is still no audit log.
 
-There is no per-account CPU or memory budget. Any member can queue an expensive
-build; the pool has a per-request timeout and nothing more. That is a stated
-residual risk (PRD-006 FR G3), and another reason accounts are for people you
-trust.
+**The per-worker caps**, which is what the host must be sized *above*:
+
+| Knob | Default | What it bounds |
+|---|---|---|
+| `AGENTCAD_QUOTA_MEMORY_MB` | `2048` | RSS per worker — the cgroup's `memory.max` where one is delegated, otherwise the supervisor's kill threshold (and the job-object commit limit on Windows). |
+| `AGENTCAD_QUOTA_ADDRESS_SPACE_MB` | `3 × memory_mb` (6144) | Linux `RLIMIT_AS` only. Deliberately loose: it exists to turn a runaway *reservation* into a recoverable `MemoryError` with a line number, not to be the cap. |
+| `AGENTCAD_QUOTA_PIDS` | `128` | cgroup `pids.max` / job-object active processes — the fork-bomb stop. |
+| `AGENTCAD_QUOTA_PIDS_HEADROOM` | `64` | `RLIMIT_NPROC` = the live uid **task** count, re-measured **at every spawn** (respawns included), plus this **× the pool size**. Per-uid and counting threads, so it is headroom, not a budget: what it bounds is at most `headroom × pool size` *extra* tasks across the whole pool. It is scaled and re-measured because the limit is per-uid but is checked against the calling process's own ceiling — one number computed once starved the third worker of a three-worker pool, which died inside `import build123d`. The hard per-worker process cap is `AGENTCAD_QUOTA_PIDS`. |
+| `AGENTCAD_QUOTA_CPU_PERCENT` | `400` | cgroup `cpu.max` / job-object rate cap, as a share of one core (`400` = 4 cores). Throttles; it never kills. `off` for no CPU quota (macOS always). |
+| `AGENTCAD_QUOTA_SAMPLE_INTERVAL_S` | `0.25` | How often the parent samples a worker's RSS. Not a limit — see the overshoot note below. |
+| `AGENTCAD_QUOTA_DISK_MB` | `2048` | **Per project**, not per worker. |
+
+Budget **`memory_mb × pool size` plus ~0.5 GB for the server, plus headroom**:
+where the supervisor is the memory tier (macOS always; Linux without a
+delegated cgroup) the kill lags one sample interval, and a script allocating at
+the ~4 GB/s this was measured at overshoots by 380–620 MB before it dies. The
+cap must therefore sit *below* the host's ceiling, not at it. With a delegated
+cgroup the kernel kills at the charge and there is no overshoot.
+
+There is still no per-**account** CPU or memory budget: any member can queue
+expensive builds one after another, and the caps bound each one rather than
+their sum. That is a stated residual (PRD-006 G3 vs. PRD-005's per-tenant
+fair scheduling), and another reason accounts are for people you trust.
 
 ---
 
@@ -237,11 +284,14 @@ positive control so a broken counter cannot make it pass). The **two** PRD-007
 customizer routes are the one deliberate exception — the first anonymous requests
 that reach the kernel, bounded exactly as the table says.
 
-**What the caps do NOT yet bound** is stated plainly, because it is the honest
-residual: a params-driven mesh can still **balloon RSS and OOM the host** (peak
-memory is uncapped until PRD-006), which also owes process/pid caps, a
-variant-cache disk budget, and worker egress denial. Until then the operator's
-backstop for a link under a distinct-param flood is
+**What PRD-006 now bounds, and what is still open.** Since PRD-006 the worker a
+variant build runs in is capped (memory by the supervisor and, where delegated,
+a cgroup; process count; CPU) and confined (no egress, writes only under its
+roots — the variant build store is one of them), so a params-driven mesh that
+balloons is killed with `reason: memory_cap` instead of OOM-ing the host; see
+"Confinement and quotas" below. What is still open is a **disk budget for the
+variant cache itself** (per-project budgets do not cover `<state-dir>/publications/build`)
+— the operator's backstop for a link under a distinct-param flood remains
 `AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE` (off by default). The per-IP rate limit and
 that gate are only honest behind the trusted proxy (`AGENTCAD_TRUSTED_PROXY`) —
 the same caveat as the login limiter, for the same reason.
@@ -391,16 +441,176 @@ rebuilding.
 
 ---
 
-## What PRD-006 will change
+## Confinement and quotas
 
-This release's honest limit is that a member is a shell. PRD-006 is the
-confinement work — a Linux sandbox for the kernel worker equivalent to the
-macOS seatbelt profile, plus per-request CPU and memory budgets. When it lands,
-the trust statement at the top of this page gets weaker in the good direction,
-and the sizing table gains enforceable limits. Nothing in this deployment
-blocks it: the worker is already a separate process behind a request/response
-boundary.
+Two separate things, reported separately, and worth keeping apart in your head:
+**confinement** is what a script may *reach* (files, network, other
+processes), **quotas** are how much of the machine it may *take*. Opting out of
+one is not opting out of the other.
 
-Also deferred, and named so it is not a surprise: no audit log, no per-project
-ACLs, no organisations, no SSO. Attribution exists (history trailers, proposal
-and comment records) but is not a queryable per-instance log.
+### What confines a worker
+
+| | mechanism | reads | writes | network | other processes |
+|---|---|---|---|---|---|
+| **Linux** | Landlock + seccomp, applied by the worker to itself before `import build123d` | `local` posture: anywhere. `hosted` posture (this deployment): an allow-list — `/usr`, `/lib*`, `/bin`, `/sbin`, `/etc`, `/opt`, `/proc`, `/dev`, `/sys`, the interpreter, the app tree, and everything it may write to (the roots in the next column — a write root is readable by construction, which is why `<state-dir>/publications/build` is the one subtree of `AGENTCAD_STATE_DIR` on this list). **Not** the rest of `AGENTCAD_STATE_DIR` (`secret.key`, `auth/`), and **nothing under the server user's home** — the config dir stopped being a write root wholesale, so there is no broader exception to state. The worker's own `HOME` env var points at its private temp dir, so `~` inside a script is not the server user's home at all | the granted roots only — the projects dir, each registered example, the server's one `agentcad-work-*` root, the worker's own private temp dir, and `<state-dir>/publications/build` (PRD-007's shared-pool variant builds — `core/share_build.py`). Nothing else, root included (Landlock beats DAC) | denied: every socket family but `AF_UNIX` | no `ptrace`, no `process_vm_readv/writev`, no `pidfd_open`/`pidfd_send_signal`/`pidfd_getfd`, no `process_madvise`, no `io_uring`, and no signal to pid ≤ 0 or to the server |
+| **macOS** | `sandbox-exec` seatbelt profile (the v3 profile, unchanged) | anywhere (`local` posture only — the narrowed profile is Linux) | the same roots | denied | signals to self only |
+| **Windows** | **none.** Reported `unsupported`, honestly, in health and here — AppContainer is carved out as [PRD-006b](prd/pending/PRD-006b-windows-appcontainer.md) | — | — | — | — |
+
+Both postures are explicit named profiles; the hosted one is what
+`AGENTCAD_MODE=hosted` selects. Forks and `exec`s inherit the confinement, so a
+script cannot escape by delegating.
+
+**Linux requirements.** Landlock must be **ABI ≥ 3** (kernel 6.2; ABI 1 is
+5.13 but lacks `TRUNCATE`, without which every truncating `open(path, "w")`
+inside a write root would be a false denial — so below ABI 3 the worker
+applies no ruleset and reports `off` rather than shipping a profile that
+lies). Landlock is a boot-time LSM: it must also be in the kernel's `lsm=`
+list. So the requirement is a **kernel**, not a distribution release: 6.2 or
+newer — Ubuntu 24.04, or 22.04 with the HWE kernel (22.04 GA is 5.15, which is
+Landlock ABI 1 and therefore below the floor). Check **both** halves, because
+either alone can be the reason confinement is `off`:
+`cat /sys/kernel/security/lsm` for the list, and the ABI the probe prints
+(`python -c "from agentcad.kernel import _confine; print(_confine.landlock_abi())"`,
+which is the CI step's third line) for the version.
+
+No capability, no `bwrap` binary and no `--privileged` are needed — the
+ruleset is applied through `ctypes` inside the worker, verified in this image
+as uid 10001 under Docker's default seccomp profile, at 0.3 ms.
+
+### What caps a worker
+
+Quotas are **tiers**, and health names the tier actually in force rather than
+promising a mechanism:
+
+| tier | where | memory | CPU | processes | on breach |
+|---|---|---|---|---|---|
+| `cgroup` | Linux, only with a delegated subtree (below) | `memory.max` + `memory.swap.max=0` — the kernel OOM-kills | `cpu.max` throttles | `pids.max` | `kernel_crash`, `details.reason: "memory_cap"`, `tier: "cgroup"` |
+| `rlimit` | Linux (`RLIMIT_AS`, `RLIMIT_NPROC`), macOS (`RLIMIT_NPROC` only) | the allocation *fails*: an ordinary `script_error` with a line number, and the warm worker survives | — (`RLIMIT_CPU` is lifetime-cumulative; the wall-clock timeout is the backstop) | `RLIMIT_NPROC` | `script_error` with `details.denied: "memory"` / `"process_count"` |
+| `supervisor` | everywhere | the parent samples the child's RSS every `sample_interval_s` and kills on breach — the only memory tier macOS has | wall clock (the existing timeouts) | — | `kernel_crash`, `details.reason: "memory_cap"`, `observed_rss_mb`, `tier: "supervisor"` |
+| `job_object` | Windows | commit limit → `MemoryError` in the script | CPU rate hard cap | active-process limit | `script_error` with `details.denied: "memory"` |
+
+**On Windows the supervisor samples the job, not the process it spawned.** A
+venv `python.exe` (uv-managed ones included) is a *launcher*: it starts the
+real interpreter as a **child** and stays behind as a ~4 MB stub. The child
+inherits the job object, so the commit limit and the CPU cap apply to the
+interpreter — but the handle the server holds is the stub's, and measuring it
+reported ~4 MB for a worker with build123d imported. So the sampler walks the
+job's process list and reports the **largest** working set in it (the max, not
+the sum: the two processes share their mapped pages). With no job object — the
+`supervisor`-only line in `mechanism` — there is nothing to walk, and the
+sample falls back to that stub handle and under-reports; the memory tier that
+bites on Windows is the job object's commit limit either way.
+
+`RLIMIT_AS`/`RLIMIT_DATA`/`RLIMIT_RSS` are `EINVAL` on Darwin (measured), which
+is why macOS has no in-process memory cap and the supervisor exists.
+
+**The supervisor kills late, by design.** It samples; it does not intercept. At
+the default 0.25 s and the ~4 GB/s a `bytearray` allocation reaches, the worker
+overshoots its cap by 380–620 MB before the kill lands, and an allocate-and-free
+that fits between two samples is invisible to it entirely. Size the host above
+the cap, and use the cgroup tier where you need a hard one.
+
+### The delegated cgroup (optional)
+
+The image mounts `/sys/fs/cgroup` read-only and root-owned, and the only other
+route to a writable subtree is `--cap-add SYS_ADMIN` — a near-root capability
+this project refuses to ask for. So the cgroup tier is opt-in **by
+delegation**. On the host, once:
+
+```bash
+sudo mkdir -p /sys/fs/cgroup/agentcad
+echo "+memory +pids +cpu" | sudo tee /sys/fs/cgroup/cgroup.subtree_control
+echo "+memory +pids +cpu" | sudo tee /sys/fs/cgroup/agentcad/cgroup.subtree_control
+sudo chown -R 10001:10001 /sys/fs/cgroup/agentcad
+```
+
+then uncomment the three lines `compose.yaml` already carries:
+
+```yaml
+    cgroup_parent: /agentcad
+    volumes:
+      - /sys/fs/cgroup/agentcad:/cg:rw
+    environment:
+      AGENTCAD_CGROUP_DIR: /cg
+```
+
+Verified end to end this way: `pids.max=16` stopped a fork loop after 15
+children, and `memory.max=200M` with swap at `0` SIGKILLed a 400 MB allocator
+with `memory.events oom_kill 1`. Swap at its default `max` does **not** work —
+the allocation swaps instead of dying — which is why the code writes
+`memory.swap.max=0` beside every `memory.max`.
+
+`AGENTCAD_CGROUP_DIR=auto` instead probes the process's *own* cgroup, the shape
+a systemd unit with `Delegate=yes` produces. It is a separate opt-in because it
+is the route that moves the server's own pids, and it refuses rather than
+guesses: not as root (`os.access` answers `W_OK` for uid 0 almost everywhere,
+so a root server would "discover" a subtree on any machine — that is activation
+by capability), not on a subtree owned by someone else, not on the root cgroup.
+This route is **unverified on a real systemd host**; the delegated-directory
+one above is what was measured.
+
+### Reading the live state
+
+```bash
+curl -s -b jar localhost:8630/api/health | jq .sandbox
+```
+
+```jsonc
+{"status": "active",                       // the CONFINEMENT's status
+ "mechanism": "landlock+seccomp",
+ "posture": "hosted",
+ "confinement": {"status": "active", "mechanism": "landlock+seccomp",
+                 "detail": {"landlock_abi": 6, "posture": "hosted",
+                            "seccomp": "seccomp(2)",
+                            "rlimits": ["RLIMIT_AS", "RLIMIT_NPROC"]}},
+ "quotas": {"status": "active", "mechanism": "rlimit+supervisor",
+            "limits": {"memory_mb": 2048, "address_space_mb": 6144,
+                       "pids": 128, "pids_headroom": 64,
+                       "cpu_percent": 400, "disk_mb": 2048}},
+ "warnings": []}
+```
+
+`status` is `active` **only because the worker itself said so** — the client
+asks it on `ping` what it managed to apply, and a preamble that failed a stage
+reports `off` with the failure in `warnings`, never `active` from intent. A
+hosted instance whose confinement is not active also prints one `WARNING:` line
+to stderr at startup; it is not fatal, because a container that refuses to boot
+teaches an operator less than one that says what it is doing. `mechanism` is
+`null` beside `off` on purpose: naming a mechanism next to `off` would claim
+something is in force. The same rule governs the quota **tiers**: a worker that
+reports no applied rlimits drops `rlimit` from `quotas.mechanism`, with the
+reason in `warnings`. A `warnings` entry that begins "the worker lost a
+Landlock grant" is a *narrower* confinement, not a failed one — one root (a
+directory that did not exist when the worker spawned) was not granted, and
+writes there will be denied while everything else stays in force.
+
+### What a breach looks like to a user or an agent
+
+Nothing new: it is the error contract that already existed.
+
+- A denial raised **inside the script** stays a `script_error` with a traceback
+  and a line number, plus `details.denied` ∈ `network` | `filesystem` |
+  `process_count` | `memory` and an Error Doctor `details.hint`. The previous
+  good geometry stays, the worker stays warm.
+- A **kill** is `kernel_crash` with `details.usage` always, and
+  `details.reason` when it is attributable. **The shipped tiers emit exactly
+  one reason, `memory_cap`** — from the supervisor's kill or from a delegated
+  cgroup's OOM counter — with `details.tier` naming which. `pids_cap` and
+  `cpu_cap` are reserved vocabulary, documented so an agent's handler can be
+  written once: a **pids** breach does not kill the worker at all (the
+  `fork()` gets `EAGAIN` and the script sees the `script_error` above), and
+  `cpu_cap` needs a `SIGXCPU` from an `RLIMIT_CPU` that AgentCAD never sets —
+  the CPU tiers throttle (`cpu.max`, the job-object rate cap) and the
+  wall-clock timeout is the backstop.
+- A **timeout** is `timeout`, exactly as before, now carrying `details.usage`.
+- An over-budget project is `diskbudget_error` (HTTP 507) raised *before* the
+  worker writes.
+
+### Still deferred, named so it is not a surprise
+
+No audit log, no per-project ACLs, no organisations, no SSO. No per-account
+compute budget (the caps are per worker per request). Windows confinement is
+[PRD-006b](prd/pending/PRD-006b-windows-appcontainer.md). A narrowed *macOS*
+read posture (the seatbelt equivalent of `hosted`) is not built — hosted mode
+is the Linux image. Attribution exists (history trailers, proposal and comment
+records) but is not a queryable per-instance log.

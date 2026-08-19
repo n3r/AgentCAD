@@ -1,10 +1,20 @@
-# AgentCAD — hosted image (PRD-005a).
+# AgentCAD — hosted image (PRD-005a, PRD-006).
 #
 # TRUST: an account on this instance can execute arbitrary Python on the host;
 # give one only to someone you would give a shell to. A part script IS
-# arbitrary Python (agentcad/kernel/worker.py) and Linux has no worker
-# confinement until PRD-006, so this image is a single-purpose box, not a
-# multi-tenant one. See docs/deployment.md.
+# arbitrary Python (agentcad/kernel/worker.py). Since PRD-006 the worker
+# confines ITSELF in this image before it imports any geometry — Landlock +
+# seccomp applied through ctypes, needing no capability and no bwrap binary
+# (verified as uid 10001 under Docker's default seccomp profile): no network,
+# writes only under /data/projects, /data/home/.agentcad, the server's work
+# root and its own private temp dir, in hosted mode no reads of /data/state
+# and nothing under /data/home except /data/home/.agentcad (a write root, so
+# readable by construction), and memory/pids/CPU caps around it.
+#
+# It is still a single-purpose box, not a multi-tenant one: every project on
+# the instance is readable and writable to every member's script, which runs
+# as this image's uid 10001 (per-project ACLs are PRD-005). See
+# docs/deployment.md, "Confinement and quotas".
 #
 # The image is multi-GB: the OCCT wheels that back build123d are. That is why
 # the compose build is not a per-PR CI job (design Decision 12).
