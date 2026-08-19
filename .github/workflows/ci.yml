@@ -68,18 +68,22 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          # A stalled Ubuntu mirror can wedge apt with no client-side timeout,
-          # hanging the job to its 30-minute cancel with no output (an
-          # intermittent, Linux-only CI flake unrelated to the suite — see
-          # docs/changelog/0253). Bound every fetch and retry the update.
+          # A stalled Ubuntu mirror wedges apt to the 30-minute job cancel with
+          # no output (an intermittent, Linux-only CI flake unrelated to the
+          # suite — see docs/changelog/0253, 0268). `Acquire::*::Timeout` does
+          # not reliably abort a mirror that stalls mid-body, and a plain retry
+          # never fires because a hung apt never returns — so wrap each call in a
+          # hard `timeout` that kills the hung fetch and lets the retry run.
           apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
                     -o Acquire::https::Timeout=30)
+          ok=0
           for attempt in 1 2 3; do
-            if sudo apt-get "${apt_opts[@]}" update; then break; fi
-            echo "::warning::apt-get update failed (attempt $attempt/3); retrying"
+            if sudo timeout 150 apt-get "${apt_opts[@]}" update; then ok=1; break; fi
+            echo "::warning::apt-get update attempt $attempt/3 failed or timed out; retrying"
             sleep 5
           done
-          sudo apt-get install -y --no-install-recommends "${apt_opts[@]}" \
+          [ "$ok" = 1 ] || { echo "::error::apt-get update failed after 3 attempts"; exit 1; }
+          sudo timeout 300 apt-get install -y --no-install-recommends "${apt_opts[@]}" \
             libgl1 libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1
 
       - name: Sync dependencies (locked)

@@ -239,6 +239,41 @@
       <header class="modal-head">
         <span id="drawing-title" class="modal-title">Drawing</span>
         <div class="modal-actions">
+          <!-- PRD-014 Slice 6: sheet format (FR1), the four projected views,
+               and a single section plane, all regenerate the preview through
+               the same previewSeq-guarded round trip as the dim-table
+               checkbox below. -->
+          <select id="drawing-sheet" class="tb-btn" title="Sheet format">
+            <option value="iso_a4">ISO A4</option>
+            <option value="iso_a3" selected>ISO A3</option>
+            <option value="iso_a2">ISO A2</option>
+            <option value="iso_a1">ISO A1</option>
+            <option value="iso_a0">ISO A0</option>
+            <option value="ansi_a">ANSI A</option>
+            <option value="ansi_b">ANSI B</option>
+            <option value="ansi_c">ANSI C</option>
+            <option value="ansi_d">ANSI D</option>
+          </select>
+          <div id="drawing-views-wrap" class="drawing-views">
+            <label class="drawing-opt"><input id="drawing-view-top" type="checkbox" checked><span>top</span></label>
+            <label class="drawing-opt"><input id="drawing-view-front" type="checkbox" checked><span>front</span></label>
+            <label class="drawing-opt"><input id="drawing-view-right" type="checkbox" checked><span>right</span></label>
+            <label class="drawing-opt"><input id="drawing-view-iso" type="checkbox" checked><span>iso</span></label>
+          </div>
+          <div class="drawing-section-ctl">
+            <button id="drawing-section-toggle" class="tb-btn" type="button">Section…</button>
+            <div id="drawing-section-panel" class="drawing-section-panel hidden">
+              <select id="drawing-section-plane" class="tb-btn" title="Section plane">
+                <option value="xy">XY</option>
+                <option value="xz">XZ</option>
+                <option value="yz">YZ</option>
+              </select>
+              <input id="drawing-section-offset" class="tb-btn drawing-section-offset"
+                     type="number" step="any" value="0" placeholder="offset mm">
+              <button id="drawing-section-apply" class="tb-btn" type="button">Apply</button>
+              <button id="drawing-section-clear" class="tb-btn hidden" type="button">Clear</button>
+            </div>
+          </div>
           <!-- FR8's dimension table. Shown only for a part that declares
                configurations: the table's columns are the configured
                parameters, so it has nothing to say about an unconfigured
@@ -248,6 +283,7 @@
             <span>dim table</span>
           </label>
           <a id="drawing-download" class="tb-btn hidden" download>Download SVG</a>
+          <button id="drawing-download-pdf" class="tb-btn hidden" type="button">Download PDF</button>
           <button id="drawing-close" class="tb-btn" type="button">Close</button>
         </div>
       </header>

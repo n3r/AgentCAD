@@ -1007,8 +1007,9 @@ declaring nothing.
 ## Tolerances and GD&T (PMI)
 
 Parts can carry a PMI section — annotation, not geometry — rendered by
-`generate_drawing` (SVG) as toleranced dimensions, datum flags, and feature
-control frames:
+`generate_drawing` (SVG and PDF; base-14 Helvetica renders GD&T symbols and
+⌀ as `?` in PDF, full-fidelity in SVG) as toleranced dimensions, datum flags,
+and feature control frames:
 
 ```json
 {"dims":   [{"id": "d1", "kind": "linear",   "target": "width", "plus": 0.1, "minus": 0.1},
@@ -1021,7 +1022,11 @@ Linear targets tolerance the overall extents (`width` = X, `height` = Z,
 `depth` = Y); diameter targets attach to circles detected in the top view
 within 0.05 mm of the nominal. Set with `set_part_pmi` (an empty object
 clears), read with `get_part_pmi`. Applies to script and reference parts;
-DXF drawings ignore PMI (v1).
+DXF drawings ignore PMI (v1). For a part with [configurations](user-guide.md#configurations),
+`generate_drawing {tabulate: true}` letters the overall extents (A/B/C) plus
+one letter per PMI **diameter** dim, in declaration order, and draws a table
+of each configuration's value per letter — linear dims are not separately
+lettered (they resolve to the same overall extents A/B/C already carry).
 
 ## Cheat-sheet
 

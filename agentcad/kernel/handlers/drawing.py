@@ -96,13 +96,29 @@ from collections import defaultdict
 
 import build123d as b3d
 
-# ---- SVG dimension primitives (sheet coords, mm, y-down) --------------------
+from ._draw_primitives import (
+    Circle,
+    Hatch,
+    Line,
+    Polyline,
+    Rect,
+    Style,
+    SvgBackend,
+    Text,
+    fmt,
+)
+from ._pdf import PdfBackend
+from ._sheets import DEFAULT_SHEET, SCALE_LADDER, SHEETS, scale_label
 
-_DIM = 'stroke="#1a56db" stroke-width="0.18" fill="none"'
-_DIMFILL = 'stroke="#1a56db" stroke-width="0.18" fill="#1a56db"'
-_TXT = 'font-family="Helvetica, Arial, sans-serif" font-size="3.5" fill="#1a56db"'
-_VIS = 'stroke="#111" stroke-width="0.5" fill="none" stroke-linecap="round"'
-_HID = 'stroke="#777" stroke-width="0.25" fill="none" stroke-dasharray="2.4 1.2"'
+# ---- dimension / callout geometry (sheet coords, mm, y-down) ----------------
+#
+# The composition below builds an ordered **display list** of the typed
+# primitives from ``_draw_primitives`` and hands it to a backend
+# (``SvgBackend`` or, since Slice 2, ``PdfBackend``). Every function here
+# returns lists of primitives, never SVG strings — the byte-locked ``_text``
+# helper the dimension table used is gone: the table is typed primitives too
+# (Slice 2), so BOTH backends render it from the one list.
+
 _ARROW_L, _ARROW_W = 3.0, 1.0
 
 
@@ -112,24 +128,17 @@ def _unit(v):
 
 
 def _arrow(tip, direction):
+    """A filled dimension arrow head as a closed, filled Polyline primitive."""
     d = _unit(direction)
     p = (-d[1], d[0])
     b1 = (tip[0] - _ARROW_L * d[0] + _ARROW_W * p[0], tip[1] - _ARROW_L * d[1] + _ARROW_W * p[1])
     b2 = (tip[0] - _ARROW_L * d[0] - _ARROW_W * p[0], tip[1] - _ARROW_L * d[1] - _ARROW_W * p[1])
-    pts = " ".join(f"{x:.3f},{y:.3f}" for x, y in (tip, b1, b2))
-    return f'<polygon points="{pts}" {_DIMFILL}/>'
-
-
-def _line(a, b, style=_DIM):
-    return f'<line x1="{a[0]:.3f}" y1="{a[1]:.3f}" x2="{b[0]:.3f}" y2="{b[1]:.3f}" {style}/>'
-
-
-def _text(pos, s, angle=0.0, anchor="middle"):
-    tr = f' transform="rotate({angle:.2f} {pos[0]:.3f} {pos[1]:.3f})"' if abs(angle) > 1e-9 else ""
-    return f'<text x="{pos[0]:.3f}" y="{pos[1]:.3f}" text-anchor="{anchor}" {_TXT}{tr}>{s}</text>'
+    return Polyline((tip, b1, b2), style=Style.DIM, closed=True, fill=True)
 
 
 def _linear_dim(pa, pb, offset, text):
+    """A linear dimension (extension lines, dimension line, two arrows, text)
+    as a list of primitives."""
     d = _unit((pb[0] - pa[0], pb[1] - pa[1]))
     n = (-d[1], d[0])
     s = 1.0 if offset >= 0 else -1.0
@@ -138,25 +147,24 @@ def _linear_dim(pa, pb, offset, text):
     qb = (pb[0] + s * n[0] * off, pb[1] + s * n[1] * off)
     els = []
     for p, q in ((pa, qa), (pb, qb)):
-        els.append(_line((p[0] + s * n[0] * 1.5, p[1] + s * n[1] * 1.5),
-                         (q[0] + s * n[0] * 2.0, q[1] + s * n[1] * 2.0)))
-    els.append(_line(qa, qb))
+        a = (p[0] + s * n[0] * 1.5, p[1] + s * n[1] * 1.5)
+        b = (q[0] + s * n[0] * 2.0, q[1] + s * n[1] * 2.0)
+        els.append(Line(a[0], a[1], b[0], b[1], Style.DIM))
+    els.append(Line(qa[0], qa[1], qb[0], qb[1], Style.DIM))
     els.append(_arrow(qa, (-d[0], -d[1])))
     els.append(_arrow(qb, d))
     ang = math.degrees(math.atan2(d[1], d[0]))
     if ang > 90 or ang <= -90:
         ang += 180
     mid = ((qa[0] + qb[0]) / 2, (qa[1] + qb[1]) / 2)
-    els.append(_text((mid[0] - s * n[0] * 1.0, mid[1] - s * n[1] * 1.0), text, angle=ang))
+    els.append(Text(mid[0] - s * n[0] * 1.0, mid[1] - s * n[1] * 1.0, text,
+                    Style.DIM, size=3.5, angle=ang))
     return els
 
 
 # ---- PMI callout primitives (sheet coords, mm, y-down) ---------------------
 
-_NOTE_TXT = 'font-family="Helvetica, Arial, sans-serif" font-size="2.5" fill="#777"'
-_BOX = 'fill="white" stroke="#1a56db" stroke-width="0.3"'
-
-# Standard Unicode GD&T characteristic symbols (rendered as SVG text).
+# Standard Unicode GD&T characteristic symbols (rendered as text).
 _FCF_SYMBOLS = {
     "flatness": "⏥",
     "position": "⌖",
@@ -164,10 +172,6 @@ _FCF_SYMBOLS = {
     "parallelism": "∥",
     "cylindricity": "⌭",
 }
-
-
-def _esc(s):
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 # ---- dimension table (PRD-012) --------------------------------------------
@@ -230,7 +234,7 @@ def _measure_table(build_shape, script, table):
         name = entry.get("config")
         params = entry.get("params") or {}
         # `str(...)`: a hand-edited or merged manifest can put anything in
-        # `label`, and a non-string would TypeError the whole sheet in `_esc`.
+        # `label`, and a non-string would TypeError the backend's escape.
         row = {"config": name, "label": str(entry.get("label") or name),
                "values": {}, "ok": True}
         try:
@@ -266,7 +270,7 @@ def _row_label(row) -> str:
 
 
 def _dim_table(rows, columns, x=_TABLE_X, y_top=_TABLE_Y, row_h=_TABLE_ROW_H):
-    """``(elements, dropped, warnings)`` — the boxed table itself.
+    """``(elements, dropped, warnings)`` — the boxed table as **primitives**.
 
     Header (``config``, the configured parameters, ``X``/``Y``/``Z``) then one
     row per configuration. Column widths follow ``_fcf_frame``'s rule
@@ -276,8 +280,10 @@ def _dim_table(rows, columns, x=_TABLE_X, y_top=_TABLE_Y, row_h=_TABLE_ROW_H):
     measured extents are never dropped — they are what the table is for, and
     *dropped* names what came off so a caller can say why a column is missing.
 
-    Every string goes through :func:`_esc`. A label is author-supplied text and
-    a single ``&`` in one would otherwise make the whole sheet unparseable.
+    Slice 2 (PRD-014): this returns typed ``Rect``/``Text`` primitives, not SVG
+    strings, so BOTH backends render the table from one display list (the SVG
+    backend escapes ``&``/``<``/``>`` on the way out, so the raw label text is
+    handed through unescaped here — pre-escaping would double it).
     """
     warnings: list[str] = []
     columns = list(columns)
@@ -313,12 +319,215 @@ def _dim_table(rows, columns, x=_TABLE_X, y_top=_TABLE_Y, row_h=_TABLE_ROW_H):
     for line in lines:
         cx = x
         for width, text in zip(widths, line):
-            els.append(f'<rect x="{cx:.3f}" y="{y:.3f}" width="{width:.3f}" '
-                       f'height="{row_h:.3f}" {_BOX}/>')
-            els.append(_text((cx + width / 2, y + row_h / 2 + 1.0), _esc(text)))
+            els.append(Rect(cx, y, width, row_h, style=Style.DIM, fill="white"))
+            els.append(Text(cx + width / 2, y + row_h / 2 + 1.0, text,
+                            Style.DIM, anchor="middle", size=3.5))
             cx += width
         y += row_h
     return els, dropped, warnings
+
+
+# ---- configuration tabulation (PRD-014 FR10) ------------------------------
+#
+# `tabulate` assigns **letter variables** (A, B, C, …) at render time and draws
+# a config table keyed by them. The letters are a render-time layer — PMI dim
+# ids stay lowercase (core/pmi.py); only datums are single uppercase letters.
+#
+# Stable order (determinism, FR12): A/B/C are always the overall X/Y/Z extents;
+# any PMI *diameter* dims follow in DECLARATION order. PMI *linear* dims resolve
+# to the very overall extents A/B/C already carry (pmi.py: width=X, height=Z,
+# depth=Y), so lettering them again would print a redundant column — they are
+# deliberately NOT separately lettered, and the X/Y/Z overall extents are the
+# guaranteed core FR10 names.
+
+
+def _tabulate_variables(pmi) -> list:
+    """The ordered letter variables: A/B/C for the overall X/Y/Z extents, then
+    one letter per PMI diameter dim (declaration order)."""
+    variables = [
+        {"letter": "A", "kind": "extent", "axis": "X", "source": "overall X (mm)"},
+        {"letter": "B", "kind": "extent", "axis": "Y", "source": "overall Y (mm)"},
+        {"letter": "C", "kind": "extent", "axis": "Z", "source": "overall Z (mm)"},
+    ]
+    i = 3
+    for d in ((pmi or {}).get("dims") or []):
+        if d.get("kind") == "diameter":
+            variables.append({
+                "letter": _letter(i), "kind": "diameter",
+                "target": float(d["target"]), "dim_id": d["id"],
+                "source": f"⌀{fmt(d['target'])} (pmi {d['id']})"})
+            i += 1
+    return variables
+
+
+def _detected_top_diameters(shape) -> list:
+    """The distinct diameters (mm, 2 dp) of closed circles in the TOP view — the
+    same projection `detected["diameters_mm"]` reports, sorted for determinism."""
+    vis, _hid = shape.project_to_viewport(look_at=(0, 0, 0), **_VIEW_DIRS["top"])
+    return sorted({round(2 * r, 2) for _c, r in _detect_circles(vis)})
+
+
+def _nearest_diameter(diameters, target):
+    """The detected diameter within ``_HOLE_DIA_TOL`` of ``target`` (nearest
+    wins), or ``None`` — a member whose feature is a different size than the
+    dim's nominal earns no value, not a wrong one."""
+    best = None
+    for d in diameters:
+        err = abs(d - float(target))
+        if err <= _HOLE_DIA_TOL and (best is None or err < best[0]):
+            best = (err, d)
+    return best[1] if best else None
+
+
+def _measure_tabulate(build_shape, script, spec, pmi) -> dict:
+    """The measured configuration table: ``{variables, rows, warnings,
+    active_config}``.
+
+    **Reuses `_measure_table`** for the overall X/Y/Z extents, the truncation to
+    ``_MAX_TABLE_ROWS`` and the one-broken-member em-dash contract — every extent
+    is a number off a built shape, which is this module's whole reason to draw a
+    table. For any PMI *diameter* variables, each buildable member is rebuilt
+    (a worker shape-cache hit) and its top view re-projected to find the detected
+    diameter nearest the dim's nominal; a member without that feature gets
+    ``None`` (an em-dash on the sheet). ``mass`` rides in from the request (it is
+    resolved service-side, where the material density lives)."""
+    variables = _tabulate_variables(pmi)
+    dia_vars = [v for v in variables if v["kind"] == "diameter"]
+    spec_rows = list(spec.get("rows") or [])
+    base = _measure_table(build_shape, script,
+                          {"columns": [], "rows": spec_rows})
+    by_name = {r.get("config"): r for r in spec_rows}
+    rows: list = []
+    for src in base["rows"]:
+        name = src["config"]
+        spec_row = by_name.get(name, {})
+        row = {"config": name, "label": src["label"],
+               "ok": src.get("ok", True), "mass": spec_row.get("mass")}
+        if not row["ok"]:
+            row["values"] = {v["letter"]: None for v in variables}
+            row["error"] = src.get("error")
+            rows.append(row)
+            continue
+        values = src.get("values") or {}
+        letter_vals: dict = {}
+        for v in variables:
+            if v["kind"] == "extent":
+                axis = values.get(v["axis"])
+                letter_vals[v["letter"]] = (round(float(axis), 3)
+                                            if axis is not None else None)
+        if dia_vars:
+            try:
+                shape, _values, _warnings = build_shape(
+                    script, spec_row.get("params") or {})
+                detected = _detected_top_diameters(shape)
+            except Exception:                                      # noqa: BLE001
+                detected = []
+            for v in dia_vars:
+                letter_vals[v["letter"]] = _nearest_diameter(detected,
+                                                             v["target"])
+        row["values"] = letter_vals
+        rows.append(row)
+    return {"variables": variables, "rows": rows,
+            "warnings": list(base["warnings"]),
+            "active_config": spec.get("active_config")}
+
+
+def _config_table(variables, rows, x=_TABLE_X, y_top=_TABLE_Y,
+                  row_h=_TABLE_ROW_H):
+    """The letter-variable configuration table (FR10) as primitives:
+    ``(elements, warnings)``.
+
+    Header (``config``, the letters, ``mass``) then one row per configuration.
+    A member that did not build prints em dashes (the ``_dim_table`` contract).
+    Column widths follow ``_dim_table``'s rule so the numbers stay
+    deterministic; letters are one character, so the table fits comfortably."""
+    warnings: list[str] = []
+    letters = [v["letter"] for v in variables]
+    lines = [["config", *letters, "mass"]]
+    for row in rows:
+        label = _row_label(row)
+        if not row.get("ok", True):
+            lines.append([label] + ["—"] * (len(letters) + 1))
+            continue
+        values = row.get("values") or {}
+        lines.append([label]
+                     + [_cell(values.get(letter)) for letter in letters]
+                     + [_cell(row.get("mass"))])
+    widths = [max(14.0, 2.2 * max(len(line[i]) for line in lines) + 4.0)
+              for i in range(len(lines[0]))]
+    if sum(widths) > _TABLE_W:
+        warnings.append(
+            f"the configuration table is {sum(widths):.0f} mm wide and "
+            f"overflows the sheet's {_TABLE_W:g} mm column")
+    els, y = [], y_top
+    for line in lines:
+        cx = x
+        for width, text in zip(widths, line):
+            els.append(Rect(cx, y, width, row_h, style=Style.DIM, fill="white"))
+            els.append(Text(cx + width / 2, y + row_h / 2 + 1.0, text,
+                            Style.DIM, anchor="middle", size=3.5))
+            cx += width
+        y += row_h
+    return els, warnings
+
+
+# ---- hole table (PRD-014 FR9) ---------------------------------------------
+
+
+def _hole_table(rows, from_metadata: bool, x, y_top, y_limit,
+                row_h=_TABLE_ROW_H):
+    """The boxed hole table as primitives: ``(elements, capped_rows, warnings)``.
+
+    A caption (``HOLE TABLE`` / ``HOLE TABLE (detected)``), a header, then one
+    row per hole. **With metadata** the columns are ``tag | X | Y | designation``
+    (the record's standard callout); **without**, ``tag | X | Y | ⌀`` (a
+    measured diameter — a projected circle cannot be given a designation it did
+    not earn). X/Y are the datum offsets the caller already put on each row.
+
+    The table shares ``table_zone`` with the dimension table by stacking below
+    it, so ``y_top`` is already past the dim table and ``y_limit`` is the zone's
+    bottom. Rows that would run past ``y_limit`` are **capped** and named in a
+    warning — never silently truncated (the ``_MAX_TABLE_ROWS`` contract, made
+    format-parametric). Every number goes through ``fmt`` (determinism).
+    """
+    warnings: list[str] = []
+    caption_h = 4.0
+    # How many DATA rows fit under the caption + header before y_limit.
+    room = max(0, int((y_limit - y_top - caption_h - row_h) / row_h))
+    if len(rows) > room:
+        warnings.append(
+            f"the hole table has {len(rows)} holes but only {room} fit the "
+            f"sheet's table zone; it prints the first {room} — widen the sheet "
+            f"to table them all")
+        rows = rows[:room]
+    header = (["tag", "X", "Y", "designation"] if from_metadata
+              else ["tag", "X", "Y", "⌀"])
+
+    def _row_cells(r):
+        last = (r.get("designation") if from_metadata
+                else f"⌀{fmt(r.get('diameter_mm'))}")
+        return [r["tag"], fmt(r["x_mm"]), fmt(r["y_mm"]), str(last)]
+
+    lines = [header] + [_row_cells(r) for r in rows]
+    widths = [max(14.0, 2.2 * max(len(line[i]) for line in lines) + 4.0)
+              for i in range(len(lines[0]))]
+    if sum(widths) > _TABLE_W:
+        warnings.append(
+            f"the hole table is {sum(widths):.0f} mm wide and overflows the "
+            f"sheet's {_TABLE_W:g} mm column")
+    caption = "HOLE TABLE" if from_metadata else "HOLE TABLE (detected)"
+    els: list = [Text(x, y_top + 2.6, caption, Style.TEXT, anchor="start",
+                      size=3.0)]
+    y = y_top + caption_h
+    for line in lines:
+        cx = x
+        for width, text in zip(widths, line):
+            els.append(Rect(cx, y, width, row_h, style=Style.DIM, fill="white"))
+            els.append(Text(cx + width / 2, y + row_h / 2 + 1.0, text,
+                            Style.DIM, anchor="middle", size=3.5))
+            cx += width
+        y += row_h
+    return els, rows, warnings
 
 
 def _tol_suffix(plus, minus):
@@ -333,23 +542,25 @@ def _fmt_tol(v):
 
 
 def _datum_flag(letter, box_center, anchor):
-    """Boxed datum letter, leader to the anchor, filled anchor triangle.
+    """Boxed datum letter, leader to the anchor, filled anchor triangle — as a
+    list of primitives.
 
     Paint order matters: the leader runs to the box center and the white
     box rect then covers the segment inside it.
     """
     x, y = box_center
-    els = [_line(anchor, (x, y)),
-           _arrow(anchor, (anchor[0] - x, anchor[1] - y)),
-           f'<rect x="{x - 3:.3f}" y="{y - 3:.3f}" width="6" height="6" {_BOX}/>',
-           _text((x, y + 1.3), letter)]
-    return els
+    return [
+        Line(anchor[0], anchor[1], x, y, Style.DIM),
+        _arrow(anchor, (anchor[0] - x, anchor[1] - y)),
+        Rect(x - 3, y - 3, 6, 6, style=Style.DIM, fill="white"),
+        Text(x, y + 1.3, letter, Style.DIM, size=3.5),
+    ]
 
 
 def _fcf_frame(x, y_top, frame, h):
     """One feature control frame: [symbol][tol][datum letters...] + gray note.
 
-    Returns the SVG elements; cell widths are fixed so positions stay
+    Returns a list of primitives; cell widths are fixed so positions stay
     deterministic.
     """
     tol = _fmt_tol(frame["tol_mm"])
@@ -358,27 +569,28 @@ def _fcf_frame(x, y_top, frame, h):
     cells += [(7.0, d) for d in frame.get("datums", [])]
     els, cx = [], x
     for w, label in cells:
-        els.append(f'<rect x="{cx:.3f}" y="{y_top:.3f}" width="{w:.3f}" '
-                   f'height="{h:.3f}" {_BOX}/>')
-        els.append(_text((cx + w / 2, y_top + h / 2 + 1.3), label))
+        els.append(Rect(cx, y_top, w, h, style=Style.DIM, fill="white"))
+        els.append(Text(cx + w / 2, y_top + h / 2 + 1.3, label, Style.DIM,
+                        size=3.5))
         cx += w
     if frame.get("note"):
-        els.append(f'<text x="{cx + 2:.3f}" y="{y_top + h / 2 + 1:.3f}" '
-                   f'text-anchor="start" {_NOTE_TXT}>{_esc(frame["note"])}</text>')
+        els.append(Text(cx + 2, y_top + h / 2 + 1, frame["note"], Style.NOTE,
+                        anchor="start", size=2.5))
     return els
 
 
 # ---- edge rendering --------------------------------------------------------
 
-def _edge_svg(e, ox, oy, scale, style):
+def _edge_prim(e, ox, oy, scale, style):
+    """One projected edge as a primitive: a ``Circle`` for a closed circle,
+    else a sampled ``Polyline``. Sheet coords are y-down (``oy - scale*Y``)."""
     if e.geom_type.name == "CIRCLE" and e.is_closed:
         c, r = e.arc_center, e.radius
-        return (f'<circle cx="{ox + scale * c.X:.3f}" cy="{oy - scale * c.Y:.3f}" '
-                f'r="{scale * r:.3f}" {style}/>')
+        return Circle(ox + scale * c.X, oy - scale * c.Y, scale * r, style)
     n = max(8, min(256, int(e.length * scale / 0.4)))
-    pts = [e.position_at(i / (n - 1)) for i in range(n)]
-    d = "M " + " L ".join(f"{ox + scale * p.X:.3f} {oy - scale * p.Y:.3f}" for p in pts)
-    return f'<path d="{d}" {style}/>'
+    pts = tuple((ox + scale * p.X, oy - scale * p.Y)
+                for p in (e.position_at(i / (n - 1)) for i in range(n)))
+    return Polyline(pts, style)
 
 
 _VIEW_DIRS = {
@@ -404,6 +616,236 @@ def _view_bounds(edges):
 def _detect_circles(vis_edges):
     return [(e.arc_center, e.radius) for e in vis_edges
             if e.geom_type.name == "CIRCLE" and e.is_closed]
+
+
+# ---- center marks & centerlines (FR8) --------------------------------------
+#
+# Circles are detected in EVERY rendered view now, not the top view alone
+# (drawing.py's inherited limitation): each view's own projected visible edges
+# yield the closed CIRCLE edges seen face-on there, and a small cross (a "center
+# mark") lands at each. A coaxial run of holes seen edge-on in a side view — a
+# row sharing an axis — shows no circle at all, so it gets a CHAIN centerline
+# spanning the run instead. Both are sorted and every coordinate goes through
+# the backend's `fmt`, so two runs give identical bytes (FR12).
+
+#: How near two circle centres must be (in a view's own 2D coords, mm) to count
+#: as the same feature. A through hole projects BOTH rims to the same centre, so
+#: without a dedup one hole would draw two coincident marks.
+_MARK_DEDUP_MM = 0.05
+
+#: |axis · view-direction| below this is "edge-on" (the circular face is seen as
+#: a line), above `1 - this` is "face-on". A hole axis is unit length.
+_EDGE_ON_TOL = 0.02
+
+
+def _project_to_view(name: str, p) -> tuple[float, float]:
+    """A world point in a view's own 2D (projected) coordinates.
+
+    Reproduces build123d's ``project_to_viewport`` frame analytically from
+    ``_VIEW_DIRS`` so a hole record's world centre can be placed in a view
+    without re-projecting geometry: forward ``f = normalize(look_at - origin)``
+    with ``look_at`` at the world origin, right ``r = normalize(f × up)``, and
+    the orthogonalized up ``u = r × f``; the 2D coords are ``(p·r, p·u)``. This
+    is the identity ``(X, Y)`` for the top view, ``(X, Z)`` for the front and
+    ``(Y, Z)`` for the right — the mappings ``_top_xy`` and ``_cutting_marks``
+    already assume.
+    """
+    origin = _VIEW_DIRS[name]["viewport_origin"]
+    up = _VIEW_DIRS[name]["viewport_up"]
+    f = _normalized([-float(o) for o in origin])
+    r = _normalized(_cross(f, [float(u) for u in up]))
+    u = _cross(r, f)
+    pv = [float(p[0]), float(p[1]), float(p[2])]
+    return (sum(pv[k] * r[k] for k in range(3)),
+            sum(pv[k] * u[k] for k in range(3)))
+
+
+def _edge_on(name: str, axis) -> bool:
+    """Is a feature of this axis seen EDGE-ON in this view (its round face a
+    line)? True when the axis is perpendicular to the view direction."""
+    origin = _VIEW_DIRS[name]["viewport_origin"]
+    f = _normalized([-float(o) for o in origin])
+    a = _normalized([float(v) for v in axis])
+    return abs(sum(a[k] * f[k] for k in range(3))) < _EDGE_ON_TOL
+
+
+def _center_mark(cx: float, cy: float, arm: float = 1.5) -> list:
+    """A center mark: two short crossing THIN lines centred on ``(cx, cy)``."""
+    return [Line(cx - arm, cy, cx + arm, cy, Style.THIN),
+            Line(cx, cy - arm, cx, cy + arm, Style.THIN)]
+
+
+def _dedup_centers(centers) -> list:
+    """The distinct circle centres in a view (a through hole projects both rims
+    to one spot), sorted by rounded ``(x, y)`` so the marks are order-stable."""
+    seen: list = []
+    for c in sorted(centers, key=lambda c: (round(c.X, 3), round(c.Y, 3))):
+        if all(math.hypot(c.X - s.X, c.Y - s.Y) > _MARK_DEDUP_MM for s in seen):
+            seen.append(c)
+    return seen
+
+
+# ---- section views (FR6) ---------------------------------------------------
+#
+# The section geometry is cut HERE, in the worker that already holds the built
+# shape (Decision 10) — no second kernel round-trip and `affinity=part_id` is
+# trivially satisfied. `analysis._section` computes only area/n_faces and throws
+# the geometry away; this keeps it. Every 2D coordinate is a plane-LOCAL
+# coordinate (`Plane.to_local_coords`), so the loops are already the section's
+# own 2D frame, and every wire is traced in connectivity order
+# (`wire.order_edges()`) with a fixed sampling density and then the whole result
+# is sorted by a geometric key — nothing depends on OCCT's internal iteration
+# order, which is the FR12 determinism requirement.
+
+#: The three orthogonal section planes, keyed by the lowercase spec name. A
+#: positive `offset_mm` moves the cut along the plane's own normal
+#: (`Plane.offset`): +Z for xy, -Y for xz, +X for yz.
+_SECTION_PLANES = {"xy": "XY", "xz": "XZ", "yz": "YZ"}
+
+#: The standard view each cut is seen edge-on in, so the cutting-plane line and
+#: arrows land on a view that actually shows where A-A is taken. Deterministic;
+#: falls back to the first rendered view when the preferred one is absent.
+_SECTION_PARENT = {"xy": "front", "xz": "top", "yz": "front"}
+
+
+def _letter(i: int) -> str:
+    """0->'A', 1->'B', ... 25->'Z', 26->'AA' — the section/detail label run."""
+    s = ""
+    i += 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def _wire_loop_2d(wire, plane) -> tuple:
+    """One section wire as a closed ring of plane-local (x, y) points.
+
+    Traced in connectivity order via ``order_edges`` (a line contributes its
+    start vertex; a curved edge is sampled at a fixed density) so the ring never
+    self-intersects and never depends on OCCT vertex order. The final point is
+    dropped — the ring is closed by the consumer — so no vertex is duplicated.
+    """
+    pts: list = []
+    for edge in wire.order_edges():
+        if edge.geom_type.name == "LINE":
+            p = plane.to_local_coords(edge.position_at(0.0))
+            pts.append((float(p.X), float(p.Y)))
+        else:
+            n = max(2, min(256, int(edge.length / 0.4)))
+            for i in range(n):
+                p = plane.to_local_coords(edge.position_at(i / n))
+                pts.append((float(p.X), float(p.Y)))
+    return tuple(pts)
+
+
+def _loop_key(loop) -> tuple:
+    """A stable geometric sort key for a loop (min-x, min-y, size, count)."""
+    if not loop:
+        return (0.0, 0.0, 0.0, 0.0, 0)
+    xs = [x for x, _ in loop]
+    ys = [y for _, y in loop]
+    return (round(min(xs), 6), round(min(ys), 6),
+            round(max(xs), 6), round(max(ys), 6), len(loop))
+
+
+def _section_bodies(part, plane_name: str, offset_mm: float) -> list:
+    """Cut `part` at the plane+offset; per-solid closed 2D loops, or ``[]``.
+
+    Each solid body is sectioned **separately** (the design's per-body rule, so a
+    multi-solid part hatches per body) and every section face contributes its
+    outer wire plus any inner wires (a bore leaves an even-odd hole). Bodies with
+    no intersection are dropped; a completely-missed plane yields ``[]``. Loops
+    within a body and the bodies themselves are sorted by ``_loop_key`` so the
+    output is order-stable across runs.
+    """
+    plane = getattr(b3d.Plane, _SECTION_PLANES[plane_name]).offset(float(offset_mm))
+    bodies: list = []
+    for solid in (part.solids() or [part]):
+        sec = b3d.section(solid, section_by=plane)
+        loops: list = []
+        for face in sec.faces():
+            for wire in (face.outer_wire(), *face.inner_wires()):
+                loop = _wire_loop_2d(wire, plane)
+                if len(loop) >= 3:
+                    loops.append(loop)
+        if loops:
+            loops.sort(key=_loop_key)
+            bodies.append(loops)
+    bodies.sort(key=lambda ls: _loop_key(ls[0]))
+    return bodies
+
+
+def _bbox2d(loops):
+    """(x0, y0, x1, y1) over every point in every loop, or a unit box."""
+    xs = [x for loop in loops for x, _ in loop]
+    ys = [y for loop in loops for _, y in loop]
+    if not xs:
+        return (0.0, 0.0, 1.0, 1.0)
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _extra_slots(va, n: int) -> list:
+    """`n` view slots in a row along the bottom of the view area (sections then
+    details land here beneath the standard views). Returns (cx, cy, w, h)."""
+    n = max(1, n)
+    cell_w = va.w / n
+    cell_h = va.h * 0.30
+    cy = va.y + va.h - cell_h * 0.5
+    return [(va.x + cell_w * (k + 0.5), cy, cell_w, cell_h) for k in range(n)]
+
+
+def _cutting_marks(placement, plane_name, offset_mm, label):
+    """Cutting-plane line + two arrows + the section letter on the parent view.
+
+    Horizontal for an xy/xz cut, vertical for a yz cut; positioned at the cut's
+    projected coordinate in the parent view (front: projX=worldX, projY=worldZ;
+    top: projY=worldY). A cut off the geometry still draws — a reader sees the
+    plane leaving the part."""
+    ox, oy, scale, (bx0, by0, bx1, by1) = placement
+    x0, x1 = ox + scale * bx0, ox + scale * bx1
+    y_top, y_bot = oy - scale * by1, oy - scale * by0
+    els: list = []
+    if plane_name == "yz":                      # vertical line at worldX=offset
+        sx = ox + scale * float(offset_mm)
+        a, b = (sx, y_top - 8.0), (sx, y_bot + 8.0)
+        els.append(Line(a[0], a[1], b[0], b[1], Style.CHAIN))
+        els.append(_arrow(a, (1.0, 0.0)))
+        els.append(_arrow(b, (1.0, 0.0)))
+        els.append(Text(a[0], a[1] - 2.0, label, Style.TEXT, size=4))
+        els.append(Text(b[0], b[1] + 5.0, label, Style.TEXT, size=4))
+    else:                                       # horizontal line
+        v = float(offset_mm) if plane_name == "xy" else -float(offset_mm)
+        sy = oy - scale * v
+        a, b = (x0 - 8.0, sy), (x1 + 8.0, sy)
+        els.append(Line(a[0], a[1], b[0], b[1], Style.CHAIN))
+        els.append(_arrow(a, (0.0, 1.0)))
+        els.append(_arrow(b, (0.0, 1.0)))
+        els.append(Text(a[0] - 3.0, sy + 1.0, label, Style.TEXT, size=4))
+        els.append(Text(b[0] + 3.0, sy + 1.0, label, Style.TEXT, size=4))
+    return els
+
+
+def _clip_edges_to_circle(edges, cx, cy, radius):
+    """Sub-polylines of each projected edge that fall inside the detail circle
+    (projected 2D coords). A pure 2D op — reuses the parent view's projection, no
+    kernel rebuild (FR7)."""
+    runs: list = []
+    for e in edges:
+        n = max(2, min(256, int(e.length / 0.4)))
+        cur: list = []
+        for i in range(n):
+            p = e.position_at(i / (n - 1))
+            if math.hypot(float(p.X) - cx, float(p.Y) - cy) <= radius:
+                cur.append((float(p.X), float(p.Y)))
+            elif len(cur) >= 2:
+                runs.append(cur)
+                cur = []
+            else:
+                cur = []
+        if len(cur) >= 2:
+            runs.append(cur)
+    return runs
 
 
 # ---- hole records -> callouts ----------------------------------------------
@@ -726,12 +1168,93 @@ def _callout_text(designation: str, count: int) -> str:
     return f"{count}× {designation}" if count > 1 else designation
 
 
-def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
-               dim_table=None):
+def _largest_fit(s_fit: float) -> float:
+    """The largest ladder ratio that is <= ``s_fit`` (clamped to the ladder)."""
+    for ratio in SCALE_LADDER:                 # largest first
+        if ratio <= s_fit:
+            return ratio
+    return SCALE_LADDER[-1]
+
+
+def _choose_scale(template, order, vbb, override):
+    """Uniform auto-scale (FR1): one scale for ALL views, the largest ladder
+    ratio whose scaled views each fit their quadrant of the view area.
+
+    Returns ``(ratio, warning_or_None)``. An explicit ``override`` is honored
+    verbatim; if it overflows the fit, the warning names the crowding risk (a
+    tripwire, not a refusal — the caller asked for it).
+    """
+    va = template.view_area
+    quad_w, quad_h = va.w / 2.0, va.h / 2.0
+    # Leave room inside the quadrant for the 14 mm dimension offset and the
+    # view label: fit the bbox into ~72% of the quadrant.
+    fill = 0.72
+    s_fit = None
+    for name in order:
+        bx0, by0, bx1, by1 = vbb[name]
+        w, h = max(bx1 - bx0, 1e-3), max(by1 - by0, 1e-3)
+        s = min(quad_w * fill / w, quad_h * fill / h)
+        s_fit = s if s_fit is None else min(s_fit, s)
+    if s_fit is None:
+        s_fit = 1.0
+    if override is not None:
+        ratio = float(override)
+        warn = None
+        if ratio > s_fit * 1.0001:
+            warn = (f"requested scale {scale_label(ratio)} overflows the view "
+                    f"area on sheet {template.format} (largest that fits is "
+                    f"{scale_label(_largest_fit(s_fit))}); views may crowd or "
+                    f"clip")
+        return ratio, warn
+    return _largest_fit(s_fit), None
+
+
+def _title_block(dl, template, scale_str, title, fallback_label):
+    """Data-driven title block (FR2). Every value arrives as a plain string in
+    ``title`` — this handler renders, it never reads git or the clock."""
+    title = title or {}
+    tb = template.title_block
+    dl.append(Rect(tb.x, tb.y, tb.w, tb.h, style=Style.FRAME, fill="white"))
+    label = title.get("label") or fallback_label
+    dl.append(Text(tb.x + 4, tb.y + 8, label, Style.TEXT, anchor="start",
+                   size=5))
+    units = title.get("units") or "mm"
+    lines = [
+        f"AgentCAD · {units} · third angle",
+        f"scale {scale_str}   sheet {template.format}",
+        f"material {title.get('material') or '—'}   "
+        f"mass {title.get('mass') or '—'}",
+        f"rev {title.get('version_ref') or '-'}   "
+        f"{title.get('version_date') or '-'}",
+    ]
+    for key, prefix in (("company", "company"), ("author", "author"),
+                        ("project_code", "project"),
+                        ("approved_by", "approved"), ("notes", "notes")):
+        val = title.get(key)
+        if val:
+            lines.append(f"{prefix}: {val}")
+    y = tb.y + 12.5
+    for ln in lines:
+        dl.append(Text(tb.x + 4, y, ln, Style.TEXT, anchor="start", size=2.6))
+        y += 2.9
+
+
+def _build_display_list(part, views, detected_out, pmi=None, hole_records=(),
+                        dim_table=None, sheet=DEFAULT_SHEET,
+                        scale_override=None, title=None, sections=(),
+                        details=(), hole_table=False, tabulate=None):
+    """Build the ordered display list for one sheet — the SINGLE composition
+    both backends render (Slice 2, Decision 1/7). Returns
+    ``(display_list, width_mm, height_mm, meta)``; ``detected_out`` is filled in
+    place. ``_build_svg`` / ``_build_pdf`` are thin wrappers that hand the list
+    to :class:`SvgBackend` / :class:`PdfBackend`."""
+    template = SHEETS.get(sheet) or SHEETS[DEFAULT_SHEET]
+    W, H = template.w_mm, template.h_mm
     proj = {name: part.project_to_viewport(look_at=(0, 0, 0), **_VIEW_DIRS[name])
             for name in views}
-    W, H = 420, 297
     hole_warnings: list[str] = []
+    warnings: list[str] = []
+    hole_table_data = None   # filled in the top-view branch (FR9)
 
     # PMI callout state. `pmi` is the normalized section from core/pmi.py.
     pmi = pmi or {}
@@ -748,53 +1271,126 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
         if d.get("kind") == "linear":
             linear_by_target.setdefault(d["target"], d)
     placements: dict = {}  # view name -> (ox, oy, scale, bounds)
-    svg = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}mm" height="{H}mm" '
-           f'viewBox="0 0 {W} {H}" font-family="Helvetica, Arial, sans-serif">',
-           f'<rect x="0" y="0" width="{W}" height="{H}" fill="white"/>',
-           f'<rect x="6" y="6" width="{W-12}" height="{H-12}" fill="none" '
-           f'stroke="#111" stroke-width="0.5"/>']
 
-    # Grid cells for up to 4 views.
-    cells = {"top": (110, 90), "front": (110, 210), "right": (300, 210), "iso": (320, 90)}
+    # Config tabulation (FR10): letter variables label the drawn dims. A/B/C map
+    # to the overall X/Y/Z extents; a PMI diameter dim's letter labels its own
+    # diameter callout. The letters are a render-time layer over the same
+    # measurements the plain sheet draws.
+    axis_letter: dict = {}
+    dia_dim_letter: dict = {}
+    if tabulate:
+        for v in tabulate.get("variables", []):
+            if v["kind"] == "extent":
+                axis_letter[v["axis"]] = v["letter"]
+            elif v["kind"] == "diameter":
+                dia_dim_letter[v["dim_id"]] = v["letter"]
+
+    # The display list: an ordered list of typed primitives (z-order = insert
+    # order), rendered by SvgBackend at the end. Sheet background + frame from
+    # the selected template (no hard-coded 420x297 anymore).
+    dl: list = [
+        Rect(0, 0, W, H, style=None, fill="white"),
+        Rect(template.frame_inset, template.frame_inset,
+             W - 2 * template.frame_inset, H - 2 * template.frame_inset,
+             style=Style.FRAME),
+    ]
+
     order = [v for v in ("top", "front", "right", "iso") if v in views]
+
+    # Uniform auto-scale (FR1): one scale chosen for ALL views from the
+    # preferred ladder, not today's per-view independent fit.
+    vbb = {name: _view_bounds(list(proj[name][0]) + list(proj[name][1]))
+           for name in order}
+    scale, scale_warn = _choose_scale(template, order, vbb, scale_override)
+    if scale_warn:
+        warnings.append(scale_warn)
+    scale_str = scale_label(scale)
+
+    va = template.view_area
+    # Quadrant centres inside the view area (top-left/top-right/bottom-*).
+    cells = {
+        "top":   (va.x + va.w * 0.25, va.y + va.h * 0.25),
+        "iso":   (va.x + va.w * 0.75, va.y + va.h * 0.25),
+        "front": (va.x + va.w * 0.25, va.y + va.h * 0.75),
+        "right": (va.x + va.w * 0.75, va.y + va.h * 0.75),
+    }
     for name in order:
         vis, hid = proj[name]
         cx, cy = cells[name]
-        bx0, by0, bx1, by1 = _view_bounds(list(vis) + list(hid))
+        bx0, by0, bx1, by1 = vbb[name]
         w, h = max(bx1 - bx0, 1e-3), max(by1 - by0, 1e-3)
-        scale = min(150 / w, 90 / h, 2.0)
-        if name == "iso":
-            scale *= 0.6
-        # center the view's bbox on the cell
+        # center the view's bbox on the cell, at the uniform scale
         ox = cx - scale * (bx0 + bx1) / 2
         oy = cy + scale * (by0 + by1) / 2
         placements[name] = (ox, oy, scale, (bx0, by0, bx1, by1))
         if name != "iso":
             for e in hid:
-                svg.append(_edge_svg(e, ox, oy, scale, _HID))
+                dl.append(_edge_prim(e, ox, oy, scale, Style.HID))
         for e in vis:
-            svg.append(_edge_svg(e, ox, oy, scale, _VIS))
+            dl.append(_edge_prim(e, ox, oy, scale, Style.VIS))
+        # Center marks (FR8) at every circle detected IN THIS VIEW — not the
+        # top view alone. A hole on a side face is a circle in the front/right
+        # view and marks there; iso shows ellipses, not CIRCLE edges, so it
+        # yields none. Deduped (a through hole projects both rims to one spot)
+        # and sorted, so the marks are byte-stable.
+        for c in _dedup_centers([c for c, _r in _detect_circles(vis)]):
+            dl.extend(_center_mark(ox + scale * c.X, oy - scale * c.Y))
         # overall dimensions on front/top (width along X, height along Y).
         # PMI linear dims tolerance the overall extents: "width" = X in both
         # views, "height" = front-view Y (world Z), "depth" = top-view Y.
         if name in ("front", "top"):
             x_dim = linear_by_target.get("width")
             y_dim = linear_by_target.get("height" if name == "front" else "depth")
-            x_text, y_text = f"{w:.2f}", f"{h:.2f}"
+            x_text, y_text = fmt(w), fmt(h)
+            # Letter labels (FR10): width is X (=A) on both views; front's
+            # height is Z (=C), top's depth is Y (=B).
+            if axis_letter:
+                x_text = f"{axis_letter['X']} {x_text}"
+                y_axis = "Z" if name == "front" else "Y"
+                y_text = f"{axis_letter[y_axis]} {y_text}"
             if x_dim is not None:
                 x_text += _tol_suffix(x_dim["plus"], x_dim["minus"])
                 rendered_linear.add(x_dim["id"])
             if y_dim is not None:
                 y_text += _tol_suffix(y_dim["plus"], y_dim["minus"])
                 rendered_linear.add(y_dim["id"])
-            svg += _linear_dim((ox + scale * bx0, oy - scale * by0),
-                               (ox + scale * bx1, oy - scale * by0),
-                               offset=14, text=x_text)
-            svg += _linear_dim((ox + scale * bx0, oy - scale * by0),
-                               (ox + scale * bx0, oy - scale * by1),
-                               offset=-14, text=y_text)
-        svg.append(f'<text x="{cx}" y="{cy - 78}" font-size="4" fill="#111" '
-                   f'text-anchor="middle">{name.upper()}</text>')
+            dl += _linear_dim((ox + scale * bx0, oy - scale * by0),
+                              (ox + scale * bx1, oy - scale * by0),
+                              offset=14, text=x_text)
+            dl += _linear_dim((ox + scale * bx0, oy - scale * by0),
+                              (ox + scale * bx0, oy - scale * by1),
+                              offset=-14, text=y_text)
+        # view label, just above the view's projected bbox
+        dl.append(Text(cx, oy - scale * by1 - 4, name.upper(), Style.TEXT,
+                       anchor="middle", size=4))
+
+    # Coaxial-run centerlines (FR8): a record's holes share an axis, and in a
+    # view where that axis is seen EDGE-ON (a side view) the run is a row of
+    # holes with no circle to mark — so a CHAIN line spans the run. Records are
+    # taken in their own stable order and each run's projected centres are
+    # sorted, so the lines are byte-stable. iso is skipped (it never shows an
+    # honest edge-on row).
+    for record in hole_records:
+        if not isinstance(record, dict):
+            continue  # a residue carrier is reported by the callout loop below
+        centers = record.get("centers") or []
+        axis = record.get("axis")
+        if len(centers) < 2 or not axis:
+            continue
+        for name in order:
+            if name == "iso" or name not in placements or not _edge_on(name, axis):
+                continue
+            ox, oy, sc, _bb = placements[name]
+            pts = sorted((_project_to_view(name, c) for c in centers),
+                         key=lambda q: (round(q[0], 6), round(q[1], 6)))
+            (ax, ay), (bx, by) = pts[0], pts[-1]
+            if math.hypot(bx - ax, by - ay) < 1e-6:
+                continue  # a stack projecting to one point is no row to span
+            dx, dy = _unit((bx - ax, by - ay))
+            margin = 3.0 / sc            # ~3 mm of sheet overrun past the ends
+            a = (ox + sc * (ax - dx * margin), oy - sc * (ay - dy * margin))
+            b = (ox + sc * (bx + dx * margin), oy - sc * (by + dy * margin))
+            dl.append(Line(a[0], a[1], b[0], b[1], Style.CHAIN))
 
     # diameter callouts from top-view circles (distinct radii)
     dia_dims = [d for d in pmi_dims if d.get("kind") == "diameter"]
@@ -821,6 +1417,15 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
         pmi_drawn: set = set()      # group diameters PMI already annotated
         ox_t, oy_t, sc_t, _bounds = placements["top"]
         slot = 0
+        # Hole-table rows (FR9). One letter per matched record, one row per
+        # matched instance (`A1, A2, …`), with X/Y measured from the top view's
+        # DATUM: the lower-left corner of its projected bounding box, in model
+        # mm. A tag is printed at each hole so the table cross-references the
+        # sheet. Letters are assigned only to records that draw, so the run has
+        # no gaps.
+        datum_x, datum_y = _bounds[0], _bounds[1]
+        hole_table_rows: list = []
+        hole_letter_i = 0
 
         def _leader(centers, text):
             """One callout: a leader from the column to a circle, and the text.
@@ -831,13 +1436,17 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
             only real difference is what the text says.
             """
             nonlocal slot
-            tx, ty = 196.0, 40.0 + 8.0 * slot   # column right of the top view
+            # A callout column just left of the sheet's right-hand column,
+            # stacking downward — on-sheet for every format (the old absolute
+            # 196 was tied to A3).
+            tx = template.title_block.x - 4.0
+            ty = template.revision_block.y + 16.0 + 8.0 * slot
             c = max(centers, key=lambda c: (c.X, c.Y))
             tip = (ox_t + sc_t * c.X, oy_t - sc_t * c.Y)
             tail = (tx - 1.5, ty - 1.2)
-            svg.append(_line(tail, tip))
-            svg.append(_arrow(tip, (tip[0] - tail[0], tip[1] - tail[1])))
-            svg.append(_text((tx, ty), _esc(text), anchor="start"))
+            dl.append(Line(tail[0], tail[1], tip[0], tip[1], Style.DIM))
+            dl.append(_arrow(tip, (tip[0] - tail[0], tip[1] - tail[1])))
+            dl.append(Text(tx, ty, text, Style.DIM, anchor="start", size=3.5))
             slot += 1
 
         for d in dia_dims:
@@ -853,7 +1462,11 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
                 continue
             _err, dia, cs = best
             prefix = f"{len(cs)}x " if len(cs) > 1 else ""
-            _leader(cs, f"{prefix}⌀{dia:.2f}"
+            # A lettered PMI diameter dim (FR10) carries its letter on the
+            # callout too, cross-referencing the config table.
+            letter = (f"{dia_dim_letter[d['id']]} " if d["id"] in dia_dim_letter
+                      else "")
+            _leader(cs, f"{letter}{prefix}⌀{dia:.2f}"
                         f"{_tol_suffix(d['plus'], d['minus'])}")
             n_dia_rendered += 1
             pmi_drawn.add(dia)
@@ -983,6 +1596,24 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
                               "seat_present": seat_present})
             if dia not in pmi_drawn:
                 _leader(centers, _callout_text(text, drawn))
+            # Hole-table rows for this record (FR9): one letter, one row per
+            # matched circle, tagged at the hole. `text` is the FINAL callout —
+            # a degraded seat/depth is tabled exactly as it is drawn. Opt-in
+            # (`hole_table`), like the dimension table, so a plain drawing is
+            # unchanged and does not sprout tags on every hole.
+            if hole_table:
+                letter = _letter(hole_letter_i)
+                hole_letter_i += 1
+                for j, c in enumerate(sorted(
+                        centers,
+                        key=lambda c: (round(c.X, 3), round(c.Y, 3))), 1):
+                    tag = f"{letter}{j}"
+                    hole_table_rows.append(
+                        {"tag": tag, "x_mm": round(c.X - datum_x, 3),
+                         "y_mm": round(c.Y - datum_y, 3), "designation": text})
+                    dl.append(Text(ox_t + sc_t * c.X + 2.0,
+                                   oy_t - sc_t * c.Y - 2.0, tag, Style.TEXT,
+                                   anchor="start", size=2.5))
 
         # Whatever is left is a hole we can only measure: same callout shape,
         # measured text, and `from_metadata: false` says which is which.
@@ -997,6 +1628,30 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
         detected_out["hole_groups"] = sorted(
             hole_groups, key=lambda g: g["diameter_mm"])
         detected_out["hole_warnings"] = hole_warnings
+
+        # The hole table (FR9). WITH metadata: the record rows above. WITHOUT:
+        # fall back to the detected diameter groups — one row per detected
+        # circle, `detected: true`, DIAMETER ONLY (a projected circle cannot
+        # tell a drilled hole from a tap, so nothing is fabricated). Either way
+        # a caller can ask "is every hole tabled?" against `rows`.
+        if hole_table and hole_table_rows:
+            hole_table_data = {"rows": hole_table_rows, "from_metadata": True}
+        elif hole_table:
+            det_rows: list = []
+            for gi, (dia, cs) in enumerate(groups):
+                letter = _letter(gi)
+                for j, c in enumerate(sorted(
+                        cs, key=lambda c: (round(c.X, 3), round(c.Y, 3))), 1):
+                    tag = f"{letter}{j}"
+                    det_rows.append(
+                        {"tag": tag, "x_mm": round(c.X - datum_x, 3),
+                         "y_mm": round(c.Y - datum_y, 3),
+                         "diameter_mm": dia, "detected": True})
+                    dl.append(Text(ox_t + sc_t * c.X + 2.0,
+                                   oy_t - sc_t * c.Y - 2.0, tag, Style.TEXT,
+                                   anchor="start", size=2.5))
+            hole_table_data = ({"rows": det_rows, "from_metadata": False}
+                               if det_rows else None)
     else:
         for d in dia_dims:
             pmi_warnings.append(
@@ -1014,9 +1669,14 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
     # above the ISO view. `detected` echoes it structurally, so a caller never
     # has to parse the SVG back to find out what was measured.
     if dim_table:
+        # The table zone comes from the sheet template now (Decision 2). For
+        # iso_a3 it is (264, 18) — the pre-v2 clear rectangle — so the table
+        # renders in the same place. Slice 2: typed primitives, extended into
+        # the display list so both the SVG and the PDF backend render it.
         table_els, table_dropped, table_warnings = _dim_table(
-            dim_table["rows"], dim_table["columns"])
-        svg += table_els
+            dim_table["rows"], dim_table["columns"],
+            x=template.table_zone.x, y_top=template.table_zone.y)
+        dl.extend(table_els)
         detected_out["dim_table"] = {
             # `columns` is what was ASKED for, and `dropped` what did not fit:
             # a caller comparing the echo to its own request should not have to
@@ -1028,14 +1688,47 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
             "warnings": list(dim_table.get("warnings") or []) + table_warnings,
         }
 
-    # title block
-    tb_x, tb_y, tb_w, tb_h = W - 6 - 150, H - 6 - 28, 150, 28
-    svg.append(f'<rect x="{tb_x}" y="{tb_y}" width="{tb_w}" height="{tb_h}" '
-               f'fill="white" stroke="#111" stroke-width="0.5"/>')
-    svg.append(f'<text x="{tb_x+4}" y="{tb_y+9}" font-size="5" fill="#111">'
-               f'{detected_out.get("label", "part")}</text>')
-    svg.append(f'<text x="{tb_x+4}" y="{tb_y+18}" font-size="3" fill="#111">'
-               f'AgentCAD · mm · third angle</text>')
+    # The configuration table (FR10), in the sheet's table column. It takes the
+    # place of the dimension table (the service sends one or the other — never
+    # both — so they never contend for the zone). `detected` echoes it so a
+    # caller verifies "every config, its A/B/C, its mass" without parsing SVG.
+    if tabulate:
+        zone = template.table_zone
+        table_els, table_warnings = _config_table(
+            tabulate["variables"], tabulate["rows"],
+            x=zone.x, y_top=zone.y)
+        dl.extend(table_els)
+        detected_out["config_table"] = {
+            "variables": [{"letter": v["letter"], "source": v["source"]}
+                          for v in tabulate["variables"]],
+            "rows": tabulate["rows"],
+            "active_config": tabulate.get("active_config"),
+            "warnings": list(tabulate.get("warnings") or []) + table_warnings,
+        }
+
+    # The hole table (FR9), stacked BELOW the dimension table in the same
+    # `table_zone` — they share the zone, and a larger sheet has more room. Rows
+    # that overflow the zone are capped with a warning, never silently dropped.
+    if hole_table_data:
+        zone = template.table_zone
+        dim_rows = len(dim_table["rows"]) + 1 if dim_table else 0
+        y_top = zone.y + dim_rows * _TABLE_ROW_H + (4.0 if dim_rows else 0.0)
+        table_els, capped, ht_warnings = _hole_table(
+            hole_table_data["rows"], hole_table_data["from_metadata"],
+            x=zone.x, y_top=y_top,
+            y_limit=zone.y + zone.h)
+        dl.extend(table_els)
+        hole_table_data["datum"] = (
+            "top-view lower-left of the projected bounding box (model X, Y mm)")
+        hole_table_data["rows"] = capped
+        if ht_warnings:
+            hole_table_data["warnings"] = ht_warnings
+        detected_out["hole_table"] = hole_table_data
+
+    # Data-driven title block (FR2), drawn from the template's title-block zone.
+    _title_block(dl, template, scale_str, title,
+                 detected_out.get("label", "part"))
+    tb = template.title_block
 
     # PMI datum flags: boxed letter + leader anchored to a side of the FRONT
     # view's bbox (top/bottom/left/right); "front"/"back" anchor to the TOP
@@ -1065,16 +1758,16 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
         else:  # right
             anchor = (x1, (y0 + y1) / 2 + shift)
             box = (x1 + 9.0, anchor[1])
-        svg += _datum_flag(datum["id"], box, anchor)
+        dl.extend(_datum_flag(datum["id"], box, anchor))
         n_datums += 1
 
     # PMI feature control frames: a column left-aligned with the title block,
     # first frame just above it, stacking upward.
     n_fcf = 0
-    fcf_h, fcf_bottom = 7.0, tb_y - 4.0
+    fcf_h, fcf_bottom = 7.0, tb.y - 4.0
     for frame in pmi_fcf:
         fcf_top = fcf_bottom - fcf_h
-        svg += _fcf_frame(tb_x, fcf_top, frame, fcf_h)
+        dl.extend(_fcf_frame(tb.x, fcf_top, frame, fcf_h))
         n_fcf += 1
         fcf_bottom = fcf_top - 2.0
 
@@ -1086,8 +1779,122 @@ def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
         }
         detected_out["pmi_warnings"] = pmi_warnings
 
-    svg.append("</svg>")
-    return "\n".join(svg)
+    # Section & detail views (FR6/FR7). Both land in a row of slots beneath the
+    # standard views; sections cut the built shape here (no second kernel call),
+    # details clip the parent view's already-computed projection (no rebuild).
+    section_specs = list(sections or [])
+    detail_specs = list(details or [])
+    slots = _extra_slots(va, len(section_specs) + len(detail_specs))
+    section_descs: list = []
+    detail_descs: list = []
+    slot_i = 0
+
+    for s_i, spec in enumerate(section_specs):
+        label = spec.get("label") or f"{_letter(s_i)}-{_letter(s_i)}"
+        plane_name = spec["plane"]
+        offset_mm = float(spec.get("offset_mm", 0.0))
+        bodies = _section_bodies(part, plane_name, offset_mm)
+        cx, cy, cell_w, cell_h = slots[slot_i]
+        slot_i += 1
+        # Cutting-plane marks on the parent view (whichever is rendered).
+        parent = _SECTION_PARENT[plane_name]
+        if parent not in placements:
+            parent = order[0] if order else None
+        if parent is not None:
+            dl.extend(_cutting_marks(placements[parent], plane_name,
+                                     offset_mm, label))
+        if not bodies:
+            # A plane that misses the solid: a warning + an empty, labelled
+            # section view — never a silent blank sheet.
+            warnings.append(f"section {label}: plane misses the solid")
+            dl.append(Text(cx, cy, f"{label} (empty)", Style.TEXT, size=4))
+            section_descs.append({"label": label, "plane": plane_name,
+                                  "offset_mm": offset_mm, "bodies": 0,
+                                  "empty": True})
+            continue
+        x0, y0, x1, y1 = _bbox2d([p for body in bodies for p in body])
+        ox = cx - scale * (x0 + x1) / 2.0
+        oy = cy + scale * (y0 + y1) / 2.0
+        for b_i, body in enumerate(bodies):
+            sheet_loops = tuple(
+                tuple((ox + scale * lx, oy - scale * ly) for lx, ly in loop)
+                for loop in body)
+            for sl in sheet_loops:
+                dl.append(Polyline(sl, style=Style.VIS, closed=True))
+            # Alternating hatch angle across bodies: 45, 135, 45, ...
+            angle = 45.0 if b_i % 2 == 0 else 135.0
+            dl.append(Hatch(sheet_loops, angle=angle, pitch=2.0))
+        dl.append(Text(cx, oy - scale * y0 + 6.0, label, Style.TEXT, size=4))
+        section_descs.append({"label": label, "plane": plane_name,
+                              "offset_mm": offset_mm, "bodies": len(bodies)})
+
+    for d_i, spec in enumerate(detail_specs):
+        label = _letter(d_i)
+        view = spec["view"]
+        cxm, cym = spec["center_mm"]
+        radius = float(spec["radius_mm"])
+        dscale = float(spec["scale"])
+        cx, cy, cell_w, cell_h = slots[slot_i]
+        slot_i += 1
+        if view not in placements or view not in proj:
+            warnings.append(
+                f"detail {label}: view {view!r} is not rendered, so it has no "
+                f"magnified view")
+            detail_descs.append({"label": label, "view": view,
+                                 "center_mm": [cxm, cym], "radius_mm": radius,
+                                 "scale": dscale, "clipped": False})
+            continue
+        ox_p, oy_p, sc_p, _bb = placements[view]
+        # The labelled circle on the parent view (where the detail is taken).
+        dl.append(Circle(ox_p + sc_p * cxm, oy_p - sc_p * cym, sc_p * radius,
+                         Style.THIN))
+        dl.append(Text(ox_p + sc_p * cxm, oy_p - sc_p * cym - sc_p * radius - 2.0,
+                       label, Style.TEXT, size=4))
+        # The magnified view: clip the parent projection to the circle, scale up.
+        vis, hid = proj[view]
+        for edges, style in ((hid, Style.HID), (vis, Style.VIS)):
+            if view == "iso" and style is Style.HID:
+                continue
+            for run in _clip_edges_to_circle(edges, cxm, cym, radius):
+                pts = tuple((cx + dscale * (px - cxm), cy - dscale * (py - cym))
+                            for px, py in run)
+                dl.append(Polyline(pts, style))
+        dl.append(Circle(cx, cy, dscale * radius, Style.THIN))
+        dl.append(Text(cx, cy + dscale * radius + 6.0,
+                       f"{label} ({scale_label(dscale)})", Style.TEXT, size=4))
+        detail_descs.append({"label": label, "view": view,
+                             "center_mm": [cxm, cym], "radius_mm": radius,
+                             "scale": dscale, "clipped": True})
+
+    return dl, W, H, {"scale": scale_str, "views": order, "warnings": warnings,
+                      "sections": section_descs, "details": detail_descs}
+
+
+def _build_svg(part, views, detected_out, pmi=None, hole_records=(),
+               dim_table=None, sheet=DEFAULT_SHEET, scale_override=None,
+               title=None, sections=(), details=(), hole_table=False,
+               tabulate=None):
+    """Render the sheet to an SVG string (thin wrapper over the shared list)."""
+    dl, W, H, meta = _build_display_list(
+        part, views, detected_out, pmi=pmi, hole_records=hole_records,
+        dim_table=dim_table, sheet=sheet, scale_override=scale_override,
+        title=title, sections=sections, details=details, hole_table=hole_table,
+        tabulate=tabulate)
+    return SvgBackend().render(dl, W, H), meta
+
+
+def _build_pdf(part, views, detected_out, pmi=None, hole_records=(),
+               dim_table=None, sheet=DEFAULT_SHEET, scale_override=None,
+               title=None, sections=(), details=(), hole_table=False,
+               tabulate=None):
+    """Render the sheet to PDF bytes (the SAME list, a different backend —
+    FR11). Deterministic: see :mod:`agentcad.kernel.handlers._pdf`."""
+    dl, W, H, meta = _build_display_list(
+        part, views, detected_out, pmi=pmi, hole_records=hole_records,
+        dim_table=dim_table, sheet=sheet, scale_override=scale_override,
+        title=title, sections=sections, details=details, hole_table=hole_table,
+        tabulate=tabulate)
+    return PdfBackend().render(dl, W, H), meta
 
 
 def _build_dxf(part, out_path):
@@ -1114,30 +1921,64 @@ def register(toolbox: dict):
     ERROR_CONTRACT = toolbox["ERROR_CONTRACT"]
 
     def drawing(params: dict) -> dict:
+        # `out_format`, not `fmt`: `fmt` is the imported float formatter.
         views = params.get("views") or ["top", "front", "right", "iso"]
-        fmt = params.get("format", "svg")
+        out_format = params.get("format", "svg")
+        sheet = params.get("sheet") or DEFAULT_SHEET
         out_path = params["out_path"]
         shape, _values, _warnings = build_shape(params["script"], params.get("params", {}))
         detected: dict = {"label": params.get("label", "part")}
-        if fmt == "svg":
+        meta = {"scale": scale_label(1.0), "views": list(views), "warnings": []}
+        if out_format in ("svg", "pdf"):
             # One extra `build_shape` per configuration — measured here, in the
             # process that owns the kernel, because a drawing prints geometry.
             # DXF ignores the table exactly as it ignores PMI (v1), so nothing
-            # is measured for a format that cannot draw it.
+            # is measured for a format that cannot draw it. SVG and PDF render
+            # the SAME display list (PRD-014 Slice 2), so both draw the table
+            # and PMI; only the backend differs.
             table = params.get("dim_table")
             measured = (_measure_table(build_shape, params["script"], table)
                         if isinstance(table, dict) and table.get("rows")
                         else None)
-            svg = _build_svg(shape, views, detected, pmi=params.get("pmi"),
-                             hole_records=_records_on(shape),
-                             dim_table=measured)
-            atomic_write(out_path, svg.encode())
-        elif fmt == "dxf":
+            # FR10: the letter-variable configuration table. Like the dim table,
+            # every value is measured from a built shape here (the diameter
+            # columns re-project each member's top view); mass rides in from the
+            # request, resolved service-side where the material density lives.
+            tabulate_spec = params.get("tabulate")
+            tabulated = (
+                _measure_tabulate(build_shape, params["script"], tabulate_spec,
+                                  params.get("pmi"))
+                if isinstance(tabulate_spec, dict) and tabulate_spec.get("rows")
+                else None)
+            build = _build_svg if out_format == "svg" else _build_pdf
+            payload, meta = build(
+                shape, views, detected, pmi=params.get("pmi"),
+                hole_records=_records_on(shape), dim_table=measured,
+                sheet=sheet, scale_override=params.get("scale"),
+                title=params.get("title"),
+                sections=params.get("sections") or (),
+                details=params.get("details") or (),
+                hole_table=bool(params.get("hole_table")),
+                tabulate=tabulated)
+            # SVG is a str, PDF is already bytes.
+            atomic_write(out_path,
+                         payload.encode() if isinstance(payload, str)
+                         else payload)
+        elif out_format == "dxf":
             _build_dxf(shape, out_path)  # DXF ignores PMI and the table (v1)
+            meta = {"scale": scale_label(1.0),  # DXF is real-scale geometry
+                    "views": ["top"], "warnings": []}
         else:
-            raise WorkerError(ERROR_CONTRACT, f"unknown drawing format {fmt!r}")
+            raise WorkerError(ERROR_CONTRACT,
+                              f"unknown drawing format {out_format!r}")
         import os
+        # FR13 machine-readable result skeleton. `sections`/`details` are filled
+        # from the composition (Slice 3); DXF renders neither, so they stay empty
+        # for that format. `detected` keeps pmi_rendered/hole_groups/dim_table.
         return {"path": out_path, "size_bytes": os.path.getsize(out_path),
-                "detected": detected}
+                "sheet": sheet, "scale": meta["scale"],
+                "views": meta["views"], "sections": meta.get("sections", []),
+                "details": meta.get("details", []),
+                "detected": detected, "warnings": meta["warnings"]}
 
     return {"drawing": drawing}

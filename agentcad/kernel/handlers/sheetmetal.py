@@ -19,11 +19,39 @@ import types
 
 import build123d as b3d
 
-from .drawing import _HID, _VIEW_DIRS, _VIS, _edge_svg, _line, _text, _view_bounds
+# Only the geometry helpers are shared with the drawing handler; the flat
+# pattern renders its own SVG strings (its own style set, HTML-entity text) and
+# keeps its local copies of the edge/line/text emitters so it is independent of
+# the drawing handler's display-list refactor (PRD-014).
+from .drawing import _VIEW_DIRS, _view_bounds
 
-# bend lines: dashed, distinct from _VIS (outline) and _HID (hidden edges)
+# Style strings, local to the flat pattern (the drawing handler moved these into
+# its SVG backend). Bend lines: dashed amber, distinct from the outline/hidden.
+_VIS = 'stroke="#111" stroke-width="0.5" fill="none" stroke-linecap="round"'
+_HID = 'stroke="#777" stroke-width="0.25" fill="none" stroke-dasharray="2.4 1.2"'
+_TXT = 'font-family="Helvetica, Arial, sans-serif" font-size="3.5" fill="#1a56db"'
 _BEND = 'stroke="#b45309" stroke-width="0.35" fill="none" stroke-dasharray="4 1.5"'
 _MARGIN = 15.0
+
+
+def _edge_svg(e, ox, oy, scale, style):
+    if e.geom_type.name == "CIRCLE" and e.is_closed:
+        c, r = e.arc_center, e.radius
+        return (f'<circle cx="{ox + scale * c.X:.3f}" cy="{oy - scale * c.Y:.3f}" '
+                f'r="{scale * r:.3f}" {style}/>')
+    n = max(8, min(256, int(e.length * scale / 0.4)))
+    pts = [e.position_at(i / (n - 1)) for i in range(n)]
+    d = "M " + " L ".join(f"{ox + scale * p.X:.3f} {oy - scale * p.Y:.3f}" for p in pts)
+    return f'<path d="{d}" {style}/>'
+
+
+def _line(a, b, style):
+    return f'<line x1="{a[0]:.3f}" y1="{a[1]:.3f}" x2="{b[0]:.3f}" y2="{b[1]:.3f}" {style}/>'
+
+
+def _text(pos, s, angle=0.0, anchor="middle"):
+    tr = f' transform="rotate({angle:.2f} {pos[0]:.3f} {pos[1]:.3f})"' if abs(angle) > 1e-9 else ""
+    return f'<text x="{pos[0]:.3f}" y="{pos[1]:.3f}" text-anchor="{anchor}" {_TXT}{tr}>{s}</text>'
 
 
 def _normalize_bend_lines(bends, WorkerError, ERROR_CONTRACT) -> list[dict]:
