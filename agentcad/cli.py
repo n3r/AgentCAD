@@ -193,7 +193,8 @@ def _accept_work_dir(raw, refuse) -> str | None:
 
 def _writable_roots(projects_dir: Path) -> list[str]:
     """Directories the sandboxed kernel workers may write to: the projects
-    dir (part .cache meshes, exports/) and each registered example project.
+    dir (part .cache meshes, exports/), each registered example project, and
+    the one state-dir subtree PRD-007's shared-pool builds need.
 
     The **system temp dir is not among them** (PRD-006 Decision 1): granting
     it made every worker able to read and write every other worker's scratch,
@@ -203,27 +204,49 @@ def _writable_roots(projects_dir: Path) -> list[str]:
     work cell when no `--work-dir` is given — is the server-wide work root
     `_build_service` creates and grants by name.
 
-    **`~/.agentcad` is not among them either** (review I5). It was, and nothing
-    justified it: no module under `agentcad/kernel/` or `agentcad/toolkit/`
-    reads or writes the config dir, every `load_config()` caller is
-    server-side, and the worker's `HOME` is its own private temp dir — so the
-    grant bought nothing and cost the one sentence the docs most want to be
-    able to say, that a part script can write **nothing under the server user's
-    home**. The config file holds index definitions and quota knobs, and a
-    script that could rewrite them could raise its own caps.
+    **`~/.agentcad` (the state dir itself) is not among them** (review I5). It
+    was, and nothing justified granting the whole thing: no module under
+    `agentcad/kernel/` or `agentcad/toolkit/` reads or writes the config dir,
+    every `load_config()` caller is server-side, and the worker's `HOME` is
+    its own private temp dir — so a blanket grant bought nothing and cost the
+    one sentence the docs most want to be able to say, that a part script can
+    write **nothing under the server user's home**. The config file holds
+    index definitions and quota knobs, and a script that could rewrite them
+    could raise its own caps; `secret.key` and `auth/` sit in the same tree
+    and must stay unreadable to a hosted member (FR5).
 
-    The projects dir is **created here** when it does not exist: it is the
-    server's own, and on Linux a Landlock grant on a missing path is ENOENT
-    (see the comment below). Everything the CALLER supplied — a `--work-dir`
-    that may still be refused — is granted as given and left alone."""
-    roots = [str(projects_dir)]
-    # It may be ABSENT on a fresh install — the service creates the projects
-    # dir after `kernel.start()`. A Landlock rule on a missing path is ENOENT
-    # (PRD-006): the grant is silently lost, so every write into the directory
-    # fails once it does appear. It is the server's own directory, so making it
-    # here is safe — unlike doing it in `sandbox.plan()`, which also receives
-    # caller-supplied `--work-dir` paths that may still be refused ("a refused
-    # path leaves nothing behind").
+    **`<state-dir>/publications/build` IS granted**, and only that one
+    subtree (PRD-007 merge). Share-link/customizer variant builds go through
+    the SHARED kernel pool into `PublicationStore.build_root()` —
+    `agentcad/core/share_build.py`'s `self._store.build_root()`, which is
+    exactly `appmode.state_dir() / "publications" / "build"` — so a
+    confined worker producing a variant mesh has to be able to write there.
+    It is safe to narrow the grant to this one subtree rather than the state
+    dir: the scripts pinned under `publications/scripts/` are already public
+    (that is the whole point of a share link), so a worker reading or writing
+    its own build cell exposes nothing that was not already exposed, while
+    `secret.key` and `auth/` are siblings of `publications/`, not beneath it,
+    and stay outside every writable and hosted-readable root. This is also
+    why the hosted read allow-list can expose only this one subtree of the
+    state dir rather than the state dir whole.
+
+    The projects dir and this subtree are **created here** when absent: both
+    are the server's own, and on Linux a Landlock grant on a missing path is
+    ENOENT (see the comment below). Everything the CALLER supplied — a
+    `--work-dir` that may still be refused — is granted as given and left
+    alone."""
+    from .core.appmode import state_dir  # read at call time: monkeypatch.setenv
+
+    roots = [str(projects_dir), str(state_dir() / "publications" / "build")]
+    # Both may be ABSENT on a fresh install — the service creates the
+    # projects dir after `kernel.start()`, and the publications build root
+    # is created lazily by whatever first builds a variant. A Landlock rule
+    # on a missing path is ENOENT (PRD-006): the grant is silently lost, so
+    # every write into the directory fails once it does appear. Both are the
+    # server's own directories, so making them here is safe — unlike doing
+    # it in `sandbox.plan()`, which also receives caller-supplied
+    # `--work-dir` paths that may still be refused ("a refused path leaves
+    # nothing behind").
     for owned in roots:
         try:
             os.makedirs(owned, exist_ok=True)

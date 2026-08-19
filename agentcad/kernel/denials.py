@@ -7,9 +7,10 @@ whether to fix the script or shrink the job: ``details.denied`` ∈
 ``{network, filesystem, process_count, memory}``.
 
 String-level on purpose. The worker calls it with the formatted exception, so
-the same four answers cover a Landlock EACCES and a seccomp EPERM on Linux and
-a job object's `MemoryError` on Windows without this module knowing which one
-is in force.
+the same four answers cover a Landlock EACCES and a seccomp EPERM on Linux, a
+macOS seatbelt EACCES/EPERM (declared by the parent that wrapped the argv —
+see :func:`active_facets`), and a job object's `MemoryError` on Windows
+without this module knowing which one is in force.
 
 Whether an answer may be *given* is per-facet (:func:`active_facets`), because
 "something is confining this process" is not evidence for all four: a worker

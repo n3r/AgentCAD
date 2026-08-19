@@ -305,3 +305,84 @@ def test_health_reports_active_for_sandboxed_kernel(sboxed, tmp_path):
     # `status` still means the confinement's, which is what it always meant.
     assert data["sandbox"]["status"] == "active"
     assert data["sandbox"]["confinement"]["mechanism"] == "seatbelt"
+
+
+# 7 — PRD-007 merge: the one state-dir subtree a worker may write
+#
+# `sboxed` above pins its own roots (`writable_dirs=[str(writable)]`), so it
+# proves nothing about `cli._writable_roots`'s new grant. This is a second,
+# equally cheap module-scoped client built the way `cmd_serve` actually builds
+# one — through `_writable_roots` — with `AGENTCAD_STATE_DIR` pointed at an
+# isolated tmp tree, so it can prove both halves under a real seatbelt: a
+# script CAN write inside `<state>/publications/build` (PRD-007's
+# share-build store) and CANNOT write elsewhere in the state dir.
+
+
+@pytest.fixture(scope="module")
+def state_root(tmp_path_factory):
+    return tmp_path_factory.mktemp("prd007-state")
+
+
+@pytest.fixture(scope="module")
+def sboxed_publications(tmp_path_factory, state_root):
+    from agentcad import cli
+
+    projects = tmp_path_factory.mktemp("prd007-projects")
+    mp = pytest.MonkeyPatch()
+    mp.setenv("AGENTCAD_CONFIG", str(state_root / "no-such-config.json"))
+    mp.setenv("AGENTCAD_STATE_DIR", str(state_root))
+    mp.delenv("AGENTCAD_NO_SANDBOX", raising=False)
+    try:
+        roots = cli._writable_roots(projects)
+        client = KernelClient(writable_dirs=roots)
+    finally:
+        mp.undo()  # the sandbox decision is made at construction
+    client.start()
+    yield client
+    client.stop()
+
+
+def test_publications_build_subtree_is_writable_under_the_seatbelt(
+        sboxed_publications, state_root):
+    target = state_root / "publications" / "build" / "proj" / "part.txt"
+    script = (
+        "import os\n"
+        "from build123d import *\n"
+        "PARAMS = {}\n"
+        "def build(p):\n"
+        f"    os.makedirs({str(target.parent)!r}, exist_ok=True)\n"
+        f"    open({str(target)!r}, 'w', encoding='utf-8').write('x')\n"
+        "    with BuildPart() as part:\n"
+        "        Box(10, 10, 10)\n"
+        "    return part.part\n"
+    )
+    result = _build(sboxed_publications, script,
+                     state_root / "publications" / "build" / "mesh.acm")
+    assert result["metrics"]["volume_mm3"] == pytest.approx(1000.0, rel=1e-6)
+    assert target.read_text(encoding="utf-8") == "x"
+
+
+def test_the_rest_of_the_state_dir_stays_unwritable(sboxed_publications,
+                                                     state_root):
+    probe = state_root / "secret.probe"
+    script = (
+        "PARAMS = {}\n"
+        "def build(p):\n"
+        f"    open({str(probe)!r}, 'w', encoding='utf-8').write('x')\n"
+        "    return None\n"
+    )
+    try:
+        with pytest.raises(KernelError) as exc_info:
+            _build(sboxed_publications, script,
+                   state_root / "publications" / "build" / "mesh2.acm")
+        err = exc_info.value
+        assert err.type == "script_error"
+        assert "PermissionError" in err.details.get("traceback", "") or (
+            "Operation not permitted" in err.message
+        )
+        assert err.details.get("denied") == "filesystem"
+        assert not probe.exists()
+    finally:
+        if probe.exists():
+            probe.unlink()
+            pytest.fail("sandboxed worker wrote outside publications/build")

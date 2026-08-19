@@ -160,12 +160,22 @@ def build(argv: list[str], write_roots: list[str], quotas: Quotas,
         if reason is None:
             confinement = {"status": "active", "mechanism": "landlock+seccomp",
                            "detail": detail}
-            # Declared here only when Landlock+seccomp are genuinely emitted
-            # below, for symmetry with `sandbox_macos` (whose worker cannot
-            # self-report the seatbelt at all). Harmless on Linux, since the
-            # worker's own preamble also fills `landlock_abi`/`seccomp` from
-            # this same payload — this is belt and braces, not load-bearing.
-            payload["confinement"] = ["filesystem", "network"]
+            # `payload["confinement"]` is deliberately NOT set here (independent
+            # re-review, post-F1). It used to be, "for symmetry with
+            # `sandbox_macos`" — but that symmetry is exactly the bug: the
+            # Linux worker CAN self-report `landlock_abi`/`seccomp`, so a
+            # parent-declared facet list is not belt-and-braces, it is a second,
+            # independent claim that `_preamble.apply_from_env` copies into
+            # `REPORT["confinement"]` **before** the landlock/seccomp stages
+            # even run. If either stage then fails inside the worker (a kernel
+            # quirk, a transient `landlock_apply` error) the self-report goes
+            # `landlock_abi=None`/`seccomp=None` but the parent-declared claim
+            # still said `["filesystem", "network"]`, and `denials.active_facets`
+            # trusts declared facets unconditionally — exactly the honesty rule
+            # M3 exists to close (a plain DAC EACCES would be relabelled a
+            # sandbox denial). macOS has no choice: its worker never touches
+            # Landlock/seccomp itself, so the seatbelt wrap has nowhere else to
+            # report from. Linux does have a choice, so it makes the honest one.
         else:
             # The payload still goes: `landlock_apply` refuses below the ABI
             # floor by itself, and seccomp is worth having even where Landlock

@@ -212,7 +212,7 @@ This project is built skill-first. Use the Superpowers process skills:
   unregister seam; reachable only by a member who already has RCE).
 - Sandboxing & quotas (`kernel/sandbox*.py`, `_confine.py`, `_preamble.py`,
   `_meter.py`, `quotas.py`, `denials.py`, `core/usage.py`; changelogs
-  0213–0219): Linux confinement is **in-process Landlock + seccomp** applied by
+  0230–0237): Linux confinement is **in-process Landlock + seccomp** applied by
   the worker to itself before `import build123d` — **no `preexec_fn` anywhere**
   (the server is threaded; cgroup placement is the parent writing `proc.pid`
   after `Popen`) · **never grant bare `/tmp`**: every worker gets a private

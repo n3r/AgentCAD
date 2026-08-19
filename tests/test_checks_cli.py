@@ -245,7 +245,9 @@ def test_a_refused_work_dir_is_never_created(tmp_path):
     changelog made ("a refused path leaves nothing behind") was false on the
     surface most people use.
 
-    Creating the directory is the runner's job, after it has accepted it.
+    Creating the directory is `cli._accept_work_dir`'s job now — accept (or
+    refuse) first, `mkdir(parents=True, exist_ok=True)` second, both before
+    `_build_service` spawns the confined workers (review I1).
     """
     proj = _copy_example(tmp_path / "refused", "cli_refused")
     inside = proj / "scratch"

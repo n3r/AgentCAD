@@ -73,6 +73,19 @@ class DiskBudgetError(AppError):
     """
 
 
+class ServiceUnavailableError(AppError):
+    """The instance cannot serve this request in its current configuration (503).
+
+    Distinct from a rate limit: a 429 clears when a slot frees, a 503 here is a
+    standing condition an operator must fix. PRD-007 raises it when the share
+    customizer is asked to build on a single-worker kernel pool — running the
+    anonymous build would starve members of their only worker, so the request
+    refuses and names the knob to fix (``AGENTCAD_KERNEL_POOL_SIZE``).
+
+    Its wire ``type`` via ``error_type`` is ``serviceunavailable_error``.
+    """
+
+
 def error_type(exc: AppError) -> str:
     """The wire ``type`` of an application error.
 

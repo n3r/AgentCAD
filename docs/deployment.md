@@ -71,12 +71,14 @@ container ships.
 | `AGENTCAD_MODE` | `local` | `local` or `hosted`. **Never inferred** — an unrecognised value refuses to start, because defaulting would fail open. |
 | `AGENTCAD_PUBLIC_ORIGIN` | — | Required in hosted mode. Scheme + host (+ port), no path, no trailing slash. Host and Origin checks compare against it; enrolment URLs are built from it. |
 | `AGENTCAD_SECRET_KEY` | generated | ≥32 characters. **Leave it unset — that is the recommended path**: one is generated and persisted `0600` at `$AGENTCAD_STATE_DIR/secret.key`, where it is readable only by the server's own user. An explicit value is process environment, so it is visible to `docker inspect`, to anything that can read `/proc/<pid>/environ`, and to whatever shell history or CI log the value passed through. Set it only when you have a reason the file cannot serve (several instances sharing one key), and then treat it as a secret in the orchestrator rather than in `.env`. |
-| `AGENTCAD_STATE_DIR` | `<config-dir>/state` | Identity state (`auth/`, `secret.key`). Created `0700` and repaired to `0700` at startup — it holds the session secret and the password hashes. Compose sets `/data/state`. **Keep it outside every kernel-writable root**: the hosted read allow-list is the read roots plus the *write* roots, so a state dir inside one is readable (and writable) by a part script, and whoever reads `secret.key` can forge any session. A hosted `agentcad serve` **refuses to start** if it is, naming both paths and exiting 2. Since the config dir is no longer a write root the `<config-dir>/state` default is safe again, but set it explicitly on any hosted instance anyway. |
+| `AGENTCAD_STATE_DIR` | `<config-dir>/state` | Identity state (`auth/`, `secret.key`). Created `0700` and repaired to `0700` at startup — it holds the session secret and the password hashes. Compose sets `/data/state`. **Keep it outside every kernel-writable root that isn't `publications/build`**: the hosted read allow-list is the read roots plus the *write* roots, so a state dir inside one is readable (and writable) by a part script, and whoever reads `secret.key` can forge any session. A hosted `agentcad serve` **refuses to start** if the state dir itself lies inside a write root, naming both paths and exiting 2. The one designed exception is `<state-dir>/publications/build` — PRD-007's share-link/customizer variant builds go through the shared kernel pool and need to write there, so that one subtree (and only that subtree) *is* a granted write root and *is* on the hosted read allow-list; `secret.key` and `auth/` are siblings of `publications/`, not beneath it, and stay out of both. Since the config dir is no longer a write root wholesale the `<config-dir>/state` default is otherwise safe, but set it explicitly on any hosted instance anyway. |
 | `AGENTCAD_PROJECTS_DIR` | `~/AgentCAD/projects` | Where projects and their `.history` git repos live. Compose sets `/data/projects`. |
 | `AGENTCAD_HOST` | `127.0.0.1` | Listen address. A non-loopback bind **requires** `AGENTCAD_MODE=hosted`. |
 | `AGENTCAD_TRUSTED_PROXY` | `127.0.0.1` | Hosted mode only. The immediate peer(s) allowed to set `X-Forwarded-For`, passed to uvicorn's `forwarded_allow_ips` (IPs or CIDRs, comma-separated). Default matches the local proxy above. **`*` is refused** — it would let any client forge the address the login limiter keys on. |
 | `AGENTCAD_PORT` | `8630` | Listen port. |
-| `AGENTCAD_KERNEL_POOL_SIZE` | `max(1, min(3, cores//3))` | Kernel workers, ≈0.5 GB RSS each. Compose pins `1` rather than letting it float with the host. |
+| `AGENTCAD_KERNEL_POOL_SIZE` | `max(1, min(3, cores//3))` | Kernel workers, ≈0.5 GB RSS each. Compose pins `2` rather than letting it float with the host: the PRD-007 share customizer reserves one worker for members, so it needs `>= 2` to run (a 1-worker pool answers `/variant`/`/download` with `503`). A viewer-only deployment can drop back to `1`. |
+| `AGENTCAD_SHARE_MAX_INFLIGHT` | `2` | Hosted mode, PRD-007. The operator ceiling on **concurrent anonymous customizer builds**. The *effective* cap is this clamped to `AGENTCAD_KERNEL_POOL_SIZE - 1`, so at least one worker is always reserved for signed-in members — that reservation, not the `affinity=` routing (which is consistent-hash cache-warmth, **not** isolation), is what keeps a share flood from starving members. Over the cap a `/s/<token>/variant` returns `429 quota_exceeded`. On a **single-worker pool** the effective cap is `0`: the customizer cannot run without starving members, so `/variant` and `/download` return `503 service_unavailable` (viewer links stay up) — the customizer needs `AGENTCAD_KERNEL_POOL_SIZE >= 2`. |
+| `AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE` | unset | Hosted mode, PRD-007. **Off by default.** Set to `N` to require sign-in once an anonymous address crosses `N` customizer rebuilds/hour (`/variant` → `401`) — a login wall on a link under a distinct-param flood, without taking the viewer offline. The pre-006 backstop for stranger compute; the per-IP threshold is only honest behind the trusted proxy (see `AGENTCAD_TRUSTED_PROXY`). |
 | `AGENTCAD_EXAMPLES` | `1` | `0` skips registering the bundled examples. Compose sets `0`: in a container they live in a read-only image layer, so edits vanish on redeploy. |
 | `AGENTCAD_CONFIG` | `~/.agentcad/config.json` | User config path; also the root the packages/indexes/state defaults derive from. |
 | `AGENTCAD_PACKAGES_DIR` / `AGENTCAD_INDEXES_DIR` | under the config dir | PRD-011 package cache and index checkouts. |
@@ -184,8 +186,10 @@ bug.
 ## Sizing
 
 - **≈0.5 GB RSS per kernel worker**, plus the server process.
-- **Floor: 2 vCPU / 4 GB** with `AGENTCAD_KERNEL_POOL_SIZE=1` (the compose
-  default). A single worker serialises builds; that is fine for a small team.
+- **Floor: 2 vCPU / 4 GB** with `AGENTCAD_KERNEL_POOL_SIZE=2` (the compose
+  default). Two workers is the minimum the **share customizer** needs — one to
+  build a visitor variant on, one kept free for members (a 1-worker pool refuses
+  `/variant` with `503`). A viewer-only deployment can run `1`.
 - **4 vCPU / 8 GB** for `AGENTCAD_KERNEL_POOL_SIZE=3`, which is what a handful
   of concurrent editors wants.
 - Disk is projects plus their `.history` git repos. Mesh caches live under each
@@ -270,10 +274,44 @@ author, and a forgotten entry fails the build rather than passing quietly.
 | `GET` | `/api/public/packages/{name}` | ditto |
 | `GET` | `/api/public/packages/{name}/versions/{version}` | ditto — the pre-generated metadata |
 | `GET` | `/api/public/packages/{name}/versions/{version}/preview` | a shipped `.png`, resolved inside the version directory |
+| `GET` | `/s/{token}`, `/embed/{token}` | a shared model's HTML shell off disk (PRD-007). `/embed/` sends `Content-Security-Policy: frame-ancestors *` so any site may embed the public customizer; every other hosted response sends `frame-ancestors 'none'`, so the authenticated app is never frameable |
+| `GET` | `/s/{token}/model`·`/mesh/{key}`·`/params`·`/script` | attribution + metrics, the cached `.acm` bytes (404-if-absent, **never builds**), the slider spec, and the pinned script iff enabled — all file reads of sidecars the publish pin wrote, **zero kernel** |
+| `GET` | `/s/{token}/variant`·`/download/{fmt}` | **the two kernel-reaching anonymous routes** — the customizer rebuild and its variant export. Param-validated to the authoring path's parity (unknown/out-of-type/out-of-enum refused before any build), per-link **and** per-IP token buckets, a global in-flight semaphore (`AGENTCAD_SHARE_MAX_INFLIGHT`), and the content-addressed variant cache in front. A disabled format or a `customizer:false` link `404`s **before** the builder |
 
-Nine entries, every one a file read. **Zero kernel calls**, proved by a test
-that exercises the whole surface with the kernel instrumented — with a positive
-control, so a broken counter cannot make it pass.
+Fifteen route templates. Thirteen are file reads that make **zero kernel calls**
+(proved by a test that exercises the surface with the kernel instrumented, with a
+positive control so a broken counter cannot make it pass). The **two** PRD-007
+customizer routes are the one deliberate exception — the first anonymous requests
+that reach the kernel, bounded exactly as the table says.
+
+**What PRD-006 now bounds, and what is still open.** Since PRD-006 the worker a
+variant build runs in is capped (memory by the supervisor and, where delegated,
+a cgroup; process count; CPU) and confined (no egress, writes only under its
+roots — the variant build store is one of them), so a params-driven mesh that
+balloons is killed with `reason: memory_cap` instead of OOM-ing the host; see
+"Confinement and quotas" below. What is still open is a **disk budget for the
+variant cache itself** (per-project budgets do not cover `<state-dir>/publications/build`)
+— the operator's backstop for a link under a distinct-param flood remains
+`AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE` (off by default). The per-IP rate limit and
+that gate are only honest behind the trusted proxy (`AGENTCAD_TRUSTED_PROXY`) —
+the same caveat as the login limiter, for the same reason.
+
+**The share token rides in the URL path**, which keeps it out of a `Referer`
+(the pages send `Referrer-Policy: no-referrer`), but a path is **not**
+log-invisible: a reverse proxy (nginx/Caddy) logs the request path by default,
+so the token lands in the proxy access log — treat those logs as containing
+secrets. uvicorn's own access log is quieted (`log_level=warning`), so it is the
+proxy tier, not the app, that records the token. What makes a path token
+acceptable is not log-secrecy but **immediate revocation and expiry**: rotate a
+link (`agentcad share revoke`) if a log is exposed, and set a TTL on links that
+should not live forever.
+
+**Popular is cheaper, but not free.** The variant cache keys on the
+range-**clamped** params, so out-of-range floods (and any repeat) coalesce onto
+one build and one cached artifact. A genuinely-distinct **in-range** flood still
+builds each variant, and the on-disk variant cache is **unbounded** until
+PRD-006 adds a disk budget — the login gate above is the operator's backstop
+until then.
 
 **A private index stays private, and *you* decide which.** An index is
 anonymously readable only when **both** your configuration and the index's own
@@ -414,7 +452,7 @@ one is not opting out of the other.
 
 | | mechanism | reads | writes | network | other processes |
 |---|---|---|---|---|---|
-| **Linux** | Landlock + seccomp, applied by the worker to itself before `import build123d` | `local` posture: anywhere. `hosted` posture (this deployment): an allow-list — `/usr`, `/lib*`, `/bin`, `/sbin`, `/etc`, `/opt`, `/proc`, `/dev`, `/sys`, the interpreter, the app tree, and everything it may write to (the roots in the next column — a write root is readable by construction). **Not** `AGENTCAD_STATE_DIR`, and **nothing under the server user's home** — the config dir stopped being a write root, so there is no exception left to state. The worker's own `HOME` env var points at its private temp dir, so `~` inside a script is not the server user's home at all | the granted roots only — the projects dir, each registered example, the server's one `agentcad-work-*` root, and the worker's own private temp dir. Nothing else, root included (Landlock beats DAC) | denied: every socket family but `AF_UNIX` | no `ptrace`, no `process_vm_readv/writev`, no `pidfd_open`/`pidfd_send_signal`/`pidfd_getfd`, no `process_madvise`, no `io_uring`, and no signal to pid ≤ 0 or to the server |
+| **Linux** | Landlock + seccomp, applied by the worker to itself before `import build123d` | `local` posture: anywhere. `hosted` posture (this deployment): an allow-list — `/usr`, `/lib*`, `/bin`, `/sbin`, `/etc`, `/opt`, `/proc`, `/dev`, `/sys`, the interpreter, the app tree, and everything it may write to (the roots in the next column — a write root is readable by construction, which is why `<state-dir>/publications/build` is the one subtree of `AGENTCAD_STATE_DIR` on this list). **Not** the rest of `AGENTCAD_STATE_DIR` (`secret.key`, `auth/`), and **nothing under the server user's home** — the config dir stopped being a write root wholesale, so there is no broader exception to state. The worker's own `HOME` env var points at its private temp dir, so `~` inside a script is not the server user's home at all | the granted roots only — the projects dir, each registered example, the server's one `agentcad-work-*` root, the worker's own private temp dir, and `<state-dir>/publications/build` (PRD-007's shared-pool variant builds — `core/share_build.py`). Nothing else, root included (Landlock beats DAC) | denied: every socket family but `AF_UNIX` | no `ptrace`, no `process_vm_readv/writev`, no `pidfd_open`/`pidfd_send_signal`/`pidfd_getfd`, no `process_madvise`, no `io_uring`, and no signal to pid ≤ 0 or to the server |
 | **macOS** | `sandbox-exec` seatbelt profile (the v3 profile, unchanged) | anywhere (`local` posture only — the narrowed profile is Linux) | the same roots | denied | signals to self only |
 | **Windows** | **none.** Reported `unsupported`, honestly, in health and here — AppContainer is carved out as [PRD-006b](prd/pending/PRD-006b-windows-appcontainer.md) | — | — | — | — |
 

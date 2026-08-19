@@ -995,6 +995,42 @@ own packages is `docs/packages.md`; the short version is
 `agentcad package validate ./pkg` until it is green, then
 `agentcad publish ./pkg --index <name>`.
 
+## Browsing the catalog (the Marketplace)
+
+The **Market** button on the toolbar opens the marketplace — a full-page,
+read-only view over the same seeded, kernel-validated catalog the Library
+searches, but built for **browsing and customizing without an account**. On a
+hosted instance you can even reach it before signing in (the URL is `/#market`):
+browsing, customizing and downloads need no session; only *adding to a project*
+does.
+
+- **Browse.** A grid of listing cards — name, summary, license, a disclosure
+  badge (`agent`/`human`), a `validated ✓` correctness badge, and a preview
+  thumbnail. The search box filters by name, keyword, standard, license or
+  parameter range, deterministically, as you type.
+- **A listing.** Open a card for its metadata (license, standards, disclosure,
+  the validated-gate detail and the `signatures` slot — `unsigned` today), a
+  preview strip, a versions selector, the read-only script, and the **customizer**:
+  a viewport with sliders. Drag `body_length` and the server rebuilds a bounded
+  variant and shows the new mass and bounding box; the part's script runs only in
+  our server-side kernel, never on your machine.
+- **Download.** STEP, STL or 3MF of the variant you configured — a fixed set for
+  every listing.
+- **Add to library** (signed-in). Adds the package to one of your projects
+  (`add_package`, pinning the public catalog index) and materialises the part
+  (`use_part`); the lockfile pins the exact version so it rebuilds byte-identically
+  forever. Agents do the same in one call with `market_install`.
+
+The catalog is **seeded and read-only** in this release — the customizer is
+PRD-007's exact containment (rate-shaped, concurrency-capped, param-validated),
+so a busy instance may briefly show "the customizer is busy" and degrade to
+view-only; it recovers on its own. Open publishing, remix and an economy are a
+later phase.
+
+> **Packages are still code.** Adding a listing to your project installs a script
+> that runs in your kernel with your privileges; the validated badge is a
+> **correctness** gate, not a security boundary, and the listing says so.
+
 ## Working with the bundled examples
 
 Pick them from the project switcher:
@@ -1060,6 +1096,43 @@ you as a user.
 > registration is closed, and `member` versus `admin` is not a wall between
 > colleagues. That is a statement of what the software does today, not a
 > caveat to skim.
+
+## Sharing a part (a hosted instance)
+
+On a hosted instance you can turn a part into an **unlisted link** that anyone
+can open in a browser — no account, no install. A logged-out visitor sees the
+model, its metrics and your attribution; a *customizer* link also gives them
+sliders that rebuild real geometry within the bounds your PARAMS declare, and a
+STEP/STL/3MF of *their* variant.
+
+- **Publish.** Select a part and click **Share…** in the toolbar. In the dialog:
+  choose the **version** (a tag by default, so the link never drifts — leaving
+  it on "current state" tags a new version for you); turn the **customizer** on
+  or off; tick the **download** formats to allow (or none for view-only); choose
+  whether the **script** is visible; and optionally an **expiry** in days
+  (default: never, until you revoke). Click **Create link** — the URL is shown
+  **once**, so copy it then.
+- **The URL is the capability.** Anyone with the link can view (and, on a
+  customizer link, customize and download). There is no other login. Treat it
+  like a shared document link: unguessable, but not secret to those you send it
+  to. The page footer says as much to your visitors.
+- **Embed it.** `…/embed/<token>` is an iframe-embeddable version of the same
+  page — drop it into a forum post or a docs page and the model orbits inline.
+- **Watch and revoke.** The dialog's **Active links** list shows each link's
+  coarse view/rebuild/download counts and a **Revoke** button. Revocation is
+  immediate; a revoked, expired or unknown link all answer the same "no such
+  link", so the URL is never an oracle for what you have published.
+- **Your work is safe from visitors.** A link pins a *copy* of the script at the
+  chosen version, built in an isolated space; editing your working part never
+  changes what a live link serves, and no visitor action can touch your project,
+  its history or its cache. A visitor supplies slider *values*, never code — the
+  same validation the editor uses clamps a number out of range and refuses a bad
+  type. A busy link degrades to view-only with a plain "try again shortly"
+  rather than an error.
+
+Publishing is also an agent tool (`share_create` / `share_list` /
+`share_revoke`) — an agent can drop a share URL into chat or a proposal. See
+`docs/agent-api.md`.
 
 ## Where files live
 

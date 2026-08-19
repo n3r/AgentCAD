@@ -1,4 +1,4 @@
-# 0216 — PRD-006 slice 2, review fixes: io_uring closed, writable roots created by their owner, honest denial labels
+# 0233 — PRD-006 slice 2, review fixes: io_uring closed, writable roots created by their owner, honest denial labels
 
 - **Commit:** pending
 - **Date:** 2026-08-18
@@ -57,7 +57,7 @@ random request ids close a forgery hole they only half close.
   saying `off` understates the confinement as badly as claiming `active` on
   intent would overstate it.
 - **The request-id claim is corrected** in `client._request_locked`'s comment
-  and in changelog 0215: random ids stop a *lingering* forked child (or any
+  and in changelog 0232 (branch number 0215): random ids stop a *lingering* forked child (or any
   stale writer) from computing and answering requests it never saw. They do
   **not** stop the running script from forging the response to its own
   in-flight request — it holds fd 1 and can reach the id through the
@@ -87,7 +87,7 @@ random request ids close a forgery hole they only half close.
 - `agentcad/kernel/sandbox.py` — the comment saying why `plan()` must NOT;
   `supported()` docstring
 - `agentcad/kernel/protocol.py` — `usage` in the documented response shape
-- `docs/changelog/0215-…md` — the corrected forgery claim (and its real hash)
+- `docs/changelog/0232-…md` (was `0215-…` on the branch) — the corrected forgery claim (and its real hash)
 - `tests/test_confine_unit.py` — io_uring denied, both arches, all three numbers
 - `tests/test_denials.py` — the socket-frame rule, and an EPERM that is not one
 - `tests/test_protocol_ids.py` — `confinement_holds` (rlimit vs landlock vs

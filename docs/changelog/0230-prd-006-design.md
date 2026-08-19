@@ -1,4 +1,4 @@
-# 0213 — PRD-006 design: sandboxing & quotas — Linux self-confinement, honest quota tiers, metering
+# 0230 — PRD-006 design: sandboxing & quotas — Linux self-confinement, honest quota tiers, metering
 
 - **Commit:** pending
 - **Date:** 2026-08-18
@@ -43,7 +43,7 @@ real worker inside the shipped compose image and on this macOS box.
 - `docs/superpowers/specs/2026-08-18-sandboxing-quotas-design.md` — new
 - `docs/superpowers/plans/2026-08-18-sandboxing-quotas.md` — new
 - `docs/prd/in-progress/PRD-006-sandboxing-quotas.md` — moved from `pending/`
-- `docs/changelog/0213-prd-006-design.md` — this entry
+- `docs/changelog/0230-prd-006-design.md` — this entry (numbered 0213 on the branch; renumbered at merge)
 
 ## Notes
 Branch `prd-006-sandboxing-quotas`, built in parallel with PRD-007 (which is

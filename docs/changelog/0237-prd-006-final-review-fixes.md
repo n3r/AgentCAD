@@ -1,4 +1,4 @@
-# 0220 — PRD-006 final review fixes: the pidfd hole, a per-worker fork budget, honest facets and tiers
+# 0237 — PRD-006 final review fixes: the pidfd hole, a per-worker fork budget, honest facets and tiers
 
 - **Commit:** pending
 - **Date:** 2026-08-19
@@ -189,6 +189,30 @@ report applying.
   `::test_network_denied_worker_survives` now assert
   `err.details["denied"] == "filesystem"`/`"network"` and pass.
 
+### Merge with main — `_writable_roots` grants `<state-dir>/publications/build` for PRD-007's shared-pool variant builds
+
+- Merging `origin/main` (PRD-007, share-link/customizer variants) into this
+  branch reintroduced the exact conflict I5 and I6 exist to prevent: PRD-007's
+  build path (`core/share_build.py`'s `self._store.build_root()`, which is
+  `appmode.state_dir() / "publications" / "build"`) writes through the SHARED
+  kernel pool, and PRD-006 removed `~/.agentcad` from the granted roots — so a
+  customizer/variant build would fail every time with a `PermissionError`
+  under the seatbelt/Landlock.
+- `cli._writable_roots` now grants exactly that one subtree — not the state
+  dir, not `~/.agentcad` wholesale — reading `state_dir()` from `.core.appmode`
+  at call time (so `monkeypatch.setenv` still works) and creating it the same
+  way the projects dir is created there (`os.makedirs`, warn-on-`OSError`).
+  `secret.key` and `auth/` are siblings of `publications/`, not beneath it, so
+  they stay ungranted and off the hosted read allow-list; the scripts pinned
+  under `publications/scripts/` are already public, so a worker reading or
+  writing its own build cell exposes nothing a share link did not already
+  expose.
+- `_refuse_state_dir_in_a_write_root` needed no code change: the guard checks
+  whether the *state dir* lies inside a granted root, and
+  `<state-dir>/publications/build` is a **child** of the state dir, not a
+  container of it, so the ordinary hosted layout is not refused. Pinned with
+  new tests rather than left implicit.
+
 ### M5 — stale text
 
 - `kernel/sandbox.py`'s module docstring no longer says Linux and Windows
@@ -225,7 +249,8 @@ report applying.
   comment
 - `agentcad/cli.py` — `_accept_work_dir`, `_within`,
   `_refuse_state_dir_in_a_write_root`, `service.writable_roots`, the three
-  commands' work-dir handling, `_writable_roots` without `~/.agentcad`
+  commands' work-dir handling, `_writable_roots` without `~/.agentcad`; merge
+  fix: `_writable_roots` grants `<state-dir>/publications/build`
 - `agentcad/core/checks.py` — module-level `refuse_work_dir_overlap`
 - `agentcad/core/packages/gate.py` — module-level `refuse_work_dir_overlap`
 - `agentcad/core/project.py` — `_TRIM_MIN_AGE_S` and `trim_cache(min_age_s=)`
@@ -238,12 +263,17 @@ report applying.
 - `tests/test_sandbox_plan.py` — the scaled/re-measured fork budget on both
   backends, `pool_size` defaults, `landlock_root`, M1, M2, the roots pin; F1's
   macOS payload now carries `confinement`, and so does the (self-reporting)
-  Linux one
+  Linux one; merge fix: the roots pin now also proves the
+  `publications/build` grant (created, present, no bare state dir/home) with
+  both the default and a monkeypatched `AGENTCAD_STATE_DIR`
 - `tests/test_sandbox_linux.py` — the live pidfd-at-the-server case, a
   three-worker pool, the lost grant that stays confined, a work dir that exists
   at spawn
 - `tests/test_sandbox.py` — F1: `details["denied"]` pinned to `"filesystem"`/
-  `"network"` on the real seatbelt, and the preamble report's `confinement` key
+  `"network"` on the real seatbelt, and the preamble report's `confinement` key;
+  merge fix: a second module-scoped client built through
+  `cli._writable_roots` proves a real seatbelt lets a script write inside
+  `<state>/publications/build` and still denies the rest of the state dir
 - `tests/test_supervisor.py` — the breach, the timeout, the crash and the
   broken pipe all reaching the hook
 - `tests/test_usage.py` — a killed request counts as an error and bills its
@@ -255,7 +285,9 @@ report applying.
 - `tests/test_checks_cli.py` — an accepted work dir exists before the spawn; a
   refused one costs no worker
 - `tests/test_deploy_config.py` — the hosted state-dir refusal and the passing
-  compose layout
+  compose layout; merge fix: the guard still passes for the default hosted
+  layout once `_writable_roots` grants the new subtree, and still refuses a
+  state dir placed inside the projects dir
 
 ## Notes
 

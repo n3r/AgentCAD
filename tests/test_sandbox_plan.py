@@ -153,15 +153,22 @@ def test_the_cli_creates_the_projects_root_it_owns_and_grants_no_home(
     missing path is ENOENT — the grant is lost and every write into it fails
     once it appears. `cli._writable_roots` owns that directory, so it makes it.
 
-    `~/.agentcad` is **not** a write root (review I5). Nothing in
+    `~/.agentcad` is **not** a write root wholesale (review I5). Nothing in
     `agentcad/kernel/` or `agentcad/toolkit/` reads or writes the config dir,
     every `load_config()` caller is server-side, and the worker's HOME is its
-    private temp dir — so the grant bought nothing and cost the sentence the
-    docs want to be able to say: a part script can write nothing under the
+    private temp dir — so a blanket grant bought nothing and cost the sentence
+    the docs want to be able to say: a part script can write nothing under the
     server user's home. The config file carries index definitions and the
     quota knobs; a script that could rewrite it could raise its own caps.
+
+    The one exception, carved out for PRD-007's shared-pool variant builds
+    (merged from main), is `<state-dir>/publications/build` — narrow enough
+    that a script gains no more than the ability to write its own
+    already-public variant mesh, and everything else under `~/.agentcad`
+    (`config.json`, `secret.key`, `auth/`) stays ungranted and unmade.
     """
     from agentcad import cli
+    from agentcad.core.appmode import state_dir
 
     home = tmp_path / "home"
     home.mkdir()
@@ -173,11 +180,49 @@ def test_the_cli_creates_the_projects_root_it_owns_and_grants_no_home(
 
     assert projects.is_dir()
     assert str(projects) in roots
+    build_root = str(state_dir() / "publications" / "build")
+    assert build_root in roots
+    assert Path(build_root).is_dir()
     assert str(home / ".agentcad") not in roots
-    assert not any(str(home) == root or root.startswith(f"{home}{os.sep}")
-                   for root in roots), roots
-    # ...and it is not created behind the operator's back either.
-    assert not (home / ".agentcad").exists()
+    assert str(state_dir()) not in roots
+    # Nothing under home is granted except that one publications/build
+    # subtree — no blanket `~/.agentcad` grant reappeared.
+    assert not any(
+        root != build_root and
+        (str(home) == root or root.startswith(f"{home}{os.sep}"))
+        for root in roots), roots
+    # ...and nothing beside that one subtree is created behind the
+    # operator's back either.
+    assert not (state_dir() / "secret.key").exists()
+    assert not (state_dir() / "auth").exists()
+    assert not (home / ".agentcad" / "config.json").exists()
+
+
+def test_writable_roots_grants_the_publications_build_subtree(monkeypatch,
+                                                               tmp_path):
+    """PRD-007 merge: share-link/customizer variant builds go through the
+    SHARED kernel pool into `PublicationStore.build_root()`
+    (`core/share_build.py`'s `self._store.build_root()`), which is exactly
+    `appmode.state_dir() / "publications" / "build"`. PRD-006 narrowed the
+    worker's write roots to exclude the state dir wholesale, so that one
+    subtree has to be granted explicitly or every variant build would fail
+    with a `PermissionError` under the seatbelt/Landlock confinement.
+    """
+    from agentcad import cli
+    from agentcad.core.appmode import state_dir
+
+    state = tmp_path / "state-elsewhere"
+    monkeypatch.setenv("AGENTCAD_STATE_DIR", str(state))
+    projects = tmp_path / "projects"
+
+    roots = cli._writable_roots(projects)
+
+    build_root = str(state_dir() / "publications" / "build")
+    assert build_root == str(state / "publications" / "build")
+    assert build_root in roots
+    assert Path(build_root).is_dir()
+    assert str(state_dir()) not in roots
+    assert str(Path.home() / ".agentcad") not in roots
 
 
 def test_a_root_the_cli_cannot_create_warns_instead_of_crashing(monkeypatch,
@@ -247,6 +292,9 @@ def test_a_backend_that_raises_does_not_leak_the_temp_dir(isolated, monkeypatch)
 
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(sandbox_macos, "build", _boom)
+    private_tmp = isolated / "private-tmp"   # not the shared temp: xdist siblings race there
+    private_tmp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(private_tmp))
     before = set(Path(tempfile.gettempdir()).glob(sandbox.TMP_PREFIX + "*"))
     with pytest.raises(RuntimeError):
         _plan([isolated])
@@ -264,6 +312,12 @@ def test_a_failure_after_the_backend_was_built_releases_it_too(isolated,
         raise RuntimeError("no plan today")
 
     monkeypatch.setattr(sandbox, "SandboxPlan", _boom)
+    # A private temp root: under xdist a sibling test process creating or
+    # releasing its own `agentcad-worker-*` dir in the shared temp between the
+    # two globs made this a race, not a measurement.
+    private_tmp = isolated / "private-tmp"
+    private_tmp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(private_tmp))
     before = set(Path(tempfile.gettempdir()).glob(sandbox.TMP_PREFIX + "*"))
     with pytest.raises(RuntimeError):
         _plan([isolated])
@@ -491,12 +545,14 @@ def test_the_linux_plan_confines_in_process_and_leaves_the_argv_alone(isolated,
             "status": "active", "mechanism": "landlock+seccomp",
             "detail": {"landlock_abi": 6, "posture": "local"}}
         payload = json.loads(plan.env["AGENTCAD_CONFINE"])
-        assert set(payload) == {"posture", "rlimits", "landlock", "seccomp",
-                                "confinement"}
-        # Belt and braces alongside the worker's own self-report (Linux
-        # applies landlock+seccomp to itself, unlike macOS's parent-applied
-        # seatbelt) — declared only when confinement is genuinely active.
-        assert payload["confinement"] == ["filesystem", "network"]
+        assert set(payload) == {"posture", "rlimits", "landlock", "seccomp"}
+        # No parent-declared `confinement` on Linux (independent re-review,
+        # post-F1): unlike macOS's parent-applied seatbelt, the Linux worker
+        # CAN and DOES self-report `landlock_abi`/`seccomp` from actually
+        # applying them, so a parent-declared facet list here would be a
+        # second, unconditional claim that survives a stage failing inside
+        # the worker — exactly the honesty rule M3 exists to close.
+        assert "confinement" not in payload
         assert payload["posture"] == "local"
         assert payload["landlock"]["read_roots"] == ["/"]   # the local posture
         assert payload["landlock"]["write_roots"] == [

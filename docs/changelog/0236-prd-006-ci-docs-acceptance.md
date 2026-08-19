@@ -1,4 +1,4 @@
-# 0219 — PRD-006 slice 5: the CI honesty gate and the Landlock probe, the image and compose posture, the docs rewritten around what actually ships, the acceptance file, and the 006b carve-out
+# 0236 — PRD-006 slice 5: the CI honesty gate and the Landlock probe, the image and compose posture, the docs rewritten around what actually ships, the acceptance file, and the 006b carve-out
 
 - **Commit:** pending
 - **Date:** 2026-08-18
@@ -7,7 +7,7 @@
 ## Summary
 
 The last slice of PRD-006, and the one that makes the previous four legible.
-Across `0213`–`0219` this branch turned "only macOS confines part scripts" into
+Across `0230`–`0236` (`0213`–`0219` on the branch) this branch turned "only macOS confines part scripts" into
 a per-OS contract that is measured rather than claimed: the **Linux worker now
 confines itself** with a Landlock ruleset and a seccomp filter applied through
 `ctypes` before `import build123d` — no capability, no `bwrap`, verified as uid
@@ -314,7 +314,7 @@ collide at merge (`b24ef66` moved 0188–0197 to 0200–0209).
 - `agentcad/kernel/sandbox_macos.py`, `agentcad/core/project.py`,
   `agentcad/cli.py`, `agentcad/core/appmode.py`, `tests/test_sandbox.py`,
   `tests/test_quotas.py` — the deferred minors
-- `docs/changelog/0219-prd-006-ci-docs-acceptance.md` — this entry
+- `docs/changelog/0236-prd-006-ci-docs-acceptance.md` — this entry (0219 on the branch)
 
 ## Notes
 

@@ -160,6 +160,36 @@ def test_a_parent_declared_facet_is_active_even_with_no_worker_evidence():
     assert active_facets(undeclared) == frozenset()
 
 
+def test_a_linux_worker_with_a_failed_stage_claims_nothing_for_that_facet():
+    """Independent re-review, post-F1: `sandbox_linux.build()` no longer
+    declares `payload["confinement"]` at all (it used to, "for symmetry with
+    `sandbox_macos`"). Linux is not macOS's case — the Linux worker CAN and
+    DOES self-report `landlock_abi`/`seccomp` from actually applying them, so
+    a parent-declared facet list there was a second, unconditional claim: if
+    `landlock`/`seccomp` failed *inside* the worker after the parent had
+    already decided (at plan time) that it intended to apply them, the
+    self-report went `landlock_abi: None`/`seccomp: None` but the declared
+    list still said `["filesystem", "network"]`, so `active_facets` would
+    have relabelled a plain DAC `EACCES` a sandbox denial — exactly what
+    review M3 exists to prevent. This is the shape `_preamble.apply_from_env`
+    now produces for a Linux worker with no `confinement` key in its payload
+    (``payload.get("confinement") or []``): the key is present as `[]`, never
+    omitted, and both spellings must claim nothing.
+    """
+    failed_landlock = {"posture": "hosted", "rlimits": ["RLIMIT_NPROC"],
+                       "quotas": [], "landlock_abi": None, "seccomp": None,
+                       "confinement": [], "failures": [
+                           {"stage": "landlock", "error": "EINVAL"}]}
+    assert active_facets(failed_landlock) == {"process_count", "memory"}
+    assert classify("PermissionError", "[Errno 13] Permission denied: '/etc/shadow'",
+                    active=active_facets(failed_landlock)) is None
+
+    # The key omitted entirely behaves identically — `.get(...) or []`.
+    omitted = {"posture": "hosted", "rlimits": [], "quotas": [],
+              "landlock_abi": None, "seccomp": None, "failures": []}
+    assert active_facets(omitted) == frozenset()
+
+
 def test_a_bare_boolean_still_means_all_four_or_none():
     """The parameter kept its old shape so a caller with one honest answer for
     the whole worker (and every existing test above) needs no change."""

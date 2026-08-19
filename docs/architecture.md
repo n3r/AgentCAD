@@ -875,22 +875,30 @@ names which one is in force:
 
 The writable roots are the same everywhere: the projects dir, registered
 examples, an accepted `--work-dir`, the worker's **private**
-`agentcad-worker-*` temp dir and the server's one `agentcad-work-*` root that
-`agentcad check` and the package gate materialize their cells under. The
-shared system temp dir is deliberately **not** granted: it let every worker
-read and write every other worker's scratch. Neither is `~/.agentcad` —
-nothing in `kernel/` or `toolkit/` reads or writes the config dir, every
-`load_config()` caller is server-side, and the worker's `HOME` is its own
-private temp dir, so the grant bought nothing and cost the sentence below.
+`agentcad-worker-*` temp dir, the server's one `agentcad-work-*` root that
+`agentcad check` and the package gate materialize their cells under, and
+`<state-dir>/publications/build` — PRD-007's share-link/customizer variant
+builds go through the SAME confined kernel pool
+(`core/share_build.py`'s `self._store.build_root()`, which is exactly
+`appmode.state_dir() / "publications" / "build"`). The shared system temp dir
+is deliberately **not** granted: it let every worker read and write every
+other worker's scratch. Neither is the rest of `~/.agentcad` — nothing in
+`kernel/` or `toolkit/` reads or writes the config dir, every `load_config()`
+caller is server-side, and the worker's `HOME` is its own private temp dir, so
+a blanket grant would buy nothing and cost the sentence below; `secret.key`
+and `auth/` sit beside `publications/`, not beneath it, and stay ungranted.
 Reads follow a *posture*: `local` reads anywhere (the v1
 stance), and `hosted` — Linux only, selected by `AGENTCAD_MODE=hosted` —
-narrows reads to an allow-list that excludes `AGENTCAD_STATE_DIR` and leaves
-**nothing under the server user's home** reachable, so a
-member's script can no longer read the session signing key. Note that the
+narrows reads to an allow-list that excludes `AGENTCAD_STATE_DIR` (except that
+one `publications/build` subtree, which is both a write root and therefore
+readable) and leaves **nothing else under the server user's home** reachable,
+so a member's script can no longer read the session signing key. Note that the
 allow-list is the read roots **plus the write roots**, which is why a write
 root is always readable — and why a hosted `agentcad serve` **refuses to
-start** when `AGENTCAD_STATE_DIR` lies inside one (exit 2, naming both paths;
-compose's `/data/state` is a sibling of `/data/projects`, not a child).
+start** when `AGENTCAD_STATE_DIR` itself lies inside a write root (exit 2,
+naming both paths; compose's `/data/state` is a sibling of `/data/projects`,
+not a child, and `<state-dir>/publications/build` is a *child* of the state
+dir, not a container of it, so it never trips this guard).
 The worker's own `HOME` is its private temp dir, so `~` inside a part script
 is never the server user's home. Forks and
 `exec`s inherit the confinement.

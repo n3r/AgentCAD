@@ -132,8 +132,17 @@ def test_the_container_binds_every_interface_and_is_therefore_hosted(service):
 
 def test_the_kernel_pool_is_pinned_not_floated(service):
     """`max(1, min(3, cores//3))` on a big host would be 3 workers at ~0.5 GB
-    each on a box the docs say can be 4 GB. Pinning is the safe default."""
-    assert service["environment"]["AGENTCAD_KERNEL_POOL_SIZE"] == "1"
+    each on a box the docs say can be 4 GB. Pinning is the safe default —
+    pinned, not floated to a host-dependent value.
+
+    The pinned value is **2**, not 1, as of PRD-007: the share customizer
+    reserves one worker for signed-in members (effective in-flight cap =
+    pool_size - 1), so it needs at least 2 to run at all — a 1-worker pool
+    answers `/variant`/`/download` with a `503`. Two workers is ~1 GB RSS,
+    within the documented 2 vCPU / 4 GB floor (deployment.md), so this is
+    still the memory-safe pin the test guards, just at the value the
+    customizer requires. A viewer-only deployment can set it back to 1."""
+    assert service["environment"]["AGENTCAD_KERNEL_POOL_SIZE"] == "2"
 
 
 def test_the_healthcheck_actually_hits_the_health_route(service):
@@ -333,6 +342,50 @@ def test_the_compose_layout_serves(monkeypatch, tmp_path, capsys,
     serve(args, open_browser=False)          # no SystemExit
 
     assert "AGENTCAD_STATE_DIR" not in capsys.readouterr().err
+
+
+def test_hosted_default_state_dir_with_the_new_root_is_not_refused(
+        monkeypatch, tmp_path, capsys):
+    """PRD-007 merge: `_writable_roots` now grants
+    `<state-dir>/publications/build` for the shared-pool variant builds
+    (`core/share_build.py`). That subtree is a CHILD of the state dir, not a
+    container of it, so the ordinary hosted layout — state dir at its default
+    location, projects dir elsewhere, both plus the new subtree among the
+    granted roots — must not trip the guard."""
+    from agentcad import cli
+
+    monkeypatch.setenv("AGENTCAD_CONFIG", str(tmp_path / "cfg.json"))
+    monkeypatch.delenv("AGENTCAD_STATE_DIR", raising=False)
+    projects = tmp_path / "projects"
+    roots = cli._writable_roots(projects)
+    build_root = str(Path(tmp_path / "state" / "publications" / "build"))
+    assert build_root in roots
+    service = SimpleNamespace(writable_roots=roots)
+
+    cli._refuse_state_dir_in_a_write_root(SimpleNamespace(hosted=True),
+                                          service)
+    assert capsys.readouterr().err == ""
+
+
+def test_hosted_state_dir_inside_the_projects_dir_is_still_refused(
+        monkeypatch, tmp_path, capsys):
+    """The new publications/build root does not weaken the existing guard: a
+    state dir placed inside the projects tree is refused exactly as before,
+    even once `_writable_roots` grants a second root alongside it."""
+    from agentcad import cli
+
+    projects = tmp_path / "data" / "projects"
+    state = projects / "state"
+    monkeypatch.setenv("AGENTCAD_CONFIG", str(tmp_path / "cfg.json"))
+    monkeypatch.setenv("AGENTCAD_STATE_DIR", str(state))
+    roots = cli._writable_roots(projects)
+    service = SimpleNamespace(writable_roots=roots)
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli._refuse_state_dir_in_a_write_root(SimpleNamespace(hosted=True),
+                                              service)
+    assert exit_info.value.code == 2
+    assert "AGENTCAD_STATE_DIR" in capsys.readouterr().err
 
 
 def test_local_mode_is_not_checked(monkeypatch, tmp_path):

@@ -1,4 +1,4 @@
-# 0214 — PRD-006 slice 1: quotas, the sandbox facade, the macOS backend, the private worker temp dir
+# 0231 — PRD-006 slice 1: quotas, the sandbox facade, the macOS backend, the private worker temp dir
 
 - **Commit:** pending
 - **Date:** 2026-08-18

@@ -1,4 +1,4 @@
-# 0215 — PRD-006 slice 2: the worker confines itself (Landlock + seccomp), meters every request, names denials; unguessable request ids; the Linux test loop
+# 0232 — PRD-006 slice 2: the worker confines itself (Landlock + seccomp), meters every request, names denials; unguessable request ids; the Linux test loop
 
 - **Commit:** de0cfba
 - **Date:** 2026-08-18

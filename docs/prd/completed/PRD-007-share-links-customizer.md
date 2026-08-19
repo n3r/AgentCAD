@@ -1,14 +1,53 @@
 # PRD-007 — Share links, embedded viewer, and customizer publishing
 
-- **Status:** pending
+- **Status:** completed — merged to main in PR #20. AC1–AC9
+  verified (`tests/test_prd007_acceptance.py`), the two browser ACs (AC1 the
+  logged-out page, AC7 the embed) **graded as evidence** rather than driven — no
+  Chrome extension was available (`list_connected_browsers` → `[]`), the same
+  posture PRD-005a's AC3 took. See "Verification levels" and "Residual gaps"
+  below; evidence is in changelogs 0213–0218.
 - **Phase:** v4 — collaborative core
 - **Created:** 2026-08-09
 - **Origin:** both — competitive analysis + founder idea #1e (Aug 2026)
-- **Depends on:** PRD-005 (hard — identity, tenancy, a public host) ·
-  PRD-006 (hard — quotas and rate limits on stranger-driven rebuilds)
+- **Depends on (as built):** PRD-005a (hard — the shipped hosted core: the
+  guard's allowlist, the `PREFIX` mount seam, identity, the trusted-proxy
+  address) · PRD-001 (the immutable tag pin) · PRD-011 (content addressing —
+  the variant cache key) · PRD-004 (the muzzled ephemeral-service recipe) ·
+  PRD-012 (the pure `normalize_params` seam and the config-build path).
+  **PRD-006 is *not* required for our own content** (005a Decision 2): a
+  bounded-param rebuild passes DATA to `build(p)`, never code. The memory/pid/
+  disk/egress caps 006 owes are the honest residual below.
 - **Related:** PRD-031 (the marketplace grows from this seed), PRD-001
   (links pin tags), PRD-011 (registry funnel), PRD-012 (configs in the
   customizer), PRD-017 (glTF exporter)
+
+> **Design divergences, folded in (2026-08-18 — now implemented).** This PRD
+> rides the shipped hosted core (PRD-005a), not the deferred PRD-005/006. The
+> [design spec](../../superpowers/specs/2026-08-18-share-links-customizer-design.md)
+> and [plan](../../superpowers/plans/2026-08-18-share-links-customizer.md) record
+> these divergences from the text below, and they are **what shipped**: the
+> customizer rebuild is a **`GET`** of a content-addressed variant, not a POST —
+> a pure read (owner state never changes), which makes CSRF moot and cross-origin
+> embedding work by construction (settles FR6's guard question, and supersedes
+> FR8/AC2's "POST"); publication/link state lives in the **PRD-005a state dir**
+> (`<state-dir>/publications/`, one shared space), not "PRD-005's storage", with
+> a **store-backed `sha256`** capability token rather than an HMAC-signed one
+> (immediate revocation, the reason 005a rejected JWTs — supersedes FR1's
+> "HMAC-signed"); the immutable pin is a **copy** of the script bytes at a
+> resolved tag into a **muzzled build service** under the state dir, so the
+> visitor path never touches a user `ProjectStore`; the viewer streams the
+> shipped **ACM** format (reusing `viewport.js::parseACM`) and **`core/gltf.py`
+> is deferred to PRD-017** to avoid build-then-migrate churn (supersedes FR5's
+> "glTF", matching this PRD's own risk note); the surface is **two** route packs
+> (`routes_share.py` at `/api`, `routes_share_public.py` at the root) because a
+> pack carries one `PREFIX`; a disabled export or a `customizer:false` link
+> answers **`404`** before the builder (the design's structural escalation
+> boundary, in place of FR11's "403"); and the MVP is part-scope. The settled
+> founder calls: `/embed/` ships **`frame-ancestors *`** (any site may embed the
+> public customizer) while every other hosted response ships
+> **`frame-ancestors 'none'`**; link expiry defaults to **never, revocable**; the
+> login-above-N gate ships **off** (`AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE`); viewer
+> links need **no account**.
 
 ## Problem & motivation
 
@@ -185,8 +224,10 @@ failures.
 - **Variant builds**: a service method `build_variant(project, part_id,
   ref, params) -> {mesh_key, metrics}` resolves the script at the ref,
   validates params, and builds through the normal kernel pool under a
-  share `affinity=` key (the pool-routing seam) so visitor load can be
-  segregated; results live in a shared variant cache with LRU/GC.
+  share `affinity=` key (the pool-routing seam, for cache warmth — **not**
+  isolation); member starvation is prevented by reserving `pool_size - 1`
+  workers for the anonymous cap, not by the affinity. Results live in a
+  shared variant cache with LRU/GC.
   `ProjectStore` is never written on the visitor path — no
   `write_guard` interaction at all.
 - **Rate limiting**: middleware on the public routes (token bucket per
@@ -237,13 +278,74 @@ failures.
   test enumerating exemptions fails when a new route goes public by
   accident); full suite green.
 
+## Verification levels
+
+What each criterion was graded against, so a reader never guesses whether
+"verified" meant a unit test or a running system. Evidence is in changelogs
+0213–0218; `tests/test_prd007_acceptance.py` carries one test per criterion.
+
+| AC | Direct test | Real server | Real browser |
+|---|---|---|---|
+| AC1 logged-out page renders, no auth cookie | yes (shell 200, no `Set-Cookie`; `/model` metrics + attribution, zero kernel) | via `TestClient` | **no — graded as evidence** |
+| AC2 slider rebuilds; a repeat is one build for two requests | yes (`kernel_counter`: fresh builds once, repeat zero; a distinct set is the positive control) | — | — |
+| AC3 STEP downloads under the mask; a disabled STL 404s before build | yes (200 STEP; `stl` 404, counter unchanged) | — | — |
+| AC4 param parity (clamp / reject enum / reject unknown) | yes (against the same `normalize_params` / `_resolve_params` the editor uses) | — | — |
+| AC5 over-limit `quota_exceeded` + owner tree byte-unchanged; in-flight cap | yes (per-link 429 with `retry_after_s`; owner snapshot equality; the semaphore consulted, with a positive control) | — | — |
+| AC6 revoked == expired == unknown 404; `customizer:false` 404s `/variant` | yes (indistinguishable bodies; the escalation boundary, counter unchanged) | — | — |
+| AC7 the embed frames on a second origin | yes (`frame-ancestors *` on `/embed/`, `'none'` on the app) | — | **no — graded as evidence** |
+| AC8 tag-pinned link keeps serving after the branch moves + the owner edits | yes (`test_share_publish.py`, over PRD-001 refs + a `write_script`) | — | — |
+| AC9 the share routes are provably the only new guard-exempt surface | yes (the set-equality enumeration grown to the eight `/s/`+`/embed/` templates, `NOT_YET_BUILT == set()`) | — | — |
+
+**The two browser ACs are not verified, and nothing here claims they are.**
+`list_connected_browsers` → `[]` (the same as PRD-005a's three sessions), so the
+viewer page, a slider drag, a download and the embedded iframe were **never
+rendered by a browser**. What *is* verified is every HTTP contract those views
+consume, the served HTML's shape, the `kernel_counter` deltas and the response
+headers, plus the JavaScript parsing (`node --check`). The criteria are
+unchanged and unmet at the visual level; they are the first thing a reviewer with
+a browser should close.
+
+## Residual gaps (recorded, not fixed)
+
+- **Peak memory is uncapped until PRD-006 — the defining residual.** A
+  params-driven mesh can still balloon RSS and OOM the host. What *is* bounded:
+  a visitor gains no code execution (bounded PARAMS are data, not code), the
+  per-request timeout kills a runaway build, per-link + per-IP token buckets
+  bound the rate, a global in-flight semaphore
+  (`AGENTCAD_SHARE_MAX_INFLIGHT`) bounds concurrency with its effective size
+  clamped to `pool_size - 1` so a member's worker is always reserved (a
+  single-worker pool refuses the customizer with `503`; pool affinity
+  `share:<pub>` is cache-warmth routing, **not** segregation), and the
+  content-addressed variant cache — keyed on the **clamped** params so
+  out-of-range floods coalesce — makes "popular = cheap". What is **not**
+  bounded: memory, process/pid, **variant-cache disk** (a distinct-in-range
+  flood still builds and fills it), and worker network egress — all PRD-006's.
+  Until then the operator's backstop for a link under a distinct-param flood is
+  `AGENTCAD_SHARE_REQUIRE_LOGIN_ABOVE` (off by default).
+- **Project/assembly-scope links, embeds-with-sliders polish, drawings/flat
+  pattern exports, script-visibility UI beyond the raw route, branch-following
+  ("live") links, and the config-mode customizer (PRD-012)** are Phase 2/3, per
+  the phasing above; the record and schema reserve the fields (`config` on the
+  settings, `scope`).
+- **A project-custom material is not copied into the content-addressed build
+  project**, so the pin falls back to the default material's density for such a
+  part (changelog 0214). Phase 2 copies the manifest's materials section.
+- **The variant cache has no GC yet** — a size-capped sweep is a small Phase-2
+  slice, deferred with the other 006 disk-budget residuals.
+- **The two browser ACs (AC1, AC7) are graded as evidence, not driven** — see
+  Verification levels. `tests/test_share_frontend.py` grades what a headless run
+  can; the visual pass awaits a connected browser.
+
 ## Risks & open questions
 
 - **Stranger compute** is the existential risk — a popular link is a
-  free rebuild farm. Defense in depth: the variant cache (popular =
-  cheap), token buckets, PRD-006 CPU/memory/wall caps, pool-affinity
-  segregation. Open: a per-deployment policy for requiring login above a
-  rebuild threshold.
+  free rebuild farm. Defense in depth: the variant cache (popular = cheap,
+  keyed on clamped params so out-of-range floods coalesce), token buckets, the
+  in-flight cap's `pool_size - 1` **worker reservation** (a member's worker is
+  never occupied by anonymous builds; a single-worker pool refuses), and PRD-006
+  CPU/memory/wall caps. Residual: a distinct-in-range flood still builds and the
+  variant-cache disk is unbounded until 006. Open: a per-deployment policy for
+  requiring login above a rebuild threshold (shipped as the login-gate knob).
 - **Guard carve-out** — any mistake in the public-route enumeration
   widens the attack surface; single-file enumeration plus the AC9 test,
   reviewed in PRD-005's security pass.

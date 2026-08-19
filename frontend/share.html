@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>AgentCAD — shared model</title>
+    <!-- Self-contained: the only assets are same-origin `/js` and `/vendor`
+         static mounts (both public); no external host is contacted, so the
+         page is CSP-clean and embeddable. -->
+    <script type="importmap">
+      { "imports": { "three": "/vendor/three.module.min.js" } }
+    </script>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f4f5f7;
+        --panel: #ffffff;
+        --ink: #1d2126;
+        --muted: #5b636d;
+        --line: #d8dce1;
+        --accent: #2f6f4f;
+        --error: #b23b3b;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16181c;
+          --panel: #1f2226;
+          --ink: #e6e9ed;
+          --muted: #9aa2ac;
+          --line: #30343a;
+          --accent: #7fc59d;
+          --error: #e77f7f;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        color: var(--ink);
+        background: var(--bg);
+        display: flex;
+        flex-direction: row;
+      }
+      #share-viewport {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 100%;
+        position: relative;
+      }
+      #share-viewport canvas { display: block; }
+      #share-controls {
+        flex: 0 0 300px;
+        max-width: 300px;
+        height: 100%;
+        overflow-y: auto;
+        padding: 18px 18px 28px;
+        background: var(--panel);
+        border-left: 1px solid var(--line);
+      }
+      #share-attribution {
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      #share-status {
+        min-height: 1.4em;
+        color: var(--muted);
+        font-size: 12.5px;
+        margin: 8px 0 16px;
+      }
+      #share-status.error { color: var(--error); }
+      .share-param {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 4px 8px;
+        align-items: center;
+        margin-bottom: 14px;
+      }
+      .share-param-label {
+        grid-column: 1 / -1;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .share-param input[type="range"] { grid-column: 1 / 2; width: 100%; }
+      .share-param output { color: var(--ink); font-variant-numeric: tabular-nums; }
+      .share-param input[type="text"],
+      .share-param select { grid-column: 1 / -1; width: 100%; }
+      #share-downloads { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 8px; }
+      .share-download {
+        appearance: none;
+        border: 1px solid var(--line);
+        background: transparent;
+        color: var(--ink);
+        border-radius: 6px;
+        padding: 7px 12px;
+        cursor: pointer;
+      }
+      .share-download:hover { border-color: var(--accent); color: var(--accent); }
+      .share-footer {
+        margin-top: 20px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      /* Embed mode: chrome-free, just the model + minimal controls. */
+      body.embed #share-controls { flex-basis: 240px; max-width: 240px; }
+      body.embed #share-attribution,
+      body.embed .share-footer { display: none; }
+      @media (max-width: 720px) {
+        body { flex-direction: column; }
+        #share-controls {
+          flex-basis: auto;
+          max-width: none;
+          border-left: none;
+          border-top: 1px solid var(--line);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="share-viewport"></div>
+    <aside id="share-controls">
+      <div id="share-attribution">Loading…</div>
+      <div id="share-status" class="share-status"></div>
+      <div id="share-panel"></div>
+      <div id="share-downloads"></div>
+      <div class="share-footer">Anyone with this link can view this model.</div>
+    </aside>
+    <script type="module" src="/js/share.js"></script>
+  </body>
+</html>

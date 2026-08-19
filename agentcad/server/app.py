@@ -26,6 +26,7 @@ from ..core.model import (
     DiskBudgetError,
     NotFoundError,
     RateLimitedError,
+    ServiceUnavailableError,
     ValidationError,
 )
 from ..core.service import AgentCADService
@@ -53,6 +54,7 @@ _ERROR_STATUS = {
     # representation needed to complete the request" is exactly this, and the
     # message names the fix (delete exports, or raise AGENTCAD_QUOTA_DISK_MB).
     DiskBudgetError: 507,
+    ServiceUnavailableError: 503,
 }
 
 
@@ -162,9 +164,17 @@ def create_app(
         usage.scope_var.set(usage.project_from_path(request.url.path))
         if security is not None:
             denied = security_module.guard(security, request)
-            if denied is not None:
-                return denied
-            return await call_next(request)
+            response = denied if denied is not None else await call_next(request)
+            # The one hardening header (founder decision 2026-08-18): the
+            # authenticated surface is not frameable. `setdefault`, so the
+            # `/embed/` page's own `frame-ancestors *` (set in its handler and
+            # excluded by `response_headers`) is not clobbered. This is a
+            # header, not a route — the anonymous-surface equality test is
+            # untouched.
+            for name, value in security_module.response_headers(
+                    request.url.path).items():
+                response.headers.setdefault(name, value)
+            return response
         # --- unchanged local-mode path below this line ---
         allowed, reason = _browser_request_allowed(request.headers, allowed_hosts)
         if not allowed:

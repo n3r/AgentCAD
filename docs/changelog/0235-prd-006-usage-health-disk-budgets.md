@@ -1,4 +1,4 @@
-# 0218 — PRD-006 slice 4: the usage meter, health's honest object, per-project disk budgets, and the server work root
+# 0235 — PRD-006 slice 4: the usage meter, health's honest object, per-project disk budgets, and the server work root
 
 - **Commit:** pending
 - **Date:** 2026-08-18

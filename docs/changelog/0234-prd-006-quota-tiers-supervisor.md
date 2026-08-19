@@ -1,4 +1,4 @@
-# 0217 — PRD-006 slice 3: the real quota tiers, the supervisor, breach attribution
+# 0234 — PRD-006 slice 3: the real quota tiers, the supervisor, breach attribution
 
 - **Commit:** pending
 - **Date:** 2026-08-18

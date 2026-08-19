@@ -1,7 +1,7 @@
 # PRD-006 — Cross-platform sandboxing and resource quotas
 
 - **Status:** in-progress — the build is complete on branch
-  `prd-006-sandboxing-quotas` (changelogs `0213`–`0219`). Moves to
+  `prd-006-sandboxing-quotas` (changelogs `0230`–`0237`, renumbered at merge from `0213`–`0220`). Moves to
   `completed/` in the close-out commit on `main` after the PR merges, per the
   house rule. AC1–AC8 verified as recorded below, with two named exceptions:
   **AC3's Windows clause** — that clause and G2/FR2's Windows confinement half
@@ -59,7 +59,7 @@
 > remain for people you trust and registration stays closed.
 >
 > **Acceptance, per platform.** Everything below was run and is cited in
-> changelog `0219`; what is **gated but not yet observed** is the CI matrix
+> changelog `0236`; what is **gated but not yet observed** is the CI matrix
 > itself — the ubuntu and windows jobs run on push, so their evidence lands
 > with the first green CI run of this branch's PR, and the controller records
 > the run there. AC1 (the malicious battery contained on Linux)
