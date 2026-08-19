@@ -31,7 +31,9 @@ prove **the real worker**, not a toy, builds and exports inside the container.
 * `acl`       — `icacls` grants land, and — the load-bearing unknown — an
                 inheritable ACE set on a directory **propagates to children
                 that already existed** (design spec, Decision 2; if it does
-                not, the implementation needs `/T`).
+                not, the implementation needs `/T`). It also creates the
+                ``Packages/<profile>/AC/Temp`` tree the lowbox token redirects
+                ``%TEMP%`` into, which round 1 proved is nobody else's job.
 * `spawn`     — `CreateProcessW` with `SECURITY_CAPABILITIES` starts the venv
                 `python.exe` launcher, the job object takes it while it is
                 suspended, and it is still alive a second later.
@@ -716,16 +718,19 @@ TOKEN_QUERY = 8
 TokenIsAppContainer = 29
 TokenAppContainerSid = 31
 
+# Nothing eager that can raise. Round 1 died right here: the lowbox token
+# rewrites TEMP to %LOCALAPPDATA%\Packages\<moniker>\AC\Temp, that directory
+# did not exist, `tempfile.gettempdir()` raised FileNotFoundError while this
+# dict was being built, and the whole probe child produced no report at all.
 out = {
     "pid": os.getpid(),
     "executable": sys.executable,
     "prefix": sys.prefix,
     "base_prefix": sys.base_prefix,
-    "gettempdir": tempfile.gettempdir(),
     "env_TEMP": os.environ.get("TEMP"),
+    "env_TMP": os.environ.get("TMP"),
     "env_USERPROFILE": os.environ.get("USERPROFILE"),
     "env_LOCALAPPDATA": os.environ.get("LOCALAPPDATA"),
-    "expanduser": os.path.expanduser("~"),
 }
 
 
@@ -798,8 +803,23 @@ def connect(host, port):
     return "connected"
 
 
+def named_temp_file():
+    handle = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                         suffix=".probe", delete=False)
+    try:
+        handle.write("probe\n")
+    finally:
+        handle.close()
+    return handle.name
+
+
 attempt("is_appcontainer", token_flag)
 attempt("appcontainer_sid", token_sid)
+# The three that raised (or would have) in round 1, each on its own so one
+# failure cannot take the report down with it.
+attempt("gettempdir", tempfile.gettempdir)
+attempt("expanduser", lambda: os.path.expanduser("~"))
+attempt("named_temp_file", named_temp_file)
 attempt("listdir_prefix", lambda: len(os.listdir(sys.prefix)))
 attempt("listdir_base_prefix", lambda: len(os.listdir(sys.base_prefix)))
 attempt("listdir_resource_root", lambda: len(os.listdir(@@RESOURCE_ROOT@@)))
@@ -944,6 +964,7 @@ class Probe:
                      self.tmpdir, self.other):
             path.mkdir(parents=True, exist_ok=True)
         note(f"scratch: {self.scratch}")
+        self._make_package_tree()
         if self.sid_text is None:
             report("acl", False, "skipped: no SID")
             return
@@ -970,6 +991,16 @@ class Probe:
                f"inheritable ACE {'reached' if propagated else 'DID NOT reach'} "
                f"pre-existing {child}")
 
+        # The same question for the redirected AppContainer temp (round 1):
+        # it is created before the grant too, so the `tmp` ACE must have
+        # reached it or `tempfile` inside the container has nothing to use.
+        ac_temp = self.appcontainer_temp()
+        _code, ac_listing = self._icacls([str(ac_temp)], "read AC\\Temp")
+        ac_ok = ac_temp.is_dir() and self.sid_text in ac_listing
+        report("acl.appcontainer_temp", ac_ok,
+               f"{ac_temp} exists={ac_temp.is_dir()} "
+               f"ace={'yes' if self.sid_text in ac_listing else 'no'}")
+
         # Read-only context: whether the ancestors carry an ALL APPLICATION
         # PACKAGES ACE at all, and whether the venv reaches into the uv cache
         # through reparse points (a read root we would otherwise miss).
@@ -978,9 +1009,41 @@ class Probe:
                             ("resource_root", self.root)):
             self._icacls([str(path)], f"read {label}")
         self._report_reparse_points()
-        report("acl", ok_count == len(grants) and propagated,
+        report("acl", ok_count == len(grants) and propagated and ac_ok,
                f"{ok_count}/{len(grants)} grants, "
-               f"propagation={'yes' if propagated else 'no'}")
+               f"propagation={'yes' if propagated else 'no'}, "
+               f"appcontainer_temp={'yes' if ac_ok else 'no'}")
+
+    def appcontainer_temp(self) -> Path:
+        """Where Windows redirects the container's ``%TEMP%``."""
+        return (Path(self.tmpdir) / "Packages" / self.profile_name / "AC"
+                / "Temp")
+
+    def _make_package_tree(self) -> None:
+        """Create the package profile tree Windows expects inside the private
+        temp dir — **before** the ACL grant, so inheritance covers it.
+
+        Round 1's finding, and it is not obvious: the lowbox token rewrites the
+        child's ``TEMP``/``TMP`` to ``%LOCALAPPDATA%\\Packages\\<moniker>\\AC\\
+        Temp``. The plan sets ``LOCALAPPDATA`` to the private temp dir, so the
+        redirect lands inside it — but nothing had created that path, so
+        ``tempfile.gettempdir()`` found no usable directory and raised
+        ``FileNotFoundError`` in the first child that touched it. Windows'
+        own profile creation makes this tree; when the write root is ours, so
+        must we. **Slice 2 puts this in `prepare_tmp()`**, for the same reason
+        and with the same list.
+        """
+        if self.tmpdir is None:
+            return
+        package = Path(self.tmpdir) / "Packages" / self.profile_name
+        made = []
+        for relative in ("AC/Temp", "AC/INetCache", "AC/INetCookies",
+                         "AC/INetHistory", "LocalState", "TempState",
+                         "RoamingState", "Settings"):
+            path = package.joinpath(*relative.split("/"))
+            path.mkdir(parents=True, exist_ok=True)
+            made.append(relative)
+        note(f"appcontainer package tree under {package}: {', '.join(made)}")
 
     def _icacls(self, arguments: list[str], label: str) -> tuple[int, str]:
         try:
@@ -1014,6 +1077,11 @@ class Probe:
     # -- 4: spawn
 
     def child_env(self) -> dict[str, str]:
+        # `LOCALAPPDATA` is load-bearing beyond "somewhere writable": the
+        # lowbox token derives the container's own `%TEMP%` from it, as
+        # `%LOCALAPPDATA%\Packages\<profile name>\AC\Temp`. `_make_package_tree`
+        # creates exactly that path inside this directory, before the ACL
+        # grant, or the redirect points at nothing (round 1).
         tmp = str(self.tmpdir)
         return {
             **os.environ,
@@ -1103,9 +1171,26 @@ class Probe:
         matches = sid_value == self.sid_text
         report("token.sid_match", matches,
                f"child={sid_value} parent={self.sid_text}")
-        report("token", in_container and matches,
+
+        # Round 1's other half: where did the lowbox token put `%TEMP%`, and
+        # can `tempfile` actually use it? The answer has to land inside the
+        # private temp dir the plan granted, or every library that opens a
+        # scratch file fails inside the container.
+        tempdir = payload.get("gettempdir") or {}
+        named = payload.get("named_temp_file") or {}
+        tempdir_value = tempdir.get("value") if tempdir.get("ok") else None
+        inside = bool(tempdir_value and self.tmpdir is not None
+                      and str(tempdir_value).lower().startswith(
+                          str(self.tmpdir).lower()))
+        temp_ok = bool(inside and named.get("ok"))
+        report("token.tempdir", temp_ok,
+               f"gettempdir={tempdir_value or tempdir.get('error')} "
+               f"inside_private_tmp={inside} "
+               f"NamedTemporaryFile={named.get('value') or named.get('error')}")
+
+        report("token", in_container and matches and temp_ok,
                f"TokenIsAppContainer={flag.get('value', flag.get('error'))} "
-               f"sid={sid_value}")
+               f"sid={sid_value} gettempdir={tempdir_value}")
 
     # -- 6: ping / build / export
 
