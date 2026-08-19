@@ -44,6 +44,12 @@ datas = [
     # The seed package catalog: the local index cli._register_catalog declares,
     # so a frozen app searches and installs with no network and no config.
     (str(REPO_ROOT / "catalog"), "catalog"),
+    # The shipped material library (PRD-028). It lives INSIDE the package and
+    # is read at import by agentcad.core.materials, which raises when the
+    # directory is missing — collect_submodules only sees .py files, so the
+    # cards have to be declared as data or the frozen app cannot even import.
+    (str(REPO_ROOT / "agentcad" / "core" / "materials_data"),
+     "agentcad/core/materials_data"),
 ]
 # build123d ships non-Python data: bundled fonts (data/fonts/...) used by
 # text rendering, and template_render.js.

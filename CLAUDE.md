@@ -246,6 +246,25 @@ This project is built skill-first. Use the Superpowers process skills:
   **`make test-linux`**, which **copies** the tree (Docker Desktop's `fakeowner`
   mounts are not Landlock-coherent) · `AGENTCAD_EXPECT_SANDBOX=active` is the
   honesty gate CI sets so a degradation is **red, not skipped**.
+- Materials library (`core/materials.py`, `materials_query.py`,
+  `materials_lint.py`, `materials_data/`, PRD-028): property keys are a
+  **closed set**, one canonical unit each, and density must be a **point**
+  in the shipped library (`_cache_key` hashes it) · the loader **raises at
+  import** on any `library`-profile lint error — author a work-in-progress
+  family file `_`-prefixed so the loader skips it · the 30 legacy ids/densities
+  are **immutable forever** (a corrected value gets a new id) · `library` vs
+  `user` lint profile (a hand-written entry is uncited-as-warning, not
+  rejected) · `masonry` stays the concrete family, not renamed · FEM
+  resolution is **service-side** (no kernel change): thermal evaluates at the
+  mean of the two fixed temperatures, a clamped table read warns
+  `temperature_out_of_table_range:`-prefixed, `fem_static`'s no-material
+  fallback (210000 MPa / ν 0.3) is recorded as `fallback_default` ·
+  `find_materials` zero-result is a `validation_error` with
+  `nearest_relaxation`, and a range qualifies `_min`/`_max` by its
+  conservative bound while a missing property never qualifies · no
+  aggregator name (MatWeb/MakeItFrom/Prospector/Granta) in any `source` ·
+  the CLI is `.venv/bin/agentcad materials lint`, never `python -m
+  agentcad.cli` (no `__main__` guard).
 - Bench (`agentcad/bench/`, `kernel/handlers/bench.py`, `benchmarks/`):
   **`error` means the harness could not measure; `not_applicable` is declared
   by `task.json` (weight 0) and never by a run** — an absent, broken or
@@ -300,7 +319,9 @@ commit manifest-reformatting churn or the venv.
 ## Deeper docs
 
 `AGENTS.md` (contributor guide) · `docs/architecture.md` · `docs/agent-api.md`
-· `docs/part-authoring.md` · `docs/user-guide.md` · `docs/deployment.md`
+· `docs/part-authoring.md` · `docs/user-guide.md` · `docs/materials.md`
+(materials library: schema, taxonomy, versioning, the lint, sourcing rules) ·
+`docs/deployment.md`
 (hosted mode: `docker compose`, accounts, tokens, backup) · `docs/packages.md`
 (packages, indexes, the publish gate, the bundled catalog) · `docs/geometry-ci.md`
 (`agentcad check` + the GitHub Action) · `docs/bench.md` (AgentCAD-Bench:

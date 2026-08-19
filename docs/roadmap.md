@@ -154,7 +154,7 @@ commit. The 031a licensing precondition is closed.
 | [025](prd/pending/PRD-025-workspaces-ia.md) | Workspaces — Build · Test · Produce · Library · Market over one model; process profiles as the "swappable modules" | pending | idea 1 | 026 |
 | [026](prd/pending/PRD-026-workbench-shell.md) | Workbench shell revamp — dialog system (no native prompts), ⌘K palette over the registry, menus, resizable panels, shortcuts | pending | idea 8 | — |
 | [027](prd/pending/PRD-027-project-navigation-scale.md) | Navigation at scale — folders, tags, search, thumbnails, bulk ops, project dashboard, virtualized trees | pending | idea 5 | 026 (soft) |
-| [028](prd/pending/PRD-028-materials-database.md) | Materials database — 300–1,000 cited generic materials, basis labels, temperature tables, process metadata, community cards | pending | idea 2 | — |
+| [028](prd/in-progress/PRD-028-materials-database.md) | Materials database — 300–1,000 cited generic materials, basis labels, temperature tables, process metadata, community cards | in progress (branch `prd-028-materials-database`) | idea 2 | — |
 | [029](prd/pending/PRD-029-agent-skills.md) | Agent skills & knowledge packs — loadable, versioned craft (core/org/project layers), bench-measured | pending | idea 4 | — |
 
 ### v6 — generative engineering, manufacturing & community

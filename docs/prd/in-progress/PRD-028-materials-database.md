@@ -1,6 +1,6 @@
 # PRD-028 — Materials database expansion
 
-- **Status:** pending
+- **Status:** in progress (branch `prd-028-materials-database`)
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** founder idea #2 (Aug 2026), engineering-reviewed; grounded by dedicated research (market_research.md, "Materials data")

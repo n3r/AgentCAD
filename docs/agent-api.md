@@ -210,8 +210,10 @@ config-pinned/packaged sources (Phase 3).
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `list_materials` | project | Resolved catalog (builtin < `~/.agentcad/materials.json` < project overrides): `{materials: [{id, label, category, density_g_cm3, source, E_gpa?, yield_mpa?, ultimate_mpa?, elongation_pct?, cte_um_m_k?, k_w_m_k?, max_service_temp_c?, cost_usd_kg?, notes?}], caveat, global_error}`. Values are typical datasheet figures, **not design allowables**. |
-| `set_project_materials` | **project, materials** | Replaces the project's `materials` section (a map `id → {density_g_cm3 required, …, category, notes}`); validates every entry, then returns the resolved list. |
+| `list_materials` | project, category, subcategory, filter | Resolved catalog (builtin < `~/.agentcad/materials.json` < project overrides), optionally narrowed by an exact `category`/`subcategory` and/or the `find_materials` constraint grammar (`filter`, below — an unknown key is a `validation_error`): `{materials: [{id, label, category, subcategory, condition, density_g_cm3, source, E_gpa?, yield_mpa?, …, basis: {key: typical\|minimum\|characteristic}, uncited: [key], warnings, process?, links, standards}], count, library_version, project_library_version, warnings, caveat, global_error}`, ordered `(category, subcategory, id)`. Values are typical datasheet figures, **not design allowables**. |
+| `find_materials` | require, prefer, category, limit, project | Searches the catalog by engineering requirements and returns the qualifying rows with their cited evidence: `{materials: [{id, label, category, subcategory, condition, constraining: {key: {value\|range, unit, basis, source}}, score?}], count, constraints, caveat}`. **`require`** grammar: `<property>_min`/`<property>_max` for `density_g_cm3, E_gpa, yield_mpa, ultimate_mpa, elongation_pct, cte_um_m_k, k_w_m_k, max_service_temp_c, cost_usd_kg, poisson_ratio, cp_j_kg_k, shear_modulus_gpa, compressive_mpa, bending_mpa, E_perp_gpa`; `category`; `subcategory`; `process` (`cnc\|weld\|fdm\|sla\|sls\|mjf\|dmls\|im\|sheet\|casting` — qualifies on a rating of `excellent\|good\|fair`, or on the `sheet` block's presence); `basis` (`typical\|minimum\|characteristic`, restricting to records whose constraining properties carry it; standalone, "carries at least one value on that basis"). A **range** qualifies `_min` by its lower bound and `_max` by its upper bound (the whole range must clear the bar); a material **missing** the property never qualifies. An unknown `require`/`prefer` key is a `validation_error` listing the grammar. **`prefer`**: `{<property>: "min"\|"max"}` — ranks the qualifying set by normalized position on each preferred property (0 best … 1 worst, summed and attached as `score`); a material missing a preferred property ranks last on that key. `limit` defaults to 10, max 50. Zero qualifying records is a `validation_error` — `"no material satisfies the constraints"` — carrying `details.nearest_relaxation: {drop, count} \| null` (the single constraint whose removal would admit the most records, by leave-one-out) and `details.tried` (the normalized constraints). |
+| `get_material` | **id**, project | One material's full record: `to_payload(full=True)` — every flat field plus `properties: {key: {value\|range, unit, basis, source, T_c?, table?, as_of?}}`, `process`, `links`, `standards`, `warnings`, `library_version`, `caveat`. An unknown `id` is a `validation_error` listing every known id in `details.known`. |
+| `set_project_materials` | **project, materials** | Replaces the project's `materials` section (a map `id → {density_g_cm3 required, …, category, notes}` **or** a v2 card `{properties: {key: {value\|range, unit, basis, source}}, …}`); validates every entry, then returns the resolved list (`list_materials`' payload). |
 | `set_solid_materials` | **project, part_id, materials** | Assign a material per solid of a multi-solid *script* part. Read `get_metrics(...).solids[].label` first (labels come from the script's `SOLID_LABELS`, else `solid_0`, `solid_1`, …). `materials` maps a solid label or index string to a material id; unmatched keys build with a warning; `{}` clears. Per-solid and aggregate mass then use those densities (unmapped solids keep the part material). Returns the rebuild result plus `solid_materials`. |
 
 ### Import (reference parts)
@@ -1362,12 +1364,26 @@ extra, the routes answer 501 with an install hint.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `fem_static` | **project, part_id, fixed_face, load_face**, load_N, load_dir, E_mpa, nu, mesh_size_mm | Linear-static FEM: clamp one axis-aligned face, load another, return max displacement and max von Mises. `fixed_face`/`load_face` = `{axis: x\|y\|z, side: min\|max}`. |
-| `fem_modal` | **project, part_id**, n_modes, fixed_face, E_mpa, nu | Modal FEM: natural `frequencies_hz` (ascending) from a consistent-mass eigensolve; E and density default from the part material. `fixed_face` = `{axis: x\|y\|z, side: min\|max}`; omit it for free-free (rigid-body modes are dropped and noted). |
-| `fem_thermal` | **project, part_id, hot_face, cold_face, t_hot_c, t_cold_c**, k_w_m_k | Thermal FEM: steady-state conduction with fixed temperatures on two faces; returns `t_min_c`/`t_max_c` and `flux_w` (total heat flow through the hot face, W). k defaults from the part material's `k_w_m_k`. |
+| `fem_static` | **project, part_id, fixed_face, load_face**, load_N, load_dir, E_mpa, nu, mesh_size_mm, temperature_c | Linear-static FEM: clamp one axis-aligned face, load another, return max displacement and max von Mises. `fixed_face`/`load_face` = `{axis: x\|y\|z, side: min\|max}`. `E_mpa`/`nu` default from the part material at `temperature_c` (default 20); no E falls back to 210000 MPa and no `poisson_ratio` to 0.3. |
+| `fem_modal` | **project, part_id**, n_modes, fixed_face, E_mpa, nu, temperature_c | Modal FEM: natural `frequencies_hz` (ascending) from a consistent-mass eigensolve; E, ν and density default from the part material (E and ν at `temperature_c`, default 20; a material with no E is still a refusal — a frequency scales with √E). `fixed_face` = `{axis: x\|y\|z, side: min\|max}`; omit it for free-free (rigid-body modes are dropped and noted). |
+| `fem_thermal` | **project, part_id, hot_face, cold_face, t_hot_c, t_cold_c**, k_w_m_k | Thermal FEM: steady-state conduction with fixed temperatures on two faces; returns `t_min_c`/`t_max_c` and `flux_w` (total heat flow through the hot face, W). k defaults from the part material's `k_w_m_k`, evaluated at the mean of `t_hot_c` and `t_cold_c`. |
 
 Routes: `POST /api/projects/{proj}/parts/{id}/fem`, `.../fem/modal`,
 `.../fem/thermal`.
+
+**Material resolution (`material_basis`).** Every FEM result carries
+`material_basis`: one entry per scalar the solver consumed (`E_mpa`, `nu`,
+`k_w_m_k`) saying where it came from — `{value, basis, source, T_c,
+interpolated, clamped, table_range, unit}` when it was read from the material,
+`{value, basis: "explicit"}` when the caller passed it, and
+`{value, basis: "fallback_default"}` for `fem_static`'s 210000 MPa / ν = 0.3.
+A property carrying a `table` is linearly interpolated at the evaluation
+temperature and **clamped** to its end row outside the table's span; a clamped
+value adds a `warnings` entry
+`temperature_out_of_table_range: <key> evaluated at <T> C, table covers
+<Tmin>..<Tmax> C; end value used` (appended to any warning the solver itself
+returned). The kernel requests are unchanged — resolution is entirely
+service-side.
 
 ### Kernel usage — `get_usage`
 

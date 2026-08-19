@@ -332,11 +332,12 @@ def test_help_lists_package_beside_the_other_commands():
     missing from it is a command nobody finds."""
     res = _cli("--help")
     assert res.returncode == 0
-    # `admin` joined the list in PRD-005a; the assertion is per-command rather
-    # than one literal string so the next command to land fails on its own
-    # merits (missing from the metavar) instead of on the punctuation.
+    # `admin` joined the list in PRD-005a, `bench` in PRD-024 and `materials`
+    # in PRD-028; the assertion is per-command rather than one literal string
+    # so the next command to land fails on its own merits (missing from the
+    # metavar) instead of on the punctuation.
     for command in ("serve", "open", "mcp", "new", "export", "check", "bench",
-                    "package", "publish", "admin"):
+                    "package", "publish", "admin", "materials"):
         assert command in res.stdout, command
-    assert ("{serve,open,mcp,new,export,check,bench,package,publish,admin}"
+    assert ("{serve,open,mcp,new,export,check,bench,package,publish,admin,materials}"
             in res.stdout)

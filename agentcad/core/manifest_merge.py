@@ -7,7 +7,8 @@ per instance field, per material — and reports what it could not decide.
 
 Key space (every leaf merges independently)::
 
-    schema_version | name | units | <any other top-level key>   whole value
+    schema_version | name | units | materials_library            whole value
+    <any other top-level key>                                    whole value
     parts.<id>                       entry add/remove, else field-wise:
       parts.<id>.label|material|kind|source                     whole value
       parts.<id>.active_config                                  whole value

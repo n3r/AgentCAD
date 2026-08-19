@@ -3242,3 +3242,207 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   font-size: 13px;
 }
 .mkt-add:hover { border-color: var(--accent); }
+
+/* ------------------------------------------------- materials browser */
+/* PRD-028 slice 5 (Decision 10). A modal on the library/proposals/configs
+   pattern — reused tokens only, so light mode keeps working unchanged.
+   Layout: tree (left) | filter bar + table/compare (center) | detail
+   (right), same three-pane shape as `.lib-body`'s two-pane just wider. */
+
+.mat-modal-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 190px 1fr 300px;
+}
+
+.mat-tree {
+  overflow: auto;
+  border-right: 1px solid var(--hairline);
+  padding: 6px 0;
+}
+.mat-tree-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 5px 12px;
+  border: none;
+  border-left: 2px solid transparent;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.mat-tree-row:hover { background: var(--raised); color: var(--text); }
+.mat-tree-row.active {
+  background: var(--raised);
+  border-left-color: var(--accent);
+  color: var(--text);
+}
+.mat-tree-row.mat-tree-all { font-weight: 600; color: var(--text); }
+.mat-tree-row.mat-tree-sub { padding-left: 22px; font-size: 11.5px; }
+.mat-tree-count { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+
+.mat-center {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--hairline);
+  overflow: hidden;
+}
+
+.mat-filters {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+.mat-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--dim);
+}
+.mat-filter input, .mat-filter select {
+  width: 84px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.mat-filter select { width: auto; }
+.mat-filter input:focus, .mat-filter select:focus {
+  outline: none;
+  border-color: var(--accent-ring);
+}
+
+.mat-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.mat-chip {
+  font-family: var(--mono);
+  font-size: 10px;
+  border-radius: 9px;
+  padding: 2px 8px;
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  color: var(--dim);
+  cursor: pointer;
+}
+.mat-chip:hover { color: var(--text); }
+.mat-chip.active {
+  color: var(--accent-bright);
+  border-color: var(--accent-ring);
+  background: var(--accent-soft);
+}
+.mat-chip.static { cursor: default; }
+.mat-chip.static:hover { color: var(--dim); }
+
+.mat-count { font-size: 11px; color: var(--dim); font-family: var(--mono); }
+
+.mat-table-wrap { flex: 1; min-height: 0; overflow: auto; padding: 0 12px 12px; }
+.mat-compare { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px 12px; }
+
+.mat-table th { white-space: nowrap; }
+.mat-sort-btn {
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+.mat-sort-btn:hover { color: var(--text); }
+.mat-row { cursor: pointer; }
+.mat-row:hover td { background: var(--raised); }
+.mat-row.active td { background: var(--accent-soft); }
+.mat-row-id { color: var(--faint); font-size: 10px; }
+
+.mat-t-table { margin-top: 4px; width: auto; }
+
+.mat-empty { padding: 14px 4px; color: var(--dim); font-size: 12px; line-height: 1.6; }
+.mat-empty.error { color: var(--err-text); }
+
+.mat-detail {
+  overflow: auto;
+  min-width: 0;
+  padding: 12px 14px;
+  overflow-wrap: anywhere;
+}
+.mat-detail-head { margin-bottom: 6px; }
+.mat-detail-name { font-size: 14px; color: var(--text); }
+.mat-detail-meta { font-size: 11.5px; color: var(--dim); margin-top: 2px; }
+
+.mat-prop-row { padding: 6px 0; border-bottom: 1px solid var(--hairline-soft); }
+.mat-prop-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.mat-prop-name { font-size: 11.5px; color: var(--dim); min-width: 110px; }
+.mat-prop-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.mat-badge {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  border-radius: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--hairline);
+  color: var(--dim);
+  margin-left: auto;
+}
+.mat-badge-typical { color: var(--accent-bright); border-color: var(--accent-ring); }
+.mat-badge-minimum { color: var(--ok); border-color: var(--ok); }
+.mat-badge-characteristic { color: var(--text); border-color: var(--hairline); }
+.mat-badge-uncited {
+  color: var(--err-text);
+  border-color: var(--err-ring);
+  background: var(--err-soft);
+}
+
+.mat-links { display: flex; flex-direction: column; gap: 3px; }
+.mat-links a { color: var(--accent-bright); font-size: 12px; }
+
+.mat-warn {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 11.5px;
+  color: var(--err-text);
+  line-height: 1.5;
+}
+
+.mat-use {
+  margin-top: 14px;
+  width: 100%;
+  height: 30px;
+  border-color: var(--accent-ring);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+.mat-use:hover:not(:disabled) { border-color: var(--accent); }
+.mat-use:disabled { opacity: 0.5; }
+
+/* The inspector's Browse… button (frontend/js/inspector.js::materialBlock),
+   assign mode's entry point into this modal. */
+.mat-browse {
+  margin-top: 8px;
+  width: 100%;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+  background: var(--raised);
+  color: var(--text);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.mat-browse:hover { background: var(--raised-2); }
