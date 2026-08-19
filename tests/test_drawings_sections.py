@@ -225,3 +225,45 @@ def test_a_section_and_detail_sheet_is_byte_stable_svg_and_pdf(demo):
     pdf = _bytes("pdf")
     assert pdf.startswith(b"%PDF-")
     assert _sha(pdf) == _sha(_bytes("pdf"))
+
+
+# --------------------------------------------- HTTP route forwards the surface
+
+def test_the_get_routes_forward_sheet_views_and_sections(demo):
+    """Regression (PRD-014 slice 6 gap): the SVG/PDF preview GET routes must
+    forward sheet / views / sections / scale, not just config / dim_table — the
+    browser preview sends them (`sections` as JSON, `views` as CSV) and the GET
+    step regenerates the file, so a route that dropped them served the wrong
+    sheet. A malformed `sections` JSON is a 422 here, before the tool."""
+    import json as _json
+
+    from fastapi.testclient import TestClient
+
+    from agentcad.server.app import create_app
+
+    registry = build_registry(demo)
+    app = create_app(demo, registry, extra_allowed_hosts={"testserver"})
+    http = TestClient(app, base_url="http://127.0.0.1")
+
+    r = http.get("/api/projects/demo/parts/box/drawing.svg", params={
+        "sheet": "ansi_a", "views": "top,front",
+        "sections": _json.dumps([{"plane": "xz", "offset_mm": 0}])})
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "image/svg+xml"
+    body = r.text
+    assert "A-A" in body                     # the section rode through
+    assert 'width="279.4mm"' in body         # the ansi_a sheet, not iso_a3
+
+    # the PDF twin honors sheet too
+    p = http.get("/api/projects/demo/parts/box/drawing.pdf",
+                 params={"sheet": "iso_a4"})
+    assert p.status_code == 200 and p.content.startswith(b"%PDF-")
+
+    # a malformed sections JSON is a 422 (the tool never sees it)
+    bad = http.get("/api/projects/demo/parts/box/drawing.svg",
+                   params={"sections": "{not json"})
+    assert bad.status_code == 422
+
+    # a bare GET (no new params) is unchanged
+    plain = http.get("/api/projects/demo/parts/box/drawing.svg")
+    assert plain.status_code == 200
