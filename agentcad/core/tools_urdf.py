@@ -9,7 +9,8 @@ in `core/urdf.py`.
 Mapping (MVP): instance → `<link>` (mass + COM-shifted inertia + mesh); rigid
 mate → `fixed`; revolute → `revolute` with `<limit>` from the connector range
 (`continuous` when unbounded); slider → `prismatic` with `<limit>` from
-`linear_range`; planar → `planar`; cylindrical/ball → `fixed` + a named warning;
+`linear_range`; planar/cylindrical/ball → `fixed` + a named warning (planar
+URDF needs the plane normal as its axis — Phase 2);
 an UNMATED instance → `fixed` child of `world` + a warning (FR15).
 
 Load order: sorts before `tools_versioning`, so any cross-pack seam is read
@@ -36,7 +37,14 @@ _JOINT_MAP = {
     "rigid": ("fixed", False, None),
     "revolute": ("revolute", False, "range"),
     "slider": ("prismatic", False, "linear_range"),
-    "planar": ("planar", False, None),
+    # planar is a resolved assembly DOF, but URDF planar needs the plane
+    # normal as its <axis> and our planar connector stores a location, not an
+    # axis — emitting <joint type="planar"> with no <axis> makes a loader
+    # default the normal to (1,0,0), a valid-looking wrong plane (review LOW-1).
+    # The MVP URDF core is fixed/revolute/prismatic (FR14); a correct planar
+    # export is Phase 2 (AGENTS.md). Degrade to fixed + a warning, like
+    # cylindrical/ball, until then.
+    "planar": ("fixed", True, None),
     "cylindrical": ("fixed", True, None),
     "ball": ("fixed", True, None),
 }
@@ -198,8 +206,8 @@ def register(registry, service) -> None:
         "export_urdf",
         "Export the assembly as a URDF robot description + one mesh per link "
         "under exports/urdf/<name>/. Mates map to joints (rigid->fixed, "
-        "revolute->revolute with limits, slider->prismatic, planar->planar; "
-        "cylindrical/ball degrade to fixed with a warning; an unmated instance "
+        "revolute->revolute with limits, slider->prismatic; "
+        "planar/cylindrical/ball degrade to fixed with a warning; an unmated instance "
         "becomes a fixed child of world with a warning). Link inertia is "
         "parallel-axis-shifted to each COM. Returns {path, links, joints, "
         "warnings}.",

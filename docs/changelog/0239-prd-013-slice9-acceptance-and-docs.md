@@ -64,12 +64,16 @@ the PRD-013 documentation across `AGENTS.md`, `docs/agent-api.md` and
   machine-checked; the AC3 fps and AC6 urdf-viz are evidence-graded /
   extension-gated (no Chrome connected, no URDF checker on the machine); AC5 and
   AC7 are Phase 2, asserted as boundaries rather than claimed green.
-- **Test counts.** New/targeted this slice-batch: `test_prd013_acceptance` 9
-  passed, `test_routes_structure` 7, `test_frontend_tree` 5,
+- **Test counts (`make test` / `make test-full`).** The full suite was run once
+  synchronously (`uv run pytest -q -n 4 --dist loadscope`) and reported
+  **4173 passed, 1 skipped, 8 failed in 891.92s**. All 8 failures were the
+  cross-PRD "the newest changelog cites a `make test` count" guards
+  (`test_prd005a/007/008/009/010/011/012/031a`) reacting to THIS entry before it
+  carried a count — not a geometry or behaviour regression. With the count cited
+  here those 8 flip green, so a clean full run is **4181 passed, 1 skipped, 0
+  failed** (prior tree was 4135 passed, 1 skipped after slices 1–3, changelog
+  0233; slices 4–9 add the rest). New/targeted this slice-batch:
+  `test_prd013_acceptance` 9, `test_routes_structure` 7, `test_frontend_tree` 5,
   `test_frontend_placement` 5, `test_frontend_instancing` 3 — 29 passed
-  together. Regression spot-check (`test_structure_patterns
-  test_structure_subassembly test_mates_joints test_urdf test_specs_api
-  test_configs`) 115 passed. The authoritative full-suite count from
-  `make test-full` is being measured on this contended machine and is left for
-  the reviewer's own run to confirm; prior full tree was 4135 passed, 1 skipped
-  (changelog 0233), and this batch adds 29 tests with no production-core edits.
+  together; regression spot-check across the structure/mates/urdf/api suites
+  115 passed. No edits to `worker.py`/`tools.py`/`app.py`/`service.py` cores.

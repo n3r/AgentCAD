@@ -199,6 +199,52 @@ def test_unmated_instance_warns_and_fixes_to_world(kernel, tmp_path):
     assert j.find("parent").get("link") == "world"
 
 
+PLANAR_BASE = '''\
+from build123d import *
+
+PARAMS = {"w": {"default": 40.0, "min": 10.0, "max": 100.0}}
+
+def build(p):
+    with BuildPart() as part:
+        Box(p.w, p.w, 6)
+    return part.part
+
+def connectors(p, part):
+    return {"pad": {"type": "planar", "location": ((0, 0, 3), (0, 0, 0)),
+                    "u_range": (-10, 10), "v_range": (-10, 10)}}
+'''
+
+
+def test_planar_mate_degrades_to_fixed_with_a_warning(kernel, tmp_path):
+    """Review LOW-1: a URDF `planar` joint needs the plane normal as its <axis>,
+    and our planar connector stores a location, not an axis — so emitting
+    <joint type="planar"> with no <axis> is a valid-looking wrong plane. The MVP
+    URDF core is fixed/revolute/prismatic (FR14); planar degrades to fixed + a
+    warning like cylindrical/ball until a correct planar export (Phase 2)."""
+    service = make_test_service(tmp_path / "projects", kernel)
+    registry = build_registry(service)
+    service.create_project("pl")
+    service.create_part("pl", "base", script=PLANAR_BASE)
+    service.create_part("pl", "arm", script=ARM)
+    service.set_assembly("pl", [
+        {"id": "b", "part": "base"},
+        {"id": "a", "part": "arm",
+         "mate": {"connector": "mount", "to_instance": "b",
+                  "to_connector": "pad"}},
+    ])
+    out = registry.call("export_urdf", {"project": "pl"})
+    assert "error" not in out, out
+    assert any(w.get("kind") == "joint_degraded" and w.get("from") == "planar"
+               for w in out["warnings"]), out["warnings"]
+    import xml.etree.ElementTree as ET
+    xml = (Path(out["path"]) / "robot.urdf").read_text()
+    urdf.validate_urdf(xml)
+    j = next(x for x in ET.fromstring(xml).findall("joint")
+             if x.get("name") == "a")
+    assert j.get("type") == "fixed"
+    assert j.find("axis") is None       # no wrong-normal axis emitted
+
+
 GOLDEN = Path(__file__).resolve().parent / "fixtures" / "urdf" / "rocketry_stack.urdf"
 
 
