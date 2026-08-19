@@ -2551,7 +2551,10 @@ User-facing reference: `docs/materials.md` and the Materials/FEM sections of
   records is a `validation_error` (`"no material satisfies the
   constraints"`) carrying `details.nearest_relaxation: {drop, count} | null`
   (the single constraint whose removal admits the most records, by
-  leave-one-out) — never a bare empty list.
+  leave-one-out; with one constraint, that one) — never a bare empty list.
+  A **standalone `basis`** means "carries at least one value on that basis"
+  (it used to be a silent match-everything). `links[].url` must be `https://`
+  — validated on write and refused again by the renderer.
 - **`routes_materials.py` answers 422 for an unknown id or an impossible
   query, not 404.** Both `GET /materials/{id}` and `POST /materials/find` go
   through `routes_configs._result` (the house convention: a tool refusal —

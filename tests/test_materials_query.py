@@ -244,10 +244,28 @@ def test_nearest_relaxation_ties_pick_the_lexicographically_first_key():
     assert result == {"drop": "max_service_temp_c_min", "count": 1}
 
 
-def test_nearest_relaxation_none_with_one_or_zero_constraints():
+def test_nearest_relaxation_names_the_only_constraint_and_is_none_with_zero():
+    """One constraint is the likeliest agent case: the relaxation names it
+    (dropping it admits the whole catalog); zero constraints → nothing to drop."""
     catalog = {"a": mat("a", yield_mpa=100.0)}
-    assert nearest_relaxation(catalog, parse_constraints({"yield_mpa_min": 500})) is None
+    assert nearest_relaxation(catalog, parse_constraints({"yield_mpa_min": 500})) == {
+        "drop": "yield_mpa_min", "count": 1}
     assert nearest_relaxation(catalog, parse_constraints({})) is None
+
+
+def test_standalone_basis_means_carries_a_value_on_that_basis():
+    """``{"basis": "minimum"}`` alone used to match everything (the basis was
+    only tested inside the property loop). Now it means "at least one property
+    on that basis", and the evidence is those properties."""
+    spec_min = mat("spec_min", yield_mpa=Property("yield_mpa", 100.0, None, "MPa",
+                                                  basis="minimum", source="s"))
+    typical = mat("typical", yield_mpa=100.0)
+    catalog = {"spec_min": spec_min, "typical": typical}
+    rows = find(catalog, require={"basis": "minimum"})
+    assert [r["id"] for r in rows] == ["spec_min"]
+    assert set(rows[0]["constraining"]) == {"yield_mpa"}
+    with pytest.raises(ValidationError):
+        find(catalog, require={"basis": "characteristic"})
 
 
 def test_nearest_relaxation_none_when_nothing_helps():

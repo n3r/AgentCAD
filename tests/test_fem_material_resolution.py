@@ -270,6 +270,18 @@ def test_static_clamps_e_above_the_table_and_warns(fem):
         "table covers 20.0..200.0 C; end value used"]
 
 
+def test_static_refuses_a_zero_stiffness_table_end(fem):
+    """EN 1993-1-2's E(T) curve ends at 0 at 1200 C (``steel_a36`` ships it):
+    resolving there must refuse, not hand the solver a singular stiffness."""
+    fem.part("bar", material="steel_a36")
+    result = fem.call("fem_static", part_id="bar", temperature_c=1200.0, **FACES)
+    assert "no stiffness at 1200.0 C" in result["error"]["message"]
+    assert fem.fake.calls == []          # nothing reached the kernel
+    ok = fem.call("fem_static", part_id="bar", temperature_c=600.0, **FACES)
+    assert fem.sent["E_mpa"] == pytest.approx(62000.0)   # 0.31 x 200 GPa
+    assert ok["material_basis"]["E_mpa"]["interpolated"] is True
+
+
 def test_static_records_explicit_values(fem):
     fem.part("bar")
     result = fem.call("fem_static", part_id="bar", E_mpa=1000.0, nu=0.1,
@@ -373,3 +385,19 @@ def test_real_solver_static_reports_the_material_basis(kernel, tmp_path):
         "project": "demo", "part_id": "bar", "load_N": 100.0, **FACES})
     assert result["material_basis"]["E_mpa"]["value"] == pytest.approx(68900.0)
     assert result["max_disp_mm"] > 0
+
+
+def test_non_finite_temperatures_are_refused_at_the_door(fem):
+    """A NaN temperature used to read the table's last row with no clamp flag
+    (``Property.at`` fell through) and then 500 the HTTP response on echo;
+    ``_quietly`` must not turn that refusal into a silent fallback either."""
+    fem.part("bar", material="synth_e", materials={"synth_e": SYNTH_E})
+    for bad in (float("nan"), float("inf")):
+        result = fem.call("fem_static", part_id="bar", temperature_c=bad, **FACES)
+        assert "temperature_c must be finite" in result["error"]["message"]
+        result = fem.call("fem_thermal", part_id="bar", t_hot_c=bad, t_cold_c=20.0,
+                          **THERMAL_FACES)
+        assert "t_hot_c must be finite" in result["error"]["message"]
+    assert fem.fake.calls == []
+    with pytest.raises(ValueError):
+        fem.service.materials.resolve("demo", "synth_e").prop("E_gpa").at(float("nan"))

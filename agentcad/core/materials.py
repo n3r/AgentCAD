@@ -226,6 +226,10 @@ class Property:
         """
         if not self.table:
             return (self.point, False, False)
+        if not math.isfinite(T_c):
+            # NaN compares false against every row and used to fall through to
+            # the last row with no clamp flag — a silent wrong answer.
+            raise ValueError(f"temperature must be finite, got {T_c!r}")
         rows = self.table
         if T_c < rows[0][0]:
             return (rows[0][1], True, True)
@@ -318,7 +322,7 @@ class Material:
         out["condition"] = self.condition
         out["standards"] = list(self.standards)
         if self.process:
-            out["process"] = {k: (dict(v) if isinstance(v, dict) else v)
+            out["process"] = {k: (dict(v) if isinstance(v, Mapping) else v)
                               for k, v in self.process.items()}
         out["links"] = [dict(link) for link in self.links]
         out["warnings"] = list(self.warnings)
@@ -515,8 +519,13 @@ def _validate_links(material_id: str, links) -> tuple[dict, ...]:
     for link in links:
         if not isinstance(link, dict) or set(link) != {"label", "url"}:
             _fail(material_id, "each link must be {label, url}")
+        url = _string(material_id, "link url", link["url"])
+        # A link lands in an ``href`` in the browser: only https may pass, so
+        # a ``javascript:`` URL in a user-layer card can never become a click.
+        if not url.lower().startswith("https://"):
+            _fail(material_id, "link url must start with https://", {"url": url})
         out.append({"label": _string(material_id, "link label", link["label"]),
-                    "url": _string(material_id, "link url", link["url"])})
+                    "url": url})
     return tuple(out)
 
 
@@ -693,6 +702,17 @@ def validate_materials_dict(materials: dict, source: str) -> dict[str, Material]
 
 # -------------------------------------------------------- the shipped library
 
+def _read_json(path: Path):
+    """A shipped data file, parsed — every failure is a ``RuntimeError``
+    naming the file (a bare ``FileNotFoundError``/``JSONDecodeError``/
+    ``RecursionError`` at import said nothing about which card to fix)."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise RuntimeError(f"{path}: cannot read the materials data file "
+                           f"({exc.__class__.__name__}: {exc})") from exc
+
+
 def load_library(data_dir: Path = _DATA_DIR) -> tuple[str, dict[str, Material]]:
     """Load ``materials_data/`` — every card linted at the ``library`` profile.
 
@@ -704,8 +724,8 @@ def load_library(data_dir: Path = _DATA_DIR) -> tuple[str, dict[str, Material]]:
     """
     from .materials_lint import lint_card  # deferred: the lint imports us back
 
-    marker = json.loads((data_dir / _LIBRARY_FILE).read_text(encoding="utf-8"))
-    version = marker["library_version"]
+    marker = _read_json(data_dir / _LIBRARY_FILE)
+    version = marker.get("library_version") if isinstance(marker, dict) else None
     if not isinstance(version, str) or not version:
         raise RuntimeError(f"{data_dir / _LIBRARY_FILE}: library_version must "
                            "be a version string")
@@ -714,7 +734,7 @@ def load_library(data_dir: Path = _DATA_DIR) -> tuple[str, dict[str, Material]]:
     for path in sorted(data_dir.glob("*.json")):
         if path.name.startswith("_"):
             continue
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = _read_json(path)
         entries = doc.get("materials") if isinstance(doc, dict) else None
         if not isinstance(entries, dict):
             raise RuntimeError(f"{path.name}: expected "
@@ -779,7 +799,10 @@ class MaterialLibrary:
                 raise ValidationError("materials.json must be an object")
             self._global_cache = validate_materials_dict(entries, "global")
             self.global_error = None
-        except (ValidationError, json.JSONDecodeError, OSError) as exc:
+        except (ValidationError, json.JSONDecodeError, OSError, ValueError,
+                RecursionError) as exc:
+            # ValueError covers UnicodeDecodeError (a cp1252 file used to
+            # break every build); RecursionError is NOT a ValueError.
             self._global_cache = {}
             self.global_error = f"{self.global_path}: {exc}"
         self._global_mtime = mtime

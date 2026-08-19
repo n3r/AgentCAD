@@ -61,6 +61,7 @@ let compareMode = false;
 let detailId = null;
 let detailRecord = null;
 let recordCache = new Map(); // id -> full get_material() record, this open only
+let toasted = new Set(); // library warnings already toasted this open (once, not per keystroke)
 let filterTimer = null;
 let listToken = 0;
 
@@ -163,6 +164,7 @@ export async function open(opts) {
   detailId = null;
   detailRecord = null;
   recordCache = new Map();
+  toasted = new Set();
   for (const input of Object.values(filterInputs)) input.value = "";
   basisSelect.value = "";
   markProcessActive();
@@ -205,11 +207,16 @@ function close() {
  *  change, which the debounce contract rules out). Picking a category only
  *  narrows the table; the tree itself stays a fixed map of the catalog. */
 async function loadTree() {
-  let payload;
-  try {
-    payload = await api.listMaterials(state.projectName);
-  } catch {
-    return; // the table's own fetch (refresh()) reports the failure
+  // The workbench already holds the project's full catalog (main.js loads it
+  // at project open and after a materials edit) — reuse it rather than
+  // fetching ~0.5 MB a second time; fall back to a fetch only when absent.
+  let payload = state.materials && state.materials.materials ? state.materials : null;
+  if (!payload) {
+    try {
+      payload = await api.listMaterials(state.projectName);
+    } catch {
+      return; // the table's own fetch (refresh()) reports the failure
+    }
   }
   if (!isOpen()) return;
   catalogRows = payload.materials || [];
@@ -246,10 +253,15 @@ async function refresh() {
   }
   if (token !== listToken || !isOpen()) return;
   rows = payload.materials || [];
+  // A library/pin warning is the same on every debounced refresh: say it
+  // once per open, not once per keystroke.
   for (const w of payload.warnings || []) {
+    if (toasted.has(w)) continue;
+    toasted.add(w);
     actions.toast(`Materials library: ${w}`, "error");
   }
-  if (payload.global_error) {
+  if (payload.global_error && !toasted.has(payload.global_error)) {
+    toasted.add(payload.global_error);
     actions.toast(`Materials: ${payload.global_error}`, "error");
   }
   countEl.textContent = `${payload.count} material${payload.count === 1 ? "" : "s"}`;
@@ -376,7 +388,7 @@ function renderTable() {
     tr.appendChild(nameTd);
 
     const catTd = document.createElement("td");
-    catTd.textContent = row.subcategory ? `${row.category} / ${row.subcategory}` : row.category;
+    catTd.textContent = `${row.category} / ${row.subcategory || "unclassified"}`;
     tr.appendChild(catTd);
 
     tr.appendChild(textTd(row.condition || "—"));
@@ -547,6 +559,10 @@ function renderDetail(record) {
     const wrap = document.createElement("div");
     wrap.className = "mat-links";
     for (const link of record.links) {
+      // The server refuses non-http(s) link urls; the renderer refuses them
+      // again so a stale or hand-edited record can never become a
+      // `javascript:` click (defence in depth, not the boundary).
+      if (!/^https:\/\//i.test(String(link.url || ""))) continue;
       const a = document.createElement("a");
       a.href = link.url;
       a.target = "_blank";
@@ -678,7 +694,9 @@ function escapeHtml(s) {
   return String(s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function errorText(err) {

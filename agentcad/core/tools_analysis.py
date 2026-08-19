@@ -13,6 +13,8 @@ mistake for an extrapolation.
 
 from __future__ import annotations
 
+import math
+
 from .model import ValidationError
 from .tools import Tool, schema
 
@@ -45,10 +47,18 @@ def resolve_property(service, project: str, material_id: str, key: str,
     `specs._youngs_mpa` read a property from, so the number a spec memo is
     keyed on is the number the solver consumed.
     """
+    try:
+        T_c = float(T_c)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"temperature must be a number, got {T_c!r}") from exc
+    if not math.isfinite(T_c):
+        # A NaN temperature used to read the table's last row with no clamp
+        # flag — a silent wrong answer — and then 500 the response on echo.
+        raise ValidationError(f"temperature must be finite, got {T_c!r}")
     prop = _material(service, project, material_id).prop(key)
     if prop is None:
         return None
-    value, interpolated, clamped = prop.at(float(T_c))
+    value, interpolated, clamped = prop.at(T_c)
     if value is None:
         return None
     table = prop.table
@@ -63,6 +73,19 @@ def resolve_property(service, project: str, material_id: str, key: str,
                         if table else None),
         "unit": prop.unit,
     }
+
+
+def _finite(name: str, value) -> float:
+    """A temperature argument as a finite float, or a refusal naming it —
+    checked at the tool's door, BEFORE ``_quietly`` could swallow it as "no
+    such property" and hand the solver a fallback for a NaN nobody meant."""
+    try:
+        t = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{name} must be a number, got {value!r}") from exc
+    if not math.isfinite(t):
+        raise ValidationError(f"{name} must be finite, got {value!r}")
+    return t
 
 
 def _quietly(service, project: str, material_id: str, key: str,
@@ -176,6 +199,15 @@ def register(registry, service) -> None:
                     entry = _in(entry, 1000.0, "MPa")   # GPa -> MPa
                     E_mpa = entry["value"]
                     basis["E_mpa"] = entry
+                    if not E_mpa > 0:
+                        # A fire-design E(T) table ends at 0 (EN 1993-1-2 at
+                        # 1200 C): refuse rather than hand the solver a
+                        # singular stiffness.
+                        raise ValidationError(
+                            f"material {material_id!r} has no stiffness at "
+                            f"{temperature_c} C (E resolves to {E_mpa} MPa); "
+                            "pass E_mpa or a lower temperature_c",
+                            {"material_basis": basis})
             else:
                 basis["E_mpa"] = {"value": E_mpa, "basis": "explicit"}
 
@@ -198,6 +230,7 @@ def register(registry, service) -> None:
                        E_mpa: float | None = None, nu: float | None = None,
                        mesh_size_mm: float = 3.0,
                        temperature_c: float = 20.0) -> dict:
+            temperature_c = _finite("temperature_c", temperature_c)
             record = service.store.get_part(project, part_id)
             script = service.store.read_script(project, part_id)
             E_mpa, nu, basis = _elastic(project, record.material, E_mpa, nu,
@@ -244,6 +277,7 @@ def register(registry, service) -> None:
                       temperature_c: float = 20.0) -> dict:
             if not 1 <= int(n_modes) <= 24:
                 raise ValidationError("n_modes must be between 1 and 24")
+            temperature_c = _finite("temperature_c", temperature_c)
             record = service.store.get_part(project, part_id)
             script = service.store.read_script(project, part_id)
             # Mass needs the real density — always the part material's.
@@ -291,13 +325,15 @@ def register(registry, service) -> None:
         def fem_thermal(project: str, part_id: str, hot_face: dict,
                         cold_face: dict, t_hot_c: float, t_cold_c: float,
                         k_w_m_k: float | None = None) -> dict:
+            t_hot_c = _finite("t_hot_c", t_hot_c)
+            t_cold_c = _finite("t_cold_c", t_cold_c)
             record = service.store.get_part(project, part_id)
             script = service.store.read_script(project, part_id)
             if k_w_m_k is None:
                 # The mean of the two fixed temperatures is the one defensible
                 # single temperature for a linear steady-state conduction model
                 # (the solver takes one scalar k).
-                t_eval = (float(t_hot_c) + float(t_cold_c)) / 2.0
+                t_eval = (t_hot_c + t_cold_c) / 2.0
                 entry = resolve_property(service, project, record.material,
                                          "k_w_m_k", t_eval)
                 if entry is None:

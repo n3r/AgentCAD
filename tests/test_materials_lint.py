@@ -245,3 +245,37 @@ def test_cli_json_output_and_shipped_library(tmp_path):
     assert done.returncode == 0, done.stderr
     findings = json.loads(done.stdout)
     assert [f for f in findings if f["level"] == "error"] == []
+
+
+# ------------------------------------------------- review 0293 follow-ups
+
+def test_top_level_cost_shorthand_needs_a_citation_too():
+    """The gate and the record used to disagree: a top-level
+    ``cost_usd_kg`` with no source linted clean while ``to_payload`` reported
+    it uncited. Now it is the same ``missing_citation`` as any property."""
+    entry = card(cost_usd_kg={"range": [1.0, 2.0], "unit": "USD/kg",
+                              "basis": "typical", "as_of": "2025"})
+    findings = lint.lint_card("test_alloy", entry, "library")
+    hit = [f for f in findings if f.code == "missing_citation"]
+    assert [f.property for f in hit] == ["cost_usd_kg"]
+    assert hit[0].level == "error"
+    entry["cost_usd_kg"]["source"] = "editorial estimate"
+    assert "missing_citation" not in codes(lint.lint_card("test_alloy", entry, "library"))
+
+
+def test_point_disagreeing_with_its_table_at_t_c_is_a_warning():
+    entry = card()
+    entry["properties"]["k_w_m_k"] = {
+        "value": 1.8, "unit": "W/(m*K)", "basis": "typical", "source": "EN",
+        "table": [[20, 1.95], [100, 1.77], [200, 1.55]]}
+    findings = lint.lint_card("test_alloy", entry, "library")
+    hit = [f for f in findings if f.code == "point_disagrees_with_table"]
+    assert len(hit) == 1 and hit[0].level == "warning"
+    assert hit[0].property == "k_w_m_k" and "1.95" in hit[0].message
+    assert not lint.has_errors(findings)
+    # within 2 % is silent; outside the envelope is still the error
+    entry["properties"]["k_w_m_k"]["value"] = 1.94
+    assert "point_disagrees_with_table" not in codes(
+        lint.lint_card("test_alloy", entry, "library"))
+    entry["properties"]["k_w_m_k"]["value"] = 9.0
+    assert "point_outside_table" in codes(lint.lint_card("test_alloy", entry, "library"))

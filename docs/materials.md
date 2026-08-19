@@ -134,6 +134,11 @@ Plus:
 When a card carries both a point and a `table`, the point still has to lie
 within the table's value envelope (lint: `point_outside_table`) — the point is
 what every non-thermal consumer reads, the table is what FEM interpolates.
+When the two disagree at the point's own `T_c` by more than 2 % the lint
+**warns** (`point_disagrees_with_table`) so the card says so out loud: a
+design point deliberately placed between a code's upper and lower limits
+(concrete's 1.8 W/(m·K) against EN 1992-1-2's 1.95 upper curve) is
+legitimate, but the reader should know FEM at 20 °C will use the table.
 
 ### Basis vocabulary
 
@@ -173,7 +178,9 @@ Optional, one closed 4-step rating enum: `excellent | good | fair | poor`
 
 A list of `{label, url}` — outbound references only (MMPDS, UL Prospector,
 manufacturer pages). AgentCAD never mirrors licensed data; a `links` entry
-points a reader at it instead. `url` must be `https`.
+points a reader at it instead. `url` must start with `https://` (validated
+on write, and the browser refuses to render anything else — a link lands in
+an `href`).
 
 ---
 
@@ -271,9 +278,14 @@ browser.
   (`poor` or absent fails; `sheet` qualifies on the block's presence).
 - `basis` — restrict to records whose *constraining* properties (the ones
   this call actually tests) carry this basis, e.g. `"minimum"` for "only spec
-  minima, please".
+  minima, please". **Standalone** (no property constraint to bind it to) it
+  means "records carrying at least one value on that basis", and the
+  evidence is those properties — never a silent match-everything.
 
-An unknown key raises `validation_error` listing the whole known grammar.
+An unknown key raises `validation_error` listing the whole known grammar; so
+does a non-finite bound (`NaN`/`Infinity` parse from JSON and would compare as
+"never less"), and a `category`/`subcategory` argument that disagrees with the
+one inside `require`.
 
 **`prefer`** (ranking, `find_materials` only): `{<property>: "min"|"max"}`.
 Score = sum of per-property normalized rank over the qualifying set (0 best …
@@ -288,7 +300,8 @@ margin report can quote "yield 240 MPa (minimum, EN 755-2)" verbatim.
 **Zero qualifying records** is a `validation_error`
 (`"no material satisfies the constraints"`) carrying
 `details.nearest_relaxation: {drop, count} | null` — the single constraint
-whose removal would admit the most records, by leave-one-out — and
+whose removal would admit the most records, by leave-one-out (with one
+constraint, that one) — and
 `details.tried` (the normalized constraints), so an agent can retry a
 narrower ask instead of guessing.
 
@@ -358,8 +371,9 @@ block a publish.
 
 `invalid_id, schema, unit_mismatch, missing_citation, density_must_be_point,
 subcategory_required, process_source_required, table_not_monotonic,
-point_outside_table, range_inverted, cost_in_two_places, disallowed_source,
-out_of_envelope`.
+point_outside_table, point_disagrees_with_table, range_inverted,
+cost_in_two_places, disallowed_source, out_of_envelope`. `missing_citation`
+also covers a top-level `cost_usd_kg` shorthand.
 
 `disallowed_source` fires whenever a `source` (on a property, on `process`,
 or on `cost_usd_kg`) names MatWeb, MakeItFrom, UL Prospector or Granta —

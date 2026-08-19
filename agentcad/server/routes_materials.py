@@ -36,9 +36,13 @@ from .routes_configs import _result
 def _parse_filter(raw: str | None) -> dict | None:
     if raw is None:
         return None
+    if len(raw) > 64 * 1024:
+        raise ValidationError("filter is too large (64 KiB max)", {"bytes": len(raw)})
     try:
+        # RecursionError is NOT a ValueError (the packages/_json.py trap): a
+        # 10 000-deep ``[[[…]]]`` used to 500 this route.
         parsed = json.loads(raw)
-    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError) as exc:
         raise ValidationError("filter must be valid JSON", {"error": str(exc)}) from exc
     if not isinstance(parsed, dict):
         raise ValidationError("filter must be a JSON object",
@@ -71,7 +75,7 @@ def build_router(service, registry) -> APIRouter:
 
     @router.put("/projects/{proj}/materials")
     async def set_materials(proj: str, request: Request):
-        body = await request.json()
+        body = await _object_body(request)   # a non-object body was a 500
         return registry.call(
             "set_project_materials",
             {"project": proj, "materials": body.get("materials", body)},

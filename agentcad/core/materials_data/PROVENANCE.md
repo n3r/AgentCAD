@@ -449,7 +449,17 @@ not be done honestly, the value carries an editorial label saying what it is,
 and the ones QA could not reconcile at all are written up above rather than
 quietly deleted.
 
-## Known warnings (22, all kept deliberately)
+## Known warnings (45 = 22 `out_of_envelope` + 23 `point_disagrees_with_table`, all kept deliberately)
+
+The 23 `point_disagrees_with_table` warnings (added after the review) name the
+cards whose point differs from their own table at `T_c` by more than 2 %:
+the 20 normal-weight concrete cards (point 1.8 W/(m·K), the usual design
+value between EN 1992-1-2's upper and lower curves, against the upper-limit
+table's 1.95 at 20 °C — said in each card's notes), `copper_c101` (CDA 391
+against the TPRC row), `ptfe` and `pvdf` (datasheet point against a curve
+read-off). Each is a deliberate editorial choice the notes explain; FEM at
+the point's temperature uses the table.
+
 
 `out_of_envelope` is a warning, never an error: the bands in
 `materials_lint.ENVELOPES` are rails for a typo'd exponent, not a claim about

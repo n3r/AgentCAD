@@ -26,6 +26,7 @@ naming the full known grammar.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 
 from dataclasses import dataclass, field, replace
@@ -138,8 +139,11 @@ def parse_constraints(raw: dict | None) -> Constraints:
             prop = key[:-4]
             if prop not in PROPERTY_UNITS:
                 _refuse_unknown(key)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValidationError(f"constraint {key!r} must be a number",
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value)):
+                # NaN/Infinity parse from JSON and compare as "never less":
+                # a NaN bound was a silent no-op and then a 500 on echo.
+                raise ValidationError(f"constraint {key!r} must be a finite number",
                                       {"known": list(_GRAMMAR_KEYS)})
             (mins if key.endswith("_min") else maxs)[prop] = float(value)
         elif key == "category":
@@ -184,11 +188,20 @@ def normalize_constraints(raw: dict | None, category: str | None = None,
         if category not in CATEGORIES:
             raise ValidationError(f"unknown category {category!r}",
                                   {"known": list(CATEGORIES)})
+        if constraints.category not in (None, category):
+            raise ValidationError(
+                f"category {category!r} disagrees with require.category "
+                f"{constraints.category!r}; give one", {"known": list(CATEGORIES)})
         constraints = replace(constraints, category=category)
     if subcategory is not None:
         if subcategory not in _ALL_SUBCATEGORIES:
             raise ValidationError(f"unknown subcategory {subcategory!r}",
                                   {"known": list(_ALL_SUBCATEGORIES)})
+        if constraints.subcategory not in (None, subcategory):
+            raise ValidationError(
+                f"subcategory {subcategory!r} disagrees with require.subcategory "
+                f"{constraints.subcategory!r}; give one",
+                {"known": list(_ALL_SUBCATEGORIES)})
         constraints = replace(constraints, subcategory=subcategory)
     return constraints
 
@@ -252,6 +265,17 @@ def qualifies(material: Material, constraints: Constraints) -> dict | None:
         if key in constraints.maxs and hi > constraints.maxs[key]:
             return None
         constraining[key] = _evidence(prop)
+    if constraints.basis is not None and not constraining:
+        # A standalone ``basis`` (no property constraint to bind it to) means
+        # "records that carry at least one value on that basis" — e.g.
+        # ``{"basis": "minimum"}`` is "show me materials with spec minima".
+        # The evidence is those properties; without this the key was a silent
+        # no-op that matched the whole catalog (review 0293).
+        carrying = {key: _evidence(prop) for key, prop in material.properties.items()
+                    if prop.basis == constraints.basis}
+        if not carrying:
+            return None
+        return carrying
     return constraining
 
 
@@ -327,10 +351,11 @@ def rank(rows: list[dict], prefer: dict | None) -> list[dict]:
 def nearest_relaxation(catalog: dict[str, Material],
                        constraints: Constraints) -> dict | None:
     """Leave-one-out over the property/process/basis constraints: the single
-    key whose removal admits the most records. `None` with <= 1 droppable
-    constraint, or when no removal admits more than the constraints as given."""
+    key whose removal admits the most records (with one constraint, that one —
+    the likeliest agent case). `None` with nothing droppable, or when no
+    removal admits more than the constraints as given."""
     keys = sorted(constraints.droppable_keys())
-    if len(keys) <= 1:
+    if not keys:
         return None
     baseline = sum(1 for m in catalog.values() if qualifies(m, constraints) is not None)
     best_key, best_count = None, baseline

@@ -211,6 +211,17 @@ def _raw_findings(m, card: dict, library: bool, named, finding) -> list[Finding]
                     "missing_citation", level,
                     named(f"property {key!r} has no source"), key))
 
+    # The top-level ``cost_usd_kg`` shorthand is a property too: it needs a
+    # citation like any other (review 0293: a library card with an uncited
+    # top-level cost linted clean while ``to_payload`` reported it uncited).
+    cost_block = card.get("cost_usd_kg")
+    if isinstance(cost_block, dict) and not (
+            isinstance(props, dict) and "cost_usd_kg" in props):
+        if cost_block.get("source") is None:
+            findings.append(finding(
+                "missing_citation", level,
+                named("property 'cost_usd_kg' has no source"), "cost_usd_kg"))
+
     for where in ("process", "cost_usd_kg"):
         block = card.get(where)
         source = block.get("source") if isinstance(block, dict) else None
@@ -258,7 +269,35 @@ def _table_findings(key: str, obj: dict, named, finding) -> list[Finding]:
                             named(f"property {key!r} point {point} is outside "
                                   f"its table's value range "
                                   f"[{min(values)}, {max(values)}]"), key)]
+        # The point is what every non-thermal consumer reads; the table is
+        # what FEM interpolates. When the two disagree at the point's own
+        # ``T_c`` by more than 2 % the card shows one number and the solver
+        # uses another — legitimate (a design point between code limits) but
+        # worth saying, so it is a warning, never an error.
+        t_c = obj.get("T_c", 20.0)
+        if isinstance(t_c, (int, float)) and not isinstance(t_c, bool):
+            at = _interp(temps, values, float(t_c))
+            if at is not None and at != 0 and abs(point - at) / abs(at) > 0.02:
+                return [finding(
+                    "point_disagrees_with_table", "warning",
+                    named(f"property {key!r} point {point} differs from its "
+                          f"table at T_c={t_c} ({at:.4g}) by more than 2 %; "
+                          "FEM interpolates the table, every other consumer "
+                          "reads the point"), key)]
     return []
+
+
+def _interp(temps, values, t):
+    """Linear interpolation with end clamping — the same rule as
+    ``Property.at`` (kept local so the lint stays import-free of the loader)."""
+    if t <= temps[0]:
+        return values[0]
+    if t >= temps[-1]:
+        return values[-1]
+    for (t0, v0), (t1, v1) in zip(zip(temps, values), zip(temps[1:], values[1:])):
+        if t0 <= t <= t1:
+            return v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+    return None
 
 
 def _resolved_findings(material, named, finding) -> list[Finding]:

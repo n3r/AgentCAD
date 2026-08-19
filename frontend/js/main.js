@@ -131,9 +131,14 @@ async function refreshProject() {
   } catch {
     return;
   }
+  const materialsMoved = JSON.stringify((state.project || {}).materials || null)
+    !== JSON.stringify(detail.materials || null);
   setState({ project: detail });
   updateEmptyState();
-  loadMaterials(state.projectName); // keep the material picker in sync after edits
+  // Keep the material picker in sync after edits — but only when the
+  // project's materials map actually moved: the full catalog is ~0.5 MB for
+  // 434 cards and `project_changed` fires after every write.
+  if (materialsMoved || !state.materials) loadMaterials(state.projectName);
   const stillThere = detail.parts.some((p) => p.id === state.selectedPart);
   if (state.mode === "part") {
     if (!stillThere) {

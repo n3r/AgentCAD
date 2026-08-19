@@ -219,3 +219,44 @@ def test_hosted_anonymous_requests_to_the_new_routes_are_401(hosted_client):
 
     r = hosted_client.get("/api/materials")
     assert r.status_code == 401
+
+
+# ------------------------------------------------- review 0293 follow-ups
+
+def test_route_json_boundary_hardening(kernel, tmp_path):
+    """The packages/_json.py trap, re-learned: ``RecursionError`` is not a
+    ``ValueError``; NaN/Infinity parse from JSON by default. Each used to be
+    a 500 (or a silent no-op filter); every one is a 422 now."""
+    client = _local_client(kernel, tmp_path)
+    bomb = "[" * 10000 + "]" * 10000
+    assert client.get("/api/materials", params={"filter": bomb}).status_code == 422
+    assert client.post("/api/materials/find", content=bomb,
+                       headers={"content-type": "application/json"}).status_code == 422
+    assert client.get("/api/materials",
+                      params={"filter": '{"yield_mpa_min": NaN}'}).status_code == 422
+    for bad in ("NaN", "Infinity", "-Infinity"):
+        r = client.post("/api/materials/find",
+                        content='{"require": {"yield_mpa_min": %s}}' % bad,
+                        headers={"content-type": "application/json"})
+        assert r.status_code == 422, bad
+        assert "finite" in r.text
+    # the 64 KiB cap is the route's, below httpx's own URL limit
+    from agentcad.server.routes_materials import _parse_filter
+    from agentcad.core.model import ValidationError as VE
+    with pytest.raises(VE, match="too large"):
+        _parse_filter('{"yield_mpa_min": 1' + "0" * 70000 + "}")
+    # PUT materials with a non-object body used to be a 500
+    svc_client = client
+    svc_client.post("/api/projects", json={"name": "demo"})
+    assert svc_client.put("/api/projects/demo/materials", json=[1, 2]).status_code in (400, 422)
+
+
+def test_find_materials_category_argument_conflicting_with_require_refuses(registry):
+    result = registry.call("find_materials", {"require": {"category": "polymer"},
+                                              "category": "metal"})
+    assert result["error"]["type"] == "validation_error"
+    assert "disagrees" in result["error"]["message"]
+    # agreeing is fine
+    rows = registry.call("find_materials", {"require": {"category": "metal"},
+                                            "category": "metal", "limit": 3})
+    assert rows["count"] == 3

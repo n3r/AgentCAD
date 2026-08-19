@@ -313,20 +313,20 @@
         "yield_mpa": {
           "value": 205.0,
           "unit": "MPa",
-          "basis": "typical",
-          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 316 annealed sheet typical tensile properties"
+          "basis": "minimum",
+          "source": "ASTM A240/A240M specified minimum for S31600 (type 316) annealed plate/sheet/strip - these are exactly the spec minima (205 MPa / 515 MPa / 40 %), which the v1 table carried as 'typical'; re-labelled by orchestrator ruling after the PRD-028 review (value unchanged, see materials_data/PROVENANCE.md)"
         },
         "ultimate_mpa": {
           "value": 515.0,
           "unit": "MPa",
-          "basis": "typical",
-          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 316 annealed sheet typical tensile properties"
+          "basis": "minimum",
+          "source": "ASTM A240/A240M specified minimum for S31600 (type 316) annealed plate/sheet/strip - these are exactly the spec minima (205 MPa / 515 MPa / 40 %), which the v1 table carried as 'typical'; re-labelled by orchestrator ruling after the PRD-028 review (value unchanged, see materials_data/PROVENANCE.md)"
         },
         "elongation_pct": {
           "value": 40.0,
           "unit": "%",
-          "basis": "typical",
-          "source": "ASM Handbook Vol. 1 (Irons and Steels), type 316 annealed sheet typical tensile properties"
+          "basis": "minimum",
+          "source": "ASTM A240/A240M specified minimum for S31600 (type 316) annealed plate/sheet/strip - these are exactly the spec minima (205 MPa / 515 MPa / 40 %), which the v1 table carried as 'typical'; re-labelled by orchestrator ruling after the PRD-028 review (value unchanged, see materials_data/PROVENANCE.md)"
         },
         "cte_um_m_k": {
           "value": 16.0,
@@ -353,7 +353,8 @@
           "source": "editorial estimate, bulk order-of-magnitude",
           "as_of": "2025"
         }
-      }
+      },
+      "notes": "Yield, tensile strength and elongation are the ASTM A240 specified minima for S31600 (annealed); typical annealed 316 sheet tests well above them."
     },
     "ss17_4ph": {
       "label": "Stainless 17-4PH (H900)",

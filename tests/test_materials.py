@@ -433,3 +433,28 @@ def test_list_materials_warns_about_a_newer_pin(service, pinned, warning):
     result = registry.call("list_materials", {"project": "demo"})
     assert result["project_library_version"] == pinned
     assert warning in result["warnings"]
+
+
+# ------------------------------------------------- review 0293 follow-ups
+
+def test_link_urls_must_be_http_or_https():
+    """A link lands in an ``href``: a ``javascript:`` URL in a user-layer card
+    must never validate, let alone render."""
+    entry = card()
+    entry["links"] = [{"label": "x", "url": "javascript:alert(1)"}]
+    with pytest.raises(ValidationError, match="http"):
+        normalize_entry("test_alloy", entry, "project")
+    entry["links"] = [{"label": "x", "url": "https://example.org/"}]
+    assert normalize_entry("test_alloy", entry, "project").links[0]["url"].startswith("https://")
+
+
+def test_global_layer_degrades_on_a_recursion_bomb(tmp_path):
+    """``json.loads`` raises ``RecursionError`` (not a ``ValueError``) on a
+    deeply nested document — the repo's named trap; the global layer must
+    degrade to builtins with ``global_error`` like any other bad file."""
+    bomb = tmp_path / "materials.json"
+    bomb.write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
+    lib = MaterialLibrary(global_path=bomb)
+    catalog = lib.effective()
+    assert "al6061" in catalog
+    assert lib.global_error and "materials.json" in lib.global_error
