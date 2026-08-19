@@ -146,11 +146,82 @@ This was a **real bug of PRD-004's**, latent on macOS/Linux because the
 argument always carried a `/` there, and visible on Windows only once there
 was a confinement to enforce the missing grant.
 
+## Review fixes (whole-branch review, after CI round 2)
+
+CI round 2: the windows portability job is **green under
+`AGENTCAD_EXPECT_SANDBOX=active`** (the battery, the token self-report and the
+report shape all measured on a real lowbox worker), ubuntu green, macOS green
+but for the known `test_sketch_diagnostics` wall-clock flake. The review that
+followed asked for these, and all of them landed:
+
+- **An unconfined Windows worker no longer claims a denial**
+  (`kernel/denials.py::active_facets`). The payload declares
+  `confinement: [filesystem, network]` before the spawn is known to have
+  worked, so a lowbox spawn that fell back to `Popen` left an ordinary worker
+  labelling every `[Errno 13]` a sandbox denial. Parent-declared facets now
+  count only when the worker's own token check said `True` — the mirror of
+  `confinement_holds`, and the macOS seatbelt path (no `appcontainer` key) is
+  untouched.
+- **The package SID is no longer derivable by another local account.** A SID is
+  a *hash of the profile name*, so a name that was only a hash of the install
+  path could be re-derived — and a profile created for it — by any other user
+  on the machine, while our ACEs (`M` on the projects dir, the work root and
+  `<state>/publications/build`; `RX` on the venv and the whole app tree,
+  `.git/` and `catalog/` included) are permanent and inheritable.
+  `profile_name()` now mixes a per-installation salt persisted 0600 at
+  `<state-dir>/appcontainer.salt` (`O_EXCL`, beside `secret.key`); a state dir
+  that cannot be written is a **warning in health**, not a refusal, and says
+  exactly what is lost. The name never leaves the server — the worker is told
+  the SID.
+- **The uninstall the docs promised now exists.** `AppContainerProfile.delete`
+  (`DeleteAppContainerProfile` — there is no reliable in-box cmdlet) and
+  `acl_revoke` (`icacls <root> /remove "*<SID>"`), with a two-step recipe in
+  `docs/deployment.md`: the profile, then the ACEs, which outlive it.
+- **`active` now needs the token flag *and* the SID** (`client.sid_mismatch`,
+  used by both `KernelClient._ensure_started` and `sandbox.report`): a worker
+  inside *some* AppContainer is no evidence for a plan that granted its roots
+  to a different one. A worker that could not read its own SID is left alone —
+  `_preamble` already filed that failure.
+- **Handle hygiene in `ConfinedProcess`**: the three pipes are created inside
+  the constructor's `try` (a second pipe failing used to leak the first),
+  `SetHandleInformation` failing closes both ends, an
+  `UpdateProcThreadAttribute` failure deletes the attribute list before
+  re-raising (`_delete_attribute_list`), and `client._kill` calls
+  `proc.close()` when the object has one, so a respawn releases the process
+  handle and the pipe wrappers deterministically instead of at GC.
+- **The worker is given an explicit `cwd`** — `resource_root()`, which is
+  RX-granted and is what `python -m` puts on `sys.path[0]`. `CreateProcessW`
+  otherwise inherits wherever the operator ran `agentcad` from, a directory the
+  container has no ACE for.
+- **`icacls` exit 0 is not success**: `Failed processing N files` (N > 0) is now
+  read as a failure (`_icacls_result`), because `icacls` reports a per-path
+  outcome and exits 0 having said it.
+- **`AGENTS.md`** — the two false statements (`expect_sandbox` "empty on
+  Windows", "Windows reports `unsupported`") are corrected, and a five-point
+  Windows AppContainer gotcha sits beside the launcher-stub one: the spawn
+  hook, the suspended start, `%TEMP%` → `Packages\<name>\AC\Temp`, `icacls`
+  `*<SID>` syntax and its exit-0 trap, and the salted name.
+- **`tests/test_prd006_acceptance.py`** no longer calls the live
+  `sandbox_windows.build()`: on the windows-latest job (and on a contributor's
+  machine) it would create a real profile and rewrite the ACLs of `sys.prefix`
+  and the checkout. The seams are stubbed and the live grading is
+  `tests/test_sandbox_windows.py`, which also gained `_requires_container()` so
+  the three unconditional `PermissionError` asserts skip on an unconfined box
+  and stay hard under `AGENTCAD_EXPECT_SANDBOX=active`.
+- **`docs/roadmap.md`** points at `prd/in-progress/`, and the PRD's own
+  `Status:` says in-progress with the probe/CI evidence.
+- New tests: the unconfined-worker facet rule (`tests/test_denials.py`), the
+  salt (stable, per-installation, and the unwritable-state-dir warning), the
+  SID mismatch, the `icacls` exit-0 trap and `acl_revoke`, and
+  `AppContainerProfile.delete`.
+
 ## Notes
 
-- **`make test` — 4366 passed, 42 skipped in 523.97s** (macOS, this branch;
-  re-run after the CI-round-1 fix: `tests/test_checks_cli.py
-  tests/test_prd004_acceptance.py tests/test_sandbox_plan.py` — 151 passed).
+- **`make test` — 4366 passed, 42 skipped in 523.97s** (macOS, this branch,
+  before the review fixes; re-run after the CI-round-1 fix:
+  `tests/test_checks_cli.py tests/test_prd004_acceptance.py
+  tests/test_sandbox_plan.py` — 151 passed). After the review fixes:
+  **`make test` — 4387 passed, 42 skipped in 675.81s** (macOS, the review-fixed tree; the implementer's own run, read by the controller after the implementer's harness stalled).
   Everything Windows in that run is the *stubbed* plan shape: **the live
   evidence — the AppContainer battery, the token self-report, the report shape
   under `AGENTCAD_EXPECT_SANDBOX=active` — lands with the next

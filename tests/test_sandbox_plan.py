@@ -808,6 +808,150 @@ def test_prepare_tmp_makes_the_package_tree_and_regrants_the_private_dir(
         plan.release()
 
 
+def test_the_windows_profile_name_is_salted_per_installation(isolated,
+                                                              windows):
+    """A package SID is a **hash of the profile name**
+    (`DeriveAppContainerSidFromAppContainerName`), so a name derived only from
+    the install path is a SID any other local account can derive — and then
+    create a profile for and hold, while our ACEs (`M` on the projects dir,
+    `RX` on the venv and the whole app tree) are permanent and inheritable.
+
+    The salt lives at `<state-dir>/appcontainer.salt`, is created on first use,
+    and is **stable**: the name has to be the same on the next start or the
+    grants would accumulate one dead SID per boot.
+    """
+    module, _calls = windows
+    from agentcad.core import appmode
+
+    first = module.profile_name()
+    assert first.startswith("agentcad-worker-") and len(first) == 16 + 12
+    assert first == module.profile_name()                 # stable across calls
+    salt_path = appmode.state_dir() / module.SALT_FILE
+    assert salt_path.is_file()
+    assert len(salt_path.read_text(encoding="utf-8").strip()) == 32
+
+    # A different installation salt is a different name (and so a different
+    # SID) for the same install path.
+    salt_path.write_text("f" * 32, encoding="utf-8")
+    assert module.profile_name() != first
+
+
+def test_a_salt_that_cannot_be_written_warns_and_still_confines(isolated,
+                                                                 windows,
+                                                                 monkeypatch):
+    """A hardening measure may not be a reason to refuse to start: the
+    unsalted name confines the worker exactly as well against the part script,
+    which is what confinement is *for*. What is lost — a SID another local
+    account can derive — is said out loud, in health's warnings."""
+    module, _calls = windows
+
+    def _refused():
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr("agentcad.core.appmode.ensure_state_dir", _refused)
+    warnings: list[str] = []
+    name = module.profile_name(warnings)
+    assert name.startswith("agentcad-worker-")
+    assert any("derivable" in warning for warning in warnings), warnings
+
+    plan = _plan([isolated])
+    try:
+        assert plan.confinement["status"] == "active"     # still confined
+        assert any("could not be salted" in warning
+                   for warning in plan.warnings), plan.warnings
+    finally:
+        plan.release()
+
+
+def test_the_profile_can_be_deleted_which_is_what_the_docs_promise(windows,
+                                                                    monkeypatch):
+    """`docs/deployment.md` documents an uninstall, so there has to be one:
+    there is no reliable in-box cmdlet for an AppContainer profile, and the
+    docstring used to promise a "PowerShell one-liner" that did not exist."""
+    from agentcad.kernel import sandbox_windows
+
+    deleted: list[str] = []
+    monkeypatch.setattr(sandbox_windows, "_userenv_delete_profile",
+                        lambda name: (deleted.append(name), 0)[1])
+    sandbox_windows.AppContainerProfile.delete("agentcad-worker-abc")
+    assert deleted == ["agentcad-worker-abc"]
+
+    # A refusal is an OSError carrying the HRESULT — the operator has to be
+    # able to tell "it is gone" from "Windows would not".
+    monkeypatch.setattr(sandbox_windows, "_userenv_delete_profile",
+                        lambda name: 0x80070005)
+    with pytest.raises(OSError, match="0x80070005"):
+        sandbox_windows.AppContainerProfile.delete("agentcad-worker-abc")
+
+
+def test_a_windows_worker_in_the_wrong_container_clears_the_claim(isolated,
+                                                                   windows):
+    """Decision 3 wants the token flag **and** the SID. A worker inside *some*
+    AppContainer is no evidence for a plan that granted its roots to a
+    different package SID: the ACEs we placed would be doing nothing, and what
+    the worker can actually reach is whatever that other container carries."""
+    from agentcad.kernel.client import sid_mismatch
+
+    _module, calls = windows
+    plan = _plan([isolated])
+    try:
+        good = {"confinement": ["filesystem", "network"], "appcontainer": True,
+                "appcontainer_sid": calls.sid_str, "failures": []}
+        body = sandbox.report(SimpleNamespace(_plan=plan, sandbox_report=good,
+                                              sandboxed=True))
+        assert body["status"] == "active"
+
+        other = {**good, "appcontainer_sid": "S-1-15-2-9-9-9-9"}
+        body = sandbox.report(SimpleNamespace(_plan=plan, sandbox_report=other,
+                                              sandboxed=True))
+        assert body["status"] == "off"
+        assert body["mechanism"] is None
+        assert any("S-1-15-2-9-9-9-9" in warning and calls.sid_str in warning
+                   for warning in body["warnings"]), body["warnings"]
+
+        # A worker that could not read its own SID is left alone: `_preamble`
+        # already filed that failure, and inventing a mismatch out of an absent
+        # measurement is a guess in the other direction.
+        assert sid_mismatch(calls.sid_str, {**good, "appcontainer_sid": None}) \
+            is None
+        assert sid_mismatch(None, other) is None
+    finally:
+        plan.release()
+
+
+def test_an_icacls_that_exits_zero_and_says_it_failed_is_a_failure(monkeypatch):
+    """`icacls` reports a per-path outcome: it can exit **0** having printed
+    `Failed processing 1 files`. Reading only the return code claimed a grant
+    that did not land — the exact overstatement Decision 8 forbids, on the step
+    that decides what the container can reach."""
+    from agentcad.kernel import sandbox_windows
+
+    runs: list[list[str]] = []
+    output = ["Successfully processed 1 files; Failed processing 0 files"]
+
+    def _run(argv, **kwargs):
+        runs.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout=output[0], stderr="")
+
+    monkeypatch.setattr(sandbox_windows, "_icacls", lambda: "icacls")
+    monkeypatch.setattr(sandbox_windows.subprocess, "run", _run)
+
+    ok, tail = sandbox_windows.acl_grant("C:\\x", "S-1-15-2-1", "(OI)(CI)M")
+    assert ok is True and "Successfully" in tail
+    assert runs[-1] == ["icacls", "C:\\x", "/grant", "*S-1-15-2-1:(OI)(CI)M"]
+
+    output[0] = "C:\\x: Access is denied. Successfully processed 0 files; " \
+                "Failed processing 1 files"
+    ok, tail = sandbox_windows.acl_grant("C:\\x", "S-1-15-2-1", "(OI)(CI)M")
+    assert ok is False
+    assert "Access is denied" in tail
+
+    # ...and the removal half of the uninstall recipe `docs/deployment.md`
+    # documents, which has to name the SID the same way (`*<SID>`).
+    sandbox_windows.acl_revoke("C:\\x", "S-1-15-2-1")
+    assert runs[-1] == ["icacls", "C:\\x", "/remove", "*S-1-15-2-1"]
+
+
 class _EchoProc:
     """Just enough of the `Popen` surface for `_ensure_started`'s first ping.
 

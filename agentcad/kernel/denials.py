@@ -80,12 +80,17 @@ def active_facets(report) -> frozenset[str]:
       Windows job object, a cgroup's ``pids.max``) whose breach still surfaces
       in here as a plain ``MemoryError``/``BlockingIOError``.
     * ``filesystem``/``network`` are ALSO active when the *parent* declared
-      them in ``report["confinement"]`` — the macOS case: the seatbelt wraps
-      the argv before the worker ever runs, so there is no ``landlock_abi`` or
-      ``seccomp`` for it to self-report, but the confinement is genuinely in
-      force and the parent (``sandbox_macos.build``) knows it. This is a
-      declared fact from the process that actually applied the wrap, never the
-      worker guessing at its own environment.
+      them in ``report["confinement"]`` **and** the worker did not contradict
+      it: on Windows the same declaration accompanies an intended AppContainer,
+      and a lowbox spawn that failed leaves a perfectly ordinary worker holding
+      a payload that says it is confined, so an ``appcontainer`` key that is
+      not ``True`` drops the declaration entirely. The macOS case has no such
+      key: the seatbelt wraps the argv before the worker ever runs, so there is
+      no ``landlock_abi`` or ``seccomp`` for it to self-report, but the
+      confinement is genuinely in force and the parent
+      (``sandbox_macos.build``) knows it. This is a declared fact from the
+      process that actually applied the wrap, never the worker guessing at its
+      own environment.
 
     A consequence worth stating out loud: on **macOS** the seatbelt is applied
     to the argv by the parent, so a seatbelt ``EACCES``/``EPERM`` is labelled
@@ -104,6 +109,17 @@ def active_facets(report) -> frozenset[str]:
     if report.get("rlimits") or report.get("quotas"):
         facets.update(("process_count", "memory"))
     declared = report.get("confinement") or ()
+    if "appcontainer" in report and report.get("appcontainer") is not True:
+        # Windows, and the mirror of `client.confinement_holds`: the parent
+        # declares the two facets when it *intends* to spawn into an
+        # AppContainer, but the lowbox spawn can fail and fall back to a plain
+        # `Popen` — and then an ordinary `[Errno 13]` from a DAC permission bug
+        # would be labelled a sandbox denial by a worker that is not confined
+        # at all. The key exists only where the worker looked at its own token,
+        # so the macOS seatbelt path (which has no such key) is untouched, and
+        # `is not True` covers the token check that failed as well as the one
+        # that said no.
+        declared = ()
     if "filesystem" in declared:
         facets.add("filesystem")
     if "network" in declared:

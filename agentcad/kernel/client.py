@@ -80,6 +80,32 @@ def confinement_holds(report: dict) -> bool:
     return True
 
 
+def sid_mismatch(intended: str | None, report: dict) -> str | None:
+    """Why the worker's AppContainer is not the one this plan prepared, or
+    ``None``.
+
+    Decision 3 says ``active`` needs the token flag **and the SID**: a worker
+    inside *some* AppContainer is no evidence for a plan that granted its roots
+    to a *different* package SID. The ACEs we placed would be doing nothing,
+    and the set of paths the worker can actually reach would be whatever that
+    other container carries — which is not a claim this process is in a
+    position to make.
+
+    A worker that could not read its own SID (the flag is true, the string is
+    missing) is left alone: `_preamble` already filed that failure, `report()`
+    turns it into a warning, and inventing a mismatch out of an absent
+    measurement would be a guess in the other direction.
+    """
+    if sys.platform != "win32" or not intended:
+        return None
+    measured = report.get("appcontainer_sid")
+    if not measured or str(measured).lower() == str(intended).lower():
+        return None
+    return (f"the worker is in AppContainer {measured} but this plan granted "
+            f"its roots to {intended}, so the confinement it is under is not "
+            f"the one that was prepared")
+
+
 class KernelError(Exception):
     def __init__(self, type: str, message: str, details: dict | None = None):
         super().__init__(f"{type}: {message}")
@@ -216,8 +242,12 @@ class KernelClient:
         # and on Linux a worker with no Landlock ABI is not confined at all
         # however good the intention was.
         self.sandbox_report = result.get("sandbox") or {}
-        self.sandboxed = bool(self.sandboxed
-                              and confinement_holds(self.sandbox_report))
+        intended = ((self._plan.confinement.get("detail") or {}).get("sid")
+                    if self._plan is not None else None)
+        self.sandboxed = bool(
+            self.sandboxed
+            and confinement_holds(self.sandbox_report)
+            and not sid_mismatch(intended, self.sandbox_report))
 
     def _drain_stdout(self, proc: subprocess.Popen, lines: queue.Queue) -> None:
         assert proc.stdout is not None
@@ -237,6 +267,17 @@ class KernelClient:
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
+                pass
+        # A `Popen` releases its handles when it is collected and needs nothing
+        # here; a backend-spawned process (Windows' `ConfinedProcess`) owns a
+        # process handle and three pipe wrappers, and waiting for the GC to
+        # take them means a respawning worker leaks one set per respawn. The
+        # attribute is absent on `Popen`, which is what `getattr` is for.
+        close = getattr(proc, "close", None)
+        if close is not None:
+            try:
+                close()
+            except OSError:                   # pragma: no cover - defensive
                 pass
         if self._plan is not None:
             # A dead worker's scratch is nobody's. The directory itself stays:

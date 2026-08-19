@@ -505,7 +505,7 @@ def report(kernel) -> dict:
     not apply — an empty ``rlimits`` list under a mechanism naming ``rlimit``
     is a cap nothing is enforcing.
     """
-    from .client import confinement_holds
+    from .client import confinement_holds, sid_mismatch
 
     plan_obj = getattr(kernel, "_plan", None) or getattr(kernel, "plan", None)
     live = getattr(kernel, "sandbox_report", None) or {}
@@ -526,6 +526,14 @@ def report(kernel) -> dict:
     if conf["status"] == "active" and live and not confinement_holds(live):
         conf["status"] = "off"
         conf["mechanism"] = None
+    if conf["status"] == "active" and live:
+        # Windows: the token flag is not enough on its own — the package SID
+        # has to be the one whose ACEs this plan placed (Decision 3).
+        mismatch = sid_mismatch(conf["detail"].get("sid"), live)
+        if mismatch:
+            conf["status"] = "off"
+            conf["mechanism"] = None
+            warnings.append(mismatch)
     # `client.sandboxed` is this same rule applied at ping time, and it is what
     # every other reader in the system consults. Preferring it here (review M1)
     # closes the one gap where the two could disagree: a worker that answered

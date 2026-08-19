@@ -477,6 +477,50 @@ No capability, no `bwrap` binary and no `--privileged` are needed — the
 ruleset is applied through `ctypes` inside the worker, verified in this image
 as uid 10001 under Docker's default seccomp profile, at 0.3 ms.
 
+**Windows requirements, and what the AppContainer leaves behind.** Windows 8 or
+later (`userenv!CreateAppContainerProfile`) and `icacls` on `PATH`; below that,
+health says `unsupported` rather than implying a switch. Two consequences an
+operator should know, because neither is undone by stopping the server:
+
+- **The ACEs are permanent and inheritable.** Each plan grants the package SID
+  `(OI)(CI)M` on the projects dir, an accepted `--work-dir` and
+  `<state-dir>/publications/build`, and `(OI)(CI)RX` on the interpreter, the
+  venv and the whole application tree (`.git/` and `catalog/` included — an
+  AppContainer that cannot read the app cannot run the worker). They stay on
+  those directories until they are removed, and new files under them inherit
+  them.
+- **The profile name is salted, and that is load-bearing.** A package SID is a
+  *hash of the profile name* (`DeriveAppContainerSidFromAppContainerName`), so
+  a name derived only from the install path would be a SID any other local
+  account could derive — create a profile for, run a process as, and reach
+  everything the ACEs above allow. The name therefore mixes a random
+  per-installation salt kept at `<state-dir>/appcontainer.salt` (16 bytes,
+  created on first use beside `secret.key`); it never leaves the server
+  process, since the worker is told the SID and never the name. **Do not copy a
+  state directory between machines** if you also copy the projects tree and
+  care about that boundary, and if the file cannot be written the server still
+  confines — health carries a warning saying the SID is derivable.
+
+**Removing it again.** The profile is per installation and is deliberately
+never deleted by the worker path, so uninstalling is two steps — the profile,
+then the ACEs, which outlive it (an ACE names a SID, and a SID whose profile is
+gone is still that SID):
+
+```powershell
+# 1. the profile. There is no reliable in-box cmdlet, so this is the API call:
+uv run python -c "from agentcad.kernel.sandbox_windows import AppContainerProfile, profile_name; name = profile_name(); AppContainerProfile.delete(name); print('deleted', name)"
+
+# 2. the ACEs, one per granted root (the SID is in `/api/health` ->
+#    sandbox.confinement.detail.sid, or print it before deleting the profile):
+icacls "C:\path\to\projects" /remove "*S-1-15-2-…"
+icacls "C:\path\to\agentcad"  /remove "*S-1-15-2-…"
+```
+
+`agentcad.kernel.sandbox_windows.acl_revoke(path, sid)` is the same `icacls
+/remove` if you would rather script it in Python. Deleting
+`<state-dir>/appcontainer.salt` afterwards is what makes the *next* start use a
+fresh, unrelated SID.
+
 ### What caps a worker
 
 Quotas are **tiers**, and health names the tier actually in force rather than

@@ -238,6 +238,40 @@ def test_a_windows_worker_reads_a_file_denial_the_ordinary_way():
                     active=frozenset({"filesystem", "network"})) == "filesystem"
 
 
+def test_a_windows_worker_that_is_not_in_its_container_claims_nothing():
+    """The lowbox spawn can fail and fall back to a plain `Popen` — and the
+    payload still says `confinement: [filesystem, network]`, because the parent
+    wrote it before it knew.
+
+    An unconfined worker holding that declaration labelled every ordinary
+    `[Errno 13]` a sandbox denial, which is the exact overstatement Decision 8
+    forbids: the reader goes looking for a cap that is not there. The worker's
+    own token is the tiebreak, the same rule `confinement_holds` applies.
+    """
+    declared = {"posture": "local", "quotas": ["job_object"],
+                "confinement": ["filesystem", "network"]}
+
+    assert active_facets({**declared, "appcontainer": True}) == {
+        "filesystem", "network", "process_count", "memory"}
+    # ...and with the token saying otherwise, only what the JOB OBJECT attests
+    # survives: a `MemoryError` is still a cap being enforced.
+    for report in ({**declared, "appcontainer": False},
+                   {**declared, "appcontainer": None}):
+        assert active_facets(report) == {"process_count", "memory"}
+        assert classify("PermissionError",
+                        "[Errno 13] Permission denied: 'C:\\x'",
+                        active=active_facets(report)) is None
+        assert classify("PermissionError", WSAEACCES,
+                        active=active_facets(report),
+                        traceback=NET_FRAME) is None
+        assert classify("MemoryError", "",
+                        active=active_facets(report)) == "memory"
+
+    # The macOS seatbelt path has no `appcontainer` key at all and is untouched.
+    assert active_facets(declared) == {"filesystem", "network",
+                                       "process_count", "memory"}
+
+
 def test_network_wins_over_filesystem_when_both_read():
     """Both are `PermissionError`; the errno is what separates them, and the
     network check has to come first or every EPERM would read as a write."""

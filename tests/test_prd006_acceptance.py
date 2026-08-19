@@ -36,6 +36,7 @@ Three of them are worth reading before you believe them:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -274,35 +275,45 @@ def test_ac3_windows_confines_with_an_appcontainer_or_says_why_not(tmp_path,
     from the worker's **own** `TokenIsAppContainer`, `off` with a `reason` when
     a profile/ACL/spawn failed, `unsupported` below Windows 8.
 
-    Runs on every OS. Off Windows the Win32 entry points cannot even load, so
-    what is graded here is the shape and the honesty: a status from the three,
-    a `reason` whenever it is not `active`, and the caps published either way.
-    The live container is exercised by `tests/test_sandbox_windows.py` **on
-    the windows-latest CI job** — gated there, not run here.
+    What is graded **here** is the plan's shape and its honesty, with the four
+    Win32/`icacls` seams stubbed on every OS. The stubs are not laziness: this
+    file also runs on the windows-latest job, where a live call would create a
+    real package profile and rewrite the ACLs of `sys.prefix` and the whole
+    checkout — on a contributor's own machine as well. The **live** container
+    (a real lowbox worker, the battery, the token self-report) is graded by
+    `tests/test_sandbox_windows.py` under `AGENTCAD_EXPECT_SANDBOX=active`.
     """
     from agentcad.kernel import sandbox_windows
 
     monkeypatch.setenv("AGENTCAD_CONFIG", str(tmp_path / "no-such-config.json"))
     monkeypatch.delenv("AGENTCAD_NO_SANDBOX", raising=False)
-    _argv, _env, confinement, quotas, backend = sandbox_windows.build(
+    grants: list[tuple] = []
+    monkeypatch.setattr(sandbox_windows, "_userenv_symbol", lambda name: True)
+    monkeypatch.setattr(sandbox_windows, "_icacls", lambda: "icacls")
+    monkeypatch.setattr(sandbox_windows, "_userenv_create_profile",
+                        lambda name, display, description: (0, 0x5100))
+    monkeypatch.setattr(sandbox_windows, "_sid_to_string",
+                        lambda psid: "S-1-15-2-1-2-3-4")
+    def _grant(path, sid, rights):
+        grants.append((path, sid, rights))
+        return True, "Successfully processed 1 files"
+
+    monkeypatch.setattr(sandbox_windows, "acl_grant", _grant)
+
+    _argv, env, confinement, quotas, backend = sandbox_windows.build(
         BASE_ARGV, [str(tmp_path)], resolve(QUOTAS, env={}, config={}),
         "local", os.getpid())
     try:
-        if sys.platform == "win32" and _expect("SANDBOX") == "active":
-            assert confinement["status"] == "active", confinement
-            assert confinement["mechanism"] == "appcontainer", confinement
-            assert confinement["detail"]["sid"].startswith("S-1-15-2-"), \
-                confinement
-        else:
-            assert confinement["status"] in ("active", "off", "unsupported"), \
-                confinement
-            if confinement["status"] == "active":
-                assert confinement["mechanism"] == "appcontainer", confinement
-            else:
-                # A mechanism named beside `off` claims something is in force,
-                # and a status with no reason reads as a bug in the sandbox.
-                assert confinement["mechanism"] is None, confinement
-                assert confinement["detail"]["reason"], confinement
+        assert confinement["status"] == "active", confinement
+        assert confinement["mechanism"] == "appcontainer", confinement
+        assert confinement["detail"]["sid"] == "S-1-15-2-1-2-3-4"
+        # The parent declares the facets it applied, so the worker may name a
+        # filesystem or network denial it cannot observe for itself...
+        payload = json.loads(env["AGENTCAD_CONFINE"])
+        assert payload["confinement"] == ["filesystem", "network"]
+        # ...and the roots really were granted to that SID, reads before writes.
+        assert {sid for _p, sid, _r in grants} == {"S-1-15-2-1-2-3-4"}
+        assert str(tmp_path) in [path for path, _s, _r in grants]
         # ...and the caps are published whatever the confinement did.
         assert quotas["limits"]["memory_mb"] == 1024
         if sys.platform == "win32" and _expect("QUOTAS") == "active":
@@ -311,6 +322,20 @@ def test_ac3_windows_confines_with_an_appcontainer_or_says_why_not(tmp_path,
             # would then name a tier nothing installed.
             assert quotas["status"] == "active", quotas
             assert quotas["mechanism"].startswith("job_object"), quotas
+    finally:
+        backend.release()
+
+    # The honesty half, on the same stubs: a grant that fails is `off` with a
+    # reason and no mechanism — never `active` by intent (Decision 8).
+    monkeypatch.setattr(sandbox_windows, "acl_grant",
+                        lambda path, sid, rights: (False, "Access is denied."))
+    _argv, _env, refused, _quotas, backend = sandbox_windows.build(
+        BASE_ARGV, [str(tmp_path)], resolve(QUOTAS, env={}, config={}),
+        "local", os.getpid())
+    try:
+        assert refused["status"] == "off", refused
+        assert refused["mechanism"] is None, refused
+        assert refused["detail"]["reason"], refused
     finally:
         backend.release()
 

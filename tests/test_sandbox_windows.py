@@ -101,6 +101,26 @@ def _expect_sandbox() -> str | None:
     return value or None
 
 
+def _requires_container(client) -> None:
+    """Skip a containment assertion on a box that is not confining anything.
+
+    Under ``AGENTCAD_EXPECT_SANDBOX=active`` (what `ci.yml` sets on this row)
+    nothing is skipped: a worker that failed to confine itself has to be a red
+    test, which is the whole point of the gate (Decision 13). Without it — a
+    contributor's machine where `icacls` is missing, a profile could not be
+    created, or `AGENTCAD_NO_SANDBOX` is set in the ambient environment — a
+    denial that does not happen is not a failure to report, because there is
+    nothing denying anything.
+    """
+    if _expect_sandbox() == "active":
+        return
+    status = sandbox.report(client)["status"]
+    if status != "active":
+        pytest.skip(f"this worker is not confined (sandbox status {status!r}), "
+                    f"so there is no denial to assert; set "
+                    f"AGENTCAD_EXPECT_SANDBOX=active to make that a failure")
+
+
 @pytest.fixture(scope="module")
 def capped(tmp_path_factory):
     """One confined, capped worker for the whole file (an OCCT import each).
@@ -122,6 +142,33 @@ def capped(tmp_path_factory):
         patch.undo()
     yield client, root
     client.stop()
+    _uninstall(client._plan)
+
+
+def _uninstall(plan) -> None:
+    """Undo what the plan installed on this machine: the ACEs, then the profile.
+
+    The documented uninstall recipe (`docs/deployment.md`), run for real — so
+    this suite leaves a dev box (and the runner) as it found it instead of
+    accumulating one profile and one dead-SID ACE on `sys.prefix` and the
+    checkout per run, and so the recipe itself is exercised somewhere. The
+    *product* never does this: the profile is per installation and shared by
+    concurrent clients (Decision 2).
+
+    Best-effort by construction — a teardown that fails a green suite would be
+    the worst of both.
+    """
+    from agentcad.kernel import sandbox_windows
+
+    profile = getattr(plan.backend, "profile", None)
+    if profile is None:
+        return
+    for path in sandbox_windows._read_roots():
+        sandbox_windows.acl_revoke(path, profile.sid_str)
+    try:
+        sandbox_windows.AppContainerProfile.delete(profile.name)
+    except OSError:
+        pass
 
 
 @pytest.fixture(scope="module")
@@ -246,6 +293,7 @@ def test_the_network_is_denied(capped):
     (`[WinError 10013]`) — which is neither `[Errno 1]` nor `[Errno 13]`, and
     is why `denials.classify` grew a rule for it."""
     client, root = capped
+    _requires_container(client)
     error = _denial(client,
                     "import socket\n"
                     "socket.create_connection(('1.1.1.1', 80), timeout=3)\n"
@@ -262,6 +310,7 @@ def test_a_write_outside_the_granted_roots_is_denied(capped):
     """`C:\\Users\\Public` is world-writable for an ordinary user and carries
     no ACE for the package SID, so the container cannot touch it."""
     client, root = capped
+    _requires_container(client)
     target = "C:\\Users\\Public\\agentcad-pwned.txt"
     error = _denial(client,
                     f"open({target!r}, 'w', encoding='utf-8').write('x')\n"
@@ -283,6 +332,7 @@ def test_a_write_into_another_workers_scratch_is_denied(capped):
     granted is reachable, and only DAC separates two live workers.
     """
     client, root = capped
+    _requires_container(client)
     other = tempfile.mkdtemp(prefix=sandbox.TMP_PREFIX)
     try:
         error = _denial(client,
@@ -307,6 +357,7 @@ def test_a_child_process_inherits_the_container(capped):
     child's own connect fails and its exit code is non-zero. A `rc=0` here
     would mean the confinement stops at the process boundary."""
     client, root = capped
+    _requires_container(client)
     error = _denial(
         client,
         "import subprocess, sys\n"

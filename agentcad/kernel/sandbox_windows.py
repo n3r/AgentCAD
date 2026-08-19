@@ -72,6 +72,8 @@ import ctypes
 import hashlib
 import json
 import os
+import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -211,6 +213,12 @@ PROFILE_PREFIX = "agentcad-worker-"
 PROFILE_DISPLAY = "AgentCAD kernel worker"
 PROFILE_DESCRIPTION = "Confinement for AgentCAD part-script execution"
 
+#: Where the per-installation salt lives, beside ``secret.key``, and how big it
+#: is. See :func:`_profile_salt` for why a package SID that is only a hash of
+#: the install path is not good enough.
+SALT_FILE = "appcontainer.salt"
+SALT_BYTES = 16
+
 #: ``icacls`` rights. ``(OI)(CI)`` makes the ACE inheritable, which is what
 #: covers a directory's **existing** children as well as its future ones —
 #: measured on windows-latest before this code relied on it (probe round 2,
@@ -221,6 +229,12 @@ WRITE_RIGHTS = "(OI)(CI)M"          # create/write/delete, but not WRITE_DAC
 #: A grant is ~50-100 ms; a plan runs <= 8 of them. The timeout is only there
 #: so a wedged `icacls` cannot hang a server thread forever.
 ICACLS_TIMEOUT_S = 180.0
+
+#: ``icacls`` prints a per-path summary and can exit **0** having said
+#: ``Failed processing 1 files``. Reading only the exit code therefore claims a
+#: grant that did not land, so the summary line is read too (the count, not the
+#: wording: the message is localized, the digits are not).
+_ICACLS_FAILED = re.compile(r"Failed processing [1-9]")
 
 #: The facets the parent declares in the worker's payload once it really did
 #: spawn through the AppContainer path — the macOS precedent, and what lets
@@ -292,18 +306,76 @@ class PROCESS_INFORMATION(ctypes.Structure):
 
 # ------------------------------------------------- the profile, the SID, ACLs
 
-def profile_name() -> str:
+def profile_name(warnings: list[str] | None = None) -> str:
     """The AppContainer name for **this installation**.
 
-    Derived from :func:`~agentcad._resources.resource_root` so two checkouts
-    (or a frozen bundle beside a source tree) never share a package SID, and so
-    a machine accumulates one profile per install rather than one per worker.
-    The profile is deliberately never deleted on the worker path: creating one
-    is not free, concurrent clients share it, and removing it is a documented
-    PowerShell one-liner (Decision 2).
+    Derived from :func:`~agentcad._resources.resource_root` — so two checkouts
+    (or a frozen bundle beside a source tree) never share a package SID, and a
+    machine accumulates one profile per install rather than one per worker —
+    **and from a per-installation random salt** (:func:`_profile_salt`).
+
+    The salt is the part that is not decoration, and the reason is
+    ``DeriveAppContainerSidFromAppContainerName``: a package SID is a *hash of
+    the name*, so an unsalted name (a hash of a guessable install path) is a
+    SID any other local account can derive — and then create a profile for,
+    and hold. Our ACEs are inheritable and permanent: ``M`` on the projects
+    dir, the work root and ``<state>/publications/build``, ``RX`` on the venv
+    and the whole app tree. The salt keeps the name — and therefore the SID —
+    unguessable; it never leaves the server process, because the worker is
+    told the SID and never the name.
+
+    The profile itself is deliberately never deleted on the worker path
+    (creating one is not free and concurrent clients share it); removing it and
+    its ACEs is documented in ``docs/deployment.md`` and implemented by
+    :meth:`AppContainerProfile.delete`.
     """
-    digest = hashlib.sha256(str(resource_root()).encode("utf-8")).hexdigest()
+    salt = _profile_salt(warnings)
+    seed = f"{salt}:{resource_root()}" if salt else str(resource_root())
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
     return f"{PROFILE_PREFIX}{digest[:12]}"
+
+
+def _profile_salt(warnings: list[str] | None = None) -> str:
+    """The installation's salt, created on first use; ``""`` if it cannot be.
+
+    ``<state-dir>/appcontainer.salt``, 16 random bytes as hex, written with
+    ``O_EXCL`` for the same reason the session secret is (two processes racing
+    at first boot must not each generate one and disagree about the SID) and
+    ``0600`` — which POSIX enforces and Windows approximates through the state
+    directory's own ACL, where it is one more file beside ``secret.key``.
+
+    A state dir that cannot be written is a **warning, not a refusal**: the
+    unsalted name still confines the worker exactly as well against the thing
+    confinement is for (the part script), and refusing to start over a
+    hardening measure would be the wrong trade. What is lost is stated in the
+    warning, because a reader has to be able to tell the two apart.
+    """
+    reason: str
+    try:
+        from ..core.appmode import ensure_state_dir
+
+        path = ensure_state_dir() / SALT_FILE
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            try:
+                os.write(fd, secrets.token_hex(SALT_BYTES).encode("ascii"))
+            finally:
+                os.close(fd)
+        salt = path.read_text(encoding="utf-8").strip()
+        if len(salt) >= 2 * SALT_BYTES:
+            return salt
+        reason = f"the salt file {path} is truncated"
+    except (OSError, ValueError) as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+    if warnings is not None:
+        warnings.append(
+            f"the AppContainer profile name could not be salted ({reason}), "
+            f"so its package SID is derivable from the install path by any "
+            f"other account on this machine")
+    return ""
 
 
 class AppContainerProfile:
@@ -340,6 +412,24 @@ class AppContainerProfile:
                           f"HRESULT 0x{hr & 0xFFFFFFFF:08X}")
         return cls(name, sid, _sid_to_string(sid))
 
+    @classmethod
+    def delete(cls, name: str) -> None:
+        """``DeleteAppContainerProfile``. Raises ``OSError`` with the HRESULT.
+
+        Nothing on the worker path calls this — the profile is per
+        installation, creating one is not free and concurrent clients share it
+        (Decision 2) — but "uninstall it again" has to be something an operator
+        can actually do, and there is no reliable in-box cmdlet for it. It is
+        what ``docs/deployment.md``'s removal recipe drives, and it removes the
+        **profile only**: the ACEs it was granted are separate and outlive it
+        (see :func:`acl_revoke`), which is exactly why the recipe has two
+        halves.
+        """
+        hr = _userenv_delete_profile(name)
+        if hr != 0:
+            raise OSError(f"DeleteAppContainerProfile({name!r}) failed: "
+                          f"HRESULT 0x{hr & 0xFFFFFFFF:08X}")
+
 
 def acl_grant(path: str, sid_str: str, rights: str) -> tuple[bool, str]:
     """``icacls <path> /grant *<SID>:<rights>``; ``(ok, output tail)``.
@@ -355,19 +445,47 @@ def acl_grant(path: str, sid_str: str, rights: str) -> tuple[bool, str]:
     that could not run is a confinement that is ``off``, not a server that
     fails to start.
     """
+    return _icacls_run([str(path), "/grant", f"*{sid_str}:{rights}"])
+
+
+def acl_revoke(path: str, sid_str: str) -> tuple[bool, str]:
+    """``icacls <path> /remove *<SID>``; ``(ok, output tail)``.
+
+    The other half of the removal recipe in ``docs/deployment.md``. The ACEs
+    :func:`acl_grant` sets are **permanent and inheritable** — deleting the
+    profile does not touch them, and a SID whose profile is gone is still a SID
+    an ACE names — so uninstalling the confinement means removing them too.
+    """
+    return _icacls_run([str(path), "/remove", f"*{sid_str}"])
+
+
+def _icacls_run(arguments: list[str]) -> tuple[bool, str]:
+    """One ``icacls`` invocation; never raises. ``(ok, output tail)``."""
     icacls = _icacls()
     if icacls is None:
         return False, "icacls is not on PATH"
     try:
         completed = subprocess.run(
-            [icacls, str(path), "/grant", f"*{sid_str}:{rights}"],
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=ICACLS_TIMEOUT_S)
+            [icacls, *arguments], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=ICACLS_TIMEOUT_S)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"{type(exc).__name__}: {exc}"
+    return _icacls_result(completed)
+
+
+def _icacls_result(completed) -> tuple[bool, str]:
+    """``(ok, tail)`` from a finished ``icacls`` run.
+
+    The exit code is **not** enough: ``icacls`` reports a per-path outcome and
+    exits 0 having said ``Failed processing 1 files`` — a grant that did not
+    land while the caller was told it did, which is precisely the overstatement
+    Decision 8 forbids. ``Successfully processed N files`` is the good half of
+    the same line, and it is localized, so the number is what is read.
+    """
     output = ((completed.stdout or "") + " " + (completed.stderr or "")).strip()
     tail = " ".join(output.split())[-200:]
-    return completed.returncode == 0, tail
+    ok = completed.returncode == 0 and not _ICACLS_FAILED.search(output)
+    return ok, tail
 
 
 def make_package_tree(tmp_dir: str, name: str) -> str:
@@ -416,27 +534,34 @@ class ConfinedProcess:
         self.job_assigned = False
         self._attr_list: int | None = None
 
-        # stdin: the child READS it, so the read end is the inheritable one.
-        stdin_r, stdin_w = _pipe(child_end="read")
-        stdout_r, stdout_w = _pipe(child_end="write")
-        stderr_r, stderr_w = _pipe(child_end="write")
-        child_handles = (stdin_r, stdout_w, stderr_w)
-
-        # Attributes, not locals: `UpdateProcThreadAttribute` stores POINTERS
-        # into the attribute list and does not copy, so every one of these has
-        # to outlive the `CreateProcessW` call.
-        self._caps = SECURITY_CAPABILITIES()
-        # The raw address: a `c_void_p` *field* takes an int or None, and
-        # handing it a `c_void_p` instance is a TypeError.
-        self._caps.AppContainerSid = int(sid)
-        # No capabilities at all. The absence of `INTERNET_CLIENT` IS the
-        # network denial (Decision 2) — there is nothing to add here.
-        self._caps.Capabilities = None
-        self._caps.CapabilityCount = 0
-        self._caps.Reserved = 0
-        self._handle_array = (ctypes.c_void_p * 3)(*child_handles)
-
+        # Every handle made below is registered here as it appears, and the
+        # `except` closes whatever exists: the second pipe failing must not
+        # leak the first, which is the shape this had before the review.
+        opened: list[int] = []
         try:
+            # stdin: the child READS it, so the read end is the inheritable one.
+            stdin_r, stdin_w = _pipe(child_end="read")
+            opened += [stdin_r, stdin_w]
+            stdout_r, stdout_w = _pipe(child_end="write")
+            opened += [stdout_r, stdout_w]
+            stderr_r, stderr_w = _pipe(child_end="write")
+            opened += [stderr_r, stderr_w]
+            child_handles = (stdin_r, stdout_w, stderr_w)
+
+            # Attributes, not locals: `UpdateProcThreadAttribute` stores
+            # POINTERS into the attribute list and does not copy, so every one
+            # of these has to outlive the `CreateProcessW` call.
+            self._caps = SECURITY_CAPABILITIES()
+            # The raw address: a `c_void_p` *field* takes an int or None, and
+            # handing it a `c_void_p` instance is a TypeError.
+            self._caps.AppContainerSid = int(sid)
+            # No capabilities at all. The absence of `INTERNET_CLIENT` IS the
+            # network denial (Decision 2) — there is nothing to add here.
+            self._caps.Capabilities = None
+            self._caps.CapabilityCount = 0
+            self._caps.Reserved = 0
+            self._handle_array = (ctypes.c_void_p * 3)(*child_handles)
+
             self._attr_buffer, self._attr_list = self._attribute_list()
             siex = STARTUPINFOEXW()
             siex.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
@@ -469,8 +594,7 @@ class ConfinedProcess:
             if not ok:
                 raise _win_error("CreateProcessW")
         except BaseException:
-            for handle in (stdin_r, stdin_w, stdout_r, stdout_w,
-                           stderr_r, stderr_w):
+            for handle in opened:
                 _close_handle(handle)
             self._free_attribute_list()
             raise
@@ -543,34 +667,33 @@ class ConfinedProcess:
         if not kernel32.InitializeProcThreadAttributeList(attr_list, 2, 0,
                                                           ctypes.byref(size)):
             raise _win_error("InitializeProcThreadAttributeList")
-        kernel32.UpdateProcThreadAttribute.argtypes = [
-            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_size_t,
-            ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_size_t)]
-        if not kernel32.UpdateProcThreadAttribute(
-                attr_list, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-                ctypes.addressof(self._caps), ctypes.sizeof(self._caps),
-                None, None):
-            raise _win_error("UpdateProcThreadAttribute(SECURITY_CAPABILITIES)")
-        if not kernel32.UpdateProcThreadAttribute(
-                attr_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-                ctypes.addressof(self._handle_array),
-                ctypes.sizeof(self._handle_array), None, None):
-            raise _win_error("UpdateProcThreadAttribute(HANDLE_LIST)")
+        # From here the list is *initialized*, so every exit has to delete it —
+        # `self._attr_list` is only set when this function RETURNS, so
+        # `_free_attribute_list` would not know about it yet (review finding).
+        try:
+            kernel32.UpdateProcThreadAttribute.argtypes = [
+                ctypes.c_void_p, ctypes.c_uint32, ctypes.c_size_t,
+                ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_size_t)]
+            if not kernel32.UpdateProcThreadAttribute(
+                    attr_list, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+                    ctypes.addressof(self._caps), ctypes.sizeof(self._caps),
+                    None, None):
+                raise _win_error(
+                    "UpdateProcThreadAttribute(SECURITY_CAPABILITIES)")
+            if not kernel32.UpdateProcThreadAttribute(
+                    attr_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                    ctypes.addressof(self._handle_array),
+                    ctypes.sizeof(self._handle_array), None, None):
+                raise _win_error("UpdateProcThreadAttribute(HANDLE_LIST)")
+        except BaseException:
+            _delete_attribute_list(attr_list)
+            raise
         return buffer, attr_list
 
     def _free_attribute_list(self) -> None:
         attr_list, self._attr_list = getattr(self, "_attr_list", None), None
-        if attr_list is None:
-            return
-        try:
-            kernel32 = _kernel32()
-            # Explicit argtypes: without them ctypes marshals a Python int as
-            # a 32-bit C int and truncates a 64-bit address.
-            kernel32.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
-            kernel32.DeleteProcThreadAttributeList(attr_list)
-        except (OSError, AttributeError):      # pragma: no cover - defensive
-            pass
+        _delete_attribute_list(attr_list)
 
     # -- the Popen surface
 
@@ -625,8 +748,10 @@ class ConfinedProcess:
             _close_handle(handle)
 
     def __del__(self) -> None:                 # pragma: no cover - GC timing
-        # The client never closes a process object explicitly (`Popen` does
-        # not need it), so a respawn would leak one process handle per worker.
+        # The backstop, not the mechanism: `client._kill` calls `close()` on
+        # anything that has one, so a respawn releases its handles then and
+        # there. This covers the paths that never reach `_kill` — a process
+        # object dropped by a caller that constructed it directly.
         try:
             self.close()
         except BaseException:
@@ -743,7 +868,10 @@ def _confine_appcontainer(backend: "WindowsBackend", write_roots: list[str],
         return {"status": "off", "mechanism": None,
                 "detail": {**local, "reason": reason}}
 
-    name = profile_name()
+    # `backend.warnings` so a salt that could not be persisted is *visible*:
+    # the confinement still works, but its SID is derivable, and health is
+    # where an operator would find that out.
+    name = profile_name(backend.warnings)
     try:
         profile = AppContainerProfile.ensure(name)
     except (OSError, AttributeError) as exc:
@@ -886,8 +1014,15 @@ class WindowsBackend:
         if self.profile is None:
             return None
         try:
+            # An explicit cwd, and `resource_root()` rather than the server's:
+            # `CreateProcessW` inherits the parent's current directory, which
+            # is wherever the operator ran `agentcad` from and is a directory
+            # the container has NO ACE for — the worker would start with an
+            # unreadable cwd (and `python -m` puts it on `sys.path[0]`). The
+            # app tree is granted RX by construction, so it is the one
+            # directory that is always right.
             return ConfinedProcess(argv, env, sid=self.profile.sid,
-                                   job=self.job)
+                                   job=self.job, cwd=str(resource_root()))
         except (OSError, AttributeError, ValueError) as exc:
             self.warnings.append(
                 f"the AppContainer spawn failed, so this worker is NOT "
@@ -1216,6 +1351,15 @@ def _userenv_derive_sid(name: str) -> tuple[int, int]:
     return int(hr), int(sid.value or 0)
 
 
+def _userenv_delete_profile(name: str) -> int:
+    """``DeleteAppContainerProfile`` -> HRESULT. Removes the profile and its
+    ``Packages\\<name>`` tree; the ACEs granted to its SID are untouched."""
+    userenv = _userenv()
+    userenv.DeleteAppContainerProfile.restype = ctypes.c_long
+    userenv.DeleteAppContainerProfile.argtypes = [ctypes.c_wchar_p]
+    return int(userenv.DeleteAppContainerProfile(name))
+
+
 def _sid_to_string(psid: int) -> str:
     """``ConvertSidToStringSidW``: ``S-1-15-2-...``, which is what ACLs use."""
     advapi32 = _advapi32()
@@ -1229,6 +1373,20 @@ def _sid_to_string(psid: int) -> str:
         return ctypes.wstring_at(out)
     finally:
         _kernel32().LocalFree(out)
+
+
+def _delete_attribute_list(attr_list: int | None) -> None:
+    """``DeleteProcThreadAttributeList``, never raising. ``None`` is a no-op."""
+    if attr_list is None:
+        return
+    try:
+        kernel32 = _kernel32()
+        # Explicit argtypes: without them ctypes marshals a Python int as a
+        # 32-bit C int and truncates a 64-bit address.
+        kernel32.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
+        kernel32.DeleteProcThreadAttributeList(attr_list)
+    except (OSError, AttributeError):          # pragma: no cover - defensive
+        pass
 
 
 def _pipe(child_end: str) -> tuple[int, int]:
@@ -1256,5 +1414,11 @@ def _pipe(child_end: str) -> tuple[int, int]:
     kernel32.SetHandleInformation.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
                                               ctypes.c_uint32]
     if not kernel32.SetHandleInformation(parent, HANDLE_FLAG_INHERIT, 0):
-        raise _win_error("SetHandleInformation")
+        error = _win_error("SetHandleInformation")
+        # Both ends, or the pipe this function made outlives the failure with
+        # nobody holding either handle — and the parent's end would still be
+        # inheritable, which is the thing the call was for.
+        _close_handle(int(read.value or 0))
+        _close_handle(int(write.value or 0))
+        raise error
     return int(read.value or 0), int(write.value or 0)

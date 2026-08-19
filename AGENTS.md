@@ -2164,6 +2164,43 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
   now asserts ≥ 100 MB so a stub-only sample fails loudly instead of passing a
   sanity bound.
 
+- **Windows confinement is an AppContainer, and five things about it are not
+  guessable** (PRD-006b, `kernel/sandbox_windows.py`, changelog 0242):
+  1. **The client spawns through the backend.** `subprocess` can pass a handle
+     list and nothing else, so a lowbox token needs `CreateProcessW` +
+     `STARTUPINFOEX` (`PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`).
+     `Backend.spawn(argv, env)` returns a `ConfinedProcess` with exactly the
+     `Popen` surface the client uses, or `None` everywhere else —
+     `client._ensure_started` is `backend.spawn(...) or subprocess.Popen(...)`.
+     If you touch that object, it must keep `stdin/stdout/stderr`, `pid`,
+     `_handle`, `poll()`, `wait(timeout)` **raising `subprocess.TimeoutExpired`**,
+     `kill()`, `returncode` and `close()`.
+  2. **The start is suspended.** `CREATE_SUSPENDED` →
+     `AssignProcessToJobObject` → `ResumeThread`, so no instruction runs
+     outside the job; `attach()` is a no-op for a process the backend spawned
+     (it checks `proc.job_assigned`) but still sets `attached`, which is what
+     the psapi sampler reads.
+  3. **`%TEMP%` is rewritten by the token** to
+     `%LOCALAPPDATA%\Packages\<profile name>\AC\Temp`. The plan points
+     `LOCALAPPDATA`/`APPDATA`/`USERPROFILE` at the private temp dir, and
+     `prepare_tmp_hook` **creates that tree** before every spawn — without it
+     the first `tempfile` call in the container raises `FileNotFoundError`
+     (probe round 1).
+  4. **`icacls` grants take `*<SID>`, not a name**
+     (`icacls <path> /grant "*S-1-15-2-…:(OI)(CI)M"`), the `(OI)(CI)` ACE
+     reaches **pre-existing** children so no `/T` is needed (measured), and
+     `icacls` can exit **0** while printing `Failed processing 1 files` — read
+     the summary line, not just the exit code.
+  5. **The profile name is salted** (`<state-dir>/appcontainer.salt`), because
+     `DeriveAppContainerSidFromAppContainerName` is a *hash of the name*: an
+     unsalted name is a SID any other local account could derive and then own,
+     and our ACEs are permanent and inheritable. The salt never leaves the
+     server — the worker is told the SID, never the name.
+  Honesty runs through all of it: the parent only ever *intends*, the worker
+  reports `TokenIsAppContainer` off its own token in `_preamble`, and
+  `confinement_holds`/`sandbox.report` require the flag **and** a matching SID
+  before health may say `active`.
+
 - **`RLIMIT_NPROC` counts tasks (threads), per uid, not processes.** A warm
   worker runs 15–22 threads, so `live_uid_process_count()` sums `Threads:`
   from `/proc/*/status`; a per-process count under-measured a multi-worker
@@ -2289,8 +2326,9 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
 - **`AGENTCAD_EXPECT_SANDBOX=active` is the honesty gate, and CI sets it.**
   Every containment test asserts *when the live status is active* and skips
   otherwise, so without the variable a silent degradation to `off` would be
-  green. `ci.yml`'s matrix carries `expect_sandbox` (`active` on macOS and
-  ubuntu, empty on Windows where `unsupported` is the honest answer) and
+  green. `ci.yml`'s matrix carries `expect_sandbox` — `active` on **all three**
+  rows since PRD-006b gave Windows a real AppContainer, so a profile, an ACL or
+  a lowbox spawn that quietly degraded to an unconfined worker is red — and
   `AGENTCAD_EXPECT_QUOTAS=active` on all three; the "Sandbox probe (Linux)"
   step prints `uname -r`, `/sys/kernel/security/lsm` and the ABI so a runner
   change is diagnosable in one red run. If you add a containment test, gate it
@@ -2324,11 +2362,11 @@ Operator-facing reference: `docs/deployment.md`, "Confinement and quotas".
   Part scripts run as the server user by design, and the confinement bounds
   what they may *reach*, never whose they are (an account on a hosted instance
   still reaches every project, which is why registration is closed). The
-  worker is confined by a deny-by-default `sandbox-exec` profile on macOS and
-  by an in-process Landlock + seccomp preamble on Linux (writes only in
-  project roots + a private temp dir, no network; `AGENTCAD_NO_SANDBOX=1` opts
-  out of the confinement but **not** of the quotas); Windows reports
-  `unsupported`. Per-worker memory/pids/CPU caps and a per-project disk budget
+  worker is confined by a deny-by-default `sandbox-exec` profile on macOS, by
+  an in-process Landlock + seccomp preamble on Linux, and by an **AppContainer**
+  on Windows (writes only in project roots + a private temp dir, no network;
+  `AGENTCAD_NO_SANDBOX=1` opts out of the confinement but **not** of the
+  quotas). Per-worker memory/pids/CPU caps and a per-project disk budget
   ride the same seam — read the sandboxing gotchas. API key from env only,
   never persisted.
 - Comment density and style: match the surrounding file. Comments state
