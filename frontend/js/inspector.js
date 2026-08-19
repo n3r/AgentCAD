@@ -1174,6 +1174,21 @@ function materialBlock(part) {
   select.addEventListener("change", () => setMaterial(select.value));
   box.appendChild(select);
 
+  // Assign mode: the Materials modal (frontend/js/materials.js) opens on
+  // THIS part, its "Use for part" button lands through `setPartMaterial`
+  // below — the exact same write the `<select>` above performs. Routed
+  // through `actions` (not a direct import) so inspector.js and
+  // materials.js don't import each other — the same idiom
+  // `actions.openProposal` uses for comments.js -> proposals.js.
+  const browse = document.createElement("button");
+  browse.type = "button";
+  browse.className = "mat-browse";
+  browse.textContent = "Browse…";
+  browse.addEventListener("click", () => {
+    if (actions.openMaterials) actions.openMaterials({ assignTo: part.id });
+  });
+  box.appendChild(browse);
+
   if (current) {
     const props = document.createElement("div");
     props.className = "mat-props";
@@ -1221,13 +1236,25 @@ function prop(label, value, unit) {
   return cell;
 }
 
-async function setMaterial(id) {
-  const part = state.part;
-  if (!part || !id || id === part.material) return;
-  const partId = part.id;
+function setMaterial(id) {
+  if (state.part) setPartMaterial(state.part.id, id);
+}
+
+/** Write `id` as `partId`'s material — the ONE path both the inspector's
+ *  `<select>` (via `setMaterial` above) and the Materials modal's "Use for
+ *  part" button (assign mode, `frontend/js/materials.js`) go through:
+ *  `api.updatePart` + the same state updates (the open part, the sidebar's
+ *  project entry, the rebuild result). `partId` need not be the currently
+ *  open part — the write always lands — but the local state mirrors only
+ *  update when it is (an assign target that isn't open has no `state.part`
+ *  to patch; `refreshPartDetail`/`project_changed` catch it up). */
+export async function setPartMaterial(partId, id) {
+  if (!partId || !id) return;
+  const isCurrent = state.part && state.part.id === partId;
+  if (isCurrent && id === state.part.material) return;
   try {
     const result = await api.updatePart(state.projectName, partId, { material: id });
-    if (state.part && state.part.id === partId) {
+    if (isCurrent) {
       state.part.material = id;
       setState({ part: state.part });
     }

@@ -312,3 +312,19 @@ def test_find_category_argument_merges_into_constraints():
                "b": mat("b", category="polymer", yield_mpa=300.0)}
     rows = find(catalog, require={"yield_mpa_min": 100}, category="polymer")
     assert [r["id"] for r in rows] == ["b"]
+
+
+def test_process_filter_works_on_the_real_catalog_not_only_on_dict_doubles():
+    """Regression: ``Material.process`` is a read-only ``MappingProxyType``; the
+    first cut tested ``isinstance(node, dict)`` and every process filter except
+    ``sheet`` matched nothing on the shipped library while the hand-built
+    doubles above (plain dicts) passed. The browser's process chips found it."""
+    from agentcad.core.materials import MATERIALS
+
+    cnc = {r["id"] for r in find(MATERIALS, require={"process": "cnc"}, limit=50)}
+    assert "al6061" in cnc                      # machinability: excellent
+    sls = {r["id"] for r in find(MATERIALS,
+                                 require={"process": "sls"}, limit=50)}
+    assert "nylon_pa12" in sls                  # printable.sls: excellent
+    for proc in ("weld", "fdm", "dmls", "im", "casting"):
+        assert find(MATERIALS, require={"process": proc}, limit=5), proc

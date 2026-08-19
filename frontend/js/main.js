@@ -20,6 +20,7 @@ import * as comments from "./comments.js";
 import * as library from "./library.js";
 import * as configs from "./configs.js";
 import * as market from "./market.js";
+import * as materials from "./materials.js";
 import * as auth from "./auth.js";
 import { setupShare } from "./share-links.js";
 
@@ -59,6 +60,12 @@ const actions = {
   // other panel uses rather than importing proposals.js and closing a cycle.
   openProposal: (id, tab) => proposals.openTo(id, tab),
   handleWriteConflict,
+  // Materials modal (PRD-028 slice 5): routed through `actions` both ways —
+  // inspector.js's Browse… button opens it, its "Use for part" button writes
+  // back through `inspector.setPartMaterial` — the same "don't import each
+  // other, go through actions" idiom `openProposal` above uses.
+  openMaterials: (opts) => materials.open(opts),
+  assignMaterial: (partId, id) => inspector.setPartMaterial(partId, id),
 };
 
 // ------------------------------------------------------------------ project
@@ -2336,6 +2343,7 @@ async function boot() {
   proposals.init(actions);
   library.init(actions);
   configs.init(actions);
+  materials.init(actions);
   presence.init();
   // After inspector.init: comments.js registers inspector's param decorator
   // and subscribes to `part` behind it, so a badge is applied to rows the
@@ -2356,6 +2364,12 @@ async function boot() {
   document.getElementById("market-btn")?.addEventListener("click", () => {
     window.location.hash = "#market";
     window.location.reload();
+  });
+  // Unlike Market, the materials browser is a MODAL inside the workbench
+  // (Decision 10's ruling) — no navigation, no reload, assign mode needs the
+  // workbench alive underneath it.
+  document.getElementById("materials-btn")?.addEventListener("click", () => {
+    materials.open();
   });
   setupUndo();
   setupKeys();
@@ -2385,6 +2399,14 @@ async function boot() {
     await loadProject(initial.name);
   } else {
     updateEmptyState();
+  }
+
+  // The `#materials` hash opens the modal AFTER the workbench inits — unlike
+  // `#market` above (a full-page takeover entered BEFORE the auth gate, which
+  // needs no project), this just opens an overlay on top of the workbench
+  // boot() just built, so it waits for that project load to settle first.
+  if (window.location.hash.startsWith("#materials")) {
+    materials.open();
   }
 }
 

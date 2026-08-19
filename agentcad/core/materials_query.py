@@ -26,6 +26,8 @@ naming the full known grammar.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from dataclasses import dataclass, field, replace
 
 from .materials import BASES, CATEGORIES, PROPERTY_UNITS, SUBCATEGORIES, Material, Property
@@ -198,12 +200,16 @@ def _process_ok(material: Material, proc: str) -> bool:
     process = material.process or {}
     if proc == "sheet":
         return bool(process.get("sheet"))
+    # ``Material.process`` is a read-only mapping (``MappingProxyType``), not a
+    # ``dict`` — test against ``Mapping`` or every nested lookup silently fails
+    # (every process filter except ``sheet`` matched nothing on the real
+    # catalog while the hand-built test doubles, plain dicts, passed).
     node = process
     for part in path[:-1]:
-        node = node.get(part) if isinstance(node, dict) else None
-        if not isinstance(node, dict):
+        node = node.get(part) if isinstance(node, Mapping) else None
+        if not isinstance(node, Mapping):
             return False
-    rating = node.get(path[-1]) if isinstance(node, dict) else None
+    rating = node.get(path[-1]) if isinstance(node, Mapping) else None
     return rating in _QUALIFYING_RATINGS
 
 
