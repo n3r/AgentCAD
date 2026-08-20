@@ -34,8 +34,10 @@ import { state, setState, onKeys } from "./state.js";
 import * as viewport from "./viewport.js";
 import * as inspector from "./inspector.js";
 import * as editor from "./editor.js";
+import * as dialogs from "./shell/dialogs.js";
 
 let actions = null;
+let inboxLegacy = null;     // the inbox overlay's seat on the dialog stack
 let pane = null;
 let tabBadge = null;
 let pinsHost = null;
@@ -130,11 +132,17 @@ export function init(a) {
     }
     refreshNotifications();
   });
-  document.getElementById("notifications-modal").addEventListener("click", (e) => {
+  const inbox = document.getElementById("notifications-modal");
+  inbox.addEventListener("click", (e) => {
     if (e.target.id === "notifications-modal") closeInbox();
   });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && drawerOpen()) closeInbox();
+  // PRD-026 FR2: Esc belongs to the shell's overlay stack, not to this module.
+  // (`#comment-pop` is NOT a `.modal-overlay` — it is an anchored popover with
+  // its own field-level Escape, and it stays as it is.)
+  inboxLegacy = dialogs.attachLegacy(inbox, {
+    view: "notifications", title: "Mentions…", onClose: closeInbox,
+    description: "Notifications addressed to you on this project",
+    isOpen: drawerOpen, open: () => openInbox(),
   });
 
   onKeys(["projectName", "branch"], () => {
@@ -249,12 +257,14 @@ function drawerOpen() {
 
 export function openInbox() {
   document.getElementById("notifications-modal").classList.remove("hidden");
+  if (inboxLegacy) inboxLegacy.notifyOpen();
   renderDrawer();
   refreshNotifications();
 }
 
 function closeInbox() {
   document.getElementById("notifications-modal").classList.add("hidden");
+  if (inboxLegacy) inboxLegacy.notifyClose();  // idempotent: Esc pops it too
 }
 
 function renderDrawer() {
@@ -301,8 +311,10 @@ function renderDrawer() {
 /** Reveal one thread in the panel — the notification drawer's and the diff
  *  chip's click target. Closes whatever modal is covering the inspector. */
 export function showThread(tid) {
-  const overlay = document.querySelector(".modal-overlay:not(.hidden)");
-  if (overlay) overlay.classList.add("hidden");
+  // Through the shell's stack, never by hiding the overlay by hand: the
+  // adopted modals hold a stack entry, and hiding the element behind their
+  // backs would leave `isModalOpen()` true forever.
+  dialogs.closeModals();
   expanded = String(tid);
   filter = "all";
   inspector.setTab("threads");

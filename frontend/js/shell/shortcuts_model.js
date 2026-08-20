@@ -1,0 +1,248 @@
+// PRD-026 shell — chord normalisation, conflict detection and the dispatch
+// table. PURE: no DOM, no imports, runs in node (tests/test_frontend_shell.py).
+//
+// One canonical spelling for a chord, decided here and nowhere else:
+//
+//   * modifier order is Mod, Ctrl, Alt, Shift — always, whatever the author
+//     typed ("shift+mod+z" and "Mod+Shift+Z" are the same binding, and a table
+//     that spelled them differently would have accepted both and fired one);
+//   * `Mod` is ⌘ on macOS and Ctrl everywhere else, resolved at DISPATCH
+//     (`fromEvent`), never at registration — the registry is platform-free;
+//   * a single-character key is upper-cased, a named key takes its DOM
+//     `KeyboardEvent.key` spelling (Escape, Enter, ArrowUp, F1…), and `?`
+//     stays `?` because that is what the browser reports for Shift+/ and the
+//     chord is the character, not the keystroke that produced it.
+
+const MODS = {
+  mod: "Mod", cmd: "Mod", command: "Mod", meta: "Mod", super: "Mod",
+  ctrl: "Ctrl", control: "Ctrl",
+  alt: "Alt", option: "Alt", opt: "Alt",
+  shift: "Shift",
+};
+
+const MOD_ORDER = ["Mod", "Ctrl", "Alt", "Shift"];
+
+// DOM `key` spellings we accept case-insensitively. Anything else with more
+// than one character is title-cased as written (so an exotic key still round
+// trips rather than being silently mangled).
+const NAMED = {};
+for (const key of ["Escape", "Enter", "Tab", "Backspace", "Delete", "Insert",
+                   "Home", "End", "PageUp", "PageDown", "ArrowUp", "ArrowDown",
+                   "ArrowLeft", "ArrowRight", "Space"]) {
+  NAMED[key.toLowerCase()] = key;
+}
+for (let i = 1; i <= 12; i += 1) NAMED[`f${i}`] = `F${i}`;
+
+/** Canonical spelling of a chord. Throws on an empty one.
+ *
+ *  `+` is both the separator and a perfectly ordinary key, so it is lifted out
+ *  before the split rather than being lost in it: `"Mod++"` is Mod plus the
+ *  `+` key, `"+"` is the bare `+` key. (`normalize` is for AUTHOR-written
+ *  chords; `fromEvent` builds its chord directly and never round-trips through
+ *  this parser.)
+ */
+export function normalize(chord) {
+  const { mods, key } = parseChord(chord);
+  return [...MOD_ORDER.filter((m) => mods.has(m)), key].join("+");
+}
+
+/** `normalize` without the throw: the canonical spelling, or `null` when the
+ *  string is not a chord at all.
+ *
+ *  THIS IS THE MACHINE PATH. `normalize` is an AUTHOR-facing parser: it throws
+ *  on shapes only a human writing `shortcut: "…"` could get wrong (a bare
+ *  modifier, two keys, nothing at all), and throwing is right there — a bad
+ *  binding must fail the build. But `fromEvent` also produces chords, from
+ *  whatever the browser reports for a keystroke, and `Table.lookup` used to
+ *  hand ITS output straight back to the same throwing parser from inside an
+ *  untried document listener. Every key whose DOM name happens to parse badly
+ *  was then an uncaught exception on every press of it: `" "` (the space bar)
+ *  and `"Super"`/`"Hyper"` were the two found, and patching them one at a time
+ *  would only have kept finding more. A lookup miss is a lookup miss.
+ */
+export function canonical(chord) {
+  try {
+    return normalize(chord);
+  } catch {
+    return null;
+  }
+}
+
+/** `{mods: Set, key}` — the one parser `normalize` and `label` share, so a
+ *  chord whose key is `+` survives both and not just the first. */
+function parseChord(chord) {
+  let text = String(chord == null ? "" : chord).trim();
+  let plusKey = false;
+  if (text === "+") {
+    plusKey = true;
+    text = "";
+  } else if (text.endsWith("+")) {
+    plusKey = true;
+    text = text.slice(0, -1);                       // "Mod++" -> "Mod+"
+    if (text.endsWith("+")) text = text.slice(0, -1); // -> "Mod"
+  }
+  const parts = text
+    .split("+")
+    .map((p) => p.trim())
+    .filter((p) => p.length);
+  if (!parts.length && !plusKey) throw new Error("empty shortcut chord");
+  const mods = new Set();
+  let key = plusKey ? "+" : null;
+  for (const part of parts) {
+    const mod = MODS[part.toLowerCase()];
+    // A lone modifier NAME is not a chord ("Shift" alone) — the throw below
+    // catches it; with other parts present it is a modifier.
+    if (mod && (parts.length > 1 || plusKey)) {
+      mods.add(mod);
+      continue;
+    }
+    if (mod) throw new Error(`shortcut chord is a bare modifier: ${chord}`);
+    if (key !== null) throw new Error(`shortcut chord has two keys: ${chord}`);
+    key = keyName(part);
+  }
+  if (key === null) throw new Error(`shortcut chord has no key: ${chord}`);
+  return { mods, key };
+}
+
+function keyName(raw) {
+  // The DOM spells the space bar `" "`, and a lone space is exactly what a
+  // parser that trims and drops empty parts cannot survive: `fromEvent`
+  // returned the truthy string `" "`, `Table.lookup` handed it to `normalize`,
+  // and `parseChord` threw "empty shortcut chord" out of an untried document
+  // listener — on EVERY press of the space bar, anywhere in the app. The
+  // canonical spelling is `Space`, which `NAMED`, `MAC_KEYS` and `PC_KEYS`
+  // already knew; only this mapping was missing. (Same family as the `+`
+  // keystroke fixed in review round 1.)
+  if (raw === " ") return "Space";
+  if (raw.length === 1) return raw.toUpperCase();
+  const named = NAMED[raw.toLowerCase()];
+  return named || raw;
+}
+
+const MODIFIER_KEYS = new Set([
+  "Alt", "AltGraph", "CapsLock", "Control", "Fn", "FnLock", "Hyper", "Meta",
+  "NumLock", "OS", "ScrollLock", "Shift", "Super", "Symbol", "SymbolLock",
+  // Not a modifier, but never a chord either: a dead key is half of one.
+  "Dead", "Process", "Unidentified",
+]);
+
+/** The chord a keydown event names, or null for a bare modifier press.
+ *
+ *  `platform` is `navigator.platform` (or anything the caller has): only
+ *  "is this a Mac" is read from it, and that single bit decides whether ⌘ or
+ *  Ctrl is `Mod`. A Ctrl press ON a Mac is a real, different chord (`Ctrl+…`),
+ *  which is why the two are not collapsed.
+ */
+export function fromEvent(event, platform) {
+  const key = event && event.key;
+  // Every UI Events "modifier key" value: pressing one alone is not a chord.
+  // `Super`/`Hyper` are here because `MODS` maps "super" to `Mod`, so without
+  // them the chord handed on was a bare modifier name.
+  if (!key || MODIFIER_KEYS.has(key)) return null;
+  const mac = isMac(platform);
+  const mods = [];
+  if (mac ? event.metaKey : event.ctrlKey) mods.push("Mod");
+  if (mac ? event.ctrlKey : false) mods.push("Ctrl");
+  if (event.altKey) mods.push("Alt");
+  // Shift is part of the chord only when it did not already change the key the
+  // browser reports: `Shift+/` arrives as `?` and IS the chord `?`, while
+  // `Shift+B` arrives as `B` and is the chord `Shift+B`.
+  if (event.shiftKey && (key.length > 1 || /^[a-z0-9]$/i.test(key))) {
+    mods.push("Shift");
+  }
+  // Assembled DIRECTLY, never via `normalize`: this runs on every keystroke in
+  // the app from inside an untried document listener, and round-tripping
+  // through a parser that splits on "+" made an ordinary `+` keypress (or a
+  // browser-zoom ⌘+) throw instead of returning a chord.
+  return [...MOD_ORDER.filter((m) => mods.includes(m)), keyName(key)].join("+");
+}
+
+const MAC_GLYPH = { Mod: "⌘", Ctrl: "⌃", Alt: "⌥", Shift: "⇧" };
+// Apple's order, which is not our storage order: ⌃⌥⇧⌘key.
+const MAC_ORDER = ["Ctrl", "Alt", "Shift", "Mod"];
+const MAC_KEYS = {
+  Escape: "Esc", Enter: "↵", Tab: "⇥", Backspace: "⌫", Delete: "⌦",
+  ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", Space: "␣",
+};
+const PC_KEYS = { Escape: "Esc", Space: "Space" };
+
+/** How the chord is written for a human on `platform`. */
+export function label(chord, platform) {
+  const { mods, key } = parseChord(chord);
+  if (isMac(platform)) {
+    const glyphs = MAC_ORDER.filter((m) => mods.has(m)).map((m) => MAC_GLYPH[m]);
+    return glyphs.join("") + (MAC_KEYS[key] || key);
+  }
+  const names = [];
+  if (mods.has("Mod") || mods.has("Ctrl")) names.push("Ctrl");
+  if (mods.has("Alt")) names.push("Alt");
+  if (mods.has("Shift")) names.push("Shift");
+  names.push(PC_KEYS[key] || key);
+  return names.join("+");
+}
+
+function isMac(platform) {
+  return /mac|iphone|ipad|ipod/i.test(String(platform || ""));
+}
+
+/** Two bindings on one chord in one scope is a programming error, not a
+ *  runtime condition — the registration is static code, so it throws in every
+ *  build (AC5) and names BOTH ids, because "conflict on Mod+S" without the
+ *  incumbent is a bug report with the useful half missing. */
+export class ShortcutConflictError extends Error {
+  constructor(chord, existingId, newId) {
+    super(`shortcut conflict on ${chord}: already bound to ${existingId}, `
+          + `cannot bind ${newId}`);
+    this.name = "ShortcutConflictError";
+    this.chord = chord;
+    this.existingId = existingId;
+    this.id = newId;
+  }
+}
+
+/** The dispatch table. `scope` separates bindings that survive an open modal
+ *  (`"modal-safe"`) from the ordinary ones (`"global"`), so the same chord may
+ *  legitimately mean two things in the two situations. */
+export class Table {
+  constructor() {
+    this._rows = []; // insertion order is the cheat-sheet's order
+    // scope -> Map<chord, row>. Nested rather than a composed `scope+chord`
+    // string key: no separator can then collide with (or be forbidden in) a
+    // chord, and no separator byte can sneak into the source.
+    this._index = new Map();
+  }
+
+  bind({ chord, id, scope = "global", when = null, title = null, group = null }) {
+    const canon = normalize(chord);
+    let byChord = this._index.get(scope);
+    if (!byChord) {
+      byChord = new Map();
+      this._index.set(scope, byChord);
+    }
+    const clash = byChord.get(canon);
+    if (clash) throw new ShortcutConflictError(canon, clash.id, id);
+    const row = { chord: canon, id, scope, when, title, group };
+    byChord.set(canon, row);
+    this._rows.push(row);
+    return row;
+  }
+
+  lookup(chord, scope = "global") {
+    const byChord = this._index.get(scope);
+    if (!byChord) return null;
+    // `canonical`, never `normalize`: this is reached from the document
+    // keydown listener with whatever the browser called the key, and an
+    // unparseable one is a MISS, not an exception (see `canonical`).
+    const canon = canonical(chord);
+    return (canon && byChord.get(canon)) || null;
+  }
+
+  list() {
+    return this._rows.map((r) => ({ ...r }));
+  }
+}
+
+// Test seam — the node round-trip imports this and nothing else.
+export const __shortcuts__ = {
+  normalize, canonical, fromEvent, label, Table, ShortcutConflictError,
+};

@@ -45,14 +45,14 @@ projects.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ AgentCAD  [project ▾]     (Rebuilding…)  [Fit] [Export ▾] ☀  ●  │  toolbar
-├──────────┬───────────────────────────────────┬───────────────────┤
-│ Parts    │                                   │ Parameters │ Code │
-│  nozzle  │                                   │            │      │
-│  flange ●│           3D viewport             │   Metrics tabs    │  inspector
-│ Assembly │        (HUD top-left)             │                   │
-│  nozzle_1│                                   │                   │
-├──────────┴───────────────────────────────────┴───────────────────┤
+│ AgentCAD  File Edit View Model Help   [project ▾]  ⌘K  [Fit] ☀ ● │  toolbar + menu bar
+├──┬───────┬───────────────────────────────────┬───────────────────┤
+│ ⋮│ Parts │                                   │ Parameters │ Code │
+│  │ nozzle│                                   │            │      │
+│  │flange●│           3D viewport             │   Metrics tabs    │  inspector
+│  │Assembly        (HUD top-left)             │                   │
+│  │nozzle_1                                   │                   │
+├──┴───────┴───────────────────────────────────┴───────────────────┤
 │ Agent  ▲                                                         │  chat dock
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -61,13 +61,77 @@ Everything is live: parameter edits, script saves, agent tool calls, and
 external MCP clients all publish the same WebSocket events, so every pane
 updates no matter who made the change.
 
+The frame itself is a shell: a **menu bar** inside the toolbar, a **⌘K
+command palette**, first-party **dialogs** for everything that used to be a
+browser `prompt()`/`confirm()`, and **resizable, collapsible panels**
+(sidebar, inspector, chat dock) whose sizes are remembered. Details below,
+and the full chord list is in [Keyboard shortcuts](#keyboard-shortcuts).
+
 ## Toolbar
+
+**Menu bar** — `File · Edit · View · Model · Help`, immediately left of the
+project switcher. Every row is the same **action** the palette and the
+keyboard shortcuts use — there is exactly one registry, so a menu never
+drifts from what ⌘K offers. A row a project state makes unusable (Export
+with nothing selected, Delete branch with only one branch) stays visible but
+**greyed** rather than vanishing, so the menu is always a true map of what
+the app can do; a row's shortcut, if it has one, is printed beside it in the
+platform's own spelling (`⌘K` on macOS, `Ctrl+K` elsewhere). Keyboard: `←`/`→`
+moves between menus, `↑`/`↓` moves within one, `Enter` runs the highlighted
+row, `Esc` closes.
+
+**Command palette** (**⌘K** / **Ctrl+K**, or the palette button on the
+toolbar) — one search box over everything the app can do: UI actions ("Fit
+view", "Toggle theme", "New part…"), every tool the running server has
+registered (the "Tools" section — a tool a pack does not load simply is not
+there, the same rule that hides FEM tools without the `[fem]` extra), and
+navigation targets (open a known project, jump to a part). Type to
+fuzzy-filter; `↑`/`↓` move, `Enter` runs, `Esc` closes. An empty query shows
+your most recent picks first, then the head of each section. Running a tool
+with required arguments opens a small form generated from the tool's own
+JSON Schema — string/enum/number/boolean fields, `project`/`part_id`
+pre-filled from what's selected — the same schema an agent reads; a tool
+with no required arguments (or once the form is filled) runs immediately.
+The result shows as a **toast** when it is small and scalar, or opens a
+non-modal **result panel** (pretty JSON, a Copy button) when it is not — a
+geometry-changing tool needs neither, since the viewport already refreshes
+from the same event every other client sees.
+
+**Dialogs.** Every prompt/confirm in the app — new project, new part,
+delete-with-blast-radius, and the rest — is a first-party dialog, not a
+browser popup: themed, keyboard-first, and consistent everywhere. `Esc`
+always cancels; `Enter` in a single-line field submits (a multi-line field
+uses `⌘Enter`/`Ctrl+Enter` so plain Enter can still add a newline); a
+destructive dialog (delete a part, delete a branch) opens focused on
+**Cancel**, never on the button that does the damage, and names what it
+would take with it (e.g. "also removes 1 assembly instance"). Focus is
+trapped inside the open dialog and returns to whatever you had focused once
+it closes. An agent can open specific dialogs too (`ui_open`, see
+[agent-api.md](agent-api.md)) — those carry a persistent "opened by agent"
+mark so it is never ambiguous who put a view in front of you.
+
+**Panels.** The sidebar, the inspector, and the chat dock all resize: drag
+the hairline on their edge, or grab it with `Tab` and nudge with the arrow
+keys. Double-click a handle (or hit `Enter` while it's focused) to
+collapse/restore the panel; the three panels also have dedicated toggles —
+**⌘B**/**Ctrl+B** (sidebar), **⇧⌘B**/**Ctrl+Shift+B** (inspector),
+**⌘J**/**Ctrl+J** (chat dock) — reachable from the View menu and the palette
+too. Sizes and collapsed state are remembered per browser
+(`localStorage`), and the inspector/sidebar auto-collapse once below
+laptop-width windows so the viewport always keeps room to work in.
+
+**The "?" cheat-sheet** — press **?** (Shift+/, outside a text field) for
+the live shortcut map, grouped by area and generated from the same registry
+every chord is bound through, so it can never go stale relative to what is
+actually bound. None of the palette/menu/shortcut/panel-toggle chords fire
+while a modal dialog is open — the dialog owns the keyboard until you
+close it.
 
 **Project switcher** — the button showing the current project name. The menu
 lists every known project with its part count, plus:
 
-- **New project…** — prompts for a name matching `[a-z][a-z0-9_]{0,39}` and
-  creates it under the projects directory.
+- **New project…** — opens a dialog for a name matching
+  `[a-z][a-z0-9_]{0,39}` and creates it under the projects directory.
 - **Open by path…** — registers an existing project directory (one
   containing `project.json`) by absolute path, e.g. a checkout somewhere
   else on disk.
@@ -99,8 +163,9 @@ mutation history: parameter changes, instance moves, script saves, part
 add/delete, material, mate, and PMI edits. The history is **shared with the
 agent** — one Cmd+Z can revert a change the chat agent (or an MCP client)
 just made. A toast names what was undone. Keyboard: **Cmd+Z** / **Ctrl+Z**
-and **Shift+Cmd+Z** / **Ctrl+Y** — except inside the code editor or a text
-field, where the editor's own text undo keeps working. The snapshots
+to undo, and **Cmd+Y** / **Ctrl+Y** or **Shift+Cmd+Z** / **Shift+Ctrl+Z** to
+redo — except inside the code editor or a text field, where the editor's own
+text undo keeps working. The snapshots
 themselves live in the per-project git history (durable, see below); the
 undo/redo *stacks* are per-server-session, so after a restart one step back
 remains available and redo starts empty.
@@ -148,16 +213,18 @@ A part that declares [configurations](#configurations) also wears a small
 **badge**: the configuration it is currently showing, or `cfg` at base (hover
 for `N configurations · active: …`).
 
-**＋** in the section header creates a part: you are prompted for an id
-(`[a-z][a-z0-9_]{0,39}`), and the part starts from the default template — a
-parametric rounded plate with four parameters — so there is immediately
-something to see and edit. New parts default to Aluminum 6061; material is
-part of the manifest and can be changed via the agent tools
+**＋** in the section header opens the **New part…** dialog (also **⌘N**/
+**Ctrl+N**): an id (`[a-z][a-z0-9_]{0,39}`, validated live), a label, and a
+material picker when the catalog is cached. The part starts from the default
+template — a parametric rounded plate with four parameters — so there is
+immediately something to see and edit. New parts default to Aluminum 6061;
+material is part of the manifest and can be changed via the agent tools
 (`update_part_script` with `material=`) or by editing `project.json`.
 
-**×** appears on hover and deletes the part *and its script file* after a
-confirm. Deletion is refused (conflict) while any assembly instance still
-references the part — remove the instances first.
+**×** appears on hover and opens a danger-styled confirm naming exactly what
+it would remove (the part, its script file, and any assembly instances that
+reference it). Deletion is refused (conflict) while any assembly instance
+still references the part — clear the instances first.
 
 ### Assembly
 
@@ -367,8 +434,9 @@ build with a `stale — last rebuild failed` note at the top.
 
 ## The Agent panel
 
-The **Agent** bar at the bottom expands into a chat dock (click the header;
-the open/closed state is remembered).
+The **Agent** bar at the bottom expands into a chat dock (click the header,
+or **⌘J**/**Ctrl+J**; the open/closed state and the dock's height are
+remembered — see [Panels](#toolbar)).
 
 **Without `ANTHROPIC_API_KEY`** the panel stays functional as a signpost: it
 explains that chat needs the key set before launch and gives the exact
@@ -623,12 +691,15 @@ branch of one project at the same time, each with its own editing turn and
 undo stack. Switching is instant — every branch keeps a materialized working
 tree, so nothing is checked out and nothing rebuilds — and the viewport, tree
 and inspector reload from the branch you moved to. Unsaved editor changes
-prompt first, as everywhere else.
+raise the discard-edits dialog first, as everywhere else.
 
-- **New branch…** prompts for a name matching `[a-z0-9][a-z0-9_/-]{0,63}`,
-  forks it from the branch you are on, and switches you to it.
-- **×** on a branch row deletes that branch and its working tree, after a
-  confirm. It appears only where the server would allow it — never on the
+- **New branch…** opens a dialog for a name matching
+  `[a-z0-9][a-z0-9_/-]{0,63}`, forks it from the branch you are on, and
+  switches you to it.
+- **×** on a branch row opens a danger confirm naming the branch. Deleting
+  from the switcher's own **Delete branch…** row instead opens a picker
+  (any branch but the current and the default one) before the same confirm.
+  It appears only where the server would allow it — never on the
   default branch or the one you are on — and a branch someone else has checked
   out comes back as an error toast. Versions (tags) made on the branch survive
   it, and its working tree is committed before removal, so nothing uncommitted
@@ -638,9 +709,10 @@ prompt first, as everywhere else.
 "the revision we sent to the machine shop" — stored as an annotated git tag.
 The dialog lists them newest-first with the message, author, relative date and
 short commit, and gives each a **Restore** action (it restores that state onto
-your current branch as one undoable step). **Tag current state…** prompts for
-a name (`[a-z0-9][a-z0-9._/-]{0,63}`, so `v1.2` works). Versions cannot be
-moved or deleted, and they outlive the branch they were made on.
+your current branch as one undoable step; the confirm names the tag whose
+state you're about to restore). **Tag current state…** opens a form for a
+name (`[a-z0-9][a-z0-9._/-]{0,63}`, so `v1.2` works) and a message. Versions
+cannot be moved or deleted, and they outlive the branch they were made on.
 
 **Merge into… (the merge modal).** Pick the source branch (*theirs*, what you
 merge from) and the target (*ours*, what you merge into — your current branch
@@ -1264,14 +1336,34 @@ written to any of these files.
 
 ## Keyboard shortcuts
 
-| Key | Action |
+Generated from the same shortcut registry the "?" cheat-sheet reads, so this
+table and the live overlay can never disagree. Every chord below is
+suppressed while a modal dialog is open — the dialog owns `Esc`/`Enter`
+until it closes — and a bare key (`F`, `G`, `R`, `?`) never fires while
+you're typing in a field.
+
+| Key (macOS / other) | Action |
 |---|---|
-| **F** | Fit view (when not typing in a field). |
+| **F** | Fit view to content. |
+| **G** | Switch the assembly gizmo to Move (an instance must be selected). |
+| **R** | Switch the assembly gizmo to Rotate (an instance must be selected). |
 | **Cmd+Z** / **Ctrl+Z** | Undo the last project change (any client's). In the code editor / a text field it stays the editor's own text undo. |
-| **Shift+Cmd+Z** / **Ctrl+Y** | Redo the last undone change. |
-| **Cmd+S** / **Ctrl+S** | Save & Rebuild the current part's script — works from anywhere, not just the editor. |
-| **Esc** | Close an open toolbar menu. |
-| **Enter** | Select the focused sidebar row (rows are Tab-reachable). |
+| **Cmd+Y** / **Ctrl+Y**, or **Shift+Cmd+Z** / **Shift+Ctrl+Z** | Redo the last undone change. |
+| **Cmd+S** / **Ctrl+S** | Save & Rebuild the current part's script — works from anywhere, not just the editor; defers to the code editor's own binding while a field, not this shortcut, has focus. |
+| **Cmd+N** / **Ctrl+N** | New part… (a project must be open). |
+| **Cmd+K** / **Ctrl+K** | Open the command palette. |
+| **Cmd+B** / **Ctrl+B** | Toggle the sidebar. |
+| **Shift+Cmd+B** / **Ctrl+Shift+B** | Toggle the inspector. |
+| **Cmd+J** / **Ctrl+J** | Toggle the chat dock. |
+| **?** | Open the keyboard shortcuts cheat-sheet. |
+| **Esc** | Cancel the topmost open dialog/menu/palette; while sketching, cancels the pending entity, then the selection, then closes the sketch. |
+| **Enter** | Submit the focused dialog's single-line field, run the highlighted palette row, or select the focused sidebar row (rows are Tab-reachable). |
+| **Delete** *(while sketching)* | Delete the selected sketch entities. |
+
+Resizable panels (sidebar, inspector, chat dock) additionally respond to
+`Tab` to focus their drag handle, the arrow keys to nudge it 16 px at a
+time, and `Enter`/double-click to collapse or restore — see
+[Panels](#toolbar).
 
 ## Troubleshooting
 

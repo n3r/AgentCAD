@@ -17,6 +17,7 @@
 // discrete actions and refresh immediately).
 
 import { api, ApiError } from "./api.js";
+import * as dialogs from "./shell/dialogs.js";
 import { state } from "./state.js";
 import * as materialsModel from "./materials_model.js";
 
@@ -64,6 +65,7 @@ let recordCache = new Map(); // id -> full get_material() record, this open only
 let toasted = new Set(); // library warnings already toasted this open (once, not per keystroke)
 let filterTimer = null;
 let listToken = 0;
+let legacy = null;
 
 export function init(a) {
   actions = a;
@@ -92,8 +94,17 @@ export function init(a) {
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) close();
   });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && isOpen()) close();
+  // PRD-026 merge: the overlay adopts the dialog stack (focus trap, one Esc
+  // owner, `isModalOpen()` truth) instead of its own document keydown — the
+  // same adoption every other legacy `.modal-overlay` got in slice 2.
+  legacy = dialogs.attachLegacy(overlay, {
+    view: "materials", title: "Materials…", isOpen, onClose: close,
+    description: "Browse the materials database (filters, compare, detail)",
+    open: () => open(),
+    when: (c) => !!c.projectName,
+    // The action row that already offers this modal, so the palette shows one
+    // row for it and not two (m4).
+    actionId: "model.materials",
   });
 
   for (const input of Object.values(filterInputs)) {
@@ -172,6 +183,7 @@ export async function open(opts) {
   compareBtn.textContent = "Compare";
 
   overlay.classList.remove("hidden");
+  if (legacy) legacy.notifyOpen();
   titleEl.textContent = assignTarget
     ? `Materials → assign to ${assignTarget}`
     : "Materials";
@@ -187,6 +199,7 @@ export async function open(opts) {
 
 function close() {
   overlay.classList.add("hidden");
+  if (legacy) legacy.notifyClose();
   assignTarget = null;
   rows = [];
   catalogRows = [];

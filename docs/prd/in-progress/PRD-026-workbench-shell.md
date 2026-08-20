@@ -1,6 +1,6 @@
 # PRD-026 — Workbench shell revamp: dialogs, command palette, menus, panels
 
-- **Status:** pending
+- **Status:** in progress — acceptance
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** founder idea #8 (Aug 2026), engineering-reviewed
@@ -102,10 +102,25 @@ change.
 - FR1. Modal dialog primitive: focus trap, Esc/Enter, backdrop, danger
   variant, form validation states; non-modal panel primitive for
   persistent surfaces; both theme-token styled.
-- FR2. All existing native dialog call sites replaced: new project, open by
-  path, new part, delete part (with dependency listing), example-reset
-  confirmations — grep-verifiable zero `window.prompt|confirm|alert` in
-  frontend/js.
+- FR2. All existing native dialog call sites replaced — grep-verifiable zero
+  `window.prompt|confirm|alert` in `frontend/js`. **Correction (shipped,
+  slice 2 report §1): 21 sites, five more modules than this PRD's draft
+  list implied** (there was no "example-reset" confirmation in the shipped
+  codebase; the real inventory is below) —
+  `main.js` (9: discard-edits guard, new part, delete part, import-part-id,
+  new project, open by path, the delete-branch picker + its per-row `×`
+  confirm, new branch), `versions.js` (2: tag/name+message, restore),
+  `merge.js` (1: abort), `proposals.js` (2: review summary, edit
+  title+description), `market.js` (2, one folded into the other: add-to-
+  project's project **select** + part id), `sketcher.js` (5: distance,
+  radius, slot width, and the ellipse's two semi-axis fields, all through
+  one `sketch-number` dialog). The **nine** legacy `.modal-overlay` modals
+  (drawing, versions, share, merge, proposals, library, configs,
+  `notifications`, and `materials` — PRD-028's browser, adopted when
+  `origin/main` merged in) are a *separate* deviation —
+  they **adopt** the shell (overlay stack, one Esc listener, focus trap,
+  dialog registry) rather than being rewritten onto the dialog primitive; see
+  "Shipped vs. deferred" below.
 - FR3. Dialogs are componentized so other PRDs register theirs (a dialog
   registry keyed by view name — the target of `ui_open`).
 
@@ -163,6 +178,57 @@ already does this well — sketcher, gizmo, chat dock).
 - **Phase 3:** user shortcut remapping; layout presets; palette learning
   (frecency).
 
+### Shipped vs. deferred (as landed, six slices)
+
+Phase 2 (menu bar FR7, full schema-form arg prompting, `ui_open` + events,
+per-workspace layout memory) shipped in full alongside the MVP — the design
+spec's ruling 1 pulled it forward because it "falls out of the action
+registry cheaply." **Phase 3 stayed deferred, exactly as scoped:**
+
+- **User shortcut remapping** — not built. `shortcuts_model.Table` binds a
+  fixed chord per registration; there is no UI or persisted override layer.
+- **Layout presets** — not built. `layout_model` persists one size/collapsed
+  state per panel per workspace; there is no named, savable/loadable set of
+  layouts.
+- **Palette frecency** — not built beyond "recent-first." `palette_model.rank`
+  tie-breaks on `localStorage["agentcad.palette.recent"]` (last-20,
+  most-recent-first) with no frequency weighting or decay.
+
+Two deliberate scope decisions inside the MVP itself, made by the
+orchestrator and pinned by tests, not oversights:
+
+- **Five mid-flow dialogs have a `view:` id (so the dialog stack and the UX
+  events name them) but deliberately carry no `dialogs.register` row, so
+  nothing can open them out of context** — `openView` cannot reach them at all,
+  which is the whole point of the ruling:
+  `discard-edits` (a navigation guard, not a destination), `import-part-id`
+  (names a file already uploaded), `restore-version` (names a specific tag),
+  `review-summary` (a verdict on a specific proposal), `sketch-number` (an
+  entity you are mid-way through drawing in the sketcher). Opening any of
+  these standalone would either no-op or need arguments the caller cannot
+  supply — "a registry row with nothing behind it is a menu that lies" (slice
+  2 report §2). Pinned by
+  `tests/test_frontend_shell.py::test_a_mid_flow_dialog_is_not_offered_as_an_openable_view`.
+- **The `merge` view's `when` predicate is narrow.** It reads
+  `() => !!staged`, module state `merge.js` sets only after a merge is
+  attempted in the *same browser session* — so the palette's "Open: Staged
+  merge…" row and `ui_open {view: "merge"}` will rarely fire even when the
+  server genuinely has a merge staged from an earlier session or another
+  client. Honest (it never claims a merge exists when its own state says
+  otherwise) but narrow; widening it needs a cheap "is a merge staged" read
+  that today only `reopenStaged()` performs, on demand (slice 2 report §7
+  concern 4).
+
+The nine legacy `.modal-overlay` modals (drawing, versions, share, merge,
+proposals, library, configs, notifications — and `materials`, PRD-028's
+browser, adopted when `origin/main` merged into this branch) were a scoped
+non-goal from the design spec (§0, "Defer"): they **adopt** the shell
+(overlay stack, one Esc listener, focus trap, dialog registry via
+`dialogs.attachLegacy`) rather than being rewritten onto the `dialogs.open`
+markup primitive. Their DOM and open/close functions are unchanged. This was
+an explicit call, not a shortfall: a full rewrite is churn with no
+user-visible gain and would collide with PRD-025's workspace work.
+
 ## Acceptance criteria
 
 - AC1. `grep -rn "window.prompt\|window.confirm\|window.alert" frontend/js`
@@ -182,6 +248,25 @@ already does this well — sketcher, gizmo, chat dock).
   correctly (test with keyboard-only walkthrough).
 - AC7. Full suite green; UI verified in a real browser per definition of
   done.
+
+### Acceptance record
+
+| AC | Evidence |
+|---|---|
+| AC1 | `tests/test_frontend_shell.py::test_no_native_dialogs_remain` (the `NATIVE_DIALOG_RE` grep) and `tests/test_prd026_acceptance.py`'s own restatement; the `index.html` "PRD-026 … has not landed" comment's removal is pinned by `test_the_modal_overlay_dom_fallback_is_gone_now_that_all_nine_are_adopted` and `tests/test_prd026_acceptance.py::test_ac1_the_index_html_prd026_comment_is_gone`. The browser half (create/delete a part via the new dialogs, zero console errors) is slice 2 §5's live Playwright session against the installed Chrome — new-part focus/validation, delete-part's blast-radius note, the delete-branch picker, the dialog stack nesting, both themes, zero page errors. |
+| AC2 | `tests/test_frontend_shell.py::test_ac2_check_interference_is_in_the_palette_because_the_registry_has_it` (real registry → `GET /api/tools` → `entriesFromTools`, both directions) and `tests/test_prd026_acceptance.py`'s compact restatement. |
+| AC3 | `tests/test_frontend_shell.py::test_ac3_a_tool_registered_into_the_live_registry_reaches_the_palette` (a fixture `Tool` registered into the app's registry, served over real `GET /api/tools`, piped into `palette_model.entriesFromTools`, findable by `rank`) and `tests/test_prd026_acceptance.py`'s restatement. |
+| AC4 | `tests/test_prd026_acceptance.py`'s layout round-trip + workspace-key-isolation test over `layout_model.serialize`/`deserialize`/`key`; the 30 `Slice 4` node tests (26 functions, one parametrized ×5) in `tests/test_frontend_shell.py` (clamp, responsive defaults, the localStorage-migration fix-round tests). The browser half was then verified live (controller-dispatched Playwright + installed Chrome against `agentcad serve`; the record is **changelog 0300's notes** — the session's own transcript lives under `.superpowers/`, which the merge added to `.gitignore`, so 0300 is the citation that exists for everyone): ArrowRight×3 grows the sidebar 48 px with `aria-valuenow` tracking, the size survives a reload via `agentcad.layout.default`, ⌘B/⇧⌘B/⌘J toggle and restore, double-click collapses and Enter expands — 12/12 checks passed, zero page errors. |
+| AC5 | `tests/test_frontend_shell.py::test_a_second_binding_on_one_chord_throws_naming_both_ids` (`ShortcutConflictError`) plus `tests/test_prd026_acceptance.py`'s own throw assertion; `F`/`Mod+S`/`Mod+Z` (and the full registered set) confirmed present in `frontend/js/main.js`'s `registerActions()`; every registered chord's presence in `docs/user-guide.md`'s regenerated shortcut table is asserted by `tests/test_prd026_acceptance.py`. |
+| AC6 | `tests/test_frontend_shell.py::test_markup_passes_the_static_a11y_pass` (dialog) and the menu-bar/palette a11y tests, plus `tests/test_prd026_acceptance.py`'s representative form/confirm/nonmodal + palette/menubar pass. The keyboard-only focus-trap/restore walkthrough is slice 1 §"Browser re-verification" and slice 2 §5/§"Browser re-verification" (Tab cycling, focus landing on Cancel for danger dialogs, Esc belonging to the topmost modal, Tab not hijacked from a `.CodeMirror` inside an adopted modal) — re-driven in the final controller browser pass (Tab×8 wraps inside the dialog, Esc returns focus to `#add-part-btn`, `?`/`F` are no-ops behind the modal; 12/12, zero page errors). |
+| AC7 | `tests/test_prd026_acceptance.py::test_ac7_the_full_suite_count_is_cited`, reading the newest `docs/changelog/NNNN-*.md` entry for a `make test` count (the PRD-004/008/011/012 precedent — this entry stays the evidence check, not a re-run of the suite from inside the suite). The browser-verification half is slices 1–2's live Chrome sessions (see AC1/AC6); PRD-026 does not itself claim "done" — see Status. |
+
+The `ui_open` agent surface (design §7, PRD "Agent surface") is proved
+end-to-end in `tests/test_tools_ui.py` (registration, `delivered_to`
+0/1/2, the rate limit, the exact published event shape) and restated
+compactly in `tests/test_prd026_acceptance.py` — a tool call publishes
+`{"type": "ui_open", "view", "args", "by": "agent"}` to a subscribed queue,
+Python-only, no WebSocket required.
 
 ## Risks & open questions
 

@@ -2,9 +2,10 @@
 // declares before installing it, and insert one of its parts at a preset.
 //
 // Wired like versions.js and proposals.js — a plain `.modal-overlay` with a
-// close button, backdrop click and Escape. Deliberately NOT a native
-// `<dialog>`: PRD-026's dialog system has not landed, and five modals in one
-// shape is worth more than one of them being modern. PRD-026 adopts all six.
+// close button and backdrop click. Deliberately NOT a native `<dialog>`: one
+// modal shape in this app is worth more than one of them being modern. PRD-026
+// slice 2 adopted it onto the shell's overlay stack (`dialogs.attachLegacy`),
+// so the markup is unchanged and Esc/focus are the stack's.
 //
 // "Add to project" is two calls, in this order and never one:
 //   1. `add_package` — resolve, verify the content id, install into the cache
@@ -22,11 +23,13 @@
 
 import { api, ApiError } from "./api.js";
 import { state } from "./state.js";
+import * as dialogs from "./shell/dialogs.js";
 
 const PART_ID_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 let actions = null;
 let overlay, titleEl, searchEl, listEl, detailEl, closeBtn;
+let legacy = null;   // the overlay's seat on the shell's dialog stack
 let hits = [];
 let selected = null;
 let searchToken = 0;
@@ -45,8 +48,13 @@ export function init(a) {
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) close();
   });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && isOpen()) close();
+  // PRD-026 FR2: Esc belongs to the shell's overlay stack, not to this module.
+  legacy = dialogs.attachLegacy(overlay, {
+    view: "library", title: "Parts library…", isOpen, onClose: close,
+    description: "Search the installed packages for a part to use",
+    open: () => open(),
+    when: (c) => !!c.projectName,
+    actionId: "model.library",   // one palette row, not two (m4)
   });
   searchEl.addEventListener("input", () => {
     clearTimeout(searchTimer);
@@ -64,6 +72,7 @@ export async function open() {
     return;
   }
   overlay.classList.remove("hidden");
+  if (legacy) legacy.notifyOpen();
   titleEl.textContent = `Parts library → ${state.projectName}`;
   note(listEl, "Searching…");
   detailEl.textContent = "";
@@ -73,6 +82,7 @@ export async function open() {
 
 function close() {
   overlay.classList.add("hidden");
+  if (legacy) legacy.notifyClose();   // idempotent: Esc pops the stack itself
   listEl.textContent = "";
   detailEl.textContent = "";
   hits = [];

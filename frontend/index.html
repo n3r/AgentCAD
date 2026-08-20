@@ -26,6 +26,11 @@
   <header id="toolbar">
     <div id="brand">Agent<b>CAD</b></div>
 
+    <!-- PRD-026 slice 4: rendered by shell/menu.js from the action registry
+         (menu.init in main.js's boot()). Empty until then — never a
+         placeholder comment a test could catch left behind. -->
+    <nav id="menubar" role="menubar"></nav>
+
     <div class="menu-wrap">
       <button id="project-btn" class="tb-btn" aria-haspopup="menu" aria-expanded="false">
         <span id="project-name">No project</span><span class="chev">▾</span>
@@ -33,8 +38,9 @@
       <div id="project-menu" class="menu left hidden" role="menu"></div>
     </div>
 
-    <!-- Static markup: setupMenus() snapshots .menu-wrap once at boot, so a
-         menu inserted later gets no outside-click/Escape/arrow handling. -->
+    <!-- Static markup. PRD-026 slice 4: shell/menu.js's attach() queries
+         .menu-wrap live at event time, so a wrap inserted later (the menu
+         bar's own generated ones) gets the same handling as this one. -->
     <div class="menu-wrap">
       <button id="branch-btn" class="tb-btn hidden" aria-haspopup="menu"
               aria-expanded="false" title="Current branch">
@@ -101,6 +107,13 @@
          hosted (a share link needs a public origin). -->
     <button id="share-btn" class="tb-btn hidden" type="button"
             aria-haspopup="dialog">Share…</button>
+
+    <!-- PRD-026: the pointer's way to the command palette. The label is the
+         chord, because the chord is the thing worth learning — and it is
+         rewritten at boot by `setupPaletteButton()` from the shortcut table,
+         so a Windows user sees `Ctrl+K` rather than a Command glyph. -->
+    <button id="palette-btn" class="tb-btn" type="button"
+            title="Command palette" aria-label="Command palette">⌘K</button>
 
     <button id="theme-btn" class="tb-btn" title="Switch to light theme"
             aria-label="Switch to light theme">☀</button>
@@ -354,9 +367,11 @@
   </div>
 
   <!-- Parts library. A plain modal on the proposals/versions pattern, not a
-       native <dialog>: PRD-026's dialog system has not landed, and one modal
-       shape in this app is worth more than one modern element. PRD-026 adopts
-       this along with the other five. -->
+       native <dialog>: one modal shape in this app is worth more than one
+       modern element. PRD-026 slice 2 adopted every `.modal-overlay` on this
+       page onto the shell's overlay stack (`dialogs.attachLegacy`) — the
+       markup below is unchanged; Esc, the focus trap and the focus restore
+       are the stack's. -->
   <div id="library-modal" class="modal-overlay hidden">
     <div class="modal wide">
       <header class="modal-head">
@@ -384,9 +399,10 @@
     </div>
   </div>
 
-  <!-- The configuration matrix. Same `.modal-overlay` shape as the other five
-       (see the library note above): the inspector is 326 px and `flex: none`,
-       so a family's metrics side by side simply do not fit there. -->
+  <!-- The configuration matrix. Same `.modal-overlay` shape as every other
+       overlay on this page (see the library note above): the inspector is
+       326 px and `flex: none`, so a family's metrics side by side simply do
+       not fit there. -->
   <div id="configs-modal" class="modal-overlay hidden">
     <div class="modal wide">
       <header class="modal-head">
@@ -399,6 +415,13 @@
       <div id="configs-body" class="cfg-body"></div>
     </div>
   </div>
+
+  <!-- The claim conflict has no markup any more: PRD-026 slice 1 moved it onto
+       `dialogs.open({view: "claim"})`, which builds it (and its focus trap,
+       its Esc and its backdrop) from the shell primitive. It is still shown
+       ONLY for a 409 whose details carry overridable:true — a plain turn-lock
+       409 keeps today's banner and is offered no override, because there is
+       nothing here that could grant one. -->
 
   <!-- The materials database browser (PRD-028 FR7/Decision 10). A MODAL
        inside the workbench — not a `#market`-style full-page takeover — so
@@ -458,22 +481,11 @@
     </div>
   </div>
 
-  <!-- The claim conflict. Shown ONLY for a 409 whose details carry
-       overridable:true (a soft per-part claim); a plain turn-lock 409 keeps
-       today's banner and is offered no override, because there is nothing
-       here that could grant one. -->
-  <div id="claim-modal" class="modal-overlay hidden">
-    <div class="modal narrow">
-      <header class="modal-head">
-        <span id="claim-title" class="modal-title">Someone is editing this part</span>
-        <div class="modal-actions">
-          <button id="claim-cancel" class="tb-btn" type="button">Cancel</button>
-          <button id="claim-override" class="tb-btn" type="button">Override</button>
-        </div>
-      </header>
-      <div id="claim-body" class="conflict-body"></div>
-    </div>
-  </div>
+  <!-- The claim conflict used to be a hand-rolled `#claim-modal` here. PRD-026
+       slice 2 replaced it with `dialogs.open()` (`main.js`'s claim-conflict
+       dialog), so the markup is gone: an unadopted `.modal-overlay` in this file
+       is now a stack-invariant violation, and the closure test in
+       `tests/test_frontend_shell.py` grades every one of them. -->
 
   <div id="notifications-modal" class="modal-overlay hidden">
     <div class="modal narrow">
@@ -503,6 +515,13 @@
       <button id="comment-pop-send" class="tb-btn" type="button">Comment</button>
     </div>
   </div>
+
+  <!-- PRD-026: every shell dialog is built into this host by
+       `shell/dialogs.js` — one overlay stack, one Esc listener, one focus
+       trap. Before #toasts so a toast raised from a dialog still paints over
+       it (the z-index says the same thing; the order makes it true without
+       relying on stacking contexts). -->
+  <div id="dialog-host"></div>
 
   <div id="toasts"></div>
 

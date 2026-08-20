@@ -23,9 +23,20 @@ import * as market from "./market.js";
 import * as materials from "./materials.js";
 import * as auth from "./auth.js";
 import { setupShare } from "./share-links.js";
+// The server's identifier rules, spelled once (`frontend/js/patterns.js`) and
+// fed to every dialog field's `pattern` through `bare()`.
+import { ID_RE, BRANCH_RE, bare } from "./patterns.js";
+// PRD-026 shell. `actions` is the ACTION REGISTRY — the panel DI object that
+// used to own that name is `panelApi` below.
+import * as actions from "./shell/actions.js";
+import * as dialogs from "./shell/dialogs.js";
+import * as shortcuts from "./shell/shortcuts.js";
+import * as menu from "./shell/menu.js";
+import * as layout from "./shell/layout.js";
+import * as palette from "./shell/palette.js";
+import * as events from "./shell/events.js";
+import { toast, init as initToasts } from "./shell/toast.js";
 
-const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
-const BRANCH_RE = /^[a-z0-9][a-z0-9_/-]{0,63}$/;
 
 const meshBuffers = new Map(); // partId -> {buffer, key, lod} from api.getMesh
 // Assembly geometry is CONTENT-addressed, not part-addressed: two instances of
@@ -41,9 +52,13 @@ let projectRefreshTimer = null;
 let lockHolder = null; // current turn-lock holder for this project (or null)
 let branchSwitchUntil = 0; // suppress the branch_changed echo of our own switch
 
-// ------------------------------------------------------------------ actions
+// ----------------------------------------------------------------- panel API
+// The dependency object every panel module receives. It was called `actions`
+// until PRD-026; the name now belongs to the action registry (shell/actions.js)
+// and this is the panels' API. Panels keep their own parameter names, so the
+// rename is confined to this file.
 
-const actions = {
+const panelApi = {
   selectPart,
   selectAssembly,
   addPart,
@@ -56,7 +71,7 @@ const actions = {
   refreshProject,
   loadProject,
   // A thread anchored to a proposal hunk focuses by opening that proposal's
-  // Files tab; comments.js reaches it through the same actions object every
+  // Files tab; comments.js reaches it through the same panelApi object every
   // other panel uses rather than importing proposals.js and closing a cycle.
   openProposal: (id, tab) => proposals.openTo(id, tab),
   handleWriteConflict,
@@ -80,7 +95,7 @@ async function refreshProjectsList() {
 }
 
 async function loadProject(name) {
-  if (!confirmDiscardEdits(null)) return; // switching projects drops the editor
+  if (!(await confirmDiscardEdits(null))) return; // switching projects drops the editor
   let detail;
   try {
     detail = await api.getProject(name);
@@ -173,16 +188,28 @@ function partKnown(partId) {
 // True when it is safe to navigate away from the current part's editor.
 // Asks the user before discarding unsaved script edits; a cancelled dialog
 // keeps the current selection.
-function confirmDiscardEdits(nextPartId) {
+// PRD-026 FR2: the native confirm became a dialog, so this is a PROMISE and every
+// caller awaits it. The three fast paths above still answer synchronously
+// (an `async` function returning `true` resolves on the microtask queue), so
+// the common "nothing is dirty" case still costs no frame.
+async function confirmDiscardEdits(nextPartId) {
   if (!state.selectedPart || nextPartId === state.selectedPart) return true;
   if (!state.part || !editor.isDirty()) return true;
   // The edited part no longer exists (deleted): nothing can be saved.
   if (!partKnown(state.selectedPart)) return true;
-  return confirm("Discard unsaved script changes?");
+  return dialogs.confirm({
+    view: "discard-edits",
+    title: "Discard unsaved script changes?",
+    body: `${state.selectedPart} has edits that were never saved. Leaving `
+      + "this part throws them away.",
+    danger: true,
+    confirmLabel: "Discard",
+    cancelLabel: "Keep editing",
+  });
 }
 
 async function selectPart(partId) {
-  if (!confirmDiscardEdits(partId)) return;
+  if (!(await confirmDiscardEdits(partId))) return;
   const seq = ++selectSeq;
   if (faceSel && faceSel.partId !== partId) clearFaceSelection();
   setState({ mode: "part", selectedPart: partId, selectedInstance: null });
@@ -212,7 +239,7 @@ async function selectAssembly(instanceId) {
     // Selecting an instance swaps its part into the inspector below, which
     // would silently drop unsaved edits to the current part's script.
     const next = state.project.assembly.instances.find((i) => i.id === instanceId);
-    if (next && !confirmDiscardEdits(next.part)) return;
+    if (next && !(await confirmDiscardEdits(next.part))) return;
   }
   const entering = state.mode !== "assembly";
   const seq = ++selectSeq;
@@ -491,30 +518,92 @@ function markPartState(partId, st) {
 
 // ----------------------------------------------------------- part CRUD
 
-async function addPart() {
+/** The material field, but ONLY when the catalog is already in hand.
+ *
+ *  `loadMaterials` fetches it per project and parks it in `state.materials`;
+ *  offering a free-text material box when it has not arrived would invite a
+ *  typo that `updatePart` then refuses, so the field is simply absent and the
+ *  inspector's picker (which owns this decision) stays the one place to set it.
+ */
+function materialField() {
+  const catalog = (state.materials && state.materials.materials) || [];
+  if (!catalog.length) return null;
+  return {
+    name: "material",
+    label: "Material",
+    type: "select",
+    value: "",
+    options: [{ value: "", label: "— none —" },
+              // `m.label` is the display name the inspector's picker shows —
+              // the same field, so the two lists read alike.
+              ...catalog.map((m) => ({ value: m.id, label: m.label || m.id }))],
+    help: "Optional; the inspector can change it later.",
+  };
+}
+
+async function addPart(args) {
   if (!state.projectName) {
     toast("Open a project first", "error");
     return;
   }
-  let id = prompt("New part id ([a-z][a-z0-9_]{0,39}):");
-  if (!id) return;
-  id = id.trim();
-  if (!ID_RE.test(id)) {
-    toast(`Invalid part id ${JSON.stringify(id)}`, "error");
-    return;
-  }
+  const prefill = args || {};
+  const values = await dialogs.form({
+    view: "new-part",
+    title: "New part",
+    width: "narrow",
+    fields: [
+      { name: "id", label: "Part id", value: prefill.id || "", required: true,
+        pattern: bare(ID_RE),
+        patternMessage: "lowercase letters, digits, _; max 40",
+        help: "Used for the script file name and every reference to the part." },
+      { name: "label", label: "Label", value: prefill.label || "",
+        placeholder: "Optional display name" },
+      ...[materialField()].filter(Boolean),
+    ],
+    buttons: [{ id: "cancel", label: "Cancel" },
+              { id: "create", label: "Create", kind: "primary", submits: true }],
+  });
+  if (!values) return;
+  const id = String(values.id).trim();
   try {
-    await api.createPart(state.projectName, id);
+    await api.createPart(state.projectName, id, values.label || undefined);
   } catch (err) {
     toast(`Create failed: ${err.message}`, "error");
     return;
+  }
+  if (values.material) {
+    // A second call because `POST /parts` takes id+label only. A refusal here
+    // must not read as "the part was not created" — it was.
+    try {
+      await api.updatePart(state.projectName, id, { material: values.material });
+    } catch (err) {
+      toast(`${id} created, but the material did not stick: ${err.message}`,
+            "error");
+    }
   }
   await refreshProject();
   await selectPart(id);
 }
 
 async function deletePart(partId) {
-  if (!confirm(`Delete part “${partId}”? This removes its script file.`)) return;
+  if (!partId) return;
+  const instances = ((state.project && state.project.assembly
+    && state.project.assembly.instances) || []).filter((i) => i.part === partId);
+  const ok = await dialogs.confirm({
+    view: "delete-part",
+    title: `Delete part “${partId}”?`,
+    body: `Deletes ${partId} and its script file.`,
+    // The blast radius, named before the click and not discovered after it:
+    // deleting a part takes every assembly instance of it with it.
+    note: instances.length
+      ? `Also removes ${instances.length} assembly instance`
+        + `${instances.length === 1 ? "" : "s"}: `
+        + instances.map((i) => i.id).join(", ")
+      : undefined,
+    danger: true,
+    confirmLabel: "Delete part",
+  });
+  if (!ok) return;
   try {
     await api.deletePart(state.projectName, partId);
   } catch (err) {
@@ -687,16 +776,20 @@ async function handleImportFile(file) {
     toast(`Upload failed: ${detail}`, "error");
     return;
   }
-  let id = prompt(
-    `Imported “${upload.source}”. Part id ([a-z][a-z0-9_]{0,39}):`,
-    deriveImportId(file.name)
-  );
-  if (!id) return; // file stays in imports/; user can retry with the same name
-  id = id.trim();
-  if (!ID_RE.test(id)) {
-    toast(`Invalid part id ${JSON.stringify(id)}`, "error");
-    return;
-  }
+  const answer = await dialogs.prompt({
+    view: "import-part-id",
+    title: "Name the imported part",
+    body: `Imported “${upload.source}”.`,
+    label: "Part id",
+    value: deriveImportId(file.name),
+    pattern: bare(ID_RE),
+    patternMessage: "lowercase letters, digits, _; max 40",
+    okLabel: "Import",
+  });
+  // Cancelled: the file stays in imports/ and the user can retry with the
+  // same name.
+  if (answer == null) return;
+  const id = answer.trim();
   let res;
   try {
     res = await api.callTool("import_cad_file", {
@@ -731,21 +824,29 @@ async function handleImportFile(file) {
 function setupLibrary() {
   const btn = document.getElementById("library-btn");
   if (!btn) return;
-  btn.addEventListener("click", () => library.open());
+  btn.addEventListener("click", () => actions.run("model.library", null,
+                                                  { source: "toolbar" }));
+}
+
+/** The file picker behind the Import button — an action's `run`, so the same
+ *  verb is reachable from the toolbar, the menus and the palette. */
+function openImportPicker() {
+  const input = document.getElementById("import-input");
+  if (!input) return;
+  if (!state.projectName) {
+    toast("Open a project first", "error");
+    return;
+  }
+  input.value = "";
+  input.click();
 }
 
 function setupImport() {
   const btn = document.getElementById("import-btn");
   const input = document.getElementById("import-input");
   if (!btn || !input) return;
-  btn.addEventListener("click", () => {
-    if (!state.projectName) {
-      toast("Open a project first", "error");
-      return;
-    }
-    input.value = "";
-    input.click();
-  });
+  btn.addEventListener("click", () => actions.run("project.import-cad", null,
+                                                  { source: "toolbar" }));
   input.addEventListener("change", () => {
     const file = input.files && input.files[0];
     if (file) handleImportFile(file);
@@ -977,6 +1078,26 @@ function handleEvent(ev) {
     case "chat_done":
       chat.handleEvent(ev);
       return;
+    // PRD-026: the agent's one way into this UI. `ui_open` is a BROADCAST —
+    // the bus has no per-client routing — so every connected browser opens the
+    // view, and each one shows the "opened by agent" attribution chip.
+    // `openView` refuses (and toasts) a view this shell does not have; it
+    // never guesses.
+    case "ui_open":
+      // Nobody awaits this: catch here, or a throwing opener is an unhandled
+      // rejection with no user-visible trace (`palette.js`'s tool path made the
+      // same argument).
+      dialogs.openView(ev.view, ev.args || {}, { by: "agent" })
+        .catch((err) => toast(
+          `Agent could not open “${ev.view}”: ${err && err.message ? err.message : err}`,
+          "error"));
+      return;
+    // Our own UX telemetry, echoed back to us by the bus. Handling any of
+    // these would make `dialog_opened` open a dialog.
+    case "dialog_opened":
+    case "dialog_submitted":
+    case "palette_executed":
+      return;
     default:
       return;
   }
@@ -1064,7 +1185,9 @@ function updateEmptyState() {
   const btn = document.createElement("button");
   btn.className = "tb-btn";
   btn.textContent = buttonLabel;
-  btn.addEventListener("click", onClick);
+  // Wrapped, not passed: both openers now take an `args` prefill object and a
+  // MouseEvent is not one.
+  btn.addEventListener("click", () => onClick());
   el.append(p, btn);
 }
 
@@ -1079,35 +1202,14 @@ function setMenuHidden(menu, hidden) {
   if (btn) btn.setAttribute("aria-expanded", hidden ? "false" : "true");
 }
 
+// PRD-026 slice 4: the outside-click/Esc/roving behaviour itself moved to
+// `shell/menu.js`'s `attach()`, which queries `.menu-wrap` LIVE at event time
+// (no more "snapshots them at boot" caveat — a wrap inserted after this call,
+// like the menu bar's own generated ones, is handled too). This just attaches
+// the three PRE-EXISTING static wraps (project/branch/export); `menu.js`
+// attaches its own generated wraps itself.
 function setupMenus() {
-  const wraps = [...document.querySelectorAll(".menu-wrap")];
-  document.addEventListener("click", (e) => {
-    for (const wrap of wraps) {
-      if (!wrap.contains(e.target)) {
-        setMenuHidden(wrap.querySelector(".menu"), true);
-      }
-    }
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      for (const wrap of wraps) setMenuHidden(wrap.querySelector(".menu"), true);
-      return;
-    }
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    const open = wraps
-      .map((w) => w.querySelector(".menu"))
-      .find((m) => !m.classList.contains("hidden"));
-    if (!open) return;
-    const items = [...open.querySelectorAll(".menu-item")].filter((i) => !i.disabled);
-    if (!items.length) return;
-    e.preventDefault();
-    const idx = items.indexOf(document.activeElement);
-    const next =
-      e.key === "ArrowDown"
-        ? items[(idx + 1) % items.length]
-        : items[(idx - 1 + items.length) % items.length];
-    next.focus();
-  });
+  for (const wrap of document.querySelectorAll(".menu-wrap")) menu.attach(wrap);
 }
 
 function setupProjectMenu() {
@@ -1162,14 +1264,18 @@ function setupProjectMenu() {
   });
 }
 
-async function newProjectPrompt() {
-  let name = prompt("Project name ([a-z][a-z0-9_]{0,39}):");
-  if (!name) return;
-  name = name.trim();
-  if (!ID_RE.test(name)) {
-    toast(`Invalid project name ${JSON.stringify(name)}`, "error");
-    return;
-  }
+async function newProjectPrompt(args) {
+  const answer = await dialogs.prompt({
+    view: "new-project",
+    title: "New project",
+    label: "Project name",
+    value: (args && args.name) || "",
+    pattern: bare(ID_RE),
+    patternMessage: "lowercase letters, digits, _; max 40",
+    okLabel: "Create",
+  });
+  if (answer == null) return;
+  const name = answer.trim();
   try {
     await api.createProject(name);
   } catch (err) {
@@ -1180,9 +1286,17 @@ async function newProjectPrompt() {
   await loadProject(name);
 }
 
-async function openProjectPrompt() {
-  const path = prompt("Absolute path to a project directory:");
-  if (!path) return;
+async function openProjectPrompt(args) {
+  const path = await dialogs.prompt({
+    view: "open-project",
+    title: "Open a project by path",
+    label: "Absolute path",
+    value: (args && args.path) || "",
+    placeholder: "/home/you/cad/bracket",
+    help: "The directory that holds project.json.",
+    okLabel: "Open",
+  });
+  if (path == null) return;
   let detail;
   try {
     detail = await api.openProject(path);
@@ -1195,8 +1309,9 @@ async function openProjectPrompt() {
 }
 
 // ------------------------------------------------------------------ branches
-// The switcher is a static .menu-wrap (setupMenus() snapshots them at boot).
-// It stays hidden when the server has no versioning routes — git missing means
+// The switcher is a static .menu-wrap, attached by setupMenus() via
+// shell/menu.js's attach(). It stays hidden when the server has no
+// versioning routes — git missing means
 // the tool pack registered nothing and the project has no branches at all.
 
 async function loadBranchState() {
@@ -1294,7 +1409,7 @@ function setupBranchMenu() {
     sep.className = "menu-sep";
     menu.appendChild(sep);
     for (const [label, run] of [
-      ["New branch…", newBranchPrompt],
+      ["New branch…", () => newBranchPrompt()],
       ["Merge into…", () => merge.openPicker()],
       ["Versions…", () => versions.open()],
     ]) {
@@ -1313,7 +1428,7 @@ function setupBranchMenu() {
 
 async function switchToBranch(name) {
   if (!state.projectName || name === state.branch) return;
-  if (!confirmDiscardEdits(null)) return; // another branch's scripts differ
+  if (!(await confirmDiscardEdits(null))) return; // another branch's scripts differ
   branchSwitchUntil = Date.now() + 1500;
   try {
     await api.switchBranch(state.projectName, name);
@@ -1369,18 +1484,72 @@ async function reloadBranchContext() {
   }
 }
 
-async function deleteBranch(name) {
+/** The picker behind `model.branches.delete`: the branch menu's per-row `×`
+ *  knows which branch it names, an action reached from the palette or a menu
+ *  does not — and an argument-free delete would name the CURRENT branch, which
+ *  the server always refuses. */
+async function deleteBranchPrompt(args) {
   if (!state.projectName) return;
-  // Same confirm affordance every other destructive action here uses
-  // (restore a version, discard a staged merge).
-  if (
-    !confirm(
-      `Delete branch “${name}” and its working tree?\n\n` +
-        "Versions (tags) made on it survive. This cannot be undone."
-    )
-  ) {
+  const deletable = (state.branches || [])
+    .filter((b) => !b.is_current && !b.is_default);
+  if (!deletable.length) {
+    toast("No other branch to delete", "error");
     return;
   }
+  const preset = args && args.branch;
+  if (deletable.some((b) => b.name === preset)) {
+    await deleteBranch(preset);
+    return;
+  }
+  const values = await dialogs.form({
+    view: "delete-branch",
+    title: "Delete a branch",
+    body: "Deletes the branch and its working tree. Versions (tags) made on "
+      + "it survive. This cannot be undone.",
+    danger: true,
+    fields: [{
+      name: "branch",
+      label: "Branch",
+      type: "select",
+      // The current branch and the default one are absent, not disabled: the
+      // server refuses both, and a row that can only fail is not a choice.
+      //
+      // It opens UNCHOSEN, and the empty option is what makes that a state the
+      // form can be in: `required` then keeps the danger button disabled until
+      // somebody deliberately picks a branch, so an Enter still travelling
+      // from the palette row that opened this cannot land on a valid form.
+      // (`focusFirst` puts focus on Cancel too — belt and braces, because this
+      // is the one dialog in the slice that deletes a working tree.)
+      options: [{ value: "", label: "— choose a branch —" },
+                ...deletable.map((b) => b.name)],
+      value: "",
+      required: true,
+    }],
+    buttons: [{ id: "cancel", label: "Cancel" },
+              { id: "delete", label: "Delete branch", kind: "danger",
+                submits: true }],
+  });
+  if (!values) return;
+  await runDeleteBranch(values.branch);
+}
+
+/** The branch menu's per-row `×`: the branch is already named, so the dialog
+ *  is the plain danger confirm every other destructive action here uses
+ *  (restore a version, discard a staged merge). */
+async function deleteBranch(name) {
+  if (!state.projectName) return;
+  const ok = await dialogs.confirm({
+    view: "delete-branch",
+    title: `Delete branch “${name}” and its working tree?`,
+    body: "Versions (tags) made on it survive. This cannot be undone.",
+    danger: true,
+    confirmLabel: "Delete branch",
+  });
+  if (!ok) return;
+  await runDeleteBranch(name);
+}
+
+async function runDeleteBranch(name) {
   try {
     await api.deleteBranch(state.projectName, name);
   } catch (err) {
@@ -1393,18 +1562,23 @@ async function deleteBranch(name) {
   await loadBranchState();
 }
 
-async function newBranchPrompt() {
+async function newBranchPrompt(args) {
   if (!state.projectName) {
     toast("Open a project first", "error");
     return;
   }
-  let name = prompt("New branch name ([a-z0-9][a-z0-9_/-]{0,63}):");
-  if (!name) return;
-  name = name.trim();
-  if (!BRANCH_RE.test(name)) {
-    toast(`Invalid branch name ${JSON.stringify(name)}`, "error");
-    return;
-  }
+  const answer = await dialogs.prompt({
+    view: "new-branch",
+    title: "New branch",
+    label: "Branch name",
+    value: (args && args.name) || "",
+    pattern: bare(BRANCH_RE),
+    patternMessage: "lowercase letters, digits, _ - /; max 64",
+    help: `Branches off ${state.branch || "the current branch"}.`,
+    okLabel: "Create",
+  });
+  if (answer == null) return;
+  const name = answer.trim();
   try {
     await api.createBranch(state.projectName, name);
   } catch (err) {
@@ -1516,7 +1690,8 @@ function setupRepMode() {
   const box = document.getElementById("repmode");
   if (!box) return;
   for (const btn of box.querySelectorAll(".repmode-btn")) {
-    btn.addEventListener("click", () => setRepMode(btn.dataset.rep));
+    btn.addEventListener("click", () => actions.run(
+      `view.repmode.${btn.dataset.rep}`, null, { source: "toolbar" }));
   }
   updateRepModeToggle();
 }
@@ -1524,56 +1699,18 @@ function setupRepMode() {
 function setupUndo() {
   const undoBtn = document.getElementById("undo-btn");
   const redoBtn = document.getElementById("redo-btn");
-  if (undoBtn) undoBtn.addEventListener("click", undoLastChange);
-  if (redoBtn) redoBtn.addEventListener("click", redoLastChange);
+  const run = (id) => () => actions.run(id, null, { source: "toolbar" });
+  if (undoBtn) undoBtn.addEventListener("click", run("edit.undo"));
+  if (redoBtn) redoBtn.addEventListener("click", run("edit.redo"));
+  document.getElementById("fit-btn")
+    ?.addEventListener("click", run("view.fit"));
 }
 
-// Bare-key shortcuts (f/g/r) must not act behind an open dialog.
-function modalOpen() {
-  return document.querySelector(".modal-overlay:not(.hidden)") != null;
-}
-
-function setupKeys() {
-  document.addEventListener("keydown", (e) => {
-    const target = e.target instanceof Element ? e.target : document.body;
-    const inField = target.closest("input, textarea, .CodeMirror") != null;
-    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "z") {
-      // In a text field leave the browser's/CodeMirror's native text undo
-      // alone; elsewhere Cmd/Ctrl+Z is project undo, Shift+Cmd/Ctrl+Z redo.
-      if (inField) return;
-      e.preventDefault();
-      if (e.shiftKey) redoLastChange();
-      else undoLastChange();
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "y") {
-      // Ctrl+Y — the Windows/Linux redo convention.
-      if (inField) return;
-      e.preventDefault();
-      redoLastChange();
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
-      // CodeMirror handles its own Cmd+S; catch it everywhere else
-      if (!target.closest(".CodeMirror")) {
-        e.preventDefault();
-        if (state.part) inspector.saveIfDirty();
-      }
-      return;
-    }
-    if (inField || modalOpen() || e.metaKey || e.ctrlKey || e.altKey) return;
-    const k = e.key.toLowerCase();
-    if (k === "f") {
-      viewport.fit();
-      return;
-    }
-    // Gizmo mode — only meaningful with an editable instance selected.
-    if ((k === "g" || k === "r") && state.mode === "assembly" && state.selectedInstance) {
-      setState({ gizmoMode: k === "g" ? "translate" : "rotate" });
-    }
-  });
-  // Shift-to-snap while dragging the gizmo (1 mm / 5°) — the placement card
-  // advertises it, so it must actually be wired.
+// Shift-to-snap while dragging the gizmo (1 mm / 5°). NOT a shortcut: it is a
+// modifier held during a drag, not a chord that runs a verb, so it stays a
+// plain listener rather than entering the shortcut table. The placement card
+// advertises it, so it must actually be wired.
+function setupGizmoSnapKeys() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Shift") viewport.setGizmoSnap(true);
   });
@@ -1581,19 +1718,11 @@ function setupKeys() {
     if (e.key === "Shift") viewport.setGizmoSnap(false);
   });
   window.addEventListener("blur", () => viewport.setGizmoSnap(false));
-  document.getElementById("fit-btn").addEventListener("click", () => viewport.fit());
 }
 
-// ------------------------------------------------------------------ toasts
-
-function toast(message, kind = "info") {
-  const host = document.getElementById("toasts");
-  const el = document.createElement("div");
-  el.className = `toast ${kind === "error" ? "error" : ""}`;
-  el.textContent = message;
-  host.appendChild(el);
-  setTimeout(() => el.remove(), kind === "error" ? 8000 : 4000);
-}
+// The v0.1 key handler and `toast()` used to live here. Both are shell modules
+// now: chords are declared on actions (see registerActions) and dispatched by
+// `shell/shortcuts.js`, notices come from `shell/toast.js`.
 
 // ---------------------------------------------------- face pick / push-pull
 
@@ -2232,46 +2361,28 @@ function renderLockIndicator() {
 //     Somebody else has this part open. Offer exactly one button, because a
 //     claim exists to stop a silent clobber, not to be a permission system.
 
-let claimResolve = null;
-
-function setupClaimDialog() {
-  const overlay = document.getElementById("claim-modal");
-  const done = (ok) => {
-    overlay.classList.add("hidden");
-    const resolve = claimResolve;
-    claimResolve = null;
-    if (resolve) resolve(ok);
-  };
-  document.getElementById("claim-cancel").addEventListener("click", () => done(false));
-  document.getElementById("claim-override").addEventListener("click", () => done(true));
-  overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) done(false);
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && claimResolve) done(false);
-  });
-}
-
+// PRD-026: the hand-rolled `#claim-modal` (its own Escape listener, its own
+// backdrop handler, one module-level resolve slot that a second 409 would have
+// overwritten) is gone. The dialog primitive already had this promise shape —
+// it was modelled on it — so the callers' contract is unchanged: `true` to
+// retry the write, `false` to give up, and it never resolves twice.
 function askOverride(claim, partId) {
-  const overlay = document.getElementById("claim-modal");
-  const body = document.getElementById("claim-body");
   const label = presence.labelFor(claim.holder);
-  document.getElementById("claim-title").textContent = `${label} is editing ${partId}`;
-  body.textContent = "";
-  const line = document.createElement("div");
-  line.textContent =
-    `${label} (${claim.holder}) has ${partId} open. Overriding takes the ` +
-    "part, lands your change, and tells them it happened — their unsaved " +
-    "edits are still theirs, and the next save wins.";
-  const meta = document.createElement("div");
-  meta.className = "claim-meta";
-  meta.textContent =
-    `holder ${claim.holder} · ${claim.holder_kind} · claim expires on its own`;
-  body.append(line, meta);
-  overlay.classList.remove("hidden");
-  return new Promise((resolve) => {
-    claimResolve = resolve;
-  });
+  return dialogs.open({
+    view: "claim",
+    title: `${label} is editing ${partId}`,
+    width: "narrow",
+    danger: true,
+    body:
+      `${label} (${claim.holder}) has ${partId} open. Overriding takes the ` +
+      "part, lands your change, and tells them it happened — their unsaved " +
+      "edits are still theirs, and the next save wins.",
+    note: `holder ${claim.holder} · ${claim.holder_kind} · claim expires on its own`,
+    buttons: [
+      { id: "cancel", label: "Cancel" },
+      { id: "override", label: "Override", kind: "danger", submits: true },
+    ],
+  }).then((res) => res.ok);
 }
 
 /** Offer the override for a refused part write. Resolves true when the caller
@@ -2291,6 +2402,289 @@ async function handleWriteConflict(err, partId) {
   return true;
 }
 
+// --------------------------------------------------------------- the actions
+// PRD-026 FR7's "single action registry": every verb the workbench performs is
+// registered here ONCE and reached three ways — the toolbar button calls
+// `actions.run(id)`, the shortcut table binds whatever `shortcut` declares,
+// and slice 3/4's palette and menu bar read the same list. Registered late in
+// `boot()` (after `shortcuts.init`) so a declared chord is bound as it lands.
+//
+// Nothing is invented here: every entry is a verb the v0.1 toolbar already
+// had, and every chord is one `setupKeys` already honoured. Actions for
+// behaviour that does not exist yet (`help.palette`, `view.sidebar.toggle`,
+// `model.branches.delete`) belong to the slices that build it — a registry row
+// with nothing behind it is a menu that lies.
+
+const notInField = (ctx) => !ctx.inField;
+
+/** Click a button another module owns. The verb stays that module's (it keeps
+ *  its own listener and its own preconditions); the action makes it reachable
+ *  from the keyboard, the menus and the palette without a second copy of the
+ *  logic that would then drift. */
+function clickButton(id) {
+  const btn = document.getElementById(id);
+  if (btn) btn.click();
+}
+
+function enterMarket() {
+  // A full reload into `#market` — boot() re-enters in market mode with the
+  // viewport singleton to itself (the "reload rather than re-run boot()"
+  // discipline showSignIn() uses).
+  window.location.hash = "#market";
+  window.location.reload();
+}
+
+function registerActions() {
+  const A = (spec) => actions.register(spec);
+  const hasProject = (c) => !!c.projectName;
+  const hasPart = (c) => !!c.selectedPart;
+  const inAssembly = (c) => c.mode === "assembly";
+  const onBranch = (c) => !!c.branch;
+
+  // ------------------------------------------------------------------ File
+  A({ id: "project.new", title: "New project…", group: "Project",
+      menu: "file/10", keywords: ["create"], run: () => newProjectPrompt() });
+  A({ id: "project.open-path", title: "Open by path…", group: "Project",
+      menu: "file/11", run: () => openProjectPrompt() });
+  A({ id: "part.new", title: "New part…", group: "Parts", menu: "file/20",
+      // Spec ruling 3. `when` (not `enabled`) on purpose: with no project open
+      // there is no part to create and the File row genuinely should not be
+      // there, so the chord declines and the browser keeps ⌘N — the one case
+      // where we are not taking a keystroke we cannot act on.
+      shortcut: "Mod+N",
+      keywords: ["create", "add"], when: hasProject, run: () => addPart() });
+  A({ id: "project.import-cad", title: "Import CAD file…", group: "Project",
+      menu: "file/30", keywords: ["step", "stl", "brep"], when: hasProject,
+      run: () => openImportPicker() });
+  const EXPORTS = [
+    ["part", "step", "file/40"], ["part", "stl", "file/41"],
+    ["part", "3mf", "file/42"],
+    ["assembly", "step", "file/50"], ["assembly", "stl", "file/51"],
+  ];
+  for (const [kind, format, menu] of EXPORTS) {
+    A({
+      id: `project.export.${kind}.${format}`,
+      title: `Export ${kind} as ${format.toUpperCase()}`,
+      group: "Export", menu, keywords: ["save", "download"],
+      when: hasProject,
+      // Both halves read `ctx`, never module state: a synthetic context (the
+      // palette's, a test's) must grade the row the same way the live one does.
+      enabled: (c) => (kind === "part" ? !!c.selectedPart : !!c.hasInstances),
+      run: () => runExport(kind, format),
+    });
+  }
+  A({ id: "project.share", title: "Share a part…", group: "Project",
+      menu: "file/60",
+      // Hosted mode only: share-links.js unhides the button once it knows the
+      // app has a public origin, so the button's visibility IS the capability.
+      when: () => {
+        const btn = document.getElementById("share-btn");
+        return !!btn && !btn.classList.contains("hidden");
+      },
+      run: () => clickButton("share-btn") });
+
+  // ------------------------------------------------------------------ Edit
+  A({ id: "edit.undo", title: "Undo", group: "Edit", menu: "edit/10",
+      // In a text field the browser's/CodeMirror's own text undo is the right
+      // answer — the binding declines and does not preventDefault.
+      shortcut: { chord: "Mod+Z", when: notInField },
+      when: hasProject, run: () => undoLastChange() });
+  A({ id: "edit.redo", title: "Redo", group: "Edit", menu: "edit/11",
+      shortcut: [{ chord: "Mod+Y", when: notInField },
+                 { chord: "Mod+Shift+Z", when: notInField }],
+      when: hasProject, run: () => redoLastChange() });
+  A({ id: "part.save-script", title: "Save & rebuild", group: "Parts",
+      menu: "edit/20",
+      // CodeMirror binds its own Cmd+S; everywhere else this catches it.
+      shortcut: { chord: "Mod+S", when: (c) => !c.inCodeMirror },
+      // `enabled`, NOT `when`: dispatch consults `when` BEFORE it
+      // `preventDefault`s, so a `when`-gated ⌘S with no part selected would
+      // fall through to the browser's "Save page as…" — which v0.1 always
+      // suppressed outside CodeMirror. The menu still greys the row out, and
+      // the run body keeps v0.1's own `if (state.part)` guard.
+      enabled: hasPart,
+      run: () => { if (state.part) inspector.saveIfDirty(); } });
+  A({ id: "part.delete", title: "Delete part…", group: "Parts",
+      menu: "edit/30", danger: true, when: hasPart,
+      run: () => deletePart(state.selectedPart) });
+
+  // ------------------------------------------------------------------ View
+  A({ id: "view.fit", title: "Fit view", group: "View", menu: "view/10",
+      shortcut: "F", keywords: ["zoom", "frame"], run: () => viewport.fit() });
+  A({ id: "view.gizmo.translate", title: "Move gizmo", group: "View",
+      menu: "view/20", shortcut: "G",
+      when: (c) => inAssembly(c) && !!c.selectedInstance,
+      run: () => setState({ gizmoMode: "translate" }) });
+  A({ id: "view.gizmo.rotate", title: "Rotate gizmo", group: "View",
+      menu: "view/21", shortcut: "R",
+      when: (c) => inAssembly(c) && !!c.selectedInstance,
+      run: () => setState({ gizmoMode: "rotate" }) });
+  // view/30-32 belong to the panel toggles registered by `shell/layout.js`
+  // (sidebar / inspector / chat dock), so the representation modes start at
+  // 40 and the theme toggle at 50 — three groups, three separators, and no
+  // two rows sharing a rank.
+  A({ id: "view.repmode.full", title: "Full geometry", group: "View",
+      menu: "view/40", when: inAssembly, run: () => setRepMode("full") });
+  A({ id: "view.repmode.simplified", title: "Simplified proxies",
+      group: "View", menu: "view/41", when: inAssembly,
+      run: () => setRepMode("simplified") });
+  A({ id: "view.theme.toggle", title: "Toggle light/dark theme", group: "View",
+      menu: "view/50", run: () => theme.toggle() });
+
+  // ----------------------------------------------------------------- Model
+  A({ id: "model.sketch", title: "2D sketch…", group: "Model", menu: "model/10",
+      when: hasPart, run: () => clickButton("sketch-btn") });
+  A({ id: "model.library", title: "Parts library…", group: "Model",
+      menu: "model/20", keywords: ["package", "screw", "insert"],
+      run: () => library.open() });
+  A({ id: "model.market", title: "Marketplace…", group: "Model",
+      menu: "model/21", run: () => enterMarket() });
+  // PRD-028's materials browser was the one adopted modal with no action row:
+  // reachable from the toolbar and from the palette's "Open: …" *view* row, but
+  // absent from the Model menu, which the user guide calls "a true map of what
+  // the app can do". `model/22` is the free slot between Marketplace and
+  // Versions. Same `run` as the toolbar button, and `panelApi.openMaterials`
+  // (PRD-028's inspector Browse… path) is untouched.
+  A({ id: "model.materials", title: "Materials…", group: "Model",
+      menu: "model/22", when: hasProject,
+      keywords: ["material", "steel", "aluminium", "density"],
+      run: () => materials.open() });
+  A({ id: "model.versions", title: "Versions…", group: "Model",
+      menu: "model/30", when: onBranch, run: () => versions.open() });
+  A({ id: "model.branches.new", title: "New branch…", group: "Model",
+      menu: "model/31", when: onBranch, run: () => newBranchPrompt() });
+  // Slice 1 could not register this: an argument-free delete would name the
+  // branch you are ON, which the server always refuses. Slice 2's picker is
+  // what makes the row honest, so it is gated on there BEING another branch
+  // (the current one and the default one are never deletable).
+  A({ id: "model.branches.delete", title: "Delete branch…", group: "Model",
+      menu: "model/32", danger: true,
+      when: (c) => !!c.branch && c.hasOtherBranches,
+      run: () => deleteBranchPrompt() });
+  A({ id: "model.proposals", title: "Proposals…", group: "Model",
+      menu: "model/33", when: onBranch, run: () => proposals.open() });
+  A({ id: "model.configs", title: "Configurations…", group: "Model",
+      menu: "model/40", when: hasPart,
+      run: () => configs.open(state.selectedPart) });
+  A({ id: "model.drawing", title: "Drawing preview…", group: "Model",
+      menu: "model/41", when: hasPart,
+      run: () => drawings.previewSvg(state.projectName, state.selectedPart) });
+
+  // ------------------------------------------------------------------ Help
+  // help/10 is the command palette (`shell/palette.js`) — the row people reach
+  // for first, and the one that leads to everything else.
+  A({ id: "help.shortcuts", title: "Keyboard shortcuts", group: "Help",
+      menu: "help/11", shortcut: "?", keywords: ["keys", "cheat sheet"],
+      run: () => openShortcutSheet() });
+
+  // The sketcher is a modal MODE, not a set of bindings: its `onKey`
+  // stopPropagation's before the shortcut table ever sees the event. The
+  // cheat-sheet still has to tell the truth about it, so those rows are
+  // declared data (spec §6).
+  shortcuts.declare({ chord: "Escape", group: "While sketching",
+                      title: "Cancel the pending entity, then the selection, "
+                             + "then close the sketch" });
+  shortcuts.declare({ chord: "Delete", group: "While sketching",
+                      title: "Delete the selected sketch entities" });
+
+  // FR3: the views this module owns. The claim dialog is deliberately NOT
+  // registered — it is a response to a 409, and nothing should be able to
+  // conjure one.
+  //
+  // A view is registered when opening it OUT OF CONTEXT is a coherent thing to
+  // ask for. `discard-edits` (a navigation guard whose "Discard" discards
+  // nothing on its own) and `import-part-id` (it names a file that has already
+  // been uploaded) are dialogs with a `view:` and no registry row for exactly
+  // that reason — a registry row with nothing behind it is a menu that lies.
+  dialogs.register("shortcuts", () => openShortcutSheet(), {
+    title: "Keyboard shortcuts",
+    description: "Every chord this workbench binds, grouped by area",
+  });
+  dialogs.register("new-part", (args) => addPart(args), {
+    title: "New part…",
+    description: "Create a part in the current project",
+    when: (c) => !!c.projectName,
+  });
+  dialogs.register("delete-part", (args) => deletePart(
+    (args && args.part) || state.selectedPart), {
+    title: "Delete part…",
+    description: "Delete a part, its script and every assembly instance of it",
+    // Destructive: an agent may not conjure the confirm that leads to it.
+    agentOpenable: false,
+    when: (c) => !!c.selectedPart,
+  });
+  dialogs.register("new-project", (args) => newProjectPrompt(args), {
+    title: "New project…", description: "Create a project",
+  });
+  dialogs.register("open-project", (args) => openProjectPrompt(args), {
+    title: "Open project by path…",
+    description: "Open a project directory that is not in the list",
+  });
+  dialogs.register("new-branch", (args) => newBranchPrompt(args), {
+    title: "New branch…", description: "Branch the current project",
+    when: (c) => !!c.branch,
+  });
+  dialogs.register("delete-branch", (args) => deleteBranchPrompt(args), {
+    title: "Delete branch…",
+    description: "Delete a branch other than the current or default one",
+    agentOpenable: false,
+    when: (c) => !!c.branch && c.hasOtherBranches,
+  });
+}
+
+/** The toolbar's palette affordance. Its label is the CHORD, so it is read
+ *  from the shortcut table rather than hard-coded: `index.html` cannot know
+ *  whether this browser renders `⌘K` or `Ctrl+K`, and a Windows user seeing a
+ *  Command glyph learns the wrong key. If the chord ever moves, this follows. */
+function setupPaletteButton() {
+  const btn = document.getElementById("palette-btn");
+  if (!btn) return;
+  const row = shortcuts.list().find((r) => r.actionId === "help.palette");
+  if (row) {
+    btn.textContent = row.label;
+    btn.title = `Command palette (${row.label})`;
+    btn.setAttribute("aria-keyshortcuts",
+                     row.chord.replace(/^Mod\+/, navigator.platform
+                       && /Mac/i.test(navigator.platform) ? "Meta+" : "Control+"));
+  }
+  btn.addEventListener("click",
+    () => actions.run("help.palette", null, { source: "toolbar" }));
+}
+
+/** The "?" cheat-sheet: `shortcuts.list()` grouped by area. Built as DOM (not
+ *  an HTML string) so no shortcut title can ever be interpolated as markup. */
+function openShortcutSheet() {
+  const groups = new Map();
+  for (const row of shortcuts.list()) {
+    if (!groups.has(row.group)) groups.set(row.group, []);
+    groups.get(row.group).push(row);
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "dlg-keys";
+  for (const [group, rows] of groups) {
+    const head = document.createElement("h3");
+    head.className = "dlg-keys-group";
+    head.textContent = group;
+    wrap.appendChild(head);
+    for (const row of rows) {
+      const line = document.createElement("div");
+      line.className = "dlg-keys-row";
+      const chord = document.createElement("kbd");
+      chord.textContent = row.label;
+      const title = document.createElement("span");
+      title.textContent = row.title;
+      line.append(chord, title);
+      wrap.appendChild(line);
+    }
+  }
+  return dialogs.open({
+    view: "shortcuts",
+    title: "Keyboard shortcuts",
+    body: wrap,
+    buttons: [{ id: "ok", label: "Close", kind: "primary" }],
+  });
+}
+
 // -------------------------------------------------------------------- boot
 
 /** Swap the workbench for the sign-in view.
@@ -2305,14 +2699,19 @@ function showSignIn() {
     document.getElementById(id)?.classList.add("hidden");
   }
   // A full reload rather than re-running boot(): every panel's init() is
-  // written to run once (setupMenus snapshots .menu-wrap, comments.js
-  // registers an inspector decorator), so re-booting in place would be a
+  // written to run once (comments.js registers an inspector decorator,
+  // layout.js inserts its resize handles), so re-booting in place would be a
   // second, subtly different app.
   auth.renderSignIn(document.getElementById("auth-view"),
                     () => location.reload());
 }
 
 async function boot() {
+  // The shell first: toasts and dialogs are used by everything below (auth
+  // failures included), and the dialog stack must own its Esc listener before
+  // any panel installs one of its own.
+  initToasts(document.getElementById("toasts"));
+  dialogs.init(document.getElementById("dialog-host"));
   theme.init(); // before viewport.init so the scene is born with the stored palette
 
   // Identity first: in hosted mode there is nothing to render until we know
@@ -2328,7 +2727,7 @@ async function boot() {
   // (add-to-library still needs a session). It takes over the whole page and
   // does not init the workbench, so the viewport singleton is its alone.
   if (window.location.hash.startsWith("#market")) {
-    market.enter(identity, actions);
+    market.enter(identity, panelApi);
     return;
   }
   if (identity === null) {
@@ -2336,48 +2735,78 @@ async function boot() {
     return;
   }
   window.addEventListener("agentcad:unauthenticated", showSignIn, { once: true });
+  // Before the panels and before registerActions(): the table subscribes to
+  // `actions.onChange`, so every chord an action declares is bound as the
+  // action lands — and a conflict throws from that registration.
+  shortcuts.init({ actions, dialogs });
+  registerActions();
+  // After registerActions() (so the first render has every File/Edit/View/
+  // Model/Help row) and after shortcuts.init() (so the three toggle actions
+  // layout.init() registers get their chords bound through the same
+  // onChange subscription as everything else).
+  menu.init({ actions, host: document.getElementById("menubar") });
+  layout.init({ workspace: "default", actions });
+  // The UX-events client, then the dialog stack's emitter: from here every
+  // `dialog_opened`/`dialog_submitted` reaches `POST /api/ui/events`
+  // fire-and-forget. `events.emit` accepts the one-object shape the dialog
+  // stack calls it with, so this line IS the wiring.
+  events.init({ api });
+  dialogs.setEmitter(events.emit);
+  // The same eligibility context the menu and the palette read, injected (not
+  // imported: `actions.js` imports `dialogs.js`) so `openView` can refuse a
+  // view whose own `when` is false instead of running its opener out of
+  // context — `ui_open {view: "merge"}` on a clean branch would otherwise start
+  // a NEW merge.
+  dialogs.setContext(actions.context);
+  // One `palette_executed` per palette run, emitted from the registry's run
+  // listener so that a menu/toolbar/shortcut run of the same action is never
+  // recorded as a palette one. Rows the palette runs WITHOUT the registry
+  // (a tool, a view, a navigation target) emit it themselves.
+  actions.onRun(({ id, source }) => {
+    if (source === "palette") events.emit("palette_executed", { action: id });
+  });
+  // After registerActions(): the palette registers `help.palette`/`Mod+K`
+  // itself, and a chord conflict must throw from that registration.
+  palette.init({ actions, dialogs, shortcuts, api, state, toast, events,
+                 loadProject, selectPart });
   viewport.init(document.getElementById("viewport"), { onPick });
-  tree.init(actions);
-  inspector.init(actions);
-  chat.init(actions);
-  placement.init(actions);
-  drawings.init(actions);
-  sketcher.init(actions);
-  versions.init(actions);
-  merge.init(actions);
-  proposals.init(actions);
-  library.init(actions);
-  configs.init(actions);
-  materials.init(actions);
+  tree.init(panelApi);
+  inspector.init(panelApi);
+  chat.init(panelApi);
+  placement.init(panelApi);
+  drawings.init(panelApi);
+  sketcher.init(panelApi);
+  versions.init(panelApi);
+  merge.init(panelApi);
+  proposals.init(panelApi);
+  library.init(panelApi);
+  configs.init(panelApi);
+  materials.init(panelApi);
   presence.init();
   // After inspector.init: comments.js registers inspector's param decorator
   // and subscribes to `part` behind it, so a badge is applied to rows the
   // inspector has already built.
-  comments.init(actions);
+  comments.init(panelApi);
   setupMenus();
   setupProjectMenu();
   setupBranchMenu();
   setupProposals();
-  setupClaimDialog();
   setupExportMenu();
   setupShare(identity);
   setupImport();
   setupLibrary();
-  // The Market button takes over the page via a full reload into `#market`, so
-  // boot() re-enters in market mode with the viewport singleton to itself — the
-  // same "reload rather than re-run boot()" discipline showSignIn() uses.
-  document.getElementById("market-btn")?.addEventListener("click", () => {
-    window.location.hash = "#market";
-    window.location.reload();
-  });
+  document.getElementById("market-btn")?.addEventListener("click",
+    () => actions.run("model.market", null, { source: "toolbar" }));
+  setupPaletteButton();
   // Unlike Market, the materials browser is a MODAL inside the workbench
-  // (Decision 10's ruling) — no navigation, no reload, assign mode needs the
-  // workbench alive underneath it.
-  document.getElementById("materials-btn")?.addEventListener("click", () => {
-    materials.open();
-  });
+  // (PRD-028 Decision 10's ruling) — no navigation, no reload, assign mode
+  // needs the workbench alive underneath it. Routed through the registry like
+  // every other toolbar button, so the Model menu, the palette and this click
+  // are the same verb (`setupLibrary()`'s shape).
+  document.getElementById("materials-btn")?.addEventListener("click",
+    () => actions.run("model.materials", null, { source: "toolbar" }));
   setupUndo();
-  setupKeys();
+  setupGizmoSnapKeys();
   setupRepMode();
   onKeys(["rebuilding", "connected"], renderIndicators);
   onKeys(["rebuilding", "part", "mode", "selectedPart", "selectedInstance"], updateHUD);

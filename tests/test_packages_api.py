@@ -359,7 +359,9 @@ def test_the_library_dialog_carries_the_security_non_claim_as_visible_text():
 def test_the_library_module_is_wired_into_the_boot_sequence():
     main = (REPO / "frontend" / "js" / "main.js").read_text(encoding="utf-8")
     assert 'import * as library from "./library.js";' in main
-    assert "library.init(actions);" in main
+    # PRD-026 renamed the panel DI object `actions` -> `panelApi`; the name
+    # `actions` now belongs to the shell's action registry.
+    assert "library.init(panelApi);" in main
     assert "setupLibrary();" in main
 
 
