@@ -2658,6 +2658,8 @@ SLICE2_VIEWS = {
 # flight, the merge adopted it by hand, and nothing here graded that until the
 # closure test below existed (final review, I2).
 ADOPTED_MODALS = {
+    "bom": "bom.js",
+    "releases": "releases.js",
     "drawing": "drawings.js",
     "versions": "versions.js",
     "share": "share-links.js",

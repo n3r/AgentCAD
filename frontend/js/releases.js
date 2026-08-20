@@ -15,8 +15,10 @@ import { api, ApiError } from "./api.js";
 import { state, onKeys } from "./state.js";
 import { openTo as openProposal } from "./proposals.js";
 import { relTime } from "./versions.js";
+import * as dialogs from "./shell/dialogs.js";
 
 let overlayEl, titleEl, bodyEl, cutBtn, closeBtn;
+let legacy = null;   // the overlay's seat on the shell's dialog stack (PRD-026)
 
 let loadSeq = 0;
 let releases = null;
@@ -42,8 +44,15 @@ export function init() {
   overlayEl.addEventListener("click", (e) => {
     if (e.target === overlayEl) close();
   });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && isOpen()) close();
+  // Adopt onto the shell's dialog stack (PRD-026): Esc, focus trap and
+  // isModalOpen() are the shell's now — no module-level keydown listener.
+  legacy = dialogs.attachLegacy(overlayEl, {
+    view: "releases", title: "Releases…", onClose: close,
+    description: "Cut and review releases of the current project",
+    isOpen: () => isOpen(),
+    open: () => open(),
+    when: (c) => !!c.projectName,
+    actionId: "model.releases",
   });
 
   onKeys(["project", "projectName"], () => {
@@ -61,6 +70,7 @@ export async function open() {
     return;
   }
   overlayEl.classList.remove("hidden");
+  if (legacy) legacy.notifyOpen();
   titleEl.textContent = `${state.projectName} · releases`;
   bodyEl.textContent = "";
   const loading = document.createElement("div");
@@ -72,6 +82,7 @@ export async function open() {
 
 function close() {
   overlayEl.classList.add("hidden");
+  if (legacy) legacy.notifyClose();   // idempotent: Esc pops the stack itself
   bodyEl.textContent = "";
 }
 
@@ -204,12 +215,20 @@ function renderRow(rel) {
 
 async function cutRelease() {
   if (!state.projectName || busy) return;
-  const notes = prompt("Release notes (optional):") || undefined;
+  const notes = await dialogs.prompt({
+    title: "Cut release",
+    label: "Release notes (optional)",
+    type: "textarea",
+    rows: 3,
+    required: false,
+    okLabel: "Cut release",
+  });
+  if (notes === null) return;   // cancelled — do not open a release
   busy = true;
   cutBtn.disabled = true;
   let res;
   try {
-    res = await api.releaseStart(state.projectName, { notes });
+    res = await api.releaseStart(state.projectName, { notes: notes || undefined });
   } catch (err) {
     busy = false;
     cutBtn.disabled = false;
