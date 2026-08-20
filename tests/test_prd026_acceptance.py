@@ -498,7 +498,13 @@ def test_the_prd_status_and_acceptance_record_are_on_the_page():
     """The status line and the AC1-AC7 evidence table this slice adds must
     actually be in the PRD file, not just in this test's imagination."""
     text = PRD.read_text(encoding="utf-8")
-    assert "**Status:** in progress — acceptance" in text
+    # The status line moves with the PRD's lifecycle ("in progress —
+    # acceptance" while the branch is open, "completed — merged in PR #29"
+    # after the close-out); what this guard pins is that a status line
+    # exists and the acceptance evidence stayed on the page.
+    assert "**Status:**" in text
+    assert ("in progress — acceptance" in text
+            or "completed — merged in PR #29" in text)
     assert "Acceptance record" in text
     assert "Shipped vs. deferred" in text
     for ac in ("AC1", "AC2", "AC3", "AC4", "AC5", "AC6", "AC7"):
