@@ -105,9 +105,9 @@ format's proving ground.
 | 5 | **[006](prd/completed/PRD-006-sandboxing-quotas.md)** — **DONE (PR #22)** | Sandboxing becomes *blocking* only when third-party code runs on our servers — which is 031b, not 031a. It was built in parallel with steps 3 and 4 (PR #22), because 005a shipped with "an account is a shell" as its stated price and that price was cheaper to remove than to keep explaining. Windows AppContainer (006b) landed in PR #24 — all three OSes confine. |
 | 6 | **031b** | Open publishing, verified tiers, moderation, economy. |
 
-Demoted behind that chain: **015, 017** (daily-driver depth —
-they buy credibility but do not compound); **013 (PR #23), 014 (PR #25) and
-028 (PR #27) are now DONE** — the first three of that depth tier to ship, ahead
+Demoted behind that chain: **017** (daily-driver depth —
+they buy credibility but do not compound); **013 (PR #23), 014 (PR #25), 015
+(PR #28) and 028 (PR #27) are now DONE** — the first of that depth tier to ship, ahead
 of the rest. **026/027** stay early-v5 movable:
 if we are inviting an audience, the shell is the shop window.
 
@@ -149,7 +149,7 @@ commit. The 031a licensing precondition is closed.
 | [012](prd/completed/PRD-012-configurations.md) | Configurations — named parameter sets with per-config metrics/BOM/drawings; matrix builds | completed (PR #18, AC1–AC9 verified) ([design](superpowers/specs/2026-08-17-configurations-design.md) · [plan](superpowers/plans/2026-08-17-configurations.md)) | analysis | — |
 | [013](prd/completed/PRD-013-assembly-v2.md) | Assembly v2 — sub-assemblies, instance patterns, simplified reps for 1k+ instances, richer joints, exploded views, URDF export | completed (PR #23, MVP: patterns + cross-project sub-assemblies + slider/planar joints + simplified reps + URDF; ball/gear couplings, exploded views, interference broad-phase → Phase 2) | analysis + idea 6 | — |
 | [014](prd/completed/PRD-014-drawings-v2.md) | Drawings v2 — ASME/ISO sheets, title/revision blocks, assembly drawings with BOM+balloons, sections, PDF, deterministic regen | completed (PR #25, MVP + Phase-3: 9 sheet formats + title blocks + sections/details + hole & config tables + deterministic PDF; revision block + assembly balloons/BOM → PRD-015) | analysis | 010 · 012 · 015 (soft) |
-| [015](prd/pending/PRD-015-bom-release-management.md) | BOM & release management — structured BOMs, Rev approval on proposals, immutable release bundles | pending | analysis | 001 · 002 · 003 |
+| [015](prd/completed/PRD-015-bom-release-management.md) | BOM & release management — structured BOMs, Rev approval on proposals, immutable release bundles | completed (PR #28, full scope: zero-kernel BOM roll-ups + CSV/JSON + ref-pinned BOM + revisions/gate/finalize + reproducible bundles; per-config part-number override deferred) | analysis | 001 · 002 · 003 |
 | [016](prd/pending/PRD-016-direct-modeling-ux.md) | Direct modeling & measurement UX — measure/sections/overlays, direct ops emitting code, selection-aware chat | pending | analysis + idea 3 | 026 (soft) |
 | [017](prd/pending/PRD-017-interop-pack.md) | Interop pack (neutral) — STEP AP242 PMI export, 3MF metadata, glTF, structured assembly-STEP import, USD flag | pending | analysis | — |
 | [025](prd/pending/PRD-025-workspaces-ia.md) | Workspaces — Build · Test · Produce · Library · Market over one model; process profiles as the "swappable modules" | pending | idea 1 | 026 |

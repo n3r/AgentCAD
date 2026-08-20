@@ -1,6 +1,6 @@
 # PRD-015 — BOM and release management
 
-- **Status:** pending
+- **Status:** completed — merged to main in PR #28 (per-config BOM part-number override and the warn/soft gate checks deferred; unblocks PRD-014's FR4/FR5)
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
