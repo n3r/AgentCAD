@@ -27,6 +27,9 @@ covering a shipped surface (it flaked on `main` and blocked PRD-015's PR #28).
 
 The Windows AppContainer code and its tests are untouched — only the *blocking
 PR CI leg* is removed. Anyone doing Windows work runs `windows-probe.yml` (or a
-local Windows host) deliberately. `make test` is unchanged by this workflow-only
-edit; the two acceptance-test adjustments keep the suite green (CI on ubuntu +
-macOS is authoritative).
+local Windows host) deliberately.
+
+`make test` — **5087 passed** (unchanged from the PRD-015 merged tree; this is a
+`.github/workflows/ci.yml` edit plus two acceptance-test string adjustments that
+add no tests, so the suite count is the same). CI on ubuntu + macOS is
+authoritative.
