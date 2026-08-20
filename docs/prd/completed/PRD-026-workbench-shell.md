@@ -1,6 +1,6 @@
 # PRD-026 — Workbench shell revamp: dialogs, command palette, menus, panels
 
-- **Status:** in progress — acceptance
+- **Status:** completed — merged in PR #29 (MVP + Phase-2; Phase 3 — user remapping, layout presets, palette frecency — deferred)
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** founder idea #8 (Aug 2026), engineering-reviewed
