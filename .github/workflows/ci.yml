@@ -49,10 +49,12 @@ jobs:
             suite: portability
             timeout: 20
             expect_sandbox: active
-          - os: windows-latest
-            suite: portability
-            timeout: 20
-            expect_sandbox: active
+          # windows-latest / portability is DROPPED: we deploy on Linux (docker),
+          # so Windows is not a target, and its portability leg was an
+          # intermittent `kernel worker exited unexpectedly` crash in the
+          # AppContainer sandbox tests that only ever cost signal. The Windows
+          # AppContainer surface still has its own opt-in `windows-probe.yml`
+          # (path/dispatch-triggered), which is where any Windows work is gated.
     steps:
       - uses: actions/checkout@v4
 

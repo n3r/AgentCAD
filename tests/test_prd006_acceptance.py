@@ -526,8 +526,10 @@ def test_ac8_the_ci_matrix_carries_the_honesty_gate():
     assert ci.count("AGENTCAD_EXPECT_SANDBOX") >= 2, \
         "both suites must carry the gate"
     assert ci.count("AGENTCAD_EXPECT_QUOTAS: active") >= 2
-    # All three rows expect confinement since PRD-006b landed the Windows
-    # AppContainer: a silent degradation to an unconfined worker is red
-    # everywhere, which is the whole point of the gate.
-    assert ci.count("expect_sandbox: active") == 3, ci
+    # Both remaining rows (macOS + Linux) expect confinement: a silent
+    # degradation to an unconfined worker is red on both, which is the whole
+    # point of the gate. The windows-latest/portability row was DROPPED — we
+    # deploy on Linux (docker), so Windows is not a target; the Windows
+    # AppContainer surface keeps its own opt-in `windows-probe.yml`.
+    assert ci.count("expect_sandbox: active") == 2, ci
     assert 'expect_sandbox: ""' not in ci

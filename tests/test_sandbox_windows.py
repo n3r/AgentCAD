@@ -1,7 +1,10 @@
 """PRD-006/006b — the Windows battery: a real worker in a real AppContainer.
 
-Windows CI only (`ci.yml` runs `-m portability` on `windows-latest`); the
-*shape* of the same plan is asserted on every OS in
+Windows only — these need a real Windows host. `ci.yml`'s `windows-latest`
+portability leg was dropped (we deploy on Linux/docker; it was intermittently
+crashing the kernel worker), so in CI they run only via the opt-in
+`windows-probe.yml`; locally they skip on non-Windows. The *shape* of the same
+plan is asserted on every OS in
 `tests/test_sandbox_plan.py`, with the Win32 entry points stubbed. What cannot
 be faked, and is what this file exists for, is the OS actually refusing:
 
