@@ -3623,6 +3623,91 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   cursor: pointer;
   font-size: 13px;
 }
+
+/* -------------------------------------------------------------------------
+   PRD-015 Slice 6: BOM + releases. `.prop-table`/`.ver-body`/`.ver-row`
+   already supply the grid and list-row shapes (proposals.js/versions.js);
+   these are the columns/chips this slice adds on top. */
+
+.bom-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 16px 16px;
+}
+.bom-table td { vertical-align: middle; }
+/* An "(est)" / "(unbuilt)" / "(stale)" / "(none)" honesty tag beside a
+   computed value — never rendered as if it were measured (design Decision 2). */
+.bom-tag {
+  margin-left: 5px;
+  font-size: 10px;
+  color: var(--dim);
+  font-style: italic;
+}
+.bom-edit {
+  width: 100%;
+  min-width: 70px;
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 6px;
+}
+.bom-edit:focus { outline: none; border-color: var(--accent); }
+.bom-edit:disabled { opacity: 0.6; }
+.bom-warnings {
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--err-ring);
+  background: var(--err-soft);
+  color: var(--err-text);
+  border-radius: 6px;
+  font-size: 11.5px;
+}
+.bom-foot {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--dim);
+  font-family: var(--mono);
+}
+.bom-ref { margin-left: auto; color: var(--dim); }
+
+.rel-row { align-items: flex-start; }
+.rel-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rel-chip {
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.rel-chip.rel-draft { color: var(--dim); border-color: var(--hairline); }
+.rel-chip.rel-in_review {
+  color: var(--accent-bright);
+  border-color: var(--accent-ring);
+  background: var(--accent-soft);
+}
+.rel-chip.rel-released {
+  color: var(--ok);
+  border-color: var(--ok);
+  background: rgba(111, 191, 143, 0.12);
+}
+.rel-chip.rel-superseded { color: var(--faint); border-color: var(--hairline-soft); }
+.rel-lock { font-size: 11px; color: var(--dim); }
+.rel-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: none;
+  align-items: flex-end;
+}
+.rel-actions .tb-btn { height: 24px; white-space: nowrap; }
 .mkt-add:hover { border-color: var(--accent); }
 
 /* ------------------------------------------------- materials browser */

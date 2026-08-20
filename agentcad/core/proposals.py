@@ -61,6 +61,11 @@ from .model import ConflictError, NotFoundError, ValidationError
 from .project import ProjectStore
 
 STATES = ("draft", "open", "approved", "changes_requested", "merged", "closed")
+# A proposal's ``kind`` (PRD-015 Decision 9): an ordinary change, or a release
+# cut. Additive — the default preserves every pre-PRD-015 call. The
+# review/approval flow does not branch on it; ``"release"`` only drives release
+# chrome and lets ``core/releases.py`` recognise its own proposals.
+KINDS = ("change", "release")
 TERMINAL = ("merged", "closed")
 ACTIVE = ("draft", "open", "approved", "changes_requested")
 VERDICTS = ("approve", "request_changes", "comment")
@@ -394,6 +399,8 @@ def _summary(proposal: dict) -> dict:
         "project": proposal.get("project"),
         "source": proposal.get("source"),
         "target": proposal.get("target"),
+        # ``kind`` defaults for a proposal written before PRD-015 (no rewrite).
+        "kind": proposal.get("kind", "change"),
         "title": proposal.get("title", ""),
         "state": proposal.get("state"),
         "author": proposal.get("author"),
@@ -432,10 +439,13 @@ class ProposalManager:
 
     def create(self, proj: str, source: str, target: str | None = None,
                title: str = "", description: str = "",
-               draft: bool = False) -> dict:
+               draft: bool = False, kind: str = "change") -> dict:
         branches = self._branches()
         canonical = branches._ensure_history(proj)
         source = _text(source, "source")
+        if kind not in KINDS:
+            raise ValidationError(f"unknown proposal kind {kind!r}",
+                                  {"allowed": list(KINDS)})
         target = _text(target, "target") if target else \
             branches.default_branch(proj)
         if source == target:
@@ -470,6 +480,7 @@ class ProposalManager:
                 "project": proj,
                 "source": source,
                 "target": target,
+                "kind": kind,
                 "title": _text(title, "title", allow_empty=True),
                 "description": _text(description, "description",
                                      allow_empty=True),

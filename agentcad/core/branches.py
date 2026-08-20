@@ -672,6 +672,32 @@ class BranchManager:
             "versions": self.versions(proj),
         }
 
+    def add_referrer(self, proj: str, tag: str, referrer: dict) -> list[dict]:
+        """Append a referrer to a version's ``tags.json`` entry (PRD-015 FR9).
+
+        The ``referrers`` list was scaffolded empty by :meth:`tag`; a release
+        registers ``{"release": <rev>}`` here so a version knows what points at
+        it. Idempotent by value: an identical referrer is not appended twice
+        (finalize is idempotent, so re-finalizing must not duplicate it). Under
+        the same lock the rest of the tag/branch state uses."""
+        canonical = self._ensure_history(proj)
+        path = self._agentcad_dir(canonical) / "tags.json"
+        with self._lock:
+            records = _read_json(path)
+            entry = records.get(tag)
+            if not isinstance(entry, dict):
+                entry = {"referrers": []}
+            refs = entry.get("referrers")
+            if not isinstance(refs, list):
+                refs = []
+            if referrer not in refs:
+                refs.append(referrer)
+            entry["referrers"] = refs
+            records[tag] = entry
+            ProjectStore._atomic_write(
+                path, json.dumps(records, indent=2).encode())
+        return list(refs)
+
     def versions(self, proj: str) -> list[dict]:
         """Tags newest-first: {name, commit, ts, author, message, referrers}.
 

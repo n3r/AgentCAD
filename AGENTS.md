@@ -2195,6 +2195,103 @@ per-member isolation. And when you print the sentence, do **not** reach for
   the route itself (not only in the tool) because the route joins it into a
   filename it then reads.
 
+## BOM & release gotchas (PRD-015 — read before touching `core/bom.py`, `core/releases.py`, `core/_worktree.py`, `tools_bom.py`/`tools_releases.py` or `routes_bom.py`/`routes_releases.py`)
+
+- **The BOM builder makes ZERO kernel calls.** `bom.count_leaves` is a
+  count-only structural walk of `manifest["assembly"]["instances"]` — a
+  pattern contributes `count`, a sub-assembly recurses into the source
+  project's own instances multiplying through — and it never composes a
+  transform, so it never needs `mates.expand`'s `kernel.request
+  ("resolve_assembly")` (the call polar patterns and sub-assembly placement
+  actually require). Mass is read from `service._status`/`_config_status`
+  **directly**, the way `get_project` peeks a badge — never `_ensure_built` /
+  `get_metrics`, which build. That cache is **process-lifetime**, so a part
+  nobody has built *in this server process* reads `mass_source: "unbuilt"`
+  (never triggers a rebuild to answer the question); a part whose
+  `_cache_key_for` no longer matches its last build reads `"stale"`. Cost
+  falls back to `material_estimate` (`unit_mass_g × material.cost_usd_kg /
+  1000`) only when there is no manual `set_bom_fields` override, flagged by
+  its own `cost_source` column that survives into the CSV export — never read
+  an estimate as a quote, and never let a refactor collapse `cost_source`/
+  `mass_source` into the value columns.
+- **Ref-pinned BOM and the release bundle both go through
+  `core/_worktree.py: materialized_service`** (which resolves tag-before-
+  branch, then commit, and imports `checks._ephemeral_service` for its three
+  non-negotiable nulls — `write_guard`/`branch_resolver`/`bus.on_publish` —
+  so there is exactly one home for them) — **never** `branches.tree_of`,
+  which is branch-only and refuses a tag outright. This is also why
+  `get_bom {ref}` reproduces quantities/part-numbers/manual-costs faithfully
+  but reads mass `unbuilt`: the materialized ephemeral service starts with a
+  cold cache and the zero-kernel builder never warms it. The release bundle
+  gets real per-tag mass only because it runs the STEP/drawing exports
+  first — inside the *same* ephemeral service, warming its cache — and
+  computes the BOM after.
+- **The release gate is the proposal's gate, not a re-run.** `release_start`
+  opens a `release`-kind PRD-002 proposal and reads the `specs`/`checks`
+  entries straight off `created["gates"]` — those already evaluated for free
+  on `proposal.create` — and composes them with three release-only checks
+  computed fresh (`working_tree_clean`, and two **soft** ones documented
+  below). It never calls `evaluate_specs`/`CheckRunner.run` itself. Approval
+  is `proposal_review {verdict: "approve"}` by someone other than the
+  author — there is no tool named `approve_proposal`; `release_finalize`
+  refuses with a `conflict_error` until `_release_approvals` (which mirrors
+  `ProposalManager._approvals_gate` exactly — latest counted verdict per
+  actor) finds one.
+- **The tag is `release/<rev-lowercased>`.** The project's ref-name regex
+  (`^[a-z0-9][a-z0-9._/-]{0,63}$`) forbids uppercase, so a literal
+  `release/A` is unresolvable — `release_finalize` lowercases the rev for the
+  git ref only. The record's own `rev` field and the tag's referrer payload
+  (`{"release": "A"}`, via `branches.add_referrer`) keep the true-case letter
+  as plain data; don't "fix" the referrer to match the lowercased tag name.
+- **Immutability (FR12) is mostly structural, not a new enforcement point.**
+  No write path can land on a tag's tree — `switch` refuses a tag, only
+  `branch_create(from_ref=tag)` works — so `store.write_guard` is completely
+  unchanged by this PRD. The real guard is the release **record**:
+  `releases._ensure_mutable` raises `ConflictError` on any attempt to rewrite
+  a `released`/`superseded` record, checked once before the RMW and again
+  inside it (a second finalize call on an already-`released` rev is instead
+  a **deepcopy no-op**, not a conflict — idempotent, not append-only-refused).
+- **Bundle reproducibility normalizes exactly TWO STEP fields, no more.**
+  `deterministic`-class artifacts (drawings, `bom.csv`/`bom.json`, flat
+  patterns, the README) are byte-identical across rebuilds at one tag by
+  construction (clock-free README, pinned drawing `version`, sorted
+  `artifacts.json`). STEP is the one normalized-comparison class:
+  `_normalize_step_bytes` neutralizes the ISO-10303-21 `FILE_NAME` write
+  timestamp **and** — found by diffing two real rebuilds, not anticipated up
+  front — OCCT's `NEXT_ASSEMBLY_USAGE_OCCURRENCE` entity, a **process-global**
+  session counter the shared kernel increments between assembly exports even
+  for byte-identical geometry. Both fields are named in the bundle's
+  `artifacts.json.classes` and its README — if a third nondeterministic STEP
+  field ever turns up, name it in both places too, don't just patch the
+  regex.
+- **Deferrals, so don't assume the surface is bigger than it is.**
+  `set_bom_fields`'s `config` argument is accepted but **reserved** — slice 1
+  stores exactly one per-part `bom` map, config-agnostic; there is no
+  per-config part-number override yet. `subassembly_refs_pinned` and
+  `drawings_regenerable` are **warn/soft** gate checks in v1 (PRD-013 has no
+  way to pin a sub-assembly ref's version yet, and a real drawings probe
+  would be a kernel call this zero-kernel path avoids) — neither can turn a
+  gate red; don't "fix" a red gate by touching these two.
+- **The `test_presence` tripwire counts the literal `X-Agent-Id` string in
+  `api.js`.** A comment merely *mentioning* the header name (not using it)
+  moves the count and fails the test — slice 6 hit exactly this with a BOM
+  CSV-url comment and had to reword it. The real usages are 6; if you add or
+  remove a genuine `X-Agent-Id` call site, update the count deliberately,
+  don't just make the tripwire pass by wordsmithing a comment.
+- **Manifest merge, per-field/per-rev, added additively.** `"bom"` joined
+  `manifest_merge._PART_SUBDICTS` (per-field merge like `params` — two
+  branches editing different BOM fields of one part merge clean) and
+  `"releases"` joined `_ENTRY_DICTS` (per-rev atomic merge — two branches
+  cutting different revs merge clean, a same-rev edit conflicts). Neither
+  needed a new merge kind.
+- **`release_bundle` has no HTTP route.** `routes_releases.py` mounts
+  `GET .../releases`, `GET .../releases/{rev}`, `POST .../releases` and
+  `POST .../releases/{rev}/finalize` — nothing for the bundle. It is
+  tool/MCP-only; the browser never needs it directly because
+  `release_finalize` already builds the bundle inline (best-effort — a
+  bundle failure is recorded on the record as `bundle: {error}`, it does not
+  un-release an already-tagged revision).
+
 ## Sandboxing & quotas gotchas (PRD-006 — read before touching `kernel/sandbox*.py`, `_confine.py`, `_preamble.py`, `_meter.py`, `quotas.py` or the client's request loop)
 
 Every item is traceable to a decision in

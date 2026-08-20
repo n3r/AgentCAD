@@ -52,10 +52,10 @@ def register(registry, service) -> None:
 
     def proposal_create(project: str, source: str, title: str,
                         target: str | None = None, description: str = "",
-                        draft: bool = False) -> dict:
+                        draft: bool = False, kind: str = "change") -> dict:
         return service.proposals.create(
             project, source, target=target, title=title,
-            description=description, draft=bool(draft),
+            description=description, draft=bool(draft), kind=kind,
         )
 
     def proposal_list(project: str, state: str | None = None) -> dict:
@@ -121,6 +121,11 @@ def register(registry, service) -> None:
                 "draft": {"type": "boolean",
                           "description": "Open it as a draft (not reviewable "
                                          "until updated to 'open')"},
+                "kind": {"type": "string",
+                         "description": "'change' (default) or 'release' — a "
+                                        "release cut (PRD-015). The review and "
+                                        "approval flow is identical; the kind "
+                                        "only drives release chrome."},
             },
             ["project", "source", "title"],
         ),
@@ -129,8 +134,9 @@ def register(registry, service) -> None:
     registry.register(Tool(
         "proposal_list",
         "List a project's proposals oldest-id-first with {proposals: "
-        "[{id, source, target, title, state, author, author_kind, created, "
-        "updated, reviews, merge_commit}], counts: {<state>: n}}. States are "
+        "[{id, source, target, kind, title, state, author, author_kind, "
+        "created, updated, reviews, merge_commit}], counts: {<state>: n}}. "
+        "'kind' is 'change' or 'release' (a release cut). States are "
         "draft, open, approved, changes_requested, merged and closed; pass "
         "'state' to filter. 'author_kind' is human or agent — bookkeeping "
         "derived from the caller's identity, not authentication.",
