@@ -1,4 +1,4 @@
-# 0323 — 2026-08-23 — PRD-027 slice 2: search engine, the `field:value` query language, `search_parts`, `GET …/search`
+# 0333 — 2026-08-23 — PRD-027 slice 2: search engine, the `field:value` query language, `search_parts`, `GET …/search`
 
 - **Commit:** pending
 - **Date:** 2026-08-23
@@ -76,4 +76,4 @@ the warm bound (10× headroom) is the one the UI depends on. Two profiled fixes
 made the warm number: `os.stat` on a `str` instead of `Path.stat` (79 % of a
 warm search), and one `_status_key` per scan instead of one per part.
 
-`make test` — see 0324 (slices 2 and 3 landed in one commit; the count is cited there).
+`make test` — see 0334 (slices 2 and 3 landed in one commit; the count is cited there).

@@ -1,4 +1,4 @@
-# 0328 — 2026-08-23 — PRD-027 slice 7: acceptance tests (AC1–AC6), docs, the tool count corrected to the measured 107/110
+# 0338 — 2026-08-23 — PRD-027 slice 7: acceptance tests (AC1–AC6), docs, the tool count corrected to the measured 107/110
 
 - **Commit:** pending
 - **Date:** 2026-08-23
@@ -20,7 +20,7 @@ phase of PRD-027 (the branch review, PR and close-out follow).
   re-opened from disk, `search_parts tag:fastener` equal (not ⊆) to the
   tagged set and `folder:Fasteners` likewise, zero kernel calls; AC2's
   machine half (`state:error` finds the one broken part and nothing after the
-  fix; the browser half cites 0327's measurements); AC3 (a built part's
+  fix; the browser half cites 0337's measurements); AC3 (a built part's
   `thumb_key` is key₁ with `.cache/<key₁>.thumb.png` on disk, a *shape*
   change rebuilds to key₂ with its own file — a uniform scale change renders
   byte-identical fit-to-frame pixels, so the key, not the bytes, is the
@@ -58,7 +58,7 @@ phase of PRD-027 (the branch review, PR and close-out follow).
   and never call the rebound `_resolved_instances`; `.thumb.png` in
   `_TRIMMABLE`; the warmer starts only in `routes_thumbnails.build_router`;
   `AGENTCAD_THUMBNAILS=off`; **six** `InstanceSpec(` sites (four carry
-  `folder` forward, two mint new instances at root — 0322 said five);
+  `folder` forward, two mint new instances at root — 0332 said five);
   `kind:package` via `provenance.parse`; `search.GRAMMAR` as the one source;
   the shared parity fixture; the context menu off the overlay stack;
   `import * as virtual`; 107/110. `README.md` feature line.

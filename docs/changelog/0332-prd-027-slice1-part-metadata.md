@@ -1,4 +1,4 @@
-# 0322 — 2026-08-23 — PRD-027 slice 1: part folder/tags, instance folder, `set_part_meta`, the single-RMW bulk write
+# 0332 — 2026-08-23 — PRD-027 slice 1: part folder/tags, instance folder, `set_part_meta`, the single-RMW bulk write
 
 - **Commit:** pending
 - **Date:** 2026-08-23

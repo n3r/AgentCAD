@@ -1,4 +1,4 @@
-# 0325 — 2026-08-23 — PRD-027 slice 4: `bulk_part_op` as one undo step, `remove_parts`, the kernel-free dashboard
+# 0335 — 2026-08-23 — PRD-027 slice 4: `bulk_part_op` as one undo step, `remove_parts`, the kernel-free dashboard
 
 - **Commit:** pending
 - **Date:** 2026-08-23
@@ -74,4 +74,4 @@ rows. Tool count is now 88 (91 with `[fem]`) — the docs strings move in
 slice 7 (eight files: the seven in the plan plus
 `tests/test_prd012_acceptance.py`'s asserted string).
 
-`make test` — see 0326 (slices 4 and 5 landed in one commit; the count is cited there).
+`make test` — see 0336 (slices 4 and 5 landed in one commit; the count is cited there).

@@ -1,4 +1,4 @@
-# 0329 — 2026-08-23 — PRD-027 final review fixes: serialized `set_part_meta`, NaN-safe refusals, claim-aware bulk delete, authoritative server search, and 20 smaller findings
+# 0339 — 2026-08-23 — PRD-027 final review fixes: serialized `set_part_meta`, NaN-safe refusals, claim-aware bulk delete, authoritative server search, and 20 smaller findings
 
 - **Commit:** pending
 - **Date:** 2026-08-23
