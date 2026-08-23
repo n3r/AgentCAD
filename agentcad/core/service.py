@@ -32,6 +32,7 @@ from .model import (
     validate_vec3,
 )
 from .project import ProjectStore
+from .skills import SkillBudget, SkillLibrary
 from .templates import CHEATSHEET, DEFAULT_PART_SCRIPT
 
 MESH_TOLERANCE = 0.1
@@ -151,6 +152,10 @@ class AgentCADService:
         self.usage = None
         # Seams the v2 feature packs replace; defaults preserve v1 behavior.
         self.materials = _DefaultMaterialResolver()
+        # Loadable agent skills (PRD-029): the shipped `agentcad/skills/` plus
+        # each project's `skills/`. Pure — no kernel, no OCP — so constructing
+        # it here costs nothing until something indexes.
+        self.skills = SkillLibrary(self.store, budget=SkillBudget.from_config())
         # Multi-user turn locking: every persistent store write is checked
         # against the per-project turn lock under the caller's identity.
         # With no lock held the guard is a no-op (full backward compat).
@@ -697,7 +702,29 @@ class AgentCADService:
     # ---------------------------------------------------------------- misc
 
     def part_template(self) -> dict:
-        return {"template": DEFAULT_PART_SCRIPT, "cheatsheet": CHEATSHEET}
+        """The contract, a starter script, the build123d basics, and the index
+        of loadable skills.
+
+        The nine toolkit sections that used to live in ``CHEATSHEET`` are core
+        skills now (PRD-029, FR9) — single source, loaded on demand instead of
+        carried in every reply. The index is best-effort: a broken skill
+        directory must not take the one call an agent makes before writing its
+        first script, so an ``AppError`` here is an empty list.
+        """
+        try:
+            skills = [{"name": entry["name"],
+                       "description": entry["description"]}
+                      for entry in self.skills.index()]
+        except AppError:
+            skills = []
+        return {
+            "template": DEFAULT_PART_SCRIPT,
+            "cheatsheet": CHEATSHEET,
+            "skills": skills,
+            "hint": "Call load_skill {name} for the guide that matches the "
+                    "task (sheet metal, holes, threads, patterns, specs, "
+                    "mates, enclosures, snap-fits, …).",
+        }
 
     # -------------------------------------------------------------- rebuild
 

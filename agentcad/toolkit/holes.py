@@ -373,7 +373,7 @@ def tapped(part, points, size: str, *, pitch: float | None = None,
     which costs **~9k triangles per hole** (`toolkit.threads`); the warning
     says so, and `depth` is then required because a thread has a length.
 
-    The two radii are not interchangeable, and this is the CHEATSHEET's
+    The two radii are not interchangeable, and this is the `holes` skill's
     hard-won rule: bore at the **tap drill** for a cosmetic/recorded thread,
     and at `thread.root_radius` when you fuse real thread geometry — boring at
     the physical tap-drill diameter buries the ridges in the wall and you get a
@@ -406,7 +406,7 @@ def tapped(part, points, size: str, *, pitch: float | None = None,
         thread_solid = threads_module.tapped_hole_thread(
             _major_diameter(row["size"]), row["pitch"], depth)
         # Bore at the ROOT radius, not the tap drill: the ridges have to have
-        # somewhere to protrude into (CHEATSHEET, templates.py).
+        # somewhere to protrude into (the `holes` skill, agentcad/skills/holes/).
         radius = float(thread_solid.root_radius)
         record["tap"]["bore_mm"] = _round(radius * 2)
     return _drill(part, points, radius, record, plane=plane, depth=depth,

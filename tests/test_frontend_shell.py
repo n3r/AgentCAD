@@ -2669,6 +2669,11 @@ ADOPTED_MODALS = {
     "configs": "configs.js",
     "notifications": "comments.js",
     "materials": "materials.js",
+    # PRD-029 slice 6 adds the twelfth: the agent-skills panel. Named here on
+    # purpose — the closure test below is exactly the mechanism that makes a
+    # new `.modal-overlay` declare itself rather than silently sitting off the
+    # dialog stack.
+    "skills": "skills.js",
 }
 
 # `<div id="…" class="modal-overlay …">` — the ten-overlay sweep the reviewer

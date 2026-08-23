@@ -1,3 +1,21 @@
+<!-- Reviewer note (stripped from the prompt the agent sees) — how the graded
+     clearance windows were derived. Each bound comes from the gap MEASURED on
+     the reference placement, with the floor kept as shipped and the ceiling
+     set at roughly twice the measurement (or at INT-003's own stated 0.5 mm
+     allowance where the prompt already names one):
+
+       row                    pair                       measured   window
+       flange_bore_gap        flange_1 - nozzle_1        0.500 mm   0.3-1.0
+       injector_gasket_gap    injector_plate_1 - nozzle_1 0.200 mm  0.15-0.5
+       head_face_stack_gap    flange_1 - injector_plate_1 0.400 mm  0.25-1.0
+
+     `flange_bore_gap` is the RADIAL bore gap and is blind to the flange's
+     axial position (dropped 3 mm it still measures 0.500 mm), which is why
+     `head_face_stack_gap` exists: it is the two gasket allowances back to
+     back across the head face plane and reads 3.400 mm for that same flange.
+     All three pairs are windowed, so any one instance parked off the stack
+     fails at least two rows. -->
+
 The project holds the three parts of a liquid-rocket thrust chamber —
 `nozzle` (the chamber and bell), `flange` (the chamber-head interface ring) and
 `injector_plate` — and **no assembly at all**: the instance list is empty.
@@ -25,6 +43,18 @@ Requirements:
 - **No two instances may touch.** This is a bolted, gasketed joint: every
   stacked face keeps a 0.2-0.5 mm allowance, and an overlap of any volume is
   a failure.
+
+Every stated gap is graded as a **two-sided window** — a floor *and* a
+ceiling, because a part parked clear of the stack is not assembled:
+
+- `flange_1` to `nozzle_1`: **0.3 mm to 1.0 mm**. That is the radial gap of
+  the flange bore over the chamber barrel — the flange has to be around the
+  barrel, not beside it.
+- `injector_plate_1` to `nozzle_1`: **0.15 mm to 0.5 mm** — the head gasket
+  allowance, top of the stack.
+- `flange_1` to `injector_plate_1`: **0.25 mm to 1.0 mm** — the two gasket
+  allowances back to back across the head face, which is what fixes how far
+  down the barrel the flange sits.
 
 Do not change any part script and do not change any part's parameters — this
 task is the placement only.

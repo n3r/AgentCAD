@@ -480,7 +480,7 @@ def test_ac6_the_documented_tool_count_is_the_live_registry_count(nav_service):
 
     It had drifted badly: the docs said "85 tools (88 with the optional
     `[fem]` extra)" while `build_registry` registered **104** before this PRD
-    and 107 with it. The number in the prose is the **no-extras** count; the
+    and 107 with it (109 once PRD-029's two skill tools merged in). The number in the prose is the **no-extras** count; the
     `[fem]` number is that plus the three tools `tools_analysis` registers
     only when `skfem` imports. A *hosted* server additionally registers
     `whoami` (`tools_auth`), which `make_test_service` is not — so this test

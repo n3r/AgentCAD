@@ -224,7 +224,10 @@ async def _serve(base: str) -> None:
         version=agentcad.__version__,
         instructions=(
             "Agentic-first parametric CAD. Parts are build123d Python scripts; "
-            "call part_template before writing your first script."
+            "call part_template before writing your first script — it carries "
+            "the contract, the build123d basics and the index of loadable "
+            "skills — then load_skill for the craft guide that matches the "
+            "task."
         ),
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,

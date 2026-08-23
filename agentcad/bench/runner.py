@@ -88,6 +88,12 @@ STOPPED = ("model_ended_turn", "wall_clock", "tool_calls", "api_turns", "error")
 #: out so this module does not import `chat.py` at import time.
 SESSION = "main"
 
+#: The default ``--skills`` selection: the whole shipped library, which is what
+#: the product ships and therefore what a bare `bench run` must measure
+#: (PRD-029 §9). ``names`` is empty for both ``all`` and ``none`` — it lists the
+#: selection only when the mode is ``only``.
+SKILLS_ALL = {"mode": "all", "names": []}
+
 #: What replaces a render's base64 payload in a written transcript. The exact
 #: string the bus event already uses (`chat.py:113-115`), so a reader who has
 #: seen one recognises the other.
@@ -337,7 +343,7 @@ class _RunBus:
 
 def run_task(task: Task, *, service, registry, cell, model,
              api_key: str | None = None, client_factory=None,
-             quiet: bool = False) -> RunOutcome:
+             quiet: bool = False, skills=None) -> RunOutcome:
     """Drive one task through one `ChatEngine` turn and report what happened.
 
     *service* and *registry* are the surface the agent acts through — the
@@ -345,11 +351,20 @@ def run_task(task: Task, *, service, registry, cell, model,
     the throwaway directory the caller created and will remove. Nothing here
     touches the user's projects dir, by construction rather than by care.
 
+    *skills* is a `core.skills.SkillLibrary` or ``None`` (PRD-029 §9,
+    `bench run --skills`). ``None`` is the engine's historical behaviour
+    byte-for-byte — no index in the system prompt, no budget bookkeeping — and
+    is what ``--skills none`` passes. It restricts **the engine only**: the
+    `load_skill` tool is on the registry either way, so a caller that wants the
+    tool to refuse as well restricts the *service's* library too
+    (`cli._install_skills`).
+
     The turn is bounded twice: the client refuses the next **API** call once a
     ceiling is spent, and an outer `wait_for` is the backstop for a **tool**
     already in flight. Both end with a scoreable directory; neither raises.
     """
     from ..agent.chat import MAX_TOOL_CALLS_PER_TURN, ChatEngine
+    from ..core.skills import SkillBudget
 
     require_agent(api_key, client_factory)
     _refuse_outside_cell(service, cell)
@@ -379,7 +394,8 @@ def run_task(task: Task, *, service, registry, cell, model,
 
     engine = ChatEngine(registry, bus, model=model,
                         api_key=api_key or "bench-injected-client",
-                        client_factory=factory)
+                        client_factory=factory,
+                        skills=skills, budget=SkillBudget.from_config())
 
     async def drive() -> None:
         turn = await engine.start_turn(project, prompt_text(task), SESSION)
@@ -530,14 +546,36 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def skills_block(selection) -> dict:
+    """The ``run.json`` skills block for a ``--skills`` selection.
+
+    Total over its input: anything that is not a selection dict is the default
+    (:data:`SKILLS_ALL`), because a run that could not say what it selected
+    would be a run whose provenance is a guess. ``names`` is sorted so two runs
+    of the same selection write the same bytes whatever order a shell spelled
+    it in.
+    """
+    if not isinstance(selection, dict):
+        return dict(SKILLS_ALL)
+    mode = selection.get("mode") or "all"
+    names = sorted(str(name) for name in (selection.get("names") or ()))
+    return {"mode": str(mode), "names": names}
+
+
 def run_json(task: Task, outcome: RunOutcome, *, agent: str, model: str,
-             started: str, finished: str) -> dict:
+             started: str, finished: str, skills=None) -> dict:
     """``run.json`` — **where everything non-deterministic lives** (§8.6).
 
     Timestamps, durations, the model, the agent, the host and the usage
     counters are all here and none of them is in `score.json`, which is what
     lets two runs of the same submission produce byte-identical scores (AC3)
     while the provenance is still on disk beside them.
+
+    ``skills`` (PRD-029 §9) joins them for the same reason: which skills the
+    agent could load is **provenance**, not a measurement, so it is recorded
+    here and `score.json` stays byte-identical between two modes that produced
+    the same geometry — which is what makes `bench report --baseline` a
+    measurement of the skill rather than of the harness.
     """
     usage = dict(outcome.usage or {})
     return {
@@ -557,6 +595,7 @@ def run_json(task: Task, outcome: RunOutcome, *, agent: str, model: str,
                     "turns": int(task.budgets.turns),
                     "api_turns": int(task.budgets.api_turns)},
         "usage": usage,
+        "skills": skills_block(skills),
         "over_budget": bool(outcome.over_budget),
         "stopped": outcome.stopped,
         "host": {"platform": sys.platform,
@@ -567,6 +606,6 @@ def run_json(task: Task, outcome: RunOutcome, *, agent: str, model: str,
 
 __all__ = ["BENCH_SCHEMA", "BudgetExhausted", "BudgetedClient",
            "CLIENT_FACTORY", "IMAGE_PLACEHOLDER", "RUN_SCHEMA", "RunOutcome",
-           "SESSION", "STOPPED", "TRANSCRIPT_SCHEMA", "WALL_GRACE_S",
-           "budgeted_client_factory", "require_agent", "run_json", "run_task",
-           "transcript_payload"]
+           "SESSION", "SKILLS_ALL", "STOPPED", "TRANSCRIPT_SCHEMA",
+           "WALL_GRACE_S", "budgeted_client_factory", "require_agent",
+           "run_json", "run_task", "skills_block", "transcript_payload"]

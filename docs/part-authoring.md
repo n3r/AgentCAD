@@ -934,7 +934,7 @@ lands only when its measurement exists (`clearance` was the one new one).
 | Project scope (in a root `specs.py`) | Asserts |
 |---|---|
 | `check_interference_free(min_volume_mm3=0.001)` | no two placed instances overlap |
-| `check_clearance(a, b, min_mm)` | minimum distance between two placed instances |
+| `check_clearance(a, b, min_mm, max_mm=None)` | distance between two placed instances: at least `min_mm`, and at most `max_mm` when given |
 | `check_stackup(from_instance, to_instance, axis, within)` | the 1-D worst-case tolerance stack-up (PMI dims) along a mate chain |
 
 Every constructor takes `name=` (a default is derived: `wall_min`, `mass_max`,
@@ -985,6 +985,12 @@ evaluates to `skip`/`fem_extra_missing` there; skips are data, never hidden.
   handed** (it gets a copy, and predicates are evaluated after the built-in
   checks precisely so a mutating one cannot change their verdicts) and must not
   depend on evaluation order.
+- **`check_clearance`'s `max_mm` is what makes it a *placement* check.**
+  `min_mm` alone is a floor, and a floor is satisfied by moving the two
+  instances further apart — 500 mm apart passes every one-sided
+  clearance a project can declare. Give `max_mm` (strictly greater than
+  `min_mm`) when the intent is "seated": the pair then has to be *close*
+  as well as clear, and a fail names the bound it broke.
 - **`check_clearance` against an imported STL is not measured.** An STL is one
   welded mesh face with no B-rep to measure a distance against, so the check is
   a `skip`/`mesh_only` in a report — and a **fail** in a proposal's `specs`
@@ -1028,11 +1034,34 @@ one letter per PMI **diameter** dim, in declaration order, and draws a table
 of each configuration's value per letter — linear dims are not separately
 lettered (they resolve to the same overall extents A/B/C already carry).
 
-## Cheat-sheet
+## Cheat-sheet and skills
 
-Agents get the full contract plus common build123d idioms (builder contexts,
-selectors, patterns, sketches, lofts) from the `part_template` tool at
-runtime; the same text lives in `agentcad/core/templates.py` (`CHEATSHEET`).
+Agents get the contract plus the build123d basics (builder contexts,
+selectors, the common OCCT failure modes) from the `part_template` tool at
+runtime; that text lives in `agentcad/core/templates.py` (`CHEATSHEET`).
+
+**The toolkit sections are no longer in the cheat-sheet.** They are core
+**skills** an agent loads on demand with `load_skill {name}` — single source,
+so a section is never carried in every reply and never duplicated:
+
+| Skill | What moved out of the cheat-sheet |
+|---|---|
+| `robust-parametrics` | the robustness toolkit (`safe_fillet`/`safe_shell`/`safe_bool`) and the parametric guards |
+| `selectors-and-occt-failures` | selector recipes and the OCCT failure playbook |
+| `patterns` | `toolkit.patterns` — bolt circles, grids, linear/polar/mirror |
+| `holes` | the hole wizard and the hole record |
+| `threads-and-fasteners` | simple vs real ISO threads, `bd_warehouse` fasteners |
+| `ribs-bosses-draft` | `features.rib`/`boss`/`draft` |
+| `sketch-solver` | the 2D constraint sketch solver |
+| `sheet-metal` | `SheetPart`, bend allowance, flat patterns |
+| `design-specs` | `SPECS` and the spec-first workflow |
+| `assemblies-and-mates` | `connectors(p, part)` and the mate types |
+
+Six more are authored for the library (`enclosures`, `snap-fits`,
+`brackets-and-mounts`, `fits-and-clearances`, `fdm-design-rules`,
+`fem-workflow`), and a project can add its own under `<project>/skills/`. See
+[docs/skills.md](skills.md) for the format, the layers, trust and the lint.
+
 The bundled examples under `examples/` are the best reference for real,
 robust parametric parts:
 
