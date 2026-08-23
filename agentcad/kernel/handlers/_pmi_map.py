@@ -271,9 +271,32 @@ def new_document():
     return doc
 
 
+def _finite(value, what: str) -> float:
+    """*value* as a float, refused (as a ``pmi_skipped`` row) if not finite.
+
+    ``core/pmi.validate_pmi`` compares against 0 — and every comparison with a
+    NaN is False, so ``plus < 0``, ``plus == 0`` and ``tol <= 0`` all wave one
+    through. It then reaches ``SetValue``, OCCT writes the literal ``NAN`` into
+    the STEP file, and the export reports it as *attached*: a toleranced part
+    whose tolerance is unreadable by every consumer, described as fine. The
+    refusal here turns that into a named skip.
+    """
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        raise PmiRefusal(f"non_finite_value: {what} is {value!r}")
+    return number
+
+
 def _emit_dimension(dimtol_tool, type_name, value, plus, minus, target_labels):
     """Add one dimension. ``plus``/``minus`` are MAGNITUDES (trap 5)."""
     enum = dimension_type(type_name, len(target_labels))  # trap 6 gate
+    # Checked BEFORE `AddDimension`: a refusal must leave no half-built label
+    # in the document (an empty dimension label is still a DIMENSIONAL_SIZE the
+    # writer emits).
+    value = _finite(value, "dimension value")
+    plus = None if plus is None else _finite(plus, "dimension plus tolerance")
+    minus = None if minus is None else _finite(minus,
+                                               "dimension minus tolerance")
     label = dimtol_tool.AddDimension()
     obj = _dimtol.XCAFDimTolObjects_DimensionObject()
     obj.SetType(enum)
@@ -304,6 +327,7 @@ def _emit_datum(dimtol_tool, letter: str, position: int, target_label):
 def _emit_geom_tolerance(dimtol_tool, type_name, value, target_label,
                          datum_labels, diameter_zone=False):
     enum = geom_tolerance_type(type_name)
+    value = _finite(value, "tolerance value")     # before AddGeomTolerance
     label = dimtol_tool.AddGeomTolerance()
     obj = _dimtol.XCAFDimTolObjects_GeomToleranceObject()
     obj.SetType(enum)
@@ -329,7 +353,7 @@ def map_pmi(doc, shape, pmi: dict, name: str | None = None) -> dict:
     [{"id", "reason"}], "notes": [str]}`` — nothing is ever dropped silently
     (FR3).
     """
-    pmi = pmi or {}
+    pmi = pmi if isinstance(pmi, dict) else {}
     shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
     dimtol_tool = XCAFDoc_DocumentTool.DimTolTool_s(doc.Main())
 
@@ -350,90 +374,149 @@ def map_pmi(doc, shape, pmi: dict, name: str | None = None) -> dict:
     def skip(entry_id, reason):
         skipped.append({"id": entry_id, "reason": reason})
 
+    def entries(key: str) -> list:
+        """The section as a list of dicts. Defence in depth, not paranoia: the
+        PMI section is a schema-tolerant LOOSE key on a manifest entry, so a
+        hand edit, a bad merge or an older tool can put anything there. The
+        server validates it before we are called (`tools_xchange._part_pmi`);
+        this makes the second line of defence a `malformed_entry` ROW rather
+        than a `KeyError` that answers 502 for a file the user can fix."""
+        section = pmi.get(key)
+        if not isinstance(section, list):
+            if section:
+                skip(key, f"malformed_entry: pmi.{key} is not a list")
+            return []
+        out = []
+        for index, entry in enumerate(section):
+            if isinstance(entry, dict):
+                out.append(entry)
+            else:
+                skip(f"{key}[{index}]",
+                     "malformed_entry: not an object")
+        return out
+
+    def entry_id(entry: dict, key: str, index: int):
+        value = entry.get("id")
+        return value if isinstance(value, str) and value else f"{key}[{index}]"
+
     # --- dimensions
-    for dim in pmi.get("dims") or []:
-        kind = dim["kind"]
+    for index, dim in enumerate(entries("dims")):
+        row = entry_id(dim, "dims", index)
+        kind = dim.get("kind")
+        if kind not in DIM_TYPE_BY_KIND:
+            skip(row, f"malformed_entry: unknown dim kind {kind!r}")
+            continue
         if kind == "linear":
-            axis, face_name = LINEAR_AXES[dim["target"]]
+            axes = LINEAR_AXES.get(dim.get("target"))
+            if axes is None:
+                skip(row, "malformed_entry: linear target must be one of "
+                          + ", ".join(sorted(LINEAR_AXES)))
+                continue
+            axis, face_name = axes
             target = _plane_facing(records, face_name)
             if target is None:  # the opposite face carries the same extent
                 target = _plane_facing(
                     records, {"right": "left", "top": "bottom",
                               "back": "front"}[face_name])
             if target is None:
-                skip(dim["id"], f"no_planar_face: the part has no planar face "
-                                f"normal to the {dim['target']} axis")
+                skip(row, f"no_planar_face: the part has no planar face "
+                          f"normal to the {dim['target']} axis")
                 continue
             value = extents[axis]
         else:  # diameter — the target IS the nominal diameter (core/pmi.py)
-            value = float(dim["target"])
+            try:
+                value = float(dim.get("target"))    # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                skip(row, "malformed_entry: diameter target must be a number")
+                continue
             target = _cylinder_for(records, value)
             if target is None:
-                skip(dim["id"], "no_cylindrical_face: the part has no "
-                                "cylindrical face to carry a diameter "
-                                "dimension")
+                skip(row, "no_cylindrical_face: the part has no "
+                          "cylindrical face to carry a diameter "
+                          "dimension")
                 continue
         try:
             _emit_dimension(dimtol_tool, DIM_TYPE_BY_KIND[kind], value,
-                            dim["plus"], dim["minus"], [target["label"]])
+                            dim.get("plus"), dim.get("minus"),
+                            [target["label"]])
         except PmiRefusal as refusal:
-            skip(dim["id"], refusal.reason)
+            skip(row, refusal.reason)
+            continue
+        except (TypeError, ValueError) as exc:
+            skip(row, f"malformed_entry: {exc}")
             continue
         attached["dims"] += 1
 
     # --- datums
     datum_labels: dict[str, object] = {}
     datum_targets: dict[str, dict] = {}
-    for index, datum in enumerate(pmi.get("datums") or []):
-        target = _plane_facing(records, datum["face"])
+    for index, datum in enumerate(entries("datums")):
+        row = entry_id(datum, "datums", index)
+        face = datum.get("face")
+        if face not in FACE_NORMALS:
+            skip(row, f"malformed_entry: unknown datum face {face!r}")
+            continue
+        target = _plane_facing(records, face)
         if target is None:
-            skip(datum["id"], f"no_planar_face: the part has no planar face "
-                              f"on its {datum['face']} side")
+            skip(row, f"no_planar_face: the part has no planar face "
+                      f"on its {face} side")
             continue
         # ASME Y14.5 has three precedence slots; a fourth declared datum shares
         # the tertiary one rather than inventing a position OCCT never writes.
         position = min(index + 1, 3)
-        datum_labels[datum["id"]] = _emit_datum(
-            dimtol_tool, datum["id"], position, target["label"])
-        datum_targets[datum["id"]] = target
+        datum_labels[row] = _emit_datum(dimtol_tool, row, position,
+                                        target["label"])
+        datum_targets[row] = target
         attached["datums"] += 1
 
     # --- feature control frames
-    for frame in pmi.get("fcf") or []:
-        declared = list(frame.get("datums") or [])
+    for index, frame in enumerate(entries("fcf")):
+        row = entry_id(frame, "fcf", index)
+        kind = frame.get("type")
+        if kind not in FCF_TYPE_BY_NAME:
+            skip(row, f"malformed_entry: unknown fcf type {kind!r}")
+            continue
+        raw_datums = frame.get("datums") or []
+        if not isinstance(raw_datums, list):
+            skip(row, "malformed_entry: fcf datums must be a list")
+            continue
+        declared = [r for r in raw_datums]
         refs = [r for r in declared if r in datum_labels]
         if len(refs) != len(declared):
             # the referenced datum itself was skipped — say so rather than
             # emit a quietly weaker frame (FR3)
             notes.append(
-                f"pmi fcf {frame['id']!r}: datum reference(s) "
-                f"{', '.join(r for r in declared if r not in refs)} dropped — "
-                "those datums could not be attached")
-        if frame["type"] == "cylindricity":
+                f"pmi fcf {row!r}: datum reference(s) "
+                f"{', '.join(str(r) for r in declared if r not in refs)} "
+                "dropped — those datums could not be attached")
+        if kind == "cylindricity":
             target = _cylinder_for(records)
             if target is None:
-                skip(frame["id"], "no_cylindrical_face: cylindricity needs a "
-                                  "cylindrical face")
+                skip(row, "no_cylindrical_face: cylindricity needs a "
+                          "cylindrical face")
                 continue
         elif refs:
             target = datum_targets[refs[0]]
         else:
             target = _largest_plane(records)
             if target is None:
-                skip(frame["id"], "no_planar_face: no planar face to carry "
-                                  "the feature control frame")
+                skip(row, "no_planar_face: no planar face to carry "
+                          "the feature control frame")
                 continue
         try:
             _emit_geom_tolerance(
-                dimtol_tool, FCF_TYPE_BY_NAME[frame["type"]], frame["tol_mm"],
+                dimtol_tool, FCF_TYPE_BY_NAME[kind], frame.get("tol_mm"),
                 target["label"], [datum_labels[r] for r in refs],
                 # Our model carries no zone shape; a position tolerance is
                 # diametral by convention (ASME Y14.5) and that is what the
                 # spike's recipe writes.
-                diameter_zone=(frame["type"] == "position"),
+                diameter_zone=(kind == "position"),
             )
         except PmiRefusal as refusal:
-            skip(frame["id"], refusal.reason)
+            skip(row, refusal.reason)
+            continue
+        except (TypeError, ValueError) as exc:
+            skip(row, f"malformed_entry: {exc}")
             continue
         attached["fcf"] += 1
 
@@ -477,11 +560,16 @@ def write_ap242(doc, path: str) -> None:
     with contextlib.redirect_stdout(sys.stderr):  # OCCT prints transfer stats
         writer = STEPCAFControl_Writer()
         previous = Interface_Static.CVal_s("write.step.schema")
-        if not Interface_Static.SetCVal_s("write.step.schema", "AP242DIS"):
-            raise RuntimeError(
-                "Interface_Static.SetCVal_s('write.step.schema', 'AP242DIS') "
-                "returned False — the file would be AP214 with no PMI")
+        # The try opens BEFORE the setter, not after it: a raise between "the
+        # static was captured" and "the restore is armed" leaks AP242DIS into
+        # every later export in this worker (the `interop._write_assembly_ap242`
+        # twin, where a second setter made the window real).
         try:
+            if not Interface_Static.SetCVal_s("write.step.schema", "AP242DIS"):
+                raise RuntimeError(
+                    "Interface_Static.SetCVal_s('write.step.schema', "
+                    "'AP242DIS') returned False — the file would be AP214 "
+                    "with no PMI")
             writer.SetDimTolMode(True)
             writer.SetColorMode(True)
             writer.SetNameMode(True)

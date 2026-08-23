@@ -196,6 +196,29 @@ def test_the_writer_itself_refuses_without_pxr(monkeypatch):
     assert "agentcad[usd]" in str(exc.value)
 
 
+def test_a_usd_refusal_is_an_app_error_not_a_bare_runtimeerror(monkeypatch):
+    """`UsdError` is a `ValidationError`, so an unwritable request reaches the
+    caller as a 4xx envelope. As a bare `RuntimeError` it escaped both
+    `ToolRegistry.call` and FastAPI's `AppError` handler — a 500 for something
+    the caller asked for."""
+    assert issubclass(usd_export.UsdError, ValidationError)
+    usd(monkeypatch, False)
+    with pytest.raises(ValidationError):
+        usd_export.build_usd([item()])
+
+
+def test_a_non_finite_pose_is_refused_rather_than_written_as_nan(pxr):
+    """`Gf` takes a NaN without complaint and `ExportToString` writes the
+    literal `nan` into the stage — a file `Usd.Stage.Open` then rejects, long
+    after the export reported success."""
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValidationError) as exc:
+            usd_export.build_usd([item(position=(bad, 0.0, 0.0))])
+        assert "finite" in str(exc.value)
+        with pytest.raises(ValidationError):
+            usd_export.build_usd([item(rotation=(0.0, bad, 0.0))])
+
+
 def test_prim_names_are_legal_usd_identifiers_and_unique():
     """Instance ids are authored strings and mesh keys are hex digests; USD
     identifiers are `[A-Za-z_][A-Za-z0-9_]*`, and two ids can sanitize to one

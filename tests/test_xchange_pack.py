@@ -382,6 +382,189 @@ def test_the_export_routes_go_through_the_wrappers(client, svc):
     assert response.json()["fidelity"]["colors"] == "per_instance"
 
 
+# --------------------------------------------- refusals reach the caller
+
+
+def _empty_acm() -> bytes:
+    """An ACM1 buffer with a valid header and zero triangles — what a build
+    that produced no geometry leaves in the cache."""
+    return struct.pack("<4sIIII", b"ACM1", 0, 0, 0, 0)
+
+
+def _blank_the_mesh(svc, instance_id="a"):
+    """Overwrite one built instance's cached mesh with an empty one."""
+    entry = next(i for i in svc.get_assembly("demo")["instances"]
+                 if i["id"] == instance_id)
+    path = svc.store.cache_dir("demo") / f"{entry['mesh_key']}.acm"
+    assert path.is_file(), path
+    path.write_bytes(_empty_acm())
+    return path
+
+
+def test_an_empty_mesh_instance_is_skipped_not_fatal(svc, registry):
+    """One degenerate member must not cost the caller the other N.
+
+    `parse_acm` refusing mid-export used to fail the whole assembly; the
+    contract that already says what did not make it into the file is
+    `fidelity.instances_skipped`, so an empty mesh is a row in it.
+    """
+    # Two DIFFERENT parts: meshes are deduplicated by `mesh_key`, so two
+    # instances of one part share one cache entry and blanking it blanks both.
+    svc.create_part("demo", "slab", script=BOX_SCRIPT.replace(
+        "p.size, p.size, p.size", "p.size, p.size, p.size * 3"))
+    svc.set_assembly("demo", [
+        {"id": "a", "part": "box", "position": [0, 0, 0]},
+        {"id": "b", "part": "slab", "position": [20, 0, 0]},
+    ])
+    svc.get_assembly("demo")
+    _blank_the_mesh(svc, "a")
+
+    result = svc.export_assembly("demo", "glb")
+    assert result["fidelity"]["instances_skipped"] == [
+        {"id": "a", "reason": "empty_mesh"}]
+    doc = glb_document(result["path"])
+    assert [n["name"] for n in doc["nodes"][1:]] == ["b"]
+
+
+def test_an_empty_part_export_is_a_clean_validation_error(svc, registry):
+    """One part, nothing to write: a refusal that says so, and — the blocker —
+    a 4xx envelope rather than a 500. `GltfError` used to be a bare
+    `ValueError` and escaped both `ToolRegistry.call` and FastAPI's `AppError`
+    handler."""
+    svc.export_part("demo", "box", "glb")        # build + cache
+    key = svc.mesh_info("demo", "box")["key"]
+    (svc.store.cache_dir("demo") / f"{key}.acm").write_bytes(_empty_acm())
+
+    with pytest.raises(ValidationError) as exc:
+        svc.export_part("demo", "box", "glb")
+    assert "nothing to tessellate" in exc.value.message
+    payload = registry.call("export_part", {"project": "demo",
+                                            "part_id": "box", "format": "glb"})
+    assert payload["error"]["type"] == "validation_error"
+
+
+def test_a_corrupt_mesh_buffer_refuses_as_422_over_the_route(svc, registry,
+                                                             client):
+    """The same blocker at the HTTP edge: a malformed buffer is the caller's
+    request, so it is a 422 with an `{"error": ...}` body, never a 500."""
+    svc.export_part("demo", "box", "gltf")
+    key = svc.mesh_info("demo", "box")["key"]
+    (svc.store.cache_dir("demo") / f"{key}.acm").write_bytes(b"NOPE" + b"\0" * 40)
+    response = client.post("/api/projects/demo/parts/box/export",
+                           json={"format": "gltf"})
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["type"] == "ValidationError"
+
+
+def test_the_staging_name_is_random_per_write(svc, registry):
+    """Changelog 0181, applied here: a fixed `.<stem>.tmp<suffix>` is one
+    staging name per target path, so two exports of one part opened the SAME
+    file, interleaved their bytes into it, and each `os.replace`d the mixture
+    into place."""
+    from agentcad.core.tools_xchange import _staging_name
+
+    target = Path("/tmp/exports/assembly.glb")
+    names = {_staging_name(target) for _ in range(20)}
+    assert len(names) == 20
+    for name in names:
+        assert name.startswith(".assembly.") and name.endswith(".tmp.glb")
+    # nothing is left behind by a successful export either
+    svc.export_part("demo", "box", "glb")
+    assert not [p for p in svc.store.exports_dir("demo").iterdir()
+                if p.name.endswith(".tmp") or ".tmp." in p.name]
+
+
+# ------------------------------------------------------- 3MF metadata guard
+
+
+def test_metadata_carrying_a_control_character_is_refused(svc, registry):
+    """lib3mf takes a C string: a NUL truncates the value silently at the
+    library boundary, so `Title\\0evil` is stamped as `Title` and the caller is
+    told the metadata was attached."""
+    for bad in ("Widget\x00evil", "Widget\x01", "\x1bTitle"):
+        result = registry.call("export_part", {
+            "project": "demo", "part_id": "box", "format": "3mf",
+            "metadata": {"title": bad}})
+        assert result["error"]["type"] == "validation_error", bad
+        assert "control character" in result["error"]["message"]
+    # ordinary text (including legal XML whitespace) still passes
+    ok = registry.call("export_part", {
+        "project": "demo", "part_id": "box", "format": "3mf",
+        "metadata": {"title": "Widget\n2"}})
+    assert "error" not in ok, ok
+
+
+# ---------------------------------------------- a malformed manifest `pmi`
+
+
+def _write_pmi(svc, part_id, pmi):
+    """Put a raw value in the part's loose `pmi` key, bypassing validation —
+    a hand edit, a bad merge, or an older tool."""
+    manifest = svc.store.manifest("demo")
+    next(e for e in manifest["parts"] if e["id"] == part_id)["pmi"] = pmi
+    svc.store.save_manifest("demo", manifest)
+
+
+@pytest.mark.parametrize("bad", [
+    {"dims": [{"id": "h", "target": "height", "plus": 0.1, "minus": 0.1}]},
+    {"dims": [{"id": "h", "kind": "linear", "target": "sideways",
+               "plus": 0.1, "minus": 0.1}]},
+    {"datums": [{"id": "A", "face": "sideways"}]},
+    {"fcf": [{"id": "f", "type": "roundness", "tol_mm": 0.1, "datums": []}]},
+])
+def test_a_malformed_manifest_pmi_refuses_before_the_kernel(svc, registry, bad):
+    """`pmi` is a schema-tolerant LOOSE key, so anything can end up there. It
+    used to be handed straight to the worker, where a missing `kind` was a
+    `KeyError` inside `map_pmi`: a 502 blaming the kernel for a manifest the
+    user can fix. Validated on read, it is a 422 naming the part."""
+    _write_pmi(svc, "box", bad)
+    result = registry.call("export_part", {"project": "demo",
+                                           "part_id": "box", "format": "step"})
+    assert result["error"]["type"] == "validation_error", result
+    assert "box" in result["error"]["message"]
+    assert "malformed pmi" in result["error"]["message"]
+
+
+def test_the_kernel_maps_a_malformed_entry_to_a_skipped_row(svc, registry):
+    """Defence in depth: with the server-side validation bypassed entirely
+    (the kernel handler called directly), `map_pmi` answers with a
+    `malformed_entry` ROW rather than a KeyError."""
+    step = svc.store.exports_dir("demo") / "direct.step"
+    result = svc.kernel.request("export_step_pmi", {
+        "script": BOX_SCRIPT, "params": {}, "name": "box",
+        "out_path": str(step),
+        "pmi": {"dims": [{"id": "h"}, "not-an-object"],
+                "datums": [{"id": "A", "face": "nowhere"}],
+                "fcf": [{"id": "f", "type": "flatness", "tol_mm": "wat",
+                         "datums": []}]},
+    })
+    reasons = {row["id"]: row["reason"] for row in result["pmi_skipped"]}
+    assert set(reasons) == {"h", "dims[1]", "A", "f"}
+    assert all(r.startswith("malformed_entry") for r in reasons.values()), \
+        reasons
+    assert result["pmi_attached"] == {"dims": 0, "datums": 0, "fcf": 0}
+    assert Path(result["path"]).is_file()
+
+
+def test_a_part_whose_every_pmi_entry_is_skipped_reports_pmi_none(svc,
+                                                                  registry):
+    """`fidelity.pmi` is a claim about the FILE. A part whose entries were all
+    skipped exports a perfectly good AP242 file with no PMI in it, and saying
+    "attached" there is the one lie `fidelity` exists to prevent."""
+    # a diameter dim and a cylindricity frame on a CUBE: no cylindrical face
+    registry.call("set_part_pmi", {
+        "project": "demo", "part_id": "box",
+        "pmi": {"dims": [{"id": "bore", "kind": "diameter", "target": 10.0,
+                          "plus": 0.05, "minus": 0.05}],
+                "fcf": [{"id": "cyl", "type": "cylindricity", "tol_mm": 0.02,
+                         "datums": []}]}})
+    result = svc.export_part("demo", "box", "step")
+    assert result["pmi_attached"] == {"dims": 0, "datums": 0, "fcf": 0}
+    assert result["fidelity"]["pmi"] == "none"
+    assert sorted(r["id"] for r in result["fidelity"]["pmi_skipped"]) == \
+        ["bore", "cyl"]
+
+
 def test_every_export_path_reports_fidelity(svc, registry):
     """FR12 in one assertion: nothing leaves this pack without it."""
     two_boxes(svc)

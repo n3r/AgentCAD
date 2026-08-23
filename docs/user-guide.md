@@ -177,14 +177,19 @@ direction. Keyboard: **F**.
 
 - *Part* (STEP / STL / 3MF / glTF / GLB): exports the **selected part** at
   origin. Disabled when no part is selected.
-- *Assembly* (STEP / STL / 3MF / glTF / GLB): exports all placed instances as
-  one file. Disabled when the project has no instances.
+- *Assembly* (STEP / STL / 3MF / glTF / GLB, plus a second **STEP
+  (structured)** row): exports all placed instances as one file. The plain
+  STEP row writes today's single fused solid; **STEP (structured)** writes a
+  real product tree instead — one product per unique part, one occurrence per
+  instance, names and colors — the file a supplier can walk. Disabled when
+  the project has no instances.
 
 `USD` appears in both sections when the optional `agentcad[usd]` extra is
 installed, and is simply absent otherwise. The menu is **schema-driven**: it
 reads the export tools' format lists at start-up and adds any format the
 static table does not already list, so a format added on the server appears
-here with no frontend change.
+here with no frontend change — `usd` is the one that actually depends on
+this today, since it exists only with the extra.
 
 Exporting a part to **STEP** when that part carries GD&T (PMI, set through the
 agent's `set_part_pmi`) first asks: *Include GD&T (AP242)*, checked by
@@ -531,7 +536,8 @@ says so in its result, and the rules are short enough to state here:
 |---|---|
 | Exact solid geometry (B-rep) | **STEP** only — everything else is a triangle mesh of it |
 | Tolerances / GD&T (PMI) | **STEP AP242, on the way out only.** We do not read PMI back out of someone else's file yet |
-| Colors, names, metadata (title, part number) | **3MF**, **glTF/GLB**, **USD**; a structured STEP carries per-instance colors too |
+| Colors, names | **3MF**, **glTF/GLB**, **USD**; a structured STEP carries per-instance colors too |
+| Metadata (title, designer, part number, creation date) | **3MF only.** glTF and USD carry no model metadata — just a generator/creator breadcrumb and the up-axis declaration |
 | Parameters, the script, sketch constraints, configurations | **Nothing.** No neutral format carries parametric intent — this is a property of the formats, not a to-do |
 
 That last row is why the project is the source of truth and an export is a
@@ -550,7 +556,11 @@ verified by hand once per release and recorded in the release notes:
 1. a part exported with `Include GD&T` opens in **FreeCAD's** AP242 viewer
    with its dimensions, datum and feature control frames visible;
 2. a 3MF opens in **PrusaSlicer** (or the Bambu/Orca lineage) at the right
-   scale, with the object names and per-solid colors intact.
+   scale, with the object names and per-solid colors intact;
+3. an assembly's GLB export, opened through the **vendored Three.js loader**
+   (not just glTF-validated), actually renders with the right instance colors
+   and poses against the live viewport — a toast reporting export success is
+   not this check; it only proves the file was written.
 
 Everything else about those two files — the AP242 schema, the millimetre
 declaration, the metadata, the colors, the PMI round trip through our own

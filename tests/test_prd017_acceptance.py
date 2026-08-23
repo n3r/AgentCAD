@@ -11,7 +11,7 @@ duplicating the list — the house rule from `tests/test_prd026_acceptance.py`.
 | AC | Test |
 |---|---|
 | AC1 | `test_ac1_a_toleranced_part_round_trips_through_ap242` |
-| AC2 | `test_ac2_a_multi_product_step_lands_deduplicated_placed_and_named`, `test_ac2_structured_false_is_still_one_blob` |
+| AC2 | `test_ac2_a_multi_product_step_lands_deduplicated_placed_and_named`, `test_ac2_holds_at_scale_fourteen_products_and_fortyone_occurrences`, `test_ac2_structured_false_is_still_one_blob` |
 | AC3 | `test_ac3_an_assembly_glb_is_structurally_valid_and_byte_stable` |
 | AC4 | `test_ac4_a_3mf_is_conformant_millimetre_and_carries_metadata_and_colours` |
 | AC5 | `test_ac5_usd_is_offered_exactly_when_it_can_run`, `test_ac5_a_stage_exports_and_reopens` |
@@ -41,6 +41,7 @@ pretended to run FreeCAD would be worse than no test:
 from __future__ import annotations
 
 import re
+import struct
 import zipfile
 from hashlib import sha256
 from pathlib import Path
@@ -62,7 +63,9 @@ from .conftest import BOX_SCRIPT, make_test_service
 from .test_interop_3mf import (ALUMINUM, STEEL, TWO_BOX, lib3mf_objects,
                                metadata_of, model_xml, object_colors)
 from .test_interop_gltf import parse_glb
-from .test_interop_import_kernel import make_assembly_step
+from .test_interop_import_kernel import (SCALED_OCCURRENCES, SCALED_PRODUCTS,
+                                         make_assembly_step,
+                                         make_scaled_assembly_step)
 from .test_interop_pmi import BORED_BLOCK
 
 REPO = Path(__file__).resolve().parents[1]
@@ -265,6 +268,56 @@ def test_ac2_a_multi_product_step_lands_deduplicated_placed_and_named(
     assert instances["ball_1"]["color"] != instances["ball_2"]["color"]
 
 
+def test_ac2_holds_at_scale_fourteen_products_and_fortyone_occurrences(
+        kernel, tmp_path):
+    """**AC2** at an order of magnitude past the 3/7 fixture.
+
+    The small assembly cannot express the failures that only appear with
+    breadth: a dedup that is really "one part per occurrence" survives 7
+    occurrences of 3 products by luck far more easily than 41 of 14, and the
+    path-qualified naming has to keep 15 same-named components (`c0`..`c4`
+    under three clusters) apart rather than five.
+
+    Measured at ~0.3 s for the landing, so it is an ordinary test, not a slow
+    one — the 14 reference builds are the cost and they are cheap boxes.
+    """
+    source = make_scaled_assembly_step(kernel, tmp_path)
+    service = make_test_service(tmp_path / "projects", kernel)
+    service.create_project("demo")
+    registry = build_registry(service)
+    result = registry.call("import_cad_file", {"project": "demo",
+                                               "source": str(source)})
+    assert "error" not in result, result
+
+    assert result["tree"]["counts"] == {"products": SCALED_PRODUCTS,
+                                        "occurrences": SCALED_OCCURRENCES}
+    # dedup: 41 occurrences, 14 parts, and every instance points at one of them
+    parts = _by_id(result["parts"])
+    assert len(parts) == SCALED_PRODUCTS
+    assert sorted(parts) == [f"part{i:02d}" for i in range(SCALED_PRODUCTS)]
+    instances = _by_id(result["instances"])
+    assert len(instances) == SCALED_OCCURRENCES
+    assert {i["part"] for i in result["instances"]} <= set(parts)
+    # the three clusters share five products: 15 occurrences, 5 parts
+    clustered = [i for i in result["instances"] if i["id"].startswith("cluster_")]
+    assert len(clustered) == 15
+    assert len({i["part"] for i in clustered}) == 5
+    # ...and 15 same-named components stayed distinct (path qualification)
+    assert len(instances) == len(result["instances"])
+
+    # Spot-checked pose: `c2`'s local (20,0,0) through `cluster_2`, which sits
+    # at (0,20,0) rotated 90 deg about Z — Rz(90)·(20,0,0) + (0,20,0).
+    placed = instances["cluster_2_c2"]
+    assert placed["position"] == pytest.approx([0, 40, 0], abs=1e-6)
+    assert placed["rotation_deg"] == pytest.approx([0, 0, 90], abs=1e-6)
+    assert placed["part"] == "part02"
+
+    # and the landed project is a real assembly, every member built
+    assembly = service.get_assembly("demo")
+    assert len(assembly["instances"]) == SCALED_OCCURRENCES
+    assert all(i["state"] == "ok" for i in assembly["instances"])
+
+
 def test_ac2_structured_false_is_still_one_blob(imported):
     """**AC2**, the other half: `structured: false` forces today's behaviour —
     one reference part for the whole file, no instances, no tree."""
@@ -279,6 +332,17 @@ def test_ac2_structured_false_is_still_one_blob(imported):
 # ============================================================ AC3
 
 
+def _accessor_bytes(document: dict, binary: bytes, index: int) -> bytes:
+    accessor = document["accessors"][index]
+    view = document["bufferViews"][accessor["bufferView"]]
+    start = view["byteOffset"] + accessor.get("byteOffset", 0)
+    sizes = {5126: 4, 5125: 4, 5123: 2, 5121: 1}
+    counts = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}
+    span = (accessor["count"] * counts[accessor["type"]]
+            * sizes[accessor["componentType"]])
+    return binary[start:start + span]
+
+
 def _validate_gltf(document: dict, binary: bytes) -> None:
     """Structural glTF 2.0 validation, written independently of the writer.
 
@@ -286,6 +350,18 @@ def _validate_gltf(document: dict, binary: bytes) -> None:
     checks are the ones that make a file *loadable* — the asset version, every
     index in range, and every accessor's byte range inside its buffer view
     inside the buffer. A viewer rejects the file if any of them is wrong.
+
+    The two that read the BUFFER and not merely the JSON are the ones worth
+    naming, because they are the two a viewer actually crashes on and the two
+    an all-JSON check cannot see:
+
+    * every triangle index is decoded and compared against the vertex count of
+      the primitive's own POSITION accessor (an out-of-range index is an
+      out-of-bounds read in the loader);
+    * every POSITION accessor's declared ``min``/``max`` is checked against the
+      float32 values in the buffer — the JSON is rounded to six decimals and
+      the buffer is not, so a naive round can put the declared bound *inside*
+      the data.
     """
     assert document["asset"]["version"] == "2.0"
     assert document["asset"]["extras"] == {"source_up_axis": "+Z",
@@ -320,6 +396,33 @@ def _validate_gltf(document: dict, binary: bytes) -> None:
                           primitive["indices"]):
                 assert 0 <= index < len(document["accessors"])
 
+            position = document["accessors"][primitive["attributes"]["POSITION"]]
+            vertices = position["count"]
+
+            # --- indices, decoded from the buffer
+            indices_accessor = document["accessors"][primitive["indices"]]
+            assert indices_accessor["componentType"] == 5125   # UNSIGNED_INT
+            raw = _accessor_bytes(document, binary, primitive["indices"])
+            assert len(raw) == indices_accessor["count"] * 4
+            decoded = struct.unpack(f"<{indices_accessor['count']}I", raw)
+            assert indices_accessor["count"] % 3 == 0, "triangles"
+            assert decoded, "a primitive with no indices draws nothing"
+            assert max(decoded) < vertices, (
+                f"index {max(decoded)} >= vertex count {vertices}")
+
+            # --- min/max, checked against the float32 values they claim to
+            # bound (component-wise, over every vertex)
+            points = struct.unpack(
+                f"<{vertices * 3}f",
+                _accessor_bytes(document, binary,
+                                primitive["attributes"]["POSITION"]))
+            for axis in range(3):
+                column = points[axis::3]
+                assert position["min"][axis] <= min(column), (
+                    "declared min is above the smallest value in the buffer")
+                assert position["max"][axis] >= max(column), (
+                    "declared max is below the largest value in the buffer")
+
 
 def test_ac3_an_assembly_glb_is_structurally_valid_and_byte_stable(svc,
                                                                    registry):
@@ -335,7 +438,11 @@ def test_ac3_an_assembly_glb_is_structurally_valid_and_byte_stable(svc,
     first = registry.call("export_assembly", {"project": "demo",
                                               "format": "glb"})
     assert "error" not in first, first
-    document, binary = parse_glb(Path(first["path"]).read_bytes())
+    # Read the BYTES now: both exports write `exports/assembly.glb`, so a sha
+    # taken after the second export would be the second file's hash compared
+    # with itself — a determinism assertion that cannot fail.
+    first_bytes = Path(first["path"]).read_bytes()
+    document, binary = parse_glb(first_bytes)
     _validate_gltf(document, binary)
 
     # One part, two instances: the mesh data is emitted ONCE (8 screws are 1
@@ -364,7 +471,8 @@ def test_ac3_an_assembly_glb_is_structurally_valid_and_byte_stable(svc,
 
     second = registry.call("export_assembly", {"project": "demo",
                                                "format": "glb"})
-    assert sha(first["path"]) == sha(second["path"])
+    assert second["path"] == first["path"], "same state, same target path"
+    assert sha256(first_bytes).hexdigest() == sha(second["path"])
 
 
 # ============================================================ AC4

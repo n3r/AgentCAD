@@ -1990,10 +1990,12 @@ per-member isolation. And when you print the sentence, do **not** reach for
   `part|project` reach is `share_scope`, never the package-index `scope` or
   `locks.write_scope`.
 
-- **No `core/gltf.py`.** The viewer streams the shipped OCP-free ACM
-  (`viewport.js::parseACM`); the glTF exporter is PRD-017's, deferred to avoid
-  build-then-migrate churn. **Only `agentcad/kernel/` imports OCP/build123d** —
-  nothing in the share path does.
+- **The share path does not use `core/gltf.py`.** The viewer streams the
+  shipped OCP-free ACM (`viewport.js::parseACM`); PRD-017 later shipped a
+  glTF exporter (`core/gltf.py`, see the Interop gotchas below), but the
+  share path was built before it and still does not route through it.
+  **Only `agentcad/kernel/` imports OCP/build123d** — nothing in the share
+  path does.
 
 ## Marketplace gotchas (PRD-031a — read before touching `server/routes_market.py`, the public catalog read, `core/tools_market.py` or the market frontend)
 
@@ -2902,7 +2904,11 @@ Full documentation: `docs/bench.md`. The design is
 - `core/gltf.py`, `core/usd_export.py` and `core/interop_colors.py` are
   **OCP-free** server-process code (probed in a fresh interpreter with OCP and
   build123d blocked) — glTF/GLB and USD are written from the cached ACM1
-  buffers with no kernel round trip at all. `gltf.py` is the **third** mirror
+  buffers, and the conversion itself makes no kernel call. `tools_xchange`'s
+  `_part_item` still reads that buffer through `mesh_info`, so an unbuilt or
+  stale part IS built first (a kernel round trip) before the OCP-free
+  conversion runs — "no kernel round trip" describes the mesh→glTF/USD step,
+  not the whole export. `gltf.py` is the **third** mirror
   of the ACM1 layout (`kernel/acm.py` packs it, `viewport.js` parses it); keep
   it minimal and written from that documented layout rather than importing the
   kernel (the pure tests synthesize their buffers the same way on purpose; the

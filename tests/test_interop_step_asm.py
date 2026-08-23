@@ -149,6 +149,89 @@ def test_a_structured_export_is_written_atomically(svc, registry):
     assert Path(result["path"]).stat().st_size == result["size_bytes"]
 
 
+def test_the_staging_name_is_random_per_writer(svc, registry):
+    """Changelog 0181 again: a fixed `.<stem>.tmp<suffix>` is ONE staging name
+    per target path, so two workers exporting one assembly opened the same
+    file and each promoted the interleaved mixture. The `.step`/`.3mf` suffix
+    is kept because OCCT's writers sniff the extension."""
+    from agentcad.kernel.handlers.interop import _staging
+
+    target = Path("/tmp/exports/assembly.step")
+    names = {_staging(target).name for _ in range(20)}
+    assert len(names) == 20
+    for name in names:
+        assert name.startswith(".assembly.") and name.endswith(".tmp.step")
+
+    three_instances(svc)
+    svc.export_assembly("demo", "step", structured=True)
+    assert [p.name for p in svc.store.exports_dir("demo").iterdir()] == \
+        ["assembly.step"]
+
+
+def test_a_failed_static_setter_does_not_leak_ap242_into_the_worker(
+        kernel, tmp_path):
+    """`write.step.schema` is a PROCESS-WIDE `Interface_Static`.
+
+    The two setters used to run *before* the `try` that restores them, so a
+    failing `write.step.assembly` set raised past the restore and left the
+    schema at AP242DIS for every later `b3d.export_step` in this warm worker —
+    silently re-schemaing files nobody asked to be AP242. The `try` now opens
+    immediately after the two values are captured.
+
+    Run inside the worker (this is kernel-only code): the probe forces the
+    second setter to fail and then asserts the plain export path is intact.
+    """
+    probe = '''\
+from pathlib import Path
+
+from OCP.Interface import Interface_Static
+from OCP.STEPCAFControl import STEPCAFControl_Writer
+
+from agentcad.kernel.handlers import interop, _pmi_map
+
+PARAMS = {}
+OUT = __OUT__
+
+
+class _Failing:
+    """The real statics, with `SetIVal_s` answering False."""
+    CVal_s = staticmethod(Interface_Static.CVal_s)
+    IVal_s = staticmethod(Interface_Static.IVal_s)
+    SetCVal_s = staticmethod(Interface_Static.SetCVal_s)
+
+    @staticmethod
+    def SetIVal_s(name, value):
+        return False
+
+
+def build(p):
+    STEPCAFControl_Writer()          # the statics exist only after this
+    before = Interface_Static.CVal_s("write.step.schema")
+    real, interop.Interface_Static = interop.Interface_Static, _Failing
+    try:
+        interop._write_assembly_ap242(_pmi_map.new_document(), OUT)
+    except RuntimeError as exc:
+        assert "write.step.assembly" in str(exc), exc
+    else:
+        raise AssertionError("the forced setter failure did not raise")
+    finally:
+        interop.Interface_Static = real
+    after = Interface_Static.CVal_s("write.step.schema")
+    assert "AP242" not in (after or ""), after
+    assert after == before or (before or "") == "", (before, after)
+
+    import build123d as b3d
+    return b3d.Solid.make_box(5, 5, 5)
+'''
+    plain = tmp_path / "plain.step"
+    result = kernel.request("export", {
+        "script": probe.replace("__OUT__", repr(str(tmp_path / "leak.step"))),
+        "params": {}, "format": "step", "out_path": str(plain)})
+    assert result["size_bytes"] > 100
+    # ...and the file the plain path wrote afterwards is NOT AP242
+    assert "AP242" not in plain.read_text()[:8192]
+
+
 # -------------------------------------------------------- the flat default
 
 

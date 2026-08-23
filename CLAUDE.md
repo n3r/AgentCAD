@@ -307,8 +307,10 @@ This project is built skill-first. Use the Superpowers process skills:
   always · **≥1 dimension** or the document mints METRE units (0.05 mm reads
   back 50.0) — FCF-only PMI gets an auxiliary bbox dim + a `pmi_notes` row ·
   tolerances as **magnitudes** (the writer negates; only the STEP text catches
-  it) · `Location_WithPath`/`Size_WithPath`/2-target `Location_Oriented` +
-  angular **segfault** the writer and must stay `pmi_skipped` **refusals** ·
+  it) · `Location_WithPath`/`Size_WithPath`/2-target `Location_Oriented`
+  **segfault** the writer (exit 139, no Python exception), and angular dims
+  round-trip in **mismatched units** — a different failure, but both must
+  stay `pmi_skipped` **refusals**, never reachable as a crash ·
   a datum **nothing references** is in the file but invisible to
   `GetDatumLabels`, and `read_step_pmi` matches by **(type, value, tol,
   target)** and datums by **name** (identity does not survive the writer; a

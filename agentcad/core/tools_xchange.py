@@ -175,22 +175,50 @@ def _with_fidelity(result: dict, fidelity: dict) -> dict:
 # ------------------------------------------------------------ mesh export
 
 
+def _staging_name(path: Path) -> str:
+    """A staging name **no other writer can be holding** (changelog 0181).
+
+    The fixed ``.<stem>.tmp<suffix>`` this used to be is one name per target
+    path, so two exports of one part raced into the same file and each
+    ``os.replace``d the interleaved mixture into place — ``os.replace`` was
+    atomic the whole time; the file being replaced *from* was shared.
+    ``ProjectStore._atomic_write`` is the precedent, spelled the same way.
+    """
+    return f".{path.stem}.{os.urandom(6).hex()}.tmp{path.suffix}"
+
+
 def _atomic_write(path: Path, data: bytes) -> None:
     """tmp + ``os.replace``, the worker's own export rule: a killed export
     never leaves a torn file where a whole one used to be."""
-    tmp = path.with_name(f".{path.stem}.tmp{path.suffix}")
+    tmp = path.with_name(_staging_name(path))
     try:
         tmp.write_bytes(data)
         os.replace(tmp, path)
     except BaseException:
+        # Only ever OUR staging file: the random suffix is what makes that
+        # sentence true, and cleaning up a shared one was the second half of
+        # the corruption.
         tmp.unlink(missing_ok=True)
         raise
 
 
 def _render(items, fmt: str) -> bytes:
-    if fmt == USD_FORMAT:
-        return usd_export.build_usd(items)
-    return gltf.build_glb(items) if fmt == "glb" else gltf.build_gltf(items)[0]
+    """Serialize *items* into *fmt*'s bytes, refusing as a ``validation_error``.
+
+    ``GltfError``/``UsdError`` are ``ValidationError`` subclasses, so they can
+    no longer escape as a 500 — but the wire ``type`` a registry envelope
+    carries is the class NAME (``ToolRegistry.call``), and a caller matching on
+    the documented ``validation_error`` would not recognize ``gltf_error``. The
+    class keeps its name for the reader; the envelope keeps the contract.
+    """
+    try:
+        if fmt == USD_FORMAT:
+            return usd_export.build_usd(items)
+        return (gltf.build_glb(items) if fmt == "glb"
+                else gltf.build_gltf(items)[0])
+    except (gltf.GltfError, usd_export.UsdError) as exc:
+        raise ValidationError(exc.message,
+                              {**exc.details, "format": fmt}) from exc
 
 
 def _self_written(fmt: str) -> bool:
@@ -214,10 +242,20 @@ def _part_item(service, proj: str, part_id: str, config: str | None) -> dict:
     # and a failed build raises the ordinary KernelError.
     info = service.mesh_info(proj, part_id, config=config)
     record = service._record_for(proj, part_id, config)
+    acm_bytes = Path(info["path"]).read_bytes()
+    if not gltf.has_triangles(acm_bytes):
+        # A part whose build produced no triangles (an empty sketch, a boolean
+        # that cancelled) has nothing a mesh format can carry. One part, one
+        # refusal — the ASSEMBLY path skips the member instead (see
+        # `_assembly_items`), because there the rest of the file is still real.
+        raise ValidationError(
+            f"nothing to tessellate: part {part_id!r} has no triangles",
+            {"part_id": part_id},
+        )
     return {
         "instance_id": part_id,
         "mesh_key": info["key"],
-        "acm_bytes": Path(info["path"]).read_bytes(),
+        "acm_bytes": acm_bytes,
         "position": [0.0, 0.0, 0.0],
         "rotation_deg": [0.0, 0.0, 0.0],
         "color_hex": color_for(record),
@@ -266,6 +304,14 @@ def _assembly_items(service, proj: str) -> tuple[list[dict], list[dict]]:
         if not path.is_file():
             skipped.append({"id": instance_id, "reason": "mesh_not_cached"})
             continue
+        acm_bytes = path.read_bytes()
+        if not gltf.has_triangles(acm_bytes):
+            # A degenerate member is a ROW, not a dead export: `parse_acm`
+            # refusing here used to cost the caller the other thirty-nine
+            # instances, and `instances_skipped` is the contract that already
+            # says what did not make it into the file.
+            skipped.append({"id": instance_id, "reason": "empty_mesh"})
+            continue
         try:
             record = service.store.get_part(owner, entry.get("part", ""))
         except AppError:
@@ -273,7 +319,7 @@ def _assembly_items(service, proj: str) -> tuple[list[dict], list[dict]]:
         items.append({
             "instance_id": instance_id,
             "mesh_key": key,
-            "acm_bytes": path.read_bytes(),
+            "acm_bytes": acm_bytes,
             "position": entry.get("position") or [0.0, 0.0, 0.0],
             "rotation_deg": entry.get("rotation_deg") or [0.0, 0.0, 0.0],
             "color_hex": color_for(record, entry),
@@ -311,6 +357,18 @@ def _normalize_metadata(metadata) -> dict:
             continue
         if not isinstance(value, str):
             raise ValidationError(f"metadata.{name} must be a string")
+        # lib3mf takes a C string: a NUL truncates the value silently at the
+        # library boundary (`Title\0evil` is stamped as `Title`), and the other
+        # C0 controls are not legal XML character data at all — so a value
+        # carrying one is refused here rather than half-written there.
+        bad = next((c for c in value if ord(c) < 0x20 and c not in "\t\n\r"),
+                   None)
+        if bad is not None:
+            raise ValidationError(
+                f"metadata.{name} contains a control character "
+                f"(U+{ord(bad):04X}); 3MF metadata is text",
+                {"key": name},
+            )
         out[name] = value
     return out
 
@@ -501,15 +559,30 @@ def _part_pmi(service, proj: str, part_id: str) -> dict | None:
     """The part's stored PMI section, or ``None`` when it has none.
 
     Read from the manifest entry the way ``tools_pmi`` writes it (a loose key,
-    never a ``PartRecord`` field).
+    never a ``PartRecord`` field) and **re-validated on the way out**.
+
+    ``set_part_pmi`` validates on write, but a loose key is exactly the kind of
+    thing a hand edit, a merge or an older tool can leave malformed — and this
+    value is handed to the kernel, where a missing ``kind`` was a ``KeyError``
+    inside ``map_pmi``: a 502 blaming the worker for a manifest the user can
+    fix. Validating here makes it a 422 naming the part and the problem.
     """
+    from .pmi import validate_pmi
+
     for entry in service.store.manifest(proj).get("parts", []):
         if entry.get("id") == part_id:
             pmi = entry.get("pmi")
-            if isinstance(pmi, dict) and any(pmi.get(k) for k in
-                                             ("dims", "datums", "fcf")):
-                return pmi
-            return None
+            if not isinstance(pmi, dict) or not any(
+                    pmi.get(k) for k in ("dims", "datums", "fcf")):
+                return None
+            try:
+                return validate_pmi(pmi)
+            except ValidationError as exc:
+                raise ValidationError(
+                    f"part {part_id!r} has a malformed pmi section: "
+                    f"{exc.message}",
+                    {"part_id": part_id, **exc.details},
+                ) from exc
     return None
 
 
@@ -533,8 +606,16 @@ def _export_step_pmi(service, proj: str, part_id: str, pmi: dict,
                                         timeout_s=300.0, affinity=part_id)
     if config is not None:
         result["config"] = config
+    # "attached" is a claim about the FILE, so it is read off what the worker
+    # actually wrote: a part whose every entry was skipped exports a perfectly
+    # good AP242 file with no PMI in it, and reporting `pmi: "attached"` there
+    # is the one lie `fidelity` exists to prevent (FR12). The skipped rows and
+    # the notes ride along either way — they are how the caller learns why.
+    attached = result.get("pmi_attached") or {}
+    carried = any(int(attached.get(key) or 0) > 0
+                  for key in ("dims", "datums", "fcf"))
     return _with_fidelity(result, _fidelity(
-        "step", pmi="attached",
+        "step", pmi="attached" if carried else "none",
         pmi_skipped=result.get("pmi_skipped", []),
         pmi_notes=result.get("pmi_notes", []),
     ))

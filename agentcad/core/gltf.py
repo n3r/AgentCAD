@@ -42,6 +42,7 @@ import struct
 import numpy as np
 
 from .interop_colors import srgb_to_linear
+from .model import ValidationError
 
 #: ``-90°`` about X, as a glTF ``[x, y, z, w]`` quaternion: Z-up → Y-up.
 ROOT_ROTATION = (-math.sin(math.pi / 4), 0.0, 0.0, math.cos(math.pi / 4))
@@ -72,8 +73,39 @@ _UNSIGNED_INT = 5125
 _TRIANGLES = 4
 
 
-class GltfError(ValueError):
-    """A malformed item list or mesh buffer — never a partial file."""
+class GltfError(ValidationError):
+    """A malformed item list or mesh buffer — never a partial file.
+
+    An ``AppError`` (``ValidationError``) and not a bare ``ValueError``: every
+    input this writer refuses is the **caller's** — an item with no mesh key, a
+    truncated buffer, an infinite rotation — and a bare ``ValueError`` escaped
+    both ``ToolRegistry.call`` and FastAPI's ``AppError`` handler, so a
+    malformed export request answered 500 instead of a refusal envelope.
+    """
+
+
+class EmptyMeshError(GltfError):
+    """A well-formed ACM1 buffer that carries no triangles.
+
+    Its own class because the two callers answer it differently: a single-part
+    export refuses (there is nothing to write), while an **assembly** export
+    reports the instance in ``fidelity.instances_skipped`` and writes the rest —
+    one degenerate member must not cost the caller the other forty.
+    """
+
+
+def has_triangles(data: bytes) -> bool:
+    """True when *data* is an ACM1 buffer with at least one triangle.
+
+    The cheap half of :func:`parse_acm` (header only), so an assembly export can
+    skip an empty member before it pays to slice the buffer. A buffer this
+    cannot read at all answers ``False`` too — the caller's next step is the
+    same skip row either way, and ``parse_acm`` is where the detail lives.
+    """
+    if len(data) < _ACM_HEADER.size:
+        return False
+    magic, nv, nt, _nep, _nel = _ACM_HEADER.unpack_from(data, 0)
+    return magic == _ACM_MAGIC and nv > 0 and nt > 0
 
 
 def parse_acm(data: bytes) -> dict:
@@ -89,7 +121,7 @@ def parse_acm(data: bytes) -> dict:
     if magic != _ACM_MAGIC:
         raise GltfError("not an ACM1 buffer")
     if nv == 0 or nt == 0:
-        raise GltfError("mesh has no triangles")
+        raise EmptyMeshError("mesh has no triangles")
     off = _ACM_HEADER.size
     pos_bytes = data[off:off + 12 * nv]
     off += 12 * nv
@@ -101,25 +133,72 @@ def parse_acm(data: bytes) -> dict:
             or len(idx_bytes) != 12 * nt:
         raise GltfError("truncated ACM1 buffer")
     positions = np.frombuffer(pos_bytes, dtype="<f4").reshape(-1, 3)
+    low = [float(v) for v in positions.min(axis=0)]
+    high = [float(v) for v in positions.max(axis=0)]
+    # A NaN anywhere in the positions propagates into min/max, so this one
+    # cheap test is also the whole-buffer finiteness check: `json.dumps(...,
+    # allow_nan=False)` would otherwise raise a bare ValueError from inside the
+    # serializer, after the caller's disk budget had already been spent.
+    if not all(math.isfinite(v) for v in (*low, *high)):
+        raise GltfError("mesh buffer contains non-finite vertex coordinates")
     return {
         "vertex_count": int(nv),
         "index_count": int(nt) * 3,
         "positions": pos_bytes,
         "normals": nrm_bytes,
         "indices": idx_bytes,
-        "min": [float(v) for v in positions.min(axis=0)],
-        "max": [float(v) for v in positions.max(axis=0)],
+        "min": low,
+        "max": high,
     }
 
 
-def _num(value) -> float:
-    """One rounding rule for every float in the document (and no ``-0.0``)."""
-    out = round(float(value), FLOAT_DIGITS)
+def _num(value, what: str = "value") -> float:
+    """One rounding rule for every float in the document (and no ``-0.0``).
+
+    A non-finite input is refused **here**, naming what it was: glTF JSON has
+    no NaN or Infinity literal, so the alternative is a ``ValueError`` out of
+    ``json.dumps`` naming nothing at all.
+    """
+    number = float(value)
+    if not math.isfinite(number):
+        raise GltfError(f"{what} is not a finite number ({value!r})")
+    out = round(number, FLOAT_DIGITS)
     return 0.0 if out == 0.0 else out
 
 
-def _vec(values) -> list[float]:
-    return [_num(v) for v in values]
+def _vec(values, what: str = "value") -> list[float]:
+    return [_num(v, what) for v in values]
+
+
+_SCALE = 10 ** FLOAT_DIGITS
+
+
+def _floor(value: float) -> float:
+    """*value* rounded DOWN to ``FLOAT_DIGITS`` decimals — never above it."""
+    scaled = math.floor(value * _SCALE)
+    while scaled / _SCALE > value:                 # ULP insurance, not theatre
+        scaled -= 1
+    return scaled / _SCALE + 0.0                   # `+ 0.0` kills `-0.0`
+
+
+def _ceil(value: float) -> float:
+    """*value* rounded UP to ``FLOAT_DIGITS`` decimals — never below it."""
+    scaled = math.ceil(value * _SCALE)
+    while scaled / _SCALE < value:
+        scaled += 1
+    return scaled / _SCALE + 0.0
+
+
+def _bounds(low, high) -> tuple[list[float], list[float]]:
+    """Accessor ``min``/``max`` that genuinely BOUND the serialized buffer.
+
+    The JSON is rounded to six decimals and the buffer is not, so the ordinary
+    ``_num`` rounding can move a minimum *up* past the smallest vertex (or a
+    maximum *down* below the largest) by up to 5e-7 — a validator reads that as
+    "an accessor value lies outside its declared bounds". Rounding the two ends
+    outwards keeps six-decimal, deterministic text and a true claim.
+    """
+    return ([_floor(v) for v in low], [_ceil(v) for v in high])
 
 
 def _qmul(a, b) -> tuple[float, float, float, float]:
@@ -140,7 +219,13 @@ def quaternion_from_euler_xyz(rotation_deg) -> tuple[float, float, float, float]
     ``THREE.Euler("XYZ")``) is **R = Rx · Ry · Rz** — the Z rotation hits the
     vector first — so the quaternion composes in exactly that order.
     """
-    rx, ry, rz = (math.radians(float(a)) / 2.0 for a in rotation_deg)
+    angles = [float(a) for a in rotation_deg]
+    if not all(math.isfinite(a) for a in angles):
+        # `math.sin(inf)` is a ValueError and `math.sin(nan)` is a silent NaN
+        # that reaches the file as a broken quaternion — refuse the input
+        # instead of either.
+        raise GltfError(f"rotation_deg is not finite ({list(rotation_deg)!r})")
+    rx, ry, rz = (math.radians(a) / 2.0 for a in angles)
     qx = (math.sin(rx), 0.0, 0.0, math.cos(rx))
     qy = (0.0, math.sin(ry), 0.0, math.cos(ry))
     qz = (0.0, 0.0, math.sin(rz), math.cos(rz))
@@ -156,12 +241,20 @@ def _normalized_items(items) -> list[dict]:
         acm_bytes = raw.get("acm_bytes")
         if not mesh_key or not acm_bytes:
             raise GltfError("every item needs a mesh_key and its ACM1 bytes")
+        instance_id = str(raw.get("instance_id") or mesh_key)
+        position = list(raw.get("position") or (0.0, 0.0, 0.0))
+        rotation = list(raw.get("rotation_deg") or (0.0, 0.0, 0.0))
+        # Named here, where the instance id is still in hand: a NaN caught six
+        # frames deeper inside `json.dumps` names no instance, and "which one"
+        # is the only part of the answer a caller can act on.
+        _vec(position, f"instance {instance_id!r} position")
+        _vec(rotation, f"instance {instance_id!r} rotation_deg")
         out.append({
-            "instance_id": str(raw.get("instance_id") or mesh_key),
+            "instance_id": instance_id,
             "mesh_key": str(mesh_key),
             "acm_bytes": acm_bytes,
-            "position": list(raw.get("position") or (0.0, 0.0, 0.0)),
-            "rotation_deg": list(raw.get("rotation_deg") or (0.0, 0.0, 0.0)),
+            "position": position,
+            "rotation_deg": rotation,
             "color_hex": raw.get("color_hex") or None,
             "material_category": raw.get("material_category") or None,
         })
@@ -223,13 +316,14 @@ def build_document(items) -> tuple[dict, bytes]:
             })
             buffer.extend(payload)
         base = len(buffer_views) - 3
+        low, high = _bounds(mesh["min"], mesh["max"])
         accessors.append({
             "bufferView": base,
             "componentType": _FLOAT,
             "count": mesh["vertex_count"],
             "type": "VEC3",
-            "min": _vec(mesh["min"]),
-            "max": _vec(mesh["max"]),
+            "min": low,
+            "max": high,
         })
         accessors.append({
             "bufferView": base + 1,
@@ -277,11 +371,13 @@ def build_document(items) -> tuple[dict, bytes]:
         "children": list(range(1, len(normalized) + 1)),
     }]
     for item in normalized:
+        what = f"instance {item['instance_id']!r}"
         nodes.append({
             "name": item["instance_id"],
             "mesh": mesh_index[(item["mesh_key"], _material_key(item))],
-            "translation": _vec(item["position"]),
-            "rotation": _vec(quaternion_from_euler_xyz(item["rotation_deg"])),
+            "translation": _vec(item["position"], f"{what} position"),
+            "rotation": _vec(quaternion_from_euler_xyz(item["rotation_deg"]),
+                             f"{what} rotation"),
         })
 
     document = {
@@ -305,8 +401,18 @@ def build_document(items) -> tuple[dict, bytes]:
 
 
 def _dumps(document: dict) -> bytes:
-    return json.dumps(document, sort_keys=True, separators=(",", ":"),
-                      allow_nan=False, ensure_ascii=True).encode("utf-8")
+    """Serialize the document. ``allow_nan=False`` is the last line of defence.
+
+    Every float reaches the document through ``_num``, which already refuses a
+    non-finite one by name, so this raise should be unreachable — it is kept
+    (and translated) because "unreachable" is a claim about today's callers,
+    and the failure it guards is a glTF file no viewer can load.
+    """
+    try:
+        return json.dumps(document, sort_keys=True, separators=(",", ":"),
+                          allow_nan=False, ensure_ascii=True).encode("utf-8")
+    except ValueError as exc:                      # NaN/Infinity in the tree
+        raise GltfError(f"glTF document is not serializable: {exc}") from exc
 
 
 def build_gltf(items, *, bin_uri: str | None = None) -> tuple[bytes, bytes]:

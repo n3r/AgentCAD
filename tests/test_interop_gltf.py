@@ -28,8 +28,9 @@ from pathlib import Path
 
 import pytest
 
-from agentcad.core import gltf, interop_colors
+from agentcad.core import gltf, interop_colors, usd_export
 from agentcad.core.materials import CATEGORIES, SUBCATEGORIES
+from agentcad.core.model import ValidationError
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -317,6 +318,100 @@ def test_an_empty_item_list_refuses():
         gltf.build_glb([])
     with pytest.raises(gltf.GltfError):
         gltf.build_glb([{"instance_id": "a"}])
+
+
+# --------------------------------------------------- the refusal CONTRACT
+
+
+def test_a_gltf_refusal_is_an_app_error_not_a_bare_valueerror():
+    """`GltfError` is a `ValidationError`, so the refusal reaches a caller as a
+    4xx envelope. As a bare `ValueError` it escaped `ToolRegistry.call` AND
+    FastAPI's `AppError` handler, and a malformed export answered 500 —
+    "something broke in the server" for an input the caller can fix."""
+    assert issubclass(gltf.GltfError, ValidationError)
+    assert issubclass(gltf.EmptyMeshError, gltf.GltfError)
+    assert issubclass(usd_export.UsdError, ValidationError)
+    with pytest.raises(ValidationError):
+        gltf.build_glb([])
+    error = pytest.raises(gltf.GltfError, gltf.parse_acm, b"NOPE").value
+    assert error.message and error.details == {}
+
+
+def test_an_empty_mesh_is_its_own_refusal_class():
+    """The two callers answer it differently — a part export refuses, an
+    assembly export skips the member — so it needs its own class, and the
+    header-only probe has to agree with the parser."""
+    empty = make_acm([], indices=[])
+    with pytest.raises(gltf.EmptyMeshError):
+        gltf.parse_acm(empty)
+    assert gltf.has_triangles(empty) is False
+    assert gltf.has_triangles(TRI) is True
+    assert gltf.has_triangles(b"NOPE" + TRI[4:]) is False
+    assert gltf.has_triangles(b"") is False
+
+
+# ----------------------------------------------------- non-finite numbers
+
+
+def test_a_non_finite_pose_is_refused_and_names_the_instance():
+    """glTF JSON has no NaN or Infinity literal. Without the guard the failure
+    was a `ValueError` out of `json.dumps` naming nothing — after the export
+    had already spent the caller's disk budget."""
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(gltf.GltfError) as exc:
+            gltf.build_glb([item(instance_id="bolt", position=(bad, 0, 0))])
+        assert "bolt" in str(exc.value)
+        with pytest.raises(gltf.GltfError) as exc:
+            gltf.build_glb([item(instance_id="bolt", rotation=(0, bad, 0))])
+        assert "bolt" in str(exc.value)
+
+
+def test_a_non_finite_rotation_never_reaches_the_quaternion():
+    """`math.sin(inf)` is a ValueError and `math.sin(nan)` is a silent NaN that
+    reaches the file as a broken quaternion — refuse the input, not either."""
+    with pytest.raises(gltf.GltfError):
+        gltf.quaternion_from_euler_xyz((float("inf"), 0, 0))
+    with pytest.raises(gltf.GltfError):
+        gltf.quaternion_from_euler_xyz((0, 0, float("nan")))
+
+
+def test_a_non_finite_vertex_is_refused_by_the_parser():
+    nan_mesh = make_acm([(0.0, 0.0, 0.0), (float("nan"), 0.0, 0.0),
+                         (0.0, 1.0, 0.0)])
+    with pytest.raises(gltf.GltfError) as exc:
+        gltf.parse_acm(nan_mesh)
+    assert "non-finite" in str(exc.value)
+
+
+# ------------------------------------------------------- accessor bounds
+
+
+def test_accessor_bounds_actually_bound_the_serialized_buffer():
+    """The JSON is rounded to six decimals and the buffer is not, so an
+    ordinary round can put the declared `min` *above* the smallest vertex (or
+    `max` below the largest) by up to 5e-7 — which a glTF validator reports as
+    an accessor value outside its declared bounds. The two ends round
+    outwards.
+
+    The fixture is chosen so plain rounding gets it wrong: 0.0000005 rounds to
+    0.000001 (up, past the value) and 9.9999995 rounds to 10.0 (down, under
+    it) at six decimals.
+    """
+    mesh = make_acm([(0.0000005, -0.0000005, 0.0),
+                     (9.9999995, 1.0, 2.0),
+                     (5.0, 3.0, 4.0)])
+    doc, binary = parse_glb(gltf.build_glb([item(acm=mesh)]))
+    accessor = doc["accessors"][0]
+    points = struct.unpack("<9f", binary[:36])
+    for axis in range(3):
+        column = points[axis::3]
+        assert accessor["min"][axis] <= min(column)
+        assert accessor["max"][axis] >= max(column)
+    # ...and it is still six-decimal, deterministic text (no float noise)
+    assert gltf.build_glb([item(acm=mesh)]) == gltf.build_glb([item(acm=mesh)])
+    for value in (*accessor["min"], *accessor["max"]):
+        assert round(value, 6) == value
+        assert str(value) != "-0.0"
 
 
 # ------------------------------------------------------------ colour map

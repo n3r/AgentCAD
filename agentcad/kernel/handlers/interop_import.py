@@ -44,6 +44,7 @@ here re-places exactly through ``b3d.Location(position, rotation_deg)``.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import re
@@ -134,10 +135,38 @@ def _pose(loc: TopLoc_Location) -> tuple[list[float], list[float]]:
     )
 
 
+#: Longest sanitized fragment a materialized ``.brep`` name may carry, before
+#: the disambiguating digest. Two of these plus the digests plus ``.brep`` sit
+#: far inside every filesystem's 255-byte component limit.
+MAX_FRAGMENT = 40
+
+#: Hex characters of the digest that disambiguates a truncated (or merely
+#: lossily sanitized) name. 8 hex chars = 32 bits.
+DIGEST_CHARS = 8
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[
+        :DIGEST_CHARS]
+
+
 def _sanitize(name: str | None) -> str:
-    """Filename-safe fragment: lowercase ``[a-z0-9_]`` only."""
+    """Filename-safe fragment: lowercase ``[a-z0-9_]``, at most 40 characters.
+
+    The cap is not cosmetic. A STEP file may name a product with ten thousand
+    characters, and the uncapped slug went straight into a path: ``os.replace``
+    then raised ``OSError: [Errno 63] File name too long: '/abs/server/path/…'``
+    — an unhandled kernel error whose message *published the server's absolute
+    directory layout* to the caller. A truncated fragment plus a digest of the
+    whole name keeps the name readable, the path short, and distinct products
+    distinct.
+    """
     slug = re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_")
-    return slug or "product"
+    if not slug:
+        return "product"
+    if len(slug) <= MAX_FRAGMENT:
+        return slug
+    return f"{slug[:MAX_FRAGMENT]}_{_digest(name or '')}"
 
 
 # ---------------------------------------------------------------- the walk
@@ -356,19 +385,60 @@ def register(toolbox: dict) -> dict:
 
         directory = Path(out_dir)
         directory.mkdir(parents=True, exist_ok=True)
-        stem = _sanitize(Path(source_path).stem)
+        # The ORIGINAL uploaded basename, not the (possibly rewritten) path we
+        # were handed — the server passes it because it is the only thing that
+        # still distinguishes two uploads whose stems sanitize alike.
+        original = str(params.get("original_name")
+                       or Path(source_path).name)
+        stem = _sanitize(Path(original).stem)
+        # `widget-1.step` and `widget_1.step` BOTH sanitize to `widget_1`, so
+        # the second import silently rewrote the first one's geometry under the
+        # first one's filename — the reference parts of import #1 then pointed
+        # at import #2's solids. The digest of the original basename is what
+        # makes the materialized name a function of the FILE, not of its slug.
+        source_key = _digest(original)
         for product, shape in zip(walk.products, walk.shapes):
-            name = f"{stem}__{product['index']}_{_sanitize(product['name'])}.brep"
+            name = (f"{stem}_{source_key}__{product['index']}_"
+                    f"{_sanitize(product['name'])}.brep")
             target = directory / name
-            # Same tmp+os.replace shape as the toolbox's atomic_write; BRepTools
-            # writes to a path itself, so the bytes never round-trip memory.
-            tmp = target.with_name(target.name + ".tmp")
+            # Same tmp+os.replace shape as the toolbox's atomic_write, with the
+            # same random staging suffix (changelog 0181): a fixed `.tmp` is one
+            # name per target, so two workers materializing one product
+            # interleaved their bytes into it and each promoted the mixture.
+            # BRepTools writes to a path itself, so the bytes never round-trip
+            # memory.
+            tmp = target.with_name(f".{target.name}.{os.urandom(6).hex()}.tmp")
             try:
-                BRepTools.Write_s(shape, str(tmp))
-            except Exception as exc:  # noqa: BLE001
-                raise _refuse(
-                    f"could not write product {product['name']!r}: {exc}") from exc
-            os.replace(tmp, target)
+                try:
+                    # The return value is the contract: `Write_s` answers False
+                    # for a write it could not complete (a full disk, a bad
+                    # path) and raises nothing, so ignoring it promoted
+                    # whatever happened to be at `tmp` — or, with no file there
+                    # at all, died in `os.replace` with the server's absolute
+                    # path in the message.
+                    written = BRepTools.Write_s(shape, str(tmp))
+                except Exception as exc:  # noqa: BLE001 — OCCT throws many types
+                    raise _refuse(
+                        f"could not write product {product['name']!r}: {exc}"
+                    ) from exc
+                if not written:
+                    raise _refuse(
+                        f"could not write product {product['name']!r}: "
+                        "BRepTools.Write returned False")
+                try:
+                    os.replace(tmp, target)
+                except OSError as exc:
+                    # `exc` carries the absolute staging path; the refusal names
+                    # the product and the errno instead.
+                    raise _refuse(
+                        f"could not materialize product {product['name']!r} "
+                        f"as {name!r}: {exc.strerror or exc.__class__.__name__}"
+                    ) from exc
+            except BaseException:
+                # Only ever OUR staging file — that is what the random suffix
+                # buys — and on every failure path, not just the raising ones.
+                tmp.unlink(missing_ok=True)
+                raise
             product["file"] = name  # basename only — never an absolute path
         return _payload(walk, warnings)
 

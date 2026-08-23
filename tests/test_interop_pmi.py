@@ -369,6 +369,67 @@ def test_a_blocked_type_becomes_a_skipped_row_and_never_reaches_the_writer(
     assert labels.Length() == 0
 
 
+# ------------------------------------------------- non-finite PMI values
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"),
+                                   float("-inf")])
+def test_a_non_finite_pmi_value_is_a_skipped_row_never_a_written_nan(value):
+    """`core/pmi.validate_pmi` compares against 0, and EVERY comparison with a
+    NaN is False — so `plus < 0`, `plus == 0` and `tol <= 0` all wave one
+    through. It then reached `SetValue`, OCCT wrote the literal `NAN` into the
+    STEP file, and the export reported the entry as *attached*: a toleranced
+    part whose tolerance no consumer can read, described as fine.
+
+    Asserted where it can be seen: zero dimension and zero tolerance labels in
+    the document, so the writer is never handed one.
+    """
+    from build123d import Box
+    from OCP.TDF import TDF_LabelSequence
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+
+    doc = _pmi_map.new_document()
+    pmi = {
+        "dims": [{"id": "h", "kind": "linear", "target": "height",
+                  "plus": value, "minus": 0.1}],
+        "datums": [{"id": "A", "face": "top"}],
+        "fcf": [{"id": "flat", "type": "flatness", "tol_mm": value,
+                 "datums": []}],
+    }
+    mapped = _pmi_map.map_pmi(doc, Box(40, 30, 20), pmi)
+
+    assert mapped["attached"]["dims"] == 1        # the auxiliary unit dim only
+    assert mapped["attached"]["fcf"] == 0
+    assert sorted(row["id"] for row in mapped["skipped"]) == ["flat", "h"]
+    for row in mapped["skipped"]:
+        assert row["reason"].startswith("non_finite_value:"), row
+
+    tool = XCAFDoc_DocumentTool.DimTolTool_s(doc.Main())
+    tolerances = TDF_LabelSequence()
+    tool.GetGeomToleranceLabels(tolerances)
+    assert tolerances.Length() == 0
+    dims = TDF_LabelSequence()
+    tool.GetDimensionLabels(dims)
+    assert dims.Length() == 1                     # only the auxiliary one
+
+
+def test_a_non_finite_value_never_reaches_the_written_file(kernel, tmp_path):
+    """End to end through the worker: the file exists, it is AP242, and the
+    string `NAN` is nowhere in it."""
+    out = tmp_path / "nan.step"
+    result = _export(kernel, out, pmi={
+        "dims": [{"id": "h", "kind": "linear", "target": "height",
+                  "plus": 0.1, "minus": 0.1},
+                 {"id": "bad", "kind": "linear", "target": "width",
+                  "plus": float("nan"), "minus": 0.1}],
+        "datums": [], "fcf": []})
+    assert [row["id"] for row in result["pmi_skipped"]] == ["bad"]
+    assert result["pmi_attached"]["dims"] == 1
+    text = out.read_text(errors="replace")
+    assert "AP242" in text[:8192]
+    assert "NAN" not in text.upper()
+
+
 def test_mesh_reference_refuses_pmi_export(kernel, tmp_path):
     """An STL reference part is a welded mesh face — no B-rep faces to hang
     PMI on. The refusal is explicit, not an empty PMI section."""

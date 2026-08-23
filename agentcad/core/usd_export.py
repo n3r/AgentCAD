@@ -68,12 +68,14 @@ without the extra, which is what lets ``tools_xchange`` ask
 
 from __future__ import annotations
 
+import math
 import re
 
 import numpy as np
 
 from . import gltf
 from .interop_colors import srgb_to_linear
+from .model import ValidationError
 
 #: Millimetres, declared. AgentCAD's own unit, carried rather than converted.
 METERS_PER_UNIT = 0.001
@@ -104,12 +106,16 @@ COLOR_DIGITS = 6
 _IDENT_RE = re.compile(r"[^A-Za-z0-9_]")
 
 
-class UsdError(RuntimeError):
+class UsdError(ValidationError):
     """USD was asked for without the extra that can write it.
 
     A malformed item list raises ``gltf.GltfError`` instead: both writers
     normalize their input through the same function, so they refuse the same
     things for the same reasons.
+
+    An ``AppError`` (``ValidationError``) and not a bare ``RuntimeError``: the
+    condition is the caller's request, and a ``RuntimeError`` escaped both
+    ``ToolRegistry.call`` and FastAPI's ``AppError`` handler as a 500.
     """
 
 
@@ -148,6 +154,19 @@ def _prim_name(raw: str, used: set[str], *, prefix: str = "") -> str:
 def _color(color_hex: str | None) -> tuple[float, float, float]:
     return tuple(round(c, COLOR_DIGITS)          # type: ignore[return-value]
                  for c in srgb_to_linear(color_hex or ""))
+
+
+def _finite3(values, what: str) -> tuple[float, float, float]:
+    """Three floats, refused if any of them is NaN or an infinity.
+
+    ``Gf`` takes a NaN without complaint and ``ExportToString`` writes the
+    literal ``nan`` into the stage — a file ``Usd.Stage.Open`` then rejects,
+    long after the export reported success. The refusal belongs at the input.
+    """
+    numbers = tuple(float(v) for v in values)
+    if not all(math.isfinite(n) for n in numbers):
+        raise UsdError(f"{what} is not finite ({list(values)!r})")
+    return numbers                               # type: ignore[return-value]
 
 
 def _mesh_arrays(acm_bytes: bytes) -> dict:
@@ -258,7 +277,8 @@ def build_usd_text(items) -> str:
         qx, qy, qz, qw = quaternion
         matrix = Gf.Matrix4d(1.0)
         matrix.SetRotate(Gf.Quatd(qw, qx, qy, qz))
-        matrix.SetTranslateOnly(Gf.Vec3d(*(float(v) for v in item["position"])))
+        matrix.SetTranslateOnly(Gf.Vec3d(*_finite3(
+            item["position"], f"instance {item['instance_id']!r} position")))
         gprim.AddTransformOp().Set(matrix)
 
         color = gprim.CreateDisplayColorPrimvar(UsdGeom.Tokens.constant)

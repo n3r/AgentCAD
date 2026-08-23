@@ -695,7 +695,7 @@ async function promptIncludePmi(partId) {
   return values ? !!values.pmi : null;
 }
 
-async function runExport(kind, format) {
+async function runExport(kind, format, structured) {
   if (!state.projectName) return;
   try {
     let result;
@@ -737,6 +737,17 @@ async function runExport(kind, format) {
             pmi,
           })
         : await api.exportPart(state.projectName, state.selectedPart, format);
+      // The passthrough answers {error} at HTTP 200 on a tool failure.
+      if (result && result.error) {
+        toast(`Export failed: ${result.error.message || "error"}`, "error");
+        return;
+      }
+    } else if (structured) {
+      // The plain assembly export route takes no `structured` flag — same
+      // reason the STEP-part path above needs `callTool` for `pmi`.
+      result = await api.callTool("export_assembly", {
+        project: state.projectName, format, structured: true,
+      });
       // The passthrough answers {error} at HTTP 200 on a tool failure.
       if (result && result.error) {
         toast(`Export failed: ${result.error.message || "error"}`, "error");
@@ -1034,7 +1045,19 @@ async function handleImportFile(file) {
       // prompt with no error shown (the plan is explicit: no error dialog).
       preview = null;
     }
-    if (preview && preview.counts && preview.counts.occurrences > 1) {
+    // Gate on the server's name-aware auto-detect rule (PRD-017 review
+    // fix): a re-imported multi-solid AgentCAD export must NOT bounce
+    // through this dialog just because it has several occurrences, or its
+    // primary button explodes it into N anonymous SOLID parts. Fall back to
+    // the old occurrence-count rule ONLY when `structured_suggested` is
+    // absent from the payload (an older server) — an explicit `false` means
+    // straight to the flat prompt no matter the occurrence count.
+    const suggestsStructured = preview && (
+      preview.structured_suggested === true
+      || (preview.structured_suggested === undefined
+          && preview.counts && preview.counts.occurrences > 1)
+    );
+    if (suggestsStructured) {
       await openImportPreview(upload, preview, file.name);
       return;
     }
@@ -1819,10 +1842,12 @@ function exportMenuItem(spec) {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "menu-item";
-  btn.dataset.export = `${spec.kind}:${spec.format}`;
+  // The trailing flag distinguishes the structured-STEP assembly row from
+  // the plain STEP row — both share kind:"assembly", format:"step".
+  btn.dataset.export = `${spec.kind}:${spec.format}:${spec.structured ? "1" : "0"}`;
   btn.disabled = !spec.enabled;
   const label = document.createElement("span");
-  label.textContent = String(spec.format).toUpperCase();
+  label.textContent = spec.label || String(spec.format).toUpperCase();
   const meta = document.createElement("span");
   meta.className = "meta";
   meta.textContent = `.${spec.format}`;
@@ -1887,8 +1912,8 @@ function setupExportMenu() {
     const item = e.target.closest("[data-export]");
     if (!item || item.disabled) return;
     setMenuHidden(menu, true);
-    const [kind, format] = item.dataset.export.split(":");
-    runExport(kind, format);
+    const [kind, format, structuredFlag] = item.dataset.export.split(":");
+    runExport(kind, format, structuredFlag === "1");
   });
 }
 
@@ -2778,10 +2803,30 @@ function registerActions() {
     ["part", "glb", "file/44"],
     ["assembly", "step", "file/50"], ["assembly", "stl", "file/51"],
     ["assembly", "gltf", "file/52"], ["assembly", "glb", "file/53"],
+    // Was reachable only via the un-awaited dynamic schema sync below (it
+    // renders last, and vanishes entirely if the boot fetch fails) — a
+    // static row so it is there from first paint like every other format.
+    ["assembly", "3mf", "file/54"],
   ];
   for (const [kind, format, menu] of EXPORTS) {
     registerExportAction(kind, format, menu);
   }
+  // PRD-017's Experience section promises the human path can produce a
+  // structured assembly STEP (product tree, not the fused compound) —
+  // today only the agent path (`export_assembly {structured: true}`)
+  // could reach it. Same STEP format as the row above but explicitly
+  // flagged, mirroring the STEP-part `callTool` precedent (`promptIncludePmi`).
+  A({
+    id: "project.export.assembly.step_structured",
+    kind: "assembly", format: "step", structured: true,
+    label: "STEP (structured)",
+    title: "Export assembly as structured STEP (product tree)",
+    group: "Export", menu: "file/55",
+    keywords: ["save", "download", "structured", "product tree", "step"],
+    when: hasProject,
+    enabled: (c) => !!c.hasInstances,
+    run: () => runExport("assembly", "step", true),
+  });
   A({ id: "project.share", title: "Share a part…", group: "Project",
       menu: "file/60",
       // Hosted mode only: share-links.js unhides the button once it knows the

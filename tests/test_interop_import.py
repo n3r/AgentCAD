@@ -22,10 +22,13 @@ apart:
 
 from __future__ import annotations
 
+import shutil
+
 import pytest
 from fastapi.testclient import TestClient
 
 from agentcad.core.manifest_merge import merge_manifests
+from agentcad.core.service import AgentCADService, EventBus
 from agentcad.core.tools import build_registry
 from agentcad.server import security as security_module
 from agentcad.server.app import create_app
@@ -182,13 +185,17 @@ def test_structured_import_is_a_usable_assembly(structured):
     assert assembly["total_mass_g"] > 0
 
 
-def test_the_instance_batch_is_one_write_and_one_event(kernel, tmp_path,
-                                                       sources):
-    """Undo granularity, stated as a test. Each `create_part` is its own
-    manifest write and its own `project_changed` (the existing path, one undo
-    step per part); everything after them — the provenance keys and all seven
-    instances — lands under a SINGLE trailing event, so the batch is one more
-    undo step and never one per occurrence."""
+def test_the_whole_landing_is_one_write_and_one_event(kernel, tmp_path,
+                                                      sources):
+    """Undo granularity, stated as a test — and the spec's own claim.
+
+    The whole landing (three parts, their provenance keys and all seven
+    instances) is **one** `save_manifest` and **one** `project_changed`. It
+    used to be one write and one event per `create_part` plus two more: N+1
+    undo steps for one user action, a half-landed project if the batch failed
+    in the middle, and — in a fresh project — a first part with nothing to
+    undo back to.
+    """
     service, registry = _project(kernel, tmp_path)
     events: list[dict] = []
     inner = service.bus.publish
@@ -197,10 +204,78 @@ def test_the_instance_batch_is_one_write_and_one_event(kernel, tmp_path,
         events.append(event)
         return inner(event)
 
+    writes: list[str] = []
+    inner_save = service.store.save_manifest
+
+    def save_spy(project, manifest):
+        writes.append(project)
+        return inner_save(project, manifest)
+
     service.bus.publish = spy
-    _import(registry, source=str(sources["assembly"]))
+    service.store.save_manifest = save_spy
+    result = _import(registry, source=str(sources["assembly"]))
     changes = [e for e in events if e.get("type") == "project_changed"]
-    assert [e.get("part") for e in changes] == ["bracket", "pin", "ball", None]
+    assert [e.get("part") for e in changes] == [None]
+    assert writes == ["demo"]
+    # ...and the single write installed everything.
+    assert len(result["parts"]) == 3 and len(result["instances"]) == 7
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not on PATH")
+def test_a_structured_import_is_exactly_one_undo_step(kernel, tmp_path,
+                                                      sources):
+    """The consequence of the single write, graded end to end.
+
+    One snapshot, so ONE `undo` reverts the whole import: no parts, no
+    instances, nothing dangling. It used to take four undos to get back, and
+    the first part of a fresh project could not be undone at all — there was
+    no snapshot before it.
+    """
+    bus = EventBus()                      # a live bus: snapshots are real here
+    service = AgentCADService(tmp_path / "projects", kernel, bus)
+    registry = build_registry(service)
+    assert "error" not in registry.call("create_project", {"name": "demo"})
+    # One prior mutation, so there is a state to come back TO: undoing the very
+    # first snapshot of a project is a conflict by design (`test_history.py`'s
+    # "undo past the root"), and that pre-existing rule is exactly why the old
+    # per-part writes left a fresh project's FIRST imported part unrecoverable.
+    assert "error" not in registry.call(
+        "create_part", {"project": "demo", "part_id": "box",
+                        "script": BOX_SCRIPT})
+
+    def snapshots():
+        payload = registry.call("project_history", {"project": "demo"})
+        assert payload["available"], payload
+        return payload["history"]
+
+    before = len(snapshots())
+    result = registry.call("import_cad_file", {
+        "project": "demo", "source": str(sources["assembly"])})
+    assert "error" not in result, result
+    after = snapshots()
+    assert len(after) == before + 1, [e.get("message") for e in after]
+
+    undone = registry.call("undo", {"project": "demo"})
+    assert "error" not in undone, undone
+    project = registry.call("get_project", {"project": "demo"})
+    assert [p["id"] for p in project["parts"]] == ["box"]
+    # no dangling instances left pointing at parts that no longer exist
+    assert service.store.instances("demo") == []
+    assert service.get_assembly("demo")["instances"] == []
+
+    # The materialized `.brep` files stay: `project_restore` OVERLAYS the
+    # snapshot's tracked content rather than cleaning the tree, so they are
+    # orphaned-but-harmless — nothing in the manifest names them, and a
+    # re-import reuses them by their deterministic names instead of writing
+    # new bytes.
+    imports = sorted(p.name for p in service.store.imports_dir("demo").iterdir())
+    assert sum(1 for n in imports if n.endswith(".brep")) == 3
+    redone = registry.call("import_cad_file", {
+        "project": "demo", "source": str(sources["assembly"])})
+    assert "error" not in redone, redone
+    assert sorted(p.name for p in
+                  service.store.imports_dir("demo").iterdir()) == imports
 
 
 # ------------------------------------------------------------- provenance
@@ -322,6 +397,57 @@ def test_an_unreadable_step_falls_back_to_flat_with_the_reason(
     assert result["part"]["id"] == "junk"
 
 
+def test_an_unreadable_step_with_no_part_id_names_the_FILE_problem(
+        kernel, tmp_path):
+    """The caller named no `part_id` because they expected the file to
+    structure itself. "needs a part_id" blames them for the wrong thing — the
+    actionable fact is that the STEP could not be read, and the auto-detect
+    learned exactly that one line earlier."""
+    service, registry = _project(kernel, tmp_path)
+    junk = service.store.imports_dir("demo", write=True) / "junk.step"
+    junk.write_bytes(b"this is not a STEP file\n" * 40)
+    result = registry.call("import_cad_file", {
+        "project": "demo", "source": "junk.step"})
+    error = result["error"]
+    assert error["type"] == "validation_error"
+    assert "could not read 'junk.step'" in error["message"]
+    assert error["details"]["stage"] == "parse"
+    assert registry.call("get_project", {"project": "demo"})["parts"] == []
+
+
+def test_import_refusals_name_the_stage_they_failed_at(kernel, tmp_path,
+                                                       sources):
+    """`details.stage` is the PRD's error contract: "parse" means we could not
+    read your file, "map" means we read it and could not land what was in it.
+    Without it every import failure reads the same and the caller cannot tell
+    "re-export from your CAD" from "fix the material"."""
+    service, registry = _project(kernel, tmp_path)
+
+    # parse: the tree read itself failed, under an explicit structured: true
+    junk = service.store.imports_dir("demo", write=True) / "junk.step"
+    junk.write_bytes(b"this is not a STEP file\n" * 40)
+    parsed = registry.call("import_cad_file", {
+        "project": "demo", "source": "junk.step", "structured": True})
+    assert parsed["error"]["type"] == "validation_error"
+    assert parsed["error"]["details"]["stage"] == "parse"
+    assert "could not read the product tree" in parsed["error"]["message"]
+
+    # map: the file read perfectly, the landing was refused
+    mapped = registry.call("import_cad_file", {
+        "project": "demo", "source": str(sources["assembly"]),
+        "material": "unobtainium"})
+    assert mapped["error"]["type"] == "validation_error"
+    assert mapped["error"]["details"]["stage"] == "map"
+    # and a refused landing lands NOTHING (the single write is all-or-nothing)
+    assert registry.call("get_project", {"project": "demo"})["parts"] == []
+    assert service.store.instances("demo") == []
+
+    flat = registry.call("import_cad_file", {
+        "project": "demo", "source": str(sources["solo"]),
+        "part_id": "solo", "material": "unobtainium"})
+    assert flat["error"]["details"]["stage"] == "map"
+
+
 # ------------------------------------------------------------- id policy
 
 
@@ -382,6 +508,41 @@ def test_an_unusable_prefix_is_refused(kernel, tmp_path, sources):
         "project": "demo", "source": str(sources["assembly"]), "prefix": "!!"})
     assert result["error"]["type"] == "validation_error"
     assert "prefix" in result["error"]["message"]
+
+
+def test_an_over_long_prefix_is_refused_rather_than_erasing_the_names(
+        kernel, tmp_path, sources):
+    """A part id is 40 characters. A 60-character prefix fills it on its own,
+    so every product would land as `<prefix>`, `<prefix>_2`, `<prefix>_3` —
+    the file's own product identity destroyed by a decoration."""
+    _service, registry = _project(kernel, tmp_path)
+    result = registry.call("import_cad_file", {
+        "project": "demo", "source": str(sources["assembly"]),
+        "prefix": "p" * 60})
+    assert result["error"]["type"] == "validation_error"
+    assert result["error"]["details"]["max_prefix"] == 16
+    assert registry.call("get_project", {"project": "demo"})["parts"] == []
+    # the boundary itself is accepted
+    assert "error" not in registry.call("import_cad_file", {
+        "project": "demo", "source": str(sources["assembly"]),
+        "prefix": "p" * 16})
+
+
+def test_instance_ids_that_are_bumped_are_reported_like_the_part_ids(
+        kernel, tmp_path, sources):
+    """A silent rename is the same defect on both loops: an instance that
+    answers to a different id than the file gave it breaks the mate, the
+    selection and the screenshot somebody takes later. The parts loop said so
+    already; the instances loop dropped `_bumped` on the floor."""
+    _service, registry = _project(kernel, tmp_path)
+    _import(registry, source=str(sources["assembly"]))
+    second = _import(registry, source=str(sources["assembly"]))
+    renamed = [w for w in second["warnings"] if "instance id(s)" in w]
+    assert len(renamed) == 1, second["warnings"]
+    assert "bracket_1 -> bracket_1_2" in renamed[0]
+    # every landed id appears in the warning it was renamed by
+    for spec in second["instances"]:
+        assert spec["id"].endswith("_2")
 
 
 def test_importing_the_same_file_twice_suffixes_deterministically(
@@ -517,16 +678,44 @@ def test_preview_422s_for_a_format_with_no_product_tree(client, sources):
                      ).status_code == 422
 
 
-def test_preview_502s_when_the_walk_cannot_read_the_file(client):
-    """A kernel-class failure keeps the worker's own error type (the
-    `routes_drawing` rule), rather than being renamed a bad request."""
+def test_preview_422s_when_the_walk_cannot_read_the_file(client):
+    """An unreadable upload is the CALLER's file, so it is a 422.
+
+    The `routes_drawing` rule read honestly rather than by its status code: a
+    502 says "the kernel is in a bad way", and every refusal this walk raises
+    itself (`contract_error` — not a STEP, unreadable, no shapes) is a
+    statement about the bytes that were uploaded. The worker's own message is
+    carried through so nothing is lost by the reclassification.
+    """
     service, http = client
     junk = service.store.imports_dir("demo", write=True) / "junk.step"
     junk.write_bytes(b"this is not a STEP file\n" * 40)
     response = http.post("/api/projects/demo/imports/junk.step/preview")
-    assert response.status_code == 502, response.text
-    assert response.json()["error"]["type"] in ("contract_error",
-                                                "kernel_error")
+    assert response.status_code == 422, response.text
+    body = response.json()["error"]
+    assert body["type"] == "ValidationError"
+    assert "junk.step" in body["message"]
+    assert body["details"]["kernel_error"] == "contract_error"
+
+
+def test_preview_suggests_structuring_exactly_when_the_import_would(
+        client, sources):
+    """`structured_suggested` is the tool's OWN auto-detect over the preview
+    payload — one predicate, two callers (the dialog gates on this key).
+
+    The two cases that make it a judgement rather than a count: the authored
+    assembly (named occurrences) suggests true, and AgentCAD's own re-imported
+    multi-solid part — N anonymous occurrences of N products all called
+    `SOLID` — suggests false, which is exactly how the import lands it.
+    """
+    _service, http = client
+    for fixture, expected in (("assembly", True), ("compound", False),
+                              ("solo", False)):
+        name = _upload(http, sources[fixture])
+        response = http.post(f"/api/projects/demo/imports/{name}/preview")
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["structured_suggested"] is expected, fixture
 
 
 # ------------------------------------------------------------ hosted mode

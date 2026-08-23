@@ -32,6 +32,8 @@ to [-90,0,90]; extrinsic XYZ would answer [0,90,90]. A pure Z rotation cannot
 tell the two sequences apart.
 """
 
+from hashlib import sha256
+
 import pytest
 
 from agentcad.kernel.client import KernelError
@@ -145,6 +147,129 @@ def make_assembly_step(kernel, tmp_path, name="assembly"):
         "out_path": str(tmp_path / "_scratch.step"),
     })
     assert target.is_file(), "fixture STEP was not written"
+    return target
+
+
+# ------------------------------------------------- the scaled fixture (AC2)
+
+#: How many occurrences of products 5..13 the scaled fixture places directly
+#: under the top assembly. 15 (three clusters of five) + 26 = 41.
+SCALED_DIRECT = (2, 3, 4, 2, 3, 4, 2, 3, 3)
+
+#: Products / occurrences the scaled fixture authors. 14 and 41 — an order of
+#: magnitude past the 3/7 shape, which is where a dedup or a name-qualification
+#: bug that the small fixture cannot express starts to show.
+SCALED_PRODUCTS = 14
+SCALED_OCCURRENCES = 41
+
+_SCALED_AUTHOR = '''\
+"""Authors a WIDER multi-product assembly STEP via raw XCAF (AC2 scale)."""
+import math
+
+from build123d import Align, Box, Solid
+from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+from OCP.Quantity import Quantity_Color, Quantity_TOC_sRGB
+from OCP.STEPCAFControl import STEPCAFControl_Writer
+from OCP.STEPControl import STEPControl_StepModelType
+from OCP.TCollection import TCollection_ExtendedString
+from OCP.TDataStd import TDataStd_Name
+from OCP.TDocStd import TDocStd_Document
+from OCP.TopLoc import TopLoc_Location
+from OCP.XCAFApp import XCAFApp_Application
+from OCP.XCAFDoc import XCAFDoc_ColorSurf, XCAFDoc_DocumentTool
+
+PARAMS = {}
+
+OUT = __OUT__
+N_PRODUCTS = __N_PRODUCTS__
+CLUSTER_SIZE = __CLUSTER_SIZE__
+CLUSTER_COUNT = __CLUSTER_COUNT__
+DIRECT = __DIRECT__
+
+MIN = (Align.MIN, Align.MIN, Align.MIN)
+
+
+def _loc(dx=0.0, dy=0.0, dz=0.0, rot_deg=0.0, axis=(0, 0, 1)):
+    trsf = gp_Trsf()
+    if rot_deg:
+        trsf.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(*axis)),
+                         math.radians(rot_deg))
+    trsf.SetTranslationPart(gp_Vec(dx, dy, dz))
+    return TopLoc_Location(trsf)
+
+
+def _name(label, text):
+    TDataStd_Name.Set_s(label, TCollection_ExtendedString(text))
+
+
+def build(p):
+    app = XCAFApp_Application.GetApplication_s()
+    doc = TDocStd_Document(TCollection_ExtendedString("XmlXCAF"))
+    app.InitDocument(doc)
+    shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+    color_tool = XCAFDoc_DocumentTool.ColorTool_s(doc.Main())
+
+    products = []
+    for i in range(N_PRODUCTS):
+        shape = Box(2 + i, 3, 4, align=MIN).solid().wrapped
+        label = shape_tool.AddShape(shape.Located(TopLoc_Location()), False)
+        _name(label, "Part%02d" % i)
+        color_tool.SetColor(
+            label,
+            Quantity_Color(0.1 + 0.05 * i, 0.4, 0.9 - 0.05 * i,
+                           Quantity_TOC_sRGB),
+            XCAFDoc_ColorSurf)
+        products.append(label)
+
+    cluster = shape_tool.NewShape()
+    _name(cluster, "Cluster")
+    for i in range(CLUSTER_SIZE):
+        _name(shape_tool.AddComponent(cluster, products[i], _loc(10 * i, 0, 0)),
+              "c%d" % i)
+
+    top = shape_tool.NewShape()
+    _name(top, "ScaledAssembly")
+    for k in range(CLUSTER_COUNT):
+        _name(shape_tool.AddComponent(
+            top, cluster, _loc(0, 20 * k, 0, rot_deg=90 * k)),
+            "cluster_%d" % (k + 1))
+    for j, count in enumerate(DIRECT):
+        index = CLUSTER_SIZE + j
+        for n in range(count):
+            _name(shape_tool.AddComponent(
+                top, products[index], _loc(5 * n, 5, 30 + 3 * index)),
+                "p%02d_%d" % (index, n + 1))
+    shape_tool.UpdateAssemblies()
+
+    writer = STEPCAFControl_Writer()
+    writer.SetColorMode(True)
+    writer.SetNameMode(True)
+    writer.SetLayerMode(True)
+    writer.Transfer(doc, STEPControl_StepModelType.STEPControl_AsIs)
+    writer.Write(OUT)
+    return Solid.make_box(1, 1, 1)
+'''
+
+
+def make_scaled_assembly_step(kernel, tmp_path, name="scaled"):
+    """The AC2 scale fixture: 14 products, 41 occurrences, one nested level.
+
+    The same in-suite raw-XCAF authoring as `make_assembly_step`, parametrized
+    — no binary blob in the repo, and the shape is data (`SCALED_DIRECT`)
+    rather than a second hand-written script.
+    """
+    target = tmp_path / f"{name}.step"
+    script = (_SCALED_AUTHOR
+              .replace("__OUT__", repr(str(target)))
+              .replace("__N_PRODUCTS__", repr(SCALED_PRODUCTS))
+              .replace("__CLUSTER_SIZE__", repr(5))
+              .replace("__CLUSTER_COUNT__", repr(3))
+              .replace("__DIRECT__", repr(list(SCALED_DIRECT))))
+    kernel.request("export", {
+        "script": script, "params": {}, "format": "step",
+        "out_path": str(tmp_path / "_scaled_scratch.step"),
+    })
+    assert target.is_file(), "scaled fixture STEP was not written"
     return target
 
 
@@ -307,20 +432,121 @@ def imported(kernel, tmp_path):
     return step, out_dir, result
 
 
+def _source_key(original_name):
+    """The 8 hex chars the materialized name carries for its source FILE."""
+    return sha256(original_name.encode()).hexdigest()[:8]
+
+
 def test_import_writes_one_brep_per_unique_product(imported):
     step, out_dir, result = imported
     assert result["counts"] == {"products": 3, "occurrences": 7}
     files = sorted(p.name for p in out_dir.iterdir())
     assert len(files) == 3, files
     assert files == sorted(p["file"] for p in result["products"])
-    # deterministic, sanitized, basename-only (never an absolute path)
+    # deterministic, sanitized, basename-only (never an absolute path), and
+    # carrying a digest of the ORIGINAL uploaded filename (see the collision
+    # test below).
+    key = _source_key("assembly.step")
     for product in result["products"]:
         name = product["file"]
-        assert name == f"assembly__{product['index']}_{product['name'].lower()}.brep"
+        assert name == (f"assembly_{key}__{product['index']}_"
+                        f"{product['name'].lower()}.brep")
         assert "/" not in name
         assert (out_dir / name).is_file()
     # no torn temporaries left behind
     assert not [f for f in files if f.endswith(".tmp")]
+
+
+def test_two_sources_whose_stems_sanitize_alike_do_not_collide(kernel,
+                                                               tmp_path):
+    """`widget-1.step` and `widget_1.step` both sanitize to `widget_1`.
+
+    Without the source digest the second import wrote its solids over the
+    first one's `.brep` files — same names, different geometry — and the first
+    import's reference parts silently became the second file's shapes. Proven
+    by geometry, not by the name: the two fixtures have different volumes.
+    """
+    out_dir = tmp_path / "refs"
+    written = {}
+    for label, size in (("widget-1.step", 10), ("widget_1.step", 20)):
+        source = tmp_path / label
+        kernel.request("export", {
+            "script": ("import build123d as b3d\n"
+                       "PARAMS = {}\n"
+                       "def build(p):\n"
+                       f"    return b3d.Solid.make_box({size}, 5, 5)\n"),
+            "params": {}, "format": "step", "out_path": str(source),
+        })
+        result = kernel.request("import_structured", {
+            "source_path": str(source), "out_dir": str(out_dir),
+            "original_name": label})
+        written[label] = result["products"][0]["file"]
+
+    assert written["widget-1.step"] != written["widget_1.step"]
+    assert len(sorted(out_dir.iterdir())) == 2
+    # ...and the FIRST file still holds the first file's geometry.
+    for label, expected in (("widget-1.step", 10 * 5 * 5),
+                            ("widget_1.step", 20 * 5 * 5)):
+        out = kernel.request("build_reference", {
+            "source_path": str(out_dir / written[label]),
+            "mesh_path": str(tmp_path / f"{written[label]}.acm"),
+            "density_g_cm3": 1.0, "tolerance": 0.1,
+        })
+        assert out["metrics"]["volume_mm3"] == pytest.approx(expected,
+                                                             rel=1e-3)
+
+
+def test_a_10k_character_product_name_is_capped_not_enametoolong(kernel,
+                                                                 tmp_path):
+    """A product name is authored data and can be arbitrarily long.
+
+    Uncapped it went straight into a path: `os.replace` raised `OSError:
+    [Errno 63] File name too long: '<the server's absolute path>'` — an
+    unhandled kernel error that published the server's directory layout to the
+    caller. The fragment is capped at 40 characters plus a digest of the whole
+    name, so the file lands and the name stays distinct.
+    """
+    long_name = "z" * 10000
+    source = tmp_path / "long.step"
+    script = (
+        "from build123d import Solid\n"
+        "from OCP.TCollection import TCollection_ExtendedString\n"
+        "from OCP.TDataStd import TDataStd_Name\n"
+        "from OCP.TDocStd import TDocStd_Document\n"
+        "from OCP.TopLoc import TopLoc_Location\n"
+        "from OCP.STEPCAFControl import STEPCAFControl_Writer\n"
+        "from OCP.STEPControl import STEPControl_StepModelType\n"
+        "from OCP.XCAFApp import XCAFApp_Application\n"
+        "from OCP.XCAFDoc import XCAFDoc_DocumentTool\n"
+        "PARAMS = {}\n"
+        f"OUT = {str(source)!r}\n"
+        f"LONG = {long_name!r}\n"
+        "def build(p):\n"
+        "    app = XCAFApp_Application.GetApplication_s()\n"
+        "    doc = TDocStd_Document(TCollection_ExtendedString('XmlXCAF'))\n"
+        "    app.InitDocument(doc)\n"
+        "    tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())\n"
+        "    shape = Solid.make_box(4, 4, 4).wrapped\n"
+        "    label = tool.AddShape(shape.Located(TopLoc_Location()), False)\n"
+        "    TDataStd_Name.Set_s(label, TCollection_ExtendedString(LONG))\n"
+        "    writer = STEPCAFControl_Writer()\n"
+        "    writer.SetNameMode(True)\n"
+        "    writer.Transfer(doc, STEPControl_StepModelType.STEPControl_AsIs)\n"
+        "    writer.Write(OUT)\n"
+        "    return Solid.make_box(1, 1, 1)\n"
+    )
+    kernel.request("export", {"script": script, "params": {}, "format": "step",
+                              "out_path": str(tmp_path / "_scratch.step")})
+
+    out_dir = tmp_path / "refs"
+    result = kernel.request("import_structured", {
+        "source_path": str(source), "out_dir": str(out_dir),
+        "original_name": "long.step"})
+    name = result["products"][0]["file"]
+    assert len(name) < 255, len(name)
+    assert (out_dir / name).is_file()
+    # the fragment is a truncation plus a digest, never the raw 10k name
+    assert "z" * 41 not in name
 
 
 def test_import_filenames_are_deterministic(kernel, tmp_path, imported):

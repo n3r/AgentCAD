@@ -146,7 +146,15 @@ features compose without editing the core files:
 3. **Route packs** — `agentcad/server/routes_<feature>.py`, each exporting
    `build_router(service, registry) -> APIRouter`; `app.py` mounts them all
    under `/api`. Most just call the matching tool through the registry, so the
-   REST and agent surfaces cannot drift.
+   REST and agent surfaces cannot drift. **The export routes are the known
+   exception** (PRD-017): `POST .../parts/{id}/export` and `POST
+   .../export` call `service.export_part`/`export_assembly` directly and
+   forward only `format`/`tolerance`/`config` from the body — `pmi`,
+   `metadata` and `structured` are tool-surface-only (agent/MCP `callTool`,
+   which the frontend's Export▾ menu itself falls back to for exactly this
+   reason — see `docs/agent-api.md`'s `export_part`/`export_assembly` rows),
+   the same kind of gap `generate_drawing`'s `tabulate` argument documents
+   for itself.
 
 **Growing an *existing* verb from a pack** (the interop pack, PRD-017, is the
 worked example). `ToolRegistry.register` raises on a duplicate name and has no

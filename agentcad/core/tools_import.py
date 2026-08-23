@@ -9,7 +9,8 @@ Two landings, one tool (PRD-017 FR8–FR10):
   reference part (ids derived from the product names), and every occurrence
   lands as an assembly instance with its composed transform and colour.
 
-``structured`` defaults to **auto** (see ``_looks_structured``). The extension
+``structured`` defaults to **auto** (see ``looks_structured``, which the
+preview route shares so the dialog and the import agree). The extension
 is checked *before* the kernel is asked anything: ``inspect_cad_tree`` refuses
 a non-STEP outright, and STL/BREP carry no product tree by construction.
 """
@@ -22,7 +23,8 @@ from pathlib import Path
 
 from ..kernel.client import KernelError
 from .imports import ingest_file, safe_import_name
-from .model import ID_RE, AuthzError, InstanceSpec, ValidationError
+from .model import (ID_RE, AppError, AuthzError, InstanceSpec, PartRecord,
+                    ValidationError, validate_id, validate_vec3)
 from .tools import Tool, schema
 
 #: Read through ``sys.modules`` rather than imported: a headless registry build
@@ -44,8 +46,19 @@ IMPORT_TIMEOUT_S = 900.0
 
 #: OCCT's STEP reader gives an unnamed instance a name of the form
 #: ``=>[0:1:1:2]`` (the referred label's entry). It is a placeholder, not a
-#: name somebody authored — see ``_looks_structured``.
+#: name somebody authored — see ``looks_structured``.
 _PLACEHOLDER_PREFIX = "=>"
+
+#: Longest ``prefix`` an import may prepend to the generated ids. An id is 40
+#: characters (``ID_RE``), so a longer prefix would push every product name out
+#: of the id entirely and land ``verylongprefix``, ``verylongprefix_2``,
+#: ``verylongprefix_3`` — the file's own identity erased by a decoration.
+MAX_PREFIX = 16
+
+#: ``details.stage`` of an import refusal (the PRD's error contract): the file
+#: could not be READ, versus the read succeeded and the LANDING was refused.
+STAGE_PARSE = "parse"
+STAGE_MAP = "map"
 
 
 def _refuse_a_host_path_in_hosted_mode(source: str) -> None:
@@ -111,7 +124,7 @@ def _is_placeholder(name: str | None) -> bool:
     return not name or name.startswith(_PLACEHOLDER_PREFIX)
 
 
-def _looks_structured(payload: dict) -> bool:
+def looks_structured(payload: dict) -> bool:
     """Auto-detect: does this file carry a product *structure*, or is it one
     part that happens to be a compound?
 
@@ -125,12 +138,35 @@ def _looks_structured(payload: dict) -> bool:
 
     ``structured: true`` overrides this in either direction; the detection only
     decides what happens when the caller said nothing.
+
+    **Public, and takes the inspect payload verbatim**, because the preview
+    ROUTE has to answer the same question the tool's auto-detect does: the
+    dialog offers a structured landing exactly when the import would choose
+    one (``structured_suggested`` in the preview response). Two implementations
+    of "is this an assembly?" would disagree on the first awkward file.
     """
-    if payload["counts"]["occurrences"] <= 1:
+    counts = payload.get("counts") or {}
+    occurrences = payload.get("occurrences") or []
+    products = payload.get("products") or []
+    if int(counts.get("occurrences") or len(occurrences)) <= 1:
         return False
-    if any(not _is_placeholder(o.get("name")) for o in payload["occurrences"]):
+    if any(not _is_placeholder(o.get("name")) for o in occurrences):
         return True
-    return len({p.get("name") for p in payload["products"]}) > 1
+    return len({p.get("name") for p in products}) > 1
+
+
+def _stage(exc: AppError, stage: str) -> AppError:
+    """Stamp ``details.stage`` on an import refusal (the PRD's error contract).
+
+    ``"parse"`` means we could not read the file; ``"map"`` means we read it
+    and could not land what was in it. The distinction is the caller's next
+    move — re-export from the authoring CAD, versus fix an id or a material —
+    and without it every import failure reads the same.
+
+    ``setdefault``: an inner refusal that already named its stage keeps it.
+    """
+    exc.details.setdefault("stage", stage)
+    return exc
 
 
 def _fidelity(*, geometry: str, structure: str, colors: str) -> dict:
@@ -170,15 +206,19 @@ def register(registry, service) -> None:
         # is required *here* rather than in the schema, because a structured
         # import derives its ids from the file.
         if not part_id:
-            raise ValidationError(
+            raise _stage(ValidationError(
                 "import_cad_file needs a 'part_id' for a flat import "
                 "(a structured import derives part ids from the file's "
                 "product names)"
+            ), STAGE_MAP)
+        try:
+            detail = service.create_part(
+                project, part_id, label=label or part_id, material=material,
+                kind="reference", source=name,
             )
-        detail = service.create_part(
-            project, part_id, label=label or part_id, material=material,
-            kind="reference", source=name,
-        )
+        except AppError as exc:
+            _stage(exc, STAGE_MAP)
+            raise
         status = detail.get("status", {})
         metrics = detail.get("metrics") or {}
         mesh_only = bool(metrics.get("mesh"))
@@ -206,89 +246,157 @@ def register(registry, service) -> None:
                     prefix: str | None, warnings: list[str]) -> dict:
         """N reference parts + N instances from one file's product tree.
 
-        Writes, in order: one manifest write per ``create_part`` (the existing
-        path), **one** manifest write for the provenance loose keys, and
-        **one** ``set_instances`` for the whole instance batch — then a single
-        trailing ``project_changed``, so the batch is one undo step on top of
-        the per-part ones.
+        **One manifest write, one ``project_changed``, one undo step.**
+
+        The spec claimed that; the code did not do it. It called
+        ``create_part`` N times (each its own manifest write and its own
+        ``project_changed``, so N snapshots), then wrote the provenance keys,
+        then ``set_instances``, then published once more — N + 1 undo steps for
+        one user action, and a failure in the middle left half the parts landed
+        with orphan ``.brep`` files beside them. Worse, undoing the *first*
+        part of a fresh project has nothing to step back to.
+
+        So the whole landing is validated first and installed in a single
+        store-level write: ids through ``validate_id``, the material through
+        the store's own ``_validate_material``, poses through
+        ``validate_vec3`` — the pieces of ``create_part``/``set_instances``
+        that apply to a batch of ``kind="reference"`` parts with no script, no
+        pattern, no configuration and no mate. Nothing reaches disk until every
+        row has passed, and the one publish that follows is the one snapshot
+        the undo stack steps over.
         """
         # write=True: the .brep files are authored state landing in the
         # project tree, so the batch answers to the write guard and the disk
         # budget exactly like the upload that preceded it.
         imports = service.store.imports_dir(project, write=True)
-        payload = service.kernel.request(
-            "import_structured",
-            {"source_path": str(imports / name), "out_dir": str(imports)},
-            timeout_s=IMPORT_TIMEOUT_S,
-        )
+        try:
+            payload = service.kernel.request(
+                "import_structured",
+                {"source_path": str(imports / name), "out_dir": str(imports),
+                 # The ORIGINAL basename: the materialized `.brep` names carry
+                 # a digest of it, so two uploads whose stems sanitize alike
+                 # (`widget-1.step`, `widget_1.step`) cannot overwrite each
+                 # other's geometry.
+                 "original_name": name},
+                timeout_s=IMPORT_TIMEOUT_S,
+            )
+        except KernelError as exc:
+            # The file could not be read. That is the caller's file, not our
+            # worker's state, so it is a refusal that names the stage — and
+            # `structured: true` is the only way here (auto-detect falls back).
+            raise ValidationError(
+                f"could not read the product tree of {name!r}: {exc.message}",
+                {"source": name, "stage": STAGE_PARSE},
+            ) from exc
         warnings = [*warnings, *payload.get("warnings", [])]
 
-        manifest = service.store.manifest(project)
-        used_parts = {p["id"] for p in manifest["parts"]}
-        used_instances = {i["id"] for i in manifest["assembly"]["instances"]}
+        try:
+            return _land(project, name, material, prefix, warnings, payload)
+        except AppError as exc:
+            _stage(exc, STAGE_MAP)
+            raise
 
-        # Ids first, for the whole file: a collision has to be resolved against
-        # the parts this import is about to add as well as the ones already
-        # there, and an instance may not be created before its part exists.
-        part_ids: list[str] = []
-        moved: list[str] = []
-        for product in payload["products"]:
-            base = _slug(f"{prefix}_{product['name']}" if prefix
-                         else product["name"])
-            part_id, bumped = _unique(base, used_parts)
-            used_parts.add(part_id)
-            part_ids.append(part_id)
-            if bumped:
-                moved.append(f"{base} -> {part_id}")
-        if moved:
-            warnings.append(
-                "part id(s) already in use, suffixed: " + ", ".join(moved))
+    def _land(project: str, name: str, material: str, prefix: str | None,
+              warnings: list[str], payload: dict) -> dict:
+        """Validate the whole landing, then install it in ONE manifest write."""
+        with service._lock:
+            manifest = service.store.manifest(project)
+            used_parts = {p["id"] for p in manifest["parts"]}
+            used_instances = {i["id"]
+                              for i in manifest["assembly"]["instances"]}
 
+            # Ids first, for the whole file: a collision has to be resolved
+            # against the parts this import is about to add as well as the ones
+            # already there.
+            part_ids: list[str] = []
+            moved: list[str] = []
+            for product in payload["products"]:
+                base = _slug(f"{prefix}_{product['name']}" if prefix
+                             else product["name"])
+                part_id, bumped = _unique(base, used_parts)
+                used_parts.add(part_id)
+                part_ids.append(part_id)
+                if bumped:
+                    moved.append(f"{base} -> {part_id}")
+            if moved:
+                warnings.append(
+                    "part id(s) already in use, suffixed: " + ", ".join(moved))
+
+            # `create_part`'s validation, for a batch: the id regex and the
+            # material. `kind="reference"` with a `source` satisfies its other
+            # two rules by construction, and the source is a basename the
+            # kernel just wrote into this project's imports/ dir.
+            service.store._validate_material(manifest, material)
+            new_entries = []
+            for part_id, product in zip(part_ids, payload["products"]):
+                validate_id(part_id, "part id")
+                record = PartRecord(
+                    id=part_id, label=product["name"] or part_id,
+                    material=material, kind="reference",
+                    source=product["file"],
+                )
+                entry = record.to_manifest()
+                # Provenance as LOOSE keys (design §7: never PartRecord fields
+                # — old manifests load, and `manifest_merge` merges them per
+                # field like every other scalar on a part entry).
+                entry["source_label"] = product["name"]
+                entry["import_source"] = name
+                new_entries.append(entry)
+
+            specs = list(service.store.instances(project))
+            landed = []
+            renamed: list[str] = []
+            for occurrence in payload["occurrences"]:
+                product = payload["products"][occurrence["product_index"]]
+                part_id = part_ids[occurrence["product_index"]]
+                # An OCCT placeholder is not a name: fall back to the product's,
+                # and let the suffixing number the repeats.
+                original = (product["name"]
+                            if _is_placeholder(occurrence["name"])
+                            else occurrence["name"])
+                base = _slug(original)
+                instance_id, bumped = _unique(base, used_instances)
+                used_instances.add(instance_id)
+                if bumped:
+                    # Said out loud, exactly as the parts loop says it: an
+                    # instance that silently answers to a different name than
+                    # the file gave it is a mate, a selection and a screenshot
+                    # that will not line up later.
+                    renamed.append(f"{original} -> {instance_id}")
+                spec = InstanceSpec(
+                    id=validate_id(instance_id, "instance id"),
+                    part=part_id,
+                    position=validate_vec3(list(occurrence["position"]),
+                                           f"{instance_id}.position"),
+                    rotation_deg=validate_vec3(
+                        list(occurrence["rotation_deg"]),
+                        f"{instance_id}.rotation_deg"),
+                    color=occurrence.get("color"),
+                )
+                specs.append(spec)
+                landed.append(spec)
+            if renamed:
+                warnings.append(
+                    "instance id(s) already in use, suffixed: "
+                    + ", ".join(renamed))
+
+            # ---- the single write: parts, provenance and instances together
+            manifest["parts"].extend(new_entries)
+            manifest["assembly"]["instances"] = [i.to_manifest()
+                                                 for i in specs]
+            service.store.save_manifest(project, manifest)
+        service.bus.publish({"type": "project_changed", "project": project})
+
+        # The part details (and the builds behind them) come AFTER the write:
+        # `get_part` is the same read `create_part` returned, minus the write
+        # and the event it used to publish per part.
         parts = []
         for part_id, product in zip(part_ids, payload["products"]):
-            detail = service.create_part(
-                project, part_id, label=product["name"], material=material,
-                kind="reference", source=product["file"],
-            )
+            detail = service.get_part(project, part_id)
             # Provenance travels with the result too, not only the manifest.
             detail["source_label"] = product["name"]
             detail["import_source"] = name
             parts.append(detail)
-
-        # One manifest write for the loose keys (design §7: never PartRecord
-        # fields — old manifests load, and `manifest_merge` merges them per
-        # field like every other scalar on a part entry).
-        manifest = service.store.manifest(project)
-        entries = {e["id"]: e for e in manifest["parts"]}
-        for part_id, product in zip(part_ids, payload["products"]):
-            entry = entries[part_id]
-            entry["source_label"] = product["name"]
-            entry["import_source"] = name
-        service.store.save_manifest(project, manifest)
-
-        specs = list(service.store.instances(project))
-        landed = []
-        for occurrence in payload["occurrences"]:
-            product = payload["products"][occurrence["product_index"]]
-            part_id = part_ids[occurrence["product_index"]]
-            # An OCCT placeholder is not a name: fall back to the product's,
-            # and let the suffixing number the repeats.
-            base = _slug(product["name"] if _is_placeholder(occurrence["name"])
-                         else occurrence["name"])
-            instance_id, _bumped = _unique(base, used_instances)
-            used_instances.add(instance_id)
-            spec = InstanceSpec(
-                id=instance_id,
-                part=part_id,
-                position=list(occurrence["position"]),
-                rotation_deg=list(occurrence["rotation_deg"]),
-                color=occurrence.get("color"),
-            )
-            specs.append(spec)
-            landed.append(spec)
-        # One validated write for the whole batch (never one per occurrence).
-        service.store.set_instances(project, specs)
-        service.bus.publish({"type": "project_changed", "project": project})
 
         tree = {key: value for key, value in payload.items()
                 if key != "warnings"}
@@ -322,6 +430,15 @@ def register(registry, service) -> None:
                 f"prefix {prefix!r} has no usable characters "
                 "(part ids are [a-z][a-z0-9_]{0,39})"
             )
+        if prefix is not None and len(prefix) > MAX_PREFIX:
+            # An id is 40 characters; a longer prefix fills it on its own and
+            # every product lands as `<prefix>`, `<prefix>_2`, `<prefix>_3` —
+            # the file's own product names erased by a decoration.
+            raise ValidationError(
+                f"prefix is {len(prefix)} characters; at most {MAX_PREFIX} "
+                "(a part id is 40, and the product name has to fit too)",
+                {"max_prefix": MAX_PREFIX},
+            )
         if structured and ext not in STRUCTURED_EXTS:
             # Honest refusal rather than a silent flat landing: a mesh (.stl)
             # or a single shape (.brep) has no product tree to read, and a
@@ -335,6 +452,7 @@ def register(registry, service) -> None:
             )
 
         go_structured = bool(structured)
+        unreadable: str | None = None
         if ext in STRUCTURED_EXTS and structured is None:
             try:
                 payload = service.kernel.request(
@@ -348,13 +466,26 @@ def register(registry, service) -> None:
                 # walk cannot read still gets today's flat landing (and the
                 # reason, rather than a silent fallback). An explicit
                 # `structured: true` never reaches here — it raises.
+                unreadable = exc.message
                 warnings.append(
                     "could not inspect the file's product tree "
                     f"({exc.message}); imported as a single part")
             else:
-                go_structured = _looks_structured(payload)
+                go_structured = looks_structured(payload)
 
         if not go_structured:
+            if unreadable is not None and not part_id:
+                # The caller named no part_id because they expected the file to
+                # structure itself. Answering "needs a part_id" blames them for
+                # the wrong thing: the actionable fact is that the STEP could
+                # not be read at all, and it is what the auto-detect learned
+                # one line ago.
+                raise ValidationError(
+                    f"could not read {name!r}: {unreadable}. Nothing was "
+                    "imported; re-export the file, or pass a 'part_id' to "
+                    "import it as a single opaque reference part.",
+                    {"source": name, "stage": STAGE_PARSE},
+                )
             return _flat(project, name, part_id, label, material, warnings)
 
         ignored = [key for key, value in (("part_id", part_id),
@@ -391,7 +522,9 @@ def register(registry, service) -> None:
                                "description": "read the STEP product tree "
                                               "(default: auto)"},
                 "prefix": {"type": "string",
-                           "description": "prepended to generated part ids"},
+                           "maxLength": MAX_PREFIX,
+                           "description": "prepended to generated part ids "
+                                          f"(at most {MAX_PREFIX} characters)"},
             },
             ["project", "source"],
         ),

@@ -82,6 +82,19 @@ METADATA_NAMES = {
 METADATA_NS = "http://agentcad.dev/2026/03/metadata"
 
 
+def _staging(target: Path) -> Path:
+    """A staging path beside *target* that **no other writer can be holding**.
+
+    The random suffix is changelog 0181's fix, applied to every writer in this
+    pack: the fixed ``.<stem>.tmp<suffix>`` is one name per target path, so two
+    exports of one part opened the *same* file, interleaved their bytes into it
+    and each ``os.replace``d the mixture into place. The suffix is kept because
+    OCCT's writers sniff the extension.
+    """
+    return target.with_name(
+        f".{target.stem}.{os.urandom(6).hex()}.tmp{target.suffix}")
+
+
 def _type_name(enum, prefix: str) -> str:
     """``XCAFDimTolObjects_GeomToleranceType_Flatness`` → ``flatness``; the
     lowercase suffix matches ``core/pmi.py``'s own type names for FCFs."""
@@ -218,20 +231,26 @@ def _write_assembly_ap242(doc, path: str) -> None:
     ``write.step.assembly``: both statics are process-wide, only exist once a
     writer has been constructed, and are restored in ``finally`` so a later
     ``b3d.export_step`` in this worker is unaffected.
+
+    The ``try`` opens **immediately after the two values are captured and
+    before either setter runs**, and that ordering is the fix, not decoration:
+    with the setters outside it, a failing ``write.step.assembly`` set raised
+    past the restore and left ``write.step.schema = AP242DIS`` in force for
+    every later export in this worker process.
     """
     with contextlib.redirect_stdout(sys.stderr):  # OCCT prints transfer stats
         writer = STEPCAFControl_Writer()
         previous_schema = Interface_Static.CVal_s("write.step.schema")
         previous_assembly = Interface_Static.IVal_s("write.step.assembly")
-        if not Interface_Static.SetCVal_s("write.step.schema", "AP242DIS"):
-            raise RuntimeError(
-                "Interface_Static.SetCVal_s('write.step.schema', 'AP242DIS') "
-                "returned False — the file would be AP214")
-        if not Interface_Static.SetIVal_s("write.step.assembly", 1):
-            raise RuntimeError(
-                "Interface_Static.SetIVal_s('write.step.assembly', 1) returned "
-                "False — the product structure would be flattened")
         try:
+            if not Interface_Static.SetCVal_s("write.step.schema", "AP242DIS"):
+                raise RuntimeError(
+                    "Interface_Static.SetCVal_s('write.step.schema', "
+                    "'AP242DIS') returned False — the file would be AP214")
+            if not Interface_Static.SetIVal_s("write.step.assembly", 1):
+                raise RuntimeError(
+                    "Interface_Static.SetIVal_s('write.step.assembly', 1) "
+                    "returned False — the product structure would be flattened")
             writer.SetColorMode(True)
             writer.SetNameMode(True)
             writer.SetLayerMode(True)
@@ -291,7 +310,7 @@ def register(toolbox: dict) -> dict:
         # Same atomic shape as worker._export_shape: a suffixed temp file (the
         # writer sniffs the extension) then os.replace, so a killed export
         # never leaves a torn — or worse, an AP214 — file at the target path.
-        tmp = target.with_name(f".{target.stem}.tmp{target.suffix}")
+        tmp = _staging(target)
         try:
             doc = _pmi_map.new_document()
             mapped = _pmi_map.map_pmi(doc, shape, pmi, name=params.get("name"))
@@ -466,7 +485,7 @@ def register(toolbox: dict) -> dict:
                 mesher.add_meta_data(namespace, name, value, "xs:string", True)
                 stamped.append(name)
             target.parent.mkdir(parents=True, exist_ok=True)
-            tmp = target.with_name(f".{target.stem}.tmp{target.suffix}")
+            tmp = _staging(target)
             try:
                 mesher.write(str(tmp))
             except BaseException:
@@ -543,7 +562,7 @@ def register(toolbox: dict) -> dict:
                 color_tool.SetColor(component, color, XCAFDoc_ColorSurf)
         shape_tool.UpdateAssemblies()
 
-        tmp = target.with_name(f".{target.stem}.tmp{target.suffix}")
+        tmp = _staging(target)
         try:
             _write_assembly_ap242(doc, str(tmp))
             schema = _pmi_map.assert_ap242_header(str(tmp))
