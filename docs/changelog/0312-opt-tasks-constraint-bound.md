@@ -218,7 +218,7 @@ uv run agentcad bench score .../opt_004_most_bolts/reference/project      --task
 uv run agentcad bench score .../opt_001_lightest_bracket/starter … 0.8000 · opt_003 starter 0.8400 · opt_004 starter 0.8667
 ```
 
-`make test` — <orchestrator fills>
+`make test` — 5426 passed, 50 skipped (branch tip; the slow AC1 set separately: 41 passed — all 25 references 1.0 under the hardened rubrics)
 
 ## Notes
 

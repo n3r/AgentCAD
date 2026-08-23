@@ -220,5 +220,5 @@ $ uv run pytest -q tests/test_bench_author.py tests/test_bench_cli.py \
       tests/test_bench_publish.py tests/test_prd024_acceptance.py
 190 passed in 103.29s (0:01:43)
 
-$ make test — <orchestrator fills>
+$ make test — 5426 passed, 50 skipped (branch tip; the slow AC1 set separately: 41 passed — all 25 references 1.0 under the hardened rubrics)
 ```

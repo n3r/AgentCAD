@@ -118,4 +118,4 @@ satisfied maximum, a violated maximum, a gap of **exactly** `max_mm` (the
 bound is inclusive at evaluation time, not only at construction), and a
 two-sided row whose *floor* is broken.
 
-`make test — <orchestrator fills>`
+`make test — 5426 passed, 50 skipped (branch tip; the slow AC1 set separately: 41 passed — all 25 references 1.0 under the hardened rubrics)`
