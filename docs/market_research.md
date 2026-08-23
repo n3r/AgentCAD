@@ -2,7 +2,7 @@
 
 *August 2026. Compiled from primary-source web research (vendor docs, release
 announcements, pricing pages, user forums, funding news, academic benchmarks)
-plus the current state of this repo (v0.1 → v3, 73-tool agent surface). This
+plus the current state of this repo (v0.1 → v5, 107-tool agent surface). This
 document is the evidence base; the conclusions it feeds live in
 [roadmap.md](roadmap.md) and the PRDs under [prd/](prd/). Part I is the
 competitive landscape; Part II holds the deep dives commissioned for specific
@@ -42,7 +42,7 @@ helpers with curvature verification; linear-static/modal/thermal FEM; 30
 engineering materials; a GUI sketcher and face push/pull that *emit script
 edits*; server-side renders so agents can see the model; git-backed
 undo/history; per-project turn locks and concurrent multi-agent chat
-sessions; mesh LOD; macOS-sandboxed script execution; a 73-tool surface
+sessions; mesh LOD; macOS-sandboxed script execution; a 107-tool surface
 exposed identically over MCP, built-in chat, and REST.
 
 What does not exist: any network deployment beyond `127.0.0.1`; any concept

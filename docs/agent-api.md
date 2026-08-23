@@ -1,6 +1,6 @@
 # Agent API Reference
 
-Agents drive AgentCAD through a single tool surface — 85 tools (88 with the
+Agents drive AgentCAD through a single tool surface — 107 tools (110 with the
 optional `[fem]` extra installed; a hosted instance registers `whoami` too), assembled once in `agentcad/core/tools.py` (the 17 core
 tools) plus the v2/v3/v4 feature packs in `agentcad/core/tools_*.py` — and
 exposed two ways:
@@ -1729,6 +1729,157 @@ else (an unknown type, an extra key, a non-string, a non-object body) is a
 `client` are set by the server — `client` is the request's `X-Agent-Id` (or
 `null`) — so a browser cannot claim to be an agent. Member-only in hosted
 mode.
+
+### Navigation at scale — folders, tags, search, bulk ops (PRD-027)
+
+Find something in a project too large to list, and act on the whole selection
+at once. Organizing is **metadata, never a file move**: `folder` and `tags`
+live in `project.json`, the script stays at `parts/<id>.py` (portability and
+git-diff stability), and none of it enters the build cache key — re-filing a
+part never invalidates its geometry. All three tools are **kernel-free**: they
+read the manifest and the scripts the service already owns, build nothing, and
+never start a rebuild. A part that has never been built is a result with
+`state: "unbuilt"`, not an error.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `set_part_meta` | **project, part_id**, folder, tags | `{id, folder, tags}` — the part's metadata after the write. `folder` is a `/`-separated path of 1–8 segments matching `[A-Za-z0-9][A-Za-z0-9 _.-]{0,39}` with no leading/trailing space per segment (`Chassis/Left side`); case is kept as typed and matched case-insensitively. `tags` is a **full replacement** list, normalized on write (stripped, lowercased, de-duplicated keeping first-seen order) and then required to match `[a-z0-9][a-z0-9_.-]{0,31}`, max 32 per part; a tag still invalid afterwards is a `validation_error` naming it. **Omit** a key to leave that field alone; `folder: ""` (or `null`) files the part at the root and `tags: []` clears them. Omitting *both* is a read-back: it writes nothing and publishes nothing. One undoable step. |
+| `search_parts` | **project, query**, filters, limit | `{query, total, parts: [row]}` — see the grammar and the row shape below. `total` is every match, `parts` the first `limit` of them in rank order, so a caller can say "50 of 312" without asking twice. `limit` is 1–500, default 50. `filters` is an optional object ANDed with the query — `{tag, material, state, kind, folder}`, where `tag` also accepts a list that ANDs (`["a","b"]` means both) — so structured filtering needs no quoting. |
+| `bulk_part_op` | **project, part_ids, op**, args | `{op, ok, applied, results: [{id, ok, error?, …}], undo_label}` — one operation over many parts as **one** undoable step. `part_ids` is 1–500 ids (50 for `export`), de-duplicated keeping order. |
+
+**The query language**, verbatim — it is one constant (`agentcad.core.search.GRAMMAR`)
+quoted into the tool description, into **every refusal's `details.grammar`**
+(the message names only what you got wrong — "unknown search field 'kidn'") and
+into this page, so an agent reading `GET /api/tools`, an agent reading a 422
+body and an agent reading this section are given the same sentence:
+
+Query grammar: whitespace-separated terms, ANDed together. A bare word is
+free text and matches a part's id, label, tags, material id and script text
+(case-insensitive substring). 'field:value' restricts one field, where field
+is one of tag, material, state, kind, folder, id, label — tag and material
+are exact on the id, state is one of ok/error/unbuilt, kind is one of
+script/reference/package (package = a part whose script carries a package
+provenance header), folder matches that folder and everything under it
+(case-insensitive, whole segments, so a/b does not match a/bc), and id/label
+are substrings. A leading '-' negates a term (-tag:draft). Double quotes
+group a phrase ("m5 boss", folder:"Left side"), and a token that starts with
+a quote is always free text, never a field. Repeating a field ANDs it: tag:a
+tag:b needs both. The empty query matches every part in manifest order. An
+unknown field, an unknown state or kind value, an empty value and an
+unterminated quote are each a validation_error.
+
+Two consequences worth stating out loud. A token that *has* a `field:` prefix
+is never quietly demoted to free text — `http://x` and `C:/tmp` are "unknown
+search field" refusals, deliberately, because a typo an agent cannot see is
+worse than an error it can; quote the token (`"http://x"`) to search for a
+literal colon. And `folder:/` is refused as an empty value rather than widened
+to "everything".
+
+**A result row** is the listing shape plus its evidence:
+
+```json
+{"id": "main_bolt_set", "label": "Main Bolt Set", "material": "steel_a36",
+ "folder": "Fasteners", "tags": ["fastener"], "state": "ok", "kind": "script",
+ "matched_on": ["tag"], "snippet": "…counterbore(part, d=8.4)…"}
+```
+
+`matched_on` names every source that matched, in a canonical order
+(`id`, `label`, `tag`, `material`, `folder`, `state`, `kind`, `script`) — it is
+what a UI badges a row with and what an agent should read before believing a
+hit. Ranking is name › tag › material › folder/state/kind › script text, with
+manifest order breaking ties. `snippet` (≤ 120 characters around the match) is
+present **only when the script text is the only content that matched** — a
+field term like `state:ok` is a filter, not content, so `state:ok counterbore`
+still gets one, while a hit on the part's own name does not. The key is absent
+rather than empty, so a `snippet` that is there always means "this is the only
+reason this row is in the list".
+
+**Bulk operations.** `op` is one of six; `args` is per op:
+
+| `op` | `args` | Per-item row adds | Undo label |
+|---|---|---|---|
+| `material` | `{material: "<id>"}` | `material`, `rebuilt` | `bulk material ×N` |
+| `tag` | `{tags: [...]}` — added to each part's existing tags | `tags` (the new full list) | `bulk tag ×N` |
+| `untag` | `{tags: [...]}` — removed from each part's existing tags | `tags` | `bulk untag ×N` |
+| `folder` | `{folder: str\|null}` — the key is **required**; `null`/`""` files at the root | `folder` | `bulk folder ×N` |
+| `delete` | `{force?: bool}` | `instances_removed` | `bulk delete ×N` |
+| `export` | `{format: "step"\|"stl"\|"3mf", tolerance?: number}` | `path`, `size_bytes` | `null` |
+
+The five manifest ops are **one manifest write, one `project_changed` publish,
+one git snapshot and one undo entry** — that is the whole point of the tool.
+Composing per-part calls instead would cost a human six presses of ⌘Z to get
+back from a six-part change. `export` writes into `exports/`, changes no
+authored state, and deliberately has **no** undo entry (each id is a kernel
+round trip, hence the 50-id ceiling).
+
+The `×N` in a label is **`applied`**, not the number of ids you sent — and when
+`applied` is `0` (every id was a failed row) there is **no write, no publish and
+`undo_label: null`**: nothing happened, so nothing is undoable. `delete` is the
+one manifest op that publishes **no `parts_meta_changed`** either; the rows are
+gone, so there is nothing left to re-file.
+
+A `material` change also **rebuilds** each touched part afterwards (material
+feeds the build cache key through the density, so a written material with no
+rebuild would leave the mesh, the badge and the mass computed against the old
+one). Those rebuilds publish `rebuild_*` only — never a second
+`project_changed`, which is what keeps the whole gesture at one undo step — and
+a part whose rebuild fails comes back as a row with `rebuilt: false` and
+`ok: false` carrying the build error. The write still landed.
+
+Partial success is per-item **validity** only: an unknown id, or a part whose
+tags would go over the cap, is a `results` row with `ok: false` carrying an
+ordinary error payload, and the rest of the selection still lands. A refusal of
+the *gesture* — an unknown `op` or material, a malformed folder or tag, a
+selection over the bound, or a part another human has claimed — is an error
+envelope with **nothing written**. `delete` without `force` refuses per item
+with a `conflict_error` naming the assembly instances still using the part in
+`details.instances`; with `force` those instances (and anything mated to them)
+are removed in the same write.
+
+**`get_project` grew three fields per part**, and they cost no kernel call:
+`folder` (`null` at the root), `tags` (`[]` when none), and `thumb_key` — the
+content id its thumbnail is addressed by, `null` unless the part's current
+build state is `ok`. Assembly instances carry `folder` too (settable with
+`PATCH /api/projects/{proj}/assembly/instances/{id}`, whose body now accepts
+`folder`; `null` is the root). `get_part` carries `folder`/`tags` on its detail.
+
+**Events.**
+
+- `parts_meta_changed {project, part_ids, fields}` — a narrow follow-up so a
+  client can re-file rows without reloading the project. `fields` names what
+  changed (`folder`, `tags`, `material`), **not** the values. It is always
+  published *after* the `project_changed` that carries the durable write, so a
+  client acting on it can assume the change is already saved and already
+  undoable.
+- `rebuild_finished` now carries **`cache_key`** — the same key
+  `get_project.thumb_key` reports, on both the cached and the freshly-built
+  branch, so a live client can swap a row's thumbnail without refetching the
+  project.
+
+**Routes.** Two of these are browser assets and one is a listing; none is an
+agent verb, and all four are **member-only** in hosted mode.
+
+| Route | Answer |
+|---|---|
+| `GET /api/projects/{proj}/search?q=&limit=` | Exactly `search_parts`' payload (the route is a passthrough to the tool — the filter box and an agent must get the same answer to the same question). An empty `q` is a listing, not a 422. A grammar refusal is a **422** whose message names the mistake and whose `details.grammar` carries the whole grammar — render that key rather than keeping a copy of the rules; an unknown project a 404. |
+| `GET /api/dashboard` | `{projects: [{name, path, n_parts, n_instances, mass_g, failing, last_modified, thumb}]}` for every project on the server. Kernel-free and render-free by contract. `mass_g` is `null` the moment one part is not built with metrics — an honest "unknown", never a partial sum; `failing` counts error states; `last_modified` is `project.json`'s mtime as ISO-8601 UTC; `thumb` is a URL only when a cached image or mesh already exists to answer from. |
+| `GET /api/projects/{proj}/parts/{part_id}/thumb.png?k=` | A 192×192 PNG rendered from the mesh already on disk. **Never builds**: a part with no cached mesh is a 404, not a rebuild. |
+| `GET /api/projects/{proj}/thumb.png?k=` | The same, composited over the project's placed instances, with a first-built-part fallback. Its key is a **bare 32-hex digest** over exactly what the composite draws (each instance's mesh key, placement and colour) — `asm-` is only the prefix of the *cache file* (`.cache/asm-<key>.thumb.png`), so `?k=` takes the digest alone, never `asm-<hash>`. Recorded: no read publishes that key, so today a client can only learn it from a previous response's `ETag` — the assembly route has no first-load `?k=` source the way a part's `thumb_key` is one. |
+
+Both thumbnail routes are the codebase's **first non-`no-store` binary
+response**, and the rule is worth understanding because it is what makes it
+safe. Every other mesh/render/drawing route is addressed by *part id*, so a
+cached copy would go stale the moment the part rebuilt. These are addressed by
+**content hash**: pass `k=<thumb_key>` (from `get_project`, or from
+`rebuild_finished.cache_key`) and, when `k` is exactly the key being served,
+the answer is `Cache-Control: private, max-age=31536000, immutable` — the
+client named this exact content, and a rebuild mints a *different* URL rather
+than changing this one. Omit `k`, or send a stale or malformed one, and the
+answer is `no-cache`; the response is still returned in full, and the next
+request revalidates through `ETag: "<key>"` into a cheap 304 that is decided
+from the key **before** anything is rendered or read. A malformed `k` is
+ignored, never refused: it can only cost the client the immutable answer, and a
+422 on a cache hint would break an `<img>` tag over a typo.
 
 ## A worked loop
 

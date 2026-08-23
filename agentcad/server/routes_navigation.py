@@ -11,8 +11,10 @@ not a route that reaches into `service.search` on its own terms.
 Errors go through ``routes_configs._result`` (the `routes_bom`/`routes_drawing`
 precedent): `search_parts` is zero-kernel and returns no ``ok`` post-state, so
 every ``{"error": …}`` it can yield is a refusal — an unknown project is the
-house 404, a bad query or an out-of-range ``limit`` the house 422 carrying the
-grammar in its message.
+house 404, a bad query or an out-of-range ``limit`` the house 422. Its message
+names only the mistake (``unknown search field 'kidn'``); the rules themselves
+ride ``details.grammar``, which ``search._refuse`` attaches to every parse
+refusal — a client renders that key rather than keeping its own copy.
 
 The dashboard is the other shape: not a passthrough, because it is **not** an
 agent verb (the tool count stays at three for this PRD) and there is nothing

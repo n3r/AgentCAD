@@ -101,6 +101,18 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   hardware: state the budget once, and every later change is refereed against
   it.
 
+- **Navigation that survives scale.** Parts and assembly instances take
+  folders and tags — project metadata, so scripts stay flat in `parts/` and
+  organizing never rebuilds anything. A type-to-filter box (`/`) narrows the
+  tree live in one query language shared with the `search_parts` agent tool:
+  `state:error tag:printed material:al6061 boss` composes free text over script
+  bodies with structured filters. Every row carries a server-rendered
+  thumbnail, cached by the part's content hash and served `immutable`. A
+  multi-selection gets a bulk bar — material, tags, folder, export, delete —
+  and each bulk change is **one** undo step, not one per part. The project
+  switcher is a dashboard of cards with hero renders, part counts, mass and a
+  failing-build badge. A 1 000-part tree renders a few dozen rows.
+
 - **Geometry CI.** One command certifies a whole project —
   `agentcad check` rebuilds every part, re-resolves the assembly, runs
   interference, evaluates the design specs and regenerates the drawings,
@@ -114,7 +126,7 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   change proposal, where a red or stale report blocks the merge. See
   [docs/geometry-ci.md](docs/geometry-ci.md).
 
-The agent tool surface is now **85 tools** (was 17; 88 with the optional
+The agent tool surface is now **107 tools** (was 17; 110 with the optional
 `[fem]` extra installed), and multi-part rebuilds fan out across a small pool of warm kernel
 workers. v3 added typed parameters, per-solid semantics, sheet metal with
 flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,
@@ -259,7 +271,7 @@ def build(p):
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — processes, components, data flow
-- [docs/agent-api.md](docs/agent-api.md) — the 85-tool agent surface, MCP setup
+- [docs/agent-api.md](docs/agent-api.md) — the 107-tool agent surface, MCP setup
 - [docs/geometry-ci.md](docs/geometry-ci.md) — `agentcad check`, the report schema, the GitHub Action
 - [docs/packages.md](docs/packages.md) — packages, indexes, the publish gate, the bundled catalog
 - [docs/part-authoring.md](docs/part-authoring.md) — the script contract and toolkit

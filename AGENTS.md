@@ -2931,6 +2931,143 @@ Full documentation: `docs/bench.md`. The design is
   cross-check against real `acm.pack` output is the kernel-backed suite,
   `tests/test_xchange_pack.py`).
 
+## Navigation gotchas (PRD-027 — read before touching `core/navigation.py`, `core/search.py`, `core/thumbnails.py`, `tools_navigation.py`, `routes_navigation.py`/`routes_thumbnails.py`, or the sidebar/dashboard frontend)
+
+- **One publish per mutating call, or the undo stack lies.** The history hook
+  snapshots on `project_changed`, so N publishes are N git snapshots and N undo
+  entries — a six-part bulk change composed of six service calls would cost the
+  human six presses of ⌘Z. `BulkExecutor`'s five manifest ops therefore go
+  through **one** `store.update_parts_meta` (or one `remove_parts`), one
+  `project_changed` carrying the gesture as its label (`bulk material ×6`, with
+  `part` **omitted** — the label is about the gesture, not a part), and only
+  then `parts_meta_changed` — except `delete`, which publishes **no**
+  `parts_meta_changed` at all (the rows are gone; there is nothing left to
+  re-file). A `material` bulk still runs
+  `service.rebuild_after_write` per part, **outside the locks**; that is safe
+  only because a rebuild publishes `rebuild_*` and never a second
+  `project_changed` — the test that counts `1` flips to `7` the moment someone
+  adds one. `export` publishes nothing and its `undo_label` is `null`: it writes
+  into `exports/` and must not cost an undo entry. And the label's `×N` is
+  **`applied`**: when `applied == 0` (every id was a failed row) there is no
+  write, no publish and `undo_label is None` — the `if edits:` / `if applied:`
+  guards, not an afterthought.
+- **`update_parts_meta` has a lock precondition the store cannot enforce.** The
+  caller holds `manifest_scope(store, proj)` **then** `service._lock` — outer to
+  inner, the order `tools_configs.set_instance_config` established. Taking
+  `manifest_scope` inside the store would invert it. The *planning* belongs
+  inside those locks too, not only the write: `tag`/`untag` merge against the
+  tag list they read, and a base read outside the lock is a lost update. A
+  `material` edit additionally obliges the caller to publish and to rebuild
+  (material feeds `_cache_key`); the store will not do it for you.
+- **`to_manifest` writes `folder`/`tags` only when set.** A project nobody has
+  organized must serialize byte-identically to before the feature existed — no
+  `folder: null`, no `tags: []`. A test compares the file bytes after a real
+  no-op write; do not "normalize" the fields into every entry.
+- **Six `InstanceSpec(` sites, and `folder` has to ride four of them.**
+  `set_instances` is a **full replace from `to_manifest()`**, and both the mate
+  tools and the gizmo drag read-all/write-all — so a field the dataclass does
+  not carry forward is destroyed by the next unrelated edit. The four that must
+  carry it are `ProjectStore.instances()`, `service._set_assembly`,
+  `tools_structure._set_assembly` and `mates._member` (a pattern member is filed
+  where its base is). The two that mint a genuinely new instance —
+  `add_subassembly` and `tools_import`'s structured landing — leave it unset,
+  which is the root, and that is correct.
+- **`search.GRAMMAR` is the one source.** It is quoted into the `search_parts`
+  tool description, into every refusal's **`details.grammar`** *and* into
+  `docs/agent-api.md`
+  (asserted verbatim by `tests/test_prd027_acceptance.py`). Do not paraphrase it
+  anywhere — an agent that reads `GET /api/tools` and an agent that reads the
+  page must be given the same sentence. Same rule for the frontend: it imports
+  nothing from Python, so `frontend/js/query_model.js` is a hand port, and the
+  **only** thing keeping the two honest is `tests/fixtures/search_queries.json`,
+  which `tests/test_search.py` and `tests/test_frontend_navigation.py` drive case
+  for case through their own language. A grammar change lands in three places or
+  it lands broken.
+- **A `field:` prefix is never demoted to free text.** `http://x` and `C:/tmp`
+  are "unknown search field" refusals on purpose (a typo an agent cannot see is
+  worse than an error it can); quoting is the escape hatch. `folder:/` is an
+  **empty value** refusal, not "everything" — `folder_matches` would have
+  widened it. `folder_matches` itself is a case-insensitive **whole-segment**
+  prefix (`a/b` is under `a`, never under `a/bc`) and an *empty query* matches
+  everything, which is what makes a cleared filter box a listing rather than a
+  422.
+- **`kind:package` is `provenance.parse(script) is not None`, never
+  `packages_lock`.** The lock says which packages a project uses; it cannot say
+  which *part* came from where. The parse gates on `MARKER in script` first, so
+  the non-package parts cost one substring scan. And `state`/`kind` are
+  deliberately **outside** the row memo: a build moves `_status` without touching
+  a manifest byte, so memoizing them with the rows serves a stale badge.
+- **A thumbnail never builds, and never calls `service._resolved_instances`.**
+  That attribute is *rebound* by `tools_structure` to `mates.resolve_project`,
+  which issues a kernel `resolve_assembly` for every polar-pattern and
+  sub-assembly member — one innocent-looking call and the "zero kernel calls"
+  contract is gone (review reproduced exactly that). `thumbnails._instances`
+  walks `store.instances` and expands **linear** patterns only, purely, through
+  the same `mates._unit`/`_member` math; mated, polar and sub-assembly instances
+  composite at their **stored** transform, and any expansion error degrades to
+  the base instance. A thumbnail is a hint — `render_view` renders the resolved
+  truth. Seven route tests install the rebinding first and run against a kernel
+  that raises.
+- **`.thumb.png` is in `_TRIMMABLE`**, so a thumbnail is derived data the cache
+  janitor may sweep at any moment; every read path treats "no file" and "no
+  mesh" as an ordinary 404, never a 500. The assembly composite is
+  `asm-<sha256>.thumb.png` — a **dash**, not a dot, so the janitor keys it on
+  its own and a part key can never collide with it.
+- **The warmer's thread starts in `routes_thumbnails.build_router` and nowhere
+  else.** `tools_navigation` only *constructs* it. `build_registry` runs in
+  `checks.py`, `packages/gate.py`, `bench/cli.py`'s per-task loop,
+  `share_build.py` and the MCP/CLI entry points — none of them an HTTP server,
+  each of which would otherwise strand a daemon thread and a bus subscriber, and
+  a late render there calls `_atomic_write`, which mkdirs: it can **re-create an
+  `agentcad-check-*` cell the CLI already deleted**. `AGENTCAD_THUMBNAILS=off`
+  is the opt-out, honoured in that one place; `tests/conftest.py` sets it autouse
+  so no test leaks a thread. Reuse, never replace, the object already bound to a
+  service (the `search.Engine` pattern) — a fresh one strands the running thread.
+- **`immutable` is earned by the content hash, not assumed.** These are the
+  codebase's first non-`no-store` binary responses, and the reason they are safe
+  is that `?k=` names the key being served: a rebuild mints a different key and
+  therefore a different URL. `k` absent/stale/malformed → `no-cache`; a malformed
+  `k` is **ignored, not refused** (a 422 on a cache hint would break an `<img>`
+  over a typo). The 304 is decided from the key **before** any render or read.
+  `_KEY_RE` uses `fullmatch`, the house gate rule.
+- **`tools_navigation` registers no gate provider and must not grow one.** It
+  loads at `nav`, which sorts before `pro` — and `tools_proposals` sets
+  `service.gate_providers = []` unconditionally, so a provider registered here
+  would be discarded without a word (the `tools_run_checks` trap restated). An
+  `ast` test asserts the absence.
+- **`_UNSET` is not `None` in `set_part_meta`.** `folder=None` *means* root, so
+  it cannot double as "leave it alone" (the `active_config` precedent); omitting
+  both fields is a read-back that publishes nothing. And every optional object
+  argument is declared `{"type": "object"}` / `{"type": "string"}`, never a JSON
+  **type list** — `ToolRegistry`'s validator looks the type up in a dict and a
+  list is unhashable, so `["string", "null"]` raises inside validation. An
+  explicit `null` still reaches the handler.
+- **`parts_meta_changed` carries ids and field *names*, not values** — a client
+  patches its own optimistic write from it and refetches for a remote one. It is
+  published **after** the `project_changed` that made the write durable, so a
+  listener may assume the change is already saved and already undoable. Do not
+  reorder them.
+- **The context menu is not on the dialogs overlay stack.** `dialogs.attachLegacy`
+  hard-codes `modal: true` (which switches off every global shortcut and the
+  sketcher) and stamps agent attribution + a `dialog_opened` event per open — all
+  wrong for a right-click menu. `shell/contextmenu.js` therefore owns `Esc`
+  through a **`window`-capture keydown listener installed only while open** (the
+  `palette.js` precedent: capture runs window → document, ahead of `dialogs.js`).
+  Its one divergence from `escOwner` (Esc taken unconditionally) and its caller
+  contract (focus the row *before* `open()`, or focus restores to `<body>`) are
+  in the module header.
+- **`import * as virtual` from `virtual_model.js`.** A named `window` import
+  shadows the browser global, in a module whose whole job is scroll geometry.
+  And the DOM tree's focus restore after a repaint must be `{preventScroll:
+  true}` and only for the row that actually had focus — a bare `.focus()` tugs
+  the list back toward an overscan row on every scroll once any row is focused.
+- **The tool count is 107 (110 with `[fem]`).** It lives in `docs/agent-api.md`,
+  `docs/architecture.md` (twice), `docs/user-guide.md`, `README.md` (twice),
+  this file and `docs/roadmap.md`, and
+  `tests/test_prd027_acceptance.py` compares the sentence against a live
+  `build_registry`, so it cannot drift silently again — it had drifted to 85
+  documented against 104 registered. A hosted instance adds `whoami` on top.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script
@@ -3023,7 +3160,7 @@ Write the changelog from the real diff, not from memory.
 ## Where to read more
 
 - `docs/architecture.md` — processes, components, ACM1 format, rebuild flow
-- `docs/agent-api.md` — the 85/88 agent tools with schemas + a worked loop
+- `docs/agent-api.md` — the 107/110 agent tools with schemas + a worked loop
 - `docs/geometry-ci.md` — `agentcad check`, the report schema, the GitHub Action
 - `docs/bench.md` — AgentCAD-Bench: the task bundle, the six subscores, `agentcad bench`, submitting from outside
 - `docs/part-authoring.md` — the script contract, toolkit, mates, sketch solver

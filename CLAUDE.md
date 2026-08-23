@@ -339,6 +339,47 @@ This project is built skill-first. Use the Superpowers process skills:
   batch is **one** `set_instances` write · every result carries `fidelity`, an
   axis the format cannot carry is **absent** (never `"none"`), and
   `parametric: "none"` is always there.
+- Navigation (`core/navigation.py`, `search.py`, `thumbnails.py`,
+  `tools_navigation.py`, `routes_navigation.py`/`routes_thumbnails.py`, the
+  sidebar/dashboard frontend; PRD-027): **one `project_changed` per mutating
+  call** — the history hook snapshots on it, so N publishes are N undo steps
+  (a bulk op is one `update_parts_meta`/`remove_parts`, one publish labelled
+  `bulk material ×6`, then `parts_meta_changed`; the per-part
+  `rebuild_after_write` is safe only because rebuilds publish `rebuild_*`
+  alone) · `update_parts_meta`'s precondition is the **caller's** locks,
+  `manifest_scope` → `service._lock` (outer → inner), with the *planning*
+  inside them too · `to_manifest` writes `folder`/`tags` **only when set** (an
+  untouched project is byte-identical) · `folder` must ride the four
+  `InstanceSpec(` sites that carry an instance forward (`instances()`, both
+  `_set_assembly`s, `mates._member`) because `set_instances` is a full replace;
+  the two that mint one (`add_subassembly`, structured import) leave it at root
+  · **`search.GRAMMAR` is the one source** (tool description + every refusal +
+  `docs/agent-api.md`, asserted verbatim) and `query_model.js` is a hand port
+  kept honest **only** by `tests/fixtures/search_queries.json`, driven by both
+  languages · a `field:` prefix is never demoted to free text (`http://x` is a
+  refusal; quote it) and `folder:/` is an empty-value refusal, while the empty
+  *query* matches everything · `kind:package` is `provenance.parse(script)`,
+  never `packages_lock`, and `state`/`kind` stay **outside** the row memo · a
+  thumbnail **never builds and never touches `service._resolved_instances`**
+  (rebound to `mates.resolve_project` → a kernel call per polar/sub-assembly
+  member): `_instances` expands **linear** patterns purely and composites
+  everything else at its **stored** transform · `.thumb.png` is in
+  `_TRIMMABLE` and the composite is `asm-<sha256>` (dash, not dot) · the warmer
+  thread starts in **`routes_thumbnails.build_router` only** (`build_registry`
+  runs in checks/gate/bench/share/MCP — a late render there re-creates a
+  deleted `agentcad-check-*` cell), `AGENTCAD_THUMBNAILS=off` opts out, and the
+  object is reused, never replaced · `immutable` is earned by the content hash
+  (`?k=` names the served key; a malformed `k` is **ignored**, and the 304 is
+  decided from the key before any render); `_KEY_RE` is `fullmatch` ·
+  `tools_navigation` loads at `nav` and registers **no gate provider** (`pro`
+  resets them) · `folder=None` means **root**, so `_UNSET` is the "unchanged"
+  sentinel, and no schema may use a JSON **type list** (the validator's dict
+  lookup is unhashable) · `parts_meta_changed` carries ids and field **names**,
+  after the durable `project_changed` · the context menu is **not** on the
+  dialogs overlay stack (`window`-capture Esc, the `palette.js` precedent) ·
+  `import * as virtual` (a named `window` import shadows the global) and focus
+  restore is `{preventScroll: true}` · tool count **107 (110 with `[fem]`)**,
+  guarded against a live `build_registry`.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests
