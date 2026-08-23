@@ -871,26 +871,34 @@ def test_a_hole_in_the_gap_between_two_solids_is_a_miss():
     assert "instance(s) [2] do not reach the part" in warning
 
 
-# ------------------ the CHEATSHEET is a guide agents receive, so it is tested
+# ------------------ the `holes` skill is a guide agents receive, so it is tested
 
 
 def test_the_cheatsheet_names_every_key_a_hole_record_actually_carries():
     """**Regression, and a standing guard.**
 
-    `core/templates.CHEATSHEET` is what `part_template` hands an agent, and it
-    is the one hole-authoring doc with no reader to notice when it goes stale:
-    `docs/part-authoring.md` and `AGENTS.md` were updated for the measured
-    `count`, `verify`/`dropped`, `designation_base` and the blind-depth
-    callouts and the CHEATSHEET got none of them, so the guide an agent is
+    The hole-wizard guide is what an agent loads before drilling anything, and
+    it is the one hole-authoring doc with no reader to notice when it goes
+    stale: `docs/part-authoring.md` and `AGENTS.md` were updated for the
+    measured `count`, `verify`/`dropped`, `designation_base` and the
+    blind-depth callouts and the guide got none of them, so what an agent is
     handed described the behaviour of two rounds earlier.
 
+    PRD-029 promoted the HOLE WIZARD section out of `core/templates.CHEATSHEET`
+    into the core skill `holes`, verbatim — so this reads the skill's own
+    loaded content (what an agent actually receives, truncation included) and
+    the guard follows the text rather than staying behind on a constant that no
+    longer carries it.
+
     Asserting it against a REAL record is what makes it stay true: a key added
-    to the record without a word in the sheet fails here.
+    to the record without a word in the guide fails here.
     """
     import re
 
-    from agentcad.core.templates import CHEATSHEET
+    from agentcad.core.skills import SkillLibrary
     from agentcad.toolkit import holes
+
+    CHEATSHEET = SkillLibrary().load("holes")["content"]
 
     _out, records, _warning = holes.counterbore(_plate(t=20.0), [(0, 0)], "M8",
                                                 depth=6.0, thru=False)
@@ -902,11 +910,11 @@ def test_the_cheatsheet_names_every_key_a_hole_record_actually_carries():
     # future keys — `status`, `origin`, `depth`, `warnings`, `label`, `seat` —
     # all passed while entirely absent.
     block = re.search(r"ONE GROUP record -- \{(.*?)\}", CHEATSHEET, re.S)
-    assert block is not None, "the CHEATSHEET's record-key block is gone"
+    assert block is not None, "the holes skill's record-key block is gone"
     declared = {token.strip()
                 for token in block.group(1).replace("\n", " ").split(",")}
     assert declared == set(record), (
-        f"CHEATSHEET record keys disagree with a real record: "
+        f"the holes skill's record keys disagree with a real record: "
         f"missing {sorted(set(record) - declared)}, "
         f"stale {sorted(declared - set(record))}")
 

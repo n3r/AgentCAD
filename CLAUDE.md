@@ -296,6 +296,38 @@ This project is built skill-first. Use the Superpowers process skills:
   strips) · the **only** write root either command grants the confined worker
   is the work dir — never the task bundle (a candidate script would rewrite
   the reference STEP it is scored against) and never the submission.
+- Skills (`core/skills.py`, `skills_lint.py`, `tools_skills.py`,
+  `routes_skills.py`, `agentcad/skills/`, the chat seam; PRD-029): the pack
+  loads at **`sk`** — read `service.skills`/`service.bus` inside the handlers
+  and never touch `gate_providers` (the `tools_run_checks` trap) · **trust is
+  a route, never a tool** (`actor_kind(client) == "human"` **and** an explicit
+  `browser:<id>`/`user:<id>` principal, or 403 — a bare `browser` is what a
+  missing header becomes), keyed by the **tree digest** (`SKILL.md` plus
+  every asset — a changed snippet untrusts), and the document lives in
+  `.history/agentcad/skills/trust.json` (branch-free, never cloned, corrupt
+  reads as empty, RMW under `trust.lock`) · an **untrusted** project skill's
+  description never reaches an agent (`redact_untrusted`, `compact_index`)
+  and a human reviews it through the route's `enforce_trust=False` read,
+  which logs no `skill_loaded` · budget eviction **rewrites the evicted
+  `tool_result` in place** to `UNLOAD_STUB` and publishes `skill_unloaded`
+  — the cost is the whole serialized result, an asset read is its own
+  `name#asset` entry, a re-load stubs the previous copy, a failed load
+  records nothing, `SkillBudget` clamps the content cap to 0.8 × the session
+  cap so one skill always fits, and there is no `unload_skill` tool ·
+  `search` is token-set (tokens ≥ 3 chars), never substring · an unreviewed
+  skill's `invalid`/`problem` text is withheld too (it quotes the file) · `truncate_sections` guarantees **`max_chars + 4`**
+  (the four are the budgeted fence closer on a cut preamble) and keeps whole
+  `## ` sections, so the payload is a byte-exact prefix · frontmatter is our
+  own parser (**every value is a string**), an unknown key warns, a broken
+  skill is **listed** as `invalid`, and `requires` **fails closed** (an
+  unknown capability is refused like a missing one) · core skills lint under
+  **`library`** and every `snippets/*.py` builds green in the kernel ·
+  `part_template` is now **contract + basics + the skill index**
+  (`{template, cheatsheet, skills, hint}`) — do not put a toolkit section
+  back in the sheet · the chat chip filters on the event's **`session`**
+  (derived from `client`; the tool publishes `skill_loaded`, the engine does
+  not) · symlinked skill dirs/files are skipped and every read is
+  `stat`-capped before it allocates.
 - Interop (`kernel/handlers/interop.py`, `interop_import.py`, `_pmi_map.py`,
   `core/tools_xchange.py`, `gltf.py`, `usd_export.py`, `interop_colors.py`,
   PRD-017): the **six AP242 traps** — **bake** the location (a located shape's
@@ -362,7 +394,9 @@ commit manifest-reformatting churn or the venv.
 ## Deeper docs
 
 `AGENTS.md` (contributor guide) · `docs/architecture.md` · `docs/agent-api.md`
-· `docs/part-authoring.md` · `docs/user-guide.md` · `docs/materials.md`
+· `docs/part-authoring.md` · `docs/skills.md` (agent skills: the format,
+layers, budget, trust, the lint, the shipped library) · `docs/user-guide.md`
+· `docs/materials.md`
 (materials library: schema, taxonomy, versioning, the lint, sourcing rules) ·
 `docs/deployment.md`
 (hosted mode: `docker compose`, accounts, tokens, backup) · `docs/packages.md`

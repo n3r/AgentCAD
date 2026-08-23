@@ -1,0 +1,470 @@
+{
+  "standard": "ISO 286-1:2010 (system of tolerances and deviations); ISO 286-2:2010 (tables of limit deviations)",
+  "units": "micrometre (um); 1 um = 0.001 mm",
+  "basis": "hole basis: the hole is H (EI = 0, ES = +IT), the shaft letter carries the fit",
+  "range_note": "nominal size ranges are 'over ... up to and including', in mm (10 mm is in 6-10, not 10-18)",
+  "nominal_ranges_mm": [
+    {
+      "key": "3-6",
+      "over": 3.0,
+      "up_to_incl": 6.0
+    },
+    {
+      "key": "6-10",
+      "over": 6.0,
+      "up_to_incl": 10.0
+    },
+    {
+      "key": "10-18",
+      "over": 10.0,
+      "up_to_incl": 18.0
+    },
+    {
+      "key": "18-30",
+      "over": 18.0,
+      "up_to_incl": 30.0
+    },
+    {
+      "key": "30-50",
+      "over": 30.0,
+      "up_to_incl": 50.0
+    }
+  ],
+  "it_grades_um": {
+    "IT6": {
+      "3-6": 8,
+      "6-10": 9,
+      "10-18": 11,
+      "18-30": 13,
+      "30-50": 16
+    },
+    "IT7": {
+      "3-6": 12,
+      "6-10": 15,
+      "10-18": 18,
+      "18-30": 21,
+      "30-50": 25
+    },
+    "IT8": {
+      "3-6": 18,
+      "6-10": 22,
+      "10-18": 27,
+      "18-30": 33,
+      "30-50": 39
+    },
+    "IT9": {
+      "3-6": 30,
+      "6-10": 36,
+      "10-18": 43,
+      "18-30": 52,
+      "30-50": 62
+    },
+    "IT10": {
+      "3-6": 48,
+      "6-10": 58,
+      "10-18": 70,
+      "18-30": 84,
+      "30-50": 100
+    },
+    "IT11": {
+      "3-6": 75,
+      "6-10": 90,
+      "10-18": 110,
+      "18-30": 130,
+      "30-50": 160
+    }
+  },
+  "fundamental_deviations_um": {
+    "H": {
+      "applies_to": "hole",
+      "deviation": "EI",
+      "values": {
+        "3-6": 0,
+        "6-10": 0,
+        "10-18": 0,
+        "18-30": 0,
+        "30-50": 0
+      },
+      "other_limit": "ES = EI + IT"
+    },
+    "g": {
+      "applies_to": "shaft",
+      "deviation": "es",
+      "values": {
+        "3-6": -4,
+        "6-10": -5,
+        "10-18": -6,
+        "18-30": -7,
+        "30-50": -9
+      },
+      "other_limit": "ei = es - IT"
+    },
+    "h": {
+      "applies_to": "shaft",
+      "deviation": "es",
+      "values": {
+        "3-6": 0,
+        "6-10": 0,
+        "10-18": 0,
+        "18-30": 0,
+        "30-50": 0
+      },
+      "other_limit": "ei = es - IT"
+    },
+    "k": {
+      "applies_to": "shaft",
+      "deviation": "ei",
+      "values": {
+        "3-6": 1,
+        "6-10": 1,
+        "10-18": 1,
+        "18-30": 2,
+        "30-50": 2
+      },
+      "other_limit": "es = ei + IT",
+      "grade_note": "these ei values hold for grades IT4 to IT7; for IT3 and finer and for IT8 and coarser, k has ei = 0"
+    },
+    "p": {
+      "applies_to": "shaft",
+      "deviation": "ei",
+      "values": {
+        "3-6": 12,
+        "6-10": 15,
+        "10-18": 18,
+        "18-30": 22,
+        "30-50": 26
+      },
+      "other_limit": "es = ei + IT"
+    }
+  },
+  "hole_basis_fits_H7": {
+    "note": "deviations relative to the nominal size, in um; clearance_um is [min, max] and a negative value is interference",
+    "fits": {
+      "H7/g6": {
+        "3-6": {
+          "hole_H7_um": [
+            0,
+            12
+          ],
+          "shaft_um": [
+            -12,
+            -4
+          ],
+          "clearance_um": [
+            4,
+            24
+          ],
+          "character": "clearance"
+        },
+        "6-10": {
+          "hole_H7_um": [
+            0,
+            15
+          ],
+          "shaft_um": [
+            -14,
+            -5
+          ],
+          "clearance_um": [
+            5,
+            29
+          ],
+          "character": "clearance"
+        },
+        "10-18": {
+          "hole_H7_um": [
+            0,
+            18
+          ],
+          "shaft_um": [
+            -17,
+            -6
+          ],
+          "clearance_um": [
+            6,
+            35
+          ],
+          "character": "clearance"
+        },
+        "18-30": {
+          "hole_H7_um": [
+            0,
+            21
+          ],
+          "shaft_um": [
+            -20,
+            -7
+          ],
+          "clearance_um": [
+            7,
+            41
+          ],
+          "character": "clearance"
+        },
+        "30-50": {
+          "hole_H7_um": [
+            0,
+            25
+          ],
+          "shaft_um": [
+            -25,
+            -9
+          ],
+          "clearance_um": [
+            9,
+            50
+          ],
+          "character": "clearance"
+        }
+      },
+      "H7/h6": {
+        "3-6": {
+          "hole_H7_um": [
+            0,
+            12
+          ],
+          "shaft_um": [
+            -8,
+            0
+          ],
+          "clearance_um": [
+            0,
+            20
+          ],
+          "character": "clearance"
+        },
+        "6-10": {
+          "hole_H7_um": [
+            0,
+            15
+          ],
+          "shaft_um": [
+            -9,
+            0
+          ],
+          "clearance_um": [
+            0,
+            24
+          ],
+          "character": "clearance"
+        },
+        "10-18": {
+          "hole_H7_um": [
+            0,
+            18
+          ],
+          "shaft_um": [
+            -11,
+            0
+          ],
+          "clearance_um": [
+            0,
+            29
+          ],
+          "character": "clearance"
+        },
+        "18-30": {
+          "hole_H7_um": [
+            0,
+            21
+          ],
+          "shaft_um": [
+            -13,
+            0
+          ],
+          "clearance_um": [
+            0,
+            34
+          ],
+          "character": "clearance"
+        },
+        "30-50": {
+          "hole_H7_um": [
+            0,
+            25
+          ],
+          "shaft_um": [
+            -16,
+            0
+          ],
+          "clearance_um": [
+            0,
+            41
+          ],
+          "character": "clearance"
+        }
+      },
+      "H7/k6": {
+        "3-6": {
+          "hole_H7_um": [
+            0,
+            12
+          ],
+          "shaft_um": [
+            1,
+            9
+          ],
+          "clearance_um": [
+            -9,
+            11
+          ],
+          "character": "transition"
+        },
+        "6-10": {
+          "hole_H7_um": [
+            0,
+            15
+          ],
+          "shaft_um": [
+            1,
+            10
+          ],
+          "clearance_um": [
+            -10,
+            14
+          ],
+          "character": "transition"
+        },
+        "10-18": {
+          "hole_H7_um": [
+            0,
+            18
+          ],
+          "shaft_um": [
+            1,
+            12
+          ],
+          "clearance_um": [
+            -12,
+            17
+          ],
+          "character": "transition"
+        },
+        "18-30": {
+          "hole_H7_um": [
+            0,
+            21
+          ],
+          "shaft_um": [
+            2,
+            15
+          ],
+          "clearance_um": [
+            -15,
+            19
+          ],
+          "character": "transition"
+        },
+        "30-50": {
+          "hole_H7_um": [
+            0,
+            25
+          ],
+          "shaft_um": [
+            2,
+            18
+          ],
+          "clearance_um": [
+            -18,
+            23
+          ],
+          "character": "transition"
+        }
+      },
+      "H7/p6": {
+        "3-6": {
+          "hole_H7_um": [
+            0,
+            12
+          ],
+          "shaft_um": [
+            12,
+            20
+          ],
+          "clearance_um": [
+            -20,
+            0
+          ],
+          "character": "interference"
+        },
+        "6-10": {
+          "hole_H7_um": [
+            0,
+            15
+          ],
+          "shaft_um": [
+            15,
+            24
+          ],
+          "clearance_um": [
+            -24,
+            0
+          ],
+          "character": "interference"
+        },
+        "10-18": {
+          "hole_H7_um": [
+            0,
+            18
+          ],
+          "shaft_um": [
+            18,
+            29
+          ],
+          "clearance_um": [
+            -29,
+            0
+          ],
+          "character": "interference"
+        },
+        "18-30": {
+          "hole_H7_um": [
+            0,
+            21
+          ],
+          "shaft_um": [
+            22,
+            35
+          ],
+          "clearance_um": [
+            -35,
+            -1
+          ],
+          "character": "interference"
+        },
+        "30-50": {
+          "hole_H7_um": [
+            0,
+            25
+          ],
+          "shaft_um": [
+            26,
+            42
+          ],
+          "clearance_um": [
+            -42,
+            -1
+          ],
+          "character": "interference"
+        }
+      }
+    }
+  },
+  "worked_example": {
+    "designation": "10 H7/g6",
+    "range": "6-10",
+    "hole_mm": [
+      10.0,
+      10.015
+    ],
+    "shaft_mm": [
+      9.986,
+      9.995
+    ],
+    "clearance_mm": [
+      0.005,
+      0.029
+    ]
+  },
+  "source_note": "values transcribed from ISO 286-1:2010 / ISO 286-2:2010; no aggregator or reseller data"
+}

@@ -1,0 +1,57 @@
+{
+  "title": "NEMA stepper motor face-mount dimensions",
+  "units": "mm",
+  "standard": "NEMA ICS 16, Part 4 (motion/position control motors — frame and mounting dimensions). The standard is written in inches; the inch value is carried beside each converted millimetre value.",
+  "corroborating_datasheet": "Oriental Motor PKP Series stepping motors, dimensional drawings for the 20/28/35/42/56 mm frames.",
+  "notes": [
+    "The frame number is the flange width in tenths of an inch (17 = 1.7 in).",
+    "The mounting holes form a SQUARE. bolt_circle_mm = bolt_square_mm * sqrt(2) and is given only for polar patterning.",
+    "flange_mm is the standard's maximum across the flats; individual motors measure a little under it. Never size a pocket to flange_mm alone.",
+    "pilot_boss_height_mm is vendor-typical, not fixed by ICS 16 — confirm on the datasheet before making a blind recess depend on it.",
+    "shaft_d_mm is the single-shaft nominal. NEMA 23 is 1/4 in (6.35 mm) nominal but 8 mm variants are common; always confirm.",
+    "face_tap_depth_mm is the usable thread depth in the motor face — screw length = plate thickness + 4 to 5 mm, never more."
+  ],
+  "frames": [
+    {
+      "frame": "NEMA 8", "flange_mm": 20.3, "flange_in": 0.80,
+      "bolt_square_mm": 16.0, "bolt_square_in": 0.630, "bolt_circle_mm": 22.63,
+      "pilot_d_mm": 15.0, "pilot_d_in": 0.591, "pilot_boss_height_mm": 1.5,
+      "screw": "M2", "clearance_d_mm": 2.4, "face_tap_depth_mm": 2.5,
+      "shaft_d_mm": 4.0
+    },
+    {
+      "frame": "NEMA 11", "flange_mm": 28.2, "flange_in": 1.10,
+      "bolt_square_mm": 23.0, "bolt_square_in": 0.906, "bolt_circle_mm": 32.53,
+      "pilot_d_mm": 22.0, "pilot_d_in": 0.866, "pilot_boss_height_mm": 2.0,
+      "screw": "M2.5", "clearance_d_mm": 2.9, "face_tap_depth_mm": 3.5,
+      "shaft_d_mm": 5.0
+    },
+    {
+      "frame": "NEMA 14", "flange_mm": 35.2, "flange_in": 1.38,
+      "bolt_square_mm": 26.0, "bolt_square_in": 1.024, "bolt_circle_mm": 36.77,
+      "pilot_d_mm": 22.0, "pilot_d_in": 0.866, "pilot_boss_height_mm": 2.0,
+      "screw": "M3", "clearance_d_mm": 3.4, "face_tap_depth_mm": 4.5,
+      "shaft_d_mm": 5.0
+    },
+    {
+      "frame": "NEMA 17", "flange_mm": 42.3, "flange_in": 1.66,
+      "bolt_square_mm": 31.0, "bolt_square_in": 1.220, "bolt_circle_mm": 43.84,
+      "pilot_d_mm": 22.0, "pilot_d_in": 0.866, "pilot_boss_height_mm": 2.0,
+      "screw": "M3", "clearance_d_mm": 3.4, "face_tap_depth_mm": 4.5,
+      "shaft_d_mm": 5.0
+    },
+    {
+      "frame": "NEMA 23", "flange_mm": 56.4, "flange_in": 2.22,
+      "bolt_square_mm": 47.14, "bolt_square_in": 1.856, "bolt_circle_mm": 66.67,
+      "pilot_d_mm": 38.1, "pilot_d_in": 1.500, "pilot_boss_height_mm": 1.6,
+      "screw": "M5", "screw_alt": "#10-24 UNC", "clearance_d_mm": 5.5,
+      "face_tap_depth_mm": 8.0, "shaft_d_mm": 6.35
+    }
+  ],
+  "bracket_rules": {
+    "pilot_bore_clearance_mm": [0.2, 0.5],
+    "pilot_bore_clearance_note": "Diametral. 0.2 machined or laser-cut, 0.3-0.5 FDM.",
+    "clearance_class": "ISO 273 medium (ASME B18.2.8 normal) unless the pattern must locate the part.",
+    "screw_length_mm": "plate thickness + 4 to 5"
+  }
+}

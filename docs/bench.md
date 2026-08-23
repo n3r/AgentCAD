@@ -75,7 +75,7 @@ the *score* is arithmetic over kernel output.
 ```
 agentcad bench run     --report DIR [--tasks GLOB] [--set NAME] [--agent builtin]
                        [--model NAME] [--work-dir DIR] [--budget SECONDS]
-                       [--quiet | --json]
+                       [--skills SEL] [--quiet | --json]
 agentcad bench score   SUBMISSION --task ID [--tasks-dir DIR] [--out DIR]
                        [--work-dir DIR] [--budget SECONDS] [--quiet | --json]
 agentcad bench prompt  ID [--tasks-dir DIR] [--json]
@@ -93,6 +93,7 @@ agentcad bench publish LEADERBOARD [-o PATH] [--title TEXT]
 | `--tasks-dir` | The task tree to load from (default: the shipped `benchmarks/tasks`). On `score` and `prompt`. |
 | `--work-dir` | Where a run or a score materializes its throwaway cells, in unique subdirectories it creates and removes. A work dir that **is, holds or sits inside** the submission, the task tree, the results directory or the projects root is refused, exit 2. It is also the **only** path either command grants the confined worker a write into: the task bundle and the submission are read-only inputs, and the worker executes the candidate's own Python. |
 | `--budget` | A wall-clock ceiling in seconds. On `run` it overrides `task.json`'s wall budget (never the tool-call ceiling — that is what keeps a task inside one engine turn). On `score` it is a deadline read before every kernel call. Must be finite and non-negative: a NaN deadline is never in the past, so it bounds nothing. |
+| `--skills` | Which agent skills the run may load (PRD-029): `all` (default — the shipped library, i.e. what the product ships), `none` (no skills block in the system prompt and every `load_skill` refused), or a comma-separated list of names from the shipped library. An unknown name is a **usage error before anything spawns**, listing what is selectable; a skill a capability gate hides here says so rather than reading as a typo, and a *project* skill cannot be named (the selection is read before any project exists). Recorded in `bench.json` and every `run.json`; `score.json` is untouched. See [Measuring a skill](#measuring-a-skill). |
 | `--baseline` / `--epsilon` | Gate a report against `benchmarks/baseline.json`, tolerating a drop of `epsilon` (default 0.02) on the total and on each category. |
 | `--md` / `--json-out` | Write the markdown summary (`$GITHUB_STEP_SUMMARY`, a PR comment) / the JSON report. |
 | `--quiet` / `--json` | `--quiet` prints nothing; `--json` puts the document **alone** on stdout, so `agentcad bench score --json \| jq` works. Neither moves the exit code. (`prompt` has only `--json`: printing the prompt *is* the command.) |
@@ -425,7 +426,7 @@ out/
   tasks/<category>/<id>/
       submission/                # the project directory the agent produced
       transcript.json            # the turn, path-redacted, images elided
-      run.json                   # timestamps, model, host, usage, budgets, stopped
+      run.json                   # timestamps, model, host, usage, budgets, skills, stopped
       score.json                 # the measurement
 ```
 
@@ -433,6 +434,49 @@ out/
 survivors: `bench report` takes its denominator from that index, so a task that
 was selected and never scored has to appear there or it would quietly leave the
 arithmetic.
+
+### Measuring a skill
+
+`--skills` exists so that *"did this skill help?"* is a measurement rather than
+an impression. Run the same suite twice, changing only the flag, and subtract:
+
+```bash
+uv run agentcad bench run --set fast --skills none      --report skills-off/
+uv run agentcad bench run --set fast --skills snap-fits --report skills-on/
+
+# A report carries ROWS, a baseline carries NUMBERS — one jq filter converts.
+uv run agentcad bench report skills-off/ --json-out skills-off/report.json
+jq '{schema, task_set, harness, agent, model, agentcad, total,
+     categories: (.categories | map_values(.total)),
+     tasks:      (.tasks      | map_values(.total))}' \
+   skills-off/report.json > skills-off/baseline.json
+
+uv run agentcad bench report skills-on/ --baseline skills-off/baseline.json
+```
+
+The last command prints the with-skill score, the without-skill score and the
+delta for every scope that moved, and exits 1 if the *with* run came out worse
+beyond `--epsilon` — the same gate CI runs against the checked-in baseline. Per
+task deltas ride along in `--json-out` / `--md`: printed, never gated.
+
+Two properties are what make the subtraction honest:
+
+* **`score.json` is byte-identical between the two modes** for the same
+  produced geometry. The selection is *provenance*: it lands in `bench.json`
+  and in every `run.json` as
+  `"skills": {"mode": "all"|"none"|"only", "names": [...]}` — `names` sorted,
+  and empty for `all` and `none` — and never in the measurement.
+* **`none` reaches the tool, not only the prompt.** The engine is given no
+  library, so the system prompt is byte-identical to the one that shipped
+  before skills existed — *and* the task service's own library is restricted
+  to the empty set, so an agent that calls `load_skill` anyway is refused
+  (`skill_not_found`, hinted with `bench --skills`) instead of quietly loading
+  what the run claims to have switched off. A named selection restricts the
+  same surface, so the system prompt advertises exactly the skills you named
+  and nothing else.
+
+One task under a stochastic agent is noise. Compare `--set fast` or wider, and
+read the category rows rather than a single task's delta.
 
 ---
 

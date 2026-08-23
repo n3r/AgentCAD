@@ -1034,11 +1034,34 @@ one letter per PMI **diameter** dim, in declaration order, and draws a table
 of each configuration's value per letter — linear dims are not separately
 lettered (they resolve to the same overall extents A/B/C already carry).
 
-## Cheat-sheet
+## Cheat-sheet and skills
 
-Agents get the full contract plus common build123d idioms (builder contexts,
-selectors, patterns, sketches, lofts) from the `part_template` tool at
-runtime; the same text lives in `agentcad/core/templates.py` (`CHEATSHEET`).
+Agents get the contract plus the build123d basics (builder contexts,
+selectors, the common OCCT failure modes) from the `part_template` tool at
+runtime; that text lives in `agentcad/core/templates.py` (`CHEATSHEET`).
+
+**The toolkit sections are no longer in the cheat-sheet.** They are core
+**skills** an agent loads on demand with `load_skill {name}` — single source,
+so a section is never carried in every reply and never duplicated:
+
+| Skill | What moved out of the cheat-sheet |
+|---|---|
+| `robust-parametrics` | the robustness toolkit (`safe_fillet`/`safe_shell`/`safe_bool`) and the parametric guards |
+| `selectors-and-occt-failures` | selector recipes and the OCCT failure playbook |
+| `patterns` | `toolkit.patterns` — bolt circles, grids, linear/polar/mirror |
+| `holes` | the hole wizard and the hole record |
+| `threads-and-fasteners` | simple vs real ISO threads, `bd_warehouse` fasteners |
+| `ribs-bosses-draft` | `features.rib`/`boss`/`draft` |
+| `sketch-solver` | the 2D constraint sketch solver |
+| `sheet-metal` | `SheetPart`, bend allowance, flat patterns |
+| `design-specs` | `SPECS` and the spec-first workflow |
+| `assemblies-and-mates` | `connectors(p, part)` and the mate types |
+
+Six more are authored for the library (`enclosures`, `snap-fits`,
+`brackets-and-mounts`, `fits-and-clearances`, `fdm-design-rules`,
+`fem-workflow`), and a project can add its own under `<project>/skills/`. See
+[docs/skills.md](skills.md) for the format, the layers, trust and the lint.
+
 The bundled examples under `examples/` are the best reference for real,
 robust parametric parts:
 

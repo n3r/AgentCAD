@@ -1,0 +1,75 @@
+{
+  "schema": "agentcad/skills/snap-fits/material_strain@1",
+  "quantity": "maximum permissible bending strain at the root of a snap-fit beam",
+  "units": {"strain": "percent", "modulus": "MPa"},
+  "basis": "one-time assembly, room temperature, short-term load. Halve for a joint that is opened and closed repeatedly, and again for service above ~40 C or below ~0 C.",
+  "fdm_derate": "The moulded values are for isotropic material. For a printed beam whose layers lie in the bending plane take 50-70 % of the value below; for a beam printed with its axis across the layers take 30 % or redesign the orientation.",
+  "rows": [
+    {
+      "id": "pla",
+      "material": "PLA",
+      "process": "fdm",
+      "strain_pct_min": 1.0,
+      "strain_pct_max": 1.5,
+      "design_pct": 1.2,
+      "modulus_mpa_typical": 3300,
+      "note": "Stiff and notch-sensitive; the least forgiving common filament. Use the long beam, not the big undercut.",
+      "source": "Derated to ~1/3 of the tensile elongation at yield published for Ingeo 3D-printing grades (NatureWorks Ingeo 4043D / 3D850 technical data sheets, ISO 527); no snap-fit manual publishes a permissible strain for PLA."
+    },
+    {
+      "id": "petg",
+      "material": "PETG / copolyester",
+      "process": "fdm",
+      "strain_pct_min": 2.5,
+      "strain_pct_max": 3.0,
+      "design_pct": 3.0,
+      "modulus_mpa_typical": 1800,
+      "note": "The default choice for printed snaps: ductile, low notch sensitivity, prints without a chamber.",
+      "source": "Derated from the yield strain of Eastman copolyester (Eastar / Amphora 3D) technical data sheets, ISO 527."
+    },
+    {
+      "id": "abs",
+      "material": "ABS",
+      "process": "injection, fdm",
+      "strain_pct_min": 4.0,
+      "strain_pct_max": 6.0,
+      "design_pct": 4.0,
+      "modulus_mpa_typical": 2100,
+      "note": "The classic snap-fit resin. Printed ABS: use the low end and watch inter-layer bonding.",
+      "source": "Permissible-strain table for a one-time assembly, Bayer MaterialScience, Snap-Fit Joints for Plastics - A Design Manual (1998); corroborated by BASF, Snap-Fit Design Manual."
+    },
+    {
+      "id": "pa",
+      "material": "PA (nylon 6 / 6-6 / 12)",
+      "process": "injection, sls, fdm",
+      "strain_pct_min": 4.0,
+      "strain_pct_max": 6.0,
+      "design_pct": 6.0,
+      "modulus_mpa_typical": 1400,
+      "note": "Value is dry-as-moulded; conditioned (moisture-equilibrated) nylon tolerates more but is softer. Modulus spans 1400-3000 MPa across grades - read the datasheet before using the force equation.",
+      "source": "Permissible-strain table, Bayer MaterialScience, Snap-Fit Joints for Plastics - A Design Manual (1998); DuPont, General Design Principles for DuPont Engineering Polymers, Module I (snap-fit section)."
+    },
+    {
+      "id": "pp",
+      "material": "PP",
+      "process": "injection",
+      "strain_pct_min": 6.0,
+      "strain_pct_max": 8.0,
+      "design_pct": 8.0,
+      "modulus_mpa_typical": 1400,
+      "note": "The living-hinge resin: the highest permissible strain of the commodity plastics, so short beams and deep undercuts are possible. Hard to print.",
+      "source": "Permissible-strain table for a one-time assembly, Bayer MaterialScience, Snap-Fit Joints for Plastics - A Design Manual (1998); BASF, Snap-Fit Design Manual."
+    },
+    {
+      "id": "pc",
+      "material": "PC",
+      "process": "injection, fdm",
+      "strain_pct_min": 3.0,
+      "strain_pct_max": 4.0,
+      "design_pct": 4.0,
+      "modulus_mpa_typical": 2350,
+      "note": "Tough but very notch-sensitive: a sharp root fillet loses most of this. r >= 0.5 t is not optional in PC.",
+      "source": "Permissible-strain table, Bayer MaterialScience, Snap-Fit Joints for Plastics - A Design Manual (1998); Erhard, Designing with Plastics (Hanser, 2006), permissible-strain guidance."
+    }
+  ]
+}

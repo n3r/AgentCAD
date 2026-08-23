@@ -21,6 +21,7 @@ import * as library from "./library.js";
 import * as configs from "./configs.js";
 import * as market from "./market.js";
 import * as materials from "./materials.js";
+import * as skills from "./skills.js";
 import * as auth from "./auth.js";
 import { setupShare } from "./share-links.js";
 // The server's identifier rules, spelled once (`frontend/js/patterns.js`) and
@@ -1321,6 +1322,22 @@ function handleEvent(ev) {
     case "chat_tool_result":
     case "chat_done":
       chat.handleEvent(ev);
+      return;
+    // PRD-029. Both go to the dock's chip renderer, which filters on `client`
+    // (only the chat engine's own ids draw a chip — the Skills modal's preview
+    // reads through `load_skill` too and must render none) and on the project,
+    // exactly as the four chat events above do.
+    case "skill_loaded":
+    case "skill_unloaded":
+      chat.handleEvent(ev);
+      return;
+    // Trust/enable state changed — here, in another tab, or on the CLI. It is
+    // LOCAL state (`.history/agentcad/skills/trust.json`), never a manifest
+    // move, so it is deliberately not a `project_changed`: nothing rebuilds,
+    // an open panel just re-reads.
+    case "skills_changed":
+      if (ev.project !== state.projectName) return;
+      if (skills.isOpen()) skills.refresh();
       return;
     // PRD-026: the agent's one way into this UI. `ui_open` is a BROADCAST —
     // the bus has no per-client routing — so every connected browser opens the
@@ -2924,6 +2941,16 @@ function registerActions() {
       menu: "model/41", when: hasPart,
       run: () => drawings.previewSvg(state.projectName, state.selectedPart) });
 
+  // ----------------------------------------------------------------- Agent
+  // PRD-029 FR7. Its own group, not `Model`: a skill is not part of the model
+  // — it is what the AGENT knows, and the panel's verb is reviewing and
+  // trusting instructions rather than editing geometry. Palette- and
+  // toolbar-reachable with no menubar slot: the shell has no Agent menu, and
+  // inventing one for a single row would be a menu that exists to hold it.
+  A({ id: "agent.skills", title: "Skills…", group: "Agent",
+      keywords: ["skills", "knowledge", "guides", "playbook"],
+      run: () => skills.open() });
+
   // ------------------------------------------------------------------ Help
   // help/10 is the command palette (`shell/palette.js`) — the row people reach
   // for first, and the one that leads to everything else.
@@ -3142,6 +3169,7 @@ async function boot() {
   library.init(panelApi);
   configs.init(panelApi);
   materials.init(panelApi);
+  skills.init(panelApi);
   presence.init();
   // After inspector.init: comments.js registers inspector's param decorator
   // and subscribes to `part` behind it, so a badge is applied to rows the
@@ -3165,6 +3193,10 @@ async function boot() {
   // are the same verb (`setupLibrary()`'s shape).
   document.getElementById("materials-btn")?.addEventListener("click",
     () => actions.run("model.materials", null, { source: "toolbar" }));
+  // Same shape for the skills panel: the toolbar, the palette and `ui_open`
+  // are one verb, routed through the registry.
+  document.getElementById("skills-btn")?.addEventListener("click",
+    () => actions.run("agent.skills", null, { source: "toolbar" }));
   setupUndo();
   setupGizmoSnapKeys();
   setupRepMode();
@@ -3201,6 +3233,12 @@ async function boot() {
   // boot() just built, so it waits for that project load to settle first.
   if (window.location.hash.startsWith("#materials")) {
     materials.open();
+  }
+  // `#skills`, for the same reason and at the same point in boot: an overlay
+  // on top of the workbench, so it waits for the project load to settle (the
+  // index it fetches is per project).
+  if (window.location.hash.startsWith("#skills")) {
+    skills.open();
   }
 }
 

@@ -32,6 +32,7 @@ wrong" (`cmd_check`'s note, `cli.py:1132-1137`).
 """
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import sys
@@ -77,6 +78,43 @@ def _tasks_root(args):
 
 
 # ------------------------------------------------------------- the parser
+
+def _skills_arg(value: str, library=None) -> dict:
+    """``--skills`` as ``{"mode", "names"}`` — argparse's ``type`` (PRD-029 §9).
+
+    Validated **here**, in `cli._finite_arg`'s idiom, so an unknown name costs
+    a usage line (exit 2) rather than three seconds of kernel spawn and a run
+    that silently measured the whole library instead of the one skill the
+    caller named.
+
+    The vocabulary is the **shipped index** — what is loadable in *this*
+    installation, which is what a run can actually measure. A name the library
+    knows but does not offer (a capability gate, an invalid file) is reported
+    as exactly that: "unknown skill" would send its author hunting a typo that
+    is not there. A *project* skill cannot be selected either, and for the same
+    reason — the selection is read before any project exists.
+    """
+    from ..core.skills import SkillLibrary
+
+    raw = (value or "").strip()
+    if raw in ("all", "none"):
+        return {"mode": raw, "names": []}
+    names = sorted({part.strip() for part in raw.split(",") if part.strip()})
+    library = library if library is not None else SkillLibrary()
+    selectable = [entry["name"] for entry in library.index()]
+    unknown = [name for name in names if name not in selectable]
+    if not names or unknown:
+        gated = sorted(set(unknown) & set(library.records()))
+        problem = (f"unknown skill {', '.join(repr(n) for n in unknown)}"
+                   if unknown else "an empty selection")
+        why = (f" ({', '.join(repr(n) for n in gated)} exists but is not "
+               f"loadable here — a capability gate or an invalid file hides "
+               f"it, so a run could not measure it)" if gated else "")
+        raise argparse.ArgumentTypeError(
+            f"{problem}{why}; --skills takes 'all', 'none', or a "
+            f"comma-separated list of: {', '.join(selectable)}")
+    return {"mode": "only", "names": names}
+
 
 def add_bench_parser(sub) -> None:
     """Add `bench` and its sub-subcommands to *sub*.
@@ -133,6 +171,15 @@ def add_bench_parser(sub) -> None:
                                     "a NaN deadline is never in the past, so "
                                     "it bounds nothing"),
                    help="wall-clock ceiling per task, overriding task.json's")
+    r.add_argument("--skills", default="all", metavar="SEL", type=_skills_arg,
+                   help="which agent skills the run may load: 'all' (the "
+                        "default, the shipped library the product ships), "
+                        "'none' (no index in the system prompt and every "
+                        "load_skill refused), or a comma-separated list of "
+                        "names from the shipped library. Recorded in "
+                        "run.json; score.json is unaffected, so two runs that "
+                        "differ only here are comparable with "
+                        "`bench report --baseline`")
     _output_group(r, "the per-task table")
 
     # ------------------------------------------------------------ score
@@ -339,13 +386,17 @@ def _cmd_run(args) -> int:
         service = bench_service(projects_root, extra_writable=extra)
         locks.set_client_id(CLIENT_ID)
         scorer = Scorer(service, build_registry(service))
+        # Parsed by argparse (`_skills_arg`); `getattr` because a caller
+        # building an `args` by hand predates the flag and must keep meaning
+        # "the library the product ships".
+        skills = bench_runner.skills_block(getattr(args, "skills", None))
         started = bench_runner._now()
         for task in selected:
             rows[task.id] = _run_one_task(
                 task, service=service, scorer=scorer, report_dir=report_dir,
                 work_dir=work_dir, model=model, api_key=api_key,
                 agent=args.agent, client_factory=client_factory,
-                failures=failures, quiet=args.quiet)
+                failures=failures, quiet=args.quiet, skills=skills)
         header = {
             "schema": bench_runner.BENCH_SCHEMA,
             "task_set": selected[0].task_set,
@@ -353,6 +404,9 @@ def _cmd_run(args) -> int:
             "agentcad": agentcad.__version__,
             "agent": args.agent,
             "model": model,
+            # The selection is a property of the RUN, so it is stated once for
+            # the whole results directory as well as on every `run.json`.
+            "skills": dict(skills),
             "started": started,
             "finished": bench_runner._now(),
             "n": len(selected),
@@ -525,8 +579,52 @@ def _derive_task_service(parent, projects_dir):
     return service
 
 
+def _install_skills(task_service, selection: dict):
+    """Apply a `--skills` selection to *task_service*; return the engine's library.
+
+    Two surfaces, one selection, and they are **not** the same edit — which is
+    the whole reason this function exists rather than one keyword on
+    `run_task`:
+
+    * the **engine** takes a library or ``None``. ``None`` is the historical
+      `ChatEngine` byte-for-byte (no skills block in the system prompt), which
+      is what ``--skills none`` has to mean;
+    * the **tools** read ``service.skills``, and `load_skill` is on the
+      registry whatever the engine holds. So a run that told the agent nothing
+      about skills but still answered `load_skill` with the whole library would
+      be measuring the library it claims to have switched off.
+
+    ``none`` is therefore ``only`` over the empty set on the service side, and
+    the refusal an out-of-selection name gets is the library's own —
+    `NotFoundError` / ``skill_not_found``, hinted with ``bench --skills``
+    (`core/skills.py`). The bench does not spell that refusal a second time.
+    """
+    from ..core.skills import SkillBudget, SkillLibrary
+
+    mode = (selection or {}).get("mode") or "all"
+    if mode == "all":
+        # The service's own library, built by `AgentCADService.__init__` over
+        # this cell's store: the shipped surface, not a second construction of
+        # it that could drift from what the product does. Its budget is
+        # `SkillBudget.from_config()`, which is the same object shape
+        # `bench_runner.run_task` hands the engine.
+        return task_service.skills
+    # The **same** budget the engine gets. `run_task` derives the engine's
+    # from `SkillBudget.from_config()`; deriving this one the same way means
+    # one config read cannot produce a library that truncates at one cap and
+    # an engine that accounts at another — and `SkillBudget` normalizes
+    # `max_skill_chars` to `max_loaded_chars` on construction, so both sides
+    # normalize identically.
+    library = SkillLibrary(task_service.store,
+                           budget=SkillBudget.from_config(),
+                           only=frozenset((selection or {}).get("names") or ()))
+    task_service.skills = library
+    return None if mode == "none" else library
+
+
 def _run_one_task(task, *, service, scorer, report_dir, work_dir, model,
-                  api_key, agent, client_factory, failures, quiet=False) -> dict:
+                  api_key, agent, client_factory, failures, quiet=False,
+                  skills=None) -> dict:
     """Run, copy out, score and write one task. Returns its `bench.json` row.
 
     Never raises: a task that dies takes its own row down and nothing else.
@@ -557,11 +655,15 @@ def _run_one_task(task, *, service, scorer, report_dir, work_dir, model,
     try:
         (cell / "projects").mkdir()
         task_service = _derive_task_service(service, cell / "projects")
+        # BEFORE `build_registry`: the pack reads `service.skills` inside its
+        # handlers, but a selection installed after the agent had already been
+        # handed its tools would be a race waiting to be written.
+        engine_skills = _install_skills(task_service, skills)
         started = bench_runner._now()
         outcome = bench_runner.run_task(
             task, service=task_service, registry=build_registry(task_service),
             cell=cell, model=model, api_key=api_key,
-            client_factory=client_factory, quiet=quiet)
+            client_factory=client_factory, quiet=quiet, skills=engine_skills)
         finished = bench_runner._now()
         row.update(over_budget=outcome.over_budget, stopped=outcome.stopped)
 
@@ -574,7 +676,7 @@ def _run_one_task(task, *, service, scorer, report_dir, work_dir, model,
             projects_root=cell / "projects"))
         write_json(out / "run.json", bench_runner.run_json(
             task, outcome, agent=agent, model=model, started=started,
-            finished=finished))
+            finished=finished, skills=skills))
 
         score = scorer.score(task, submission, work_dir=work_dir)
         write_json(out / "score.json", score)

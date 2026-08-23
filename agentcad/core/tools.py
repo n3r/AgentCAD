@@ -268,8 +268,9 @@ def build_registry(service: AgentCADService) -> ToolRegistry:
     ))
     reg(Tool(
         "part_template",
-        "Get the part script contract, a starter template, and a build123d cheat-sheet. "
-        "Call this before writing your first script.",
+        "Get the part script contract, a starter template, the build123d basics, "
+        "and the index of loadable skills. Call this before writing your first "
+        "script, then load_skill for the matching guide.",
         _schema({}, []),
         lambda: service.part_template(),
     ))

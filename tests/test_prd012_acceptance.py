@@ -647,9 +647,10 @@ def test_the_documentation_describes_the_shipped_configuration_surface():
                    "diverged_params", "instance_config"):
         assert needle in api, f"docs/agent-api.md does not cover {needle!r}"
     # The count line is measured, not guessed: `build_registry` over a service
-    # without the `[fem]` extra registers 85 tools, and the extra adds three.
-    # (Wrapped across a line in the source, so compare on collapsed space.)
-    assert "85 tools (88 with the optional" in " ".join(api.split())
+    # without the `[fem]` extra registers 106 tools (PRD-029 added two), and
+    # the extra adds three. (Wrapped across a line in the source, so compare
+    # on collapsed space.)
+    assert "106 tools (109 with the optional" in " ".join(api.split())
 
     guide = (REPO / "docs" / "user-guide.md").read_text(encoding="utf-8")
     assert "## Configurations" in guide
