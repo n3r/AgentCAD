@@ -2784,15 +2784,31 @@ Full documentation: `docs/bench.md`. The design is
   and it emits a **visible `::notice::`** when the key is absent: a silently
   skipped benchmark is indistinguishable from one that scored zero.
 
-- **Two product findings the bench fenced rather than fixed** (both are
-  follow-ups, not bench bugs): `handlers/drawing._view_bounds` samples six
-  points per edge, so a curved silhouette's overall dimensions come out ~5%
-  under — `author.render_drawing(check_dims=True)` refuses to ship a lying
-  sheet. And a swept pipe surface does not survive the STEP round trip as a
-  boolean operand (script-vs-script and STEP-vs-STEP both intersect; script
-  against the checked-in STEP returns nothing), which is why
-  `fix_005_invalid_shell` weights `geometry` 0.00 with the reason argued in its
-  `prompt.md`.
+- **Two product findings the bench fenced rather than fixed.** The first is
+  **fixed** (changelog 0307): `handlers/drawing._view_bounds` sampled six
+  points per edge, so a curved silhouette's overall dimensions came out ~5%
+  under (a Ø140 flange dimensioned 132.641); it now takes each edge's own
+  bounding box, and `_edge_prim`/`_build_dxf` emit real lines and arcs instead
+  of sampled polylines. `author.render_drawing(check_dims=True)` keeps
+  refusing to ship a lying sheet — a live guard, not a fence. The second is
+  now **detected** (changelog 0308): OCCT 7.9's `BRepAlgoAPI_Common` silently
+  mis-answers a boolean between two solids that both carry G1-tangent face
+  junctions — a filleted swept elbow, say — whatever their serialization; the
+  STEP round trip was never the trigger, and operand *sameness* (script vs.
+  itself, or STEP vs. itself) is what hides the bug by letting OCCT take a
+  shortcut to the right answer. Two genuinely distinct tangent-jointed solids
+  can return empty or a negative volume, and even a positive result from such
+  a pair is order-dependent and not provably trustworthy. No healing recipe
+  works (fuzzy tolerances, `ShapeFix`, `UnifySameDomain`, sewing, `Copy`,
+  `Glue`, OBB — all probed), so `agentcad/kernel/handlers/_bop.py` fails
+  closed instead: a suspiciously-overlapping empty result is rechecked with
+  an octant-subdivided crop, and a disagreement is refused rather than
+  banked — `bench.py`'s IoU raises `KernelError` (excluded, not a false 0.0)
+  and `worker.pairwise_interference` marks the pair `degenerate: true` rather
+  than reporting a silent "clean". `fix_005_invalid_shell` still weights
+  `geometry` 0.00, argued in its `prompt.md`: the boolean is degenerate for
+  every candidate, the reference included, so a geometry weight would score
+  everyone zero on shape rather than surface the defect.
 
 ## Interop gotchas (PRD-017 — read before touching `kernel/handlers/interop.py`, `interop_import.py`, `_pmi_map.py`, `core/tools_xchange.py`, `gltf.py`, `usd_export.py`, `interop_colors.py`, `tools_import.py` or `routes_import.py`)
 

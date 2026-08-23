@@ -1008,8 +1008,16 @@ class Scorer:
             return self._subscore(task, "interference", 0.0, "error",
                                   {"error": _error(exc)})
         checked = int(result.get("checked") or 0)
+        # ``degenerate`` (kernel/handlers/_bop.py) is carried through into
+        # score.json: the pair already counts as un-clean in
+        # ``interference_fraction`` — it is in ``pairs`` — but a reader of the
+        # detail has to be able to tell "overlaps by 12 mm3" from "OCCT could
+        # not answer, so we assumed the worst". Only emitted when set, so a
+        # clean run's bytes are unchanged (AC3).
         pairs = sorted(({"a": pair.get("a"), "b": pair.get("b"),
-                         "volume_mm3": pair.get("volume_mm3")}
+                         "volume_mm3": pair.get("volume_mm3"),
+                         **({"degenerate": True} if pair.get("degenerate")
+                            else {})}
                         for pair in result.get("pairs") or []),
                        key=lambda pair: (pair["a"] or "", pair["b"] or ""))
         skipped = sorted(result.get("skipped_mesh") or [])

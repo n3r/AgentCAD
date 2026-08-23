@@ -1132,8 +1132,19 @@ class SpecRunner:
         measured = max((pair["volume_mm3"] for pair in pairs), default=0.0)
         if pairs:
             named = ", ".join(f"{p['a']}/{p['b']}" for p in pairs[:3])
+            message = f"{len(pairs)} interfering pair(s): {named}"
+            # A pair the kernel could not boolean at all (``degenerate``, see
+            # kernel/handlers/_bop.py) is already IN ``pairs``: the worker
+            # fails closed rather than reporting a clean assembly it cannot
+            # vouch for. Its ``volume_mm3`` is 0.0 and means nothing, so the
+            # count is said out loud instead of hiding inside ``measured``.
+            unmeasurable = sum(1 for p in pairs if p.get("degenerate"))
+            if unmeasurable:
+                message += (f"; {unmeasurable} indeterminate (OCCT could not "
+                            "boolean the pair — counted as interfering, "
+                            "fail-closed)")
             return {"status": "fail", "measured": measured, "details": details,
-                    "message": f"{len(pairs)} interfering pair(s): {named}"}
+                    "message": message}
         return {"status": "pass", "measured": measured, "details": details,
                 "message": f"no two of {result['checked']} instances overlap"}
 

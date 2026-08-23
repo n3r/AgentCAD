@@ -154,6 +154,221 @@ def test_interference_detects_overlap(kernel):
     assert not any("c" in key for key in pairs)
 
 
+# The bench's coolant elbow: an annular section swept along a filleted
+# right-angle centre line, i.e. G1-tangent cylinder/torus/cylinder junctions
+# all the way along. That is the operand shape OCCT 7.9 answers wrongly about
+# (kernel/handlers/_bop.py) — and the shape half of `examples/engine` is built
+# from, which is why this belongs on the product path and not only in the
+# bench.
+ELBOW_SCRIPT = '''\
+from build123d import *
+
+PARAMS = {"tube_d": {"default": 24.0}, "wall": {"default": 3.0},
+          "run": {"default": 60.0}, "bend_r": {"default": 24.0}}
+
+def build(p):
+    with BuildPart() as part:
+        with BuildLine() as path:
+            Polyline((0, 0, 0), (p.run, 0, 0), (p.run, 0, p.run))
+            fillet(path.vertices().group_by(Axis.X)[-1].sort_by(Axis.Z)[0:1],
+                   radius=p.bend_r)
+        with BuildSketch(Plane.YZ):
+            Circle(p.tube_d / 2)
+            Circle(p.tube_d / 2 - p.wall, mode=Mode.SUBTRACT)
+        sweep(path=path.line)
+    return part.part
+'''
+
+
+def test_two_overlapping_elbows_are_never_reported_clean(kernel):
+    """Two coincident elbows differing only in bend radius — the same two legs
+    running down the same two axes, overlapping over most of their length.
+    `pairwise_interference` used to report this assembly **clean**, because
+    OCCT intersected the pair to nothing with `IsDone()` true and no error
+    raised, and the empty result was read as `0.0`.
+
+    What this pins is the **platform-invariant** property: the pair is
+    reported, by one of the two honest answers. Which answer you get depends on
+    the OS, and that is not a bug in the guard — it is the bug the guard exists
+    for. Measured: **macOS** returns the empty intersection, so the pair comes
+    back with `degenerate: True` and a `volume_mm3` of 0.0 that carries no
+    information (the recheck in `handlers/_bop._disagrees` is a detector, and
+    its cropped octant sum is never promoted into the measurement). **Linux**
+    (ubuntu-latest, same pinned build123d) computes a real intersection volume
+    for the same two solids and needs no marker. The same operand pair has also
+    been seen answering both ways inside *one* process on one machine,
+    depending on what was booleaned before it — so this could not be pinned to a
+    platform even if we wanted to.
+
+    Silence is the only answer that is not honest, and silence is what this
+    asserts against. The strict mechanics of the degenerate path — the marker,
+    the emit-below-`min_volume` rule, the threshold arithmetic — are pinned
+    deterministically over a stubbed boolean below and in
+    `test_the_recheck_ignores_slivers_below_the_callers_own_floor`.
+    """
+    items = [
+        {"name": "elbow_r24", "script": ELBOW_SCRIPT,
+         "params": {"bend_r": 24.0}, "position": [0, 0, 0]},
+        {"name": "elbow_r30", "script": ELBOW_SCRIPT,
+         "params": {"bend_r": 30.0}, "position": [0, 0, 0]},
+    ]
+    result = kernel.request("interference", {"items": items}, timeout_s=300.0)
+
+    assert len(result["pairs"]) == 1
+    pair = result["pairs"][0]
+    assert {pair["a"], pair["b"]} == {"elbow_r24", "elbow_r30"}
+    # Either OCCT could not answer (fail closed, marked) or it answered with a
+    # real volume. Never a silent absence, and never a marker-less 0.0.
+    assert pair.get("degenerate") is True or pair["volume_mm3"] > 0.001, pair
+
+
+def _two_boxes():
+    from build123d import Box
+
+    return [("a", Box(10, 10, 10)), ("b", Box(10, 10, 10))]
+
+
+@pytest.mark.parametrize("answer, expected", [
+    # A boolean the kernel could not compute: emitted anyway, marked, even
+    # though its volume is below `min_volume`. This is the whole fail-closed
+    # contract, pinned without asking OCCT to misbehave on cue.
+    ((0.0, True), {"a": "a", "b": "b", "volume_mm3": 0.0, "degenerate": True}),
+    # An ordinary overlap grows no marker.
+    ((500.0, False), {"a": "a", "b": "b", "volume_mm3": 500.0}),
+])
+def test_the_degenerate_marker_rides_the_emitted_pair(monkeypatch, answer,
+                                                      expected):
+    from agentcad.kernel import worker
+
+    monkeypatch.setattr(worker, "checked_common_volume",
+                        lambda *a, **k: answer)
+    assert worker.pairwise_interference(_two_boxes()) == [expected]
+
+
+def test_a_clean_boolean_below_the_threshold_emits_no_pair(monkeypatch):
+    """The condition is `volume > min_volume or degenerate` — the `or` must not
+    have turned the threshold into a no-op."""
+    from agentcad.kernel import worker
+
+    monkeypatch.setattr(worker, "checked_common_volume",
+                        lambda *a, **k: (0.0, False))
+    assert worker.pairwise_interference(_two_boxes()) == []
+
+
+def test_interference_does_not_cry_degenerate_on_a_clean_assembly(kernel):
+    """The other half of the guard. Three boxes, one real overlap: no pair
+    carries the marker, so `_bop`'s recheck is not firing on ordinary
+    geometry (a false degenerate is fail-*closed*, but it is still false)."""
+    items = [
+        {"name": "a", "script": BOX_SCRIPT, "params": {"size": 10.0},
+         "position": [0, 0, 0]},
+        {"name": "b", "script": BOX_SCRIPT, "params": {"size": 10.0},
+         "position": [5, 0, 0]},
+        {"name": "c", "script": BOX_SCRIPT, "params": {"size": 10.0},
+         "position": [100, 0, 0]},
+    ]
+    result = kernel.request("interference", {"items": items})
+    assert not any("degenerate" in pair for pair in result["pairs"])
+
+
+# ---- the degeneracy detector itself (kernel/handlers/_bop.py)
+#
+# These are dict-and-stub tests, not geometry: `_disagrees`' threshold is
+# arithmetic and has to be provable without asking OCCT anything.
+
+
+class _StubPoint:
+    def __init__(self, value):
+        self.X = self.Y = self.Z = value
+
+
+class _StubBox:
+    def __init__(self, lo=0.0, hi=10.0):
+        self.min = _StubPoint(lo)
+        self.max = _StubPoint(hi)
+
+
+class _StubSolid:
+    """A solid every boolean answers with — `_bop` reads only `wrapped`,
+    `solids()` and `&`, so this is the whole surface it touches."""
+
+    wrapped = object()
+
+    def solids(self):
+        return [self]
+
+    def __and__(self, other):
+        return self
+
+
+def _disagrees(answer, min_volume):
+    from agentcad.kernel.handlers._bop import _disagrees as fn
+
+    solid, box = _StubSolid(), _StubBox()
+    return fn(solid, box, solid, box, lambda shape: answer, min_volume)
+
+
+@pytest.mark.parametrize("answer, min_volume, expected", [
+    # A tangential-contact sliver is not evidence: the callers already refuse
+    # to REPORT a pair this small, so a detector firing below their own
+    # threshold would manufacture a pair the measurement would have discarded.
+    (1e-12, 0.001, False),
+    (-1e-12, 0.001, False),        # the floor is on the magnitude
+    (0.0, 0.001, False),
+    (0.01, 0.001, True),           # a real disagreement, above the line
+    (-5.0, 0.001, True),
+    # `min_volume=0` means "report every overlap", not "treat float noise as
+    # evidence": `_SLIVER_VOLUME_MM3` (a 1 um cube) still floors it.
+    (1e-12, 0.0, False),
+    (1e-6, 0.0, True),
+    (float("nan"), 0.001, True),   # a volume OCCT could not compute
+])
+def test_the_recheck_ignores_slivers_below_the_callers_own_floor(
+        answer, min_volume, expected):
+    assert _disagrees(answer, min_volume) is expected
+
+
+def test_a_zero_clearance_fit_is_empty_and_not_degenerate():
+    """The realistic false-degenerate: a shaft exactly filling its bore is
+    legitimately empty AND ~100% AABB overlap, so it reaches the recheck on
+    every single check. A false positive here would be permanent phantom
+    interference on the product path and `clear: False` on every motion sweep.
+    Prismatic on purpose — OCCT is honest about these, so the recheck has to
+    agree with it."""
+    from build123d import Box, Cylinder
+    from agentcad.kernel.handlers._bop import checked_common_volume
+
+    def volume_of(shape):
+        solids = shape.solids()
+        return float(sum(s.volume for s in solids)) if solids \
+            else float(shape.volume)
+
+    bore = (Box(40, 40, 20) - Cylinder(radius=8, height=40)).solids()[0]
+    shaft = Cylinder(radius=8, height=20).solids()[0]
+
+    assert checked_common_volume(bore, bore.bounding_box(), shaft,
+                                 shaft.bounding_box(), volume_of) == (0.0, False)
+    assert checked_common_volume(shaft, shaft.bounding_box(), bore,
+                                 bore.bounding_box(), volume_of) == (0.0, False)
+
+
+def test_the_intersection_is_measured_by_the_injected_volume_function():
+    """`worker._common_vol` used to read `float(c.volume)` off the boolean
+    result, and `Compound.volume` reports only the first child subtree of a
+    NESTED compound — an undercount on exactly the multi-piece results a
+    boolean produces. The volume now comes from the injected `_shape_volume`
+    (the solids sum). Pinned with a stub whose two answers differ, because a
+    real nested-Compound intersection is not cheap to provoke on demand."""
+    from agentcad.kernel.handlers._bop import checked_common_volume
+
+    class _Nested(_StubSolid):
+        volume = 40.0          # what `.volume` would have said
+
+    solid, box = _Nested(), _StubBox()
+    assert checked_common_volume(solid, box, solid, box,
+                                 lambda shape: 100.0) == (100.0, False)
+
+
 ANALYSIS_SCRIPT = '''\
 from build123d import *
 

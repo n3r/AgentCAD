@@ -140,12 +140,16 @@ def _compact_path(points, epsilon: float) -> list:
 def compact_svg(text: str, epsilon: float = PATH_EPSILON) -> str:
     """Collapse the drawing handler's tessellated polylines, losslessly.
 
-    ``handlers/drawing._edge_svg`` discretizes **every** non-circular edge —
-    a dead-straight 90 mm line included — into up to 256 points, which makes a
-    three-view sheet a 150-250 KB file whose straight edges are 99% redundant.
-    An asset is attached to the prompt as **text, verbatim** (design §8.4), so
-    those bytes are the agent's context window, and a task whose drawing costs
-    50 000 tokens before the first tool call is measuring the wrong thing.
+    ``handlers/drawing._edge_prim`` samples an edge it cannot draw exactly into
+    up to 256 points. It used to do that to **every** non-closed-circle edge —
+    a dead-straight 90 mm line included — which made a three-view sheet a
+    150-250 KB file whose straight edges were 99% redundant; since changelog
+    0307 a LINE is two points and a circular edge is a circle or an arc, so
+    what is left for this helper is the genuinely free-form geometry (ELLIPSE,
+    BSPLINE — an iso view of a turned part is full of it). An asset is attached
+    to the prompt as **text, verbatim** (design §8.4), so those bytes are the
+    agent's context window, and a task whose drawing costs 50 000 tokens before
+    the first tool call is measuring the wrong thing.
 
     Douglas-Peucker at :data:`PATH_EPSILON` removes only vertices that are
     already indistinguishable from the segment replacing them at the file's own
@@ -193,13 +197,15 @@ def overall_dim_problems(svg_text: str, extents_mm, *,
     """Every overall dimension on *svg_text* that disagrees with the part.
 
     A sheet that dimensions a Ø140 flange `132.64` is worse than no sheet: the
-    agent is being graded against geometry the drawing denies. `_view_bounds`
-    (`kernel/handlers/drawing.py`) samples each edge at **six** points, which
-    is exact for a line and wrong for a circle -- a full circle is sampled at
-    0/72/144/216/288 degrees, so its silhouette extremes are missed and the
-    view bounds, which are also what the overall dims are drawn from, come out
-    under the truth. Rectilinear parts are unaffected, which is why this is a
-    guard and not a blanket refusal.
+    agent is being graded against geometry the drawing denies. That was a real
+    product defect -- `_view_bounds` (`kernel/handlers/drawing.py`) sampled each
+    edge at **six** points, exact for a line and wrong for a circle (a full
+    circle is sampled at 0/72/144/216/288 degrees, so its silhouette extremes
+    are missed and the view bounds, which are also what the overall dims are
+    drawn from, come out under the truth). It is **fixed** (changelog 0307:
+    exact per-edge bounding boxes), and this stays as the live guard on the
+    authoring path, because a sheet that contradicts its own part is a task
+    nobody can solve and the check costs a regex.
 
     Pure and non-raising, `task_problems`' shape: the caller decides whether a
     disagreement is a refusal or a report.
@@ -261,9 +267,10 @@ def render_drawing(task_dir, part_id: str, *, service, views=None,
 
     ``check_dims`` verifies the rendered sheet's overall dimensions against the
     part's own bbox (:func:`overall_dim_problems`) and **refuses** rather than
-    writing a sheet that contradicts the geometry it is a drawing of. It is a
-    guard against a real defect on curved silhouettes, not a formality --
-    see that function. Pass ``check_dims=False`` only to look at a bad sheet.
+    writing a sheet that contradicts the geometry it is a drawing of. The
+    curved-silhouette defect it was written for is fixed (changelog 0307); the
+    guard stays live, because it is what would catch its return. Pass
+    ``check_dims=False`` only to look at a bad sheet.
     """
     from ..core.tools import build_registry
 

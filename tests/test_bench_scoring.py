@@ -617,6 +617,38 @@ def test_the_interference_subscore_sorts_and_names_what_it_measured(
     assert row["detail"]["skipped_mesh"] == ["mesh_one"]
 
 
+def test_a_degenerate_pair_keeps_its_marker_in_the_detail(bare_scorer):
+    """`interference_fraction` needs no change — a pair OCCT could not boolean
+    is *in* `pairs`, so it already costs the assembly its clean count. What the
+    detail has to preserve is *why*: `volume_mm3: 0.0` alone reads as "they
+    barely touch", which is the opposite of "we could not tell". The key is
+    emitted only when set, so a clean run's score.json bytes are unchanged."""
+    task = _interference_task(bench_tasks.load_task(SEED))
+    service = SimpleNamespace(check_interference=lambda *a, **k: {
+        "checked": 2,
+        "pairs": [{"a": "elbow_a", "b": "elbow_b", "volume_mm3": 0.0,
+                   "degenerate": True}]})
+
+    row = bare_scorer._interference(service, task, "p", None, [])
+
+    assert row["status"] == "ok"
+    # C(2,2) = 1 pair, and it is un-clean.
+    assert row["value"] == 0.0
+    assert row["detail"]["pairs"] == [{"a": "elbow_a", "b": "elbow_b",
+                                       "volume_mm3": 0.0,
+                                       "degenerate": True}]
+
+
+def test_an_ordinary_pair_carries_no_degenerate_key(bare_scorer):
+    task = _interference_task(bench_tasks.load_task(SEED))
+    service = SimpleNamespace(check_interference=lambda *a, **k: {
+        "checked": 2, "pairs": [{"a": "x", "b": "y", "volume_mm3": 3.0}]})
+
+    row = bare_scorer._interference(service, task, "p", None, [])
+
+    assert row["detail"]["pairs"] == [{"a": "x", "b": "y", "volume_mm3": 3.0}]
+
+
 def test_fewer_than_two_instances_is_a_zero_with_a_reason(bare_scorer):
     task = _interference_task(bench_tasks.load_task(SEED))
     service = SimpleNamespace(
