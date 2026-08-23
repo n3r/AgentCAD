@@ -37,9 +37,18 @@ always did.
   - one-sided → `pass`, the unchanged "… at or above the 1 mm minimum".
   `skipped_mesh` (`skip`/`mesh_only`), the unknown-instance error row and the
   `KernelError` paths are untouched.
+- A declaration with **no `min_mm`** (only reachable by hand-editing a
+  `specs.py`, since the constructor takes it positionally) is now one named
+  `error` row — *"clearance declares no min_mm; declare it with
+  check_clearance"*, carrying the offending `limit` in `details` — returned
+  **before** the mate pass, so it costs no kernel call. It used to report the
+  same defect two ways: a clean-looking `fail` when the distance exceeded
+  `max_mm`, and an `error` worded as a raw `TypeError` from `_fmt(None)`
+  (caught by the evaluator dispatch) otherwise.
 - Docs: the constructor is listed as `check_clearance(a, b, min_mm,
-  max_mm=None)` in `docs/part-authoring.md`'s project-scope table and in the
-  `specs.py` template's vocabulary line, plus a short gotcha explaining why
+  max_mm=None)` in `docs/part-authoring.md`'s project-scope table and in
+  `templates.CHEATSHEET`'s project-scope vocabulary line (the part-authoring
+  cheat sheet the tools hand an author), plus a short gotcha explaining why
   `max_mm` is what turns the check into a placement check.
 
 ## Files
@@ -47,11 +56,12 @@ always did.
   validation, and the docstring saying what the second bound is for.
 - `agentcad/core/specs.py` — `_eval_clearance`: reads `limit` once, evaluates
   the upper bound server-side, and the three message branches.
-- `agentcad/core/templates.py` — the project-scope vocabulary line in the
-  `specs.py` starter template.
+- `agentcad/core/templates.py` — the project-scope vocabulary line in
+  `CHEATSHEET`, the part-authoring cheat sheet (not a `specs.py` starter
+  template — there is none).
 - `docs/part-authoring.md` — the project-scope constructor table row and a new
   gotcha bullet.
-- `tests/test_specs.py` — four new tests (see below).
+- `tests/test_specs.py` — six new tests (see below).
 
 ## Notes
 **Kernel-side vs server-side, and why server-side won.** `handle_clearance`
@@ -86,6 +96,10 @@ $ uv run pytest -q tests/test_specs.py tests/test_checks.py \
       tests/test_specs_kernel.py tests/test_specs_gate.py
 319 passed, 2 skipped in 87.63s (0:01:27)
 
+# after review round 1 (the min-less guard + the boundary row)
+$ uv run pytest -q tests/test_specs.py
+76 passed, 2 skipped in 30.34s
+
 $ uv run ruff check agentcad/toolkit/specs.py agentcad/core/specs.py \
       agentcad/core/templates.py tests/test_specs.py
 All checks passed!
@@ -95,10 +109,13 @@ New tests in `tests/test_specs.py`:
 the exact dict it was, and the two-sided one differs only in `limit`),
 `test_a_clearance_maximum_at_or_below_the_minimum_names_both`,
 `test_a_bad_clearance_maximum_raises_at_construction` (0, negative, string,
-bool, inf), and the kernel-backed
-`test_run_grades_the_clearance_upper_bound` — one `specs.py` with four rows
-driven end to end through the declaration pass and four `clearance` kernel
-calls: a one-sided row whose message is pinned verbatim, a satisfied maximum,
-a violated maximum, and a two-sided row whose *floor* is broken.
+bool, inf), `test_a_clearance_declaring_only_a_maximum_is_one_named_error`
+(a stub `SpecRunner`, no kernel — the guard returns before it needs one), and
+the kernel-backed `test_run_grades_the_clearance_upper_bound` — one `specs.py`
+with five rows driven end to end through the declaration pass and five
+`clearance` kernel calls: a one-sided row whose message is pinned verbatim, a
+satisfied maximum, a violated maximum, a gap of **exactly** `max_mm` (the
+bound is inclusive at evaluation time, not only at construction), and a
+two-sided row whose *floor* is broken.
 
 `make test — <orchestrator fills>`

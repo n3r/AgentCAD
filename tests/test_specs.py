@@ -888,6 +888,7 @@ SPECS = [
     check_clearance("box_1", "box_2", min_mm=1.0, max_mm=20.0, name="seated"),
     check_clearance("box_1", "box_2", min_mm=1.0, max_mm=5.0, name="drifted"),
     check_clearance("box_2", "box_3", min_mm=0.5, max_mm=5.0, name="tight"),
+    check_clearance("box_1", "box_2", min_mm=1.0, max_mm=10.0, name="exact"),
 ]
 '''
 
@@ -927,6 +928,26 @@ def test_a_bad_clearance_maximum_raises_at_construction(max_mm):
     assert "max_mm" in str(excinfo.value)
 
 
+def test_a_clearance_declaring_only_a_maximum_is_one_named_error():
+    """A hand-edited declaration with no ``min_mm`` reports ONE way. Without
+    the guard it was a clean-looking ``fail`` when the distance exceeded
+    ``max_mm`` and a raw ``TypeError``-worded ``error`` (from ``_fmt(None)``)
+    otherwise — the same defect wearing two faces. The guard is up front, so
+    the row costs no kernel call and no mate pass."""
+    runner = SpecRunner(SimpleNamespace())
+
+    row = runner._eval_clearance("demo", {
+        "spec": 1, "kind": "clearance", "scope": "project", "name": "half",
+        "limit": {"max_mm": 5.0}, "requirement": None,
+        "options": {"a": "box_1", "b": "box_2"}})
+
+    assert row["status"] == "error"
+    assert row["measured"] is None
+    assert row["message"] == ("clearance declares no min_mm; declare it with "
+                              "check_clearance")
+    assert row["details"]["limit"] == {"max_mm": 5.0}
+
+
 @pytest.mark.slow
 @pytest.mark.portability
 def test_run_grades_the_clearance_upper_bound(demo):
@@ -959,6 +980,13 @@ def test_run_grades_the_clearance_upper_bound(demo):
     assert drifted["message"] == ("box_1 to box_2 is 10 mm, above the 5 mm "
                                   "maximum \u2014 the parts are not seated")
     assert drifted["details"]["point_a"] and drifted["details"]["point_b"]
+
+    # The bound is INCLUSIVE at evaluation time, not only at construction:
+    # a gap of exactly max_mm is seated, not drifted.
+    exact = _by_id(report, "project:exact")
+    assert exact["status"] == "pass"
+    assert exact["measured"] == pytest.approx(10.0, abs=1e-6)
+    assert exact["message"] == "box_1 to box_2 is 10 mm, within [1, 10] mm"
 
     # Both bounds declared, the FLOOR broken: the message names the minimum.
     tight = _by_id(report, "project:tight")

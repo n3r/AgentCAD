@@ -1161,6 +1161,15 @@ class SpecRunner:
         # The minimum keeps deferring to the worker's ``ok`` so a one-sided
         # declaration takes byte-for-byte the path it always took.
         maximum = limit.get("max_mm")
+        if minimum is None:
+            # A hand-edited declaration with only ``max_mm``. Without this the
+            # row reports two ways for one defect: a clean-looking ``fail``
+            # when the distance is over the maximum, and a raw ``TypeError``
+            # from ``_fmt(None)`` (caught by the evaluator dispatch) otherwise.
+            # One named error, before any kernel call.
+            return _error_row(
+                "clearance declares no min_mm; declare it with check_clearance",
+                {"limit": dict(limit)})
         try:
             resolved = {i.id: i for i in self.service._resolved_instances(
                 proj, timeout_s=self._mate_timeout(deadline))}
