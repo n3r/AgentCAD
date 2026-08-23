@@ -5,6 +5,7 @@
 import { api, ApiError } from "./api.js";
 import { state, onKeys } from "./state.js";
 import * as layout from "./shell/layout.js";
+import * as skillsModel from "./skills_model.js";
 
 const MCP_SNIPPET =
   "claude mcp add agentcad -- uv --directory <path-to-agentcad-repo> run agentcad mcp";
@@ -248,6 +249,28 @@ export function handleEvent(ev) {
       finishStream(); // sending already reset above, before the project filter
       break;
     }
+    // PRD-029 FR7/AC1. A skill is agent INSTRUCTIONS entering the agent's
+    // context, so the dock says so — the transparency half of the trust story
+    // (spec §7), and an inspectable prompt-injection surface.
+    //
+    // The `client` filter is the whole correctness of this chip: the Skills
+    // modal's own preview goes through `load_skill` too (so a human read is
+    // logged like every other surface), and that read must render NOTHING
+    // here. Only the chat engine's own ids — `chat` / `chat:<session>` —
+    // qualify; `browser:<hex>` and `mcp` do not.
+    case "skill_loaded": {
+      if (!skillsModel.isChatClient(ev.client)) break;
+      addSkillChip(ev);
+      scrollDown();
+      break;
+    }
+    // The budget evicted it (its `tool_result` in the history was rewritten to
+    // a stub). The chip STAYS — the transcript above it was written while the
+    // skill was loaded — and is struck through instead.
+    case "skill_unloaded": {
+      markSkillUnloaded(ev.name);
+      break;
+    }
   }
 }
 
@@ -295,6 +318,37 @@ function addToolChip(name, args, status) {
   details.appendChild(pre);
   messagesEl.appendChild(details);
   return details;
+}
+
+/** "📘 snap-fits · core" — a flat pill, distinct from a `.tool-chip` (which is
+ *  a disclosure with the call's arguments in it). Keyed by `data-skill` so the
+ *  matching `skill_unloaded` can find it by name. */
+function addSkillChip(ev) {
+  const div = document.createElement("div");
+  div.className = "skill-chip";
+  div.dataset.skill = ev.name ? String(ev.name) : "";
+  // The label lives in its own span so `.unloaded` can strike THAT and not the
+  // "unloaded" word explaining it: a `line-through` set on the chip is painted
+  // straight through every inline descendant, and a child cannot opt out.
+  const label = document.createElement("span");
+  label.className = "skill-chip-name";
+  label.textContent = skillsModel.chipLabel(ev);
+  div.appendChild(label);
+  messagesEl.appendChild(div);
+  return div;
+}
+
+function markSkillUnloaded(name) {
+  if (!name) return;
+  for (const chip of messagesEl.querySelectorAll(".skill-chip")) {
+    if (chip.dataset.skill !== String(name)) continue;
+    if (chip.classList.contains("unloaded")) continue;
+    chip.classList.add("unloaded");
+    const note = document.createElement("span");
+    note.className = "skill-chip-note";
+    note.textContent = "unloaded";
+    chip.appendChild(note);
+  }
 }
 
 function safeJson(value) {

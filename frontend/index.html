@@ -84,6 +84,8 @@
 
     <button id="materials-btn" class="tb-btn" title="Browse the materials database">Materials</button>
 
+    <button id="skills-btn" class="tb-btn" title="Agent skills — loadable craft guides">Skills</button>
+
     <button id="import-btn" class="tb-btn" title="Import a CAD file (.step / .stp / .brep / .stl)">Import</button>
     <input id="import-input" type="file" accept=".step,.stp,.brep,.stl" hidden>
 
@@ -521,6 +523,33 @@
         </div>
         <aside id="materials-detail" class="mat-detail" aria-label="Material detail"></aside>
       </div>
+    </div>
+  </div>
+
+  <!-- Agent skills (PRD-029 FR7, spec §7). The same `.modal-overlay` chrome as
+       Materials, adopted onto the dialog stack by `skills.js`. A skill is
+       agent instructions; a PROJECT one needs one human act before an agent
+       may load it, and the "Review & trust" button in here IS that act — the
+       trust route is refused to every non-human client, so no agent surface
+       can approve agent instructions. Rows, badges, the preview and the
+       provenance line are all built in JS from `GET /api/projects/{p}/skills`
+       and `GET /api/projects/{p}/skills/{name}`; the body lands in a `<pre>`
+       via `textContent` and never as markup. -->
+  <div id="skills-modal" class="modal-overlay hidden">
+    <div class="modal wide" role="dialog" aria-modal="true" aria-label="Agent skills">
+      <header class="modal-head">
+        <span id="skills-title" class="modal-title">Agent skills</span>
+        <div class="modal-actions">
+          <span id="skills-count" class="skills-count"></span>
+          <button id="skills-close" class="tb-btn" type="button">Close</button>
+        </div>
+      </header>
+      <div id="skills-banner" class="skills-banner hidden"></div>
+      <div class="skills-modal-body">
+        <aside id="skills-list" class="skills-list" aria-label="Skill index"></aside>
+        <section id="skills-detail" class="skills-detail" aria-label="Skill preview"></section>
+      </div>
+      <footer id="skills-hint" class="skills-hint"></footer>
     </div>
   </div>
 

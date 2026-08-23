@@ -3913,3 +3913,179 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
   cursor: pointer;
 }
 .mat-browse:hover { background: var(--raised-2); }
+
+/* ------------------------------------------------------- agent skills */
+/* PRD-029 slice 6 (spec §7). Two panes — the effective index (left) and the
+   preview of what an agent would actually load (right) — on the same
+   `.modal-overlay`/`.modal wide` chrome as the materials browser, reusing
+   its tokens so light mode keeps working unchanged. The badge classes are
+   the provenance vocabulary: which layer wrote this, what it shadows, and
+   whether a human has looked at it yet. */
+
+.skills-modal-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+}
+
+.skills-count { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+
+/* The one-line consent banner: shown only while some project skill is
+   untrusted, because a banner that is always there stops being read. */
+.skills-banner {
+  flex: none;
+  padding: 7px 14px;
+  font-size: 11.5px;
+  color: var(--err-text);
+  background: var(--err-soft);
+  border-bottom: 1px solid var(--err-ring);
+}
+
+.skills-list {
+  overflow: auto;
+  border-right: 1px solid var(--hairline);
+  padding: 4px 0;
+}
+.skills-detail {
+  overflow: auto;
+  padding: 10px 14px;
+  min-width: 0;
+}
+
+.skill-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 12px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+}
+.skill-row:hover { background: var(--raised); }
+.skill-row.active { background: var(--raised); border-left-color: var(--accent); }
+.skill-row-hidden { cursor: default; opacity: 0.6; }
+.skill-row-hidden:hover { background: none; }
+
+.skill-row-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.skill-enable { margin: 0; flex: none; }
+.skill-name {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.skill-version { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+.skill-desc { font-size: 11.5px; color: var(--dim); line-height: 1.45; }
+.skill-invalid { font-size: 11px; color: var(--err-text); font-family: var(--mono); }
+.skill-actions { display: flex; gap: 6px; padding-top: 2px; }
+.skill-actions .tb-btn { height: 22px; font-size: 11px; }
+
+.skill-badge {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  border-radius: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--hairline);
+  color: var(--dim);
+}
+.badge-core { color: var(--dim); border-color: var(--hairline); }
+.badge-project { color: var(--accent-bright); border-color: var(--accent-ring); }
+.badge-org, .badge-layer { color: var(--text); border-color: var(--hairline); }
+.badge-overrides { color: var(--text); border-color: var(--hairline-soft); }
+/* "needs review" / "changed since trusted": the state the panel EXISTS for,
+   so it is the loudest thing on the row. */
+.badge-review {
+  color: var(--err-text);
+  border-color: var(--err-ring);
+  background: var(--err-soft);
+}
+.badge-invalid { color: var(--err-text); border-color: var(--err-ring); }
+.badge-hidden { color: var(--faint); border-color: var(--hairline-soft); }
+
+.skill-detail-head { font-size: 13px; color: var(--text); font-weight: 600; }
+.skill-prov {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--faint);
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.skill-truncated {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--err-text);
+}
+.skill-assets {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.skill-content {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  background: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.skills-hint {
+  flex: none;
+  padding: 7px 14px;
+  border-top: 1px solid var(--hairline);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.skill-empty { padding: 12px 14px; font-size: 12px; color: var(--dim); }
+.skill-empty.error { color: var(--err-text); }
+
+/* The chat dock's skill chip. Deliberately NOT a `.tool-chip`: a tool call is
+   something the agent DID, a skill load is something that entered its
+   context — different fact, different shape (a flat one-line pill, no
+   disclosure triangle, no payload). `.unloaded` is the budget evicting it
+   (spec §11's `skill_unloaded`): struck through and faded, because the chip
+   must stay in place — the transcript above it was written while the skill
+   WAS loaded. */
+.skill-chip {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--accent-ring);
+  border-radius: 999px;
+  padding: 2px 10px;
+  background: var(--ink);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--accent-bright);
+  max-width: 90%;
+}
+.skill-chip.unloaded {
+  border-color: var(--hairline-soft);
+  color: var(--faint);
+}
+/* The strike goes on the LABEL, not the chip: a `line-through` set on the chip
+   is painted through every inline descendant, and a child's own
+   `text-decoration: none` cannot undo it — the word "unloaded" would be struck
+   along with the name it explains. */
+.skill-chip.unloaded .skill-chip-name { text-decoration: line-through; }
+.skill-chip .skill-chip-note {
+  font-size: 9.5px;
+  color: var(--faint);
+}
