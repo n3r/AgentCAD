@@ -149,7 +149,7 @@ uv run pytest -q tests/test_drawings.py tests/test_drawings_v2.py \
 275 passed, 2 skipped
 ```
 
-`make test` — <orchestrator fills>
+`make test` — 5411 passed, 50 skipped (branch tip; the slow AC1 set separately: 41 passed — all 25 references still 1.0)
 
 ## Notes
 

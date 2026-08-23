@@ -344,4 +344,4 @@ Fix round 1 also re-ran the RED probe after the `min_volume` change (stub the
 empty branch back to `(0.0, False)`): both kernel tests still fail without the
 guard and pass with it.
 
-`make test` — <orchestrator fills>
+`make test` — 5411 passed, 50 skipped (branch tip; the slow AC1 set separately: 41 passed — all 25 references still 1.0)

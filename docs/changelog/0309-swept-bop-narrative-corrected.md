@@ -89,5 +89,5 @@ IoU path — are both `0308`, cited rather than re-explained.
 ## Verification
 
 ```
-make test — <orchestrator fills>
+make test — 5411 passed, 50 skipped (branch tip; the slow AC1 set separately: 41 passed — all 25 references still 1.0)
 ```
