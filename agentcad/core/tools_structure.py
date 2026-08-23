@@ -132,6 +132,7 @@ def _install_expansion(service) -> None:
                     config=item.get("config"),
                     pattern=item.get("pattern"),
                     assembly=item.get("assembly"),
+                    folder=item.get("folder"),   # PRD-027, same reason
                 )
                 for item in instances
             ]

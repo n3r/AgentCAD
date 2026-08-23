@@ -18,6 +18,7 @@ from typing import Callable
 
 from . import locks
 from .materials import DEFAULT_MATERIAL, LIBRARY_VERSION, get_material
+from .navigation import normalize_folder, normalize_tags
 from .model import (
     ConflictError,
     DiskBudgetError,
@@ -94,6 +95,11 @@ def _validate_assembly_ref(iid: str, ref) -> None:
         raise ValidationError(
             f"instance {iid!r}: assembly reference needs a project"
         )
+
+#: What one entry of ``update_parts_meta``'s ``edits`` map may name. Closed on
+#: purpose: a bulk op that accepted an unrecognized key would report success
+#: for N parts it did not touch.
+_META_EDIT_KEYS = frozenset({"folder", "tags", "material"})
 
 #: "this keyword was not passed", for a field whose ``None`` is a real value.
 #: ``active_config=None`` MEANS "return to base" (pop the key), so it cannot
@@ -261,22 +267,37 @@ class ProjectStore:
     def get_part(self, proj: str, part_id: str) -> PartRecord:
         for entry in self.manifest(proj)["parts"]:
             if entry["id"] == part_id:
-                return PartRecord(
-                    id=entry["id"],
-                    label=entry.get("label", entry["id"]),
-                    material=entry.get("material", DEFAULT_MATERIAL),
-                    params=dict(entry.get("params", {})),  # JSON scalars pass through
-                    kind=entry.get("kind", "script"),
-                    source=entry.get("source"),
-                    solid_materials=entry.get("solid_materials"),
-                    # Read back as stored: resolution is the record's job
-                    # (PartRecord.effective_params), never this read's — a
-                    # store that resolved would let the next set_params bake
-                    # the active configuration into the overrides.
-                    configs=entry.get("configs"),
-                    active_config=entry.get("active_config"),
-                )
+                return self._part_record(entry)
         raise NotFoundError(f"part {part_id!r} not found in project {proj!r}")
+
+    @staticmethod
+    def _part_record(entry: dict) -> PartRecord:
+        """One manifest part entry -> a PartRecord.
+
+        The single construction site, so a field added to the record is read
+        back by every caller — `get_part` and the bulk `update_parts_meta`,
+        which builds N records from ONE manifest read rather than re-reading
+        (and re-parsing) a 1 000-part manifest once per part.
+        """
+        return PartRecord(
+            id=entry["id"],
+            label=entry.get("label", entry["id"]),
+            material=entry.get("material", DEFAULT_MATERIAL),
+            params=dict(entry.get("params", {})),  # JSON scalars pass through
+            kind=entry.get("kind", "script"),
+            source=entry.get("source"),
+            solid_materials=entry.get("solid_materials"),
+            # Read back as stored: resolution is the record's job
+            # (PartRecord.effective_params), never this read's — a
+            # store that resolved would let the next set_params bake
+            # the active configuration into the overrides.
+            configs=entry.get("configs"),
+            active_config=entry.get("active_config"),
+            # PRD-027: absent keys read as root / no tags, so a
+            # pre-PRD-027 manifest loads with no migration.
+            folder=entry.get("folder"),
+            tags=list(entry.get("tags") or []),
+        )
 
     def script_path(self, proj: str, part_id: str) -> Path:
         return self._resolve(proj) / "parts" / f"{part_id}.py"
@@ -428,6 +449,184 @@ class ProjectStore:
                 return self.get_part(proj, part_id)
         raise NotFoundError(f"part {part_id!r} not found")
 
+    # ------------------------------------------- navigation meta (PRD-027)
+
+    def update_part_meta(
+        self,
+        proj: str,
+        part_id: str,
+        *,
+        folder: str | None | object = _UNSET,
+        tags: list[str] | None = None,
+    ) -> PartRecord:
+        """Set one part's navigation metadata (FR1).
+
+        ``folder`` omitted leaves it alone, ``folder=None`` (or ``""``) files
+        the part at root; ``tags=None`` leaves them alone, ``tags=[]`` clears
+        them. Clearing POPS the key, so a part that has been organized and
+        then un-organized is byte-identical to one that never was.
+
+        Scoped like `write_script` and `update_part_entry`: the guard that
+        `save_manifest` calls sees the part this write is about, so a PRD-008
+        claim on it refuses.
+        """
+        # Validate before taking the scope: a malformed tag is the caller's
+        # mistake, and it should not cost a claim check or a guard call.
+        if folder is not _UNSET:
+            folder = normalize_folder(folder)
+        if tags is not None:
+            tags = normalize_tags(tags)
+        with locks.write_scope(part_id):
+            manifest = self.manifest(proj)
+            for entry in manifest["parts"]:
+                if entry["id"] == part_id:
+                    self._apply_meta(entry, folder=folder, tags=tags)
+                    self.save_manifest(proj, manifest)
+                    return self._part_record(entry)
+        raise NotFoundError(f"part {part_id!r} not found in project {proj!r}")
+
+    def update_parts_meta(
+        self, proj: str, edits: dict[str, dict]
+    ) -> list[PartRecord]:
+        """Set navigation metadata (and material) on MANY parts in ONE write.
+
+        ``edits`` maps part id -> ``{"folder": str|None, "tags": list|None,
+        "material": str|None}``; for ``folder`` the KEY BEING PRESENT is what
+        means "set it" (its ``None`` is a real value, root), while ``tags``
+        and ``material`` treat ``None`` as "leave alone".
+
+        The single `save_manifest` is the point of the method, not an
+        optimization: one manifest write is one `project_changed` publish is
+        one history snapshot is **one undo step** (design ruling 4). A bulk
+        op built out of N `update_part_meta` calls would cost the user N
+        presses of Cmd+Z to take back one gesture.
+
+        Nothing is mutated until everything validates, and the write guard is
+        invoked once per part id **inside that part's `write_scope`** before
+        the first mutation — so a part another human holds refuses the whole
+        bulk with the usual `ConflictError` (ruling 5) rather than leaving
+        half of it applied.
+
+        **PRECONDITION — the caller MUST serialize this call.** This is an
+        UNSERIALIZED read-modify-write with a deliberately wide window: the
+        manifest is read at the top, then N write-guard calls run (each one a
+        branch-checkout check and a turn-lock check, i.e. real I/O), and only
+        then is the mutated manifest saved. A concurrent `set_params`,
+        `update_part_entry` or `set_instances` on the same project inside that
+        window is **silently lost** — the last save wins and the loser was told
+        it succeeded. The store cannot close this itself, so the caller holds::
+
+            with manifest_scope(service.store, proj), service._lock:
+                service.store.update_parts_meta(proj, edits)
+
+        Both locks, outer-to-inner in exactly that order — `manifest_scope`
+        (from `packages/manager.py`) against the configuration tools and the
+        package manager, `service._lock` against `service.update_part` /
+        `set_params` / `set_assembly`. It is the order
+        `tools_configs.set_instance_config` already documents and takes; both
+        are reentrant.
+
+        **Why this method does not take `manifest_scope` itself:** because the
+        caller holds `service._lock` around it (that is the service layer's
+        serialization primitive for a manifest RMW — `service.update_part` is
+        the precedent), acquiring `manifest_scope` *inside* here would make the
+        acquisition order `service._lock` → `manifest_scope`, the exact inverse
+        of the house order above. Two threads — one entering through
+        `set_instance_config`, one through the bulk op — would then hold one
+        lock each and wait for the other. A lock taken at the wrong level is
+        worse than no lock, so it is the caller's, named here instead. (The
+        layering says the same thing: `core/project.py` is the bottom of the
+        import graph, and pulling `packages.manager` — and with it `cache`,
+        `indexes`, `lockfile`, `_git` — into the store to reach one RLock
+        inverts the dependency as well as the locks.)
+
+        **OBLIGATION — `material` is not just a field.** It feeds
+        `_cache_key` (via `service.material_density`), so a caller that changes
+        one must, per affected part, publish `project_changed` and then call
+        `service.rebuild_after_write(proj, part_id)` — the `service.update_part`
+        precedent. Writing it here without that leaves the part's cached mesh,
+        its `_status` entry and its mass metrics computed against the OLD
+        density, and nothing will correct them until something else happens to
+        invalidate the key. `folder`/`tags` carry no such obligation: they
+        reach no cache key and no geometry request.
+        """
+        if not isinstance(edits, dict):
+            raise ValidationError(
+                "edits must be an object of part_id -> "
+                "{folder?, tags?, material?}"
+            )
+        manifest = self.manifest(proj)
+        entries = {p["id"]: p for p in manifest["parts"]}
+        missing = [pid for pid in edits if pid not in entries]
+        if missing:
+            raise NotFoundError(
+                f"unknown part(s) in project {proj!r}: "
+                f"{', '.join(sorted(missing))}",
+                {"missing": sorted(missing)},
+            )
+        # 1. validate every edit, writing nothing
+        planned: dict[str, dict] = {}
+        for part_id, edit in edits.items():
+            if not isinstance(edit, dict):
+                raise ValidationError(
+                    f"edit for part {part_id!r} must be an object")
+            # A typo'd key must not be a silent no-op: `{"tag": [...]}` or
+            # `{"folders": "x"}` would otherwise report success having changed
+            # nothing, which for a bulk op means N parts quietly untouched.
+            unknown = sorted(set(edit) - _META_EDIT_KEYS)
+            if unknown:
+                raise ValidationError(
+                    f"edit for part {part_id!r} has unknown key(s) "
+                    f"{', '.join(repr(k) for k in unknown)}; allowed: "
+                    f"{', '.join(sorted(_META_EDIT_KEYS))}",
+                    {"part": part_id, "unknown": unknown,
+                     "allowed": sorted(_META_EDIT_KEYS)},
+                )
+            plan: dict = {}
+            if "folder" in edit:
+                plan["folder"] = normalize_folder(edit["folder"])
+            if edit.get("tags") is not None:
+                plan["tags"] = normalize_tags(edit["tags"])
+            if edit.get("material") is not None:
+                self._validate_material(manifest, edit["material"])
+                plan["material"] = edit["material"]
+            planned[part_id] = plan
+        # 2. the guard, per part, in that part's scope — still writing nothing
+        for part_id in edits:
+            with locks.write_scope(part_id):
+                if self.write_guard is not None:
+                    self.write_guard(proj)
+        # 3. mutate in place, 4. ONE save
+        for part_id, plan in planned.items():
+            entry = entries[part_id]
+            self._apply_meta(
+                entry,
+                folder=plan["folder"] if "folder" in plan else _UNSET,
+                tags=plan.get("tags"),
+            )
+            if "material" in plan:
+                entry["material"] = plan["material"]
+        self.save_manifest(proj, manifest)
+        return [self._part_record(entries[part_id]) for part_id in edits]
+
+    @staticmethod
+    def _apply_meta(entry: dict, *, folder, tags) -> None:
+        """Write already-validated meta onto a manifest part entry.
+
+        Cleared values pop their key (the `configs` precedent) — the manifest
+        never carries ``"folder": null`` or ``"tags": []``.
+        """
+        if folder is not _UNSET:
+            if folder:
+                entry["folder"] = folder
+            else:
+                entry.pop("folder", None)
+        if tags is not None:
+            if tags:
+                entry["tags"] = list(tags)
+            else:
+                entry.pop("tags", None)
+
     # ------------------------------------------------------------- assembly
 
     def instances(self, proj: str) -> list[InstanceSpec]:
@@ -448,6 +647,7 @@ class ProjectStore:
                 config=i.get("config"),
                 pattern=i.get("pattern"),
                 assembly=i.get("assembly"),
+                folder=i.get("folder"),
             )
             for i in self.manifest(proj)["assembly"]["instances"]
         ]
@@ -502,6 +702,11 @@ class ProjectStore:
             inst.rotation_deg = validate_vec3(
                 inst.rotation_deg, f"{inst.id}.rotation_deg"
             )
+            # PRD-027: validated HERE for the same reason `config` is — four
+            # writers reach set_instances (service.set_assembly,
+            # tools_structure's wrapper, tools_mates, the instance PATCH) and
+            # only the store sees all of them.
+            inst.folder = normalize_folder(inst.folder)
         # Reject dangling mates on write, so removing an anchor instance can't
         # leave the whole assembly unreadable (mate resolution would then fail).
         for inst in instances:

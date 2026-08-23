@@ -261,6 +261,11 @@ class AgentCADService:
                     "configs": entry.get("configs") or {},
                     "active_config": entry.get("active_config"),
                     "state": status["state"] if status else "unbuilt",
+                    # PRD-027 navigation metadata. Always present (null / [])
+                    # so the tree never has to distinguish "absent" from
+                    # "root"; this listing stays kernel-free.
+                    "folder": entry.get("folder"),
+                    "tags": list(entry.get("tags") or []),
                 }
             )
         return {
@@ -335,6 +340,8 @@ class AgentCADService:
             # and an agent never have to distinguish "absent" from "base".
             "configs": record.configs or {},
             "active_config": record.active_config,
+            "folder": record.folder,          # PRD-027 navigation metadata
+            "tags": list(record.tags),
             "script": script,
             "params_spec": None if is_reference else self._params_spec(script),
             "status": {
@@ -604,6 +611,9 @@ class AgentCADService:
                     # the store sees all three); `set_instance_config` is the
                     # narrow tool that does not need the whole list.
                     config=item.get("config"),
+                    # PRD-027: the store validates it (four writers reach
+                    # set_instances and only the store sees all four).
+                    folder=item.get("folder"),
                 )
             )
         with self._lock:
