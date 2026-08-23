@@ -3,13 +3,13 @@
   "windows": [
     {
       "metric": "n_faces",
-      "min": 30.48,
+      "min": 38.1,
       "name": "objective_bolt_faces",
       "part": "flange"
     },
     {
       "metric": "n_faces",
-      "min": 26.67,
+      "min": 33.33,
       "name": "objective_bolt_faces_relaxed",
       "part": "flange"
     },
