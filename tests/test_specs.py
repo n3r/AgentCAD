@@ -25,6 +25,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -890,6 +891,41 @@ def test_run_names_the_offending_pair_when_instances_overlap(demo):
     pairs = interference["details"]["pairs"]
     assert {pairs[0]["a"], pairs[0]["b"]} == {"box_1", "box_2"}
     assert interference["measured"] > 0.0
+
+
+def test_a_pair_the_kernel_could_not_boolean_fails_and_says_so():
+    """Fail-closed, out loud. A `degenerate` pair (kernel/handlers/_bop.py) is
+    a boolean OCCT could not compute, so the worker lists it rather than
+    reporting an assembly it cannot vouch for. Its `volume_mm3` is 0.0 and
+    means nothing — `measured` would read as "they barely touch" — so the row
+    names the count in its message. Kernel-free: the seam is
+    `service.check_interference`."""
+    runner = SpecRunner(SimpleNamespace(check_interference=lambda *a, **k: {
+        "checked": 2,
+        "pairs": [{"a": "elbow_a", "b": "elbow_b", "volume_mm3": 0.0,
+                   "degenerate": True}]}))
+
+    row = runner._eval_interference("demo", {})
+
+    assert row["status"] == "fail"
+    assert row["measured"] == 0.0
+    assert "1 interfering pair(s): elbow_a/elbow_b" in row["message"]
+    assert "1 indeterminate" in row["message"]
+    assert "fail-closed" in row["message"]
+    assert row["details"]["pairs"][0]["degenerate"] is True
+
+
+def test_a_measurable_overlap_keeps_the_message_it_always_had():
+    """The clause is conditional: an ordinary interfering pair must not grow
+    an 'indeterminate' tail."""
+    runner = SpecRunner(SimpleNamespace(check_interference=lambda *a, **k: {
+        "checked": 2,
+        "pairs": [{"a": "box_1", "b": "box_2", "volume_mm3": 500.0}]}))
+
+    row = runner._eval_interference("demo", {})
+
+    assert row["message"] == "1 interfering pair(s): box_1/box_2"
+    assert row["measured"] == 500.0
 
 
 @pytest.mark.slow

@@ -154,6 +154,75 @@ def test_interference_detects_overlap(kernel):
     assert not any("c" in key for key in pairs)
 
 
+# The bench's coolant elbow: an annular section swept along a filleted
+# right-angle centre line, i.e. G1-tangent cylinder/torus/cylinder junctions
+# all the way along. That is the operand shape OCCT 7.9 answers wrongly about
+# (kernel/handlers/_bop.py) — and the shape half of `examples/engine` is built
+# from, which is why this belongs on the product path and not only in the
+# bench.
+ELBOW_SCRIPT = '''\
+from build123d import *
+
+PARAMS = {"tube_d": {"default": 24.0}, "wall": {"default": 3.0},
+          "run": {"default": 60.0}, "bend_r": {"default": 24.0}}
+
+def build(p):
+    with BuildPart() as part:
+        with BuildLine() as path:
+            Polyline((0, 0, 0), (p.run, 0, 0), (p.run, 0, p.run))
+            fillet(path.vertices().group_by(Axis.X)[-1].sort_by(Axis.Z)[0:1],
+                   radius=p.bend_r)
+        with BuildSketch(Plane.YZ):
+            Circle(p.tube_d / 2)
+            Circle(p.tube_d / 2 - p.wall, mode=Mode.SUBTRACT)
+        sweep(path=path.line)
+    return part.part
+'''
+
+
+def test_interference_reports_a_boolean_it_could_not_compute(kernel):
+    """Two coincident elbows differing only in bend radius — the same two legs
+    running down the same two axes, overlapping over most of their length. OCCT
+    intersects them to **nothing**, with `IsDone()` true and no error raised,
+    and `pairwise_interference` used to read that empty result as `0.0` and
+    report the assembly **clean**. It now fails closed: the pair is listed with
+    `degenerate: True` and a `volume_mm3` that carries no information.
+
+    The measured volume stays 0.0 on purpose. The recheck in
+    `handlers/_bop._disagrees` is a detector — its cropped octant sum is not a
+    valid intersection volume — so it is never promoted into the measurement.
+    """
+    items = [
+        {"name": "elbow_r24", "script": ELBOW_SCRIPT,
+         "params": {"bend_r": 24.0}, "position": [0, 0, 0]},
+        {"name": "elbow_r30", "script": ELBOW_SCRIPT,
+         "params": {"bend_r": 30.0}, "position": [0, 0, 0]},
+    ]
+    result = kernel.request("interference", {"items": items}, timeout_s=300.0)
+
+    assert len(result["pairs"]) == 1
+    pair = result["pairs"][0]
+    assert {pair["a"], pair["b"]} == {"elbow_r24", "elbow_r30"}
+    assert pair["degenerate"] is True
+    assert pair["volume_mm3"] >= 0.0
+
+
+def test_interference_does_not_cry_degenerate_on_a_clean_assembly(kernel):
+    """The other half of the guard. Three boxes, one real overlap: no pair
+    carries the marker, so `_bop`'s recheck is not firing on ordinary
+    geometry (a false degenerate is fail-*closed*, but it is still false)."""
+    items = [
+        {"name": "a", "script": BOX_SCRIPT, "params": {"size": 10.0},
+         "position": [0, 0, 0]},
+        {"name": "b", "script": BOX_SCRIPT, "params": {"size": 10.0},
+         "position": [5, 0, 0]},
+        {"name": "c", "script": BOX_SCRIPT, "params": {"size": 10.0},
+         "position": [100, 0, 0]},
+    ]
+    result = kernel.request("interference", {"items": items})
+    assert not any("degenerate" in pair for pair in result["pairs"])
+
+
 ANALYSIS_SCRIPT = '''\
 from build123d import *
 

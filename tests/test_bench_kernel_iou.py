@@ -44,6 +44,30 @@ def build(p):
 # `shape.solids()`, so this shape's reported volume is 2000 mm3 while the
 # region it actually occupies is 1500 — the exact double-count the handler's
 # clamp exists for.
+# The bench's own coolant elbow (`fix_005`, reference defaults): an annular
+# section swept along a filleted right-angle centre line. Every face junction
+# along that sweep is G1-tangent — cylinder into torus into cylinder — which is
+# exactly the operand shape OCCT 7.9's `BRepAlgoAPI_Common` answers wrongly
+# about (see kernel/handlers/_bop.py). 21711.685 mm3 at these defaults.
+ELBOW = """
+from build123d import *
+PARAMS = {"tube_d": {"default": 24.0}, "wall": {"default": 3.0},
+          "run": {"default": 60.0}, "bend_r": {"default": 24.0}}
+
+def build(p):
+    with BuildPart() as part:
+        with BuildLine() as path:
+            Polyline((0, 0, 0), (p.run, 0, 0), (p.run, 0, p.run))
+            fillet(path.vertices().group_by(Axis.X)[-1].sort_by(Axis.Z)[0:1],
+                   radius=p.bend_r)
+        with BuildSketch(Plane.YZ):
+            Circle(p.tube_d / 2)
+            Circle(p.tube_d / 2 - p.wall, mode=Mode.SUBTRACT)
+        sweep(path=path.line)
+    return part.part
+"""
+
+
 OVERLAPPING_PAIR = """
 from build123d import *
 PARAMS = {}
@@ -348,8 +372,11 @@ def test_a_non_finite_side_volume_is_an_error_and_never_a_perfect_score():
 
 
 def test_a_non_finite_intersection_is_an_error_too():
-    """The same guard one stage later: `max(nan, 0.0)` is `nan`, so a boolean
-    that answered NaN would reach `inter / union` with both sides finite."""
+    """The same guard one stage later. The old body clamped with
+    `max(volume, 0.0)`, which is `nan` for a NaN, so a boolean that answered
+    NaN reached `inter / union` with both sides finite. `_bop` now calls a
+    non-finite intersection volume degenerate — a different sentence, the same
+    refusal, and the same `intersect` stage."""
     calls = []
 
     def _volume(shape):
@@ -360,3 +387,34 @@ def test_a_non_finite_intersection_is_an_error_too():
         _stub_iou(_volume)()
     assert exc.value.type == "kernel_error"
     assert exc.value.details["stage"] == "intersect"
+
+
+def test_a_degenerate_boolean_is_refused_not_banked_as_a_zero(kernel, tmp_path):
+    """The elbow against *itself*, round-tripped through STEP: the truth is
+    `iou == 1.0` and OCCT's `A & B` answers **empty**, with `IsDone()` true and
+    no error to catch. The old body returned 0.0 from that empty result, so the
+    bench banked a perfect candidate as a total miss — the single worst number
+    this handler can produce after `iou: 1.0` for a NaN.
+
+    The STEP round trip is not the *cause* (STEP ⊗ STEP is degenerate too —
+    changelog 0282:214-223 measured that correctly); it is what stops OCCT
+    taking the same-shape shortcut that hides the bug, so it is the cheapest
+    reliable way to pin the behaviour. The refusal is a kernel error, which the
+    scorer turns into `status: "error"` and *excludes* (FR7), and the worker has
+    to survive it — the last two lines are the point of the test.
+    """
+    step = tmp_path / "elbow.step"
+    kernel.request("export", {"script": ELBOW, "params": {}, "format": "step",
+                              "out_path": str(step)}, timeout_s=180.0)
+
+    with pytest.raises(KernelError) as exc:
+        kernel.request("iou", {"candidate": {"script": ELBOW, "params": {}},
+                               "reference": {"source": str(step)},
+                               "align": "world",
+                               "rotations_deg": [[0.0, 0.0, 0.0]]},
+                       timeout_s=300.0)
+
+    assert exc.value.type == "kernel_error"
+    assert "degenerate" in exc.value.message
+    assert (exc.value.details or {}).get("stage") == "intersect"
+    assert kernel.request("ping", {})["ok"] is True

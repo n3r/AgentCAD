@@ -34,6 +34,7 @@ import build123d as b3d
 
 from ._meter import Meter
 from .denials import active_facets, classify
+from .handlers._bop import checked_common_volume
 from . import paramclamp
 from .mesh import tessellate, tessellate_with_faces
 from .protocol import ERROR_CONTRACT, ERROR_KERNEL, ERROR_SCRIPT, WorkerError
@@ -656,6 +657,18 @@ def pairwise_interference(placed, min_volume: float = 0.001) -> list[dict]:
     boolean), so a small detailed solid — a threaded stud — is never
     intersected against a whole casting. Shared by ``handle_interference``
     and the motion sweep's per-sample collision check.
+
+    Every Solid-vs-Solid boolean goes through
+    ``handlers/_bop.checked_common_volume``: OCCT 7.9 answers ``IsDone()``
+    while returning an empty (or negative-volume) intersection for operands
+    with G1-tangent face junctions — any filleted swept solid, e.g. the
+    ``examples/engine`` manifolds — which this function used to bank as a
+    clean 0.0. A pair whose boolean could not be computed is reported
+    **fail-closed**: it lands in the returned list with an extra
+    ``"degenerate": True`` key whatever its volume, and its ``volume_mm3``
+    (0.0) carries no information. That optional key is the only change to the
+    return shape; readers that do not know it see an ordinary interfering
+    pair, which is the safe reading.
     """
     decomposed = []
     for name, shape in placed:
@@ -684,24 +697,29 @@ def pairwise_interference(placed, min_volume: float = 0.001) -> list[dict]:
         return b3d.Pos(*center) * b3d.Box(*size), \
             size[0] * size[1] * size[2]
 
-    def _common_vol(a, b):
-        c = a & b
-        return float(c.volume) if c is not None else 0.0
+    def _common_vol(a, ba, b, bb):
+        """(volume, degenerate) for one Solid-vs-Solid boolean."""
+        return checked_common_volume(a, ba, b, bb, _shape_volume)
 
     def _solid_common(sa, ba, sb, bb):
         box, ov = _crop_box(ba, bb)
         big, big_bb = (sa, ba) if _box_volume(ba) >= _box_volume(bb) \
             else (sb, bb)
-        small = sb if big is sa else sa
+        small, small_bb = (sb, bb) if big is sa else (sa, ba)
         if ov < 0.4 * _box_volume(big_bb):
             cropped = big & box
             if cropped is None:
-                return 0.0
+                return 0.0, False
             # the crop may split into pieces (or vanish) — keep every
             # boolean strictly Solid-vs-Solid
-            return sum(_common_vol(piece, small)
-                       for piece in cropped.solids())
-        return _common_vol(big, small)
+            total, degenerate = 0.0, False
+            for piece in cropped.solids():
+                volume, bad = _common_vol(piece, piece.bounding_box(),
+                                          small, small_bb)
+                total += volume
+                degenerate = degenerate or bad
+            return total, degenerate
+        return _common_vol(big, big_bb, small, small_bb)
 
     pairs = []
     for i in range(len(decomposed)):
@@ -710,15 +728,21 @@ def pairwise_interference(placed, min_volume: float = 0.001) -> list[dict]:
             name_b, sols_b, box_b = decomposed[j]
             if not _boxes_touch(box_a, box_b):
                 continue
-            volume = 0.0
+            volume, degenerate = 0.0, False
             with contextlib.redirect_stdout(sys.stderr):
                 for sa, ba in sols_a:
                     for sb, bb in sols_b:
                         if _boxes_touch(ba, bb):
-                            volume += _solid_common(sa, ba, sb, bb)
-            if volume > min_volume:
-                pairs.append({"a": name_a, "b": name_b,
-                              "volume_mm3": volume})
+                            part, bad = _solid_common(sa, ba, sb, bb)
+                            volume += part
+                            degenerate = degenerate or bad
+            # Fail closed: a pair OCCT could not boolean is reported even
+            # though its measured volume is 0.0.
+            if volume > min_volume or degenerate:
+                entry = {"a": name_a, "b": name_b, "volume_mm3": volume}
+                if degenerate:
+                    entry["degenerate"] = True
+                pairs.append(entry)
     return pairs
 
 
