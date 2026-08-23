@@ -712,11 +712,17 @@ the server-side code it measures.
   lip engagement), and a pair that is **supposed to touch** cannot carry a real
   floor at all, because `min_mm` must be > 0 while a seated pair measures
   exactly 0.000 mm (`asm_003` grades its two contact pairs with a floor of
-  1e-9 mm, which is a ceiling with a floor that cannot fail, and leaves overlap
-  to `no_interference`). A rubric row is a measurement between two instances,
-  never a pose; `check_stackup` does not change that, because it measures
-  worst-case tolerance accumulation along a *mate chain* and these instances are
-  placed rather than mated.
+  1e-12 mm — any floor at or below `_slack`'s absolute 1e-9 cannot fail — which
+  is a ceiling with a floor that cannot fail, and leaves overlap to
+  `no_interference`). The signal is also **small where the assembly is small**:
+  `asm_002` has two instances, so one pair, so one clearance row — the whole of
+  its placement grade is `0.35 / 2 = 0.175` of that task's total, which is
+  about 0.035 of the five-task category mean and therefore *under* the 0.05
+  epsilon the release gate treats as noise. A parked lid is visible on the task, not on
+  the category. A rubric row is a measurement between two instances, never a
+  pose; `check_stackup` does not change that: it measures worst-case tolerance
+  accumulation along a *mate chain* and these instances are placed rather than
+  mated.
 * **Two product findings bound what `geometry` can measure at all.** Both were
   found by authoring the task set and are stated here because a subscore that
   is silently unmeasurable is worse than one that says so.
@@ -782,13 +788,27 @@ the server-side code it measures.
   of 1.0. That is the authoring rule for any task added to this category — the
   range says what the script can build, the rubric says what the application
   allows, and if those are the same number the task measures nothing but
-  slider-reading. What remains is **measurement slack, not a range**: a row is
-  written a hair under its requirement (`check_wall(4.0)` reads ~0.2 mm over
-  the true wall on `opt_001`'s bracket; `opt_003`'s fit floors sit 0.05 mm
-  under; `opt_005`'s `shank_reach` 0.1 mm under), so a candidate can sit inside
-  that slack — and a near-optimal answer inside the objective's own 5% rung
-  gets full credit by design. Neither lets a candidate **outscore** the
-  reference: the objective windows are one-sided.
+  slider-reading. What remains is **measurement slack, not a range** — and it
+  does not all run the same way, so each task's direction is stated rather than
+  averaged:
+  * *Slack in the candidate's favour.* `opt_001`'s `check_wall(4.0)` reads
+    ~0.2 mm **over** the true wall (a 3.9 mm leg measures 4.094 and is green),
+    `opt_003`'s fit floors sit 0.05 mm under and `opt_005`'s `shank_reach`
+    0.1 mm under, so a candidate can sit just inside a stated requirement.
+    None of it lets a candidate **outscore** the reference — the objective
+    windows are one-sided — and a near-optimal answer inside the objective's
+    own 5% rung gets full credit by design.
+  * *Slack against the candidate.* `opt_004`'s `bolt_circle_ligament` reads
+    ~0.4 mm **under** the nominal rim ligament (the grid-4 sampler walks out
+    through the 1.5 mm rim chamfer), so an agent doing correct nominal
+    arithmetic — a Ø125.0 bolt circle, whose rim ligament is exactly the 3 mm
+    asked for — measures 2.387 and is **red**. A row that punishes correct
+    reasoning is a task defect unless it is disclosed, so that prompt states
+    the overread in its own constraint bullet and tells the agent to keep real
+    margin. That disclosure is part of the fairness bar, not a footnote to it.
+  A reference must clear its binding row on **designed** margin rather than on
+  slack in its favour: `opt_001`'s sits at `thk` 4.05 against a 4.0 floor —
+  0.05 mm of real material — for exactly that reason.
 * **Contamination.** These tasks are public, so they will eventually appear in
   training corpora. The mitigations are versioned task sets (every score is
   labelled `bench-v1`) and published transcripts (a shortcut is inspectable);

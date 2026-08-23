@@ -11,8 +11,11 @@
      clearance inside the cavity), 0.180 mm at Z = 33.1 and 2.105 mm at
      Z = 35.1. So the 0.2 mm ceiling reds a lid whose lip has left the cavity
      and every parked lid, and passes one floating within its lip engagement.
-     A 0.14 mm ceiling would catch that too and was rejected: 0.04 mm between
-     the reference and a red is a bound that grades noise, not placement. -->
+     A 0.14 mm ceiling would catch that too and was rejected on authoring
+     tolerance, not measurement: the reading is exact and repeatable, but
+     0.14 mm leaves only 0.04 mm around a seat height the prompt states as
+     0.1 mm, so an agent that reasonably rounds it (a 0.15 mm seat) would red
+     a placement that is substantially right. -->
 
 The project holds the two mouldings of a snap-fit electronics enclosure —
 `enclosure_base` (the open-top shell) and `enclosure_lid` — and **no assembly

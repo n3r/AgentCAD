@@ -8,11 +8,15 @@
        thread_clearance  cap_screw_1 - tapped_plate_1   1.177 mm  0.5-2.0
 
      Two of the three pairs are SUPPOSED to touch, and `check_clearance`
-     requires `min_mm > 0`, so `clamp_seat` and `head_seat` carry the
-     smallest floor the evaluator admits (`specs/project.py`'s `TOUCHING`,
-     1e-9 mm, where the worker's `distance >= min - _slack(min)` is
-     `0.0 >= 0.0`). They are ceilings; overlap stays `no_interference`'s row.
-     Without them the clamp plate's placement was ungraded entirely.
+     requires `min_mm > 0`, so `clamp_seat` and `head_seat` carry a floor
+     that cannot fail (`specs/project.py`'s `TOUCHING`, 1e-12 mm). Any floor
+     at or below `_slack`'s absolute 1e-9 works — 1e-9 is the LARGEST such
+     value, not the smallest, so the constant sits three orders inside the
+     family instead of on its boundary. They are ceilings; overlap stays
+     `no_interference`'s row. Without them the clamp plate's placement was
+     ungraded entirely. The tripwire is manual: no test pins these references
+     at 1.0, so a `_slack` change shows up in a scored run, not in
+     `make test`.
 
      Measured perturbations behind the ceilings: screw lifted 1 mm ->
      head_seat 1.000 mm (red), thread_clearance still 1.177 mm (its approach
@@ -45,9 +49,11 @@ Requirements:
 - `cap_screw_1` goes in from above on the same axis, unrotated, with its
   **head seated flat on the clamp plate's top face**. The screw's local origin
   is the underside of its head — the seating plane.
-- The screw must **not bottom out**: its tip has to keep **at least 0.5 mm**
-  of clear space from the tapped plate. As shipped, the thread engagement and
-  the screw length leave about 1.2 mm.
+- The screw must **not bottom out**: it has to keep **at least 0.5 mm** of
+  clear space from the tapped plate everywhere, its tip included. What is
+  measured is the closest approach between the two solids, which as shipped is
+  about 1.2 mm — see the note under the graded gaps for where that 1.2 mm
+  actually is.
 - **No two instances may overlap** by any volume. Faces that touch are fine;
   material that shares space is not.
 
@@ -60,7 +66,12 @@ joint is not assembled. The three graded gaps are:
   0.5 mm off** the clamp plate's top face. A screw left proud of its seat
   fails here.
 - `cap_screw_1` to `tapped_plate_1`: **0.5 mm to 2.0 mm** — not bottomed out,
-  and still down in the tapped hole.
+  and still down in the tapped hole. Note what that distance is: the closest
+  approach between the two solids is **radial**, the screw's thread flank
+  against the counterbore wall (4.5 mm counterbore radius against an M8 root
+  radius of about 3.32 mm, so about 1.18 mm as shipped) — it is not the
+  tip-to-hole-bottom depth, so do not model it as one. Seating depth is graded
+  by the `cap_screw_1`-to-`clamp_plate_1` row above.
 
 Do not change any part script and do not change any part's parameters — this
 task is the placement only.

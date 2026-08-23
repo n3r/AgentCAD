@@ -27,8 +27,14 @@ measurement SATURATES at 0.15 mm for a lid lifted anywhere between ~0.05 mm
 and the 3 mm lip depth. The 0.2 mm ceiling therefore fails a lid whose lip has
 come out of the cavity (measured 2.105 mm at Z = 35.1) and every parked lid,
 and passes a lid floating within its own lip engagement. A tighter ceiling
-(0.14 mm) would catch that too, and was rejected: it leaves 0.04 mm between
-the reference and a red, which is a bound that grades noise.
+(0.14 mm) would catch that too, and was rejected for an AUTHORING-tolerance
+reason rather than a measurement one: the measurement is exact and repeatable
+(0.10000000000000142 mm), but 0.14 mm leaves an agent 0.04 mm of room around a
+seat height the prompt states as 0.1 mm — so a candidate that reasons its way
+to a 0.15 mm seat, or rounds the snap gap up, reds a placement that is
+substantially right. The 0.2 mm ceiling asks the question the task is about
+(is the lid on the base, lip in the cavity?) and leaves the last two decimal
+places to the reviewer.
 """
 
 from agentcad.toolkit.specs import check_clearance, check_interference_free

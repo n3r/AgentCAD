@@ -51,26 +51,40 @@ reviewer comment (stripped from the prompt the agent sees) and in each
   0.15 mm radial clearance inside the cavity (`enclosure_lid.LIP_CLEARANCE`),
   so 0.2 mm reds a lid whose lip has left the cavity and every parked lid, and
   passes a lid floating within its lip engagement. A 0.14 mm ceiling would
-  catch that too and was **rejected**: 0.04 mm between the reference and a red
-  is a bound that grades noise. Two instances give one pair, so this row is the
-  whole of the placement grade here — stated in the rubric docstring.
+  catch that too and was **rejected on authoring tolerance, not measurement**:
+  the reading is exact and repeatable (0.10000000000000142 mm), but 0.14 mm
+  leaves an agent only 0.04 mm around a seat height the prompt states as
+  0.1 mm, so a candidate that reasons its way to a 0.15 mm seat reds a
+  placement that is substantially right. Two instances give one pair, so this
+  row is the whole of the placement grade here — stated in the rubric
+  docstring, and its weight is called out in `docs/bench.md` (0.175 of the task
+  total, about 0.035 of the category mean, under the gate's 0.05 epsilon).
 
 ### `asm_003_bolted_joint` — the awkward one: two pairs are *supposed* to touch
 - **New** `clamp_seat` (`clamp_plate_1`–`tapped_plate_1`) and **new**
   `head_seat` (`cap_screw_1`–`clamp_plate_1`), both measured **0.000 mm**.
-  `check_clearance` requires `min_mm > 0`, so both carry `TOUCHING = 1e-9` — the
-  smallest floor the evaluator admits, where the worker's
-  `distance >= min_mm - _slack(min_mm)` is exactly `0.0 >= 0.0` — and a ceiling
-  of **0.5 mm**. They are ceilings with a floor that cannot fail, declared that
-  way on purpose: what these two pairs state is *how close*, never *how far*,
-  and material sharing space stays `no_interference`'s row. Without them the
-  clamp plate's placement was graded by nothing at all.
+  `check_clearance` requires `min_mm > 0`, so both carry `TOUCHING = 1e-12` and
+  a ceiling of **0.5 mm**. The worker's test is
+  `distance >= min_mm - _slack(min_mm)` with `_slack(x) = max(1e-9, |x|·1e-9)`,
+  so a floor cannot fail for **any** `min_mm` at or below the absolute slack
+  floor of `1e-9`: that is a family, and `1e-9` is its **largest** member, not
+  its smallest (`_positive` admits any positive float). Picking the boundary
+  value would make the rows depend on the comparison landing on `0.0 >= 0.0`
+  exactly, so the constant sits three orders inside the family. They are
+  ceilings with a floor that cannot fail, declared that way on purpose: what
+  these two pairs state is *how close*, never *how far*, and material sharing
+  space stays `no_interference`'s row. Without them the clamp plate's placement
+  was graded by nothing at all.
 - `thread_clearance` (`cap_screw_1`–`tapped_plate_1`), measured **1.177 mm** →
   `[0.5, 2.0]`. Measured perturbations: bottomed 2 mm down → 0.000 mm (floor);
   8 mm up → 3.222 mm (ceiling); **1 mm up → still 1.177 mm**, because that
   approach is radial inside the counterbore. So this row cannot grade the
   screw's seating depth — `head_seat` does (1.000 mm, red, for that same 1 mm
-  lift), which is the second reason it exists.
+  lift), which is the second reason it exists. The prompt says so in as many
+  words — the graded distance there is the screw's thread flank against the
+  4.5 mm counterbore wall (an M8 root radius of ≈ 3.32 mm gives the 1.18 mm),
+  not the tip-to-hole-bottom depth — so a candidate reasoning about tip depth
+  does not mis-model the joint to satisfy it.
 
 ### `asm_004_truss_node` — five of six pairs bounded
 - `gusset_seat` (`gusset_1`–`base_plate_1`), measured **2.000 mm** → `[1.0,
@@ -126,8 +140,15 @@ reviewer comment (stripped from the prompt the agent sees) and in each
   why.
 - `benchmarks/tasks/assemble_and_clear/asm_00{1,2,3,4,5}_*/prompt.md` — the
   graded windows in words plus the reviewer comment.
-- `docs/bench.md` — the `assemble_and_clear` bullet under "What this does not
-  guarantee".
+- `docs/bench.md` — **two** hunks under "What this does not guarantee": the
+  `assemble_and_clear` bullet (this entry's work) and the
+  *optimisation-category* bullet, which is the **held-over** rewrite belonging
+  to changelog 0312's task. That rewrite was authored in the previous task but
+  left uncommitted so a concurrent editor of the same file would not be
+  clobbered; it landed in this commit because this commit is the next one to
+  touch `docs/bench.md`. The commit message says so, and 0312's own entry
+  carries the matching note. Nothing in the opt hunk is this task's design —
+  read it against 0312.
 - No `task.json` changed: `task_set` stays `bench-v1` and every `weights` block
   is byte-identical (`tests/test_bench_tasks.py`'s category-weight test still
   pins them).
@@ -142,21 +163,28 @@ The starters place no instances, so their clearance rows are `error` rows
 0 now, which is why five more rows changed no starter score.
 
 **`asm_003`'s `TOUCHING` floor is a coupling, and it is declared as one.** It
-depends on `core.specs._slack`'s absolute `1e-9` floor and on
-`BRepExtrema_DistShapeShape` returning exactly `0.0` for coincident faces. If
-either changes, the two seated rows go red **on the reference**, which the
-per-bundle proof numbers in this entry exist to catch. The alternative was
-leaving the clamp plate's placement ungraded — a documented full-marks cheat in
-the one bundle whose pairs are designed to touch — and that was judged worse
-than a documented, measured coupling.
+depends on `core.specs._slack` keeping an absolute floor of at least `1e-12`
+and on `BRepExtrema_DistShapeShape` returning exactly `0.0` for coincident
+faces. If either goes, the two seated rows go red **on the reference itself**.
+The tripwire is **manual**, and that is the part worth knowing: no test pins
+the assembly references at 1.0 — `tests/test_bench_scoring.py`'s
+reference-scores-one test covers the seed task (`mfd_001`) only — so a `_slack`
+change surfaces as a red reference in a scored run (`agentcad bench score
+benchmarks/tasks/assemble_and_clear/asm_003_bolted_joint/reference/project
+--task assemble_and_clear/asm_003_bolted_joint`) and **not** in `make test`.
+The per-bundle proof numbers below are what such a run is checked against. The
+alternative was leaving the clamp plate's placement ungraded — a documented
+full-marks cheat in the one bundle whose pairs are designed to touch — and that
+was judged worse than a documented, measured coupling.
 
 **Nothing else was touched.** No `agentcad/**` change, no test change
 (`tests/test_bench_tasks_fix_asm.py`'s four asm contract tests — starter places
 no instances, reference places ≥ 2, the rubric names only placed instances, the
 prompt names every instance the rubric uses — pass unchanged, and the last one
 is what keeps the new rows fair), and `AGENTS.md` does not name this limitation
-so it is not edited. `docs/bench.md`'s *optimisation* bullet is a concurrent
-change (changelog 0312); this entry edits only the `assemble_and_clear` bullet.
+so it is not edited. The one thing in this commit that is **not** this task's
+work is `docs/bench.md`'s *optimisation* bullet, carried over as described
+under Files; its design and its numbers belong to changelog 0312.
 
 ## Verification
 Per bundle, scored with `uv run agentcad bench score <project> --task
