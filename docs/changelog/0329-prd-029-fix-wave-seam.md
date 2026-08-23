@@ -143,7 +143,14 @@ test-first; the failing test is named beside each change.
   cap so the serialized envelope of one capped skill always fits;
   `routes_skills._is_human` states out loud that in local mode the gate is a
   consent gate, not a security boundary (`X-Agent-Id` is unvalidated there).
-- The suite: `make test` on the final tree, quiet machine — FINAL_COUNT. The
+- The suite: `make test` on the final tree, quiet machine — 5967 passed, 66 skipped, 4 failed in 765 s on the tree merged with
+`origin/main` (PRD-017 landed underneath; the merge kept both trap blocks in
+`AGENTS.md`/`CLAUDE.md` and ported main's one cheat-sheet edit —
+`check_clearance(a, b, min_mm, max_mm=)` — into the `design-specs` skill).
+The four: the known local `[fem]` real-solver timeout that skips on CI, and
+three 120 s kernel-wait timeouts under the suite's own load
+(`test_supervisor` ×2, `test_share_viewer`) that re-run green in isolation
+(3 passed, 28 s). The
   pre-final run of the same tree minus the three follow-ups was 5739 passed,
   51 skipped, 14 failed in 781 s: eleven were the count guards reading this
   entry's own placeholder, one the known local `[fem]` real-solver timeout

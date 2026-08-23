@@ -48,4 +48,11 @@ the old cheat-sheet or lacked the skill tools.
 Pre-existing drift noticed, not fixed here: README, `agent-api.md`,
 `architecture.md` and `user-guide.md` say "85 tools" while `build_registry`
 registers 109 (107 before this PRD) — a separate docs fix. `make test` on the
-whole branch (all seven slices, quiet machine) — FINAL_COUNT.
+whole branch (all seven slices, quiet machine) — 5967 passed, 66 skipped, 4 failed in 765 s on the tree merged with
+`origin/main` (PRD-017 landed underneath; the merge kept both trap blocks in
+`AGENTS.md`/`CLAUDE.md` and ported main's one cheat-sheet edit —
+`check_clearance(a, b, min_mm, max_mm=)` — into the `design-specs` skill).
+The four: the known local `[fem]` real-solver timeout that skips on CI, and
+three 120 s kernel-wait timeouts under the suite's own load
+(`test_supervisor` ×2, `test_share_viewer`) that re-run green in isolation
+(3 passed, 28 s).
