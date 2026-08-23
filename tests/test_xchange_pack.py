@@ -118,10 +118,10 @@ def test_the_export_schemas_are_mutated_in_place(registry):
     assert part["metadata"]["type"] == "object"
     assembly = registry.get("export_assembly").input_schema["properties"]
     assert assembly["format"]["enum"] == list(ASSEMBLY_FORMATS)
-    # Slice 5 owns `structured` and assembly `3mf`; an enum entry is a promise,
-    # so neither is advertised before it runs.
-    assert "structured" not in assembly
-    assert "3mf" not in assembly["format"]["enum"]
+    # Slice 5 landed both: an enum entry is a promise, and these two now run
+    # (`tests/test_interop_step_asm.py` holds the promise down).
+    assert "3mf" in assembly["format"]["enum"]
+    assert assembly["structured"]["type"] == "boolean"
     # `import_cad_file` belongs to the import pack, not this one.
     assert registry.get("import_cad_file") is not None
 
@@ -257,8 +257,8 @@ def test_an_errored_instance_is_reported_not_silently_dropped(svc, registry):
 @pytest.mark.parametrize("fmt,expected", [
     ("step", {"geometry": "brep", "pmi": "none", "parametric": "none"}),
     ("stl", {"geometry": "mesh", "parametric": "none"}),
-    ("3mf", {"geometry": "mesh", "colors": "none", "metadata": "none",
-             "parametric": "none"}),
+    # `3mf` left this list in slice 5: a part 3MF is no longer delegated, it
+    # goes through `export_3mf_rich` (tests/test_interop_3mf.py).
 ])
 def test_delegated_part_exports_are_unchanged_but_carry_fidelity(
         svc, registry, fmt, expected):
@@ -294,9 +294,9 @@ def test_delegated_assembly_exports_are_unchanged_but_carry_fidelity(
 def test_an_unsupported_assembly_format_names_what_is_supported(svc, registry):
     two_boxes(svc)
     with pytest.raises(ValidationError) as exc:
-        svc.export_assembly("demo", "3mf")     # slice 5
+        svc.export_assembly("demo", "obj")
     assert exc.value.message == (
-        "assembly export supports formats: step, stl, gltf, glb")
+        "assembly export supports formats: step, stl, 3mf, gltf, glb")
 
 
 # -------------------------------------------------------------- STEP + PMI
