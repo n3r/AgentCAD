@@ -693,3 +693,60 @@ def test_patch_folder_on_a_mate_driven_instance_is_allowed(kernel, tmp_path):
     # and the refused body wrote nothing
     assert {i.id: i.folder for i in service.store.instances("demo")}["pin1"] \
         == "Fasteners/M5"
+
+
+# ------------------------------------------- C1: the meta write is serialized
+
+def test_update_part_meta_documents_its_serialization_precondition():
+    """C1: the single-part write is the same unserialized RMW its bulk sibling
+    is, and it now says so — naming the locks and their order."""
+    doc = ProjectStore.update_part_meta.__doc__
+    assert "PRECONDITION" in doc
+    assert "manifest_scope(service.store, proj), service._lock" in doc
+
+
+def test_set_part_meta_does_not_lose_a_concurrent_write(demo):
+    """C1: `set_part_meta` used to be an unserialized read-modify-write, so a
+    `set_params` landing inside its window was silently clobbered — both
+    callers were told "ok" and one of the two writes was simply gone.
+
+    Each thread verifies its OWN last write immediately after the call
+    returns. Under the fix that can never fail: a competing writer can only
+    save a manifest it read *after* this write landed. Without it, one thread's
+    stale snapshot overwrites the other's row.
+    """
+    import threading
+
+    service, registry = demo
+    lost: list[str] = []
+    sizes = (11.0, 12.0)
+
+    def tag_cube():
+        for i in range(200):
+            tag = f"t{i}"
+            out = registry.call("set_part_meta",
+                                {"project": "demo", "part_id": "cube",
+                                 "tags": [tag]})
+            assert "error" not in out, out
+            if raw_part(service, "cube").get("tags") != [tag]:
+                lost.append(f"cube tags {tag}")
+
+    def param_pin():
+        for i in range(50):
+            size = sizes[i % 2]
+            service.set_params("demo", "pin", {"size": size})
+            if raw_part(service, "pin").get("params", {}).get("size") != size:
+                lost.append(f"pin size {size}")
+
+    threads = [threading.Thread(target=tag_cube),
+               threading.Thread(target=param_pin)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=180)
+    assert not any(t.is_alive() for t in threads)
+    # The manifest is still one parseable document...
+    doc = json.loads(manifest_path(service).read_text(encoding="utf-8"))
+    assert {p["id"] for p in doc["parts"]} == {"cube", "pin"}
+    # ...and nothing either thread wrote was silently dropped.
+    assert lost == []

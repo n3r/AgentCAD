@@ -31,9 +31,11 @@ would be an import cycle, not a style question.
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from .model import AppError, ValidationError, error_type
 
@@ -50,6 +52,73 @@ MAX_FOLDER_DEPTH = 8
 
 #: Maximum tags on one part (counted after de-duplication).
 MAX_TAGS = 32
+
+#: Characters of one scalar an error may echo back.
+_MAX_ECHO = 200
+#: Entries of one list or object an error may echo back.
+_MAX_ECHO_ITEMS = 20
+#: How far into a caller's nesting an echo descends before summarizing.
+_MAX_ECHO_DEPTH = 3
+
+
+def _safe(value, _depth: int = 0):
+    """A caller's value, made safe to put in an error message or ``details``.
+
+    Two hazards, one helper — and both were real 500s or amplifiers:
+
+    * **NaN and Infinity are not JSON.** Starlette serializes every response
+      with ``allow_nan=False``, so a ``float("nan")`` echoed back — nested one
+      level down inside a list or an object, where the tool registry's
+      shallow type check never looks — raised inside the serializer and turned
+      an honest 200 refusal envelope into an HTTP **500**. Every float
+      therefore goes out as its ``repr`` (``"nan"``, ``"inf"``, ``"2.5"``): a
+      string is what the reader wanted anyway, and it is the only spelling
+      that survives the round trip for all of them.
+    * **An echo is an amplifier.** A caller who sends a megabyte of tag, or a
+      selection of ten thousand ids, must not get it back in the message *and*
+      again in ``details``. Scalars are capped at :data:`_MAX_ECHO`
+      characters, containers at :data:`_MAX_ECHO_ITEMS` entries (the rest
+      counted, never dropped silently), and nesting at
+      :data:`_MAX_ECHO_DEPTH`.
+
+    Structure is preserved where it is cheap to preserve: a list stays a list
+    and an object an object, so a client can still read ``details.args.tags``
+    rather than a string blob. ``None``, ``bool`` and ordinary ``int`` are
+    returned untouched — they are already JSON, already small, and several
+    callers compare against them.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        # `json.dumps` renders an int with `str()`, which raises above
+        # CPython's 4 300-digit conversion limit: the same 500, another door.
+        return value if value.bit_length() <= 256 \
+            else f"<int, {value.bit_length()} bits>"
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, str):
+        return value if len(value) <= _MAX_ECHO else value[:_MAX_ECHO] + "…"
+    if isinstance(value, (list, tuple)):
+        if _depth >= _MAX_ECHO_DEPTH:
+            return f"<list of {len(value)}>"
+        out = [_safe(item, _depth + 1) for item in value[:_MAX_ECHO_ITEMS]]
+        if len(value) > _MAX_ECHO_ITEMS:
+            out.append(f"… and {len(value) - _MAX_ECHO_ITEMS} more")
+        return out
+    if isinstance(value, dict):
+        if _depth >= _MAX_ECHO_DEPTH:
+            return f"<object with {len(value)} keys>"
+        items = list(value.items())[:_MAX_ECHO_ITEMS]
+        out = {str(key)[:_MAX_ECHO]: _safe(item, _depth + 1)
+               for key, item in items}
+        if len(value) > _MAX_ECHO_ITEMS:
+            out["…"] = f"and {len(value) - _MAX_ECHO_ITEMS} more"
+        return out
+    try:
+        text = str(value)
+    except Exception:  # noqa: BLE001 — a __str__ that raises is still an echo
+        return f"<unprintable {type(value).__name__}>"
+    return text if len(text) <= _MAX_ECHO else text[:_MAX_ECHO] + "…"
 
 
 def normalize_folder(value) -> str | None:
@@ -71,30 +140,31 @@ def normalize_folder(value) -> str | None:
         return None
     if isinstance(value, bool) or not isinstance(value, str):
         raise ValidationError(
-            f"invalid folder {value!r}: must be a string or null",
-            {"folder": value},
+            f"invalid folder {_safe(value)!r}: must be a string or null",
+            {"folder": _safe(value)},
         )
     if value == "":
         return None
     segments = value.split("/")
     if len(segments) > MAX_FOLDER_DEPTH:
         raise ValidationError(
-            f"invalid folder {value!r}: at most {MAX_FOLDER_DEPTH} segments "
-            f"(got {len(segments)})",
-            {"folder": value},
+            f"invalid folder {_safe(value)!r}: at most {MAX_FOLDER_DEPTH} "
+            f"segments (got {len(segments)})",
+            {"folder": _safe(value)},
         )
     for segment in segments:
         if segment != segment.strip():
             raise ValidationError(
-                f"invalid folder {value!r}: segment {segment!r} has leading "
-                "or trailing whitespace",
-                {"folder": value, "segment": segment},
+                f"invalid folder {_safe(value)!r}: segment "
+                f"{_safe(segment)!r} has leading or trailing whitespace",
+                {"folder": _safe(value), "segment": _safe(segment)},
             )
         if not FOLDER_SEGMENT_RE.fullmatch(segment):
             raise ValidationError(
-                f"invalid folder {value!r}: segment {segment!r} must match "
+                f"invalid folder {_safe(value)!r}: segment "
+                f"{_safe(segment)!r} must match "
                 r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,39}",
-                {"folder": value, "segment": segment},
+                {"folder": _safe(value), "segment": _safe(segment)},
             )
     return value
 
@@ -113,21 +183,22 @@ def normalize_tags(value) -> list[str]:
     """
     if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
         raise ValidationError(
-            f"invalid tags {value!r}: must be an array of strings",
-            {"tags": value},
+            f"invalid tags {_safe(value)!r}: must be an array of strings",
+            {"tags": _safe(value)},
         )
     out: list[str] = []
     seen: set[str] = set()
     for raw in value:
         if isinstance(raw, bool) or not isinstance(raw, str):
             raise ValidationError(
-                f"invalid tag {raw!r}: must be a string", {"tag": raw})
+                f"invalid tag {_safe(raw)!r}: must be a string",
+                {"tag": _safe(raw)})
         tag = raw.strip().lower()
         if not TAG_RE.fullmatch(tag):
             raise ValidationError(
-                f"invalid tag {raw!r}: must match [a-z0-9][a-z0-9_.-]{{0,31}} "
-                "after stripping and lowercasing",
-                {"tag": raw},
+                f"invalid tag {_safe(raw)!r}: must match "
+                "[a-z0-9][a-z0-9_.-]{0,31} after stripping and lowercasing",
+                {"tag": _safe(raw)},
             )
         if tag in seen:
             continue
@@ -161,7 +232,7 @@ def folder_matches(folder: str | None, query: str) -> bool:
     if not isinstance(query, str):
         raise ValidationError(
             f"folder query must be a string, got {type(query).__name__}",
-            {"query": query},
+            {"query": _safe(query)},
         )
     wanted = [s.lower() for s in query.strip("/").split("/") if s != ""]
     if not wanted:
@@ -216,13 +287,13 @@ def _bulk_ids(part_ids, limit: int) -> list[str]:
             part_ids, (list, tuple)):
         raise ValidationError(
             f"part_ids must be an array of strings, got "
-            f"{type(part_ids).__name__}", {"part_ids": part_ids})
+            f"{type(part_ids).__name__}", {"part_ids": _safe(part_ids)})
     for part_id in part_ids:
         if isinstance(part_id, bool) or not isinstance(part_id, str) \
                 or not part_id:
             raise ValidationError(
-                f"invalid part id {part_id!r}: must be a non-empty string",
-                {"part_id": part_id})
+                f"invalid part id {_safe(part_id)!r}: must be a non-empty "
+                "string", {"part_id": _safe(part_id)})
     ids = list(dict.fromkeys(part_ids))
     if not ids or len(ids) > limit:
         raise ValidationError(
@@ -247,6 +318,13 @@ class BulkExecutor:
       ``ok: false`` and an ``error`` payload. The rest of the selection still
       lands. ``ok`` is then ``false`` and ``applied`` says how many parts the
       write actually touched.
+
+      A row's ``ok`` is about the **write**, and only the write. The
+      ``material`` op rebuilds each touched part afterwards, and a part whose
+      script does not build comes back ``ok: true`` with ``rebuilt: false``
+      and the build error: the material IS in the manifest, the publish went
+      out and one Cmd+Z takes it back, so saying ``ok: false`` about it would
+      be false in the one direction that matters.
     * **A refusal of the gesture** — an unknown op, a material that does not
       exist, a malformed folder or tag, a selection over the bound, or a part
       another human is holding (PRD-008 claim, ruling 5) — **raises**, before
@@ -269,14 +347,14 @@ class BulkExecutor:
         """Run *op* over *part_ids*. See the class docstring for the shape."""
         if not isinstance(op, str) or op not in OPS:
             raise ValidationError(
-                f"unknown bulk op {op!r}: one of {', '.join(OPS)}",
-                {"op": op, "known": list(OPS)})
+                f"unknown bulk op {_safe(op)!r}: one of {', '.join(OPS)}",
+                {"op": _safe(op), "known": list(OPS)})
         if args is None:
             args = {}
         if not isinstance(args, dict):
             raise ValidationError(
                 f"args must be an object, got {type(args).__name__}",
-                {"args": args})
+                {"args": _safe(args)})
         # The bound is read from the op, so the 50-id export ceiling is applied
         # before anything looks at a part.
         ids = _bulk_ids(part_ids,
@@ -338,9 +416,16 @@ class BulkExecutor:
                 for part_id in edits:
                     post = service.rebuild_after_write(proj, part_id)
                     row = rows[part_id]
+                    # `ok` is about the WRITE, and the write landed: the
+                    # material is in the manifest, the publish went out, and
+                    # one Cmd+Z takes it back. A failed rebuild is a fact
+                    # about the part's script, reported as `rebuilt: false`
+                    # plus the build error — flipping `ok` said "this part was
+                    # not changed" about a part that WAS changed, and every
+                    # reader of the row (the bulk bar's applied count, an
+                    # agent's retry loop) believed it.
                     row["rebuilt"] = bool(post.get("ok"))
                     if not post.get("ok"):
-                        row["ok"] = False
                         row["error"] = post.get("error")
         return {"op": op, "ok": all(row["ok"] for row in results),
                 "applied": applied, "results": results, "undo_label": label}
@@ -365,7 +450,8 @@ class BulkExecutor:
             material = args.get("material")
             if not isinstance(material, str) or not material:
                 raise ValidationError(
-                    'bulk material needs {"material": "<id>"}', {"args": args})
+                    'bulk material needs {"material": "<id>"}',
+                    {"args": _safe(args)})
             # The same check `update_part_entry` makes on the single-part path,
             # so a bulk change can never accept a material a single one refuses.
             store._validate_material(manifest, material)
@@ -375,15 +461,16 @@ class BulkExecutor:
             # key cannot double as it (the `{"config": null}` precedent).
             if "folder" not in args:
                 raise ValidationError(
-                    'bulk folder needs a "folder" key (null or "" means root)',
-                    {"args": args})
+                    'bulk folder needs a "folder" key (null or "" means '
+                    'root)', {"args": _safe(args)})
             folder = normalize_folder(args["folder"])
             fields = ["folder"]
         else:
             ordered = normalize_tags(args.get("tags") or [])
             if not ordered:
                 raise ValidationError(
-                    f'bulk {op} needs a non-empty "tags" array', {"args": args})
+                    f'bulk {op} needs a non-empty "tags" array',
+                    {"args": _safe(args)})
             wanted = set(ordered)
             fields = ["tags"]
 
@@ -396,8 +483,8 @@ class BulkExecutor:
                 results.append({
                     "id": part_id, "ok": False,
                     "error": {"type": "notfound_error",
-                              "message": f"part {part_id!r} not found",
-                              "details": {"part": part_id}}})
+                              "message": f"part {_safe(part_id)!r} not found",
+                              "details": {"part": _safe(part_id)}}})
                 continue
             try:
                 if op == "material":
@@ -428,6 +515,35 @@ class BulkExecutor:
 
     # ------------------------------------------------------------- delete
 
+    def _assert_unclaimed(self, proj: str, ids: list[str]) -> None:
+        """Refuse the gesture if another human holds any part it would delete.
+
+        `remove_parts` reaches `save_manifest` — and therefore `write_guard` —
+        **outside any `write_scope`**, so the guard saw ``current_write_part()
+        is None`` and a PRD-008 claim on one of the selected parts never
+        refused: a bulk delete walked through a colleague's held part and took
+        its script with it. `update_parts_meta` already runs the guard once per
+        id inside that id's scope before its first mutation, and this is the
+        same preflight for the delete path — the *whole* call refuses (ruling
+        5: partial success covers per-item validity, not stepping on a
+        colleague), and it runs inside the caller's locks having written
+        nothing.
+
+        Only ids that are actually in the project are checked. An unknown id
+        holds nothing, and turning it into a claim refusal would replace an
+        honest per-item ``notfound_error`` row with a whole-call conflict.
+        """
+        from . import locks
+
+        store = self.service.store
+        if store.write_guard is None:
+            return
+        known = {p["id"] for p in store.manifest(proj)["parts"]}
+        for part_id in ids:
+            if part_id in known:
+                with locks.write_scope(part_id):
+                    store.write_guard(proj)
+
     def _delete(self, proj: str, ids: list[str], args: dict) -> dict:
         from .packages.manager import manifest_scope
 
@@ -436,8 +552,9 @@ class BulkExecutor:
         if not isinstance(force, bool):
             raise ValidationError(
                 f"delete force must be a boolean, got {type(force).__name__}",
-                {"force": force})
+                {"force": _safe(force)})
         with manifest_scope(service.store, proj), service._lock:
+            self._assert_unclaimed(proj, ids)
             outcome = service.store.remove_parts(proj, ids, force=force)
             # The eviction `service.delete_part` does, part for part: the badge
             # AND every configuration build state of that part (a
@@ -479,7 +596,8 @@ class BulkExecutor:
         fmt = args.get("format")
         if not isinstance(fmt, str) or not fmt:
             raise ValidationError(
-                'bulk export needs {"format": "step|stl|3mf"}', {"args": args})
+                'bulk export needs {"format": "step|stl|3mf"}',
+                {"args": _safe(args)})
         service._check_format(fmt)
         extra: dict = {}
         tolerance = args.get("tolerance")
@@ -488,7 +606,17 @@ class BulkExecutor:
                     tolerance, (int, float)):
                 raise ValidationError(
                     "export tolerance must be a number",
-                    {"tolerance": tolerance})
+                    {"tolerance": _safe(tolerance)})
+            # A deflection is a positive length in millimetres. NaN, ±inf and
+            # anything ≤ 0 are refused HERE rather than handed to the worker:
+            # a non-finite one is not JSON (it would 500 the response on the
+            # way back out, `_safe`'s first hazard), and a zero or negative
+            # one asks the tessellator for infinite refinement — 50 kernel
+            # round trips that each run to their 300 s ceiling.
+            if not math.isfinite(tolerance) or tolerance <= 0:
+                raise ValidationError(
+                    "export tolerance must be a finite number greater than 0",
+                    {"tolerance": _safe(tolerance)})
             extra["tolerance"] = float(tolerance)
 
         results: list[dict] = []
@@ -592,7 +720,16 @@ def dashboard(service) -> dict:
             "mass_g": mass if known else None,
             "failing": failing,
             "last_modified": _mtime_iso(Path(row["path"]) / "project.json"),
-            "thumb": (f"/api/projects/{name}/thumb.png"
+            # `quote(..., safe="")`: `list_projects` reports a DIRECTORY
+            # name, and nothing validates that one — a project folder called
+            # "my proj" (or one with a `#`, or a `?`) is listed verbatim, and
+            # interpolating it raw produced a URL the browser either mangled
+            # or truncated at the fragment. Encoded here rather than in
+            # `dashboard.js` because the payload's contract is a URL, not a
+            # name (`api.projectThumbUrl` encodes the same way for the same
+            # reason), and a client that already has the string must not have
+            # to know it needs repairing.
+            "thumb": (f"/api/projects/{quote(name, safe='')}/thumb.png"
                       if has_thumb(service, name) else None),
         })
     return {"projects": projects}

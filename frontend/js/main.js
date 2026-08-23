@@ -129,6 +129,14 @@ async function loadProject(name) {
     part: null,
     selectedPart: null,
     selectedInstance: null,
+    // The MULTI-selection goes with the scalars, atomically (X2). Part ids
+    // are project-local and collide freely — `base` exists in half the
+    // example projects — so a selection carried across a switch left the
+    // bulk bar armed with ids that now name OTHER parts, in a tree that
+    // showed nothing selected. Anchor too: a stale anchor makes the next
+    // Shift-click sweep a range from a row that is not there.
+    selection: new Set(),
+    selectionAnchor: null,
     mode: "part",
     rebuilding: new Set(),
     partKinds: {},
@@ -664,10 +672,16 @@ async function deletePart(partId) {
     body: `Deletes ${partId} and its script file.`,
     // The blast radius, named before the click and not discovered after it:
     // deleting a part takes every assembly instance of it with it.
+    // The truth: this browser never sends `force`, so the delete is REFUSED
+    // while an instance still uses the part — it does not quietly take the
+    // instances with it. The count and the ids stay, because they are the
+    // blast radius the reader has to go and clear first.
     note: instances.length
-      ? `Also removes ${instances.length} assembly instance`
-        + `${instances.length === 1 ? "" : "s"}: `
+      ? `Refused while ${instances.length} assembly instance`
+        + `${instances.length === 1 ? "" : "s"} still use`
+        + `${instances.length === 1 ? "s" : ""} it: `
         + instances.map((i) => i.id).join(", ")
+        + " — clear or re-point them first."
       : undefined,
     danger: true,
     confirmLabel: "Delete part",

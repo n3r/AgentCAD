@@ -343,8 +343,12 @@ comes back, and the toast names what it would undo ("bulk material ×6").
 Bulk operations allow **partial success**: if some parts could not be changed
 (an id that no longer exists, a part still used by an assembly instance), the
 rest still land and a **results panel** opens listing every row with its
-status and error. Deleting parts an assembly still uses is refused per part
-unless you confirm removing those instances too.
+status and error. Deleting a part an assembly instance still uses is
+**refused** — per part in a bulk, with the instances named — so clear those
+instances or re-point them at another part first; the rest of the selection
+still lands. (A **Material** change that lands but whose part then fails to
+build is listed as "written, rebuild failed": the material *was* written, and
+one undo takes it back.)
 
 **＋** in the section header opens the **New part…** dialog (also **⌘N**/
 **Ctrl+N**): an id (`[a-z][a-z0-9_]{0,39}`, validated live), a label, and a
@@ -358,8 +362,10 @@ bar's **Material** verb, or via the agent tools (`update_part_script` with
 `material=`) and by editing `project.json`.
 
 Deleting is in the context menu (single or bulk) rather than on the row: it
-opens a danger-styled confirm naming exactly what it would remove — the parts,
-their script files, and any assembly instances that reference them.
+opens a danger-styled confirm naming exactly what it would remove — the parts
+and their script files — and, when an assembly instance still references one,
+saying so: the delete of that part is **refused** while the instance exists,
+and the confirm names the instances you have to clear or re-point first.
 
 ### Assembly
 

@@ -70,11 +70,29 @@ def register(registry, service) -> None:
             record = service.store.get_part(project, part_id)  # 404s honestly
             return {"id": record.id, "folder": record.folder,
                     "tags": list(record.tags)}
-        record = service.store.update_part_meta(
-            project, part_id,
-            **({} if folder is _UNSET else {"folder": folder}),
-            tags=tags,
-        )
+        # Function-local, like every other cross-layer import in this pack:
+        # `packages.manager` sits far above `tools.py`'s load order and pulls
+        # the cache/index/lockfile stack in with it.
+        from .packages.manager import manifest_scope
+
+        # `update_part_meta` is an UNSERIALIZED manifest read-modify-write
+        # (read → guard → save), exactly like its bulk sibling, and this is
+        # the only caller — so the serialization is here. Both locks,
+        # outer-to-inner in the house order `BulkExecutor._meta` and
+        # `tools_configs.set_instance_config` already take: `manifest_scope`
+        # against the package manager and the configuration tools,
+        # `service._lock` against `set_params` / `update_part` /
+        # `set_assembly`. Without them a concurrent write landing inside the
+        # window was silently lost and both callers were told "ok".
+        # The publishes stay OUTSIDE: the history hook runs git synchronously
+        # on `project_changed`, and holding a manifest lock across it would
+        # serialize every writer behind a commit.
+        with manifest_scope(service.store, project), service._lock:
+            record = service.store.update_part_meta(
+                project, part_id,
+                **({} if folder is _UNSET else {"folder": folder}),
+                tags=tags,
+            )
         # project_changed FIRST: it is the publish the history hook snapshots
         # on, so anything reacting to parts_meta_changed can assume the write
         # is durable and already undoable.
@@ -156,8 +174,9 @@ def register(registry, service) -> None:
         "nothing, and changes nothing. "
         f"{GRAMMAR} "
         "filters: an optional object ANDed with the query — "
-        "{tag: str|[str], material, state, kind, folder} — so structured "
-        "filtering needs no quoting; a list ANDs (tag: ['a','b'] means both). "
+        "{tag, material, state, kind, folder} — so structured filtering needs "
+        "no quoting; EVERY one of those keys also accepts a list, which ANDs "
+        "(tag: ['a','b'] means both). "
         f"limit: 1..{MAX_LIMIT}, default 50; `total` counts every match.",
         schema(
             {
@@ -248,7 +267,11 @@ def register(registry, service) -> None:
         f"(export is capped at {MAX_BULK_EXPORT} — each one is a kernel round "
         "trip). "
         "Returns {op, ok (every row ok), applied (parts the write touched), "
-        "results: [{id, ok, error?, ...}], undo_label}. The five manifest ops "
+        "results: [{id, ok, error?, ...}], undo_label}. A row's `ok` is about "
+        "the WRITE: `material` also rebuilds each touched part, and one whose "
+        "script does not build is still `ok: true` with `rebuilt: false` and "
+        "the build error — the material landed and undo covers it. "
+        "The five manifest ops "
         "are ONE manifest write, ONE project_changed and ONE undo step "
         "labelled with undo_label; export changes no authored state and has "
         "no undo entry. A part another client has claimed refuses the whole "

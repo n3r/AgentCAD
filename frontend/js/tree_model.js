@@ -15,7 +15,8 @@
 // is where the "a hit pulls its ancestors into view, open" rule lives. Neither
 // knows what a `<li>` is; `tree.js` renders whatever list it gets.
 
-import { asQuery, matches, segments, isFolderPath } from "./query_model.js";
+import { asQuery, matches, segments, folderMatches, isFolderPath }
+  from "./query_model.js";
 
 /** Row descriptors from the RAW (un-expanded) instance list. Each row:
  *  {id, kind, part?, count?, badge?, expandable?, readonly?, source?, config?}.
@@ -210,6 +211,42 @@ export function instanceTree(instances, opts) {
                   opts);
 }
 
+/** Every part filed at `path` **or under it**, by id, in manifest order.
+ *
+ *  Read from the PROJECT, never from the rendered rows. A folder's context
+ *  menu ("Select 12 parts", "Move 12 parts to…") used to count the visible
+ *  flattened rows under the folder, which made a collapsed folder contain
+ *  **zero** parts and an expanded folder miss everything inside a collapsed
+ *  child of its own — the menu offered to move twelve parts and moved four.
+ *  Membership is a fact about the manifest; visibility and the filter are
+ *  facts about the screen, and they are not the same question.
+ *
+ *  Matching is segment-wise and case-insensitive (`query_model.folderMatches`,
+ *  which is `navigation.folder_matches`), so `Chassis` contains `Chassis/Left`
+ *  and does not contain `ChassisBrackets`.
+ */
+export function partsInFolder(parts, path) {
+  return (Array.isArray(parts) ? parts : [])
+    .filter((p) => p && p.id != null && folderMatches(p.folder, path || ""))
+    .map((p) => p.id);
+}
+
+/** The stored "empty" folders that survive a reload — which is none of them.
+ *
+ *  A folder created with **New folder…** is a session-only placeholder: the
+ *  dialog promises it "is dropped on reload if it is still empty", and it was
+ *  not — `readTree` restored the list unconditionally, so an experiment made
+ *  months ago came back on every load of that project forever. Adopting a
+ *  project's stored state prunes every path no part occupies; a path some
+ *  part is filed at (or under) is kept, where it is harmless because the
+ *  parts would draw the folder anyway.
+ */
+export function pruneEmptyFolders(emptyFolders, parts) {
+  const list = Array.isArray(emptyFolders) ? emptyFolders : [];
+  return list.filter((path) => (Array.isArray(parts) ? parts : [])
+    .some((p) => p && folderMatches(p.folder, String(path || ""))));
+}
+
 /** The tree under a filter: `{rows, total, shown}`.
  *
  *  `query` is a parsed query, or a string this parses (`query_model.asQuery`).
@@ -221,10 +258,26 @@ export function instanceTree(instances, opts) {
  *    that can see script text. Intersecting would drop every script-only hit
  *    — `filterRows(parts, "counterbore", {ids: ["base_plate"]})` would answer
  *    `shown: 0` for a row the server just told us matched, which is the exact
- *    query shape the server gets asked about. The union is also what makes the
+ *    query shape the server gets asked about. The union is what makes the
  *    120 ms debounce feel instant: the client's own matches render on the
  *    keystroke and the server's script hits JOIN them when they land, rather
  *    than replacing a list that was already right.
+ *  * ...UNTIL `opts.authoritative` says the answer in `opts.ids` is the
+ *    server's answer to THIS query, at which point it REPLACES the client's
+ *    row set. The union is a provisional answer, not a better one: for free
+ *    text the server sees a superset and the two agree, but for a `kind:`
+ *    term the client is wrong in both directions (`get_project` reports the
+ *    manifest kind, and `package` is derived from a provenance header the
+ *    browser cannot read), so a union would keep rows the server excluded.
+ *    `tree.js` sets it only once an answer for the current query has landed —
+ *    before that the provisional list is what the user sees, exactly as
+ *    before.
+ *  * `opts.evidence` (`{id: matched_on}`) is the server's own evidence for
+ *    the rows it named. A row the client also matched keeps the CLIENT's
+ *    evidence (it can see every metadata source); a row only the server kept
+ *    uses the server's, falling back to `["script"]` — the browser has no
+ *    script text, so for a free-text query the script is the only thing that
+ *    *can* have matched.
  *  * **every part row carries `matchedOn`** — its `matched_on` evidence, in
  *    `query_model.SOURCES` order. This is the one place evidence is reported
  *    (there is no separate `evidence` map to keep in sync), and `tree.js`
@@ -257,6 +310,8 @@ export function filterRows(parts, query, opts) {
     return {rows: folderTree(list, o), total: list.length, shown: list.length};
   }
   const ids = o.ids ? new Set(o.ids) : null;
+  const authoritative = ids !== null && o.authoritative === true;
+  const fromServer = o.evidence || {};
   const scripts = o.scripts || {};
   const kept = [];
   const evidence = new Map();
@@ -264,9 +319,11 @@ export function filterRows(parts, query, opts) {
     const id = part ? part.id : null;
     const found = matches(part, q, {scriptText: scripts[id] || ""});
     const named = ids !== null && ids.has(id);
-    if (found === null && !named) continue;
+    if (authoritative ? !named : (found === null && !named)) continue;
     kept.push(part);
-    evidence.set(id, found === null ? ["script"] : found);
+    const theirs = fromServer[id];
+    evidence.set(id, found !== null ? found
+      : (Array.isArray(theirs) && theirs.length ? theirs : ["script"]));
   }
   const rows = folderTree(kept).map((row) => (row.kind === "part"
     ? {...row, matchedOn: evidence.get(row.id) || []}
@@ -407,4 +464,5 @@ export { isFolderPath };
 // Test seam — the node round-trip imports this and nothing else.
 export const __treeModel__ = { instanceRows, memberIdsOf, rowsHtml, folderTree,
                                filterRows, instanceTree, selectionAfter,
-                               persistTree, readTree, treeKey, isFolderPath };
+                               persistTree, readTree, treeKey, isFolderPath,
+                               partsInFolder, pruneEmptyFolders };

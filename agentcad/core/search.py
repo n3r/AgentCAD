@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .model import ValidationError
-from .navigation import folder_matches
+from .navigation import _safe, folder_matches
 from .packages import provenance
 
 #: The fields a ``field:value`` term may name. Order is the order the grammar
@@ -190,7 +190,7 @@ def parse(query: str) -> Query:
         return Query(())
     if not isinstance(query, str):
         raise _refuse(f"query must be a string, got {type(query).__name__}",
-                      {"query": query})
+                      {"query": _safe(query)})
     return Query(tuple(_term(pieces) for pieces in _tokenize(query)))
 
 
@@ -234,7 +234,7 @@ def _tokenize(query: str) -> list[list[tuple[str, bool]]]:
     if in_quote:
         raise _refuse(
             "unterminated quote in query: every \" needs a closing \"",
-            {"query": query})
+            {"query": _safe(query)})
     flush_token()
     return tokens
 
@@ -254,8 +254,8 @@ def _term(pieces: list[tuple[str, bool]]) -> Term:
     if not sep or not _FIELD_RE.fullmatch(field):
         return _free_term(head + tail, negate, pieces)
     if field.lower() not in FIELDS:
-        raise _refuse(f"unknown search field {field!r}",
-                      {"field": field, "fields": list(FIELDS)})
+        raise _refuse(f"unknown search field {_safe(field)!r}",
+                      {"field": _safe(field), "fields": list(FIELDS)})
     return field_term(field.lower(), rest + tail, negate=negate)
 
 
@@ -271,7 +271,7 @@ def _free_term(value: str, negate: bool, pieces) -> Term:
         raise _refuse(
             "empty search term: a '-' or a \"\" with nothing in it matches "
             "nothing and hides the rest of the query",
-            {"term": "".join(text for text, _ in pieces)})
+            {"term": _safe("".join(text for text, _ in pieces))})
     return Term(None, value.lower(), negate)
 
 
@@ -286,12 +286,16 @@ def field_term(field: str, value, *, negate: bool = False) -> Term:
     to the whole project instead of narrowing it.
     """
     if field not in FIELDS:
-        raise _refuse(f"unknown search field {field!r}",
-                      {"field": field, "fields": list(FIELDS)})
+        raise _refuse(f"unknown search field {_safe(field)!r}",
+                      {"field": _safe(field), "fields": list(FIELDS)})
     if not isinstance(value, str):
+        # `_safe`, never the value itself: a filter object is a caller's JSON,
+        # so `{"tag": NaN}` reaches here nested one level below the registry's
+        # type check — and a NaN echoed into `details` is not JSON, which made
+        # this refusal an HTTP 500 (`navigation._safe`).
         raise _refuse(
             f"{field} must be a string, got {type(value).__name__}",
-            {"field": field, "value": value})
+            {"field": field, "value": _safe(value)})
     value = value.strip()
     if not value:
         raise _refuse(
@@ -305,15 +309,15 @@ def field_term(field: str, value, *, negate: bool = False) -> Term:
             # "//" parse to the EMPTY prefix and match every folder — the same
             # silent widening an empty value would cause, one character later.
             raise _refuse(
-                f"folder: has no value — {value!r} is only separators",
-                {"field": field, "value": value})
+                f"folder: has no value — {_safe(value)!r} is only separators",
+                {"field": field, "value": _safe(value)})
     else:
         value = value.lower()
     if field == "state" and value not in STATES:
-        raise _refuse(f"unknown state {value!r}",
+        raise _refuse(f"unknown state {_safe(value)!r}",
                       {"field": field, "values": list(STATES)})
     if field == "kind" and value not in KINDS:
-        raise _refuse(f"unknown kind {value!r}",
+        raise _refuse(f"unknown kind {_safe(value)!r}",
                       {"field": field, "values": list(KINDS)})
     return Term(field, value, negate)
 
@@ -710,11 +714,11 @@ def _limit(limit) -> int:
     if isinstance(limit, bool) or not isinstance(limit, int):
         raise ValidationError(
             f"limit must be an integer between 1 and {MAX_LIMIT}",
-            {"limit": limit, "max": MAX_LIMIT})
+            {"limit": _safe(limit), "max": MAX_LIMIT})
     if not 1 <= limit <= MAX_LIMIT:
         raise ValidationError(
-            f"limit must be between 1 and {MAX_LIMIT} (got {limit})",
-            {"limit": limit, "max": MAX_LIMIT})
+            f"limit must be between 1 and {MAX_LIMIT} (got {_safe(limit)})",
+            {"limit": _safe(limit), "max": MAX_LIMIT})
     return limit
 
 
@@ -733,8 +737,9 @@ def _with_filters(parsed: Query, filters) -> Query:
                               {"keys": list(FILTER_KEYS)})
     for key in filters:
         if key not in FILTER_KEYS:
-            raise ValidationError(f"unknown filter {key!r}",
-                                  {"filter": key, "keys": list(FILTER_KEYS)})
+            raise ValidationError(f"unknown filter {_safe(key)!r}",
+                                  {"filter": _safe(key),
+                                   "keys": list(FILTER_KEYS)})
     terms = list(parsed.terms)
     for key in FILTER_KEYS:  # a fixed order, so two equal filter objects
         if key not in filters:  # produce the same Query
@@ -743,7 +748,7 @@ def _with_filters(parsed: Query, filters) -> Query:
         values = value if isinstance(value, list) else [value]
         if not values:
             raise ValidationError(
-                f"filter {key!r} is an empty list — omit it instead",
-                {"filter": key})
+                f"filter {_safe(key)!r} is an empty list — omit it instead",
+                {"filter": _safe(key)})
         terms += [field_term(key, item) for item in values]
     return Query(tuple(terms))

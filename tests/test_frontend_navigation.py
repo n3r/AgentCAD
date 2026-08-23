@@ -120,14 +120,15 @@ def test_every_navigation_module_imports_in_node_and_exports_its_contract():
     """
     got = run_js("out({qm: Object.keys(qm), vm: Object.keys(vm),"
                  " tm: Object.keys(tm), cm: Object.keys(cm)});")
-    for name in ("FIELDS", "parse", "matches", "hasFreeText", "rank",
-                 "scriptOnly", "__queryModel__"):
+    for name in ("FIELDS", "parse", "matches", "hasFreeText", "needsServer",
+                 "rank", "scriptOnly", "__queryModel__"):
         assert name in got["qm"], f"query_model.{name} is missing"
     for name in ("window", "__virtualModel__"):
         assert name in got["vm"], f"virtual_model.{name} is missing"
     for name in ("instanceRows", "memberIdsOf", "rowsHtml", "folderTree",
                  "filterRows", "instanceTree", "selectionAfter", "persistTree",
-                 "readTree", "treeKey", "isFolderPath", "__treeModel__"):
+                 "readTree", "treeKey", "isFolderPath", "partsInFolder",
+                 "pruneEmptyFolders", "__treeModel__"):
         assert name in got["tm"], f"tree_model.{name} is missing"
     for name in ("init", "open", "close", "isOpen", "markup"):
         assert name in got["cm"], f"contextmenu.{name} is missing"
@@ -1109,10 +1110,18 @@ def test_a_project_switch_drops_the_previous_projects_search_answer():
     answer."""
     source = (FRONTEND / "tree.js").read_text(encoding="utf-8")
     body = source.split("function syncTreeState()", 1)[1].split("\n}", 1)[0]
-    for needle in ("serverIds = null", "snippets = {}", "searchError = null",
+    # `clearServerAnswer()` is the one spelling of "forget the last answer"
+    # (ids, snippets, the server's evidence and its total) — three call sites
+    # share it, and its own body is asserted just below.
+    for needle in ("clearServerAnswer()", "searchError = null",
                    'filterEl.value = ""', 'state.treeFilter = ""',
                    "clearTimeout(searchTimer)"):
         assert needle in body, f"syncTreeState does not {needle}"
+    cleared = source.split("function clearServerAnswer()", 1)[1] \
+        .split("\n}", 1)[0]
+    for needle in ("serverIds = null", "snippets = {}", "serverEvidence = {}",
+                   "serverTotal = 0"):
+        assert needle in cleared, f"clearServerAnswer does not {needle}"
 
 
 def test_a_server_search_refusal_outlives_an_unrelated_repaint():
@@ -1138,3 +1147,207 @@ def test_the_bulk_actions_grade_the_injected_context_not_module_state():
     main = (FRONTEND / "main.js").read_text(encoding="utf-8")
     assert "when: (c) => c.selectionSize > 1" in main
     assert "when: () => bulk.hasSelection()" not in main
+
+
+# ================================================== the final review wave (JS)
+#
+# Four pure helpers and six invariants a grep states better than a screenshot.
+# Every one of them names the defect it prevents.
+
+
+def test_needs_server_covers_free_text_and_every_kind_term():
+    """X3: `get_project` reports the MANIFEST kind, so an installed package
+    part reaches the browser as `"script"` — the client's answer to a `kind`
+    term is wrong in both directions, and the query has to go to the server."""
+    got = run_js(
+        "out({free: qm.needsServer('counterbore'),"
+        " tag: qm.needsServer('tag:m5'),"
+        " kind: qm.needsServer('kind:package'),"
+        " negated: qm.needsServer('-kind:package'),"
+        " mixed: qm.needsServer('tag:m5 kind:script'),"
+        " empty: qm.needsServer(''),"
+        " freetext_only: qm.hasFreeText('kind:package')});")
+    assert got["free"] is True
+    assert got["kind"] is True and got["negated"] is True
+    assert got["mixed"] is True
+    assert got["tag"] is False and got["empty"] is False
+    # ...and `hasFreeText` keeps meaning exactly what it says (the snippet rule
+    # and the fixture parity tests both read it).
+    assert got["freetext_only"] is False
+
+
+def test_an_authoritative_server_answer_replaces_the_client_row_set():
+    """X3(b): a union keeps rows the server excluded — for `kind:package` the
+    client keeps every non-package part it can see. With the answer present it
+    REPLACES; before it lands the provisional union is what shows."""
+    parts = json.dumps([
+        {"id": "pkg_bolt", "label": "bolt", "kind": "script"},
+        {"id": "own_bolt", "label": "bolt", "kind": "script"},
+    ])
+    got = run_js(
+        f"const rows = {parts};"
+        "const union = tm.filterRows(rows, 'kind:package', {ids: ['pkg_bolt']});"
+        "const auth = tm.filterRows(rows, 'kind:package',"
+        "  {ids: ['pkg_bolt'], authoritative: true,"
+        "   evidence: {pkg_bolt: ['kind']}});"
+        "const before = tm.filterRows(rows, 'kind:package', {});"
+        "const negated = tm.filterRows(rows, '-kind:package',"
+        "  {ids: ['own_bolt'], authoritative: true});"
+        "out({union: union.rows.filter(r => r.kind === 'part').map(r => r.id),"
+        " auth: auth.rows.filter(r => r.kind === 'part').map(r => r.id),"
+        " authEvidence: auth.rows.filter(r => r.kind === 'part')"
+        "   .map(r => r.matchedOn),"
+        " before: before.shown,"
+        " negated: negated.rows.filter(r => r.kind === 'part').map(r => r.id)});")
+    # the union keeps the row the server did NOT name — the bug
+    assert got["union"] == ["pkg_bolt", "own_bolt"] or got["union"] == ["pkg_bolt"]
+    assert got["auth"] == ["pkg_bolt"]
+    assert got["authEvidence"] == [["kind"]]     # the server's own evidence
+    assert got["negated"] == ["own_bolt"]
+    # ...and with no answer at all the client answers provisionally as before
+    assert got["before"] == 0
+
+
+def test_parts_in_folder_reads_the_project_not_the_visible_rows():
+    """X7: folder membership from `state.project.parts`, by segment-wise path
+    containment — a collapsed folder used to contain zero parts."""
+    parts = json.dumps([
+        {"id": "a", "folder": "Chassis"},
+        {"id": "b", "folder": "Chassis/Left side"},
+        {"id": "c", "folder": "chassis/right"},     # case-insensitive
+        {"id": "d", "folder": "ChassisBrackets"},   # NOT under "Chassis"
+        {"id": "e"},                                # the root
+    ])
+    got = run_js(f"const filed = {parts};"
+                 "out({chassis: tm.partsInFolder(filed, 'Chassis'),"
+                 " left: tm.partsInFolder(filed, 'Chassis/Left side'),"
+                 " root: tm.partsInFolder(filed, ''),"
+                 " missing: tm.partsInFolder(filed, 'Nope'),"
+                 " nil: tm.partsInFolder(null, 'Chassis')});")
+    assert got["chassis"] == ["a", "b", "c"]
+    assert got["left"] == ["b"]
+    assert got["root"] == ["a", "b", "c", "d", "e"]   # everything is under root
+    assert got["missing"] == [] and got["nil"] == []
+
+
+def test_empty_folders_are_pruned_against_a_real_parts_list():
+    """X9: the New folder… dialog promises a placeholder is "dropped on reload
+    if it is still empty", and `readTree` restored it unconditionally."""
+    got = run_js(
+        "const filed = [{id: 'a', folder: 'Chassis/Left'}];"
+        "out({kept: tm.pruneEmptyFolders(['Chassis', 'Chassis/Left', 'Ghost'],"
+        "                                filed),"
+        " none: tm.pruneEmptyFolders(['Ghost'], []),"
+        " nil: tm.pruneEmptyFolders(null, filed)});")
+    assert got["kept"] == ["Chassis", "Chassis/Left"]
+    assert got["none"] == [] and got["nil"] == []
+
+
+def test_the_truncation_notice_names_the_cap_and_the_total():
+    """X5: the server caps a search at 500 rows; with the answer authoritative
+    that cap silently truncated the tree."""
+    got = run_dom_js(
+        "out({over: tree.truncationNotice(1312, 500, 500),"
+        " exact: tree.truncationNotice(500, 500, 500),"
+        " under: tree.truncationNotice(12, 12, 500),"
+        " partial: tree.truncationNotice(1312, 3, 500)});")
+    assert got["over"] == ("showing the first 500 of 1312 matches — "
+                           "narrow the query")
+    assert got["exact"] == "" and got["under"] == ""
+    # a short answer is not a truncated one (it is an answer still arriving)
+    assert got["partial"] == ""
+
+
+def test_a_failed_server_search_drops_the_previous_answer():
+    """M8/X4: a failed call left the previous query's `serverIds` unioned into
+    the filter indefinitely — and, now that an answer is authoritative, it
+    would go on DECIDING the list."""
+    source = (FRONTEND / "tree.js").read_text(encoding="utf-8")
+    body = source.split("async function runServerSearch", 1)[1].split("\n}", 1)[0]
+    catch = body.split("catch (err) {", 1)[1].split("\n  }", 1)[0]
+    assert "clearServerAnswer()" in catch
+    assert "render()" in catch
+    # ...and every query change clears it, not only one with no free text.
+    input_body = source.split("function onFilterInput()", 1)[1].split("\n}", 1)[0]
+    assert "clearServerAnswer()" in input_body
+    assert "if (!free)" not in input_body
+
+
+def test_an_instance_folder_move_patches_one_at_a_time():
+    """M9: `PATCH …/instances/{id}` is a full-list replace, so N of them in
+    flight is N racing whole-list writes."""
+    source = (FRONTEND / "tree.js").read_text(encoding="utf-8")
+    body = source.split("function moveTo(", 1)[1].split("\n}", 1)[0]
+    # Prose about the trap is not the trap (the AC1 grep's own rule).
+    code = "\n".join(line for line in body.splitlines()
+                     if not line.strip().startswith(("//", "*", "/*")))
+    assert "Promise.all" not in code
+    assert "await api.patchInstance" in code
+
+
+def test_a_project_switch_clears_the_multi_selection():
+    """X2: part ids are project-local and collide (`base` is in half the
+    examples), so a carried selection armed the bulk bar with ids naming other
+    parts, in a tree that showed nothing selected."""
+    source = (FRONTEND / "main.js").read_text(encoding="utf-8")
+    body = source.split("async function loadProject(", 1)[1].split("\n}", 1)[0]
+    assert "selection: new Set()" in body
+    assert "selectionAnchor: null" in body
+
+
+def test_the_delete_copy_says_refused_not_removed():
+    """I4: the browser never sends `force`, so a delete of a part an instance
+    still uses is REFUSED — the copy promised a flow that does not exist."""
+    tree_src = (FRONTEND / "tree.js").read_text(encoding="utf-8")
+    main_src = (FRONTEND / "main.js").read_text(encoding="utf-8")
+    assert "confirm again" not in tree_src
+    assert "refused" in tree_src
+    assert "Also removes" not in main_src
+    assert "Refused while" in main_src
+
+
+def test_a_rebuild_failure_is_its_own_status_and_applied_comes_off_the_payload():
+    """X6: the write landed, so the row is not "failed" — and the bulk bar's
+    applied count comes from the server's `applied`, not from row `ok`."""
+    got = run_dom_js(
+        "const r = {op: 'material', applied: 2, results: ["
+        "  {id: 'a', ok: true, rebuilt: true},"
+        "  {id: 'bad', ok: true, rebuilt: false,"
+        "   error: {type: 'script_error', message: 'boom'}},"
+        "  {id: 'ghost', ok: false,"
+        "   error: {type: 'notfound_error', message: 'no such part'}}]};"
+        "out({rows: bulk.resultRows(r), summary: bulk.resultSummary(r)});")
+    statuses = [row["status"] for row in got["rows"]]
+    assert statuses == ["ok", "written, rebuild failed", "failed"]
+    assert "script_error: boom" == got["rows"][1]["detail"]
+    assert got["summary"] == ("material: 2 of 3 parts applied · 1 failed "
+                              "· 1 written but not rebuilt")
+
+
+def test_the_dashboards_project_cards_get_out_of_the_way():
+    """X8: on a first run the dashboard IS the app, and the New/Open cards fired
+    their action and forgot it — the project opened behind the dashboard."""
+    source = (FRONTEND / "dashboard.js").read_text(encoding="utf-8")
+    body = source.split("async function runProjectAction(", 1)[1].split("\n}\n", 1)[0]
+    assert "await actions.runAction(id)" in body
+    assert "hideForProject()" in body
+    assert "await reload()" in body
+
+
+def test_focus_is_restored_without_scrolling_the_tree():
+    """X10: the row focus goes back to is virtualized, so the browser's default
+    scroll-into-view lurches the list when a menu closes."""
+    # The RESTORE site in each module — the one that focuses an element the
+    # module does not own (a tree row). `contextmenu.js` also focuses its own
+    # menu rows, which are three lines tall and inside a popup: those keep the
+    # plain `focus()`.
+    menu = (SHELL / "contextmenu.js").read_text(encoding="utf-8")
+    restore = menu.split("const restore = entry.restore;", 1)[1] \
+        .split("entry.resolve();", 1)[0]
+    assert "restore.focus({preventScroll: true})" in restore
+    assert ".focus();" not in restore
+
+    dash = (FRONTEND / "dashboard.js").read_text(encoding="utf-8")
+    body = dash.split("export function close()", 1)[1].split("\n}", 1)[0]
+    assert "restoreFocus.focus({preventScroll: true})" in body
+    assert ".focus();" not in body

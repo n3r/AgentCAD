@@ -134,7 +134,31 @@ def _too_many_triangles(meshes: list[dict]) -> bool:
     return total > render.MAX_TRIANGLES
 
 
-def render_part_thumb(cache_dir: Path, key: str) -> bytes | None:
+def may_write(service, proj: str) -> bool:
+    """Is this project under its disk budget? (PRD-006 quotas, PRD-027 FR4)
+
+    A thumbnail is derived data written into ``.cache/``, so it is subject to
+    the same budget every other write is: a project that is already full must
+    not be made fuller by an ``<img>`` tag. What the budget stops is only the
+    **caching write** — the picture is still rendered in memory and served,
+    because refusing to draw would turn a quota into a broken image and tell
+    the user nothing about why.
+
+    `assert_disk_budget` is the one implementation of the rule (it returns
+    immediately, walking nothing, when no budget is configured — which is the
+    default and the hot path). Any `AppError` is read as "do not write": an
+    unknown or half-deleted project is exactly the case where writing into a
+    directory we cannot measure is the wrong move.
+    """
+    try:
+        service.store.assert_disk_budget(proj)
+    except AppError:
+        return False
+    return True
+
+
+def render_part_thumb(cache_dir: Path, key: str, *,
+                      write: bool = True) -> bytes | None:
     """Render and cache the thumbnail for one mesh cache key.
 
     Returns the PNG bytes, or **None** when there is no mesh on disk for *key*,
@@ -143,6 +167,10 @@ def render_part_thumb(cache_dir: Path, key: str) -> bytes | None:
     preference. The write is atomic (``_atomic_write``
     stages through a random name), so a concurrent renderer of the same key
     loses rather than corrupts — and both wrote the same bytes anyway.
+
+    ``write=False`` renders and returns the bytes without caching them — the
+    over-budget path (`may_write`). It is a caller's decision, not this
+    function's, because this one is handed a directory and knows no project.
     """
     cache_dir = Path(cache_dir)
     mesh_file = mesh_for_key(cache_dir, key)
@@ -156,7 +184,8 @@ def render_part_thumb(cache_dir: Path, key: str) -> bytes | None:
     if not _has_triangles(meshes) or _too_many_triangles(meshes):
         return None
     png = _render(meshes)
-    ProjectStore._atomic_write(thumb_path(cache_dir, key), png)
+    if write:
+        ProjectStore._atomic_write(thumb_path(cache_dir, key), png)
     return png
 
 
@@ -201,7 +230,7 @@ def part_thumb(service, proj: str, part_id: str) -> tuple[bytes, str] | None:
             return path.read_bytes(), key
         except OSError:
             pass   # racing with the janitor: fall through and re-render
-    png = render_part_thumb(cache, key)
+    png = render_part_thumb(cache, key, write=may_write(service, proj))
     return (png, key) if png is not None else None
 
 
@@ -285,6 +314,19 @@ def _expand_linear(inst) -> list:
     ]
 
 
+def instance_rows(service, proj: str) -> list[tuple[dict, object]]:
+    """The public name for `_instance_rows`, and the reason it has one.
+
+    `assembly_key` and `assembly_thumb` both need this walk, and the assembly
+    route calls both — so an uncached hit used to walk every instance and hash
+    every distinct part's script **twice**. The route computes the rows once
+    and hands the same list to both; the two functions still fall back to
+    walking themselves when nobody passed any, because every other caller
+    (the dashboard's `has_thumb` neighbours, a test) has only a project name.
+    """
+    return _instance_rows(service, proj)
+
+
 def _instance_rows(service, proj: str) -> list[tuple[dict, object]]:
     """``(row, instance)`` for every instance whose mesh is already on disk.
 
@@ -335,7 +377,7 @@ def _digest(rows: list[dict]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
 
 
-def assembly_key(service, proj: str) -> str | None:
+def assembly_key(service, proj: str, rows=None) -> str | None:
     """Content id of the assembly composite, or None when nothing is built.
 
     It hashes exactly what the composite draws — each instance's mesh key, its
@@ -346,13 +388,14 @@ def assembly_key(service, proj: str) -> str | None:
     it from a previous response's ``ETag`` and the assembly route's ``?k=``
     has no first-load source the way a part's ``thumb_key`` does.
     """
-    rows = _instance_rows(service, proj)
+    if rows is None:
+        rows = _instance_rows(service, proj)
     if not rows:
         return None
     return _digest([row for row, _inst in rows])
 
 
-def assembly_thumb(service, proj: str) -> tuple[bytes, str] | None:
+def assembly_thumb(service, proj: str, rows=None) -> tuple[bytes, str] | None:
     """``(png, key)`` for the project's assembly, or None when nothing is built.
 
     Composites the placed instances (transform + colour, like `render_view`),
@@ -369,7 +412,8 @@ def assembly_thumb(service, proj: str) -> tuple[bytes, str] | None:
     anyway.
     """
     cache = service.store.cache_dir(proj)
-    rows = _instance_rows(service, proj)
+    if rows is None:
+        rows = _instance_rows(service, proj)
     if rows:
         key = _digest([row for row, _inst in rows])
         path = cache / f"{ASM_PREFIX}{key}.thumb.png"
@@ -395,7 +439,9 @@ def assembly_thumb(service, proj: str) -> tuple[bytes, str] | None:
         # from an <img> tag. Falling through to the part fallback is the answer.
         if _has_triangles(meshes) and not _too_many_triangles(meshes):
             png = _render(meshes)
-            ProjectStore._atomic_write(path, png)
+            # Serve it either way; cache it only under budget (`may_write`).
+            if may_write(service, proj):
+                ProjectStore._atomic_write(path, png)
             return png, key
 
     for entry in service.store.manifest(proj)["parts"][:_FALLBACK_SCAN]:
@@ -403,6 +449,25 @@ def assembly_thumb(service, proj: str) -> tuple[bytes, str] | None:
         if got is not None:
             return got
     return None
+
+
+def has_representation(service, proj: str, key: str) -> bool:
+    """Is there a picture we could serve for *key*? **is_file checks only.**
+
+    The `If-None-Match: *` gate (RFC 9110 §13.1.2): `*` matches only when the
+    resource HAS a current representation, and for a thumbnail that means
+    either the PNG is already cached or the mesh it would be rendered from is
+    on disk — exactly the two things `part_thumb` answers from. It renders
+    nothing and builds nothing, and `canonical_path_of` rather than
+    `cache_dir` because a *gate* must not mkdir into a project just by being
+    asked about it (the `has_thumb` rule).
+    """
+    try:
+        cache = service.store.canonical_path_of(proj) / ".cache"
+    except AppError:
+        return False
+    return (thumb_path(cache, key).is_file()
+            or mesh_for_key(cache, key) is not None)
 
 
 def has_thumb(service, proj: str) -> bool:
@@ -462,6 +527,7 @@ class ThumbnailWarmer:
             "skipped_exists": 0,    # already cached (the common case)
             "skipped_missing": 0,   # the mesh is gone (trimmed, or never built)
             "skipped_too_large": 0, # over render.MAX_TRIANGLES, or empty
+            "skipped_budget": 0,    # the project is at its disk budget
             "dropped": 0,           # evicted from a full queue, oldest first
             "failed": 0,            # the render raised; logged, never re-raised
         }
@@ -473,7 +539,6 @@ class ThumbnailWarmer:
         self._thread: threading.Thread | None = None
         self._queue: queue.Queue | None = None
         self._stop = threading.Event()
-        self._active = False
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -494,13 +559,26 @@ class ThumbnailWarmer:
         thread.start()
 
     def stop(self) -> None:
-        """Unsubscribe and join. Safe to call twice, and safe if never started."""
+        """Unsubscribe and join. Safe to call twice, and safe if never started.
+
+        ``_stop`` is set **before** ``_thread`` is cleared, and the order is
+        the whole of the fix: with it the other way round, a thread that
+        finished a cycle inside that window saw the flag still clear, went
+        back to blocking on `get()` — and only *then* did `stop()` put the
+        wake token into a queue it had already unsubscribed, so the join waited
+        out its full five seconds for a thread that was never going to notice.
+
+        After this returns, `drain()` still works: it sees ``_thread is None``
+        and renders the pending set **inline** in the caller's thread (that is
+        what `_render_pending(force=True)` is for — the stop flag must not
+        turn a synchronous drain into a silent no-op).
+        """
+        self._stop.set()
         with self._lock:
             thread, q = self._thread, self._queue
             self._thread = None
         if thread is None:
             return
-        self._stop.set()
         if q is not None:
             self.service.bus.unsubscribe(q)
             try:
@@ -564,7 +642,9 @@ class ThumbnailWarmer:
         this call is always consumed before it returns.
         """
         if self._thread is None:
-            self._render_pending()
+            # No thread — including after `stop()`, whose `_stop` flag would
+            # otherwise make this a no-op that reported success.
+            self._render_pending(force=True)
             return
         barrier = threading.Event()
         with self._lock:
@@ -589,8 +669,6 @@ class ThumbnailWarmer:
                 break
             if self._stop.is_set():
                 break
-            with self._lock:
-                self._active = True
             try:
                 self._absorb(event)
                 while True:
@@ -601,7 +679,6 @@ class ThumbnailWarmer:
                 self._render_pending()
             finally:
                 with self._lock:
-                    self._active = False
                     if q.empty() and not self._pending:
                         self._release_barriers()
 
@@ -620,8 +697,10 @@ class ThumbnailWarmer:
         if isinstance(proj, str) and isinstance(key, str) and proj and key:
             self.enqueue(proj, key)
 
-    def _render_pending(self) -> None:
-        while not self._stop.is_set():
+    def _render_pending(self, *, force: bool = False) -> None:
+        """Render everything queued. ``force`` ignores the stop flag — it is
+        the inline `drain()` path, which has no thread to stop."""
+        while force or not self._stop.is_set():
             with self._lock:
                 if not self._pending:
                     return
@@ -639,6 +718,13 @@ class ThumbnailWarmer:
             return
         if mesh_for_key(cache, key) is None:
             self.stats["skipped_missing"] += 1
+            return
+        if not may_write(self.service, proj):
+            # The warmer exists only to WRITE a file ahead of a reader, so
+            # over budget there is nothing for it to do: rendering into memory
+            # and dropping the bytes would spend the CPU for nothing. A route
+            # asked for the same picture still renders and serves it.
+            self.stats["skipped_budget"] += 1
             return
         try:
             png = render_part_thumb(cache, key)

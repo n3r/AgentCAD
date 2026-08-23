@@ -839,3 +839,124 @@ def test_a_real_check_run_leaves_no_thumbnail_thread(kernel, tmp_path,
     assert report["stages"]
     assert svc.thumbnails.started is False
     assert len(_warmer_threads()) == before
+
+
+# ======================================== the final review wave (M7/M10/M14/M15)
+
+def test_a_star_if_none_match_is_not_a_304_for_an_unbuilt_part(client):
+    """M14 — RFC 9110 §13.1.2: `If-None-Match: *` evaluates false when there is
+    NO current representation, so the request must proceed (to this route's
+    404). Answering 304 tells a client "the copy you hold is current" about a
+    picture that does not exist and never did.
+    """
+    svc = client.svc
+    svc.create_project("demo")
+    _add_part(svc)
+    star = {"If-None-Match": "*"}
+
+    assert client.get("/api/projects/demo/parts/box/thumb.png",
+                      headers=star).status_code == 404
+    assert client.get("/api/projects/demo/thumb.png",
+                      headers=star).status_code == 404
+
+    # ...and once there IS a representation, `*` matches it as it always did.
+    _build(svc)
+    assert client.get("/api/projects/demo/parts/box/thumb.png",
+                      headers=star).status_code == 304
+    svc.set_assembly("demo", [{"id": "a", "part": "box"}])
+    assert client.get("/api/projects/demo/thumb.png",
+                      headers=star).status_code == 304
+
+
+def test_the_assembly_route_walks_the_instances_once(client, monkeypatch):
+    """M7: `assembly_key` and `assembly_thumb` each walked every instance,
+    hashing every distinct part's script — twice per uncached hit."""
+    svc = client.svc
+    svc.create_project("demo")
+    _add_part(svc)
+    _build(svc)
+    svc.set_assembly("demo", [{"id": "a", "part": "box"}])
+
+    calls = []
+    real = thumbnails._instance_rows
+    monkeypatch.setattr(thumbnails, "_instance_rows",
+                        lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+
+    assert client.get("/api/projects/demo/thumb.png").status_code == 200
+    assert len(calls) == 1, f"walked the assembly {len(calls)} times"
+
+
+def test_a_thumbnail_is_not_written_while_the_project_is_over_budget(service):
+    """M15: a render is derived data written into `.cache/`, so it is subject
+    to the same disk budget every other write is — a full project must not be
+    made fuller by an `<img>` tag. The picture is still SERVED (rendered in
+    memory); it is only the caching write that is skipped.
+    """
+    key = _build(service)
+    cache = service.store.cache_dir("demo")
+    thumb = thumbnails.thumb_path(cache, key)
+    if thumb.is_file():
+        thumb.unlink()
+
+    service.store.disk_budget_mb = 0.000_001      # everything is over it
+    service.store._disk_memo.clear()
+
+    got = thumbnails.part_thumb(service, "demo", "box")
+    assert got is not None, "an over-budget project still gets its picture"
+    assert not thumb.is_file(), "...but nothing new was written into .cache"
+
+    # The warmer, whose whole job is to write, simply skips.
+    warmer = thumbnails.ThumbnailWarmer(service)
+    warmer.enqueue("demo", key)
+    warmer.drain()
+    assert warmer.stats["skipped_budget"] == 1
+    assert not thumb.is_file()
+
+    # Under budget again, the same call writes.
+    service.store.disk_budget_mb = None
+    service.store._disk_memo.clear()
+    assert thumbnails.part_thumb(service, "demo", "box") is not None
+    assert thumb.is_file()
+
+
+def test_an_existing_thumbnail_is_still_served_over_budget(service):
+    """Serving from a file already on disk writes nothing, so the budget has
+    no opinion about it."""
+    key = _build(service)
+    assert thumbnails.part_thumb(service, "demo", "box") is not None
+    thumb = thumbnails.thumb_path(service.store.cache_dir("demo"), key)
+    assert thumb.is_file()
+
+    service.store.disk_budget_mb = 0.000_001
+    service.store._disk_memo.clear()
+    png, served = thumbnails.part_thumb(service, "demo", "box")
+    assert served == key and png == thumb.read_bytes()
+
+
+def test_warmer_stop_sets_the_stop_flag_before_it_drops_the_thread(service):
+    """M10: `stop()` nulled `_thread` first, so a thread that finished a cycle
+    in that window saw `_stop` clear and went back to blocking on a queue
+    nobody would ever put to again — the join then waited out its whole
+    timeout. Set the flag first."""
+    source = pathlib.Path(thumbnails.__file__).read_text(encoding="utf-8")
+    body = source.split("    def stop(self)", 1)[1].split("\n    def ", 1)[0]
+    assert body.index("self._stop.set()") < body.index("self._thread = None")
+    # ...and the dead `_active` bookkeeping is gone (nothing ever read it).
+    assert "_active" not in source
+
+
+def test_drain_after_stop_still_drains(service):
+    """M10: `drain()` reads `self._thread is None` as "run inline", which is
+    exactly right after a `stop()` — but only if `stop()` really left it None
+    and the pending set is still drainable."""
+    key = _build(service)
+    thumb = thumbnails.thumb_path(service.store.cache_dir("demo"), key)
+    if thumb.is_file():
+        thumb.unlink()
+    warmer = thumbnails.ThumbnailWarmer(service)
+    warmer.start()
+    warmer.stop()
+    warmer.enqueue("demo", key)
+    warmer.drain(timeout=5.0)
+    assert warmer.pending_count() == 0
+    assert thumb.is_file()

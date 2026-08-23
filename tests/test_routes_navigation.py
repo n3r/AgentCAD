@@ -194,9 +194,14 @@ def test_the_route_answers_the_same_payload(http, demo):
 
 
 def test_the_route_is_registered_under_api(http):
-    paths = {r.path for r in http.app.routes if getattr(r, "path", None)}
-    assert "/api/dashboard" in paths or http.get(
-        "/api/dashboard").status_code == 200
+    """I5: `[r.path for r in app.routes]` sees the 23 routes `app.py` declares
+    and NONE of the ones a pack contributes — FastAPI leaves `include_router`
+    opaque — so this used to be carried entirely by the `or` after it, which
+    is a tautology (the route answering 200 is what "registered" means). The
+    house walker flattens the packs."""
+    from .conftest import flatten_routes
+
+    assert ("GET", "/api/dashboard") in flatten_routes(http.app)
 
 
 def test_the_dashboard_route_is_member_only():
@@ -243,3 +248,29 @@ def test_twenty_projects_answer_in_under_half_a_second(counted, tmp_path,
     with capsys.disabled():
         print(f"\ndashboard: 20 projects x 25 parts in {elapsed * 1000:.1f} ms")
     assert elapsed < 0.5, f"{elapsed:.3f}s"
+
+
+def test_the_naive_route_walk_would_not_have_seen_it(http):
+    """The other half of I5, stated once: the walk the test used to do sees
+    only what `app.py` declares itself."""
+    naive = {r.path for r in http.app.routes if getattr(r, "path", None)}
+    assert "/api/dashboard" not in naive
+
+
+def test_the_thumb_url_is_encoded(demo, tmp_path):
+    """M6: `list_projects` reports a DIRECTORY name and validates nothing, so
+    a folder called "my proj" is listed verbatim — and interpolated raw into
+    `/api/projects/{name}/thumb.png` it produced a URL with a space in it."""
+    import shutil
+
+    root = tmp_path / "projects"
+    shutil.copytree(root / "alpha", root / "my proj")
+    # something for `has_thumb` to find (an `.acm` is enough — it is a gate,
+    # not a render)
+    cache = root / "my proj" / ".cache"
+    cache.mkdir(exist_ok=True)
+    (cache / ("0" * 32 + ".acm")).write_bytes(b"not really a mesh")
+
+    payload = dashboard(demo)
+    card = row(payload, "my proj")
+    assert card["thumb"] == "/api/projects/my%20proj/thumb.png"

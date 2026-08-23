@@ -51,18 +51,29 @@ _IMMUTABLE = "private, max-age=31536000, immutable"
 _REVALIDATE = "no-cache"
 
 
-def _if_none_match(header: str | None, etag: str) -> bool:
+def _if_none_match(header: str | None, etag: str, has_representation) -> bool:
     """Does the client already hold this exact entity?
 
     RFC 9110 allows a comma-separated list and a weak `W/` prefix; both are
-    normalized away before comparing, and `*` matches anything we would serve.
+    normalized away before comparing.
+
+    ``*`` is the one entry that is not a comparison. RFC 9110 §13.1.2 is
+    explicit: it matches "if the *selected representation* exists", so for a
+    resource with **no** current representation the condition evaluates to
+    false and the request proceeds — here, to the 404 an unbuilt part deserves.
+    Answering 304 to it told a client that the copy it holds is current about a
+    picture that does not exist and never did. ``has_representation`` is a
+    callable, not a flag, so the `is_file` check it costs is only paid when a
+    request actually sends `*`.
     """
     if not header:
         return False
     for candidate in header.split(","):
         candidate = candidate.strip()
         if candidate == "*":
-            return True
+            if has_representation():
+                return True
+            continue          # another entry in the list may still match
         if candidate.startswith("W/"):
             candidate = candidate[2:]
         if candidate == etag:
@@ -79,7 +90,8 @@ def _headers(key: str, k: str | None) -> dict:
     }
 
 
-def _not_modified(key: str, k: str | None, request: Request) -> Response | None:
+def _not_modified(key: str, k: str | None, request: Request,
+                  has_representation=lambda: True) -> Response | None:
     """The 304, decided from the KEY ALONE — before anything is rendered.
 
     This is what makes the docstring's "cheap 304" true: resolving the key is a
@@ -89,7 +101,8 @@ def _not_modified(key: str, k: str | None, request: Request) -> Response | None:
     thumbnail is content-addressed, so the bytes the client holds for this key
     are the bytes for this key, permanently.
     """
-    if _if_none_match(request.headers.get("if-none-match"), f'"{key}"'):
+    if _if_none_match(request.headers.get("if-none-match"), f'"{key}"',
+                      has_representation):
         return Response(status_code=304, headers=_headers(key, k))
     return None
 
@@ -123,7 +136,9 @@ def build_router(service, registry) -> APIRouter:
         # Key first, so a revalidation costs no render and no file read. An
         # unknown part raises NotFoundError out of the record lookup here.
         key = thumbnails.part_key(service, proj, part_id)
-        early = _not_modified(key, k, request)
+        early = _not_modified(
+            key, k, request,
+            lambda: thumbnails.has_representation(service, proj, key))
         if early is not None:
             return early
         got = thumbnails.part_thumb(service, proj, part_id)
@@ -139,12 +154,18 @@ def build_router(service, registry) -> APIRouter:
         # `assembly_key` walks the manifest and stats the cache; it renders
         # nothing and reads no PNG. It is None when no placed instance is
         # built, in which case only the part fallback can name the key.
-        key = thumbnails.assembly_key(service, proj)
+        # ONE walk of the instances for both calls: `assembly_key` hashes
+        # every distinct part's script, and computing it twice per uncached hit
+        # was the whole cost of this route.
+        rows = thumbnails.instance_rows(service, proj)
+        key = thumbnails.assembly_key(service, proj, rows)
         if key is not None:
+            # A key at all means at least one instance's mesh is on disk, so a
+            # representation exists and `If-None-Match: *` matches it.
             early = _not_modified(key, k, request)
             if early is not None:
                 return early
-        got = thumbnails.assembly_thumb(service, proj)
+        got = thumbnails.assembly_thumb(service, proj, rows)
         if got is None:
             raise NotFoundError(
                 f"project {proj!r} has no built geometry to preview")

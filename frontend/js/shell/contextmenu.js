@@ -173,7 +173,12 @@ export function close() {
   if (entry.el.parentNode) entry.el.parentNode.removeChild(entry.el);
   const restore = entry.restore;
   if (restore && typeof restore.focus === "function" && restore.isConnected) {
-    restore.focus();
+    // `preventScroll` (X10): the element being restored to is a virtualized
+    // tree row, and the browser's default scroll-into-view jumps the list
+    // whenever the row has drifted out of the rendered window while the menu
+    // was open — the verb runs and the tree lurches. Focus without moving the
+    // scrollport, exactly as `tree.js`'s own `focusRowAt`/`focusTree` do.
+    restore.focus({preventScroll: true});
   }
   entry.resolve();
 }

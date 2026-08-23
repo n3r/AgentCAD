@@ -28,9 +28,10 @@ import { state, setState, onKeys } from "./state.js";
 import { api, clientId } from "./api.js";
 import {
   memberIdsOf, instanceTree, filterRows, folderTree, selectionAfter,
-  persistTree, readTree, treeKey, isFolderPath,
+  persistTree, readTree, treeKey, isFolderPath, partsInFolder,
+  pruneEmptyFolders,
 } from "./tree_model.js";
-import { hasFreeText, scriptOnly } from "./query_model.js";
+import { needsServer, scriptOnly } from "./query_model.js";
 import * as virtual from "./virtual_model.js";
 import * as contextmenu from "./shell/contextmenu.js";
 import * as dialogs from "./shell/dialogs.js";
@@ -43,6 +44,13 @@ export const ROW_HEIGHT = 28;
  *  applies on the keystroke; only free text needs the round trip, because only
  *  the server has the part scripts. */
 const SEARCH_DEBOUNCE_MS = 120;
+
+// Rows one server search asks for. It is `search.MAX_LIMIT`, deliberately at
+// the ceiling: the answer is authoritative for the current query, so what this
+// bounds is how much of a very large match set the tree can show — and when
+// the server's `total` says there was more, `truncationNotice` says so out
+// loud rather than quietly showing a prefix.
+const SEARCH_LIMIT = 500;
 
 let actions = null;
 let partsView = null;
@@ -61,12 +69,20 @@ const expanded = new Set();
 // `state.projectName` is what names its localStorage key.
 let treeState = {collapsed: [], emptyFolders: []};
 let treeStateProject = null;
+// Whether this project's restored `emptyFolders` have been checked against a
+// real parts list yet — see `pruneStoredFolders`.
+let treeStatePruned = false;
 
-// The last server answer for the current free-text query: the ids it named and
-// the snippets it carried. `null` means "no server answer applies" — either the
-// query has no free text or one is still in flight.
+// The last server answer for the CURRENT query: the ids it named, the
+// snippets it carried, its own `matched_on` evidence, and the total it counted
+// before the 500-row cap. `null` means "no server answer applies" — the query
+// does not need the server, or one is still in flight, or the last one failed.
+// It is cleared on EVERY query change, because an answer is an answer to one
+// query and to no other.
 let serverIds = null;
 let snippets = {};
+let serverEvidence = {};
+let serverTotal = 0;
 let searchSeq = 0;
 let searchTimer = null;
 // The two refusals the filter box can be showing. `parseError` is the client
@@ -194,13 +210,34 @@ function syncTreeState() {
     /* storage disabled: an all-expanded tree is the honest fallback */
   }
   treeState = readTree(raw);
+  treeStatePruned = false;
   clearTimeout(searchTimer);
   searchSeq += 1;                 // an answer still in flight is now stale
-  serverIds = null;
-  snippets = {};
+  clearServerAnswer();
   searchError = null;
   if (filterEl) filterEl.value = "";
   state.treeFilter = "";
+}
+
+/** Drop the restored "empty" folders no part occupies (X9).
+ *
+ *  **Once per project, and only when there is a listing to check against.**
+ *  The New folder… dialog promises a placeholder "is dropped on reload if it
+ *  is still empty" and `readTree` restored it unconditionally, so a folder
+ *  invented once came back forever. It cannot run inside `syncTreeState`:
+ *  that fires on the project switch, when `state.project` may still be null,
+ *  and pruning against an empty list would delete every folder a user had.
+ *  It must not run on every render either — a folder created *this* session
+ *  is empty by definition and has to survive until the page is reloaded. */
+function pruneStoredFolders(parts) {
+  if (treeStatePruned || !state.project || !Array.isArray(state.project.parts)) {
+    return;
+  }
+  treeStatePruned = true;
+  const kept = pruneEmptyFolders(treeState.emptyFolders, parts);
+  if (kept.length === treeState.emptyFolders.length) return;
+  treeState = {...treeState, emptyFolders: kept};
+  saveTreeState();
 }
 
 function saveTreeState() {
@@ -237,7 +274,13 @@ function toggleCollapsed(path, want) {
 function partRows() {
   const parts = (state.project && state.project.parts) || [];
   syncTreeState();
-  const opts = {ids: serverIds, collapsed: treeState.collapsed,
+  pruneStoredFolders(parts);
+  const opts = {ids: serverIds, evidence: serverEvidence,
+                // The server's answer for THIS query replaces the client's
+                // provisional one (X3): `serverIds` is only ever non-null for
+                // the current query, so its presence IS the condition.
+                authoritative: serverIds !== null,
+                collapsed: treeState.collapsed,
                 emptyFolders: treeState.emptyFolders};
   try {
     const answer = filterRows(parts, state.treeFilter || "", opts);
@@ -970,32 +1013,43 @@ export function focusFilter() {
 
 // ------------------------------------------------------------------ filter
 
+/** Forget the server's answer. It answered ONE query; the moment the text in
+ *  the box changes it is about a query nobody is asking any more. */
+function clearServerAnswer() {
+  serverIds = null;
+  snippets = {};
+  serverEvidence = {};
+  serverTotal = 0;
+}
+
 function onFilterInput() {
   const q = filterEl.value;
   clearTimeout(searchTimer);
   searchSeq += 1;                  // an in-flight answer is now stale
-  let free = false;
-  try {
-    free = hasFreeText(q);
-  } catch {
-    free = false;                  // the grammar refused; partRows() reports it
-  }
+  // ALWAYS, not only when the new query needs no server (X4). Keeping the old
+  // ids "until the new answer lands" left the previous query's rows in the
+  // list for a whole debounce — and for the whole session if the new call
+  // failed — and with an authoritative answer it would be actively wrong.
+  clearServerAnswer();
   searchError = null;              // it was about the PREVIOUS query
-  if (!free) {
-    serverIds = null;
-    snippets = {};
+  let server = false;
+  try {
+    server = needsServer(q);
+  } catch {
+    server = false;                // the grammar refused; partRows() reports it
   }
   // Synchronous: the client owns every metadata source, so the list moves on
-  // the keystroke and the server's script hits JOIN it 120 ms later.
+  // the keystroke and the server's answer REPLACES it 120 ms later.
   setState({treeFilter: q});
-  if (free) searchTimer = setTimeout(() => runServerSearch(q), SEARCH_DEBOUNCE_MS);
+  if (server) {
+    searchTimer = setTimeout(() => runServerSearch(q), SEARCH_DEBOUNCE_MS);
+  }
 }
 
 function clearFilter() {
   clearTimeout(searchTimer);
   searchSeq += 1;
-  serverIds = null;
-  snippets = {};
+  clearServerAnswer();
   searchError = null;
   if (filterEl) filterEl.value = "";
   setState({treeFilter: ""});
@@ -1007,21 +1061,47 @@ async function runServerSearch(q) {
   const seq = ++searchSeq;
   let payload;
   try {
-    payload = await api.searchParts(proj, q, 500);
+    payload = await api.searchParts(proj, q, SEARCH_LIMIT);
   } catch (err) {
     if (seq !== searchSeq) return;
+    // The call FAILED, so there is no answer — and the previous query's ids
+    // must not go on narrowing (or, worse, authoritatively deciding) the list
+    // indefinitely. Clear and repaint; the client's own matches stand, with
+    // the refusal under the box saying why there is nothing from the server.
+    clearServerAnswer();
     searchError = err && err.error ? err.error.message : String(err);
     renderFilterMessage();
+    render();
     return;
   }
+  // Sequence FIRST: an answer is consumed only when it answers the query in
+  // the box right now (X4).
   if (seq !== searchSeq || proj !== state.projectName) return;
   searchError = null;
   serverIds = (payload.parts || []).map((p) => p.id);
   snippets = {};
+  serverEvidence = {};
+  serverTotal = Number(payload.total) || serverIds.length;
   for (const p of payload.parts || []) {
     if (p.snippet) snippets[p.id] = p.snippet;
+    if (Array.isArray(p.matched_on)) serverEvidence[p.id] = p.matched_on;
   }
+  renderFilterMessage();
   render();
+}
+
+/** "showing the first 500 of 1 312 matches — narrow the query", or "".
+ *
+ *  The server caps a search at `SEARCH_LIMIT` rows and reports the true
+ *  `total` beside them, and with the answer AUTHORITATIVE that cap is a
+ *  silent truncation of the tree: a 900-part project matching a common word
+ *  showed 500 rows and said nothing about the other 400. Raising the cap is
+ *  not the fix (it moves the number, not the silence) — saying so is. Pure and
+ *  exported, because the arithmetic is the only part worth a test. */
+export function truncationNotice(total, shown, limit) {
+  return (Number(total) > Number(shown) && Number(shown) >= Number(limit))
+    ? `showing the first ${shown} of ${total} matches — narrow the query`
+    : "";
 }
 
 /** Paint whichever refusal is current. The client's parse error wins: it is
@@ -1029,12 +1109,18 @@ async function runServerSearch(q) {
  *  made for an earlier keystroke. */
 function renderFilterMessage() {
   if (!filterMsgEl) return;
-  const message = parseError || searchError || "";
+  // A REFUSAL is the invalid state (the box goes red and gets aria-invalid).
+  // The truncation notice is not a refusal — the answer is right, just
+  // partial — so it shares the line and marks nothing invalid.
+  const refusal = parseError || searchError || "";
+  const message = refusal
+    || truncationNotice(serverTotal, serverIds ? serverIds.length : 0,
+                        SEARCH_LIMIT);
   filterMsgEl.textContent = message;
   filterMsgEl.classList.toggle("hidden", !message);
   if (filterEl) {
-    filterEl.classList.toggle("invalid", !!message);
-    if (message) filterEl.setAttribute("aria-invalid", "true");
+    filterEl.classList.toggle("invalid", !!refusal);
+    if (refusal) filterEl.setAttribute("aria-invalid", "true");
     else filterEl.removeAttribute("aria-invalid");
   }
 }
@@ -1094,9 +1180,12 @@ function partMenuItems(row) {
 }
 
 function folderMenuItems(view, row) {
+  // From `state.project.parts`, never from `view.rows` (X7): the rendered rows
+  // are what is VISIBLE, so a collapsed folder contained zero parts and an
+  // expanded one missed everything inside a collapsed child — the menu offered
+  // "Move 12 parts" and moved four. Membership is a fact about the manifest.
   const ids = view.kind === "part"
-    ? view.rows.filter((r) => r.kind === "part"
-        && underFolder(r.part && r.part.folder, row.path)).map((r) => r.id)
+    ? partsInFolder((state.project && state.project.parts) || [], row.path)
     : [];
   return [
     {id: "toggle", label: row.collapsed ? "Expand" : "Collapse",
@@ -1119,14 +1208,6 @@ function instanceMenuItems(row) {
      run: () => moveInstance(row.id)},
     {id: "newfolder", label: "New folder…", run: () => newFolder()},
   ];
-}
-
-/** Is `folder` inside `path` (itself included)? Case-insensitive on segments,
- *  the way `navigation.py` matches folders. */
-function underFolder(folder, path) {
-  const have = String(folder || "").toLowerCase().split("/").filter(Boolean);
-  const want = String(path || "").toLowerCase().split("/").filter(Boolean);
-  return want.every((s, i) => have[i] === s);
 }
 
 // -------------------------------------------------------------- the verbs
@@ -1296,8 +1377,12 @@ export async function deleteParts(ids) {
     view: "bulk-delete-parts",
     title: `Delete ${ids.length} parts?`,
     body: `Deletes ${ids.join(", ")} and their script files.`,
-    note: "Assembly instances of these parts refuse the delete unless you "
-          + "confirm again — this is one undoable step either way.",
+    // The truth, and only the truth: this browser never sends `force`, so a
+    // part an assembly instance still uses is REFUSED (per part — the rest of
+    // the selection still lands, and the results dialog names which).
+    note: "A part an assembly instance still uses is refused — the instances "
+          + "are named in the results, and you clear or re-point them first. "
+          + "Whatever does land is one undoable step.",
     danger: true,
     confirmLabel: `Delete ${ids.length} parts`,
   });
@@ -1395,7 +1480,12 @@ async function runBulkOp(ids, op, args) {
  *  anything with a failed row goes to the results dialog `bulk.js` owns (a
  *  toast per item would be six toasts for a six-part selection). */
 export function reportBulk(result, op, args) {
-  const failed = (result.results || []).filter((r) => r && r.ok === false);
+  // `ok === false` is a row the write did not touch; `rebuilt === false` is a
+  // `material` row the write DID touch whose part then failed to build (X6).
+  // Both belong in the results dialog — the second one is the only place the
+  // build error is ever shown — but only the first one is "not applied".
+  const failed = (result.results || []).filter(
+    (r) => r && (r.ok === false || r.rebuilt === false));
   if (op !== "export") {
     // The write already landed; patch what we know rather than refetch.
     const applied = (result.results || []).filter((r) => r && r.ok !== false)
@@ -1530,10 +1620,24 @@ function moveTo(kind, ids, folder) {
       return !inst || !sameFolder(inst.folder, folder);
     });
     if (!moving.length) return;
-    Promise.all(moving.map((id) =>
-      api.patchInstance(state.projectName, id, {folder})))
+    // SEQUENTIAL, never `Promise.all` (M9). `PATCH …/instances/{id}` is a
+    // read-modify-write of the WHOLE instance list — the route reads
+    // `store.instances()`, edits one, and writes all of them back — so N of
+    // them in flight at once is N racing full-list replaces, and all but the
+    // last winner's edit is silently lost. The route now takes `service._lock`
+    // around that window, which makes the writes atomic; doing them one after
+    // another is what makes them CUMULATIVE. Ten instances is ten quick round
+    // trips, and the drag has already visually landed.
+    (async () => {
+      for (const id of moving) {
+        await api.patchInstance(state.projectName, id, {folder});
+      }
+    })()
       .then(() => actions.refreshProject())
-      .catch((err) => actions.toast(`Move failed: ${err.message}`, "error"));
+      .catch((err) => {
+        actions.toast(`Move failed: ${err.message}`, "error");
+        actions.refreshProject();   // some of them may have landed
+      });
     return;
   }
   const moving = movingIds(ids, folder);

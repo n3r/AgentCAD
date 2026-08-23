@@ -24,30 +24,42 @@ def build_router(service, registry) -> APIRouter:
         # predates the helper; PRD-027 §5 gave it a second writable key, which
         # is when a second opinion about body shape stops being affordable.
         body = await _object_body(request)
-        instances = service.store.instances(proj)
-        target = next((i for i in instances if i.id == instance_id), None)
-        if target is None:
-            raise NotFoundError(f"instance {instance_id!r} not found")
-        # The refusal is about the TRANSFORM, not the instance: a mate owns
-        # position/rotation, so setting one by hand would be overwritten on
-        # the next resolve. Filing the same instance in a folder — or
-        # recoloring it — touches nothing the mate computes (PRD-027 §5).
-        if ("position" in body or "rotation_deg" in body) and target.mate:
-            raise ConflictError(
-                f"instance {instance_id!r} is mate-driven; clear its mate before "
-                "setting an explicit transform"
-            )
-        if "position" in body:
-            target.position = validate_vec3(body["position"], "position")
-        if "rotation_deg" in body:
-            target.rotation_deg = validate_vec3(body["rotation_deg"], "rotation_deg")
-        if "color" in body:
-            target.color = body["color"]
-        if "folder" in body:
-            # `null` (and "") is root. Validated here as well as in the store
-            # so a bad path is a 422 naming it, before the whole-list write.
-            target.folder = normalize_folder(body["folder"])
-        service.store.set_instances(proj, instances)
+        # `set_instances` is a **full-list replace**, so read → mutate → write
+        # is a lost update the moment two of these overlap: a gizmo drag and a
+        # folder drop landing together would write one of the two lists whole
+        # and drop the other's edit entirely. `service._lock` is the service
+        # layer's serialization primitive for exactly this — `set_assembly`
+        # (service.py:631) takes it around the same `set_instances` call, and
+        # so does every store write reached through the service. It is an
+        # RLock, and the publish stays outside it (the house pattern: the
+        # history hook commits synchronously on `project_changed`).
+        with service._lock:
+            instances = service.store.instances(proj)
+            target = next((i for i in instances if i.id == instance_id), None)
+            if target is None:
+                raise NotFoundError(f"instance {instance_id!r} not found")
+            # The refusal is about the TRANSFORM, not the instance: a mate owns
+            # position/rotation, so setting one by hand would be overwritten on
+            # the next resolve. Filing the same instance in a folder — or
+            # recoloring it — touches nothing the mate computes (PRD-027 §5).
+            if ("position" in body or "rotation_deg" in body) and target.mate:
+                raise ConflictError(
+                    f"instance {instance_id!r} is mate-driven; clear its mate "
+                    "before setting an explicit transform"
+                )
+            if "position" in body:
+                target.position = validate_vec3(body["position"], "position")
+            if "rotation_deg" in body:
+                target.rotation_deg = validate_vec3(
+                    body["rotation_deg"], "rotation_deg")
+            if "color" in body:
+                target.color = body["color"]
+            if "folder" in body:
+                # `null` (and "") is root. Validated here as well as in the
+                # store so a bad path is a 422 naming it, before the
+                # whole-list write.
+                target.folder = normalize_folder(body["folder"])
+            service.store.set_instances(proj, instances)
         service.bus.publish({"type": "project_changed", "project": proj})
         return service.get_assembly(proj)
 

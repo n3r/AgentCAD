@@ -689,3 +689,161 @@ def test_missing_part_raises_notfound_outside_a_bulk(demo):
     service, _ = demo
     with pytest.raises(NotFoundError):
         service.store.remove_part("demo", "ghost")
+
+
+# ============================== C2/M16: a refusal must survive serialization
+#
+# `json.dumps(..., allow_nan=False)` is what Starlette serializes a response
+# with, so a NaN echoed into `details` — nested one level down inside a list or
+# an object a caller sent, where no schema type check looks — turned an honest
+# 200 refusal envelope into an HTTP 500.
+
+NAN = float("nan")
+INF = float("inf")
+
+NAN_CALLS = [
+    ("set_part_meta", {"project": "demo", "part_id": "a", "tags": [NAN]}),
+    ("set_part_meta", {"project": "demo", "part_id": "a", "tags": ["ok", INF]}),
+    ("bulk_part_op", {"project": "demo", "part_ids": [NAN], "op": "tag",
+                      "args": {"tags": ["x"]}}),
+    ("bulk_part_op", {"project": "demo", "part_ids": ["a"], "op": "material",
+                      "args": {"material": NAN}}),
+    ("bulk_part_op", {"project": "demo", "part_ids": ["a"], "op": "folder",
+                      "args": {"folder": NAN}}),
+    ("bulk_part_op", {"project": "demo", "part_ids": ["a"], "op": "tag",
+                      "args": {"tags": [NAN]}}),
+    ("bulk_part_op", {"project": "demo", "part_ids": ["a"], "op": "delete",
+                      "args": {"force": NAN}}),
+    ("bulk_part_op", {"project": "demo", "part_ids": ["a"], "op": "export",
+                      "args": {"format": "step", "tolerance": NAN}}),
+    ("bulk_part_op", {"project": "demo", "part_ids": ["a"], "op": "export",
+                      "args": {"format": "step", "tolerance": INF}}),
+    ("bulk_part_op", {"project": "demo", "part_ids": ["a"], "op": "export",
+                      "args": {"format": "step", "tolerance": 0}}),
+    ("bulk_part_op", {"project": "demo", "part_ids": ["a"], "op": "export",
+                      "args": {"format": "step", "tolerance": -1.0}}),
+    ("search_parts", {"project": "demo", "query": "", "filters": {"tag": INF}}),
+    ("search_parts", {"project": "demo", "query": "",
+                      "filters": {"folder": [NAN]}}),
+]
+
+
+@pytest.mark.parametrize("name,args", NAN_CALLS,
+                         ids=[f"{n}-{i}" for i, (n, _) in enumerate(NAN_CALLS)])
+def test_a_non_finite_number_is_a_refusal_not_a_500(demo, name, args):
+    _, registry = demo
+    result = registry.call(name, args)
+    assert result.get("error", {}).get("type") == "validation_error", result
+    # The exact serialization Starlette performs on the way out.
+    json.dumps(result, allow_nan=False)
+
+
+def test_a_refusal_caps_the_value_it_echoes(demo):
+    """M16: an echo is an amplifier — a caller who sends 1 MB of tag must not
+    get 1 MB back in the message AND another megabyte in `details`."""
+    _, registry = demo
+    huge = "x" * 1_000_000
+    result = registry.call("set_part_meta", {"project": "demo", "part_id": "a",
+                                             "tags": [huge]})
+    error = result["error"]
+    assert error["type"] == "validation_error"
+    assert len(json.dumps(error)) < 2_000
+    assert len(error["details"]["tag"]) <= 201
+
+
+def test_a_refusal_caps_the_object_it_echoes(demo):
+    """The same cap one level down: `{"args": args}` is a caller's object, and
+    a bulk refusal echoed the whole thing back."""
+    _, registry = demo
+    result = registry.call("bulk_part_op", {
+        "project": "demo", "part_ids": ["a"], "op": "material",
+        "args": {"material": ["u" * 1_000_000] * 50}})
+    assert result["error"]["type"] == "validation_error"
+    assert len(json.dumps(result["error"])) < 6_000
+    # capped by ITEMS as well as by characters
+    echoed = result["error"]["details"]["args"]["material"]
+    assert len(echoed) == 21 and echoed[-1] == "\u2026 and 30 more"
+
+
+def test_safe_caps_a_value_an_id_list_and_a_non_finite_float():
+    """M16/C2 at the unit: the one helper both modules echo through."""
+    from agentcad.core.navigation import _safe
+
+    assert _safe("x" * 1000) == "x" * 200 + "\u2026"
+    capped = _safe([f"p{i}" for i in range(400)])
+    assert len(capped) == 21 and capped[-1] == "\u2026 and 380 more"
+    assert _safe(float("nan")) == "nan"
+    assert _safe(float("inf")) == "inf"
+    assert _safe({"tags": [float("-inf")]}) == {"tags": ["-inf"]}
+    assert _safe(5) == 5 and _safe(True) is True and _safe(None) is None
+
+
+# ================================ X1: a bulk delete respects a colleague's claim
+
+def test_bulk_delete_refuses_the_whole_gesture_when_a_part_is_claimed(demo):
+    """X1: `remove_parts` saves the manifest outside any `write_scope`, so the
+    guard `save_manifest` calls saw no part and a PRD-008 claim never refused —
+    a bulk delete walked straight through another human's held part. Ruling 5
+    is the rule for every op: a colleague refuses the WHOLE call, before any
+    write."""
+    service, _ = demo
+
+    def guard(proj):
+        if locks.current_write_part() == "b":
+            raise ConflictError("b is claimed by someone else")
+
+    service.store.write_guard = guard
+    before = manifest_path(service).read_bytes()
+    with pytest.raises(ConflictError):
+        BulkExecutor(service).run("demo", ["a", "b"], "delete", {})
+    assert manifest_path(service).read_bytes() == before
+    assert {p["id"] for p in service.store.manifest("demo")["parts"]} \
+        >= {"a", "b"}
+    assert service.store.script_path("demo", "a").is_file()
+
+
+def test_a_claim_on_an_id_that_is_not_in_the_project_does_not_refuse(demo):
+    """An unknown id is a per-item row, not a claim: it holds nothing."""
+    service, _ = demo
+
+    def guard(proj):
+        if locks.current_write_part() == "ghost":
+            raise ConflictError("ghost is claimed")
+
+    service.store.write_guard = guard
+    out = BulkExecutor(service).run("demo", ["a", "ghost"], "delete", {})
+    assert out["applied"] == 1
+    assert [row["ok"] for row in out["results"]] == [True, False]
+
+
+# ============ X6: a row's `ok` is about the WRITE, never about the rebuild
+
+BROKEN_SCRIPT = '''\
+from build123d import *
+
+PARAMS = {}
+
+def build(p):
+    raise RuntimeError("boom")
+'''
+
+
+def test_a_failed_rebuild_does_not_unsay_a_material_write(demo):
+    """X6: the write landed and undo covers it, so the row is `ok: true`; the
+    build outcome is `rebuilt: false` plus the build error. Flipping `ok` said
+    "this part was not changed" about a part that WAS changed — and the bulk
+    bar derived its applied count from that flag."""
+    service, _ = demo
+    service.store.add_part("demo", "bad", "bad", "al6061", BROKEN_SCRIPT)
+
+    result = BulkExecutor(service).run("demo", ["a", "bad"], "material",
+                                       {"material": "steel_a36"})
+    rows = {row["id"]: row for row in result["results"]}
+    assert rows["a"]["ok"] is True and rows["a"]["rebuilt"] is True
+    assert rows["bad"]["ok"] is True, rows["bad"]
+    assert rows["bad"]["rebuilt"] is False
+    assert rows["bad"]["error"], "the build error is still on the row"
+    # the gesture landed, whole: two parts written, one undo step
+    assert result["applied"] == 2
+    assert result["ok"] is True
+    assert service.store.get_part("demo", "bad").material == "steel_a36"

@@ -72,7 +72,10 @@ export function close() {
   setState({dashboardOpen: false});
   if (restoreFocus && typeof restoreFocus.focus === "function"
       && restoreFocus.isConnected) {
-    restoreFocus.focus();
+    // `preventScroll` (X10): what the dashboard was opened from is often a
+    // tree row, and a virtualized row that scrolled out while the dashboard
+    // was up would drag the whole list to itself on the way back.
+    restoreFocus.focus({preventScroll: true});
   }
   restoreFocus = null;
   return true;
@@ -319,18 +322,49 @@ function actionCard(label, hint, run) {
 // menu and here.
 function newProjectCard() {
   return actionCard("New project…", "Create an empty project",
-                    () => actions.runAction("project.new"));
+                    () => runProjectAction("project.new"));
 }
 
 function openPathCard() {
   return actionCard("Open by path…", "A project directory not in the list",
-                    () => actions.runAction("project.open-path"));
+                    () => runProjectAction("project.open-path"));
+}
+
+/** Run one of the two project-making actions and then get out of the way (X8).
+ *
+ *  The card used to fire the action and forget it, so on a FIRST RUN — where
+ *  the dashboard is the whole app and `close()` refuses while no project is
+ *  open — the user created a project and went on looking at the dashboard,
+ *  with their new workbench behind it. Awaiting it is what makes "did this
+ *  actually open a project?" answerable: the name changed, so hide; it did
+ *  not (the dialog was cancelled, or the create failed and toasted), so stay
+ *  and refresh the listing instead, which is the honest outcome either way.
+ */
+async function runProjectAction(id) {
+  const before = state.projectName;
+  try {
+    await actions.runAction(id);
+  } catch {
+    /* the action toasts its own failure; the dashboard just stays up */
+  }
+  if (state.projectName && state.projectName !== before) hideForProject();
+  else await reload();
 }
 
 async function openProject(name) {
   if (name !== state.projectName) await actions.loadProject(name);
-  // Closed AFTER the load: `close()` refuses while no project is open, and a
-  // first run reaches this with `state.projectName` still null.
+  hideForProject();
+}
+
+/** Hide, having just opened a project.
+ *
+ *  Not `close()`: that one refuses while `state.projectName` is null, which
+ *  is precisely the state a first run clicks these cards in — the project
+ *  exists by the time we get here, but the guard reads as a refusal to a
+ *  reader and the ordering has bitten before. It also does not restore focus
+ *  to whatever the dashboard was opened from, because the workbench behind it
+ *  is a different project now. */
+function hideForProject() {
   host.classList.add("hidden");
   setState({dashboardOpen: false});
   restoreFocus = null;

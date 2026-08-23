@@ -647,3 +647,26 @@ def test_a_thousand_part_project_searches_cold_and_warm_within_budget(
 def test_the_module_never_imports_the_kernel():
     source = Path(search_mod.__file__).read_text(encoding="utf-8")
     assert "OCP" not in source and "build123d" not in source
+
+
+def test_a_refusal_never_echoes_a_value_that_is_not_json():
+    """C2: `{"tag": NaN}` is a filter object a caller can send — the registry's
+    type check only sees the object, not what is inside it — and a NaN echoed
+    into `details` raised inside Starlette's `allow_nan=False` serializer, i.e.
+    an HTTP 500 in place of a 422 refusal."""
+    from agentcad.core.search import _with_filters, field_term
+
+    for value in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValidationError) as exc:
+            field_term("tag", value)
+        json.dumps(exc.value.details, allow_nan=False)
+        assert exc.value.details["value"] == repr(value)
+
+        with pytest.raises(ValidationError) as exc:
+            _with_filters(parse(""), {"folder": [value]})
+        json.dumps(exc.value.details, allow_nan=False)
+
+    # ...and the same guard caps an echo that is merely enormous (M16).
+    with pytest.raises(ValidationError) as exc:
+        parse("x" * 500 + ' "unterminated')
+    assert len(exc.value.details["query"]) <= 201

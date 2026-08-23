@@ -617,6 +617,24 @@ class ProjectStore:
         Scoped like `write_script` and `update_part_entry`: the guard that
         `save_manifest` calls sees the part this write is about, so a PRD-008
         claim on it refuses.
+
+        **PRECONDITION — the caller MUST serialize this call**, exactly as
+        `update_parts_meta` documents. `write_scope` is the *claim* check, not
+        a mutex: this is an unserialized read-modify-write (manifest read →
+        guard → `save_manifest`), so a concurrent `set_params`,
+        `update_part_entry` or bulk op landing inside the window is silently
+        lost — both callers are told "ok" and one of the two writes is gone.
+        The caller holds::
+
+            with manifest_scope(service.store, proj), service._lock:
+                service.store.update_part_meta(proj, part_id, ...)
+
+        Both locks, outer-to-inner in that order (the `update_parts_meta`
+        docstring argues the order at length, and the reason this method does
+        not take `manifest_scope` itself is the same one: doing so would
+        invert the house acquisition order and deadlock against
+        `tools_configs.set_instance_config`). `tools_navigation.set_part_meta`
+        is the one caller and takes both.
         """
         # Validate before taking the scope: a malformed tag is the caller's
         # mistake, and it should not cost a claim check or a guard call.

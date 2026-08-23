@@ -186,25 +186,40 @@ export function resultRows(result) {
   const rows = (result && Array.isArray(result.results)) ? result.results : [];
   return rows.filter((r) => r && r.id != null).map((r) => ({
     id: String(r.id),
-    status: r.ok === false ? "failed" : "ok",
-    // The one column that says something per row: the refusal for a failed
-    // one, the written file for a successful export, nothing otherwise.
-    detail: r.ok === false && r.error
+    // THREE outcomes, not two (X6). A row's `ok` is about the WRITE: a
+    // `material` row whose part then failed to build is `ok: true` with
+    // `rebuilt: false`, and calling that "failed" told the reader their
+    // material had not been written when it had — and had already cost them
+    // an undo step. It is its own status, and it carries the build error.
+    status: r.ok === false ? "failed"
+      : (r.rebuilt === false ? "written, rebuild failed" : "ok"),
+    // The one column that says something per row: the refusal (or the build
+    // error) for a row that has one, the written file for a successful
+    // export, nothing otherwise.
+    detail: r.error
       ? `${r.error.type || "error"}: ${r.error.message || ""}`.trim()
       : (r.path ? String(r.path) : ""),
   }));
 }
 
-/** `4 of 6 parts applied · 2 failed` — the sentence over the table. */
+/** `4 of 6 parts applied · 2 failed` — the sentence over the table.
+ *
+ *  `applied` comes off the PAYLOAD, not off the rows: the server counts the
+ *  parts its write touched (`applied`), and deriving it here from row `ok`
+ *  drifted from that the moment `ok` stopped meaning "and it rebuilt" (X6).
+ *  Counting the rows is the fallback for a payload that has no `applied`. */
 export function resultSummary(result) {
   const rows = resultRows(result);
   const failed = rows.filter((r) => r.status === "failed").length;
-  const applied = rows.length - failed;
+  const stale = rows.filter((r) => r.status === "written, rebuild failed").length;
+  const applied = (result && typeof result.applied === "number")
+    ? result.applied : rows.length - failed;
   const op = (result && result.op) || "operation";
   const noun = `part${rows.length === 1 ? "" : "s"}`;
-  return failed
-    ? `${op}: ${applied} of ${rows.length} ${noun} applied · ${failed} failed`
-    : `${op}: ${applied} of ${rows.length} ${noun} applied`;
+  let line = `${op}: ${applied} of ${rows.length} ${noun} applied`;
+  if (failed) line += ` · ${failed} failed`;
+  if (stale) line += ` · ${stale} written but not rebuilt`;
+  return line;
 }
 
 /** The non-modal results table. Built as DOM, never as an HTML string: the
@@ -241,7 +256,7 @@ export function showResults(result) {
     id.className = "bulk-results-id";
     id.textContent = row.id;
     const status = document.createElement("td");
-    status.textContent = row.status === "failed" ? "failed" : "ok";
+    status.textContent = row.status;
     const detail = document.createElement("td");
     detail.className = "bulk-results-detail";
     detail.textContent = row.detail;

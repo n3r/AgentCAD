@@ -268,6 +268,30 @@ export function hasFreeText(query) {
     .some((t) => t.field === null || t.field === undefined);
 }
 
+/** Does this query need the SERVER to answer it *correctly*?
+ *
+ *  Two reasons, and only two:
+ *
+ *  * **free text** matches script bodies, which the browser does not have;
+ *  * **any `kind:` term**, which is the subtler one. `get_project` reports the
+ *    MANIFEST kind, so an installed package part arrives at the browser as
+ *    `"script"` — `kind:package` is *derived* server-side from the script's
+ *    provenance header, and the browser cannot see a script at all. The
+ *    client's answer to a `kind` term is therefore wrong in BOTH directions:
+ *    `kind:package` misses every package part, and `-kind:package` keeps
+ *    every one of them. So the query goes to the server, and when the answer
+ *    for the current query arrives it REPLACES the client's row set rather
+ *    than joining it (`tree_model.filterRows`'s `authoritative` option).
+ *
+ *  A string is parsed (and may therefore throw); a parsed query is read
+ *  directly. `hasFreeText` stays exactly what it says on the tin — the
+ *  snippet rule and the fixture parity tests both read it.
+ */
+export function needsServer(query) {
+  return asQuery(query).terms.some(
+    (t) => t.field === null || t.field === undefined || t.field === "kind");
+}
+
 // -------------------------------------------------------------- the matcher
 
 /** `matched_on` for a row, or `null` when the row is out.
@@ -417,6 +441,6 @@ export function isFolderPath(value) {
 }
 
 // Test seam — the node round-trip imports this and nothing else.
-export const __queryModel__ = {parse, asQuery, matches, hasFreeText, rank,
-                               scriptOnly, fieldTerm, folderMatches,
-                               isFolderPath, FIELDS};
+export const __queryModel__ = {parse, asQuery, matches, hasFreeText,
+                               needsServer, rank, scriptOnly, fieldTerm,
+                               folderMatches, isFolderPath, FIELDS};

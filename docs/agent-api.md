@@ -1744,7 +1744,7 @@ never start a rebuild. A part that has never been built is a result with
 | Tool | Arguments | Returns |
 |---|---|---|
 | `set_part_meta` | **project, part_id**, folder, tags | `{id, folder, tags}` — the part's metadata after the write. `folder` is a `/`-separated path of 1–8 segments matching `[A-Za-z0-9][A-Za-z0-9 _.-]{0,39}` with no leading/trailing space per segment (`Chassis/Left side`); case is kept as typed and matched case-insensitively. `tags` is a **full replacement** list, normalized on write (stripped, lowercased, de-duplicated keeping first-seen order) and then required to match `[a-z0-9][a-z0-9_.-]{0,31}`, max 32 per part; a tag still invalid afterwards is a `validation_error` naming it. **Omit** a key to leave that field alone; `folder: ""` (or `null`) files the part at the root and `tags: []` clears them. Omitting *both* is a read-back: it writes nothing and publishes nothing. One undoable step. |
-| `search_parts` | **project, query**, filters, limit | `{query, total, parts: [row]}` — see the grammar and the row shape below. `total` is every match, `parts` the first `limit` of them in rank order, so a caller can say "50 of 312" without asking twice. `limit` is 1–500, default 50. `filters` is an optional object ANDed with the query — `{tag, material, state, kind, folder}`, where `tag` also accepts a list that ANDs (`["a","b"]` means both) — so structured filtering needs no quoting. |
+| `search_parts` | **project, query**, filters, limit | `{query, total, parts: [row]}` — see the grammar and the row shape below. `total` is every match, `parts` the first `limit` of them in rank order, so a caller can say "50 of 312" without asking twice. `limit` is 1–500, default 50. `filters` is an optional object ANDed with the query — `{tag, material, state, kind, folder}`, where **every one of those keys** also accepts a list that ANDs (`tag: ["a","b"]` means both; `folder: ["A","B"]` means a folder under both, i.e. nothing) — so structured filtering needs no quoting. |
 | `bulk_part_op` | **project, part_ids, op**, args | `{op, ok, applied, results: [{id, ok, error?, …}], undo_label}` — one operation over many parts as **one** undoable step. `part_ids` is 1–500 ids (50 for `export`), de-duplicated keeping order. |
 
 **The query language**, verbatim — it is one constant (`agentcad.core.search.GRAMMAR`)
@@ -1823,8 +1823,11 @@ feeds the build cache key through the density, so a written material with no
 rebuild would leave the mesh, the badge and the mass computed against the old
 one). Those rebuilds publish `rebuild_*` only — never a second
 `project_changed`, which is what keeps the whole gesture at one undo step — and
-a part whose rebuild fails comes back as a row with `rebuilt: false` and
-`ok: false` carrying the build error. The write still landed.
+a part whose rebuild fails comes back as a row with `rebuilt: false` carrying
+the build error — and still `ok: true`, because a row's `ok` is about the
+**write**: the material is in the manifest, the publish went out and one undo
+takes it back. Read `applied` (and `rebuilt` per row), never a row's `ok`, to
+count what the gesture changed.
 
 Partial success is per-item **validity** only: an unknown id, or a part whose
 tags would go over the cap, is a `results` row with `ok: false` carrying an
@@ -1833,8 +1836,12 @@ the *gesture* — an unknown `op` or material, a malformed folder or tag, a
 selection over the bound, or a part another human has claimed — is an error
 envelope with **nothing written**. `delete` without `force` refuses per item
 with a `conflict_error` naming the assembly instances still using the part in
-`details.instances`; with `force` those instances (and anything mated to them)
-are removed in the same write.
+`details.instances`; with `force` those instances are removed in the same
+write — **unless one of them is still referenced by an instance that survives
+the delete** (a mate pointing at it, or an assembly interface export naming
+it), which refuses that part per item whatever `force` says, with the
+referencing ids in `details.referenced_by`. Force removes a part's own
+instances; it never rewrites somebody else's mate.
 
 **`get_project` grew three fields per part**, and they cost no kernel call:
 `folder` (`null` at the root), `tags` (`[]` when none), and `thumb_key` — the
