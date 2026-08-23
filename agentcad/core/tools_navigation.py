@@ -207,3 +207,71 @@ def register(registry, service) -> None:
         service.thumbnails = ThumbnailWarmer(service)
 
     # --- bulk (slice 4) ---
+
+    # Function-local, like the two blocks above (this file's three slices were
+    # written concurrently). `BulkExecutor` is stateless — a thin binding of
+    # `service` to the six ops — so it is constructed per call rather than
+    # installed on the service the way `search`/`thumbnails` are: nothing else
+    # holds a reference to it, and one less mutable attribute on the service is
+    # one less thing a rebuilt registry can strand.
+    from .navigation import MAX_BULK, MAX_BULK_EXPORT, OPS, BulkExecutor
+
+    def bulk_part_op(project: str, part_ids: list, op: str,
+                     args: dict | None = None) -> dict:
+        """Run one operation over many parts as ONE undoable step (FR5).
+
+        Partial success is per-item **validity** only: an unknown id or a part
+        whose tags would go over the cap is a ``results`` row with ``ok:
+        false``, and the rest of the selection still lands. A refusal of the
+        *gesture* — an unknown op or material, a malformed folder or tag, a
+        selection over the bound, or a part another human is holding — is an
+        error envelope with nothing written.
+        """
+        return BulkExecutor(service).run(project, part_ids, op, args)
+
+    registry.register(Tool(
+        "bulk_part_op",
+        "Apply one operation to many parts in a single undoable step — the "
+        "way to re-material, re-file, tag, export or delete a selection "
+        "without spending one undo entry per part. "
+        f"op: one of {', '.join(OPS)}. "
+        "args by op: material {material: '<id>'}; tag/untag {tags: [..]} "
+        "(added to / removed from each part's existing tags, normalized the "
+        "same way set_part_meta normalizes them); folder {folder: str|null} "
+        "(null or \"\" files the parts at the root — the key is REQUIRED); "
+        "export {format: 'step'|'stl'|'3mf', tolerance?: number}; "
+        "delete {force?: bool} (without force a part an assembly instance "
+        "still uses is refused per item and names the instances in "
+        "error.details.instances; with force those instances are removed in "
+        "the same write). "
+        f"part_ids: 1..{MAX_BULK} ids, de-duplicated keeping order "
+        f"(export is capped at {MAX_BULK_EXPORT} — each one is a kernel round "
+        "trip). "
+        "Returns {op, ok (every row ok), applied (parts the write touched), "
+        "results: [{id, ok, error?, ...}], undo_label}. The five manifest ops "
+        "are ONE manifest write, ONE project_changed and ONE undo step "
+        "labelled with undo_label; export changes no authored state and has "
+        "no undo entry. A part another client has claimed refuses the whole "
+        "call — partial success covers per-item validity, not a colleague.",
+        schema(
+            {
+                "project": {"type": "string", "description": "Project name"},
+                "part_ids": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": f"1..{MAX_BULK} part ids "
+                                   f"({MAX_BULK_EXPORT} for export); "
+                                   "duplicates are collapsed, order kept.",
+                },
+                "op": {"type": "string",
+                       "description": f"One of: {', '.join(OPS)}."},
+                # "object", never a JSON type LIST: the registry validator looks
+                # the type up in a dict and a list is unhashable (see `folder`
+                # above). An absent/None args is the empty object.
+                "args": {"type": "object",
+                         "description": "Operation arguments; see the "
+                                        "description for the shape per op."},
+            },
+            ["project", "part_ids", "op"],
+        ),
+        bulk_part_op,
+    ))

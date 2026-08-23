@@ -392,6 +392,146 @@ class ProjectStore:
         if script.is_file():
             script.unlink()
 
+    def remove_parts(
+        self, proj: str, part_ids: list[str], *, force: bool = False
+    ) -> dict:
+        """Delete MANY parts in ONE manifest write (PRD-027 FR5).
+
+        Returns ``{"removed": [ids], "errors": {id: payload},
+        "instances_removed": {part_id: [instance ids]}}`` — the instances keyed
+        by the part that took them, because that is what a bulk row reports
+        back to the person who pressed the button. Per-item validity, partial
+        success: an
+        unknown id and a part an assembly still uses are *rows*, not
+        exceptions, so one bad id in a fifty-part selection does not throw the
+        other forty-nine away. The single-part `remove_part` still raises —
+        it has one item, and a caller with one item wants the exception.
+
+        The single `save_manifest` is the point: one write is one
+        `project_changed` publish is one history snapshot is **one undo step**
+        (design ruling 4). Scripts are unlinked **after** it, so a crash
+        between the two leaves orphaned files rather than manifest entries
+        pointing at nothing.
+
+        ``force`` extends the write to the assembly: every instance of a
+        removed part is dropped in the same manifest RMW (a pattern instance
+        names its part the same way; a sub-assembly instance carries
+        ``part: ""`` and can never match).
+
+        **A dropped instance that something still points at is refused, not
+        written.** `set_instances` rejects a dangling ``mate.to_instance`` on
+        write — "so removing an anchor instance can't leave the whole assembly
+        unreadable" — and `set_assembly_interface` makes the same referential
+        check. Writing the manifest directly here would go around both and
+        leave a project whose next gizmo drag is a `ValidationError`. So the
+        drop set is checked against the *survivors* to a fixpoint (dropping
+        one part's instances can only ever create blockers, never clear them),
+        and a part whose instances are still referenced becomes a
+        `conflict_error` row naming what holds it in ``details.referenced_by``.
+
+        **Claims (PRD-008) are deliberately not consulted per part.** A part
+        removal is a whole-manifest write, and `presence.py`'s guard documents
+        exactly that case: "a whole-manifest write (add/remove part, assembly,
+        materials, restore, undo) is turn-locked ONLY, by design — a claim is
+        a part claim". `remove_part` takes no `write_scope`; neither does
+        this, so bulk delete is not stricter than the single delete it
+        mirrors. The metadata ops (`update_parts_meta`) are the ones a claim
+        guards, because those are genuinely per-part writes.
+
+        **PRECONDITION** — like `update_parts_meta`, this is an unserialized
+        read-modify-write. The caller holds
+        ``manifest_scope(store, proj)`` and ``service._lock``, outer to inner.
+        """
+        if not isinstance(part_ids, (list, tuple)) or any(
+                not isinstance(pid, str) for pid in part_ids):
+            raise ValidationError("part_ids must be an array of strings")
+        manifest = self.manifest(proj)
+        known = {p["id"] for p in manifest["parts"]}
+        instances = manifest["assembly"]["instances"]
+        interface = manifest["assembly"].get("interface") or {}
+
+        errors: dict[str, dict] = {}
+        candidates: list[str] = []
+        # Which instances each candidate part would take with it. Read once:
+        # the fixpoint below only ever removes candidates, never instances.
+        owned: dict[str, list[str]] = {}
+        for part_id in dict.fromkeys(part_ids):     # de-dup, order kept
+            if part_id not in known:
+                errors[part_id] = {
+                    "type": "notfound_error",
+                    "message": f"part {part_id!r} not found",
+                    "details": {"part": part_id},
+                }
+                continue
+            used_by = [i["id"] for i in instances if i.get("part") == part_id]
+            if used_by and not force:
+                errors[part_id] = {
+                    "type": "conflict_error",
+                    "message": f"part {part_id!r} is used by assembly "
+                               f"instance(s): {', '.join(used_by)}",
+                    "details": {"instances": used_by},
+                }
+                continue
+            owned[part_id] = used_by
+            candidates.append(part_id)
+
+        # Fixpoint: a survivor pointing INTO the drop set blocks the part that
+        # owns the target. Excluding that part returns its instances to the
+        # survivors, which can create new blockers — hence the loop.
+        while candidates:
+            dropping = {iid for pid in candidates for iid in owned[pid]}
+            held: dict[str, list[str]] = {}
+            for inst in instances:
+                if inst["id"] in dropping:
+                    continue
+                target = (inst.get("mate") or {}).get("to_instance")
+                if target in dropping:
+                    held.setdefault(target, []).append(inst["id"])
+            for name, spec in interface.items():
+                if isinstance(spec, dict) and spec.get("instance") in dropping:
+                    held.setdefault(spec["instance"], []).append(
+                        f"interface:{name}")
+            if not held:
+                break
+            blocked = False
+            for part_id in list(candidates):
+                by = sorted({who for iid in owned[part_id]
+                             for who in held.get(iid, [])})
+                if not by:
+                    continue
+                errors[part_id] = {
+                    "type": "conflict_error",
+                    "message": f"part {part_id!r}: instance(s) "
+                               f"{', '.join(owned[part_id])} are still "
+                               f"referenced by {', '.join(by)}",
+                    "details": {"instances": owned[part_id],
+                                "referenced_by": by},
+                }
+                candidates.remove(part_id)
+                blocked = True
+            if not blocked:                        # unreachable; never spin
+                break
+
+        dropping = {pid: owned[pid] for pid in candidates if owned[pid]}
+        if candidates:
+            gone = set(candidates)
+            manifest["parts"] = [p for p in manifest["parts"]
+                                 if p["id"] not in gone]
+            if dropping:
+                flat = {iid for ids in dropping.values() for iid in ids}
+                manifest["assembly"]["instances"] = [
+                    i for i in instances if i["id"] not in flat]
+            self.save_manifest(proj, manifest)
+            # AFTER the save (the `remove_part` order): the manifest is the
+            # record, and an orphaned script is recoverable while an entry
+            # pointing at a deleted file is not.
+            for part_id in candidates:
+                script = self.script_path(proj, part_id)
+                if script.is_file():
+                    script.unlink()
+        return {"removed": list(candidates), "errors": errors,
+                "instances_removed": dropping}
+
     def update_part_entry(
         self,
         proj: str,
