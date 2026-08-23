@@ -373,3 +373,12 @@ empty branch back to `(0.0, False)`): both kernel tests still fail without the
 guard and pass with it.
 
 `make test` — 5411 passed, 50 skipped (branch tip; the slow AC1 set separately: 41 passed — all 25 references still 1.0)
+
+## Follow-up (2026-08-23)
+
+Filed upstream with a standalone reproduction:
+<https://github.com/Open-Cascade-SAS/OCCT/issues/1496>. The reproduction
+refined the trigger once more: an equivalent cylinder+torus+cylinder solid
+built from primitives and fused does NOT reproduce — the lie is specific to
+`BRepOffsetAPI_MakePipeShell` output (its seam/face parametrization), not to
+tangent junctions in the abstract. `_bop.py`'s docstring carries the link.

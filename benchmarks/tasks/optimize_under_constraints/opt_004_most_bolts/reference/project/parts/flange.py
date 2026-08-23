@@ -24,7 +24,7 @@ PARAMS = {
                 "description": "Bore diameter (clears the chamber barrel)"},
     "flange_t": {"default": 14.0, "min": 5.0, "max": 50.0, "unit": "mm",
                  "description": "Flange thickness"},
-    "n_bolts": {"default": 8.0, "min": 4.0, "max": 24.0, "unit": "count",
+    "n_bolts": {"default": 8.0, "min": 4.0, "max": 48.0, "unit": "count",
                 "description": "Number of bolts on the bolt circle"},
     "bolt_d": {"default": 9.0, "min": 3.0, "max": 20.0, "unit": "mm",
                "description": "Bolt clearance hole diameter"},

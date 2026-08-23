@@ -1,6 +1,6 @@
 # PRD-017 — Interop pack: neutral formats done right
 
-- **Status:** pending
+- **Status:** completed
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
@@ -129,9 +129,11 @@ instances; the release bundle (PRD-015) exports AP242+PMI back out.
   part number from PRD-015 fields when present), explicit millimeter units,
   and colors: per-instance for assemblies, per-solid (from
   `set_solid_materials`-driven categories) for multi-solid parts.
-- FR5. The output is a conformant OPC package (validates against the 3MF
-  core schema in tests) and opens in the PrusaSlicer/Bambu/Orca lineage
-  with correct scale and names (manual verification once per release).
+- FR5. The output is a conformant OPC package — validated structurally
+  (OPC parts + core-namespace XML asserts, in tests; an XSD validator would
+  be a new dependency) and re-read via lib3mf, the 3MF Consortium's own
+  reader — and opens in the PrusaSlicer/Bambu/Orca lineage with correct
+  scale and names (manual verification once per release).
 
 **glTF / GLB**
 - FR6. `export_part`/`export_assembly` gain `gltf` (JSON+bin) and `glb`
@@ -171,9 +173,11 @@ instances; the release bundle (PRD-015) exports AP242+PMI back out.
 **Cross-cutting**
 - FR12. Every import/export result carries `fidelity` (FR3/FR9 shape);
   documentation states the translation matrix plainly: exact B-rep — STEP
-  only; PMI — STEP AP242 only; tessellation + colors + metadata — 3MF/
-  glTF/USD; parametric intent (PARAMS, scripts, constraints, specs) —
-  survives in **no** neutral format, by nature of the formats.
+  only; PMI — STEP AP242 only; tessellation + colors — 3MF/glTF/USD;
+  model metadata (title, designer, part number, creation date) — **3MF
+  only**, glTF/USD carry no metadata beyond a generator/up-axis breadcrumb;
+  parametric intent (PARAMS, scripts, constraints, specs) — survives in
+  **no** neutral format, by nature of the formats.
 
 ## Agent surface
 
@@ -243,14 +247,16 @@ guard. Events: imports publish the existing `project_changed`.
   and renders in the vendored Three.js loader with instance colors and
   poses matching `get_assembly` (test + browser check); two exports at the
   same state are byte-identical (test).
-- AC4. A 3MF export validates against the core schema, declares millimeter
-  units, and carries title/part-number metadata; a multi-solid part carries
-  per-solid colors (tests); it opens correctly scaled in PrusaSlicer
-  (manual, once per release).
+- AC4. A 3MF export is validated structurally (OPC parts + core-namespace
+  XML asserts) and re-read via lib3mf, declares millimeter units, and
+  carries title/part-number metadata; a multi-solid part carries per-solid
+  colors (tests); it opens correctly scaled in PrusaSlicer (manual, once
+  per release).
 - AC5. With `agentcad[usd]` installed, `usd` appears in the format enums
-  and exports a stage that `usdchecker`-equivalent validation accepts;
-  without the extra the format is absent from `GET /api/tools` schemas
-  (tests, FEM-gating pattern).
+  and exports a stage that opens and composes via `Usd.Stage.Open` with
+  structural asserts (`usd-core` ships no `ComplianceChecker`, so there is
+  no `usdchecker`-equivalent to run); without the extra the format is
+  absent from `GET /api/tools` schemas (tests, FEM-gating pattern).
 - AC6. Every interop result carries a `fidelity` block; the PMI-skip path
   (an FCF type the writer can't map) is exercised and reported, not
   dropped (test).

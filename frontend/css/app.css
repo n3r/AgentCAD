@@ -1610,6 +1610,20 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--accent-brig
 .dlg-error { font-size: 11px; color: var(--err-text); }
 .dlg-error:empty, .dlg-foot-error:empty { display: none; }
 
+/* PRD-017 import preview dialog: the uploaded STEP file's product list,
+   reusing the sidebar's `.row`/`.row-swatch`/`.row-badge` styling (tree.js)
+   so it reads as the same kind of list rather than a second visual language. */
+.import-tree {
+  margin-top: 10px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+.import-tree-row { cursor: default; }
+.import-tree-row:hover { background: var(--raised); }
+
 .dlg-foot {
   flex: none;
   display: flex;

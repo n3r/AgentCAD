@@ -235,7 +235,7 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 |---|---|---|
 | `get_metrics` | **project, part_id** | `{volume_mm3, mass_g, area_mm2, bbox, center_of_mass, is_valid, n_faces, n_edges, n_solids, solids?}` — `solids` (multi-solid parts only) is an index-ordered `[{label, volume_mm3, mass_g, bbox, center_of_mass}]`. |
 | `get_mesh_summary` | **project, part_id** | `{vertices, triangles, edges, bbox}` — statistics only, no binary buffer. |
-| `export_part` | **project, part_id, format**, tolerance, config | Writes `exports/<part_id>.<format>`; formats `step`, `stl`, `3mf`. With `config` it exports that declared configuration resolved purely to `exports/<part_id>_<config>.<format>` and echoes `config` in the result — pure means the part's own overrides are **not** in the file even when it is diverged, so omit `config` to export the working state. |
+| `export_part` | **project, part_id, format**, tolerance, config, pmi, metadata | Writes `exports/<part_id>.<format>`; formats `step`, `stl`, `3mf`, `gltf`, `glb`, plus `usd` **only when `agentcad[usd]` is installed** (the FEM gating rule — the enum entry and the behavior appear together, and without the extra `usd` is the ordinary unknown-format `validation_error` naming the formats that do exist). `step` carries the part's PMI as **AP242** whenever the part has any (`pmi: false` opts back out to plain geometry; a part with no PMI takes today's writer unchanged) — the result then also carries `pmi_attached: {dims, datums, fcf}`, `pmi_skipped`, `pmi_notes` and `schema`. `3mf` writes per-solid names/colors (from `set_solid_materials`) and stamps model metadata; `metadata` (3MF only) overrides five keys — `title`, `designer`, `description`, `creation_date`, `part_number` — and accepts the 3MF spellings (`Title`, `PartNumber`, `CreationDate`) too, while an unknown key is a `validation_error` listing the five. Only `title` (the part's label) and `designer` (`"AgentCAD"`) are **always** derived; `part_number` is stamped only when the part's BOM fields declare one, `creation_date` only when the project has resolved version history (both simply absent otherwise), and `description` has **no** derived default — it is stamped only when the caller passes one explicitly. `gltf`/`glb`/`usd` are converted **server-side** from the cached mesh — the conversion itself makes no kernel call, but it reads the mesh through `mesh_info`, which builds the part first when it is not already built or is stale, exactly as `get_part`'s mesh route does (`usd` writes `exports/<part_id>.usda`). Every result carries [`fidelity`](#interop-fidelity-and-the-translation-matrix). With `config` it exports that declared configuration resolved purely to `exports/<part_id>_<config>.<format>` and echoes `config` in the result — pure means the part's own overrides are **not** in the file even when it is diverged, so omit `config` to export the working state. |
 
 ### Assembly and mates
 
@@ -247,7 +247,7 @@ session's tool calls run under client identity `chat:<session>` (`chat` for
 | `add_subassembly` | **project, id, source**, position, rotation_deg | Instance another project as a sub-assembly (FR1). The source is resolved **read-only** (never written or rebuilt); its members flatten in under `<id>/<member>`, rigidly placed. A cross-project cycle is a `validation_error` with `details.cycle`. |
 | `set_assembly_interface` | **project, exports** | Declare which of a project's connectors are exported for mating from a parent (FR3). `exports` = map `name → {instance, connector}`; only exported names are matable when this project is instanced elsewhere. `{}` clears. |
 | `check_interference` | **project**, min_volume | Boolean-intersects every instance pair; `{pairs: [{a, b, volume_mm3}], checked, skipped_mesh?}` above the threshold. Runs over the **flattened** graph, so an 8-member bolt circle contributes 8 bodies. STL references are `skipped_mesh` (booleans on a mesh segfault OCCT). Each instance is measured at its **own** configuration's geometry. |
-| `export_assembly` | **project, format** | Whole placed assembly as `step` or `stl`. |
+| `export_assembly` | **project, format**, structured | Whole placed assembly (every instance at its resolved transform) to `exports/assembly.<format>`; formats `step`, `stl`, `3mf`, `gltf`, `glb`, plus `usd` with the extra. `step` is one **fused** solid unless `structured: true`, which writes a real STEP product tree — one product per unique part (deduplicated by owner project + part + configuration), one occurrence per instance, names and per-instance colors — the file a supplier can walk. `structured` on any other format is a `validation_error`: the mesh formats are already per-instance. `gltf`/`glb` deduplicate meshes (8 instances of one part are 1 mesh and 8 nodes) and carry per-instance colors; `3mf` writes one colored object per instance with the transform baked in. The export runs over the **expanded** assembly, so a pattern contributes its members and a sub-assembly its flattened parts. On `gltf`/`glb`/`usd` only, an instance that is not built, or whose mesh is not cached, becomes a `fidelity.instances_skipped` row rather than a silent omission — `step` (fused or `structured: true`), `stl` and `3mf` have no such row: a broken instance fails the whole export there. Every result carries [`fidelity`](#interop-fidelity-and-the-translation-matrix). |
 | `export_urdf` | **project**, name, mesh_format | Export the flattened assembly as a URDF robot description + one mesh per link under `exports/urdf/<name>/`. Mates map to joints: rigid→`fixed`, revolute→`revolute` (limits from `range`, `continuous` when unbounded), slider→`prismatic`; planar/cylindrical/ball degrade to `fixed` + a named warning (planar URDF needs the plane normal as its axis — Phase 2); an unmated instance becomes a `fixed` child of `world` + a warning. Link inertia is parallel-axis-shifted to each COM. Returns `{path, links, joints, warnings}`. |
 | `set_mate` | **project, instance, connector, to_instance, to_connector**, angle_deg, offset_mm, dof | Constrain `instance` to `to_instance` via named connectors declared by a part's `connectors(p, part)`. The moving-side `connector` must be *rigid*; the anchor `to_connector` may be rigid/revolute/cylindrical/**slider/planar**. `angle_deg`/`offset_mm` are shorthand; the general `dof` object drives `{offset_mm}` (slider `position`), `{u_mm, v_mm, spin_deg}` (planar), or `{angle_deg}`. **Out-of-range DOFs clamp to the connector's range with a `dof_clamped` warning — they never raise.** When the anchor is a sub-assembly, `to_connector` names an exported **interface** connector; a non-exported name is a `validation_error` with `details.interface`. Returns the updated assembly. |
 | `clear_mate` | **project, instance** | Removes the instance's mate; it reverts to its explicit position/rotation. Returns the updated assembly. |
@@ -278,7 +278,71 @@ config-pinned/packaged sources (Phase 3).
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `import_cad_file` | **project, source, part_id**, label, material | Imports `.step`/`.stp`/`.brep`/`.stl` as a *reference* part (no script; placeable in assemblies, and — STEP/BREP only — usable in booleans). `source` is an absolute path to ingest, or the basename of a file already uploaded via `POST /api/projects/{proj}/imports`. Returns `{part: <detail>, imported: {source, n_solids, is_valid, mesh_only, warnings}}`. |
+| `import_cad_file` | **project, source**, part_id, label, material, structured, prefix | Imports `.step`/`.stp`/`.brep`/`.stl` as *reference* part(s) (no script; placeable in assemblies, and — STEP/BREP only — usable in booleans). `source` is an absolute path to ingest, or the basename of a file already uploaded via `POST /api/projects/{proj}/imports`. **Two landings.** *Structured* (a STEP with a product tree): one reference part per **unique** product — 8 occurrences of one screw are 1 part — plus one assembly instance per occurrence with its **composed** transform and its color, ids slugged from the product/occurrence names (`prefix` prepended, collisions suffixed `_2`, `_3`, … deterministically and reported in `warnings`), the original names kept as the part's `label` and its `source_label`. Returns `{parts, instances, tree, warnings, fidelity}`. *Flat* (today's behavior, byte for byte): one reference part for the whole file, returning `{part, imported: {source, n_solids, is_valid, mesh_only, warnings}, warnings, fidelity}`. **`part_id` is required only for a flat import** — a structured one derives its ids from the file, and a `part_id`/`label` passed to it is reported ignored rather than silently dropped. `structured` defaults to **auto**: a STEP is read structurally when it has more than one occurrence *and* something in it is named (an occurrence name, or more than one distinct product name) — AgentCAD's own multi-solid STEP export reads back as N anonymous occurrences of N products all called `SOLID`, and a count-only rule would explode a re-imported widget into N parts. `structured: true`/`false` overrides in either direction; `true` on a `.stl`/`.brep` is a `validation_error` (a mesh has no product tree), and a STEP the walk cannot read falls back to flat with the reason in `warnings`. A malformed or unreadable file that fails outright is a `validation_error` carrying `details.stage` — `"parse"` when the file itself could not be read, `"map"` when it read but the walk that turns it into a product tree could not — so a caller can tell a corrupt upload from a structurally-unmappable one. Deep trees flatten to one instance level in v1 (transforms composed). The 100 MB cap and the extension gate are unchanged. |
+
+`POST /api/projects/{proj}/imports/{name}/preview` returns the uploaded file's
+product tree — `{products, occurrences, tree, counts: {products, occurrences},
+warnings}` — **read-only**: no parts, no instances, no `.brep` materialization.
+It is the same walk `import_cad_file`'s auto-detect runs, and what the browser's
+import dialog asks before offering the structured landing. A filename that is
+not previewable is 422, a missing file 404, and a file the walk cannot read is
+502 with the worker's own error type.
+
+### Interop: fidelity and the translation matrix
+
+**Every** import and export result carries a `fidelity` block naming what
+survived the translation — attached at the tool layer, on delegated paths too,
+because "the export succeeded" and "the export kept your tolerances" are
+different sentences. An axis the format cannot express is **absent** rather
+than `"none"`: "STL has no PMI" is not news, "your STEP dropped a datum" is.
+`parametric: "none"` is on every one of them.
+
+| Call | `fidelity` |
+|---|---|
+| `export_part` `step`, part has PMI | `{geometry: "brep", pmi: "attached", pmi_skipped: [{id, reason}], pmi_notes: [...], parametric: "none"}` |
+| `export_part` `step`, `pmi: false` | `{geometry: "brep", pmi: "opted_out", parametric: "none"}` |
+| `export_part`/`export_assembly` `step` (no PMI / fused) | `{geometry: "brep", pmi: "none", parametric: "none"}` |
+| `export_assembly` `step`, `structured: true` | `{geometry: "brep", structure: "tree", colors: "per_instance", parametric: "none"}` — no `pmi` axis at all: the AP242 PMI writer is the single-part path, and `pmi: "none"` here would read as "yours was dropped" |
+| `stl` (part or assembly) | `{geometry: "mesh", parametric: "none"}` |
+| `3mf` | `{geometry: "mesh", colors: "per_solid"\|"per_instance"\|"none", metadata: "attached"\|"none", parametric: "none"}` |
+| `gltf`/`glb`/`usd` | `{geometry: "mesh", colors: "per_instance", parametric: "none"}` (+ `instances_skipped: [{id, reason}]` on an assembly export that could not place an instance) |
+| `import_cad_file` | `{geometry: "brep"\|"mesh", structure: "tree"\|"flat", colors: "per_instance"\|"none", pmi: "not_read", parametric: "none"}` |
+
+`pmi_skipped` is FR3's honesty valve: an entry the AP242 writer cannot map (a
+diameter dimension on a part with no cylindrical face, a datum with no planar
+face, a dimension type blocklisted because it crashes OCCT's writer) is
+reported with a reason and the rest of the PMI still attaches — the export
+succeeds, and the caller learns their bore tolerance did not travel.
+`pmi_notes` records substitutions made to keep the file honest (an
+FCF-only part gets one untoleranced overall-size dimension, because an XCAF
+document with no dimension mints **metre** units for every tolerance measure).
+
+**The translation matrix**, plainly:
+
+| What | Where it survives |
+|---|---|
+| Exact B-rep | **STEP only** (export). `.brep` is an *import*-side materialization format for a reference part, not something `export_part`/`export_assembly` can write. |
+| PMI / GD&T (dims, datums, feature control frames) | **STEP AP242, export only.** PMI is never read *back* out of a foreign file — an import reports `pmi: "not_read"`, not `"none"`. |
+| Tessellation + colors | **3MF, glTF/GLB, USD.** Structured STEP carries per-instance colors too; STL carries neither. |
+| Metadata (title, designer, part number, creation date) | **3MF only.** glTF and USD carry no model-metadata fields — only a generator/`creator` breadcrumb and the up-axis declaration, in `asset.extras`/`customLayerData`, not the 3MF keys. |
+| Parametric intent — `PARAMS`, the script, sketch constraints, `SPECS`, configurations | **No neutral format**, by the nature of the formats. That is not a gap we are closing; it is why the project is the source of truth and an export is a compiled artifact of one version. |
+
+**Determinism.** glTF/GLB and USD are byte-identical across two exports of the
+same state (stable ordering, fixed float rounding, no timestamp) — cacheable
+and diffable by content hash. **3MF is not and never will be**: lib3mf mints a
+fresh `p:UUID` per object per write, so nothing content-hashes a 3MF (the DXF
+precedent). Its one date, `CreationDate`, is PRD-014's resolved *version* date
+— the same string a drawing's title block prints for that state — never a wall
+clock, and omitted entirely when a project has no history.
+
+**Known gap: the CLI export surface is narrower than the tool.** `agentcad
+export` (`cli.py`'s `cmd_export`) calls `service.export_part` directly,
+without running `build_registry` first — so `tools_xchange`'s wrapping never
+applies. It offers only `--format step|stl|3mf` (the plain, PMI-less,
+metadata-less writers) and never `gltf`/`glb`/`usd`, `pmi`, or a `fidelity`
+block; there is no CLI assembly-export subcommand at all. This is an
+intentional v1 surface split (the MCP/HTTP tool surface is where this PRD's
+work landed), noted here as follow-up material rather than fixed silently.
 
 ### Drawings and analysis
 

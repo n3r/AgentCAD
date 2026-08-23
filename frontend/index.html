@@ -95,13 +95,14 @@
       </button>
       <div id="export-menu" class="menu right hidden" role="menu">
         <div class="menu-label">Part</div>
-        <button class="menu-item" data-export="part:step">STEP <span class="meta">.step</span></button>
-        <button class="menu-item" data-export="part:stl">STL <span class="meta">.stl</span></button>
-        <button class="menu-item" data-export="part:3mf">3MF <span class="meta">.3mf</span></button>
+        <!-- PRD-017: rebuilt from the action registry (main.js's
+             `renderExportSection`) every time this menu opens, so a format
+             the live tool schema adds (gltf/glb here, usd/3mf later) needs no
+             second copy of the format list in this file. -->
+        <div id="export-part-items"></div>
         <div class="menu-sep"></div>
         <div class="menu-label">Assembly</div>
-        <button class="menu-item" data-export="assembly:step">STEP <span class="meta">.step</span></button>
-        <button class="menu-item" data-export="assembly:stl">STL <span class="meta">.stl</span></button>
+        <div id="export-assembly-items"></div>
         <div class="menu-sep"></div>
         <div class="menu-label">Drawing</div>
         <button class="menu-item" data-drawing="svg">SVG preview <span class="meta">.svg</span></button>

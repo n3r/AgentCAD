@@ -1151,7 +1151,25 @@ class SpecRunner:
     def _eval_clearance(self, proj: str, declaration: dict,
                         deadline: float | None = None) -> dict:
         options = declaration.get("options") or {}
-        minimum = (declaration.get("limit") or {}).get("min_mm")
+        limit = declaration.get("limit") or {}
+        minimum = limit.get("min_mm")
+        # The upper bound is evaluated HERE, not in the kernel: the worker
+        # already returns ``distance_mm``, so the second comparison is
+        # arithmetic on a number that has crossed the boundary — it needs no
+        # protocol change, no new field on the request, and no version skew
+        # between a running worker and a server that learned about ``max_mm``.
+        # The minimum keeps deferring to the worker's ``ok`` so a one-sided
+        # declaration takes byte-for-byte the path it always took.
+        maximum = limit.get("max_mm")
+        if minimum is None:
+            # A hand-edited declaration with only ``max_mm``. Without this the
+            # row reports two ways for one defect: a clean-looking ``fail``
+            # when the distance is over the maximum, and a raw ``TypeError``
+            # from ``_fmt(None)`` (caught by the evaluator dispatch) otherwise.
+            # One named error, before any kernel call.
+            return _error_row(
+                "clearance declares no min_mm; declare it with check_clearance",
+                {"limit": dict(limit)})
         try:
             resolved = {i.id: i for i in self.service._resolved_instances(
                 proj, timeout_s=self._mate_timeout(deadline))}
@@ -1191,11 +1209,19 @@ class SpecRunner:
                    "point_b": result.get("point_b")}
         row = {"measured": distance, "details": details,
                "location": result.get("point_a")}
+        if maximum is not None and distance > maximum + _slack(maximum):
+            return {**row, "status": "fail",
+                    "message": f"{options['a']} to {options['b']} is "
+                               f"{_fmt(distance)} mm, above the "
+                               f"{_fmt(maximum)} mm maximum — the parts are "
+                               f"not seated"}
         if result.get("ok"):
+            within = (f"within [{_fmt(minimum)}, {_fmt(maximum)}] mm"
+                      if maximum is not None else
+                      f"at or above the {_fmt(minimum)} mm minimum")
             return {**row, "status": "pass",
                     "message": f"{options['a']} to {options['b']} is "
-                               f"{_fmt(distance)} mm, at or above the "
-                               f"{_fmt(minimum)} mm minimum"}
+                               f"{_fmt(distance)} mm, {within}"}
         return {**row, "status": "fail",
                 "message": f"{options['a']} to {options['b']} is "
                            f"{_fmt(distance)} mm, below the "

@@ -934,7 +934,7 @@ lands only when its measurement exists (`clearance` was the one new one).
 | Project scope (in a root `specs.py`) | Asserts |
 |---|---|
 | `check_interference_free(min_volume_mm3=0.001)` | no two placed instances overlap |
-| `check_clearance(a, b, min_mm)` | minimum distance between two placed instances |
+| `check_clearance(a, b, min_mm, max_mm=None)` | distance between two placed instances: at least `min_mm`, and at most `max_mm` when given |
 | `check_stackup(from_instance, to_instance, axis, within)` | the 1-D worst-case tolerance stack-up (PMI dims) along a mate chain |
 
 Every constructor takes `name=` (a default is derived: `wall_min`, `mass_max`,
@@ -985,6 +985,12 @@ evaluates to `skip`/`fem_extra_missing` there; skips are data, never hidden.
   handed** (it gets a copy, and predicates are evaluated after the built-in
   checks precisely so a mutating one cannot change their verdicts) and must not
   depend on evaluation order.
+- **`check_clearance`'s `max_mm` is what makes it a *placement* check.**
+  `min_mm` alone is a floor, and a floor is satisfied by moving the two
+  instances further apart — 500 mm apart passes every one-sided
+  clearance a project can declare. Give `max_mm` (strictly greater than
+  `min_mm`) when the intent is "seated": the pair then has to be *close*
+  as well as clear, and a fail names the bound it broke.
 - **`check_clearance` against an imported STL is not measured.** An STL is one
   welded mesh face with no B-rep to measure a distance against, so the check is
   a `skip`/`mesh_only` in a report — and a **fail** in a proposal's `specs`
