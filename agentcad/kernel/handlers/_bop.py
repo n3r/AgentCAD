@@ -94,7 +94,10 @@ SUSPECT_OVERLAP_FRACTION = 0.5
 #: The default volume below which a rechecked octant is noise rather than a
 #: disagreement, used when the caller declares no threshold of its own (the
 #: bench ``iou`` path). Deliberately the same 0.001 mm3 that
-#: ``worker.pairwise_interference`` defaults ``min_volume`` to.
+#: ``worker.pairwise_interference`` defaults ``min_volume`` to. The flip side:
+#: a part genuinely smaller than 0.001 mm3 sits under the detector's floor and
+#: a degenerate empty against it goes undetected — accepted, since no real
+#: part is a sub-(0.1 mm)^3 solid.
 DEGENERATE_MIN_VOLUME_MM3 = 0.001
 
 #: A hard floor under the caller's threshold, so a caller asking for
