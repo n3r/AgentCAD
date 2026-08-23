@@ -1,6 +1,6 @@
 # PRD-027 — Project, part & assembly navigation at scale
 
-- **Status:** in-progress (design spec + plan: `docs/superpowers/specs/2026-08-23-project-navigation-scale-design.md`, `docs/superpowers/plans/2026-08-23-project-navigation-scale.md`)
+- **Status:** completed (PR #34, merged 2026-08-23 as `bf3b41a`) — MVP + Phase 2 shipped; Phase 3 (sub-assembly nesting, pattern member rows, 1k-instance certification) deferred. Design: `docs/superpowers/specs/2026-08-23-project-navigation-scale-design.md`; plan: `docs/superpowers/plans/2026-08-23-project-navigation-scale.md`; changelogs 0331–0339.
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** founder idea #5 (Aug 2026), engineering-reviewed
