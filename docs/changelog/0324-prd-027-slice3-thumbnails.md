@@ -1,4 +1,4 @@
-# 0310 — 2026-08-23 — PRD-027 slice 3: content-addressed thumbnails, the warmer, `thumb.png` routes, `rebuild_finished.cache_key`
+# 0324 — 2026-08-23 — PRD-027 slice 3: content-addressed thumbnails, the warmer, `thumb.png` routes, `rebuild_finished.cache_key`
 
 - **Commit:** pending
 - **Date:** 2026-08-23
@@ -9,7 +9,7 @@
 Per-part and per-assembly 192² iso thumbnails rendered server-side from the
 meshes that already exist (FR4/G3), keyed by the build cache key, pre-warmed
 by a bus subscriber and rendered on demand — never building. Design §3.
-Landed in one commit with slice 2 (0309): both slices edit their own anchored
+Landed in one commit with slice 2 (0323): both slices edit their own anchored
 block of `tools_navigation.py`.
 
 ## Changes

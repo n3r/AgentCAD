@@ -1,4 +1,4 @@
-# 0312 — 2026-08-23 — PRD-027 slice 5: `query_model` (the parity port), folder tree / filter / selection models, `virtual_model`, the context-menu primitive
+# 0326 — 2026-08-23 — PRD-027 slice 5: `query_model` (the parity port), folder tree / filter / selection models, `virtual_model`, the context-menu primitive
 
 - **Commit:** pending
 - **Date:** 2026-08-23
@@ -10,7 +10,7 @@ The pure, node-tested half of the new sidebar: a byte-equivalent port of the
 search grammar and matcher, the folder tree / filter / multi-selection /
 persisted-collapse models, a virtual-window model, and a context-menu shell
 primitive. No DOM module changes yet (slice 6). Design §2 (client half), §7.
-Landed in one commit with slice 4 (0311).
+Landed in one commit with slice 4 (0325).
 
 ## Changes
 

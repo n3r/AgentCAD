@@ -1,4 +1,4 @@
-# 0307 — 2026-08-23 — PRD-027 Navigation at scale: design spec + slice plan, PRD moved to in-progress
+# 0321 — 2026-08-23 — PRD-027 Navigation at scale: design spec + slice plan, PRD moved to in-progress
 
 - **Commit:** pending
 - **Date:** 2026-08-23
@@ -48,7 +48,7 @@ No code changes.
 - `docs/superpowers/plans/2026-08-23-project-navigation-scale.md` — new
 - `docs/prd/in-progress/PRD-027-project-navigation-scale.md` — moved + status
 - `docs/roadmap.md` — index row
-- `docs/changelog/0307-prd-027-design.md` — this entry
+- `docs/changelog/0321-prd-027-design.md` — this entry
 
 ## Notes
 
