@@ -23,6 +23,11 @@ What this pack routes:
 
 * ``gltf``/``glb`` — **server-side**, from the ACM1 mesh cache
   (``core/gltf.py``), never a kernel round trip.
+* ``usd`` — server-side from the same buffers (``core/usd_export.py``), and
+  **only when ``agentcad[usd]`` is installed**: the format enum entry and the
+  route behaviour appear together or not at all (the FEM gating rule — an
+  agent never sees a tool that cannot run). Without the extra a ``usd``
+  request is the ordinary unknown-format ``validation_error``.
 * ``step`` on a part that has PMI — the ``export_step_pmi`` kernel handler
   (AP242, slice 1); ``pmi: false`` opts back out to today's path.
 * ``3mf`` (part and assembly) — the ``export_3mf_rich`` kernel handler
@@ -59,7 +64,7 @@ import functools
 import os
 from pathlib import Path
 
-from . import gltf, usage
+from . import gltf, usage, usd_export
 from .interop_colors import category_for, color_for
 from .model import AppError, ValidationError
 from .service import EXPORT_TOLERANCE
@@ -73,12 +78,47 @@ from .tools_drawing import _drawing_version
 
 _WRAPPED = "_agentcad_xchange_wrapped"
 
-#: What ``export_part`` accepts (slice 7 appends ``usd`` when it is available).
-PART_FORMATS = ("step", "stl", "3mf", "gltf", "glb")
-#: What ``export_assembly`` accepts.
-ASSEMBLY_FORMATS = ("step", "stl", "3mf", "gltf", "glb")
+#: What ``export_part`` accepts before the optional formats are added.
+BASE_PART_FORMATS = ("step", "stl", "3mf", "gltf", "glb")
+#: What ``export_assembly`` accepts before the optional formats are added.
+BASE_ASSEMBLY_FORMATS = ("step", "stl", "3mf", "gltf", "glb")
 #: The formats this pack writes itself, from the mesh cache.
 MESH_FORMATS = ("gltf", "glb")
+
+#: Written here too, but only when ``agentcad[usd]`` is installed (FR11) — the
+#: FEM gating rule: an agent is never offered a format that cannot run. The
+#: file is ``.usda`` text, hence the extension override.
+USD_FORMAT = "usd"
+_EXTENSIONS = {USD_FORMAT: usd_export.SUFFIX.lstrip(".")}
+
+#: Appended to both export descriptions when — and only when — usd is live.
+USD_DESCRIPTION = (
+    " usd writes a .usda stage (Z-up and millimetres DECLARED, never "
+    "converted: metersPerUnit 0.001), one Mesh per unique part referenced by "
+    "one prim per instance, with per-instance displayColor."
+)
+
+
+def part_formats() -> tuple[str, ...]:
+    """The live export enum: the base list, plus ``usd`` when it can be written.
+
+    A function and not a constant because availability is a property of the
+    *interpreter*, and the gating tests monkeypatch it both ways. The module
+    attribute is looked up on ``usd_export`` at call time for the same reason.
+    """
+    return BASE_PART_FORMATS + ((USD_FORMAT,)
+                                if usd_export.usd_available() else ())
+
+
+def assembly_formats() -> tuple[str, ...]:
+    return BASE_ASSEMBLY_FORMATS + ((USD_FORMAT,)
+                                    if usd_export.usd_available() else ())
+
+
+#: Import-time snapshots, for callers that read the surface as data (the
+#: tests, and the OCP-free probe). ``register`` always recomputes.
+PART_FORMATS = part_formats()
+ASSEMBLY_FORMATS = assembly_formats()
 
 #: Stamped as the 3MF ``Designer`` when the caller names none. The tool wrote
 #: the file; the human is named by the project's history, not by a guess here.
@@ -115,7 +155,7 @@ def _fidelity(fmt: str, *, pmi: str | None = None, pmi_skipped=None,
             out["pmi_skipped"] = list(pmi_skipped)
         if pmi_notes is not None:
             out["pmi_notes"] = list(pmi_notes)
-    if fmt in ("3mf", "gltf", "glb"):
+    if fmt in ("3mf", "gltf", "glb", USD_FORMAT):
         out["colors"] = colors or "none"
     if fmt == "3mf":
         out["metadata"] = metadata
@@ -148,7 +188,19 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 
 def _render(items, fmt: str) -> bytes:
+    if fmt == USD_FORMAT:
+        return usd_export.build_usd(items)
     return gltf.build_glb(items) if fmt == "glb" else gltf.build_gltf(items)[0]
+
+
+def _self_written(fmt: str) -> bool:
+    """Formats this pack writes itself from the ACM cache."""
+    return fmt in MESH_FORMATS or fmt == USD_FORMAT
+
+
+def _export_path(service, proj: str, name: str, fmt: str) -> Path:
+    return (service.store.exports_dir(proj)
+            / f"{name}.{_EXTENSIONS.get(fmt, fmt)}")
 
 
 def _mesh_path(service, project: str, key: str) -> Path:
@@ -498,18 +550,19 @@ def _install(service) -> None:
         @functools.wraps(export_part)
         def _export_part(proj, part_id, format, tolerance=EXPORT_TOLERANCE, *,
                          config=None, pmi=None, metadata=None):
-            if format not in PART_FORMATS:
+            if format not in part_formats():
                 # The same refusal `service._check_format` raises, over the
-                # extended list (EXPORT_FORMATS itself is untouched).
+                # extended list (EXPORT_FORMATS itself is untouched). Without
+                # the `usd` extra, `usd` lands here like any other unknown.
                 raise ValidationError(
                     f"unknown export format {format!r}",
-                    {"known": list(PART_FORMATS)},
+                    {"known": list(part_formats())},
                 )
-            if format in MESH_FORMATS:
+            if _self_written(format):
                 item = _part_item(service, proj, part_id, config)
                 name = part_id if config is None else f"{part_id}_{config}"
                 service.store.assert_disk_budget(proj)
-                out = service.store.exports_dir(proj) / f"{name}.{format}"
+                out = _export_path(service, proj, name, format)
                 _atomic_write(out, _render([item], format))
                 result = {"path": str(out), "size_bytes": out.stat().st_size}
                 if config is not None:
@@ -547,10 +600,10 @@ def _install(service) -> None:
         @functools.wraps(export_assembly)
         def _export_assembly(proj, format, *, structured=False,
                              tolerance=EXPORT_TOLERANCE):
-            if format not in ASSEMBLY_FORMATS:
+            if format not in assembly_formats():
                 raise ValidationError(
                     "assembly export supports formats: "
-                    + ", ".join(ASSEMBLY_FORMATS))
+                    + ", ".join(assembly_formats()))
             if structured and format != "step":
                 raise ValidationError(
                     "structured export is STEP only (the other formats are "
@@ -559,13 +612,13 @@ def _install(service) -> None:
                 return _export_step_structured(service, proj)
             if format == "3mf":
                 return _export_3mf_assembly(service, proj, tolerance)
-            if format in MESH_FORMATS:
+            if _self_written(format):
                 items, skipped = _assembly_items(service, proj)
                 if not items:
                     raise ValidationError(
                         "assembly has no instances to export")
                 service.store.assert_disk_budget(proj)
-                out = service.store.exports_dir(proj) / f"assembly.{format}"
+                out = _export_path(service, proj, "assembly", format)
                 _atomic_write(out, _render(items, format))
                 return _with_fidelity(
                     {"path": str(out), "size_bytes": out.stat().st_size},
@@ -590,21 +643,24 @@ def _extend_schemas(registry, service) -> None:
     it is visible through ``build_registry`` **and** ``GET /api/tools`` is the
     contract. ``import_cad_file``'s schema belongs to ``tools_import``.
     """
+    formats = part_formats()
     part = registry.get("export_part")
     if part is not None:
         part.description = (
             "Export a part to exports/<part_id>.<format> (or "
-            "exports/<part_id>_<config>.<format> with config). Formats: step, "
-            "stl, 3mf, gltf, glb. STEP carries the part's PMI as AP242 when it "
+            "exports/<part_id>_<config>.<format> with config). Formats: "
+            + ", ".join(formats)
+            + ". STEP carries the part's PMI as AP242 when it "
             "has any (pmi: false opts out). glTF/GLB are Y-up (converted from "
             "our Z-up), tessellated and coloured. Every result reports what "
             "survived the translation in `fidelity`."
+            + (USD_DESCRIPTION if USD_FORMAT in formats else "")
         )
         props = part.input_schema["properties"]
         props["format"] = {
             "type": "string",
-            "description": "step | stl | 3mf | gltf | glb",
-            "enum": list(PART_FORMATS),
+            "description": " | ".join(formats),
+            "enum": list(formats),
         }
         props["pmi"] = {
             "type": "boolean",
@@ -629,23 +685,25 @@ def _extend_schemas(registry, service) -> None:
                                     config=config, pmi=pmi, metadata=metadata)
         )
 
+    formats = assembly_formats()
     assembly = registry.get("export_assembly")
     if assembly is not None:
         assembly.description = (
             "Export the whole assembly (instances placed by their transforms). "
-            "Formats: step, stl, 3mf, gltf, glb. step is one fused solid "
+            "Formats: " + ", ".join(formats) + ". step is one fused solid "
             "unless structured: true, which writes a real STEP product tree "
             "(one product per part, one occurrence per instance, names and "
             "colours). glTF/GLB deduplicate meshes (N instances of one part "
             "are one mesh), carry per-instance colours and are Y-up; 3MF is "
             "one coloured object per instance with model metadata. The result "
             "reports `fidelity`."
+            + (USD_DESCRIPTION if USD_FORMAT in formats else "")
         )
         props = assembly.input_schema["properties"]
         props["format"] = {
             "type": "string",
-            "description": "step | stl | 3mf | gltf | glb",
-            "enum": list(ASSEMBLY_FORMATS),
+            "description": " | ".join(formats),
+            "enum": list(formats),
         }
         props["structured"] = {
             "type": "boolean",

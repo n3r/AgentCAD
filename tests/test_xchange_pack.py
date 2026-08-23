@@ -295,8 +295,11 @@ def test_an_unsupported_assembly_format_names_what_is_supported(svc, registry):
     two_boxes(svc)
     with pytest.raises(ValidationError) as exc:
         svc.export_assembly("demo", "obj")
+    # The supported list is live: it names usd exactly when the extra is
+    # installed, so the expectation is derived, not hardcoded.
+    from agentcad.core.tools_xchange import assembly_formats
     assert exc.value.message == (
-        "assembly export supports formats: step, stl, 3mf, gltf, glb")
+        "assembly export supports formats: " + ", ".join(assembly_formats()))
 
 
 # -------------------------------------------------------------- STEP + PMI
