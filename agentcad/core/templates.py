@@ -475,7 +475,7 @@ grid=8) | check_that(fn, name) | check_fem_static(fixed_face, load_face,
 load_N, max_vm_mpa=, max_disp_mm=)   # faces are {"axis": "z", "side": "max"}
 
 Project scope (in the project's root specs.py, over assembly instance ids):
-check_interference_free() | check_clearance(a, b, min_mm) |
+check_interference_free() | check_clearance(a, b, min_mm, max_mm=) |
 check_stackup(from_instance, to_instance, axis, within)
 
 Every constructor takes name= (a default is derived: wall_min, mass_max, ...)

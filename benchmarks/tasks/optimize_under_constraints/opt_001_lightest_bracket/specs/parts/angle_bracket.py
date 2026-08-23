@@ -11,12 +11,20 @@
 # reference/metrics.json, where a graded one-sided window can express "lighter
 # is better" and a pass/fail spec row cannot.
 #
-# `leg_thickness` is stated in measured terms: the reference (thk = 6.0) reads
-# 6.235 mm at grid=4, so the 4 mm floor is not reachable by moving `thk`, whose
-# declared minimum is 6.0 — it is the floor for a candidate that REWRITES the
-# script, which is the cheapest way to lose mass and the one way this part can
-# be made unbuildable. `bolt_pattern` counts the Ø14 hole edges directly (two
-# circular edges per through hole, four holes) rather than trusting a
+# `leg_thickness` is the row that makes this an optimisation rather than "read
+# PARAMS, type the minimum". `thk` declares `min` 3.0 and the 4 mm floor binds
+# a whole millimetre inside it, so the answer is the constraint rather than the
+# end of the slider. Stated in measured terms, because grid=4 reads about
+# 0.2 mm over the leg thickness itself: thk 3.0 -> 3.176 (red),
+# thk 3.8 -> 3.992 (red), thk 4.0 -> 4.196 (green),
+# thk 4.05 -> 4.247 (green, the reference), thk 6.0 -> 6.235 (green). The
+# reference sits 0.05 mm over the floor in REAL material rather than leaning on
+# the sampler's overread — a reference that passed only because grid=4 reads
+# high would be a reference resting on a measurement artefact.
+# The row is also the floor for a candidate that REWRITES the script, which is
+# the cheapest way to lose mass and the one way this part can be made
+# unbuildable. `bolt_pattern` counts the Ø14 hole edges directly
+# (two circular edges per through hole, four holes) rather than trusting a
 # parameter: at hole_d = 10 it reads 0 matching edges and fails.
 #
 # `material_density` is the row that stops the cheapest wrong answer of all.

@@ -17,10 +17,19 @@
 # red on the reference itself and could neither pass nor discriminate.
 # `lip_depth` and `plate_thickness` are the two halves of the fit stated in the
 # terms a bounding box can actually see: the reference reads z in
-# [-1.5, +2.0], and both floors sit 0.05 mm inside that.
+# [-1.5, +2.0], and both floors sit 0.05 mm inside that. They are also the rows
+# that make this an optimisation rather than "read PARAMS, type the minimum":
+# `lid_t` declares `min` 1.0 and `lip_h` declares `min` 0.8 — what the script
+# prints, not what this enclosure allows — so both floors bind a whole
+# millimetre inside the declared range. Measured, the end of both sliders
+# (1.0 / 0.8) is red on both rows and scores 0.775.
 # `screw_holes` counts the Ø3 hole edges directly (one circular edge per
 # countersunk hole, four holes) rather than trusting a parameter: at
-# screw_d = 5 it reads 0 matching edges and fails.
+# screw_d = 5 it reads 0 matching edges and fails. It is also the third row
+# a too-thin plate loses, and for a real reason: the 90° countersink at
+# csk_r 3.0 needs 1.5 mm of depth, so under a 2 mm plate it breaks through and
+# the cylindrical hole it was countersinking is gone (48 faces at the
+# reference, 44 at lid_t 1.5).
 from agentcad.toolkit.specs import (
     check_bbox as _bench_check_bbox,
     check_that as _bench_check_that,

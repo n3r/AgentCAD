@@ -16,25 +16,25 @@
       "part": "angle_bracket"
     },
     {
-      "max": 663.06,
+      "max": 454.43,
       "metric": "mass_g",
       "name": "objective_mass",
       "part": "angle_bracket"
     },
     {
-      "max": 757.78,
+      "max": 519.34,
       "metric": "mass_g",
       "name": "objective_mass_relaxed",
       "part": "angle_bracket"
     },
     {
-      "max": 84465.72,
+      "max": 57888.66,
       "metric": "volume_mm3",
       "name": "objective_volume",
       "part": "angle_bracket"
     },
     {
-      "max": 96532.25,
+      "max": 66158.47,
       "metric": "volume_mm3",
       "name": "objective_volume_relaxed",
       "part": "angle_bracket"

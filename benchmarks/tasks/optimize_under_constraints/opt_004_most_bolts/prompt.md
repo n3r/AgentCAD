@@ -5,38 +5,80 @@
      has no unique correct shape. Weights are the category defaults
      0.10 / 0.05 / 0.45 / 0.00 / 0.00 / 0.40.
 
-     Objective: maximise `n_faces`, which on this part IS the bolt count.
-     Measured across five builds, n_faces = 8 + n_bolts exactly (n=8 -> 16,
-     n=16 -> 24, n=18 -> 26, n=21 -> 29, n=24 -> 32): the ring, bore, two
-     chamfers and the two end faces are a constant eight, and every bolt hole
-     adds exactly one cylindrical face. The reference solution (`n_bolts` 24 —
-     the parameter's own declared maximum, on the shipped Ø118 bolt circle)
-     measures **32 faces**. The objective is a two-rung one-sided window
-     derived from that measured value:
+     WHAT BINDS: two ligaments, not the parameter range. `n_bolts` declares
+     `max` 48 — 48 holes is a slot, not a bolt circle, and the script builds it
+     — and the answer is 32, sixteen short of the end of the slider, because
+     the bolt circle is squeezed from both sides:
 
-       objective_bolt_faces          min = 32 / 1.05 = 30.48  (>= 31 faces,
-                                                               >= 23 bolts)
-       objective_bolt_faces_relaxed  min = 32 / 1.20 = 26.67  (>= 27 faces,
-                                                               >= 19 bolts)
+       * outward, by `bolt_circle_ligament` (`check_wall(min_mm=3.0, grid=4)`),
+         which on this part reads the RIM. Measured at n_bolts = 32:
+         Ø122.5 -> 4.154, Ø123.5 -> 3.447, Ø124 -> 3.094, Ø124.5 -> 2.740 (red),
+         Ø125 -> 2.387 (red). The sampler walks out through the 1.5 mm rim
+         chamfer, so it reads about 0.4 mm UNDER the nominal rim ligament, and
+         Ø124.2-ish is where the row turns. Note the direction: unlike
+         `opt_001`'s wall row, this slack runs AGAINST the candidate — a Ø125
+         circle whose nominal rim ligament is exactly the 3 mm asked for is
+         red at 2.387 — so the visible prompt discloses the overread and tells
+         the agent to keep real margin. Without that clause an agent doing
+         correct nominal arithmetic would lose a row it had satisfied.
+       * inward, by `bolt_spacing`, which is the neighbour ligament: Ø9 holes
+         3 mm apart is 12 mm centre to centre, and centre to centre on a bolt
+         circle is the CHORD, `D * sin(pi/n)` — not the arc `pi*D/n`, which
+         overstates the spacing and would put the threshold about half a
+         millimetre too low. Ø123.5 carries 32 (chord 12.105). A 33rd needs
+         Ø125.72 against the row as shipped (11.95) or Ø126.24 against the
+         nominal 3 mm, and BOTH are red on the rim row — measured, Ø125.8 with
+         33 bolts passes `bolt_spacing` (chord 11.958) and reads 2.208 on
+         `bolt_circle_ligament`, scoring 0.935714.
+
+     Reference: `n_bolts` 32 on a Ø123.5 circle — 40 faces, rim row 3.447,
+     chord 12.105. Both rows green with margin, and 33 bolts unreachable in
+     either direction (Ø123.5/33 loses `bolt_spacing`; Ø125.8/33 loses
+     `bolt_circle_ligament`; Ø125.53/33 loses both and scores 0.871429).
+
+     `bolt_spacing` is a `check_that` and not more `check_wall` because the
+     wall sampler does not see the neighbour ligament AT ALL: measured, 42
+     holes on a Ø124 circle leave 0.27 mm between neighbours and
+     `check_wall(3.0, grid=4)` still reports 4.064 and passes it. Nor does a
+     finer grid fix it — grid=16 reads 0.022 mm on EVERY variant, reference
+     included, because it samples the chamfer. So the neighbour requirement is
+     measured directly on the built part's hole centres (`arc_center`, never
+     `center()`: a merged hole is a trimmed arc and its centre of mass is a
+     point on the arc).
+
+     Objective: maximise `n_faces`, which on this part IS the bolt count.
+     Measured across builds, n_faces = 8 + n_bolts exactly (n=8 -> 16,
+     n=24 -> 32, n=32 -> 40, n=42 -> 50): the ring, bore, two rim chamfers, two
+     bore chamfers and the two end faces are a constant eight, and every bolt
+     hole adds exactly one cylindrical face. The reference measures **40
+     faces**. The objective is a two-rung one-sided window derived from that
+     measured value:
+
+       objective_bolt_faces          min = 40 / 1.05 = 38.10  (>= 39 faces,
+                                                               >= 31 bolts)
+       objective_bolt_faces_relaxed  min = 40 / 1.20 = 33.33  (>= 34 faces,
+                                                               >= 26 bolts)
 
      A two-rung ladder because `metrics` is scored as the fraction of windows
      satisfied, and a single window would make the objective a cliff. Measured
      proof:
 
-       reference (n_bolts 24)  32 faces -> 1.0
-       starter   (n_bolts 8)   16 faces -> 0.866667  (fails both rungs)
-       half-way  (n_bolts 21)  29 faces -> 0.933333  (fails the tight rung)
+       reference (32 @ Ø123.5)  40 faces -> 1.0
+       starter   (8 @ Ø118)     16 faces -> 0.866667  (fails both rungs)
+       half-way  (28 @ Ø118)    36 faces -> 0.933333  (fails the tight rung)
+       old range ceiling (24 @ Ø118) 32 faces -> 0.866667  (every rubric row
+                                                  green, both rungs missed)
+       new range ceiling (48 @ Ø118) 106 faces -> 0.804762  (the holes merge
+                                                  into a slot: two solids,
+                                                  `bolt_spacing` and
+                                                  `bolt_pattern` both red)
 
-     `n_faces` is a proxy and is honest about being one: it counts bolt holes
-     only while the candidate keeps the part's topology. That is why the
-     ligament, bore and envelope constraints are rubric-owned spec rows rather
-     than more face counting — they are what stops a candidate buying faces
-     with geometry that is not a bolt hole.
-
-     The ligament row is the trap that makes this an optimisation rather than
-     "type the maximum": at n_bolts = 24 on the shipped Ø118 circle the
-     grid-4 sampler reads 6.500 mm, but pushing the bolt circle out to Ø130
-     (which the script clamps to a Ø127 circle) reads **0.972 mm** and is red.
+     `n_faces` is a proxy and `bolt_pattern` is what keeps it honest: it
+     requires at least four Ø9 holes and that the face count is exactly those
+     holes plus the ring's own eight, so a candidate cannot buy faces with
+     geometry that is not a bolt hole. Measured, that closes the cheapest
+     rewrite of all — 41 holes at Ø5 on the shipped circle reads 49 faces and
+     would otherwise be a 1.0; it scores 0.871429, because Ø5 is not Ø9.
 -->
 
 The project already holds the part `flange`, the chamber-head interface ring.
@@ -46,16 +88,31 @@ Objective: **fit as many Ø9 mm bolt holes as you can.** You are scored on the
 number of bolt holes — more is better, and there is no target you have to hit
 exactly. The bolt circle is yours to move.
 
+The parameter range is not the limit here: the bolt count can be driven far
+past what this ring can carry, and **the ligaments below are what stop you**,
+not the end of the slider.
+
 Constraints, all of them graded:
 
 - The flange keeps its Ø140 mm outer diameter and its 14 mm thickness (the
   envelope is 140.3 x 140.3 x 14.2 mm and it may not read under 139.85 mm
   across or under 13.9 mm thick).
 - The Ø87 mm bore stays — the ring still slips over the chamber barrel.
-- Every bolt hole keeps at least **3 mm** of material to the bore, to the rim
-  and to its neighbours, measured as `check_wall(min_mm=3.0, grid=4)`. This is
-  the flange's own INT-003 requirement: crowding the bolt circle outward loses
-  it long before the holes themselves touch.
+- Every bolt hole keeps at least **3 mm** of material to the bore and to the
+  rim, measured as `check_wall(min_mm=3.0, grid=4)`. This is the flange's own
+  INT-003 requirement: crowding the bolt circle outward loses it long before
+  the holes themselves touch the rim. Be aware the sampler reads **about
+  0.4 mm under** the nominal rim ligament near the chamfered rim, so keep real
+  margin — a bolt circle whose nominal ligament is exactly 3 mm measures under
+  the floor and is red.
+- Every bolt hole keeps at least **3 mm** of material to its neighbours,
+  measured on the built part as centre-to-centre spacing: Ø9 holes 3 mm apart
+  are 12 mm between centres.
+- Every hole is **Ø9 mm**, and the ring carries nothing else: the score counts
+  faces, so the part must read as the ring's own eight faces (top, bottom, rim
+  and bore cylinders, and the four edge chamfers) plus exactly one face per
+  bolt hole. A pocket, a counterbore, a smaller hole or a pair of holes merged
+  into a slot is not a bolt.
 - The result must be one valid solid.
 
 Datum: unchanged. The flange's bottom face lies on Z = 0 and the ring rises

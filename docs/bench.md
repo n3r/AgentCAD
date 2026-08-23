@@ -697,18 +697,32 @@ the server-side code it measures.
   AC1 cannot catch (the reference is in the right pose by construction). The
   mitigation is the checklist above and a reviewer who reads `frame.datum`
   against `prompt.md`.
-* **`assemble_and_clear` grades non-interference, not placement.** The rubric a
-  v1 assembly task can express is one-sided: `check_clearance(min_mm=…)` sets a
-  *floor* on the gap between two instances, and metric windows are keyed to a
-  **part**, so nothing in the rubric can see where an instance was placed. A
-  candidate that creates every instance and parks them far apart therefore
-  satisfies the `specs` and `interference` channels in full. The prompts state
-  the seating in words and a reviewer reads them, but the scorer does not
-  penalise it — and `check_stackup` cannot close the hole, because it measures
-  worst-case tolerance accumulation along a *mate chain* and these instances are
-  placed rather than mated. v1 ships the limitation disclosed rather than
-  papered over; closing it needs a max-clearance (or placement-window) check in
-  `toolkit/specs.py` and a v2 task set that uses it.
+* **`assemble_and_clear` grades placement as pair distances, and only as pair
+  distances.** Every seating relationship the five prompts state in words is
+  now a **two-sided window** — `check_clearance(min_mm=…, max_mm=…)`, the floor
+  for non-interference and the ceiling for placement — so the v1 "create every
+  instance and park them 500 mm apart" cheat is closed: measured, it scores
+  0.7375 (`asm_001`), 0.825 (`asm_002`), 0.7375 (`asm_003`), 0.708333
+  (`asm_004`) and 0.7 (`asm_005`) against a reference of 1.0, with every
+  clearance row red and only `check_interference_free` — correctly — still
+  green. What remains is what a *distance between two solids* cannot see: a
+  part slid along a face it stays parallel to, spun about the axis its closest
+  approach is symmetric on, or lifted inside a running clearance that saturates
+  (`asm_002`'s lid holds its lip's 0.15 mm radial gap anywhere within the 3 mm
+  lip engagement), and a pair that is **supposed to touch** cannot carry a real
+  floor at all, because `min_mm` must be > 0 while a seated pair measures
+  exactly 0.000 mm (`asm_003` grades its two contact pairs with a floor of
+  1e-12 mm — any floor at or below `_slack`'s absolute 1e-9 cannot fail — which
+  is a ceiling with a floor that cannot fail, and leaves overlap to
+  `no_interference`). The signal is also **small where the assembly is small**:
+  `asm_002` has two instances, so one pair, so one clearance row — the whole of
+  its placement grade is `0.35 / 2 = 0.175` of that task's total, which is
+  about 0.035 of the five-task category mean and therefore *under* the 0.05
+  epsilon the release gate treats as noise. A parked lid is visible on the task, not on
+  the category. A rubric row is a measurement between two instances, never a
+  pose; `check_stackup` does not change that: it measures worst-case tolerance
+  accumulation along a *mate chain* and these instances are placed rather than
+  mated.
 * **Two product findings bound what `geometry` can measure at all.** Both were
   found by authoring the task set and are stated here because a subscore that
   is silently unmeasurable is worse than one that says so.
@@ -765,19 +779,36 @@ the server-side code it measures.
   knob and 0.05 on a five-task category mean is loose. The gate is advisory on
   the schedule and blocking on a release branch; many samples per task is
   unaffordable and is not proposed.
-* **The optimisation category's constraint is sometimes the parameter range.**
-  `opt_002_stiffest_gusset` and `opt_005_shortest_screw` are genuinely
-  constraint-bound: the optimum sits where a declared engineering check (wall,
-  clearance, thread engagement) stops being satisfiable, which is the shape the
-  category promises. On `opt_001_lightest_bracket`, `opt_003_thinnest_lid` and
-  `opt_004_most_bolts` the binding limit is instead the **`PARAMS` range the
-  script declares** — the best answer is the end of the slider, and an agent
-  that reads `PARAMS` and goes to the bound scores as well as one that
-  reasoned. Those three still measure that the agent can read a constraint set,
-  drive a parametric model and verify it, but they do not measure engineering
-  judgement. Closing it is a v2 task-set change (widen the declared ranges so a
-  real check binds first), not a harness change, and the three tasks are
-  disclosed rather than removed.
+* **The optimisation category is constraint-bound, to within the slack each
+  row is measured with.** All five `opt_*` tasks now put the optimum where a
+  declared engineering row stops being satisfiable, strictly inside the
+  `PARAMS` range the script declares, so reading `PARAMS` and typing the end of
+  the slider is a *worse* answer than reasoning: measured, it scores 0.925
+  (`opt_001`), 0.775 (`opt_003`) and 0.804762 (`opt_004`) against a reference
+  of 1.0. That is the authoring rule for any task added to this category — the
+  range says what the script can build, the rubric says what the application
+  allows, and if those are the same number the task measures nothing but
+  slider-reading. What remains is **measurement slack, not a range** — and it
+  does not all run the same way, so each task's direction is stated rather than
+  averaged:
+  * *Slack in the candidate's favour.* `opt_001`'s `check_wall(4.0)` reads
+    ~0.2 mm **over** the true wall (a 3.9 mm leg measures 4.094 and is green),
+    `opt_003`'s fit floors sit 0.05 mm under and `opt_005`'s `shank_reach`
+    0.1 mm under, so a candidate can sit just inside a stated requirement.
+    None of it lets a candidate **outscore** the reference — the objective
+    windows are one-sided — and a near-optimal answer inside the objective's
+    own 5% rung gets full credit by design.
+  * *Slack against the candidate.* `opt_004`'s `bolt_circle_ligament` reads
+    ~0.4 mm **under** the nominal rim ligament (the grid-4 sampler walks out
+    through the 1.5 mm rim chamfer), so an agent doing correct nominal
+    arithmetic — a Ø125.0 bolt circle, whose rim ligament is exactly the 3 mm
+    asked for — measures 2.387 and is **red**. A row that punishes correct
+    reasoning is a task defect unless it is disclosed, so that prompt states
+    the overread in its own constraint bullet and tells the agent to keep real
+    margin. That disclosure is part of the fairness bar, not a footnote to it.
+  A reference must clear its binding row on **designed** margin rather than on
+  slack in its favour: `opt_001`'s sits at `thk` 4.05 against a 4.0 floor —
+  0.05 mm of real material — for exactly that reason.
 * **Contamination.** These tasks are public, so they will eventually appear in
   training corpora. The mitigations are versioned task sets (every score is
   labelled `bench-v1`) and published transcripts (a shortcut is inspectable);

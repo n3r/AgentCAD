@@ -11,9 +11,9 @@
         "outer_d": 140.0,
         "inner_d": 87.0,
         "flange_t": 14.0,
-        "n_bolts": 24.0,
+        "n_bolts": 32.0,
         "bolt_d": 9.0,
-        "bolt_circle_d": 118.0
+        "bolt_circle_d": 123.5
       }
     }
   ],

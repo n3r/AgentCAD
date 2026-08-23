@@ -23,7 +23,10 @@ process changes whether the next one answers truthfully.
 
 No healing recipe fixes it. Fuzzy booleans at every tolerance, ``ShapeFix``,
 ``UnifySameDomain``, sewing, ``Copy``, ``Glue`` and OBB alignment were all
-probed and all fail. So the answer is **detection and honest degradation**,
+probed and all fail. Reported upstream with a minimal reproduction as
+https://github.com/Open-Cascade-SAS/OCCT/issues/1496 (OCCT 7.9.3; specific to
+``BRepOffsetAPI_MakePipeShell`` output — an equivalent primitives-built fuse
+does not reproduce). So the answer is **detection and honest degradation**,
 never a silent zero: the bench turns a degenerate pair into a ``status:
 "error"`` subscore (excluded, FR7) and the product path reports the pair as
 interfering with ``degenerate: true`` (fail-closed).

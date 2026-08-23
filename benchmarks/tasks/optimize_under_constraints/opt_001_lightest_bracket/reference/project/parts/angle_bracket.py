@@ -28,7 +28,7 @@ PARAMS = {
               "description": "Horizontal leg length (X)"},
     "width": {"default": 80.0, "min": 40.0, "max": 150.0, "unit": "mm",
               "description": "Bracket width (Y)"},
-    "thk": {"default": 10.0, "min": 6.0, "max": 20.0, "unit": "mm",
+    "thk": {"default": 10.0, "min": 3.0, "max": 20.0, "unit": "mm",
             "description": "Leg thickness"},
     "hole_d": {"default": 14.0, "min": 8.0, "max": 20.0, "unit": "mm",
                "description": "Bolt hole diameter, two holes per leg"},
