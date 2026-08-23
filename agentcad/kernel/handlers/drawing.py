@@ -97,6 +97,7 @@ from collections import defaultdict
 import build123d as b3d
 
 from ._draw_primitives import (
+    Arc,
     Circle,
     Hatch,
     Line,
@@ -581,12 +582,81 @@ def _fcf_frame(x, y_top, frame, h):
 
 # ---- edge rendering --------------------------------------------------------
 
+#: A circular edge whose sweep is within this many degrees of 0 or 360 is not
+#: an arc anyone can draw: at 360 it IS the full circle (an "open" seam-split
+#: rim), at 0 it is a zero-length artefact. Both fall back to ``Circle``, whose
+#: rendering does not depend on a start angle. 1e-3 deg on a 200 mm radius is
+#: 3.5 um — far below the 3 dp the backends print.
+_ARC_FULL_TOL_DEG = 1e-3
+
+
+def _arc_angles(e, *, y_down: bool = True):
+    """``(start_deg, end_deg)`` for an open circular edge, or ``(None, None)``.
+
+    The angles are measured about ``e.arc_center`` and ordered so that sweeping
+    from ``start`` to ``end`` in the direction of **increasing** angle passes
+    through ``e.position_at(0.5)`` — which is exactly the contract both drawing
+    backends' ``Arc`` renderers assume (``_draw_primitives.SvgBackend._arc``
+    emits SVG's positive-angle sweep flag; ``_pdf.PdfBackend._arc`` steps the
+    Bezier chain the same way), and also ezdxf's ``add_arc`` (CCW from start to
+    end).
+
+    ``y_down=True`` (the default) measures in the **sheet** plane, where the
+    projected model Y is negated (``oy - scale*Y``); a mirror flips the sense
+    of every angle, so the ordering has to be computed *after* the negation,
+    not before. ``y_down=False`` is the model-plane twin DXF wants, whose axes
+    are the projected X/Y as they stand.
+
+    An edge's own parametrisation may run either way round the circle, so the
+    midpoint is what decides: the two candidate sweeps (``a0 -> a1`` and
+    ``a1 -> a0``) sum to 360, and only one of them contains ``a_mid``.
+    """
+    c = e.arc_center
+    cx, cy = float(c.X), float(c.Y)
+    sign = -1.0 if y_down else 1.0
+
+    def _at(u: float) -> float:
+        p = e.position_at(u)
+        return math.degrees(math.atan2(sign * (float(p.Y) - cy),
+                                       float(p.X) - cx))
+
+    a0, a_mid, a1 = _at(0.0), _at(0.5), _at(1.0)
+    # Walking a0 -> a_mid -> a1 always in the increasing direction: <= 360 when
+    # the edge itself runs that way, else 720 - (its true sweep).
+    walk = ((a_mid - a0) % 360.0) + ((a1 - a_mid) % 360.0)
+    start, end, sweep = ((a0, a1, walk) if walk <= 360.0
+                         else (a1, a0, 720.0 - walk))
+    if sweep <= _ARC_FULL_TOL_DEG or sweep >= 360.0 - _ARC_FULL_TOL_DEG:
+        return (None, None)
+    return (start, end)
+
+
 def _edge_prim(e, ox, oy, scale, style):
-    """One projected edge as a primitive: a ``Circle`` for a closed circle,
-    else a sampled ``Polyline``. Sheet coords are y-down (``oy - scale*Y``)."""
-    if e.geom_type.name == "CIRCLE" and e.is_closed:
+    """One projected edge as a primitive. Sheet coords are y-down
+    (``oy - scale*Y``).
+
+    A ``LINE`` is a two-point ``Polyline`` and a circular edge is a ``Circle``
+    or an ``Arc`` — **exactly**, not sampled. Only the genuinely free-form
+    geometry left (ELLIPSE, BSPLINE, ...) goes through the point sampler, which
+    used to swallow every edge and turn a dead-straight 90 mm line into 256
+    points. A ``Polyline`` (rather than the ``Line`` primitive) for the straight
+    case on purpose: an outline edge stays an SVG ``<path>``, so anything
+    counting or post-processing outline paths keeps working.
+    """
+    gt = e.geom_type.name
+    if gt == "LINE":
+        a, b = e.position_at(0.0), e.position_at(1.0)
+        return Polyline(((ox + scale * a.X, oy - scale * a.Y),
+                         (ox + scale * b.X, oy - scale * b.Y)), style)
+    if gt == "CIRCLE":
         c, r = e.arc_center, e.radius
-        return Circle(ox + scale * c.X, oy - scale * c.Y, scale * r, style)
+        cx, cy, cr = ox + scale * c.X, oy - scale * c.Y, scale * r
+        if e.is_closed:
+            return Circle(cx, cy, cr, style)
+        start, end = _arc_angles(e)
+        if start is None:
+            return Circle(cx, cy, cr, style)
+        return Arc(cx, cy, cr, start, end, style)
     n = max(8, min(256, int(e.length * scale / 0.4)))
     pts = tuple((ox + scale * p.X, oy - scale * p.Y)
                 for p in (e.position_at(i / (n - 1)) for i in range(n)))
@@ -602,12 +672,24 @@ _VIEW_DIRS = {
 
 
 def _view_bounds(edges):
+    """The projected 2D extent of ``edges``: ``(x0, y0, x1, y1)``.
+
+    Each edge's **own** bounding box, which the kernel computes from the curve
+    rather than from samples of it. This used to take six ``position_at``
+    samples per edge — exact for a line and wrong for anything curved: a full
+    circle was sampled at 0/72/144/216/288 deg, missing all four of its own
+    silhouette extremes, so a Ø140 flange's plan view came out 132.641 wide and
+    was auto-scaled, placed and *dimensioned* at that lie (bench PRD-024 found
+    it; changelog 0307 fixed it). Exact for circles, tight for partial arcs,
+    and cheaper than the sampler it replaces.
+    """
     xs, ys = [], []
     for e in edges:
-        for i in range(6):
-            p = e.position_at(i / 5)
-            xs.append(p.X)
-            ys.append(p.Y)
+        bb = e.bounding_box()
+        xs.append(float(bb.min.X))
+        xs.append(float(bb.max.X))
+        ys.append(float(bb.min.Y))
+        ys.append(float(bb.max.Y))
     if not xs:
         return (0, 0, 1, 1)
     return (min(xs), min(ys), max(xs), max(ys))
@@ -826,12 +908,51 @@ def _cutting_marks(placement, plane_name, offset_mm, label):
     return els
 
 
+def _clip_segment_to_circle(x0, y0, x1, y1, cx, cy, radius):
+    """The part of the segment ``(x0,y0)-(x1,y1)`` inside the circle, or None.
+
+    Exact: substitute ``p(t) = p0 + t*d`` into ``|p - c|^2 = r^2`` and solve the
+    quadratic in ``t``, then clamp the root interval to ``[0, 1]``. A tangent
+    touch (``disc <= 0``) is not a run — a single point draws nothing.
+    """
+    dx, dy = x1 - x0, y1 - y0
+    a = dx * dx + dy * dy
+    if a <= 1e-18:                      # a zero-length segment
+        return None
+    fx, fy = x0 - cx, y0 - cy
+    b = 2.0 * (fx * dx + fy * dy)
+    c = fx * fx + fy * fy - radius * radius
+    disc = b * b - 4.0 * a * c
+    if disc <= 0.0:
+        return None
+    root = math.sqrt(disc)
+    t0 = max(0.0, (-b - root) / (2.0 * a))
+    t1 = min(1.0, (-b + root) / (2.0 * a))
+    if t1 <= t0:
+        return None
+    return [(x0 + t0 * dx, y0 + t0 * dy), (x0 + t1 * dx, y0 + t1 * dy)]
+
+
 def _clip_edges_to_circle(edges, cx, cy, radius):
     """Sub-polylines of each projected edge that fall inside the detail circle
     (projected 2D coords). A pure 2D op — reuses the parent view's projection, no
-    kernel rebuild (FR7)."""
+    kernel rebuild (FR7).
+
+    A straight edge is clipped **analytically** (:func:`_clip_segment_to_circle`)
+    — two points in, two points out, no sampling grid to snag the boundary on.
+    Curved edges keep the sampler: clipping a curve to a circle needs samples,
+    and the run this yields IS a polyline.
+    """
     runs: list = []
     for e in edges:
+        if e.geom_type.name == "LINE":
+            a, b = e.position_at(0.0), e.position_at(1.0)
+            run = _clip_segment_to_circle(float(a.X), float(a.Y),
+                                          float(b.X), float(b.Y),
+                                          cx, cy, radius)
+            if run is not None:
+                runs.append(run)
+            continue
         n = max(2, min(256, int(e.length / 0.4)))
         cur: list = []
         for i in range(n):
@@ -1904,9 +2025,23 @@ def _build_dxf(part, out_path):
     msp = doc.modelspace()
     vis, _hid = part.project_to_viewport(look_at=(0, 0, 0), **_VIEW_DIRS["top"])
     for e in vis:
-        if e.geom_type.name == "CIRCLE" and e.is_closed:
+        # Native CAD entities, not a polyline approximation of them: a DXF is
+        # read by other CAD, and a LINE/ARC survives a round trip as the exact
+        # thing it is. `_arc_angles(y_down=False)` is the model-plane twin —
+        # ezdxf's ARC sweeps CCW from start to end in model coords, with no
+        # sheet y-flip in play.
+        gt = e.geom_type.name
+        if gt == "LINE":
+            a, b = e.position_at(0.0), e.position_at(1.0)
+            msp.add_line((a.X, a.Y), (b.X, b.Y))
+        elif gt == "CIRCLE":
             c = e.arc_center
-            msp.add_circle((c.X, c.Y), e.radius)
+            start, end = ((None, None) if e.is_closed
+                          else _arc_angles(e, y_down=False))
+            if start is None:
+                msp.add_circle((c.X, c.Y), e.radius)
+            else:
+                msp.add_arc((c.X, c.Y), e.radius, start, end)
         else:
             n = max(2, min(256, int(e.length / 0.4)))
             pts = [(p.X, p.Y) for p in (e.position_at(i / (n - 1)) for i in range(n))]

@@ -28,6 +28,16 @@ fem = [
     "scikit-fem>=10",
     "meshio>=5.3",
 ]
+# USD export (PRD-017 FR11). The marker is load-bearing, not decoration:
+# usd-core ships wheels for macOS universal2, manylinux x86_64 and win_amd64
+# only — there is NO linux-aarch64 wheel, and `make test-linux` (and an arm64
+# Docker image) is exactly that platform, where an unmarked requirement makes
+# `uv sync --extra usd` fail outright. With the marker those platforms simply
+# get no package, `usd_available()` stays False, and the `usd` format never
+# appears in the export tools (see `agentcad/core/usd_export.py`).
+usd = [
+    "usd-core>=26.8; platform_machine != 'aarch64' or sys_platform != 'linux'",
+]
 
 [project.scripts]
 agentcad = "agentcad.cli:main"

@@ -1990,10 +1990,12 @@ per-member isolation. And when you print the sentence, do **not** reach for
   `part|project` reach is `share_scope`, never the package-index `scope` or
   `locks.write_scope`.
 
-- **No `core/gltf.py`.** The viewer streams the shipped OCP-free ACM
-  (`viewport.js::parseACM`); the glTF exporter is PRD-017's, deferred to avoid
-  build-then-migrate churn. **Only `agentcad/kernel/` imports OCP/build123d** —
-  nothing in the share path does.
+- **The share path does not use `core/gltf.py`.** The viewer streams the
+  shipped OCP-free ACM (`viewport.js::parseACM`); PRD-017 later shipped a
+  glTF exporter (`core/gltf.py`, see the Interop gotchas below), but the
+  share path was built before it and still does not route through it.
+  **Only `agentcad/kernel/` imports OCP/build123d** — nothing in the share
+  path does.
 
 ## Marketplace gotchas (PRD-031a — read before touching `server/routes_market.py`, the public catalog read, `core/tools_market.py` or the market frontend)
 
@@ -2782,15 +2784,152 @@ Full documentation: `docs/bench.md`. The design is
   and it emits a **visible `::notice::`** when the key is absent: a silently
   skipped benchmark is indistinguishable from one that scored zero.
 
-- **Two product findings the bench fenced rather than fixed** (both are
-  follow-ups, not bench bugs): `handlers/drawing._view_bounds` samples six
-  points per edge, so a curved silhouette's overall dimensions come out ~5%
-  under — `author.render_drawing(check_dims=True)` refuses to ship a lying
-  sheet. And a swept pipe surface does not survive the STEP round trip as a
-  boolean operand (script-vs-script and STEP-vs-STEP both intersect; script
-  against the checked-in STEP returns nothing), which is why
-  `fix_005_invalid_shell` weights `geometry` 0.00 with the reason argued in its
-  `prompt.md`.
+- **Two product findings the bench fenced rather than fixed.** The first is
+  **fixed** (changelog 0307): `handlers/drawing._view_bounds` sampled six
+  points per edge, so a curved silhouette's overall dimensions came out ~5%
+  under (a Ø140 flange dimensioned 132.641); it now takes each edge's own
+  bounding box, and `_edge_prim`/`_build_dxf` emit real lines and arcs instead
+  of sampled polylines. `author.render_drawing(check_dims=True)` keeps
+  refusing to ship a lying sheet — a live guard, not a fence. The second is
+  now **detected** (changelog 0308): OCCT 7.9's `BRepAlgoAPI_Common` silently
+  mis-answers a boolean between two solids that both carry G1-tangent face
+  junctions — a filleted swept elbow, say — whatever their serialization; the
+  STEP round trip was never the trigger, and operand *sameness* (script vs.
+  itself, or STEP vs. itself) is what hides the bug by letting OCCT take a
+  shortcut to the right answer. Two genuinely distinct tangent-jointed solids
+  can return empty or a negative volume, and even a positive result from such
+  a pair is order-dependent and not provably trustworthy. No healing recipe
+  works (fuzzy tolerances, `ShapeFix`, `UnifySameDomain`, sewing, `Copy`,
+  `Glue`, OBB — all probed), so `agentcad/kernel/handlers/_bop.py` fails
+  closed instead: a suspiciously-overlapping empty result is rechecked with
+  an octant-subdivided crop, and a disagreement is refused rather than
+  banked — `bench.py`'s IoU raises `KernelError` (excluded, not a false 0.0)
+  and `worker.pairwise_interference` marks the pair `degenerate: true` rather
+  than reporting a silent "clean". `fix_005_invalid_shell` still weights
+  `geometry` 0.00, argued in its `prompt.md`: the boolean is degenerate for
+  every candidate, the reference included, so a geometry weight would score
+  everyone zero on shape rather than surface the defect.
+
+## Interop gotchas (PRD-017 — read before touching `kernel/handlers/interop.py`, `interop_import.py`, `_pmi_map.py`, `core/tools_xchange.py`, `gltf.py`, `usd_export.py`, `interop_colors.py`, `tools_import.py` or `routes_import.py`)
+
+- **The six AP242 traps `_pmi_map.py` owns**, each mutation-verified by a test:
+  (1) a located shape yields a reference label with null sub-shape labels, so
+  every `SetDatum` fails silently — the location is **baked** via
+  `BRepBuilderAPI_Transform` (dropping it, the spike's recipe, teleports an
+  off-origin part); (2) construct `STEPCAFControl_Writer` **first**, *then* set
+  `write.step.schema = AP242DIS`, **assert the setter returned True**, and
+  **restore the static after the write** — set before construction it is a
+  silent no-op and the file is AP214 with zero PMI, and left set it re-schemas
+  every later plain STEP export in the warm worker; (3)
+  `DatumObject.SetPosition(min(i+1, 3))` **always**, or every datum-referencing
+  FCF is dropped; (4) a document with **no dimension** mints METRE units for
+  tolerance measures (0.05 mm reads back 50.0), so FCF-only PMI gets one
+  untoleranced auxiliary bbox-size dimension + a `pmi_notes` row; (5)
+  tolerances are passed as **magnitudes** (`SetLowerTolValue(+minus)` — the
+  writer negates, and the reader hides the sign, so only the STEP text catches
+  it); (6) `Location_WithPath` / `Size_WithPath` / two-target
+  `Location_Oriented` **segfault** the writer (exit 139, no Python exception)
+  and angular dims round-trip in mismatched units — all of them are
+  `PmiRefusal` → `pmi_skipped` rows, **never** reachable as a crash. Keep the
+  blocklist a refusal path.
+- **A datum nothing references is written to the file but invisible to our own
+  reader.** `#437 = DATUM('','',#4,.F.,'A')` is there, and
+  `GetDatumLabels` returns nothing for it — OCCT materializes datum labels only
+  through a geometric tolerance's datum system. So a round-trip test that
+  asserts on datums needs a frame that references one; and `read_step_pmi`
+  matches entries by **(type, value, tolerance, target)** and datums by
+  **name**, because entry identity does not survive the writer (a dim labelled
+  `BORE_H7` reads back as `size_diameter`) and a two-datum FCF reads back as
+  **three** datum labels.
+- **sRGB vs linear, both directions.** Reading a colour out of OCCT is
+  `Quantity_Color.Values(Quantity_TOC_sRGB)` — `.Red()/.Green()/.Blue()` return
+  **linear** and silently darken every imported colour. Writing one *into*
+  glTF's `baseColorFactor` or USD's `primvars:displayColor` goes through
+  `interop_colors.srgb_to_linear`, because both are linear-light; 3MF and
+  structured STEP take the sRGB hex as-is (`Quantity_TOC_sRGB` on the set too).
+  One map answers "what colour is this?" for all four writers
+  (`core/interop_colors.py`: explicit colour > material-category map >
+  `#98a2ad`), closed over `materials.CATEGORIES`/`SUBCATEGORIES` and asserted.
+- **`tools_xchange.py` is named for its load order.** Packs load
+  alphabetically and `tools_structure` **replaces** `service.export_assembly`
+  (it does not delegate), so a pack sorting before it is silently thrown away —
+  `xchange` sorts after `structure`/`undo`/`versioning` and therefore captures
+  the **final**, PRD-013-expanded methods. `tools_interop.py` would not have.
+  It extends the two core tools by **wrapping the service method** (`_WRAPPED`
+  sentinel = idempotent re-registration) **and mutating the registered `Tool`
+  in place** — schema, description **and `handler`**; the old lambda took the
+  old argument list, so a schema advertising `pmi` over an unrebound handler is
+  a `TypeError` at call time. Both halves are asserted through
+  `GET /api/tools`. `import_cad_file`'s schema belongs to `tools_import`, not
+  here.
+- **`Mesher.add_shape(Part)` silently drops `.label` and `.color`** (it reads
+  them only off a `Solid`) — which is why today's plain 3MF has neither.
+  `export_3mf_rich` decomposes to `shape.solids()` and stamps each solid
+  **before** adding it; metadata is stamped **after** the shapes
+  (`add_meta_data` mints a components object when the model has none yet).
+  Solid labels are the same vocabulary `get_metrics` reports, so a
+  `solid_colors` map is keyed exactly like `solid_materials` (label > index >
+  `default_color` > no colour at all).
+- **A single-solid product must be added as a `TopoDS_Solid`.** As the
+  single-solid `TopoDS_Compound` every build123d part is, `export_step_structured`'s
+  product colour still survives but every **per-occurrence** colour override is
+  dropped by OCCT's writer (measured). A genuinely multi-solid product keeps
+  its compound and its colour is then written *per solid*, which our own
+  `inspect_cad_tree` reads back as `color: None` — recorded, not worked around
+  (the fix, a product per (part, colour) pair, would inflate the product count
+  the round trip asserts).
+- **3MF is never byte-hashed.** lib3mf mints a fresh `p:UUID` per object per
+  write, so two exports of one state differ by construction (the DXF
+  precedent): the determinism test compares the model XML with the
+  production-namespace UUIDs stripped. `CreationDate` is PRD-014's resolved
+  **version date** (`tools_drawing._drawing_version`), never `datetime.now()`,
+  and `"-"` (no history) means the field is **omitted**, not stamped.
+- **`usd-core` ships no linux-aarch64 wheel** and `make test-linux` runs arm64,
+  so the `usd` extra's environment marker is load-bearing — without it
+  `uv sync --extra usd` breaks on exactly the platform CI uses. On an excluded
+  platform nothing resolves, `usd_available()` stays False, and the format
+  never appears (enum, description, routing and refusal message all read the
+  same live function). Importing `core/usd_export.py` must **not** import
+  `pxr` — the whole gate rests on answering a yes/no question for free.
+- **pxr's `rotateXYZ` composes the reverse of ours.** It names the application
+  order on **row** vectors (`Rz·Ry·Rx` in our column convention, per
+  `usdGeom/xformOp.cpp`), the reverse of the house intrinsic XYZ, and the two
+  agree only when at most one angle is non-zero — a silent, 3-axis-only error.
+  The pose is therefore **one `xformOp:transform` matrix**, built from the glTF
+  writer's own quaternion. glTF, by contrast, *does* need a conversion: one
+  root node with a fixed −90° X quaternion, stated in `asset.extras`, never a
+  per-caller flag.
+- **The structured-import auto-detect is name-aware, not count-only.** More
+  than one occurrence is necessary but not sufficient: AgentCAD's own
+  `export_step` of a multi-solid part reads back as N anonymous occurrences of
+  N products all called `SOLID`, and a raw count would explode every
+  re-imported widget (it broke `test_step_reference_roundtrip`). Structured iff
+  `>1 occurrence AND (an authored occurrence name OR >1 distinct product
+  name)`; `structured: true/false` overrides either way. Occurrence identity is
+  the **component-label path**, never the leaf label (one product's label is
+  shared by all its occurrences). `part_id` is required only for a **flat**
+  import; on a structured one it is reported ignored (the browser always sends
+  it). The whole instance batch is **one** `set_instances` write + one trailing
+  `project_changed` — one undo step, never one per occurrence.
+- **Every interop result carries `fidelity`**, exports and imports alike, and
+  an axis the format cannot carry is **absent** rather than `"none"` ("STL has
+  no PMI" is not news, "your STEP dropped a datum" is). A structured STEP
+  carries no `pmi` axis at all — `pmi: "none"` there would read as "yours was
+  dropped". `parametric: "none"` is on every one of them, and imports report
+  `pmi: "not_read"` (we do not read foreign PMI yet).
+- `core/gltf.py`, `core/usd_export.py` and `core/interop_colors.py` are
+  **OCP-free** server-process code (probed in a fresh interpreter with OCP and
+  build123d blocked) — glTF/GLB and USD are written from the cached ACM1
+  buffers, and the conversion itself makes no kernel call. `tools_xchange`'s
+  `_part_item` still reads that buffer through `mesh_info`, so an unbuilt or
+  stale part IS built first (a kernel round trip) before the OCP-free
+  conversion runs — "no kernel round trip" describes the mesh→glTF/USD step,
+  not the whole export. `gltf.py` is the **third** mirror
+  of the ACM1 layout (`kernel/acm.py` packs it, `viewport.js` parses it); keep
+  it minimal and written from that documented layout rather than importing the
+  kernel (the pure tests synthesize their buffers the same way on purpose; the
+  cross-check against real `acm.pack` output is the kernel-backed suite,
+  `tests/test_xchange_pack.py`).
 
 ## Conventions (match these)
 

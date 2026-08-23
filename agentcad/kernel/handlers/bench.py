@@ -1,12 +1,12 @@
 """Worker handler pack for the bench geometry scorer (PRD-024).
 
 ``iou`` measures how much of the candidate is the reference, and vice versa, as
-one number. Four traps this handler is written around:
+one number. Five traps this handler is written around:
 
 * **Only the intersection is booleaned.** ``union = volA + volB - inter`` is
   arithmetic; a ``|`` on multi-solid Compound operands is exactly the operand
-  shape ``worker.pairwise_interference`` warns about (``worker.py:650-653``),
-  and it would double the OCCT failure surface for a number we already have.
+  shape ``worker.pairwise_interference``'s docstring warns about, and it would
+  double the OCCT failure surface for a number we already have.
 * **Both sides are decomposed into solids**, for ``pairwise_interference``'s
   two reasons: build123d's ``&`` misbehaves when an operand is a multi-solid
   Compound, and an AABB prefilter skips almost all of the N*M work. The
@@ -22,6 +22,14 @@ one number. Four traps this handler is written around:
 * **Every boolean is guarded** into a ``WorkerError(ERROR_KERNEL, ...,
   {"stage": ...})`` so the scorer can record ``status: "error"`` (FR7) rather
   than crash the harness or bank a silent zero.
+* **A boolean that lies is refused, not banked.** OCCT 7.9 returns an empty
+  (or negative-volume) intersection, with no error, for operands carrying
+  G1-tangent face junctions — any filleted swept solid. Two *coincident*
+  copies of the bench's own coolant elbow intersect to nothing. That is the
+  worst possible IoU input: the candidate is the reference and the handler
+  would answer ``iou: 0.0``. ``_bop.checked_common_volume`` detects it and the
+  handler raises the same kernel error every other failed boolean raises, so
+  the subscore is ``error`` and **excluded**, never a banked false zero.
 
 Volumes come from ``shape_volume`` (sum over ``shape.solids()``), never
 ``.volume``: a boolean result is routinely a nested Compound and
@@ -47,6 +55,8 @@ from __future__ import annotations
 import contextlib
 import math
 import sys
+
+from ._bop import checked_common_volume
 
 ALIGN_MODES = ("world", "com", "bbox_center")
 
@@ -138,11 +148,25 @@ def register(toolbox: dict) -> dict:
                     or a.max.Y < b.min.Y - tol or b.max.Y < a.min.Y - tol
                     or a.max.Z < b.min.Z - tol or b.max.Z < a.min.Z - tol)
 
-    def _common_volume(solid_a, solid_b) -> float:
-        common = solid_a & solid_b
-        if common is None or getattr(common, "wrapped", None) is None:
-            return 0.0
-        return max(shape_volume(common), 0.0)
+    def _common_volume(solid_a, box_a, solid_b, box_b) -> float:
+        """One pair's intersection volume, or a kernel error if OCCT lied.
+
+        The old body clamped with ``max(volume, 0.0)`` and returned ``0.0`` on
+        an empty result — which laundered both of ``_bop``'s degenerate
+        signatures (a negative volume, and an empty intersection between
+        solids that plainly overlap) into a confident, wrong zero.
+        """
+        volume, degenerate = checked_common_volume(
+            solid_a, box_a, solid_b, box_b, shape_volume)
+        if degenerate:
+            raise WorkerError(
+                ERROR_KERNEL,
+                "iou unavailable: degenerate boolean — OCCT could not "
+                "intersect this solid pair (tangent-jointed swept solids are "
+                "unreliable BOP operands in OCCT 7.9); refusing to bank the "
+                "empty result as a measurement",
+                {"stage": "intersect"})
+        return volume
 
     def _decompose(shape) -> list:
         return [(s, s.bounding_box()) for s in (shape.solids() or [shape])]
@@ -159,7 +183,8 @@ def register(toolbox: dict) -> dict:
             for solid_a, box_a in left:
                 for solid_b, box_b in right:
                     if _boxes_touch(box_a, box_b):
-                        total += _common_volume(solid_a, solid_b)
+                        total += _common_volume(solid_a, box_a,
+                                                solid_b, box_b)
         return total
 
     def handle_iou(params: dict) -> dict:

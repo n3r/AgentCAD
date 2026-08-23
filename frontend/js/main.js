@@ -690,7 +690,81 @@ async function deletePart(partId) {
 
 // ------------------------------------------------------------------ export
 
-async function runExport(kind, format) {
+/** A compact " · …" toast suffix from an export/import result's `fidelity`
+ *  and `warnings` (PRD-017 deliverables 3–4). PMI presence/opt-out is always
+ *  worth a word (it is the whole point of the toggle below); everything else
+ *  — a skipped PMI entry, an import warning — only shows up when there is
+ *  something to say, so the happy path stays one short line. */
+function resultSuffix(result) {
+  const bits = [];
+  const attached = result && result.pmi_attached;
+  if (attached) {
+    const total = (attached.dims || 0) + (attached.datums || 0) + (attached.fcf || 0);
+    if (total) {
+      bits.push(
+        `PMI attached (${attached.dims || 0} dim${attached.dims === 1 ? "" : "s"}, `
+        + `${attached.datums || 0} datum${attached.datums === 1 ? "" : "s"}, `
+        + `${attached.fcf || 0} FCF${attached.fcf === 1 ? "" : "s"})`
+      );
+    }
+  }
+  const fid = (result && result.fidelity) || {};
+  if (fid.pmi === "opted_out") bits.push("PMI opted out");
+  const skipped = Array.isArray(fid.pmi_skipped) ? fid.pmi_skipped : [];
+  if (skipped.length) {
+    bits.push(`PMI: ${skipped.length} entr${skipped.length === 1 ? "y" : "ies"} skipped`);
+  }
+  // An assembly export's own skip list (an unbuilt/broken instance) — the
+  // same "never silent" rule the PMI skip line above follows.
+  const instancesSkipped = Array.isArray(fid.instances_skipped)
+    ? fid.instances_skipped : [];
+  if (instancesSkipped.length) {
+    bits.push(`${instancesSkipped.length} `
+      + `instance${instancesSkipped.length === 1 ? "" : "s"} skipped`);
+  }
+  const warnings = (result && result.warnings) || [];
+  if (warnings.length) {
+    bits.push(`${warnings.length} warning${warnings.length === 1 ? "" : "s"}`);
+  }
+  return bits.length ? ` · ${bits.join(" · ")}` : "";
+}
+
+/** STEP part export only: when the part has PMI stored, ask whether to
+ *  attach it (default yes — the same default `export_part`'s wrapper
+ *  applies server-side when `pmi` is omitted). Returns `true`/`false` to
+ *  pass explicitly, or `null` when the user cancelled the export outright.
+ *  A part with no PMI never sees a dialog — there is nothing to opt out of. */
+async function promptIncludePmi(partId) {
+  let info;
+  try {
+    info = await api.callTool("get_part_pmi", {
+      project: state.projectName, part_id: partId,
+    });
+  } catch {
+    return true; // couldn't check — the export still runs on the server's own default
+  }
+  const pmi = (info && !info.error && info.pmi) || {};
+  const hasPmi = ["dims", "datums", "fcf"]
+    .some((k) => Array.isArray(pmi[k]) && pmi[k].length);
+  if (!hasPmi) return true;
+  const values = await dialogs.form({
+    view: "export-step-pmi",
+    title: "Export STEP",
+    width: "narrow",
+    body: `${partId} has PMI (GD&T) attached.`,
+    fields: [{
+      name: "pmi", type: "checkbox", value: true,
+      label: "Include GD&T (AP242)",
+    }],
+    buttons: [
+      { id: "cancel", label: "Cancel" },
+      { id: "export", label: "Export", kind: "primary", submits: true },
+    ],
+  });
+  return values ? !!values.pmi : null;
+}
+
+async function runExport(kind, format, structured) {
   if (!state.projectName) return;
   try {
     let result;
@@ -715,14 +789,34 @@ async function runExport(kind, format) {
       // payload, so this costs no round trip.
       diverged = !!(cfg && state.part && state.part.status
         && state.part.status.diverged);
-      result = cfg
+      let pmi;
+      if (format === "step") {
+        pmi = await promptIncludePmi(state.selectedPart);
+        if (pmi === null) return; // cancelled at the PMI checkbox
+      }
+      // The REST export route (`api.exportPart`) forwards no `pmi` — only the
+      // tool passthrough can opt out — so a STEP export always goes through
+      // `callTool`, config or not; every other format keeps the plain route.
+      result = cfg || pmi !== undefined
         ? await api.callTool("export_part", {
             project: state.projectName,
             part_id: state.selectedPart,
             format,
-            config: cfg,
+            config: cfg || undefined,
+            pmi,
           })
         : await api.exportPart(state.projectName, state.selectedPart, format);
+      // The passthrough answers {error} at HTTP 200 on a tool failure.
+      if (result && result.error) {
+        toast(`Export failed: ${result.error.message || "error"}`, "error");
+        return;
+      }
+    } else if (structured) {
+      // The plain assembly export route takes no `structured` flag — same
+      // reason the STEP-part path above needs `callTool` for `pmi`.
+      result = await api.callTool("export_assembly", {
+        project: state.projectName, format, structured: true,
+      });
       // The passthrough answers {error} at HTTP 200 on a tool failure.
       if (result && result.error) {
         toast(`Export failed: ${result.error.message || "error"}`, "error");
@@ -735,7 +829,7 @@ async function runExport(kind, format) {
     const note = diverged
       ? " — the configuration as declared; your edits are not in it"
       : "";
-    toast(`Exported ${result.path} (${kb} KB)${note}`);
+    toast(`Exported ${result.path} (${kb} KB)${note}${resultSuffix(result)}`);
   } catch (err) {
     const detail = err instanceof ApiError ? err.error.message : String(err);
     toast(`Export failed: ${detail}`, "error");
@@ -819,6 +913,11 @@ function updateGizmo() {
 
 // ---------------------------------------------------------------- import
 
+// The kernel pack's own list (`tools_import.STRUCTURED_EXTS`) — only these
+// carry a product tree worth previewing; STL/BREP go straight to the
+// unchanged flat prompt.
+const STRUCTURED_IMPORT_EXTS = new Set([".step", ".stp"]);
+
 function deriveImportId(filename) {
   let id = (filename || "part")
     .replace(/\.[^.]*$/, "") // drop extension
@@ -830,27 +929,19 @@ function deriveImportId(filename) {
   return id.slice(0, 40) || "reference";
 }
 
-async function handleImportFile(file) {
-  if (!file) return;
-  if (!state.projectName) {
-    toast("Open a project first", "error");
-    return;
-  }
-  let upload;
-  try {
-    const buf = await file.arrayBuffer();
-    upload = await api.uploadImport(state.projectName, file.name, buf);
-  } catch (err) {
-    const detail = err instanceof ApiError ? err.error.message : String(err);
-    toast(`Upload failed: ${detail}`, "error");
-    return;
-  }
+/** Today's single-part landing, unchanged: prompt for a part id, then
+ *  `import_cad_file`. `opts` carries `{structured: false}` only when the
+ *  preview dialog's "Import flat instead" forced it — the natural path (no
+ *  preview, or a single-product file) sends no `structured` key at all, so
+ *  the tool's own auto-detect (a no-op for these files) decides exactly as
+ *  it did before this slice. */
+async function importFlat(upload, originalName, opts) {
   const answer = await dialogs.prompt({
     view: "import-part-id",
     title: "Name the imported part",
     body: `Imported “${upload.source}”.`,
     label: "Part id",
-    value: deriveImportId(file.name),
+    value: deriveImportId(originalName),
     pattern: bare(ID_RE),
     patternMessage: "lowercase letters, digits, _; max 40",
     okLabel: "Import",
@@ -866,6 +957,7 @@ async function handleImportFile(file) {
       source: upload.source,
       part_id: id,
       label: id,
+      ...(opts || {}),
     });
   } catch (err) {
     const detail = err instanceof ApiError ? err.error.message : String(err);
@@ -887,7 +979,159 @@ async function handleImportFile(file) {
   if (imp.n_solids != null) {
     bits.push(`${imp.n_solids} solid${imp.n_solids === 1 ? "" : "s"}`);
   }
-  toast(`Imported ${id}${bits.length ? ` (${bits.join(", ")})` : ""}`);
+  toast(`Imported ${id}${bits.length ? ` (${bits.join(", ")})` : ""}${resultSuffix(res)}`);
+}
+
+/** The preview dialog's product list: one `.row` per unique product (the
+ *  tree.js sidebar styling, reused rather than reinvented), a swatch in its
+ *  authored colour and a `×N` occurrence badge — "14 products, 41
+ *  occurrences" is the summary line above it; this is the "names +
+ *  per-product occurrence counts" the design spec asks for. */
+function renderImportProductTree(preview) {
+  const counts = new Map();
+  for (const occ of preview.occurrences || []) {
+    counts.set(occ.product_index, (counts.get(occ.product_index) || 0) + 1);
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "import-tree";
+  for (const product of preview.products || []) {
+    const row = document.createElement("div");
+    row.className = "row import-tree-row";
+    const swatch = document.createElement("span");
+    swatch.className = "row-swatch";
+    swatch.style.background = product.color || "#8f9aa6";
+    row.appendChild(swatch);
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = product.name;
+    row.appendChild(label);
+    const n = counts.get(product.index) || 0;
+    const badge = document.createElement("span");
+    badge.className = "row-badge";
+    badge.textContent = `×${n}`;
+    badge.title = `${n} occurrence${n === 1 ? "" : "s"} of ${product.name}`;
+    row.appendChild(badge);
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+/** PRD-017 FR8-FR9's dialog: a multi-product STEP file's product tree, a
+ *  prefix field, and the choice between landing it structured (N reference
+ *  parts + N instances) or flat (today's one-part prompt, unchanged). */
+async function openImportPreview(upload, preview, originalName) {
+  const wrap = document.createElement("div");
+  const nProducts = preview.counts.products;
+  const nOcc = preview.counts.occurrences;
+  const summary = document.createElement("p");
+  summary.className = "dlg-text";
+  summary.textContent =
+    `${nProducts} product${nProducts === 1 ? "" : "s"}, `
+    + `${nOcc} occurrence${nOcc === 1 ? "" : "s"}`;
+  wrap.append(summary, renderImportProductTree(preview));
+
+  const res = await dialogs.open({
+    view: "import-preview",
+    title: "Import preview",
+    width: "wide",
+    body: wrap,
+    fields: [{
+      name: "prefix",
+      label: "Part id prefix (optional)",
+      value: "",
+      placeholder: "e.g. vendor",
+      pattern: "[a-z0-9_]*",
+      patternMessage: "lowercase letters, digits, _ only",
+      help: "Prepended to every generated part id.",
+    }],
+    buttons: [
+      { id: "cancel", label: "Cancel" },
+      { id: "flat", label: "Import flat instead" },
+      {
+        id: "structured", kind: "primary", submits: true,
+        label: `Import ${nProducts} part${nProducts === 1 ? "" : "s"}`,
+      },
+    ],
+  });
+  if (res.button === "flat") {
+    await importFlat(upload, originalName, { structured: false });
+    return;
+  }
+  if (!res.ok) return; // cancelled, or dismissed by clicking outside
+
+  const prefix = String(res.values.prefix || "").trim();
+  let result;
+  try {
+    result = await api.callTool("import_cad_file", {
+      project: state.projectName,
+      source: upload.source,
+      structured: true,
+      ...(prefix ? { prefix } : {}),
+    });
+  } catch (err) {
+    const detail = err instanceof ApiError ? err.error.message : String(err);
+    toast(`Import failed: ${detail}`, "error");
+    return;
+  }
+  if (result && result.error) {
+    toast(`Import failed: ${result.error.message || "error"}`, "error");
+    return;
+  }
+  await refreshProject();
+  if ((result.instances || []).length) await selectAssembly(null);
+  const nParts = (result.parts || []).length;
+  const nInstances = (result.instances || []).length;
+  toast(
+    `Imported ${nParts} part${nParts === 1 ? "" : "s"}, `
+    + `${nInstances} instance${nInstances === 1 ? "" : "s"}${resultSuffix(result)}`
+  );
+}
+
+async function handleImportFile(file) {
+  if (!file) return;
+  if (!state.projectName) {
+    toast("Open a project first", "error");
+    return;
+  }
+  let upload;
+  try {
+    const buf = await file.arrayBuffer();
+    upload = await api.uploadImport(state.projectName, file.name, buf);
+  } catch (err) {
+    const detail = err instanceof ApiError ? err.error.message : String(err);
+    toast(`Upload failed: ${detail}`, "error");
+    return;
+  }
+
+  const ext = (upload.source.match(/\.[^.]*$/) || [""])[0].toLowerCase();
+  if (STRUCTURED_IMPORT_EXTS.has(ext)) {
+    let preview = null;
+    try {
+      preview = await api.previewImport(state.projectName, upload.source);
+    } catch {
+      // Non-STEP-shaped upload (422/404) or an unreadable file (502): the
+      // preview is a convenience, never the import — fall through to today's
+      // prompt with no error shown (the plan is explicit: no error dialog).
+      preview = null;
+    }
+    // Gate on the server's name-aware auto-detect rule (PRD-017 review
+    // fix): a re-imported multi-solid AgentCAD export must NOT bounce
+    // through this dialog just because it has several occurrences, or its
+    // primary button explodes it into N anonymous SOLID parts. Fall back to
+    // the old occurrence-count rule ONLY when `structured_suggested` is
+    // absent from the payload (an older server) — an explicit `false` means
+    // straight to the flat prompt no matter the occurrence count.
+    const suggestsStructured = preview && (
+      preview.structured_suggested === true
+      || (preview.structured_suggested === undefined
+          && preview.counts && preview.counts.occurrences > 1)
+    );
+    if (suggestsStructured) {
+      await openImportPreview(upload, preview, file.name);
+      return;
+    }
+  }
+  await importFlat(upload, file.name);
 }
 
 function setupLibrary() {
@@ -1686,23 +1930,58 @@ async function newBranchPrompt(args) {
   await switchToBranch(name); // creating does not switch you server-side
 }
 
+/** One toolbar Export▾ row for an already-graded `actions.list()` entry
+ *  (`kind`/`format`/`enabled` all ride on the spec — see
+ *  `registerExportAction`). Kept a plain button, same markup the old
+ *  hand-written HTML used, so `app.css`'s `.menu-item`/`.meta` styling needs
+ *  no changes. */
+function exportMenuItem(spec) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "menu-item";
+  // The trailing flag distinguishes the structured-STEP assembly row from
+  // the plain STEP row — both share kind:"assembly", format:"step".
+  btn.dataset.export = `${spec.kind}:${spec.format}:${spec.structured ? "1" : "0"}`;
+  btn.disabled = !spec.enabled;
+  const label = document.createElement("span");
+  label.textContent = spec.label || String(spec.format).toUpperCase();
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = `.${spec.format}`;
+  btn.append(label, meta);
+  return btn;
+}
+
+/** PRD-017 deliverable 2: the toolbar Export▾ menu's Part/Assembly rows are
+ *  built from `actions.list()` — the SAME rows the generated File menu
+ *  shows — every time the dropdown opens, rather than a second hand-written
+ *  copy in `index.html`. A format registered late (the dynamic sync above,
+ *  or a concurrent pack landing after boot) appears here the next time the
+ *  menu opens, with zero code here. */
+function renderExportSection(container, kind) {
+  container.textContent = "";
+  const ctx = actions.context();
+  for (const spec of actions.list(ctx)) {
+    if (spec.kind !== kind || !spec.id.startsWith("project.export.")) continue;
+    container.appendChild(exportMenuItem(spec));
+  }
+}
+
 function setupExportMenu() {
   const btn = document.getElementById("export-btn");
   const menu = document.getElementById("export-menu");
+  const partItems = document.getElementById("export-part-items");
+  const assemblyItems = document.getElementById("export-assembly-items");
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
     if (!menu.classList.contains("hidden")) {
       setMenuHidden(menu, true);
       return;
     }
-    const hasPart = !!state.selectedPart;
-    const hasInstances =
-      state.project && state.project.assembly.instances.length > 0;
-    for (const item of menu.querySelectorAll("[data-export]")) {
-      const [kind] = item.dataset.export.split(":");
-      item.disabled = kind === "part" ? !hasPart : !hasInstances;
-    }
+    renderExportSection(partItems, "part");
+    renderExportSection(assemblyItems, "assembly");
     // Drawings are script-part only (the server rejects references).
+    const hasPart = !!state.selectedPart;
     const selInfo = state.selectedPart && state.partKinds[state.selectedPart];
     const selKind = selInfo
       ? selInfo.kind
@@ -1730,8 +2009,8 @@ function setupExportMenu() {
     const item = e.target.closest("[data-export]");
     if (!item || item.disabled) return;
     setMenuHidden(menu, true);
-    const [kind, format] = item.dataset.export.split(":");
-    runExport(kind, format);
+    const [kind, format, structuredFlag] = item.dataset.export.split(":");
+    runExport(kind, format, structuredFlag === "1");
   });
 }
 
@@ -2531,9 +2810,71 @@ function enterMarket() {
   window.location.reload();
 }
 
+// Module scope (not local to registerActions()): `syncDynamicExportFormats`
+// below registers more of these after boot, once the live tool schema is in
+// hand, and needs the same eligibility predicate the static rows use.
+const hasProject = (c) => !!c.projectName;
+
+// The next free "File" menu rank for a format `syncDynamicExportFormats`
+// discovers that the static EXPORTS table below does not already cover
+// (usd, structured/3mf assembly export, …) — after file/40-53's static rows
+// and clear of file/60 ("Share a part…") below.
+let nextExportMenuRank = 65;
+
+/** One `project.export.<kind>.<format>` action — the static EXPORTS loop and
+ *  `syncDynamicExportFormats` both funnel through this so the two can never
+ *  register the same id with different shapes. `kind`/`format` ride on the
+ *  action spec itself (extra properties `actions.register` does not mind) so
+ *  the toolbar Export▾ menu can rebuild its rows straight from
+ *  `actions.list()` — see `renderExportSection` — instead of keeping a
+ *  second, hand-authored copy of "what formats exist" in `index.html`. */
+function registerExportAction(kind, format, menuRank) {
+  const id = `project.export.${kind}.${format}`;
+  if (actions.get(id)) return; // already covered by the static table
+  actions.register({
+    id, kind, format,
+    title: `Export ${kind} as ${String(format).toUpperCase()}`,
+    group: "Export", menu: menuRank, keywords: ["save", "download"],
+    when: hasProject,
+    // Both halves read `ctx`, never module state: a synthetic context (the
+    // palette's, a test's) must grade the row the same way the live one does.
+    enabled: (c) => (kind === "part" ? !!c.selectedPart : !!c.hasInstances),
+    run: () => runExport(kind, format),
+  });
+}
+
+/** PRD-017 deliverable 2: the formats the STATIC table below does not know
+ *  about, discovered from the live tool schema (`GET /api/tools`, the same
+ *  registry the palette already reads) and registered the same way — so
+ *  `usd` (flagged), a concurrent slice's `3mf` on `export_assembly`, or a
+ *  future format all appear with zero code here once the pack that adds them
+ *  mutates the schema. Best-effort: an unreachable server at boot just means
+ *  the menu shows the static formats until the next call succeeds. */
+async function syncDynamicExportFormats() {
+  let payload;
+  try {
+    payload = await api.listTools();
+  } catch {
+    return;
+  }
+  const byName = new Map(
+    ((payload && payload.tools) || []).map((t) => [t.name, t])
+  );
+  for (const [kind, toolName] of
+       [["part", "export_part"], ["assembly", "export_assembly"]]) {
+    const tool = byName.get(toolName);
+    const props = tool && tool.input_schema && tool.input_schema.properties;
+    const enumValues = props && props.format && Array.isArray(props.format.enum)
+      ? props.format.enum
+      : [];
+    for (const format of enumValues) {
+      registerExportAction(kind, format, `file/${nextExportMenuRank++}`);
+    }
+  }
+}
+
 function registerActions() {
   const A = (spec) => actions.register(spec);
-  const hasProject = (c) => !!c.projectName;
   const hasPart = (c) => !!c.selectedPart;
   const inAssembly = (c) => c.mode === "assembly";
   const onBranch = (c) => !!c.branch;
@@ -2561,21 +2902,34 @@ function registerActions() {
       run: () => openImportPicker() });
   const EXPORTS = [
     ["part", "step", "file/40"], ["part", "stl", "file/41"],
-    ["part", "3mf", "file/42"],
+    ["part", "3mf", "file/42"], ["part", "gltf", "file/43"],
+    ["part", "glb", "file/44"],
     ["assembly", "step", "file/50"], ["assembly", "stl", "file/51"],
+    ["assembly", "gltf", "file/52"], ["assembly", "glb", "file/53"],
+    // Was reachable only via the un-awaited dynamic schema sync below (it
+    // renders last, and vanishes entirely if the boot fetch fails) — a
+    // static row so it is there from first paint like every other format.
+    ["assembly", "3mf", "file/54"],
   ];
   for (const [kind, format, menu] of EXPORTS) {
-    A({
-      id: `project.export.${kind}.${format}`,
-      title: `Export ${kind} as ${format.toUpperCase()}`,
-      group: "Export", menu, keywords: ["save", "download"],
-      when: hasProject,
-      // Both halves read `ctx`, never module state: a synthetic context (the
-      // palette's, a test's) must grade the row the same way the live one does.
-      enabled: (c) => (kind === "part" ? !!c.selectedPart : !!c.hasInstances),
-      run: () => runExport(kind, format),
-    });
+    registerExportAction(kind, format, menu);
   }
+  // PRD-017's Experience section promises the human path can produce a
+  // structured assembly STEP (product tree, not the fused compound) —
+  // today only the agent path (`export_assembly {structured: true}`)
+  // could reach it. Same STEP format as the row above but explicitly
+  // flagged, mirroring the STEP-part `callTool` precedent (`promptIncludePmi`).
+  A({
+    id: "project.export.assembly.step_structured",
+    kind: "assembly", format: "step", structured: true,
+    label: "STEP (structured)",
+    title: "Export assembly as structured STEP (product tree)",
+    group: "Export", menu: "file/55",
+    keywords: ["save", "download", "structured", "product tree", "step"],
+    when: hasProject,
+    enabled: (c) => !!c.hasInstances,
+    run: () => runExport("assembly", "step", true),
+  });
   A({ id: "project.share", title: "Share a part…", group: "Project",
       menu: "file/60",
       // Hosted mode only: share-links.js unhides the button once it knows the
@@ -2866,6 +3220,12 @@ async function boot() {
   // action lands — and a conflict throws from that registration.
   shortcuts.init({ actions, dialogs });
   registerActions();
+  // PRD-017 deliverable 2: not awaited — the static EXPORTS rows already work,
+  // and this only ADDS rows (usd, a concurrent slice's assembly 3mf, …) once
+  // the live schema answers. `actions.register` fires `onChange` per row, so
+  // the File menu (and, on its next open, the toolbar Export▾ menu) update on
+  // their own the moment each one lands.
+  syncDynamicExportFormats();
   // After registerActions() (so the first render has every File/Edit/View/
   // Model/Help row) and after shortcuts.init() (so the three toggle actions
   // layout.init() registers get their chords bound through the same

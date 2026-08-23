@@ -578,6 +578,13 @@ export const api = {
   sketchBlocks: (script) =>
     request("POST", "/api/sketch/blocks", { script }),
 
+  /** The uploaded STEP file's product tree (PRD-017 FR8) — read-only, no
+   *  writes. Resolves `{products, occurrences, tree, counts, warnings}`;
+   *  throws ApiError (422 non-STEP, 404 not uploaded, 502 unreadable) —
+   *  callers fall back to the flat import prompt on any failure. */
+  previewImport: (proj, name) =>
+    request("POST", `/api/projects/${enc(proj)}/imports/${enc(name)}/preview`),
+
   /** Raw-body upload of an imported CAD file. Resolves {source, size_bytes};
    *  throws ApiError on rejection (too large, bad extension, empty). */
   async uploadImport(proj, filename, arrayBuffer) {

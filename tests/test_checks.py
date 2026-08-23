@@ -208,6 +208,35 @@ def test_the_summary_is_every_stages_items_flattened():
     assert report["status"] == "red" and report["exit_code"] == 1
 
 
+def test_a_pair_the_kernel_could_not_boolean_reads_as_indeterminate():
+    """A degenerate pair (kernel/handlers/_bop.py) is in `pairs` because the
+    worker fails closed, and its `volume_mm3` is 0.0 and means nothing. Rendered
+    with the ordinary sentence it would say "overlap by 0.0 mm³", which reads as
+    a rounding artefact — the opposite of "the measurement did not happen".
+    `_pair_item` touches no `self`, so it is callable unbound: still a pure
+    test, no kernel."""
+    from agentcad.core.checks import CheckRunner
+
+    row = CheckRunner._pair_item(None, {"a": "elbow_a", "b": "elbow_b",
+                                        "volume_mm3": 0.0,
+                                        "degenerate": True}, set(), [])
+
+    assert row["status"] == "fail"
+    assert row["message"] == ("elbow_a and elbow_b: indeterminate (degenerate "
+                              "boolean) — counted as interfering")
+    assert row["details"]["degenerate"] is True
+
+
+def test_an_ordinary_overlapping_pair_keeps_the_sentence_it_always_had():
+    from agentcad.core.checks import CheckRunner
+
+    row = CheckRunner._pair_item(None, {"a": "a", "b": "b",
+                                        "volume_mm3": 812.4}, set(), [])
+
+    assert row["message"] == "a and b overlap by 812.4 mm³"
+    assert "degenerate" not in row["details"]
+
+
 def test_requirements_come_from_the_specs_stages_rows():
     specs_stage = make_stage("specs", [
         make_item("specs", "check", "nozzle:throat_wall", "pass", "3.0 mm",

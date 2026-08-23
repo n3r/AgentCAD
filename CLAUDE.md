@@ -296,6 +296,49 @@ This project is built skill-first. Use the Superpowers process skills:
   strips) · the **only** write root either command grants the confined worker
   is the work dir — never the task bundle (a candidate script would rewrite
   the reference STEP it is scored against) and never the submission.
+- Interop (`kernel/handlers/interop.py`, `interop_import.py`, `_pmi_map.py`,
+  `core/tools_xchange.py`, `gltf.py`, `usd_export.py`, `interop_colors.py`,
+  PRD-017): the **six AP242 traps** — **bake** the location (a located shape's
+  sub-shape labels are null, so every `SetDatum` fails silently; *dropping* it
+  teleports an off-origin part) · construct the writer **then** set
+  `write.step.schema = AP242DIS`, **assert** the setter and **restore** it
+  (process-global: left set it re-schemas every later plain export; set early
+  it is a no-op and the file is AP214 with zero PMI) · `DatumObject.SetPosition`
+  always · **≥1 dimension** or the document mints METRE units (0.05 mm reads
+  back 50.0) — FCF-only PMI gets an auxiliary bbox dim + a `pmi_notes` row ·
+  tolerances as **magnitudes** (the writer negates; only the STEP text catches
+  it) · `Location_WithPath`/`Size_WithPath`/2-target `Location_Oriented`
+  **segfault** the writer (exit 139, no Python exception), and angular dims
+  round-trip in **mismatched units** — a different failure, but both must
+  stay `pmi_skipped` **refusals**, never reachable as a crash ·
+  a datum **nothing references** is in the file but invisible to
+  `GetDatumLabels`, and `read_step_pmi` matches by **(type, value, tol,
+  target)** and datums by **name** (identity does not survive the writer; a
+  two-datum FCF reads back as three labels) · colour is **sRGB on the wire,
+  linear in glTF/USD**: read with `Quantity_Color.Values(Quantity_TOC_sRGB)`
+  (`.Red()` is linear and darkens every import), write through
+  `srgb_to_linear` for `baseColorFactor`/`displayColor` · **`tools_xchange` is
+  named for load order** — `tools_structure` *replaces* `export_assembly`, so
+  the pack must sort after it and wrap the **final** methods (`_WRAPPED`), and
+  the in-place schema mutation must **rebind the handler** too or the new
+  arguments are a `TypeError` · `Mesher.add_shape(Part)` **drops names and
+  colours** — decompose to `solids()` and stamp each one first; and a
+  single-solid product must be added as a **`TopoDS_Solid`** or every
+  per-occurrence colour override is dropped · **3MF is never byte-hashed**
+  (fresh `p:UUID` per object per write — the DXF precedent); `CreationDate` is
+  PRD-014's version date, omitted when it is `"-"` · **`usd-core` has no
+  linux-aarch64 wheel** — the extra's marker is load-bearing (`make test-linux`
+  is arm64) and importing `usd_export` must not import `pxr` · pxr's
+  `rotateXYZ` composes **reversed** (row vectors), so the pose is one
+  `xformOp:transform` **matrix**; glTF instead converts Z-up→Y-up with **one
+  root node** (−90° X, stated in `asset.extras`), USD only **declares**
+  (`upAxis Z`, `metersPerUnit 0.001`) · the structured-import auto-detect is
+  **name-aware**, not count-only (our own multi-solid export reads back as N
+  anonymous `SOLID` occurrences), occurrence identity is the **component-label
+  path**, `part_id` is required only for a **flat** import, and the instance
+  batch is **one** `set_instances` write · every result carries `fidelity`, an
+  axis the format cannot carry is **absent** (never `"none"`), and
+  `parametric: "none"` is always there.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests
