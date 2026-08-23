@@ -722,12 +722,17 @@ the server-side code it measures.
     which measures the same fact through mass, volume and bbox. This is an
     OCCT/product observation, not a bench one: any AgentCAD feature that
     booleans an imported swept surface meets it.
-  * *Generated view bounds undersize a curved silhouette.*
-    `kernel/handlers/drawing.py`'s `_view_bounds` samples each edge at six
-    points, which is exact for a line and wrong for a circle, so a sheet's
-    overall dimensions can come out under the truth. `author.py drawing`
-    refuses to write such a sheet (`check_dims=True`), because a bench asset
-    that contradicts its own part is a task nobody can solve.
+  * *Generated view bounds undersized a curved silhouette* — **fixed**
+    (changelog 0307). `kernel/handlers/drawing.py`'s `_view_bounds` sampled
+    each edge at six points, which is exact for a line and wrong for a circle,
+    so a sheet's overall dimensions came out under the truth: mfd_003's Ø140
+    flange was auto-dimensioned 132.641. It now takes each edge's own bounding
+    box, and the same change made `_edge_prim` emit a real two-point line and a
+    real arc instead of up to 256 sampled points. `author.py drawing` still
+    refuses to write a sheet whose overall dimensions contradict the part
+    (`check_dims=True`) — that guard stays live, because a bench asset that
+    contradicts its own part is a task nobody can solve and the check is a
+    regex.
 * **A build that times out or crashes is the candidate's, and it is a zero.**
   Nothing in the scorer shortens a build's own ceiling, so with no `--budget` a
   `timeout` is a fact about how long the candidate's script runs, and a worker

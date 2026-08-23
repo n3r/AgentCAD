@@ -158,9 +158,13 @@ class Circle:
 
 @dataclass(frozen=True)
 class Arc:
-    #: Kept in the vocabulary for Slice 3 section outlines; the SVG backend
-    #: renders it as an elliptical-arc path segment. Angles in degrees, CCW,
-    #: measured in the sheet plane (y-down).
+    #: A circular arc. Angles in degrees measured in the sheet plane (y-down),
+    #: swept from ``start_deg`` to ``end_deg`` in the direction of INCREASING
+    #: angle — the SVG backend renders that as a positive-sweep elliptical-arc
+    #: path segment and the PDF backend as the matching Bezier chain. Its
+    #: producer is ``drawing._edge_prim``, which emits one for every open
+    #: circular projected edge (changelog 0307; before that it was vocabulary
+    #: with no producer, kept for Slice 3 section outlines).
     cx: float
     cy: float
     r: float

@@ -6,6 +6,7 @@ exercises it works on a `tmp_path` copy of a shipped bundle, and the pure
 functions (`compact_svg`) are tested without a service at all.
 """
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -109,9 +110,11 @@ def test_render_drawing_writes_a_three_view_svg(tmp_path, kernel):
     for view in ("TOP", "FRONT", "RIGHT"):
         assert f">{view}<" in text
     assert "ISO" not in text                 # `DEFAULT_VIEWS` is three views
-    # The compaction runs on the way out: the raw handler output tessellates
-    # every straight edge into up to 256 points, so a compacted sheet has no
-    # path anywhere near that long.
+    # No outline path is a tessellation. The drawing handler emits a LINE as
+    # two points and a circular edge as a real `<circle>`/`A` arc (changelog
+    # 0307), and `compact_svg` collapses what is left — the ellipse/bspline
+    # sampler's output — to within `PATH_EPSILON`. Either way no path here is
+    # anywhere near the sampler's 256-point ceiling.
     longest = max((len(chunk.split(" L "))
                    for chunk in text.split('d="M ')[1:]), default=0)
     assert 0 < longest < 64
@@ -311,34 +314,29 @@ def test_every_generated_sheet_dimensions_the_part_it_draws():
 
 
 @pytest.mark.timeout(300)
-def test_render_drawing_refuses_a_sheet_that_contradicts_the_part(tmp_path,
-                                                                  kernel):
-    """The tripwire, end to end, on the part that actually trips it.
+def test_render_drawing_dimensions_the_curved_part_exactly(tmp_path, kernel):
+    """The flange that used to trip the tripwire now renders honestly.
 
-    `handlers/drawing._view_bounds` samples each edge at six points — exact for
-    a line, wrong for a circle — so the flange's plan view is dimensioned
-    132.64 for a Ø140 part while the front view on the same sheet says 140.00.
-    `mfd_003`'s shipped asset carries the corrected annotation; this pins the
-    guard that stops a re-render putting the lie back.
-
-    **If this test ever fails because the render succeeded, the product bug is
-    fixed:** delete the test and re-render `mfd_003`'s asset from the helper.
+    This replaces `test_render_drawing_refuses_a_sheet_that_contradicts_the_
+    part`, whose own docstring instructed its deletion the day the product bug
+    was fixed. `handlers/drawing._view_bounds` sampled each edge at six points
+    — exact for a line, wrong for a circle — so mfd_003's Ø140 plan view was
+    dimensioned 132.64 while the front view on the same sheet said 140. It now
+    takes each edge's own bounding box (changelog 0307), so `check_dims` passes
+    on the curved part instead of refusing it. The guard itself STAYS: it is
+    the thing that would catch a regression here, and it is cheap.
     """
     bundle = _bundle_copy(tmp_path, "model_from_drawing/mfd_003_head_flange")
     service = make_test_service(tmp_path / "projects", kernel)
     from agentcad.core.tools import build_registry
 
     build_registry(service)
-    before = (bundle / "assets" / "drawing.svg").read_text(encoding="utf-8")
-    with pytest.raises(ValidationError) as excinfo:
-        author.render_drawing(bundle, "flange", service=service)
-    assert "contradicts the part" in str(excinfo.value)
-    # Refused BEFORE the write: the good asset is still there.
-    assert (bundle / "assets" / "drawing.svg").read_text(
-        encoding="utf-8") == before
-    # And `check_dims=False` is the deliberate way to look at the bad sheet.
-    author.render_drawing(bundle, "flange", service=service, check_dims=False,
-                          out=tmp_path / "bad.svg")
-    assert author.overall_dim_problems(
-        (tmp_path / "bad.svg").read_text(encoding="utf-8"),
-        [140.0, 140.0, 14.0])
+    target = author.render_drawing(bundle, "flange", service=service,
+                                   check_dims=True)
+    sheet = target.read_text(encoding="utf-8")
+    assert author.overall_dim_problems(sheet, [140.0, 140.0, 14.0]) == []
+    # The plan view's own overall dims, not the front view's: both extents of
+    # the Ø140 silhouette are drawn at 140 now.
+    dims = re.findall(r'fill="#1a56db"[^>]*>([^<]+)</text>', sheet)
+    assert dims.count("140") >= 3, dims
+    assert "132.64" not in sheet

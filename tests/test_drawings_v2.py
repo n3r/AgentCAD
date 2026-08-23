@@ -11,6 +11,7 @@ and the auto-scale are only worth testing against a genuinely projected shape.
 
 from __future__ import annotations
 
+import re
 import shutil
 import xml.etree.ElementTree as ET
 
@@ -293,3 +294,198 @@ def test_version_override_pins_the_title_block_and_is_byte_stable(demo):
         "project": "demo", "part_id": "flange"})
     assert "error" not in derived
     assert "wt-" in _svg(demo)                        # default derives a content ref
+
+
+# ------------------------------------------ exact bounds + real primitives ---
+#
+# `_view_bounds` used to sample six points per edge (exact for a line, wrong
+# for a circle) and `_edge_prim` discretised every non-closed-circle edge into
+# up to 256 points. Both are fixed (changelog 0307): bounds come from each
+# edge's own bounding box, a LINE draws as a two-point polyline and an open
+# CIRCLE as a real arc.
+
+#: A dead-prismatic part: every projected edge in every view is a LINE.
+BLOCK = '''\
+from build123d import *
+
+PARAMS = {
+    "w": {"default": 60.0, "min": 10.0, "max": 200.0, "unit": "mm", "description": "width"},
+    "d": {"default": 40.0, "min": 10.0, "max": 200.0, "unit": "mm", "description": "depth"},
+    "h": {"default": 10.0, "min": 2.0,  "max": 100.0, "unit": "mm", "description": "height"},
+}
+
+def build(p):
+    with BuildPart() as part:
+        Box(p.w, p.d, p.h)
+    return part.part
+'''
+
+#: A part whose top-view silhouette extreme is a PARTIAL arc: a 60 x 40 block
+#: with an R15 lug centred on the +Y edge, so exactly half the cylinder sticks
+#: out. Top-view extents: 60 wide, 20 + 15 + 20 = 55 deep.
+LUG = '''\
+from build123d import *
+
+PARAMS = {
+    "r": {"default": 15.0, "min": 2.0, "max": 100.0, "unit": "mm", "description": "lug radius"},
+}
+
+def build(p):
+    with BuildPart() as part:
+        Box(60, 40, 10)
+        with Locations((0, 20, 0)):
+            Cylinder(radius=p.r, height=10)
+    return part.part
+'''
+
+_DIM_TEXT = re.compile(r'fill="#1a56db"[^>]*>([^<]+)</text>')
+_ARC_PATH = re.compile(
+    r'<path d="M (-?[\d.]+) (-?[\d.]+) A (-?[\d.]+) (-?[\d.]+) 0 (\d) (\d) '
+    r'(-?[\d.]+) (-?[\d.]+)"')
+
+
+@pytest.fixture
+def shapes(kernel, tmp_path):
+    service = make_test_service(tmp_path / "projects", kernel)
+    service.create_project("demo")
+    service.create_part("demo", "block", script=BLOCK)
+    service.create_part("demo", "lug", script=LUG)
+    return service
+
+
+def test_a_curved_silhouette_is_dimensioned_at_its_true_extent(demo):
+    """The Ø140 flange's plan view used to be dimensioned 132.641 — the six
+    point sampler missed the circle's own extremes. Exact per-edge bounding
+    boxes put the silhouette back."""
+    registry = build_registry(demo)
+    result = registry.call("generate_drawing", {
+        "project": "demo", "part_id": "flange", "views": ["top", "front"]})
+    assert "error" not in result, result
+    svg = _svg(demo)
+    dims = _DIM_TEXT.findall(svg)
+    # top view: 140 x 140; front view: 140 x 14. Three "140"s, no undersize.
+    assert dims.count("140") == 3, dims
+    assert "14" in dims, dims
+    assert "132.64" not in svg
+    assert "133.14" not in svg
+
+
+def test_a_prismatic_part_draws_two_point_paths_not_tessellated_lines(shapes):
+    """Every projected edge of a box is a LINE, so every outline path on the
+    sheet is exactly ``M x y L x y`` — no 256-point discretisation of a
+    dead-straight edge."""
+    registry = build_registry(shapes)
+    result = registry.call("generate_drawing", {
+        "project": "demo", "part_id": "block"})
+    assert "error" not in result, result
+    svg = (shapes.store.exports_dir("demo") / "block_drawing.svg").read_text(
+        encoding="utf-8")
+    chunks = re.findall(r'<path d="M ([^"]+)"', svg)
+    assert chunks, "the sheet drew no outline paths"
+    assert all(chunk.count(" L ") == 1 for chunk in chunks), \
+        max(chunks, key=lambda c: c.count(" L "))[:200]
+    # a box has no circles, and the sheet is small because nothing is sampled
+    assert "<circle" not in svg
+    assert result["size_bytes"] < 20000, result["size_bytes"]
+
+
+def test_a_partial_arc_silhouette_renders_as_an_arc_the_right_way_round(shapes):
+    """The lug's outer half-circle is a real ``A`` segment, oriented so it
+    bulges AWAY from the block, and the plan view is dimensioned 60 x 55."""
+    registry = build_registry(shapes)
+    result = registry.call("generate_drawing", {
+        "project": "demo", "part_id": "lug", "views": ["top"]})
+    assert "error" not in result, result
+    svg = (shapes.store.exports_dir("demo") / "lug_drawing.svg").read_text(
+        encoding="utf-8")
+    dims = _DIM_TEXT.findall(svg)
+    assert "60" in dims and "55" in dims, dims
+
+    arcs = _ARC_PATH.findall(svg)
+    assert arcs, "the lug's half-round silhouette did not render as an arc"
+    scale = 1.0 / float(result["scale"].split(":")[1]) \
+        if result["scale"].startswith("1:") else float(
+            result["scale"].split(":")[0])
+    semis = []
+    for x0, y0, rx, _ry, large, sweep, x1, y1 in arcs:
+        x0, y0, r, x1, y1 = (float(x0), float(y0), float(rx), float(x1),
+                             float(y1))
+        if abs(r - 15.0 * scale) > 0.01:
+            continue                       # not the lug's own rim
+        semis.append((x0, y0, r, large, sweep, x1, y1))
+    assert semis, f"no R{15.0 * scale} arc on the sheet: {arcs}"
+    for x0, y0, r, large, sweep, x1, y1 in semis:
+        # Both endpoints sit on the block's +Y edge => the same sheet y, and
+        # they are a full diameter apart: the segment IS the half circle.
+        assert y0 == pytest.approx(y1, abs=1e-3), (x0, y0, x1, y1)
+        assert abs(x1 - x0) == pytest.approx(2 * r, abs=1e-3), (x0, x1, r)
+        # Left endpoint first, `large-arc 0`, `sweep 1`: in SVG's y-down frame
+        # that is the clockwise half, i.e. the one that bulges UP the sheet
+        # (+Y in the model, away from the block). Flip either the y-negation or
+        # the ordering in `_arc_angles` and this pair changes.
+        assert x1 > x0, (x0, x1)
+        assert (large, sweep) == ("0", "1"), (large, sweep)
+
+
+def test_dxf_carries_native_lines_and_arcs(shapes):
+    """DXF used to be lwpolylines for everything but a closed circle."""
+    import ezdxf
+
+    registry = build_registry(shapes)
+    assert "error" not in registry.call("generate_drawing", {
+        "project": "demo", "part_id": "block", "format": "dxf"})
+    block = list(ezdxf.readfile(str(
+        shapes.store.exports_dir("demo") / "block_drawing.dxf")).modelspace())
+    assert any(e.dxftype() == "LINE" for e in block), \
+        sorted({e.dxftype() for e in block})
+    assert not any(e.dxftype() == "LWPOLYLINE" for e in block), \
+        sorted({e.dxftype() for e in block})
+
+    assert "error" not in registry.call("generate_drawing", {
+        "project": "demo", "part_id": "lug", "format": "dxf"})
+    lug = list(ezdxf.readfile(str(
+        shapes.store.exports_dir("demo") / "lug_drawing.dxf")).modelspace())
+    types = sorted({e.dxftype() for e in lug})
+    assert "ARC" in types, types
+    assert "LINE" in types, types
+
+
+def test_a_detail_view_clips_a_straight_edge_analytically(shapes):
+    """`_clip_edges_to_circle` sampled every edge on a 0.4 mm grid, boundary
+    included. A LINE is now clipped by solving the segment/circle quadratic, so
+    a detail on a prismatic part is exact two-point runs whose ends sit ON the
+    detail circle rather than on the nearest sample."""
+    registry = build_registry(shapes)
+    result = registry.call("generate_drawing", {
+        "project": "demo", "part_id": "block", "views": ["top"],
+        "details": [{"view": "top", "center_mm": [30, 20], "radius_mm": 8,
+                     "scale": 2}]})
+    assert "error" not in result, result
+    assert result["details"][0]["clipped"] is True
+    svg = (shapes.store.exports_dir("demo") / "block_drawing.svg").read_text(
+        encoding="utf-8")
+    chunks = re.findall(r'<path d="M ([^"]+)"', svg)
+    assert chunks
+    assert all(chunk.count(" L ") == 1 for chunk in chunks), \
+        max(chunks, key=lambda c: c.count(" L "))[:200]
+
+
+def test_clip_segment_to_circle_is_exact():
+    """The pure quadratic behind the detail-view clip (no kernel involved)."""
+    from agentcad.kernel.handlers.drawing import _clip_segment_to_circle
+
+    # A chord straight through the centre: clipped to the two intersections.
+    run = _clip_segment_to_circle(-10.0, 0.0, 10.0, 0.0, 0.0, 0.0, 3.0)
+    assert run == [pytest.approx((-3.0, 0.0)), pytest.approx((3.0, 0.0))]
+    # An endpoint already inside stays put; only the outside end is trimmed.
+    run = _clip_segment_to_circle(0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 3.0)
+    assert run == [pytest.approx((0.0, 0.0)), pytest.approx((3.0, 0.0))]
+    # Wholly inside: unchanged.
+    assert _clip_segment_to_circle(-1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 3.0) == \
+        [pytest.approx((-1.0, 0.0)), pytest.approx((1.0, 0.0))]
+    # A miss, a tangent touch and a zero-length segment are all "no run".
+    assert _clip_segment_to_circle(-10.0, 5.0, 10.0, 5.0, 0.0, 0.0, 3.0) is None
+    assert _clip_segment_to_circle(-10.0, 3.0, 10.0, 3.0, 0.0, 0.0, 3.0) is None
+    assert _clip_segment_to_circle(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0) is None
+    # Entirely outside but on the line through the circle: still no run.
+    assert _clip_segment_to_circle(5.0, 0.0, 9.0, 0.0, 0.0, 0.0, 3.0) is None
