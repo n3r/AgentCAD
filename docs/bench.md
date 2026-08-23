@@ -712,16 +712,27 @@ the server-side code it measures.
 * **Two product findings bound what `geometry` can measure at all.** Both were
   found by authoring the task set and are stated here because a subscore that
   is silently unmeasurable is worse than one that says so.
-  * *A swept surface does not survive the STEP round trip as a boolean
-    operand.* `fix_005_invalid_shell`'s coolant elbow is a swept pipe:
-    script-against-script and STEP-against-STEP both intersect cleanly at
-    21 711.685 mm³, but the boolean the IoU handler actually takes — the
-    candidate's script solid against the checked-in STEP — returns `None`,
-    i.e. **0 mm³ of intersection between two solids of identical volume**. The
-    task therefore weights `geometry` 0.00 and carries the weight on `metrics`,
-    which measures the same fact through mass, volume and bbox. This is an
-    OCCT/product observation, not a bench one: any AgentCAD feature that
-    booleans an imported swept surface meets it.
+  * *Tangent-jointed swept solids are unreliable BOP operands in OCCT 7.9 —
+    now detected (changelog 0308).* `fix_005_invalid_shell`'s coolant elbow is
+    a swept pipe with G1-tangent face junctions at every bend; OCCT 7.9's
+    `BRepAlgoAPI_Common` can silently return a wrong answer for such a pair —
+    usually empty, sometimes a negative volume — whatever their
+    serialization. The STEP round trip is not the trigger:
+    script-against-itself and STEP-against-itself both "intersect cleanly" at
+    21 711.685 mm³, but that is operand *sameness* letting OCCT take a
+    shortcut, not proof the boolean works — two genuinely distinct
+    tangent-jointed solids of identical shape (e.g. two independent STEP
+    re-imports) return **empty**, and even a positive result from such a pair
+    is order-dependent and not provably trustworthy. `_bop.py` now detects the
+    disagreement (an octant-subdivided crop recheck on a suspicious empty) and
+    fails closed instead of banking it: the IoU handler raises `KernelError`
+    (subscore excluded) and
+    `worker.pairwise_interference` marks the pair `degenerate: true`.
+    `fix_005_invalid_shell` still weights `geometry` 0.00 and carries the
+    weight on `metrics` — not because the STEP round trip fails, but because
+    the boolean is degenerate for **every** candidate, the reference
+    included, so a geometry weight there would score everyone zero on shape
+    rather than surface a real defect.
   * *Generated view bounds undersized a curved silhouette* — **fixed**
     (changelog 0307). `kernel/handlers/drawing.py`'s `_view_bounds` sampled
     each edge at six points, which is exact for a line and wrong for a circle,
