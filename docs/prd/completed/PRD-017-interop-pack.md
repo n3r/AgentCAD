@@ -1,6 +1,6 @@
 # PRD-017 — Interop pack: neutral formats done right
 
-- **Status:** in-progress
+- **Status:** completed
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** competitive analysis (Aug 2026)
