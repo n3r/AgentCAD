@@ -448,6 +448,19 @@ def test_dxf_carries_native_lines_and_arcs(shapes):
     types = sorted({e.dxftype() for e in lug})
     assert "ARC" in types, types
     assert "LINE" in types, types
+    # And the arc points the right way round in MODEL coordinates, which is the
+    # other half of `_arc_angles` (`y_down=False`) and is NOT pinned by the SVG
+    # test: the rim is centred on (0, 20) with R15, and ezdxf sweeps CCW from
+    # start to end, so 0 -> 180 is the half that bulges to +Y, away from the
+    # block. The reversed twin would read (180, 360) and still satisfy
+    # `"ARC" in types`.
+    arcs = [e for e in lug if e.dxftype() == "ARC"]
+    assert len(arcs) == 1, [(e.dxf.center, e.dxf.radius) for e in arcs]
+    arc = arcs[0]
+    assert (arc.dxf.center.x, arc.dxf.center.y) == pytest.approx((0.0, 20.0))
+    assert arc.dxf.radius == pytest.approx(15.0)
+    assert (arc.dxf.start_angle, arc.dxf.end_angle) == \
+        pytest.approx((0.0, 180.0))
 
 
 def test_a_detail_view_clips_a_straight_edge_analytically(shapes):

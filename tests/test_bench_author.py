@@ -340,3 +340,44 @@ def test_render_drawing_dimensions_the_curved_part_exactly(tmp_path, kernel):
     dims = re.findall(r'fill="#1a56db"[^>]*>([^<]+)</text>', sheet)
     assert dims.count("140") >= 3, dims
     assert "132.64" not in sheet
+
+
+@pytest.mark.timeout(300)
+def test_render_drawing_refuses_before_writing_when_check_dims_objects(
+        tmp_path, kernel, monkeypatch):
+    """The `check_dims` guard is live, and it refuses BEFORE the write.
+
+    The curved-silhouette defect it was written for is fixed (changelog 0307),
+    so no shipped part trips it any more — which is exactly why the refusal
+    branch needs its own test rather than a part that happens to be broken.
+    `overall_dim_problems` is the guard's whole judgement, so stubbing it is
+    stubbing the defect, not the mechanism: everything downstream of it (the
+    `ValidationError`, its message, its details, and the fact that nothing is
+    written) is the real code path.
+    """
+    bundle = _bundle_copy(tmp_path, "model_from_drawing/mfd_001_spacer_plate")
+    service = make_test_service(tmp_path / "projects", kernel)
+    from agentcad.core.tools import build_registry
+
+    build_registry(service)
+    monkeypatch.setattr(author, "overall_dim_problems",
+                        lambda *a, **k: ["the sheet dimensions 1 mm, which "
+                                         "matches none of the part's extents"])
+    out = tmp_path / "refused.svg"
+    with pytest.raises(ValidationError) as excinfo:
+        author.render_drawing(bundle, "spacer_plate", service=service,
+                              out=out, check_dims=True)
+    assert "contradicts the part" in str(excinfo.value)
+    assert excinfo.value.details["part"] == "spacer_plate"
+    assert excinfo.value.details["problems"]
+    # Refused BEFORE the write: no sheet exists at the target at all, and the
+    # bundle's own asset is untouched.
+    assert not out.exists()
+    assert (bundle / "assets" / "drawing.svg").read_bytes() == (
+        bench_tasks.tasks_root() / "model_from_drawing" / "mfd_001_spacer_plate"
+        / "assets" / "drawing.svg").read_bytes()
+    # ...and with the guard off, the same call writes.
+    monkeypatch.setattr(author, "overall_dim_problems", lambda *a, **k: [])
+    assert author.render_drawing(bundle, "spacer_plate", service=service,
+                                 out=out, check_dims=True) == out
+    assert out.exists()

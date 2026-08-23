@@ -117,6 +117,25 @@ New tests in `tests/test_drawings_v2.py`:
   centre, one endpoint inside, wholly inside, miss, tangent, zero-length,
   wholly-outside-but-collinear.
 
+`test_dxf_carries_native_lines_and_arcs` also pins the **model-plane** angle twin
+(`_arc_angles(y_down=False)`), which the SVG test cannot reach: the lug's rim is
+`center (0, 20), R15, start 0deg, end 180deg`, and ezdxf sweeps CCW, so that is
+the half bulging to +Y. The reversed twin reads `(180, 360)` and would otherwise
+pass on `"ARC" in types` alone. Both this and the SVG endpoint pin were
+mutation-checked: swapping `y_down=False` for `y_down=True` in `_build_dxf`
+fails the DXF assertion with `(-180, -0)`.
+
+In `tests/test_bench_author.py`,
+`test_render_drawing_refuses_before_writing_when_check_dims_objects` covers the
+`check_dims` refusal branch, which the deleted tripwire was the only end-to-end
+exercise of — three docstrings and two docs now claim the guard "stays live", so
+it needs a test that does not depend on a part being broken.
+`overall_dim_problems` is monkeypatched to report one problem (that function IS
+the judgement; everything downstream of it is the real path): `render_drawing`
+raises `ValidationError`, its `details` name the part and the problems, and
+**nothing is written** to the target. Mutation-checked: `if problems:` ->
+`if False:` fails it with `DID NOT RAISE`.
+
 Targeted suites, all green:
 
 ```
@@ -127,7 +146,7 @@ uv run pytest -q tests/test_drawings.py tests/test_drawings_v2.py \
   tests/test_sheetmetal.py tests/test_sheetmetal_v2.py \
   tests/test_bench_author.py tests/test_prd014_acceptance.py \
   tests/test_bench_tasks.py
-274 passed, 2 skipped
+275 passed, 2 skipped
 ```
 
 `make test` — <orchestrator fills>
