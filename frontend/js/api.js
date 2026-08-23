@@ -137,13 +137,69 @@ export const api = {
   exportAssembly: (proj, format) =>
     request("POST", `/api/projects/${enc(proj)}/export`, { format }),
 
-  /** Set one instance's transform/color. 409 (ConflictError) if mate-driven. */
+  /** Set one instance's transform/color/folder.
+   *
+   *  409 (ConflictError) if mate-driven — but only when the body carries a
+   *  `position`/`rotation_deg`: PRD-027 made `folder` an organizing edit, not a
+   *  transform, so the sidebar can re-file a mated instance the same way it
+   *  re-files any other. `{folder: null}` files it at the project root. */
   patchInstance: (proj, id, body) =>
     request("PATCH", `/api/projects/${enc(proj)}/assembly/instances/${enc(id)}`, body),
 
   /** Undo/redo the last project mutation. 409 (ConflictError) when empty. */
   undo: (proj) => request("POST", `/api/projects/${enc(proj)}/undo`),
   redo: (proj) => request("POST", `/api/projects/${enc(proj)}/redo`),
+
+  // ---- navigation at scale (PRD-027) --------------------------------------
+  // Three of these five are the tool passthrough, so a REFUSAL is a 200 with
+  // an `{error: {type, message, details}}` payload rather than a thrown
+  // ApiError (app.py's tool convention) — every caller checks `res.error`
+  // before reading the result. The two URL builders return strings and make
+  // no request at all: they are `<img src>` values.
+
+  /** Search a project's parts. `q` is the `field:value` grammar
+   *  (`core/search.py` / `query_model.js`); an empty `q` lists every part in
+   *  manifest order. Answers `{query, total, parts: [{id, label, material,
+   *  folder, tags, state, kind, matched_on, snippet?}]}`.
+   *
+   *  A route, not the tool passthrough: the browser only calls it when the
+   *  query has FREE TEXT (script bodies live on the server and nowhere else),
+   *  so a refusal here — a bad field name, an out-of-range limit — is a 422
+   *  ApiError carrying the grammar, which is what the filter box shows. */
+  searchParts: (proj, q, limit) =>
+    request("GET", `/api/projects/${enc(proj)}/search${query({ q, limit })}`),
+
+  /** One part's folder and/or tags. Omit a key to leave it unchanged;
+   *  `folder: null` (or `""`) files it at the root and `tags: []` clears them.
+   *  One undoable step; resolves `{id, folder, tags}` or `{error}`. */
+  setPartMeta: (proj, partId, meta) =>
+    request("POST", "/api/tools/set_part_meta",
+            { project: proj, part_id: partId, ...(meta || {}) }),
+
+  /** One operation over many parts as ONE undo step (`material` | `tag` |
+   *  `untag` | `folder` | `export` | `delete`). Resolves `{op, ok, applied,
+   *  results: [{id, ok, error?, …}], undo_label}` — `ok: false` on a row is
+   *  per-item validity and the rest of the selection still landed, while an
+   *  `{error}` envelope means nothing was written at all. */
+  bulkPartOp: (proj, partIds, op, args) =>
+    request("POST", "/api/tools/bulk_part_op",
+            { project: proj, part_ids: partIds, op, args: args || {} }),
+
+  /** Every project as one card's worth of facts (kernel-free, never builds):
+   *  `{projects: [{name, path, n_parts, n_instances, mass_g|null, failing,
+   *  last_modified|null, thumb|null}]}`. */
+  dashboard: () => request("GET", "/api/dashboard"),
+
+  /** A part's 192×192 preview URL. `key` is the part's `thumb_key` from
+   *  `get_project`: naming it is what earns the immutable cache header, and a
+   *  key that no longer matches is simply revalidated. `null`/omitted is
+   *  still a valid URL (revalidated every time); a part with no mesh 404s,
+   *  which the row renders as its placeholder glyph. */
+  partThumbUrl: (proj, id, key) =>
+    `/api/projects/${enc(proj)}/parts/${enc(id)}/thumb.png${query({ k: key })}`,
+
+  /** The project's assembly preview URL (the dashboard card's hero). */
+  projectThumbUrl: (proj) => `/api/projects/${enc(proj)}/thumb.png`,
 
   // ---- materials v2 ----
   /** `listMaterials(proj)` is the original call and stays byte-compatible;

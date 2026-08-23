@@ -277,6 +277,9 @@ CHORD_TO_DOC_TEXT = {
     "Mod+S": ["Cmd+S", "Ctrl+S"],
     "Mod+N": ["Cmd+N", "Ctrl+N"],
     "Mod+K": ["Cmd+K", "Ctrl+K"],
+    # PRD-027 navigation: the dashboard and the sidebar filter box.
+    "Mod+Shift+O": ["Cmd+Shift+O", "Ctrl+Shift+O"],
+    "/": ["**/**"],
     "Mod+B": ["Cmd+B", "Ctrl+B"],
     "Shift+Mod+B": ["Shift+Cmd+B", "Ctrl+Shift+B"],
     "Mod+J": ["Cmd+J", "Ctrl+J"],

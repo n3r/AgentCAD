@@ -51,10 +51,19 @@ ERROR_CASES = [c for c in CASES if c.get("error")]
 MATCHED_ON_CASES = [c for c in MATCH_CASES if c.get("expect_matched_on")]
 META_ONLY_CASES = [c for c in MATCH_CASES if not c.get("needs_script")]
 
-#: Every JS file this slice creates or changes. `node --check` parses each one,
+#: Every JS file PRD-027 creates or changes. `node --check` parses each one,
 #: so a syntax error is a red test rather than a blank sidebar in the browser.
 JS_FILES = [FRONTEND / "query_model.js", FRONTEND / "virtual_model.js",
-            FRONTEND / "tree_model.js", SHELL / "contextmenu.js"]
+            FRONTEND / "tree_model.js", SHELL / "contextmenu.js",
+            # Slice 6, the DOM half.
+            FRONTEND / "tree.js", FRONTEND / "bulk.js",
+            FRONTEND / "dashboard.js", FRONTEND / "main.js",
+            FRONTEND / "api.js", FRONTEND / "state.js"]
+
+#: The three DOM modules of slice 6. They are imported (not just parsed) below:
+#: a top-level `document`/`window` reference in any of them would fail that
+#: import, which is the constraint the whole pure/DOM split rests on.
+DOM_PRELUDE = None  # built after `_uri` is defined, below
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None,
                                 reason="node is not installed")
@@ -82,6 +91,19 @@ def run_js(body: str, prelude: str = PRELUDE, env: dict | None = None) -> object
                           env=env)
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
+
+
+DOM_PRELUDE = f"""
+import * as tree from {_uri(FRONTEND / "tree.js")};
+import * as bulk from {_uri(FRONTEND / "bulk.js")};
+import * as dash from {_uri(FRONTEND / "dashboard.js")};
+const out = (v) => process.stdout.write(JSON.stringify(v));
+"""
+
+
+def run_dom_js(body: str) -> object:
+    """Run `body` in node with slice 6's three DOM modules imported."""
+    return run_js(body, prelude=DOM_PRELUDE)
 
 
 def _case_id(case) -> str:
@@ -789,3 +811,330 @@ def test_context_menu_markup_defaults_its_label_and_survives_no_items():
     assert 'role="menu"' in got["empty"] and "<li" not in got["empty"]
     assert 'aria-label="Actions"' in got["noLabel"]
     assert got["closed"] is False
+
+
+# ================================================== slice 6, the DOM modules
+#
+# `tree.js`, `bulk.js` and `dashboard.js` are the DOM half — their behaviour is
+# graded in a real browser (the changelog's Playwright pass). What node can
+# still prove, and what belongs here, is two things: that all three IMPORT
+# without a document (a top-level DOM reference is the regression the pure/DOM
+# split exists to prevent, and it would take the whole workbench down at boot),
+# and that the handful of pure string/number helpers they export say the right
+# thing — a plural, a "—" that must not be "0 g", a rounded relative time.
+
+
+def test_the_dom_modules_import_in_node_and_export_their_contract():
+    got = run_dom_js("out({tree: Object.keys(tree), bulk: Object.keys(bulk),"
+                     " dash: Object.keys(dash)});")
+    for name in ("init", "INSTANCE_PALETTE", "instanceColor", "ROW_HEIGHT",
+                 "focusFilter", "focusTree", "runBulk", "reportBulk",
+                 "setBulkFailureReporter", "splitTags", "editTags",
+                 "moveParts", "exportParts", "deleteParts",
+                 "annotateSiblings", "sameFolder"):
+        assert name in got["tree"], f"tree.{name} is missing"
+    for name in ("init", "run", "clearSelection", "hasSelection", "bulkLabel",
+                 "resultRows", "resultSummary", "showResults"):
+        assert name in got["bulk"], f"bulk.{name} is missing"
+    for name in ("init", "open", "close", "isOpen", "formatMass",
+                 "relativeTime", "countsLine"):
+        assert name in got["dash"], f"dashboard.{name} is missing"
+
+
+def test_presence_still_gets_the_instance_palette_from_the_tree():
+    """`presence.js` imports `INSTANCE_PALETTE` from `tree.js`; the rewrite
+    kept both exports byte-compatible, and a swatch colour that moved would be
+    a silently different assembly."""
+    palette = run_dom_js(
+        "out({palette: tree.INSTANCE_PALETTE,"
+        " plain: tree.instanceColor({}, 9),"
+        " own: tree.instanceColor({color: '#123456'}, 0)});")
+    assert palette["palette"][0] == "#8f9aa6"
+    assert len(palette["palette"]) == 8
+    assert palette["plain"] == palette["palette"][1]   # 9 % 8
+    assert palette["own"] == "#123456"
+
+
+def test_the_row_height_is_the_one_the_window_arithmetic_assumes():
+    """`virtual_model.window` divides by the row height, so `tree.js`'s
+    constant and the stylesheet's `.side-list.tree > .row { height }` have to
+    be the same number — a row that grew by a pixel would make the scrollbar
+    lie by a row every twenty-eight."""
+    got = run_dom_js("out({h: tree.ROW_HEIGHT});")
+    assert got["h"] == 28
+    css = (ROOT / "frontend" / "css" / "app.css").read_text(encoding="utf-8")
+    assert ".side-list.tree > .row {" in css
+    block = css.split(".side-list.tree > .row {", 1)[1].split("}", 1)[0]
+    assert "height: 28px;" in block, block
+
+
+def test_split_tags_accepts_spaces_and_commas():
+    got = run_dom_js("out({a: tree.splitTags(' fastener, m5  printed '),"
+                     " empty: tree.splitTags(''), nil: tree.splitTags(null)});")
+    assert got["a"] == ["fastener", "m5", "printed"]
+    assert got["empty"] == [] and got["nil"] == []
+
+
+def test_bulk_label_counts_and_clamps():
+    got = run_dom_js("out({one: bulk.bulkLabel(1), six: bulk.bulkLabel(6),"
+                     " nil: bulk.bulkLabel(null), neg: bulk.bulkLabel(-3)});")
+    assert got == {"one": "1 selected", "six": "6 selected",
+                   "nil": "0 selected", "neg": "0 selected"}
+
+
+def test_bulk_result_rows_separate_failures_from_successes():
+    result = {
+        "op": "folder", "ok": False, "applied": 2,
+        "results": [
+            {"id": "a", "ok": True},
+            {"id": "b", "ok": True},
+            {"id": "c", "ok": False,
+             "error": {"type": "NotFoundError", "message": "no part c"}},
+        ],
+        "undo_label": "bulk folder x2",
+    }
+    got = run_dom_js(f"const r = {json.dumps(result)};"
+                     "out({rows: bulk.resultRows(r),"
+                     " summary: bulk.resultSummary(r)});")
+    assert [r["status"] for r in got["rows"]] == ["ok", "ok", "failed"]
+    assert got["rows"][2]["detail"] == "NotFoundError: no part c"
+    assert got["summary"] == "folder: 2 of 3 parts applied · 1 failed"
+
+
+def test_bulk_result_rows_are_total_over_a_shape_they_did_not_expect():
+    """The results dialog is opened BECAUSE something went wrong; a payload it
+    cannot read must give an empty table, never a throw inside the surface
+    that exists to explain the failure."""
+    got = run_dom_js("out({none: bulk.resultRows(null),"
+                     " noList: bulk.resultRows({op: 'tag'}),"
+                     " junk: bulk.resultRows({results: [null, {}, {id: 'x'}]}),"
+                     " summary: bulk.resultSummary(null)});")
+    assert got["none"] == [] and got["noList"] == []
+    assert [r["id"] for r in got["junk"]] == ["x"]
+    assert got["summary"] == "operation: 0 of 0 parts applied"
+
+
+def test_an_export_row_reports_the_file_it_wrote():
+    got = run_dom_js("out(bulk.resultRows({op: 'export', results:"
+                     " [{id: 'a', ok: true, path: '/tmp/a.step'}]}));")
+    assert got[0]["detail"] == "/tmp/a.step"
+
+
+def test_dashboard_mass_is_never_a_partial_sum_dressed_as_a_total():
+    """Ruling 8: `mass_g` is `null` the moment one part is unbuilt, and the
+    card has to render that as "unknown" — `0 g` would be a number somebody
+    reads as the project's mass and acts on."""
+    got = run_dom_js("out({nil: dash.formatMass(null),"
+                     " undef: dash.formatMass(undefined),"
+                     " nan: dash.formatMass(NaN), zero: dash.formatMass(0),"
+                     " small: dash.formatMass(4.5), mid: dash.formatMass(87.4),"
+                     " kg: dash.formatMass(1234.5)});")
+    assert got["nil"] == "—" and got["undef"] == "—" and got["nan"] == "—"
+    assert got["zero"] == "0 g"
+    assert got["small"] == "4.50 g"
+    assert got["mid"] == "87 g"
+    assert got["kg"] == "1.23 kg"
+
+
+def test_dashboard_relative_time_rounds_and_survives_a_skewed_clock():
+    got = run_dom_js("""
+      const now = Date.parse("2026-08-23T12:00:00Z");
+      const at = (s) => new Date(now - s * 1000).toISOString();
+      out({
+        none: dash.relativeTime(null, now),
+        junk: dash.relativeTime("not a date", now),
+        fresh: dash.relativeTime(at(5), now),
+        minute: dash.relativeTime(at(60), now),
+        minutes: dash.relativeTime(at(600), now),
+        hour: dash.relativeTime(at(3600), now),
+        days: dash.relativeTime(at(3 * 86400), now),
+        future: dash.relativeTime(at(-600), now),
+      });
+    """)
+    assert got["none"] == "" and got["junk"] == ""
+    assert got["fresh"] == "just now"
+    assert got["minute"] == "1 minute ago"
+    assert got["minutes"] == "10 minutes ago"
+    assert got["hour"] == "1 hour ago"
+    assert got["days"] == "3 days ago"
+    # A laptop whose clock is ten minutes behind the server must not be told
+    # the project was modified "in 10 minutes".
+    assert got["future"] == "just now"
+
+
+def test_dashboard_counts_line_pluralises_both_halves():
+    got = run_dom_js("out({one: dash.countsLine({n_parts: 1, n_instances: 1}),"
+                     " many: dash.countsLine({n_parts: 33, n_instances: 65}),"
+                     " empty: dash.countsLine(null)});")
+    assert got["one"] == "1 part · 1 instance"
+    assert got["many"] == "33 parts · 65 instances"
+    assert got["empty"] == "0 parts · 0 instances"
+
+
+# ------------------------------------------------- the wiring, as a grep
+#
+# Three facts about slice 6 that only a reading of the source can carry, each
+# one a regression somebody would otherwise find in a browser: the delete
+# button really is gone from the row, `virtual_model` is imported NAMESPACED,
+# and no native dialog crept into the three new modules (the AC1 grep in
+# `tests/test_prd026_acceptance.py` covers the whole tree; this is the local
+# statement of the same rule for the files this slice wrote).
+
+
+def test_the_row_delete_button_is_gone_and_the_context_menu_replaced_it():
+    source = (FRONTEND / "tree.js").read_text(encoding="utf-8")
+    assert "row-del" not in source, "ruling 7: the per-row × is removed"
+    assert "row-menu" in source and "contextmenu.open(" in source
+    css = (ROOT / "frontend" / "css" / "app.css").read_text(encoding="utf-8")
+    assert ".row-del" not in css, "the deleted button's styles are still here"
+
+
+def test_virtual_model_is_imported_namespaced_by_the_tree():
+    """A named `import { window }` shadows the browser global for the WHOLE
+    importing module — `window.addEventListener` in `tree.js` would then call
+    the window-arithmetic function and fail like a DOM bug."""
+    source = (FRONTEND / "tree.js").read_text(encoding="utf-8")
+    assert 'import * as virtual from "./virtual_model.js"' in source
+    # Prose about the trap is not the trap (the AC1 grep's own rule).
+    code = [line for line in source.splitlines()
+            if not line.strip().startswith(("//", "*", "/*"))]
+    assert not any("import { window }" in line for line in code)
+
+
+def test_the_new_modules_carry_no_native_dialog():
+    for name in ("tree.js", "bulk.js", "dashboard.js"):
+        source = (FRONTEND / name).read_text(encoding="utf-8")
+        for spelling in ("window.prompt(", "window.confirm(", "window.alert("):
+            assert spelling not in source, f"{name} calls {spelling}"
+
+
+# ================================================ slice 6, the review fixes
+#
+# Seven of the fixes below are behaviour a browser grades; three are pure
+# functions and four are invariants a grep states better than a screenshot
+# does. Each one names the regression it prevents, because every one of them
+# was a real defect in the first cut of this slice.
+
+
+def test_aria_posinset_counts_siblings_not_the_flat_list():
+    """`aria-posinset`/`aria-setsize` are defined relative to the row's
+    PARENT. A flattened tree makes the flat index the obvious answer and the
+    wrong one: a part in a three-part folder must announce "2 of 3", never
+    "812 of 1009"."""
+    rows = [
+        {"kind": "folder", "path": "Body", "depth": 0},
+        {"kind": "folder", "path": "Body/panels", "depth": 1},
+        {"kind": "part", "id": "a", "depth": 2},
+        {"kind": "part", "id": "b", "depth": 2},
+        {"kind": "part", "id": "c", "depth": 1},
+        {"kind": "folder", "path": "chassis", "depth": 0},
+        {"kind": "part", "id": "d", "depth": 1},
+        {"kind": "part", "id": "e", "depth": 0},
+    ]
+    got = run_dom_js(f"out(tree.annotateSiblings({json.dumps(rows)})"
+                     ".map((r) => [r.id || r.path, r.posinset, r.setsize]));")
+    assert got == [
+        ["Body", 1, 3],            # Body, chassis, e are the three root rows
+        ["Body/panels", 1, 2],     # panels and c share Body
+        ["a", 1, 2], ["b", 2, 2],  # a and b share panels
+        ["c", 2, 2],
+        ["chassis", 2, 3],
+        ["d", 1, 1],
+        ["e", 3, 3],
+    ]
+
+
+def test_annotate_siblings_is_total_over_an_empty_or_flat_list():
+    got = run_dom_js("out({empty: tree.annotateSiblings([]),"
+                     " flat: tree.annotateSiblings("
+                     "[{id: 'a', depth: 0}, {id: 'b', depth: 0}])"
+                     ".map((r) => [r.posinset, r.setsize])});")
+    assert got["empty"] == []
+    assert got["flat"] == [[1, 2], [2, 2]]
+
+
+def test_same_folder_matches_the_navigation_grammar_s_case_rule():
+    """Folders keep the case a human typed and match case-insensitively
+    (ruling 9); `null` and `""` are both the project root. This is what makes
+    "dropped where it already is" a no-op instead of an undo step."""
+    got = run_dom_js("out({root: tree.sameFolder(null, ''),"
+                     " rootNull: tree.sameFolder(undefined, null),"
+                     " case: tree.sameFolder('Chassis/Left', 'chassis/left'),"
+                     " diff: tree.sameFolder('a', 'b'),"
+                     " notRoot: tree.sameFolder('a', null)});")
+    assert got == {"root": True, "rootNull": True, "case": True,
+                   "diff": False, "notRoot": False}
+
+
+def test_a_repaint_never_scrolls_the_list_back_to_the_focused_row():
+    """The window renders 8 overscan rows ABOVE the viewport, so the focused
+    row is routinely in the DOM and outside the scrollport. A bare `.focus()`
+    scrolls it into view — which meant that from the first click on a part,
+    every repaint yanked the list back and the tree fought the user's scroll.
+    Every `.focus()` on a row therefore passes `{preventScroll: true}`."""
+    source = (FRONTEND / "tree.js").read_text(encoding="utf-8")
+    code = [line for line in source.splitlines()
+            if not line.strip().startswith(("//", "*", "/*"))]
+    # Row focus only — `filterEl.focus()` is a text box the user asked for.
+    focuses = [line for line in code
+               if "li.focus(" in line or "back.focus(" in line]
+    assert focuses, "the focus calls vanished — this test is now blind"
+    for line in focuses:
+        assert "preventScroll: true" in line, \
+            f"a row is focused without preventScroll: {line.strip()}"
+
+
+def test_a_repaint_restores_focus_only_to_the_row_that_had_it():
+    """The other half of the same fix: with no fallback. Focusing "whatever
+    owns the tab stop" when the user's row has scrolled out MOVES them to a
+    row they never asked for — `rows[win.start]`, eight rows above the
+    viewport."""
+    source = (FRONTEND / "tree.js").read_text(encoding="utf-8")
+    body = source.split("if (focusedKey) {", 1)[1].split("}", 1)[0]
+    assert "data-row-key" in body
+    assert 'tabindex="0"' not in body, "the tab-stop fallback is back"
+    # And the key comes off the ROW, not off whatever element holds focus:
+    # the `⋯` button has no `rowKey` of its own.
+    assert 'active.closest("li.row")' in source
+
+
+def test_a_filter_change_sends_the_scrollport_home():
+    source = (FRONTEND / "tree.js").read_text(encoding="utf-8")
+    assert "lastLaidOutFilter" in source and "scrollTop = 0" in source
+
+
+def test_a_project_switch_drops_the_previous_projects_search_answer():
+    """`serverIds` is UNIONED into the filter, so a part id that exists in two
+    projects would survive the switch on the strength of the old project's
+    answer."""
+    source = (FRONTEND / "tree.js").read_text(encoding="utf-8")
+    body = source.split("function syncTreeState()", 1)[1].split("\n}", 1)[0]
+    for needle in ("serverIds = null", "snippets = {}", "searchError = null",
+                   'filterEl.value = ""', 'state.treeFilter = ""',
+                   "clearTimeout(searchTimer)"):
+        assert needle in body, f"syncTreeState does not {needle}"
+
+
+def test_a_server_search_refusal_outlives_an_unrelated_repaint():
+    """The parse refusal and the server refusal used to be one variable, so a
+    repaint from an unrelated `rebuild_finished` wiped the server's message a
+    fraction of a second after it appeared."""
+    source = (FRONTEND / "tree.js").read_text(encoding="utf-8")
+    assert "let searchError = null;" in source
+    assert "let parseError = null;" in source
+    # `partRows` (which every render calls) may only clear the PARSE one.
+    body = source.split("function partRows()", 1)[1].split("\n}", 1)[0]
+    assert "parseError = null" in body
+    assert "searchError" not in body
+    assert "parseError || searchError" in source
+
+
+def test_the_bulk_actions_grade_the_injected_context_not_module_state():
+    """An eligibility predicate has to grade a synthetic context (the
+    palette's, a test's) the same way it grades the live one."""
+    actions_src = (SHELL / "actions.js").read_text(encoding="utf-8")
+    assert "selectionSize: state.selection ? state.selection.size : 0"
+    assert "selectionSize" in actions_src
+    main = (FRONTEND / "main.js").read_text(encoding="utf-8")
+    assert "when: (c) => c.selectionSize > 1" in main
+    assert "when: () => bulk.hasSelection()" not in main

@@ -28,6 +28,15 @@ export const state = {
   presence: null,        // last heartbeat payload {you, clients, claims, ttl_s}
   comments: null,        // list_comments payload {threads, counts}, or null
   notifications: null,   // list_notifications payload {notifications, unread}
+  // PRD-027 navigation. The multi-selection lives BESIDE the scalars above,
+  // never instead of them: `selectedPart`/`selectedInstance` stay "the
+  // primary" that the inspector, the viewport, comments and presence read, and
+  // none of those modules learns about this set. A plain click sets both; a
+  // Cmd/Shift click grows the set and leaves the primary where it was.
+  selection: new Set(),  // part ids in the sidebar's multi-selection
+  selectionAnchor: null, // the row a Shift-range measures from
+  treeFilter: "",        // the sidebar filter box's raw query text
+  dashboardOpen: false,  // the all-projects pane is covering the workspace
 };
 
 const listeners = new Map();

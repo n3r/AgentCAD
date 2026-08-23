@@ -119,6 +119,12 @@ export function context() {
     // predicate never has to reach for module state.
     hasInstances: !!(state.project && state.project.assembly
       && state.project.assembly.instances.length),
+    // How many parts the sidebar has multi-selected (PRD-027). Here for the
+    // same reason `hasInstances` is: the `part.bulk.*` rows are eligible only
+    // above one, and a predicate that read `state.selection` itself would
+    // grade a synthetic context (the palette's, a test's) differently from
+    // the live one.
+    selectionSize: state.selection ? state.selection.size : 0,
     // Whether any branch is deletable at all — the one you are on and the
     // default one are refused by the server, so "there are branches" is not
     // the same question as "delete branch… can do anything".

@@ -1442,6 +1442,8 @@ you're typing in a field.
 | **Cmd+S** / **Ctrl+S** | Save & Rebuild the current part's script — works from anywhere, not just the editor; defers to the code editor's own binding while a field, not this shortcut, has focus. |
 | **Cmd+N** / **Ctrl+N** | New part… (a project must be open). |
 | **Cmd+K** / **Ctrl+K** | Open the command palette. |
+| **Cmd+Shift+O** / **Ctrl+Shift+O** | Open the all-projects dashboard (also the first screen when no project has been opened in this browser). `Esc` closes it while the keyboard is inside the pane — it takes focus when it opens, so press `Esc` there; after clicking away into the toolbar, click back into the pane first or use its **Close** button. With no project open it does not close: there is nothing behind it yet. |
+| **/** | Focus the sidebar's part filter (a project must be open). `Esc` in the box clears it and returns focus to the tree. |
 | **Cmd+B** / **Ctrl+B** | Toggle the sidebar. |
 | **Shift+Cmd+B** / **Ctrl+Shift+B** | Toggle the inspector. |
 | **Cmd+J** / **Ctrl+J** | Toggle the chat dock. |

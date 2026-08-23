@@ -141,19 +141,46 @@
   <div id="market-view" class="hidden"></div>
 
   <div id="workspace">
+    <!-- PRD-027 FR2/FR7: both lists are VIRTUALIZED trees. Each `<ul
+         role="tree">` is its own scroll container holding a few dozen 28 px
+         rows between two spacer `<li>`s, so a 1 000-part project is a few
+         dozen nodes rather than seven thousand. The sections are the flex
+         children that give those lists a bounded height — `#sidebar` itself no
+         longer scrolls. -->
     <aside id="sidebar">
-      <div class="side-section">
+      <div class="side-section" id="parts-section">
         <div class="side-head">
           <span>Parts</span>
+          <!-- "n of N" while a filter is active; the plain count otherwise. -->
+          <span id="tree-count" class="tree-count"></span>
           <button id="add-part-btn" class="side-add" title="New part">+</button>
         </div>
-        <ul id="parts-list" class="side-list"></ul>
+        <div class="tree-filterbar">
+          <input id="tree-filter" class="tree-filter" type="search"
+                 placeholder="Filter parts…" aria-label="Filter parts"
+                 autocomplete="off" autocorrect="off" spellcheck="false">
+        </div>
+        <!-- The grammar's refusal ("unknown field: colour"), in the surface
+             that asked — never a toast, which would fire on every keystroke
+             of a half-typed `field:` term. -->
+        <div id="tree-filter-msg" class="tree-filter-msg hidden" role="status"></div>
+        <!-- bulk.js renders into this strip when more than one part is
+             selected; empty and hidden otherwise. -->
+        <div id="bulk-bar" class="bulk-bar hidden" role="toolbar"
+             aria-label="Bulk actions"></div>
+        <!-- The drop target for "file this at the project root", revealed only
+             while parts are being dragged (a permanent one would be a 28 px
+             strip of dead sidebar). -->
+        <div id="parts-root-drop" class="tree-root-drop hidden">Project root</div>
+        <ul id="parts-list" class="side-list tree" role="tree"
+            aria-label="Parts"></ul>
       </div>
-      <div class="side-section">
+      <div class="side-section" id="assembly-section">
         <div class="side-head" id="assembly-head" style="cursor:pointer" title="Show assembly">
           <span>Assembly</span>
         </div>
-        <ul id="instances-list" class="side-list"></ul>
+        <ul id="instances-list" class="side-list tree" role="tree"
+            aria-label="Assembly instances"></ul>
       </div>
     </aside>
 
@@ -235,6 +262,20 @@
       <div id="pane-threads" class="pane hidden"></div>
     </aside>
   </div>
+
+  <!-- PRD-027 FR6: the all-projects dashboard. A full-pane view pinned under
+       the toolbar and over the whole workspace (never a modal — it is a place,
+       not a decision, and the workbench behind it stays alive so closing it
+       costs no reload). Shown on first run, by `project.dashboard` / ⌘⇧O, from
+       the project menu's "All projects…" row, and by `ui_open {view:
+       "dashboard"}`. -->
+  <div id="dashboard" class="hidden" tabindex="-1" role="region"
+       aria-label="All projects"></div>
+
+  <!-- PRD-027: the host `shell/contextmenu.js` builds the one open context
+       menu into. Before #dialog-host so a dialog a menu item opens paints
+       over the menu's own teardown. -->
+  <div id="contextmenu-host"></div>
 
   <section id="chat-dock" class="collapsed">
     <header id="chat-head">
