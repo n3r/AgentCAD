@@ -143,13 +143,18 @@ def test_the_checked_in_step_datum_still_matches_its_script(
 
     **The IoU half runs only where the datum is actually scored** (a non-zero
     `geometry` weight). `fix_005_invalid_shell` is the exception the product
-    already found: its swept pipe surface does not survive the STEP round trip
-    as a **boolean operand** — two STEP imports of the identical shape (same
-    volume to fifteen digits, as this test asserts) intersect at 0.0 mm³ — and
-    that is exactly why the task weights `geometry` 0.00, argued in its own
-    `prompt.md`. Asserting an IoU there would be asserting a product defect the
-    bench deliberately fenced rather than the drift this test is for; the
-    volume and bbox comparison still catches a datum that moved.
+    already found: its coolant elbow has G1-tangent face junctions at every
+    bend, and OCCT 7.9's `BRepAlgoAPI_Common` can silently mis-answer a
+    **boolean operand** pair like this regardless of serialization (changelog
+    0308) — two STEP imports of the identical shape (same volume to fifteen
+    digits, as this test asserts) intersect at 0.0 mm³, not because of the
+    STEP round trip but because operand *sameness* is what usually hides the
+    bug and these are two genuinely distinct imports. That is exactly why the
+    task weights `geometry` 0.00, argued in its own `prompt.md`. Asserting an
+    IoU there would be asserting a product defect the bench deliberately
+    fenced (now detected and failed closed, not healed) rather than the
+    drift this test is for; the volume and bbox comparison still catches a
+    datum that moved.
 
     Tasks whose category weights `geometry` at zero ship no datum at all
     (`reference.steps: {}`) and are not parametrised here — there is nothing to

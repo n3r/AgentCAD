@@ -1847,10 +1847,21 @@ class CheckRunner:
     def _pair_item(self, pair: dict, seen: set, warnings: list[str]) -> dict:
         a, b = pair.get("a"), pair.get("b")
         volume = pair.get("volume_mm3")
+        details = {"a": a, "b": b, "volume_mm3": volume}
+        if pair.get("degenerate"):
+            # A pair the kernel could not boolean at all (see
+            # kernel/handlers/_bop.py). It is in `pairs` because the worker
+            # fails closed, and its `volume_mm3` is 0.0 and means nothing —
+            # "overlap by 0.0 mm³" would read as a rounding artefact when what
+            # happened is that the measurement did not happen.
+            details["degenerate"] = True
+            return make_item("assembly", "pair", f"{a} ↔ {b}", "fail",
+                             f"{a} and {b}: indeterminate (degenerate "
+                             f"boolean) — counted as interfering",
+                             details=details, seen=seen, warnings=warnings)
         return make_item("assembly", "pair", f"{a} ↔ {b}", "fail",
                          f"{a} and {b} overlap by {_number(volume)} mm³",
-                         details={"a": a, "b": b, "volume_mm3": volume},
-                         seen=seen, warnings=warnings)
+                         details=details, seen=seen, warnings=warnings)
 
     # -------------------------------------------------------- stage 3: specs
 
