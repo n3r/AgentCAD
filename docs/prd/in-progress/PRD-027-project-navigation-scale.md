@@ -1,6 +1,6 @@
 # PRD-027 — Project, part & assembly navigation at scale
 
-- **Status:** pending
+- **Status:** in-progress (design spec + plan: `docs/superpowers/specs/2026-08-23-project-navigation-scale-design.md`, `docs/superpowers/plans/2026-08-23-project-navigation-scale.md`)
 - **Phase:** v5 — daily-driver depth
 - **Created:** 2026-08-09
 - **Origin:** founder idea #5 (Aug 2026), engineering-reviewed

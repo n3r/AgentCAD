@@ -128,6 +128,11 @@ class PartRecord:
     # the schema PRD-011 froze. Insertion order IS family order — never sorted.
     configs: dict[str, dict] | None = None
     active_config: str | None = None  # a declared name, or None = base
+    # PRD-027 navigation metadata. `folder` is a display path (verbatim, see
+    # navigation.normalize_folder); `tags` are normalized identifiers. Both are
+    # organization, never geometry — nothing here reaches _cache_key.
+    folder: str | None = None
+    tags: list[str] = field(default_factory=list)
 
     def to_manifest(self) -> dict:
         data = {
@@ -149,6 +154,12 @@ class PartRecord:
             data["configs"] = self.configs
         if self.active_config:
             data["active_config"] = self.active_config
+        # Same conditional discipline (PRD-027 FR1): a project nobody has
+        # organized serializes byte-identically to a pre-PRD-027 one.
+        if self.folder:
+            data["folder"] = self.folder
+        if self.tags:
+            data["tags"] = list(self.tags)
         return data
 
     def config_params(self, name: str) -> dict:
@@ -221,6 +232,11 @@ class InstanceSpec:
     # one of {part-only, pattern+part, assembly} — validated in set_instances.
     pattern: dict | None = None
     assembly: dict | None = None
+    # PRD-027: the folder this instance is filed under in the assembly tree.
+    # Load-bearing on the SAME grounds as `config` above — `set_instances`
+    # rewrites the whole list from `to_manifest()`, so a field the dataclass
+    # does not carry is destroyed by the next gizmo drag or mate edit.
+    folder: str | None = None
     # Transient (never persisted): the project a sub-assembly member is BUILT
     # from. Set only on flattened members produced by cross-project resolution
     # so a consumer builds its geometry against the source, not the parent.
@@ -251,6 +267,8 @@ class InstanceSpec:
             data["pattern"] = self.pattern
         if self.assembly:
             data["assembly"] = self.assembly
+        if self.folder:
+            data["folder"] = self.folder
         return data
 
 

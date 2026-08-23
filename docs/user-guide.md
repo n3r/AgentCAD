@@ -212,13 +212,57 @@ paint on the next visit.
 connected; gray means the UI is reconnecting (it retries with backoff and
 resyncs the project when the connection returns).
 
+## Dashboard
+
+The all-projects screen: a card grid, one card per project, that replaces the
+bare switcher dropdown as the way in. It is what you see on **first run**, and
+whenever the project the browser last remembered is no longer on the server.
+Open it any time with **⌘⇧O**/**Ctrl+Shift+O**, from **File → All projects…**,
+from the project menu's "All projects…", or from the ⌘K palette. It is a full
+pane rather than a modal, so every shortcut keeps working while it is up;
+`Esc` closes it when the keyboard is inside the pane (it takes focus when it
+opens), and with no project open it does not close — there is nothing behind
+it yet.
+
+Each card carries:
+
+- a **hero thumbnail** — the project's assembly rendered at its last build, or
+  a placeholder when nothing has been built yet;
+- the project name and `N parts · M instances`;
+- **total mass**, or **—**;
+- the **relative time** of the last change (`project.json`'s mtime);
+- a red **`n failing`** badge when parts in it last failed to build.
+
+Two honesty rules are worth knowing, because they are deliberate:
+
+- **The mass is "—" whenever any part in the project is not currently built
+  with metrics.** A partial sum is a number you would read as the project's
+  mass and act on, so the dashboard refuses to print one. Build the project
+  (or fix the failing part) and the number appears.
+- **The dashboard never builds and never renders.** It reads each project's
+  manifest and whatever build state the running server already holds. That is
+  what keeps opening the app instant with twenty projects on disk — and it is
+  why a card can show a thumbnail that is one edit out of date, or a state dot
+  that only reflects builds this server has actually done.
+
+Beside the project cards sit **New project** and **Open by path** cards, which
+run the same dialogs the File menu does.
+
 ## Sidebar
 
 ### Parts
 
-One row per part, showing its label (hover for id and material). Click to
-select — the viewport, all three inspector tabs, and the HUD follow the
-selection. Rows are focusable; Enter selects too.
+A tree, not a list. Each row carries a 24 px **thumbnail** (or a placeholder
+glyph until the part is built), its label (hover for id and material),
+`script`/`ref`/`cfg` badges, any claim/presence chips, a build-state dot, and a
+**⋯** button that opens the same context menu a right-click does. Click a row
+to select — the viewport, all three inspector tabs, and the HUD follow the
+selection. Rows are focusable; Enter selects, ↑/↓/Home/End move, ←/→ collapse
+and expand a folder, and Space toggles a row's membership in the selection.
+
+Only the visible rows exist in the page. A 1 000-part project renders a few
+dozen `<li>` and two spacers, so the tree stays responsive at a scale where a
+plain list would not.
 
 Build-state dot on the right of a row:
 
@@ -231,18 +275,97 @@ A part that declares [configurations](#configurations) also wears a small
 **badge**: the configuration it is currently showing, or `cfg` at base (hover
 for `N configurations · active: …`).
 
+**Folders.** Parts can be filed into folders — `Chassis`, `Fasteners`,
+`Chassis/Left side` — up to eight levels deep. A folder is **project
+metadata, not a directory**: scripts stay flat in `parts/<id>.py`, which keeps
+a project portable and its git diffs readable, and re-filing a part never
+rebuilds it. Collapse state is remembered per project. Create one with **New
+folder…** in the context menu (it appears empty until you move something into
+it), or by typing a path into **Move to folder…**.
+
+**Drag to organize.** Drag a row onto a folder to move it; drag onto the root
+zone at the top to unfile it. If the dragged row is part of the current
+selection, the whole selection travels — and lands as **one** undo step. An
+assembly instance can be filed the same way.
+
+**Tags.** Free-form lowercase labels (`fastener`, `printed`, `vendor.misumi`),
+up to 32 per part, shared between you and any agent working on the project:
+`search_parts {query: "tag:printed"}` is how an agent addresses "everything
+tagged printed" as a stable group. Edit them with **Tags…** in the context
+menu, or in bulk from the action bar.
+
+**The filter box** is pinned at the top of the section; **/** focuses it from
+anywhere outside a text field, and `Esc` in the box clears it and returns
+focus to the tree. Type and the tree narrows live to matching rows with their
+parent folders opened around them; the header reads "n of N". Clearing the box
+restores the tree exactly as you left it, collapse state included.
+
+The box speaks the same query language as the `search_parts` agent tool, so
+what you type in the UI is what you would hand an agent:
+
+| Type this | To find |
+|---|---|
+| `boss` | any part whose id, label, tag, material **or script text** contains "boss" |
+| `tag:printed` | parts tagged `printed` (exact) |
+| `-tag:draft` | everything *not* tagged `draft` |
+| `state:error` | parts whose last build failed (`ok`, `error`, `unbuilt`) |
+| `kind:package` | parts that came from an installed package (`script`, `reference`, `package`) |
+| `material:al6061` | parts of that material (exact id) |
+| `folder:Chassis` | that folder and everything under it |
+| `"m5 boss"` | the phrase, not the two words |
+| `state:error tag:printed boss` | all three at once — terms are ANDed |
+
+Metadata-only queries are answered in the browser instantly; a query with free
+text also asks the server (which is the half that can read script text) and
+the two result sets are **unioned**, so a part found only by something inside
+its script still shows up — badged `script`, with the matching snippet as its
+tooltip. A query the grammar cannot parse shows the reason under the box
+instead of blanking the list.
+
+**Multi-selection** follows Finder: click selects one, **Cmd/Ctrl+click**
+toggles a row, **Shift+click** extends from the last click over the *visible*
+order (so a collapsed folder's hidden parts are not swept up), and Space
+toggles from the keyboard.
+
+**The context menu** (right-click, the **⋯** button, or the ContextMenu key)
+acts on the whole selection and says how many rows it will touch: Rename…,
+Tags…, Move to folder…, New folder…, Export…, Delete…. `Esc` closes it; ↑/↓
+and Enter drive it from the keyboard.
+
+**The bulk action bar** appears directly under the filter box as soon as more
+than one row is selected: "N selected · Material · Tags · Folder · Export ·
+Delete · ×". Four of its verbs — Tags, Folder, Export, Delete — are the same
+implementation the context menu runs; **Material** is the one verb with no
+row-level twin, because a single part's material is the inspector's picker. A bulk change
+is **one undo step**, not one per part — press ⌘Z/Ctrl+Z once and all of it
+comes back, and the toast names what it would undo ("bulk material ×6").
+
+Bulk operations allow **partial success**: if some parts could not be changed
+(an id that no longer exists, a part still used by an assembly instance), the
+rest still land and a **results panel** opens listing every row with its
+status and error. Deleting a part an assembly instance still uses is
+**refused** — per part in a bulk, with the instances named — so clear those
+instances or re-point them at another part first; the rest of the selection
+still lands. (A **Material** change that lands but whose part then fails to
+build is listed as "written, rebuild failed": the material *was* written, and
+one undo takes it back.)
+
 **＋** in the section header opens the **New part…** dialog (also **⌘N**/
 **Ctrl+N**): an id (`[a-z][a-z0-9_]{0,39}`, validated live), a label, and a
 material picker when the catalog is cached. The part starts from the default
 template — a parametric rounded plate with four parameters — so there is
-immediately something to see and edit. New parts default to Aluminum 6061;
-material is part of the manifest and can be changed via the agent tools
-(`update_part_script` with `material=`) or by editing `project.json`.
+immediately something to see and edit. New parts default to Aluminum 6061.
+Material is part of the manifest; change one part's from the **inspector's**
+material picker (there is deliberately no Material row in the context menu —
+the inspector *is* the per-part picker), several parts' at once from the bulk
+bar's **Material** verb, or via the agent tools (`update_part_script` with
+`material=`) and by editing `project.json`.
 
-**×** appears on hover and opens a danger-styled confirm naming exactly what
-it would remove (the part, its script file, and any assembly instances that
-reference it). Deletion is refused (conflict) while any assembly instance
-still references the part — clear the instances first.
+Deleting is in the context menu (single or bulk) rather than on the row: it
+opens a danger-styled confirm naming exactly what it would remove — the parts
+and their script files — and, when an assembly instance still references one,
+saying so: the delete of that part is **refused** while the instance exists,
+and the confirm names the instances you have to clear or re-point first.
 
 ### Assembly
 
@@ -254,7 +377,9 @@ at the whole machine.
 
 Instances (position, rotation, color) are edited through the agent tools
 (`set_assembly`) or by editing `project.json` directly — the v1 UI displays
-and selects them but has no drag-to-place editor.
+and selects them but has no drag-to-place editor. Instances take **folders**
+like parts do: drag one onto a folder row, or `PATCH` its `folder` — grouping
+in the assembly tree is metadata and never moves geometry.
 
 An instance of a part that declares [configurations](#configurations) shows
 `part@config` instead of the bare part name, and the placement card gains a
@@ -463,7 +588,7 @@ instead. Everything else in the app works normally.
 
 **With the key** (set in the environment before `make run` /
 `agentcad serve`) it becomes a full tool-using assistant with the same
-106-tool surface external agents get ([agent-api.md](agent-api.md)):
+109-tool surface external agents get ([agent-api.md](agent-api.md)):
 
 - The hint in the header reads `agent works on <project>` — each chat is
   scoped to the currently open project, with a separate in-memory history
@@ -1582,6 +1707,8 @@ you're typing in a field.
 | **Cmd+S** / **Ctrl+S** | Save & Rebuild the current part's script — works from anywhere, not just the editor; defers to the code editor's own binding while a field, not this shortcut, has focus. |
 | **Cmd+N** / **Ctrl+N** | New part… (a project must be open). |
 | **Cmd+K** / **Ctrl+K** | Open the command palette. |
+| **Cmd+Shift+O** / **Ctrl+Shift+O** | Open the all-projects dashboard (also the first screen when no project has been opened in this browser). `Esc` closes it while the keyboard is inside the pane — it takes focus when it opens, so press `Esc` there; after clicking away into the toolbar, click back into the pane first or use its **Close** button. With no project open it does not close: there is nothing behind it yet. |
+| **/** | Focus the sidebar's part filter (a project must be open). `Esc` in the box clears it and returns focus to the tree. |
 | **Cmd+B** / **Ctrl+B** | Toggle the sidebar. |
 | **Shift+Cmd+B** / **Ctrl+Shift+B** | Toggle the inspector. |
 | **Cmd+J** / **Ctrl+J** | Toggle the chat dock. |

@@ -5,6 +5,8 @@ import { api, ApiError, clientId } from "./api.js";
 import { state, setState, onKeys } from "./state.js";
 import * as viewport from "./viewport.js";
 import * as tree from "./tree.js";
+import * as bulk from "./bulk.js";
+import * as dashboard from "./dashboard.js";
 import * as inspector from "./inspector.js";
 import * as editor from "./editor.js";
 import * as chat from "./chat.js";
@@ -82,6 +84,16 @@ const panelApi = {
   // other, go through actions" idiom `openProposal` above uses.
   openMaterials: (opts) => materials.open(opts),
   assignMaterial: (partId, id) => inspector.setPartMaterial(partId, id),
+  // PRD-027. `patchPartsMeta` is how a WRITER (the tree's context menu, the
+  // bulk bar) folds the values it just wrote back into `state.project` — the
+  // `parts_meta_changed` event names the parts and the fields but never the
+  // values, so this is the only path that re-files a row without a refetch.
+  patchPartsMeta,
+  // The dashboard's two cards run the existing `project.new` /
+  // `project.open-path` actions rather than reimplementing their dialogs;
+  // going through the registry keeps one verb per thing the app can do.
+  runAction: (id) => actions.run(id, null, { source: "dashboard" }),
+  openDashboard: () => dashboard.open(),
 };
 
 // ------------------------------------------------------------------ project
@@ -118,6 +130,14 @@ async function loadProject(name) {
     part: null,
     selectedPart: null,
     selectedInstance: null,
+    // The MULTI-selection goes with the scalars, atomically (X2). Part ids
+    // are project-local and collide freely — `base` exists in half the
+    // example projects — so a selection carried across a switch left the
+    // bulk bar armed with ids that now name OTHER parts, in a tree that
+    // showed nothing selected. Anchor too: a stale anchor makes the next
+    // Shift-click sweep a range from a row that is not there.
+    selection: new Set(),
+    selectionAnchor: null,
     mode: "part",
     rebuilding: new Set(),
     partKinds: {},
@@ -517,6 +537,63 @@ function markPartState(partId, st) {
   }
 }
 
+/** Point a part's sidebar thumbnail at a new build (PRD-027 FR4/FR8).
+ *
+ *  `rebuild_finished` now carries the `cache_key` the build landed on, which
+ *  IS the `thumb_key` `get_project` publishes — so the row's `<img src>` moves
+ *  to a URL the browser has never seen and refetches, with no project refetch
+ *  and no cache busting of ours. `null` on a failure, because a part with no
+ *  current mesh has nothing to preview and the route would 404. */
+function markPartThumb(partId, key) {
+  if (!state.project) return;
+  const entry = state.project.parts.find((p) => p.id === partId);
+  if (entry && entry.thumb_key !== (key || null)) {
+    entry.thumb_key = key || null;
+    setState({ project: state.project });
+  }
+}
+
+// Part ids whose folder/tags/material THIS client just wrote, with the moment
+// the note expires. `parts_meta_changed` names parts and fields but never
+// values (design §4), so a row somebody else re-filed can only be re-read —
+// while our own is already correct in `state.project`, and re-fetching it
+// would repaint the sidebar for nothing.
+const metaWrittenLocally = new Map();
+const META_ECHO_MS = 4000;
+
+/** Fold a metadata write's OWN values into `state.project` and re-render.
+ *
+ *  Called by the writer with what the server answered (`set_part_meta` returns
+ *  the stored `{folder, tags}`) or with what the bulk op was asked for. The
+ *  entries it stamps are what makes the matching `parts_meta_changed` a
+ *  re-render instead of a refetch. */
+function patchPartsMeta(ids, patch) {
+  const parts = (state.project && state.project.parts) || [];
+  const wanted = new Set(ids || []);
+  const now = Date.now();
+  let moved = false;
+  for (const entry of parts) {
+    if (!wanted.has(entry.id)) continue;
+    metaWrittenLocally.set(entry.id, now + META_ECHO_MS);
+    for (const [key, value] of Object.entries(patch || {})) {
+      if (value === undefined) continue;
+      entry[key] = key === "tags" ? [...(value || [])] : value;
+      moved = true;
+    }
+  }
+  if (moved) setState({ project: state.project });
+}
+
+/** Did this client write every one of these parts' metadata a moment ago? */
+function metaEchoOfOurs(ids) {
+  const now = Date.now();
+  for (const [id, until] of [...metaWrittenLocally]) {
+    if (until <= now) metaWrittenLocally.delete(id);
+  }
+  return (ids || []).length > 0
+    && ids.every((id) => metaWrittenLocally.has(id));
+}
+
 // ----------------------------------------------------------- part CRUD
 
 /** The material field, but ONLY when the catalog is already in hand.
@@ -596,10 +673,16 @@ async function deletePart(partId) {
     body: `Deletes ${partId} and its script file.`,
     // The blast radius, named before the click and not discovered after it:
     // deleting a part takes every assembly instance of it with it.
+    // The truth: this browser never sends `force`, so the delete is REFUSED
+    // while an instance still uses the part — it does not quietly take the
+    // instances with it. The count and the ids stay, because they are the
+    // blast radius the reader has to go and clear first.
     note: instances.length
-      ? `Also removes ${instances.length} assembly instance`
-        + `${instances.length === 1 ? "" : "s"}: `
+      ? `Refused while ${instances.length} assembly instance`
+        + `${instances.length === 1 ? "" : "s"} still use`
+        + `${instances.length === 1 ? "s" : ""} it: `
         + instances.map((i) => i.id).join(", ")
+        + " — clear or re-point them first."
       : undefined,
     danger: true,
     confirmLabel: "Delete part",
@@ -1176,6 +1259,8 @@ function handleEvent(ev) {
       state.rebuilding.delete(ev.part);
       setState({ rebuilding: state.rebuilding });
       markPartState(ev.part, "ok");
+      // PRD-027 FR8: the build's content id is the thumbnail's address.
+      markPartThumb(ev.part, ev.cache_key || null);
       if (state.part && state.part.id === ev.part && ev.metrics) {
         state.part.metrics = ev.metrics;
         // Spread: `status` also carries `diverged` / `diverged_params`, and a
@@ -1211,6 +1296,10 @@ function handleEvent(ev) {
       state.rebuilding.delete(ev.part);
       setState({ rebuilding: state.rebuilding });
       markPartState(ev.part, "error");
+      // No current mesh means nothing to preview: the row falls back to its
+      // placeholder rather than showing the last build that worked, which
+      // would say "this part is fine" beside a red dot.
+      markPartThumb(ev.part, null);
       if (state.part && state.part.id === ev.part) {
         state.part.status = {
           ...(state.part.status || {}),
@@ -1228,6 +1317,18 @@ function handleEvent(ev) {
       // are `unverified`. Not re-reading here would leave them showing `ok`,
       // which is the one thing the four states exist to prevent.
       comments.scheduleRefresh();
+      return;
+    }
+    case "parts_meta_changed": {
+      // PRD-027 FR8. The payload names the parts and the fields, never the
+      // values, so a row somebody ELSE re-filed can only be re-read — through
+      // the debounced refetch the `project_changed` that preceded this event
+      // already scheduled (never a second, immediate fetch of the same
+      // manifest). Our own writes are already folded into `state.project` by
+      // `patchPartsMeta`, so all this event owes them is the re-render.
+      if (ev.project !== state.projectName) return;
+      if (metaEchoOfOurs(ev.part_ids)) setState({ project: state.project });
+      else scheduleProjectRefresh();
       return;
     }
     case "project_changed": {
@@ -1521,6 +1622,16 @@ function setupProjectMenu() {
       openProjectPrompt();
     });
     menu.appendChild(open);
+    // PRD-027 FR6: this dropdown stays the ONE-CLICK path between projects;
+    // the dashboard is the browsing one, with the stats and the thumbnails.
+    const all = document.createElement("button");
+    all.className = "menu-item";
+    all.textContent = "All projects…";
+    all.addEventListener("click", () => {
+      setMenuHidden(menu, true);
+      actions.run("project.dashboard", null, { source: "menu" });
+    });
+    menu.appendChild(all);
     setMenuHidden(menu, false);
   });
 }
@@ -2804,6 +2915,12 @@ function registerActions() {
       menu: "file/10", keywords: ["create"], run: () => newProjectPrompt() });
   A({ id: "project.open-path", title: "Open by path…", group: "Project",
       menu: "file/11", run: () => openProjectPrompt() });
+  // PRD-027 FR6. No `when`: the dashboard is exactly what you want when NO
+  // project is open, and it is the first-run screen for that reason.
+  A({ id: "project.dashboard", title: "All projects…", group: "Project",
+      menu: "file/15", shortcut: "Mod+Shift+O",
+      keywords: ["dashboard", "switch", "recent", "home"],
+      run: () => dashboard.open() });
   A({ id: "part.new", title: "New part…", group: "Parts", menu: "file/20",
       // Spec ruling 3. `when` (not `enabled`) on purpose: with no project open
       // there is no part to create and the File row genuinely should not be
@@ -2878,6 +2995,29 @@ function registerActions() {
   A({ id: "part.delete", title: "Delete part…", group: "Parts",
       menu: "edit/30", danger: true, when: hasPart,
       run: () => deletePart(state.selectedPart) });
+  // PRD-027 FR3. A bare `/`, so `shortcuts.js`'s own rule 2 (only chords with
+  // a modifier fire inside a text field) is what keeps it from typing itself
+  // into the editor, and rule 1 keeps it out of an open dialog — no `when` of
+  // its own has to re-derive either.
+  A({ id: "tree.filter.focus", title: "Filter parts", group: "Parts",
+      menu: "edit/40", shortcut: "/", keywords: ["search", "find"],
+      when: hasProject, run: () => tree.focusFilter() });
+  // PRD-027 FR5. `when` on the SELECTION, not on `selectedPart`: these verbs
+  // are the bulk bar's, they are meaningless for one part (the row's own
+  // context menu is that), and a menu row that ran on a single part under a
+  // plural title would be lying about what it does.
+  const BULK = [
+    ["material", "Set material for the selection…", "edit/50"],
+    ["tags", "Tag the selection…", "edit/51"],
+    ["folder", "Move the selection to a folder…", "edit/52"],
+    ["export", "Export the selection…", "edit/53"],
+    ["delete", "Delete the selection…", "edit/54"],
+  ];
+  for (const [op, title, menu] of BULK) {
+    A({ id: `part.bulk.${op}`, title, group: "Parts", menu,
+        danger: op === "delete", keywords: ["bulk", "selection", "many"],
+        when: (c) => c.selectionSize > 1, run: () => bulk.run(op) });
+  }
 
   // ------------------------------------------------------------------ View
   A({ id: "view.fit", title: "Fit view", group: "View", menu: "view/10",
@@ -3158,6 +3298,10 @@ async function boot() {
                  loadProject, selectPart });
   viewport.init(document.getElementById("viewport"), { onPick });
   tree.init(panelApi);
+  // After tree.init: the bulk bar installs its results dialog INTO the tree
+  // (`setBulkFailureReporter`), and the dashboard registers its view.
+  bulk.init(panelApi);
+  dashboard.init(panelApi);
   inspector.init(panelApi);
   chat.init(panelApi);
   placement.init(panelApi);
@@ -3219,12 +3363,17 @@ async function boot() {
 
   await refreshProjectsList();
   const stored = localStorage.getItem("agentcad.project");
-  const initial =
-    state.projects.find((p) => p.name === stored) || state.projects[0];
+  const initial = state.projects.find((p) => p.name === stored);
   if (initial) {
     await loadProject(initial.name);
   } else {
+    // PRD-027 FR6: FIRST RUN is the dashboard, not "whatever project sorted
+    // first". Opening someone else's project because it happened to be at the
+    // top of the list is a decision the app has no business making — and with
+    // no projects at all the dashboard is still the right screen, because its
+    // "New project…" card is the next thing to do.
     updateEmptyState();
+    await dashboard.open();
   }
 
   // The `#materials` hash opens the modal AFTER the workbench inits — unlike

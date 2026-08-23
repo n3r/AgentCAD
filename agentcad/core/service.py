@@ -266,6 +266,23 @@ class AgentCADService:
                     "configs": entry.get("configs") or {},
                     "active_config": entry.get("active_config"),
                     "state": status["state"] if status else "unbuilt",
+                    # PRD-027 navigation metadata. Always present (null / [])
+                    # so the tree never has to distinguish "absent" from
+                    # "root"; this listing stays kernel-free.
+                    "folder": entry.get("folder"),
+                    "tags": list(entry.get("tags") or []),
+                    # PRD-027 FR4: the content id the tree row's thumbnail is
+                    # addressed by (`…/thumb.png?k=<thumb_key>`), so the
+                    # browser can ask for an immutable answer. `null` unless
+                    # this build state is `ok` — an unbuilt or failed part has
+                    # nothing to preview, and the route 404s it. Still
+                    # kernel-free: it reads the status the service already has
+                    # and never renders anything here.
+                    "thumb_key": (
+                        status["cache_key"]
+                        if status and status["state"] == "ok"
+                        else None
+                    ),
                 }
             )
         return {
@@ -340,6 +357,8 @@ class AgentCADService:
             # and an agent never have to distinguish "absent" from "base".
             "configs": record.configs or {},
             "active_config": record.active_config,
+            "folder": record.folder,          # PRD-027 navigation metadata
+            "tags": list(record.tags),
             "script": script,
             "params_spec": None if is_reference else self._params_spec(script),
             "status": {
@@ -609,6 +628,9 @@ class AgentCADService:
                     # the store sees all three); `set_instance_config` is the
                     # narrow tool that does not need the whole list.
                     config=item.get("config"),
+                    # PRD-027: the store validates it (four writers reach
+                    # set_instances and only the store sees all four).
+                    folder=item.get("folder"),
                 )
             )
         with self._lock:
@@ -988,6 +1010,13 @@ class AgentCADService:
                         "part": part_id,
                         "metrics": cached_metrics,
                         "cached": True,
+                        # PRD-027 FR4: the content id this build landed on, so
+                        # a subscriber can address the derived artifacts keyed
+                        # by it (the thumbnail warmer, the browser's <img>)
+                        # without a project refetch. Additive: nothing that
+                        # read this event before has to change, and it is the
+                        # same value `mesh_info`/`get_project` already publish.
+                        "cache_key": key,
                         **tag,
                     }
                 )
@@ -1082,6 +1111,7 @@ class AgentCADService:
                 "part": part_id,
                 "metrics": metrics,
                 "cached": False,
+                "cache_key": key,   # PRD-027 FR4 — see the cached branch above
                 **tag,
             }
         )

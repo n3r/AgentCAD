@@ -18,7 +18,7 @@ the same service humans use through the browser UI.
 │ FastAPI server — 127.0.0.1:<port>   (agentcad serve)        │
 │                                                             │
 │   ToolRegistry ──► AgentCADService ──► ProjectStore (files) │
-│   (106 tools,      (cache, events,     ~/AgentCAD/projects  │
+│   (109 tools,      (cache, events,     ~/AgentCAD/projects  │
 │    single source    orchestration)     or --projects-dir    │
 │    of truth)             │                                  │
 │                          │ line-delimited JSON-RPC (stdio)  │
@@ -28,7 +28,7 @@ the same service humans use through the browser UI.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-The registry registers **106 tools** (109 with the optional `[fem]` extra
+The registry registers **109 tools** (112 with the optional `[fem]` extra
 installed — `fem_static`, `fem_modal`, `fem_thermal` register only when their
 deps are importable).
 
@@ -115,13 +115,19 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/core/tools.py` | ToolRegistry — the 17 core tools defined once; discovers and loads `tools_*.py` packs. MCP and chat render from the merged registry. |
 | `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals, specs, run_checks, comments, packages, configs, ui, xchange), each exporting `register(registry, service)`. `tools_specs` additionally *wraps* `service._rebuild` and `service.get_part` (the `install_write_guard` precedent) and appends the `specs` gate provider; `tools_run_checks` installs `service.checks` and appends the `checks` gate — and is named for **load order**, since packs load alphabetically and `tools_proposals` resets `gate_providers`. |
 | `agentcad/core/tools_ui.py` | The `ui_open` tool pack (PRD-026): loads at `ui`, registers unconditionally (no gate provider). Validates `view`/`args`, rate-limits to 10 opens/10 s per process, and publishes `{"type": "ui_open", "view", "args", "by": "agent"}` on `service.bus` — `delivered_to` is `EventBus.subscriber_count()`, read *before* the publish. |
+| `agentcad/core/navigation.py` | Navigation at scale (PRD-027): the folder/tag grammar (`normalize_folder`, `normalize_tags`, `folder_matches` — a case-insensitive **whole-segment** prefix, so `a/b` is under `a` and not under `a/bc`), `BulkExecutor` (the six ops over a multi-selection as **one** manifest write, one `project_changed` and one undo entry), and `dashboard(service)` (every project as one card's worth of facts, from manifests and in-memory `_status` alone). No kernel call anywhere in it. |
+| `agentcad/core/search.py` | The part search: the `field:value` query grammar (`parse`, and the single `GRAMMAR` constant quoted into the tool description, every refusal and `docs/agent-api.md`), a pure matcher/ranker (`matches`, `rank`, `snippet`) the frontend ports byte-for-byte, and `Engine` — an on-demand scan with a stat-validated memo (manifest rows keyed on `(mtime_ns, size)`, script text per path), **no** inverted index and no bus plumbing. `state`/`kind` are deliberately outside the memo: a build moves `_status` without touching a manifest byte. |
+| `agentcad/core/thumbnails.py` | Content-addressed 192² iso previews rendered from meshes that already exist: `part_key`/`part_thumb`, `assembly_key`/`assembly_thumb` (a composite over the placed instances), `has_thumb`, and `ThumbnailWarmer` (a daemon thread on `bus.subscribe()` reacting to `rebuild_finished.cache_key`, queue 256 coalesced by `(proj, key)`, `drain()` as an exact barrier). **Never builds** — and never calls the rebound `service._resolved_instances`, which would issue kernel requests for every polar-pattern and sub-assembly member. |
+| `agentcad/core/tools_navigation.py` | The navigation tool pack (PRD-027): `set_part_meta`, `search_parts`, `bulk_part_op`. Loads at `nav` — after `tools_materials`, before `tools_proposals`, which resets `gate_providers` — and registers **no** gate provider. It *constructs* `service.search` and `service.thumbnails` (reusing one already bound to this service) and starts neither. |
+| `agentcad/server/routes_navigation.py` | `GET /api/projects/{proj}/search` (a passthrough to the `search_parts` tool, so the filter box and an agent get one answer to one question) and `GET /api/dashboard`. Member-only by default-deny. |
+| `agentcad/server/routes_thumbnails.py` | `GET /api/projects/{proj}/parts/{part_id}/thumb.png` and `GET /api/projects/{proj}/thumb.png` — the codebase's first non-`no-store` binary responses, safe because they are addressed by content hash (below). This pack is also the **only** place the thumbnail warmer's thread is started: route packs are mounted by `create_app` alone, so the MCP server, the CLI, `agentcad check`, the package gate and the bench never spawn it. |
 | `agentcad/server/app.py` | Core REST routes (thin), `/api/tools` passthrough, WebSocket channel, static hosting; mounts `routes_*.py` packs under `/api`. |
 | `agentcad/server/routes_*.py` | Route packs (import upload + structured-tree preview, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve + sketch blocks, history, branches/versions/merge, proposals, specs, checks, comments, presence, packages, configs, ui + the content-addressed mesh route). |
 | `agentcad/server/routes_ui.py` | `POST /api/ui/events` (PRD-026): the browser's fire-and-forget UX telemetry (`dialog_opened`/`dialog_submitted`/`palette_executed`), allow-listed and re-published on `service.bus` with `by: "browser"` and the `X-Agent-Id` client id. Member-only by default (not in `PUBLIC_PATHS`). |
 | `agentcad/bench/` | AgentCAD-Bench (PRD-024): the task-bundle loader, the six-subscore kernel scorer over a muzzled copy, the budgeted runner, the report/baseline gate, the leaderboard and the authoring helper. CLI-only — no tool, route or event. OCP-free, asserted by a test. |
 | `agentcad/agent/mcp_server.py` | MCP stdio server proxying `/api/tools`; auto-starts the HTTP server when unreachable. |
 | `agentcad/agent/chat.py` | Server-side Anthropic tool-use loop streaming to the UI over the WebSocket. |
-| `frontend/` | Static ES modules (no bundler): Three.js viewport, tree, parameter inspector, CodeMirror editor, chat panel. |
+| `frontend/` | Static ES modules (no bundler): Three.js viewport, tree, parameter inspector, CodeMirror editor, chat panel. PRD-027 adds `query_model.js` (the byte-equivalent port of `core/search.py`'s grammar and matcher, driven through the same `tests/fixtures/search_queries.json` parity fixture as the Python half), `virtual_model.js` (the pure scroll window — import it namespaced, `import * as virtual`, because a named `window` import shadows the browser global), the `tree_model.js` folder/filter/selection models, and the DOM halves `tree.js` (rewritten on those models), `bulk.js` and `dashboard.js`. |
 | `frontend/js/shell/` | The workbench shell (PRD-026): `actions.js` (the one action registry menus/palette/shortcuts read), `dialogs.js`/`dialogs_model.js` (the modal/non-modal primitive, the overlay stack, the dialog-view registry `ui_open` resolves through), `palette.js`/`palette_model.js` (⌘K: fuzzy ranking, JSON-Schema→form fields, result routing), `menu.js`/`menu_model.js` (the File/Edit/View/Model/Help bar), `layout.js`/`layout_model.js` (resizable/collapsible sidebar/inspector/chat-dock panels, per-workspace `localStorage`), `shortcuts.js`/`shortcuts_model.js` (chord registration, conflict detection, the "?" cheat-sheet), `toast.js`, `events.js` (`POST /api/ui/events`). Every DOM module is paired with a DOM-free `*_model.js` importable in node — the `tree_model.js`/`tree.js` split, tested from `tests/test_frontend_shell.py`. |
 
 ## v2 extension points
@@ -885,6 +891,62 @@ in `inspector.js`.
 
 Full reference: [`docs/agent-api.md`](agent-api.md#configurations) and the
 user-facing [`docs/user-guide.md`](user-guide.md#configurations).
+
+## Navigation at scale (PRD-027)
+
+Three core modules, two route packs and one tool pack, all of them **outside
+the geometry path**: `folder` and `tags` are additive manifest fields that
+never enter `_cache_key`'s payload, and search, the dashboard and every
+thumbnail read only what is already on disk or already in memory.
+
+**Metadata.** `PartRecord.folder`/`tags` and `InstanceSpec.folder` are written
+by `to_manifest` **only when set**, so a project nobody has organized
+serializes byte-identically to before the feature existed. The store's
+`update_part_meta` writes one part; `update_parts_meta(proj, edits)` validates
+every id and every edit key first, then does one mutation pass and **one**
+`save_manifest` — which is what makes a bulk gesture one git snapshot and one
+undo entry. Its lock precondition is the caller's: `manifest_scope(store,
+proj)` **then** `service._lock`, outer to inner (taking `manifest_scope` inside
+the store would invert the order `tools_configs.set_instance_config` already
+established).
+
+**Search.** No index is maintained and none is invalidated. `Engine` scans the
+manifest on demand behind a memo validated by `(mtime_ns, size)` on
+`project.json` (and per script path for the text), which measured cold 59–120 ms
+and warm 6–13 ms over a 1 000-part project against a 500/100 ms budget. Both
+the tool and `GET …/search` go through the same call, and `frontend/js/query_model.js`
+is a port of the same grammar and ranker — the agreement between the two
+languages is written down once, in `tests/fixtures/search_queries.json`, and
+driven through both.
+
+**The thumbnail cache.** A part thumbnail is a 192² PNG at
+`.cache/<key>.thumb.png`, where `<key>` is the part's build cache key — the
+same key `get_project` reports as `thumb_key` and `rebuild_finished` now
+carries as `cache_key`. A project (assembly) thumbnail is a composite over the
+placed instances at `.cache/asm-<hash>.thumb.png` — a **dash**, not a dot, so
+the cache janitor keys it on its own; `.thumb.png` is in the store's
+`_TRIMMABLE` set, so a thumbnail is derived data the janitor may sweep at any
+time.
+
+Because the address is a content hash, these two routes are the codebase's
+**first `immutable` responses**. Every other mesh/render route answers
+`no-store` for a good reason: it is addressed by part id, so a cached copy
+goes stale the instant the part rebuilds. Here, a request that names the key
+being served (`?k=<thumb_key>`) gets `Cache-Control: private, max-age=31536000,
+immutable` — a rebuild mints a *different* key and therefore a different URL,
+so nothing can be stale. Anything else gets `no-cache` plus `ETag: "<key>"`,
+and the 304 is decided from the key **before** any render or file read.
+
+Nothing on this path builds. `thumbnails._instances` walks
+`store.instances` directly and expands only *linear* patterns, purely, rather
+than calling `service._resolved_instances` — which `tools_structure` rebinds to
+`mates.resolve_project`, and which issues a kernel `resolve_assembly` for every
+polar-pattern and sub-assembly member. Mated, polar and sub-assembly instances
+therefore composite at their **stored** transform: a thumbnail is a hint, and
+`render_view` renders the resolved truth. The warmer is constructed in the tool
+pack and **started only by `routes_thumbnails.build_router`**, so exactly the
+process that serves `thumb.png` runs the thread; `AGENTCAD_THUMBNAILS=off`
+opts out.
 
 ## Anatomy of one rebuild
 

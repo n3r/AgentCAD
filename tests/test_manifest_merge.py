@@ -1611,3 +1611,57 @@ def test_a_malformed_configuration_entry_is_named_as_a_warning():
 # through `validation.integrity` while a dangling `active_config` is only a
 # warning — is `tests/test_configs_merge.py`, which drives two branches through
 # `merge_branch` rather than reading source.
+
+
+# ----------------------------------------------- PRD-027 navigation metadata
+
+def test_a_both_sides_tag_edit_is_a_whole_list_conflict_and_folder_is_atomic():
+    """M13 — the ruling in the PRD-027 design (§1), pinned rather than assumed.
+
+    `folder` is a scalar and `tags` a list, and NEITHER is in
+    `_PART_SUBDICTS`/`_PART_ENTRY_DICTS`, so both merge **atomically**: two
+    branches editing one part's tag list conflict on the WHOLE list, exactly
+    the way `packages` and a material entry do. Set-union was rejected
+    deliberately — it would silently restore a tag one side had removed on
+    purpose, which is a merge nobody authored.
+
+    The other half of the ruling is that this costs nothing where the two
+    sides touch DIFFERENT parts, or different fields of one part.
+    """
+    base, ours, theirs = triple(manifest(parts=[
+        part("flange", folder="Chassis", tags=["m5", "steel"]),
+        part("pin"),
+    ]))
+    entry_of(ours["parts"], "flange")["tags"] = ["m5", "steel", "ours"]
+    entry_of(theirs["parts"], "flange")["tags"] = ["m5", "theirs"]
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert keys_of(conflicts) == ["parts.flange.tags"]
+    assert conflicts[0]["base"] == ["m5", "steel"]
+    assert conflicts[0]["ours"] == ["m5", "steel", "ours"]
+    assert conflicts[0]["theirs"] == ["m5", "theirs"]
+    assert list(conflicts[0]) == list(CONFLICT_KEYS)
+    # ours wins the working copy until the conflict is resolved — no union
+    assert entry_of(merged["parts"], "flange")["tags"] == ["m5", "steel", "ours"]
+
+    # `folder` is a scalar and merges the same way: one side moving a part is
+    # a clean merge, both sides moving it to different folders is one conflict.
+    base, ours, theirs = triple(manifest(parts=[
+        part("flange", folder="Chassis", tags=["m5"]), part("pin")]))
+    entry_of(ours["parts"], "flange")["folder"] = "Chassis/Left"
+    entry_of(theirs["parts"], "flange")["tags"] = ["m5", "theirs"]
+    entry_of(theirs["parts"], "pin")["folder"] = "Fasteners"
+
+    merged, conflicts = merge_manifests(base, ours, theirs)
+
+    assert conflicts == []
+    assert entry_of(merged["parts"], "flange")["folder"] == "Chassis/Left"
+    assert entry_of(merged["parts"], "flange")["tags"] == ["m5", "theirs"]
+    assert entry_of(merged["parts"], "pin")["folder"] == "Fasteners"
+
+    base, ours, theirs = triple(manifest(parts=[part("flange", folder="A")]))
+    entry_of(ours["parts"], "flange")["folder"] = "B"
+    entry_of(theirs["parts"], "flange")["folder"] = "C"
+    _merged, conflicts = merge_manifests(base, ours, theirs)
+    assert keys_of(conflicts) == ["parts.flange.folder"]

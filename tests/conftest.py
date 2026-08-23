@@ -165,6 +165,28 @@ def _restore_client_identity():
     locks.client_id_var.reset(token)
 
 
+@pytest.fixture(autouse=True)
+def _thumbnail_warmer_off(monkeypatch):
+    """Default PRD-027's background thumbnail warmer OFF for the whole suite.
+
+    `routes_thumbnails.build_router` starts a daemon thread per service — the
+    TOOL pack only constructs the warmer (it is `build_registry` that runs in
+    `agentcad check`, the package gate and `bench`, none of which is an HTTP
+    server), so what this switches off is every `create_app` in the suite, and
+    there are dozens. Without it a session accumulates one never-stopped thread
+    per app and renders a 192² PNG on every build it happens to observe.
+    `AGENTCAD_THUMBNAILS=off` is read in `build_router`, which is now the only
+    place that could start it. Nothing an assertion can see changes:
+    the thumbnail routes render on demand from meshes that already exist, so
+    the warmer only ever decides whether the first read pays for the render.
+
+    A test that *wants* the default path (there are two, in
+    `test_thumbnails.py`) deletes the variable itself — this is a default, not
+    a pin, and it is the same knob the geometry-CI and bench services use.
+    """
+    monkeypatch.setenv("AGENTCAD_THUMBNAILS", "off")
+
+
 @pytest.fixture(scope="session")
 def kernel():
     client = KernelClient()

@@ -3,8 +3,11 @@
 The one property worth a unit test (invisible to a screenshot, unreachable from
 Python): a pattern instance collapses to ONE row carrying a `xN` badge, a
 sub-assembly to ONE read-only row naming its source, and a plain part to a plain
-row. `frontend/js/tree_model.js` is pure (no DOM, no imports), so its row model
-runs in node exactly as in the browser.
+row. `frontend/js/tree_model.js` is pure — no DOM, and since PRD-027 slice 5
+one import (`query_model.js`, pure too) — so its row model runs in node exactly
+as in the browser. The folder/filter/selection half PRD-027 added to the same
+module is tested in `tests/test_frontend_navigation.py`; these five cases stay
+here because they pin the PRD-013 grouping the folder tree carries along.
 """
 
 from __future__ import annotations

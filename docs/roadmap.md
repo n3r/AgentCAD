@@ -154,7 +154,7 @@ commit. The 031a licensing precondition is closed.
 | [017](prd/completed/PRD-017-interop-pack.md) | Interop pack (neutral) — STEP AP242 PMI export, 3MF metadata, glTF, structured assembly-STEP import, USD flag | completed (PR #31, full scope: AP242 PMI export + structured import/export + deterministic glTF/GLB + 3MF v2 + USD extra + fidelity; nested import onto PRD-013 sub-assemblies and PMI import deferred) | analysis | — |
 | [025](prd/pending/PRD-025-workspaces-ia.md) | Workspaces — Build · Test · Produce · Library · Market over one model; process profiles as the "swappable modules" | pending | idea 1 | 026 |
 | [026](prd/completed/PRD-026-workbench-shell.md) | Workbench shell revamp — dialog system (no native prompts), ⌘K palette over the registry, menus, resizable panels, shortcuts | completed (PR #29, AC1–AC7 verified incl. a live-browser pass; Phase 3 — remapping, layout presets, frecency — deferred) ([design](superpowers/specs/2026-08-19-workbench-shell-design.md) · [plan](superpowers/plans/2026-08-19-workbench-shell.md)) | idea 8 | — |
-| [027](prd/pending/PRD-027-project-navigation-scale.md) | Navigation at scale — folders, tags, search, thumbnails, bulk ops, project dashboard, virtualized trees | pending | idea 5 | 026 (soft) |
+| [027](prd/in-progress/PRD-027-project-navigation-scale.md) | Navigation at scale — folders, tags, search, thumbnails, bulk ops, project dashboard, virtualized trees | in-progress ([design](superpowers/specs/2026-08-23-project-navigation-scale-design.md) · [plan](superpowers/plans/2026-08-23-project-navigation-scale.md)) | idea 5 | 026 (soft) |
 | [028](prd/completed/PRD-028-materials-database.md) | Materials database — 300–1,000 cited generic materials, basis labels, temperature tables, process metadata, community cards | completed (PR #27, MVP + Phase 2: 434 cited cards across 30 leaves, schema v2 with per-value basis/source and 80 temperature tables, `find_materials`/`get_material`, FEM resolves E/ν/k at temperature, `agentcad materials lint`, Materials browser; community repo + package distribution + FreeCAD import + 600+ records → `docs/materials.md` Deferred) | idea 2 | — |
 | [029](prd/completed/PRD-029-agent-skills.md) | Agent skills & knowledge packs — loadable, versioned craft (core/org/project layers), bench-measured | completed (PR #33, MVP + the Phase-2 items that live in this repo: `SKILL.md` format + strict frontmatter, core < project layering with visible overrides, `list_skills`/`load_skill` on chat/MCP/HTTP, budgeted chat seam with transcript-rewriting LRU eviction, digest-keyed trust granted only by a human-only route, 16 core skills incl. ten promoted from the cheat-sheet, Skills modal + chat chips, `agentcad skill new\|lint`, `bench run --skills`; deferred by recorded ruling: org layer (PRD-005), workspace-aware suggestion (PRD-025), CI-published per-skill bench deltas, marketplace distribution (PRD-031)) | idea 4 | — |
 
@@ -194,7 +194,7 @@ renders for agent vision; git-backed undo/history; turn locks and
 concurrent multi-agent sessions; mesh LOD streaming; macOS-sandboxed
 execution; a fast macOS PR gate, focused Linux/Windows portability jobs, and
 scheduled exhaustive macOS coverage; single-binary packaging; a then-42-tool
-agent surface (45 with `[fem]`) over MCP, chat, and REST — 85/88 today, and
+agent surface (45 with `[fem]`) over MCP, chat, and REST — 109/112 today, and
 this line is a v3 snapshot, not a current count.
 
 ## Deliberate non-goals

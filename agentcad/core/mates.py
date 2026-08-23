@@ -45,8 +45,9 @@ RESOLVE_TIMEOUT_S = 120.0
 
 def _member(base: InstanceSpec, index: int, position, rotation_deg):
     """One concrete pattern/sub-assembly member: id `<base>[i]`, inheriting the
-    base's part/color/config/mate template, at a composed transform. `pattern`
-    and `assembly` are cleared — a member is a leaf, never re-expanded."""
+    base's part/color/config/folder/mate template, at a composed transform.
+    `pattern` and `assembly` are cleared — a member is a leaf, never
+    re-expanded."""
     return InstanceSpec(
         id=f"{base.id}[{index}]",
         part=base.part,
@@ -55,6 +56,9 @@ def _member(base: InstanceSpec, index: int, position, rotation_deg):
         color=base.color,
         mate=copy.deepcopy(base.mate) if base.mate else None,
         config=base.config,
+        # PRD-027: a member is filed where its base is, so the assembly tree
+        # shows an expanded pattern under the folder the author chose.
+        folder=base.folder,
     )
 
 
