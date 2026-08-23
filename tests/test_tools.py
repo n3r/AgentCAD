@@ -72,3 +72,10 @@ def test_part_template_contains_contract(registry):
     result = registry.call("part_template", {})
     assert "PARAMS" in result["template"]
     assert "CONTRACT" in result["cheatsheet"].upper()
+    # PRD-029: the toolkit sections left the sheet and became loadable skills,
+    # so the one call an agent makes before writing a script must still hand it
+    # a way to find them — the index, by name.
+    assert isinstance(result["skills"], list)
+    names = [entry["name"] for entry in result["skills"]]
+    assert len(names) >= 10, names
+    assert all(isinstance(name, str) and name for name in names)
