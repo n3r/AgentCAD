@@ -1,4 +1,4 @@
-# 0315 — PRD-017 slice 8: acceptance tests + docs (close-out)
+# 0318 — PRD-017 slice 8: acceptance tests + docs (close-out)
 
 - **Commit:** pending
 - **Date:** 2026-08-23
@@ -37,7 +37,7 @@ and one condensed trap list each in `AGENTS.md` and `CLAUDE.md`.
     every accessor byte range inside its view inside the buffer, every index
     in range), the poses match `get_assembly`'s own numbers, `#ff0000` reaches
     the file **linear**, and two exports are byte-identical (sha256). The
-    Three.js half cites slice 6's Playwright run (changelog 0313).
+    Three.js half cites slice 6's Playwright run (changelog 0316).
   - **AC4** — the 3MF is an OPC package with the three required parts, the
     core-namespace root, `unit="millimeter"`, `Title`/`Designer`/`PartNumber`
     (from `set_bom_fields`) and per-solid colours resolved through the
@@ -119,7 +119,7 @@ session for the browser half, `docs/user-guide.md`'s per-release list for the
 two viewers. A test that pretended to run FreeCAD would be worse than no test.
 
 Slice-suite provenance for this branch: `make test` — 5564 passed, 40 skipped
-(the run recorded in `0314-interop-usd.md`). Slice 8 adds no production code,
+(the run recorded in `0317-interop-usd.md`). Slice 8 adds no production code,
 only tests and documentation.
 
 `make test` — 5573 passed, 40 skipped (21:54); non-passing were the pre-existing prd028 AC6 local solver timeout (skips on CI), the supervisor ballooning-kill and sketch-drag timing flakes (documented load-flake families), and a routes_structure worker-restart timeout cascade — all 34 pass in 67 s in isolation.

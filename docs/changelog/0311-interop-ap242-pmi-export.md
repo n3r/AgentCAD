@@ -1,4 +1,4 @@
-# 0308 — PRD-017 slice 1: STEP AP242 PMI export (kernel)
+# 0311 — PRD-017 slice 1: STEP AP242 PMI export (kernel)
 
 - **Commit:** pending
 - **Date:** 2026-08-23

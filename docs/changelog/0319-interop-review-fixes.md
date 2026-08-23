@@ -1,4 +1,4 @@
-# 0316 — PRD-017 review fixes (4-way review: 2 Opus lenses, adversarial verifier, Codex)
+# 0319 — PRD-017 review fixes (4-way review: 2 Opus lenses, adversarial verifier, Codex)
 
 - **Commit:** pending
 - **Date:** 2026-08-23

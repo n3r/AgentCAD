@@ -1,4 +1,4 @@
-# 0307 — PRD-017 interop pack: design spec + slice plan; PRD moved to in-progress
+# 0310 — PRD-017 interop pack: design spec + slice plan; PRD moved to in-progress
 
 - **Commit:** pending
 - **Date:** 2026-08-23

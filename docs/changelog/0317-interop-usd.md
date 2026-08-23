@@ -1,4 +1,4 @@
-# 0314 — PRD-017 slice 7: USD export behind the `usd` extra
+# 0317 — PRD-017 slice 7: USD export behind the `usd` extra
 
 - **Commit:** pending
 - **Date:** 2026-08-23

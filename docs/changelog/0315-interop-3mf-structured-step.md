@@ -1,4 +1,4 @@
-# 0312 — PRD-017 slice 5: 3MF v2 + structured STEP assembly export
+# 0315 — PRD-017 slice 5: 3MF v2 + structured STEP assembly export
 
 - **Commit:** pending
 - **Date:** 2026-08-23

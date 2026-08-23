@@ -1,4 +1,4 @@
-# 0309 — PRD-017 slice 2: structured STEP import, kernel half
+# 0312 — PRD-017 slice 2: structured STEP import, kernel half
 
 - **Commit:** pending
 - **Date:** 2026-08-23

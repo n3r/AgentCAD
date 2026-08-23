@@ -30,7 +30,7 @@ pretended to run FreeCAD would be worse than no test:
 * **AC3 — the vendored Three.js loader.** The automated half is the
   structural validation and the byte-identical sha below. The browser half
   was run with Playwright + the installed Chrome in slice 6 (changelog
-  `0313-interop-frontend.md`: preview render, structured landing, GLB export
+  `0316-interop-frontend.md`: preview render, structured landing, GLB export
   toast; screenshots in the session scratchpad, referenced from the PR).
 * **AC4 — PrusaSlicer.** The automated half is the OPC/XML conformance, the
   `millimeter` unit, the metadata and the lib3mf re-read below. Opening the
@@ -431,7 +431,7 @@ def test_ac3_an_assembly_glb_is_structurally_valid_and_byte_stable(svc,
     two exports of one state are **byte-identical**.
 
     The Three.js half is evidence-graded, not stubbed: slice 6 drove the
-    vendored loader in the installed Chrome with Playwright (changelog 0313).
+    vendored loader in the installed Chrome with Playwright (changelog 0316).
     """
     two_boxes(svc)
     assembly = svc.get_assembly("demo")

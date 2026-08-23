@@ -1,4 +1,4 @@
-# 0311 — PRD-017 slice 4: glTF/GLB export, color map, tools_xchange pack
+# 0314 — PRD-017 slice 4: glTF/GLB export, color map, tools_xchange pack
 
 - **Commit:** pending
 - **Date:** 2026-08-23
@@ -52,4 +52,4 @@ Behavior change, intended (FR1): every `format=step` export of a part with
 stored PMI — REST route and release bundles included — now writes AP242
 unless `pmi: false`; `test_release_bundle` green. `mesh` entries key by
 `(mesh_key, material)` because a glTF primitive carries its material.
-`make test` — 5507 passed, 40 skipped in the recorded run (19:31, box shared with a concurrent session); the 7 non-passing items are the same known set as 0308/0309 — sheetmetal/supervisor load timeouts (22/22 pass in 57 s in isolation) and the pre-existing local-only prd028 AC6 real-solver timeout (skips on CI).
+`make test` — 5507 passed, 40 skipped in the recorded run (19:31, box shared with a concurrent session); the 7 non-passing items are the same known set as 0311/0312 — sheetmetal/supervisor load timeouts (22/22 pass in 57 s in isolation) and the pre-existing local-only prd028 AC6 real-solver timeout (skips on CI).

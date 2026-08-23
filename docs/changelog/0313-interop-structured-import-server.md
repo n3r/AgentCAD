@@ -1,4 +1,4 @@
-# 0310 — PRD-017 slice 3: structured STEP import, server half
+# 0313 — PRD-017 slice 3: structured STEP import, server half
 
 - **Commit:** pending
 - **Date:** 2026-08-23
@@ -49,4 +49,4 @@ transforms, and colors; a preview route feeds the import dialog. FR8–FR10
 - `tests/test_interop_import.py` — new (30 tests)
 
 ## Notes
-`make test` — 5507 passed, 40 skipped in the recorded run (19:31, box shared with a concurrent session); the 7 non-passing items are the same known set as 0308/0309 — sheetmetal/supervisor load timeouts (22/22 pass in 57 s in isolation) and the pre-existing local-only prd028 AC6 real-solver timeout (skips on CI).
+`make test` — 5507 passed, 40 skipped in the recorded run (19:31, box shared with a concurrent session); the 7 non-passing items are the same known set as 0311/0312 — sheetmetal/supervisor load timeouts (22/22 pass in 57 s in isolation) and the pre-existing local-only prd028 AC6 real-solver timeout (skips on CI).

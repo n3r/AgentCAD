@@ -1,4 +1,4 @@
-# 0313 — PRD-017 slice 6: frontend import preview + export menu
+# 0316 — PRD-017 slice 6: frontend import preview + export menu
 
 - **Commit:** pending
 - **Date:** 2026-08-23
