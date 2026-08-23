@@ -175,15 +175,28 @@ direction. Keyboard: **F**.
 
 **Export menu** — two sections:
 
-- *Part* (STEP / STL / 3MF): exports the **selected part** at origin.
-  Disabled when no part is selected.
-- *Assembly* (STEP / STL): exports all placed instances as one file.
-  Disabled when the project has no instances.
+- *Part* (STEP / STL / 3MF / glTF / GLB): exports the **selected part** at
+  origin. Disabled when no part is selected.
+- *Assembly* (STEP / STL / 3MF / glTF / GLB): exports all placed instances as
+  one file. Disabled when the project has no instances.
+
+`USD` appears in both sections when the optional `agentcad[usd]` extra is
+installed, and is simply absent otherwise. The menu is **schema-driven**: it
+reads the export tools' format lists at start-up and adds any format the
+static table does not already list, so a format added on the server appears
+here with no frontend change.
+
+Exporting a part to **STEP** when that part carries GD&T (PMI, set through the
+agent's `set_part_pmi`) first asks: *Include GD&T (AP242)*, checked by
+default. Leave it on and the tolerances travel inside the STEP file; uncheck
+it for plain geometry. Parts without PMI export straight away, exactly as
+before. The toast then says what travelled — `PMI attached (2 dims, 1 datum,
+1 FCF)`, or which entries could not be mapped.
 
 Exports are written to `<project>/exports/<part>.<format>` (assembly:
-`exports/assembly.<format>`); a toast shows the full path and size. Nothing
-is downloaded through the browser — the file lands on disk next to the
-project.
+`exports/assembly.<format>`; USD writes `.usda`); a toast shows the full path
+and size. Nothing is downloaded through the browser — the file lands on disk
+next to the project.
 
 **Theme switcher** — the ☀/☾ button. Toggles between the dark (default) and
 light themes; the whole UI switches, including the 3D scene and the code
@@ -485,6 +498,63 @@ a **reference part**: no script, but it shows in the tree, renders, measures,
 and (STEP/BREP) can be booleaned and placed in assemblies. STL is mesh-only
 (display/measure; excluded from interference checks). Its `get_part` shows
 `kind: reference` and the `source` file instead of a script.
+
+**Importing a whole assembly (the import preview).** Pick a `.step`/`.stp`
+with the Import button and, when the file holds more than one occurrence, an
+**Import preview** dialog opens instead of the old part-id prompt: one row per
+unique product with a swatch in its authored color and a `×N` occurrence
+badge, under a summary line (*"14 products, 41 occurrences"*). You get three
+choices —
+
+- **Import N parts** — the structured landing: one reference part per unique
+  product (8 occurrences of one screw are **one** part), one placed assembly
+  instance per occurrence, with the names, the composed transforms and the
+  colors the file carried. The optional *Part id prefix* field prefixes every
+  generated id, which is how you keep two revisions of a vendor assembly apart
+  in one project; colliding ids are suffixed `_2`, `_3`, … and the import says
+  so.
+- **Import flat instead** — today's behavior: the whole file as one reference
+  part, with the part-id prompt. For a genuinely monolithic file.
+- **Cancel**.
+
+A single-occurrence file, a non-STEP file, or a preview that fails goes
+straight to the old prompt with no error shown — nothing changed for those.
+Asking the agent instead (`import_cad_file`) makes the same call, and there
+the structured/flat decision is automatic unless you say which you want. Deep
+trees flatten to one instance level for now (the transforms are composed, so
+everything lands where the file says).
+
+**What travels between tools — and what does not.** Every import and export
+says so in its result, and the rules are short enough to state here:
+
+| | Survives in |
+|---|---|
+| Exact solid geometry (B-rep) | **STEP** only — everything else is a triangle mesh of it |
+| Tolerances / GD&T (PMI) | **STEP AP242, on the way out only.** We do not read PMI back out of someone else's file yet |
+| Colors, names, metadata (title, part number) | **3MF**, **glTF/GLB**, **USD**; a structured STEP carries per-instance colors too |
+| Parameters, the script, sketch constraints, configurations | **Nothing.** No neutral format carries parametric intent — this is a property of the formats, not a to-do |
+
+That last row is why the project is the source of truth and an export is a
+compiled artifact of one version: send a supplier the STEP, keep the model.
+
+**USD needs its extra, and not every platform has it.** `usd` shows up in the
+Export menu only when `agentcad[usd]` is installed (`uv sync --extra usd`).
+The upstream `usd-core` wheel exists for **macOS**, **x86-64 Linux** and
+**Windows** — there is **no linux-aarch64 wheel**, so on an ARM Linux box the
+extra installs nothing, `usd` never appears, and everything else works
+normally.
+
+**Per-release manual interop checks.** Two things a test cannot assert,
+verified by hand once per release and recorded in the release notes:
+
+1. a part exported with `Include GD&T` opens in **FreeCAD's** AP242 viewer
+   with its dimensions, datum and feature control frames visible;
+2. a 3MF opens in **PrusaSlicer** (or the Bambu/Orca lineage) at the right
+   scale, with the object names and per-solid colors intact.
+
+Everything else about those two files — the AP242 schema, the millimetre
+declaration, the metadata, the colors, the PMI round trip through our own
+reader — is covered by the suite.
 
 **Materials with properties.** The builtin catalog is now 30 engineering
 materials, each with density plus optional modulus, yield/ultimate strength,
