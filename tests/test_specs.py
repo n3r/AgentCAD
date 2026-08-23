@@ -44,6 +44,7 @@ from agentcad.core.specs import (
 )
 from agentcad.core.tools import build_registry
 from agentcad.core.tools_stackup import compute_stackup
+from agentcad.toolkit.specs import check_clearance
 from agentcad.kernel.client import KernelError
 
 from .conftest import BOX_SCRIPT, clone_test_service, make_test_service
@@ -872,6 +873,98 @@ def test_run_measures_clearance_and_names_interference(demo):
     assert interference["status"] == "pass"
     assert interference["details"]["pairs"] == []
     assert report["project_checks"]["status"] == "red"     # the touching pair
+    assert report["status"] == "red"
+
+
+# ---- the clearance upper bound: placement, not only non-interference
+
+# box_1 and box_2 are 30 mm apart on X and 20 mm across, so the measured gap is
+# 10 mm; box_3 is mated flush against box_2, so that gap is 0.
+CLEARANCE_BOUNDS_SPECS = '''\
+from agentcad.toolkit.specs import check_clearance
+
+SPECS = [
+    check_clearance("box_1", "box_2", min_mm=1.0, name="floor"),
+    check_clearance("box_1", "box_2", min_mm=1.0, max_mm=20.0, name="seated"),
+    check_clearance("box_1", "box_2", min_mm=1.0, max_mm=5.0, name="drifted"),
+    check_clearance("box_2", "box_3", min_mm=0.5, max_mm=5.0, name="tight"),
+]
+'''
+
+
+def test_the_clearance_maximum_is_additive_in_the_declaration():
+    """A two-arg call is byte-identical: ``max_mm`` is the only new key, and
+    only when it is given. Every reader downstream treats ``limit`` as data,
+    so an old declaration must not acquire a field it never declared."""
+    base = check_clearance("lid_1", "base_1", 0.05, name="seat",
+                           requirement="INT-003")
+
+    assert base == {"spec": 1, "kind": "clearance", "scope": "project",
+                    "name": "seat", "limit": {"min_mm": 0.05},
+                    "requirement": "INT-003",
+                    "options": {"a": "lid_1", "b": "base_1"}}
+    assert check_clearance("lid_1", "base_1", 0.05, max_mm=0.5, name="seat",
+                           requirement="INT-003") == {
+        **base, "limit": {"min_mm": 0.05, "max_mm": 0.5}}
+
+
+@pytest.mark.parametrize("max_mm", [0.05, 0.01])
+def test_a_clearance_maximum_at_or_below_the_minimum_names_both(max_mm):
+    """Equal bounds are a window no measurement can land in — a limit that
+    cannot *pass*. The error names both numbers, because either one may be
+    the typo."""
+    with pytest.raises(ValueError) as excinfo:
+        check_clearance("lid_1", "base_1", 0.05, max_mm=max_mm)
+
+    message = str(excinfo.value)
+    assert "max_mm" in message and "min_mm" in message
+
+
+@pytest.mark.parametrize("max_mm", [0.0, -1.0, "wide", True, float("inf")])
+def test_a_bad_clearance_maximum_raises_at_construction(max_mm):
+    with pytest.raises(ValueError) as excinfo:
+        check_clearance("lid_1", "base_1", 0.05, max_mm=max_mm)
+    assert "max_mm" in str(excinfo.value)
+
+
+@pytest.mark.slow
+@pytest.mark.portability
+def test_run_grades_the_clearance_upper_bound(demo):
+    """The bound end to end: through ``specs.py``, the declaration pass and
+    one ``clearance`` kernel call per row. ``floor`` pins that a one-sided
+    declaration still reports exactly the message it always did."""
+    service, runner = demo
+    (service.store.path_of("demo") / "specs.py").write_text(
+        CLEARANCE_BOUNDS_SPECS, encoding="utf-8")
+
+    report = runner.run("demo")
+
+    floor = _by_id(report, "project:floor")
+    assert floor["status"] == "pass"
+    assert floor["limit"] == {"min_mm": 1.0}
+    assert floor["message"] == ("box_1 to box_2 is 10 mm, at or above the "
+                                "1 mm minimum")
+
+    seated = _by_id(report, "project:seated")
+    assert seated["status"] == "pass"
+    assert seated["measured"] == pytest.approx(10.0, abs=1e-6)
+    assert seated["unit"] == "mm"
+    assert seated["limit"] == {"min_mm": 1.0, "max_mm": 20.0}
+    assert seated["message"] == "box_1 to box_2 is 10 mm, within [1, 20] mm"
+
+    drifted = _by_id(report, "project:drifted")
+    assert drifted["status"] == "fail"
+    assert drifted["measured"] == pytest.approx(10.0, abs=1e-6)
+    assert drifted["limit"] == {"min_mm": 1.0, "max_mm": 5.0}
+    assert drifted["message"] == ("box_1 to box_2 is 10 mm, above the 5 mm "
+                                  "maximum \u2014 the parts are not seated")
+    assert drifted["details"]["point_a"] and drifted["details"]["point_b"]
+
+    # Both bounds declared, the FLOOR broken: the message names the minimum.
+    tight = _by_id(report, "project:tight")
+    assert tight["status"] == "fail"
+    assert tight["message"] == ("box_2 to box_3 is 0 mm, below the 0.5 mm "
+                                "minimum")
     assert report["status"] == "red"
 
 

@@ -268,16 +268,35 @@ def check_interference_free(min_volume_mm3: float = 0.001, *,
         _requirement(requirement), {})
 
 
-def check_clearance(a: str, b: str, min_mm: float, *, name: str | None = None,
+def check_clearance(a: str, b: str, min_mm: float, *,
+                    max_mm: float | None = None, name: str | None = None,
                     requirement: str | None = None) -> dict:
-    """At least *min_mm* of clear space between two placed instances."""
+    """At least *min_mm* of clear space between two placed instances.
+
+    *max_mm* closes the other side of the bound — "these two are within X mm
+    of each other" — so a check can grade *placement* and not only
+    non-interference: a one-sided floor is satisfied by parking both instances
+    500 mm apart. It is optional and additive; omitted, the declaration is
+    byte-for-byte the one this constructor has always emitted.
+
+    ``max_mm`` must be strictly greater than ``min_mm``: equal bounds are a
+    window no real measurement can land in, and that is a limit that cannot
+    pass rather than one that cannot fail (``_number``'s reasoning, the other
+    way round).
+    """
     a = _identifier("a", a)
     b = _identifier("b", b)
     if a == b:
         raise ValueError(f"a and b must be different instances, both are {a!r}")
+    limit = {"min_mm": _positive("min_mm", min_mm)}
+    if max_mm is not None:
+        limit["max_mm"] = _positive("max_mm", max_mm)
+        if limit["max_mm"] <= limit["min_mm"]:
+            raise ValueError(
+                f"max_mm ({limit['max_mm']}) must be > min_mm "
+                f"({limit['min_mm']})")
     return _declaration("clearance", "project", _name(name, f"clearance_{a}_{b}"),
-                        {"min_mm": _positive("min_mm", min_mm)},
-                        _requirement(requirement), {"a": a, "b": b})
+                        limit, _requirement(requirement), {"a": a, "b": b})
 
 
 def check_stackup(from_instance: str, to_instance: str, axis: str, within: float,
