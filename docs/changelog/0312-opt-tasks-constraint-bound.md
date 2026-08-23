@@ -29,34 +29,47 @@ moment a score is published this becomes a `bench-v2` change.
 All numbers measured through `agentcad bench score` / the real `Scorer` on the
 pinned build123d, on this machine, against the bundles as shipped in this diff.
 
-### `opt_001_lightest_bracket` — the 4 mm wall floor binds at `thk` 4.0
+### `opt_001_lightest_bracket` — the 4 mm wall floor binds at `thk` 4.05
 
 `PARAMS["thk"]` min widened **6.0 → 3.0** (both scripts, identically), and the
-reference moved from `thk` 6.0 to **`thk` 4.0** — the lightest bracket whose
-wall is the 4 mm `check_wall(min_mm=4.0, grid=4)` asks for, a whole millimetre
-inside the declared range. Measured wall across the range (grid=4 reads about
-0.2 mm over the leg thickness itself):
+reference moved from `thk` 6.0 to **`thk` 4.05** — the lightest bracket that
+clears the 4 mm `check_wall(min_mm=4.0, grid=4)` asks for **on designed
+margin**, a whole millimetre inside the declared range. Measured wall across the
+range (grid=4 reads about 0.2 mm over the leg thickness itself):
 
-| `thk` | 3.0 | 3.5 | 3.8 | 3.9 | 4.0 | 4.5 | 6.0 |
-|---|---|---|---|---|---|---|---|
-| `leg_thickness` | 3.176 ✗ | 3.686 ✗ | 3.992 ✗ | 4.094 ✓ | **4.196 ✓** | 4.706 ✓ | 6.235 ✓ |
+| `thk` | 3.0 | 3.5 | 3.8 | 3.9 | 4.0 | **4.05** | 4.5 | 6.0 |
+|---|---|---|---|---|---|---|---|---|
+| `leg_thickness` | 3.176 ✗ | 3.686 ✗ | 3.992 ✗ | 4.094 ✓ | 4.196 ✓ | **4.247 ✓** | 4.706 ✓ | 6.235 ✓ |
 
-Reference measures **427.6291 g / 54475.0446 mm³** (was 631.4818 / 80443.5403),
+The 0.05 mm is the point (review round 1, minor 4): at `thk` 4.00 the real wall
+IS the floor, so the row passes only because the sampler reads 0.196 mm high and
+the reference would have rested on a measurement artefact. At 4.05 it clears the
+requirement in real material. A candidate doing honest nominal arithmetic that
+lands on 4.00 is **not** punished — it still scores 1.0, by being lighter than
+the reference rather than by being forgiven.
+
+Reference measures **432.7866 g / 55132.0570 mm³** (was 631.4818 / 80443.5403),
 and the four objective rungs were re-derived from it at the unchanged 1.05/1.20
-ratios: 449.01 g / 513.15 g / 57198.80 mm³ / 65370.05 mm³.
+ratios: 454.43 g / 519.34 g / 57888.66 mm³ / 66158.47 mm³.
 
 | candidate | total |
 |---|---|
-| reference (`thk` 4.0) | **1.0** |
+| reference (`thk` 4.05) | **1.0** |
 | starter (`thk` 10.0) | 0.8 |
 | half-way (`thk` 4.5) | 0.9 |
+| nominal answer (`thk` 4.0) | 1.0 |
 | **old range floor (`thk` 6.0)** | **0.8** (all six rubric rows green, all four objective rungs missed) |
 | new range floor (`thk` 3.0) | 0.925 (every metric window green, `leg_thickness` red at 3.176) |
 | starter re-materialled `al6061` | 0.825 (unchanged; the density twin still binds) |
 
 The R6-fillet claim was re-measured at the new reference thickness: R2 reads
-423.3165 g against R6's 427.6291 g — 4.3126 g, 1.0%, still inside the
+428.4740 g against R6's 432.7866 g — 4.3126 g, 1.0%, still inside the
 objective's 5% slack, so the one ungraded rule still cannot move the score.
+`author metrics` was deliberately **not** re-run: `seed_metrics` writes a
+first-draft ±1% band on mass and volume plus bbox and solids windows, which
+would overwrite the hand-tightened one-sided objective rungs this task is scored
+on. The reference was re-measured through the same service path the helper
+uses.
 
 ### `opt_003_thinnest_lid` — the fit floors bind, and the countersink is why
 
@@ -106,6 +119,10 @@ bundle's own comment warned. So the rubric gained two `check_that` rows:
   0.05 mm of measurement slack). Centres come from `edge.arc_center`, never
   `edge.center()`: a merged hole survives as a trimmed arc whose centre of mass
   is a point *on* the arc, which would make a merged pattern look well spaced.
+  What it measures is the straight-line distance, i.e. the **chord**
+  `D·sin(π/n)` — not the arc `πD/n`, which is longer and would let a pattern
+  through that the metal does not. At the reference the chord is 12.105 where
+  the arc would have said 12.125.
 - **`bolt_pattern`** — at least four Ø9 holes and `n_faces == 8 + holes`, which
   is what keeps the `n_faces` objective honest now that the ceiling is high
   enough for the proxy to be gamed.
@@ -114,9 +131,13 @@ What binds is now a genuine two-sided squeeze: outward by
 `bolt_circle_ligament` (measured at n=32: Ø122.5 → 4.154, Ø123.5 → 3.447,
 Ø124 → 3.094, Ø124.5 → 2.740 ✗, Ø125 → 2.387 ✗ — the sampler walks out through
 the 1.5 mm rim chamfer and reads ~0.4 mm under the nominal rim ligament), and
-inward by `bolt_spacing` (a 33rd bolt needs Ø126.05, which the rim row reads at
-1.998 and refuses). Objective rungs re-derived from 40 faces at the unchanged
-ratios: 38.10 (≥ 31 bolts) and 33.33 (≥ 26 bolts).
+inward by `bolt_spacing`. A 33rd bolt needs Ø125.72 against the row as shipped
+(11.95) or Ø126.24 against the nominal 3 mm — **corrected in review round 1,
+minor 2**, from the Ø126.05 the arc formula gave — and both are red on the rim
+row: measured, 33 bolts on Ø125.8 pass `bolt_spacing` (chord 11.958) and read
+2.208 on `bolt_circle_ligament`, scoring 0.935714. The conclusion is unchanged —
+32 is the optimum in either arithmetic. Objective rungs re-derived from 40 faces
+at the unchanged ratios: 38.10 (≥ 31 bolts) and 33.33 (≥ 26 bolts).
 
 | candidate | total |
 |---|---|
@@ -126,6 +147,8 @@ ratios: 38.10 (≥ 31 bolts) and 33.33 (≥ 26 bolts).
 | **old range ceiling (24 @ Ø118)** | **0.866667** — every rubric row green, both rungs missed |
 | new range ceiling (48 @ Ø118) | 0.804762 — holes merge into a slot: two solids, `bolt_spacing` + `bolt_pattern` red |
 | 33 @ Ø123.5 | 0.935714 (`bolt_spacing` red) |
+| 33 @ Ø125.53 | 0.871429 (**both** ligament rows red: 2.398 and chord 11.932) |
+| 33 @ Ø125.8 | 0.935714 (`bolt_spacing` green at chord 11.958, `bolt_circle_ligament` red at 2.208) |
 | 33 @ Ø126.1 | 0.935714 (`bolt_circle_ligament` red at 1.998) |
 | 41 holes at **Ø5** @ Ø118 | 0.871429 — 49 faces, and without `bolt_pattern` this was a 1.0 |
 | 31 @ Ø120 | 1.0 (a near-optimal answer inside the 5% rung, full credit by design) |
@@ -150,14 +173,22 @@ ratios: 38.10 (≥ 31 bolts) and 33.33 (≥ 26 bolts).
   comment, which `strip_reviewer_comments` removes before the model sees it.
 - Rewrote the `docs/bench.md` "What this does not guarantee" bullet: the
   category is constraint-bound now, carries the authoring rule for new tasks,
-  and discloses what actually remains (per-row measurement slack and the 5%
-  rung's full credit — neither of which lets a candidate outscore the reference,
-  because the objective windows are one-sided).
+  and discloses what actually remains — **split by the direction the slack
+  runs** (review round 1, Important 1). In the candidate's favour on `opt_001`
+  (~0.2 mm over), `opt_003` (0.05 mm) and `opt_005` (0.1 mm), none of which can
+  outscore a one-sided objective window; **against** the candidate on `opt_004`,
+  whose `bolt_circle_ligament` reads ~0.4 mm *under* nominal, so a Ø125.0 circle
+  with an exactly-3 mm nominal rim ligament is red at 2.387. A row that punishes
+  correct reasoning is a task defect unless it is disclosed, so `opt_004`'s
+  visible prompt now states the overread in its own constraint bullet and tells
+  the agent to keep real margin. The bullet also records the rule the round-1
+  review produced: a reference clears its binding row on designed margin, never
+  on slack in its favour.
 
 ## Files
 
 - `benchmarks/tasks/optimize_under_constraints/opt_001_lightest_bracket/{starter,reference/project}/parts/angle_bracket.py` — `thk` min 6.0 → 3.0
-- `.../opt_001_lightest_bracket/reference/project/project.json` — `thk` 6.0 → 4.0
+- `.../opt_001_lightest_bracket/reference/project/project.json` — `thk` 6.0 → 4.05
 - `.../opt_001_lightest_bracket/reference/metrics.json` — four objective rungs re-derived
 - `.../opt_001_lightest_bracket/prompt.md` — "what binds" paragraph, new provenance block
 - `.../opt_001_lightest_bracket/specs/parts/angle_bracket.py` — `leg_thickness` comment inverted (the row now binds inside the range)
@@ -169,7 +200,11 @@ ratios: 38.10 (≥ 31 bolts) and 33.33 (≥ 26 bolts).
 - `.../opt_004_most_bolts/reference/metrics.json` — `n_faces` rungs 30.48/26.67 → 38.10/33.33
 - `.../opt_004_most_bolts/specs/parts/flange.py` — `bolt_spacing` + `bolt_pattern` rows, `_bench_bolt_centres`, and the comment explaining which row sees which ligament
 - `.../opt_004_most_bolts/prompt.md` — both new rows stated, new provenance block
-- `docs/bench.md` — the optimisation caveat bullet, rewritten
+- `docs/bench.md` — the optimisation caveat bullet, rewritten. **Authored by
+  this task, committed with `6384467`**: the hunk was held back from `ab1cbcc`
+  so it could not clobber a concurrent edit to the same file, and it physically
+  landed alongside the `asm_*` work. `0311` carries the matching correction from
+  the other side.
 
 ## Verification
 
@@ -177,7 +212,7 @@ ratios: 38.10 (≥ 31 bolts) and 33.33 (≥ 26 bolts).
 uv run pytest -q tests/test_bench_tasks.py tests/test_bench_author.py   # 44 passed
 uv run pytest -q tests/test_bench_cli.py tests/test_bench_scoring.py    # 76 passed
 uv run pytest -q "tests/test_prd024_acceptance.py::test_ac1_every_shipped_reference_scores_one[optimize_under_constraints/opt_00{1,3,4}_*]"   # 3 passed
-uv run agentcad bench score .../opt_001_lightest_bracket/reference/project --task optimize_under_constraints/opt_001_lightest_bracket  # 1.0000
+uv run agentcad bench score .../opt_001_lightest_bracket/reference/project --task optimize_under_constraints/opt_001_lightest_bracket  # 1.0000 (re-proved at thk 4.05)
 uv run agentcad bench score .../opt_003_thinnest_lid/reference/project    --task optimize_under_constraints/opt_003_thinnest_lid       # 1.0000
 uv run agentcad bench score .../opt_004_most_bolts/reference/project      --task optimize_under_constraints/opt_004_most_bolts         # 1.0000
 uv run agentcad bench score .../opt_001_lightest_bracket/starter … 0.8000 · opt_003 starter 0.8400 · opt_004 starter 0.8667
@@ -203,3 +238,19 @@ uv run agentcad bench score .../opt_001_lightest_bracket/starter … 0.8000 · o
   own eight faces plus one per Ø9 hole, so a candidate that legitimately adds a
   chamfer of its own would lose the row. The prompt states that constraint in
   words, which is the fairness bar this task set holds itself to.
+- **Commit attribution for the `docs/bench.md` hunk.** The optimisation-caveat
+  bullet is this task's work, but it was held back from commit `ab1cbcc` so a
+  concurrent edit to the same file could not be clobbered, and it physically
+  landed in commit `6384467` with the `asm_*` changes. Read `6384467`'s
+  `docs/bench.md` diff as two authors' work; `0311` records the same split from
+  the other side.
+- **Review round 1** (T-C, approved with one Important + three minors) landed
+  on top of `ab1cbcc` as working-tree edits: the slack disclosure in
+  `docs/bench.md` is now split by direction (Important 1), `opt_004`'s 33rd-bolt
+  threshold is chord arithmetic rather than arc (minor 2), `opt_004`'s visible
+  prompt discloses the rim sampler's strict-side overread (minor 3), and
+  `opt_001`'s reference moved 4.0 → 4.05 so its binding row passes on designed
+  margin (minor 4). The minor-4 re-derivation rippled no further than the four
+  objective rungs and the numbers quoted around them: the `material_density`
+  row is thickness-independent, and the `al6061` exploit still clears both mass
+  rungs (352.2434 g against 454.43 g) and is still caught by the volume twins.

@@ -53,6 +53,11 @@ from agentcad.toolkit.specs import (
 #: Ø9 bolt holes, so radius 4.5, and 3 mm of material between two of them is
 #: 4.5 + 3 + 4.5 = 12 mm centre to centre. The row is written 0.05 mm under
 #: that — measurement slack on the requirement, not a different requirement.
+#: What the predicate measures is the straight-line distance between centres,
+#: i.e. the CHORD `D * sin(pi/n)`, which is the honest reading of "3 mm of
+#: material between two holes"; the arc `pi*D/n` is longer and would let a
+#: pattern through that the metal does not.  At the reference (32 on Ø123.5)
+#: the chord is 12.105 and the arc would have said 12.125.
 _BENCH_BOLT_R = 4.5
 _BENCH_MIN_PITCH = 11.95
 

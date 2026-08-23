@@ -14,18 +14,27 @@
          which on this part reads the RIM. Measured at n_bolts = 32:
          Ø122.5 -> 4.154, Ø123.5 -> 3.447, Ø124 -> 3.094, Ø124.5 -> 2.740 (red),
          Ø125 -> 2.387 (red). The sampler walks out through the 1.5 mm rim
-         chamfer, so it reads about 0.4 mm under the nominal rim ligament,
-         and Ø124.2-ish is where the row turns.
+         chamfer, so it reads about 0.4 mm UNDER the nominal rim ligament, and
+         Ø124.2-ish is where the row turns. Note the direction: unlike
+         `opt_001`'s wall row, this slack runs AGAINST the candidate — a Ø125
+         circle whose nominal rim ligament is exactly the 3 mm asked for is
+         red at 2.387 — so the visible prompt discloses the overread and tells
+         the agent to keep real margin. Without that clause an agent doing
+         correct nominal arithmetic would lose a row it had satisfied.
        * inward, by `bolt_spacing`, which is the neighbour ligament: Ø9 holes
-         3 mm apart is 12 mm centre to centre, so a circle of diameter D
-         carries floor(pi*D/12) bolts. Ø123.5 carries 32 (12.125 mm pitch);
-         a 33rd needs Ø126.05 or more, which the rim row reads at 1.998 and
-         refuses.
+         3 mm apart is 12 mm centre to centre, and centre to centre on a bolt
+         circle is the CHORD, `D * sin(pi/n)` — not the arc `pi*D/n`, which
+         overstates the spacing and would put the threshold about half a
+         millimetre too low. Ø123.5 carries 32 (chord 12.105). A 33rd needs
+         Ø125.72 against the row as shipped (11.95) or Ø126.24 against the
+         nominal 3 mm, and BOTH are red on the rim row — measured, Ø125.8 with
+         33 bolts passes `bolt_spacing` (chord 11.958) and reads 2.208 on
+         `bolt_circle_ligament`, scoring 0.935714.
 
      Reference: `n_bolts` 32 on a Ø123.5 circle — 40 faces, rim row 3.447,
-     pitch 12.125. Both rows green with margin, and 33 bolts unreachable in
-     either direction (Ø123.5/33 loses `bolt_spacing`; Ø126.1/33 loses
-     `bolt_circle_ligament`; both score 0.9357).
+     chord 12.105. Both rows green with margin, and 33 bolts unreachable in
+     either direction (Ø123.5/33 loses `bolt_spacing`; Ø125.8/33 loses
+     `bolt_circle_ligament`; Ø125.53/33 loses both and scores 0.871429).
 
      `bolt_spacing` is a `check_that` and not more `check_wall` because the
      wall sampler does not see the neighbour ligament AT ALL: measured, 42
@@ -92,7 +101,10 @@ Constraints, all of them graded:
 - Every bolt hole keeps at least **3 mm** of material to the bore and to the
   rim, measured as `check_wall(min_mm=3.0, grid=4)`. This is the flange's own
   INT-003 requirement: crowding the bolt circle outward loses it long before
-  the holes themselves touch the rim.
+  the holes themselves touch the rim. Be aware the sampler reads **about
+  0.4 mm under** the nominal rim ligament near the chamfered rim, so keep real
+  margin — a bolt circle whose nominal ligament is exactly 3 mm measures under
+  the floor and is red.
 - Every bolt hole keeps at least **3 mm** of material to its neighbours,
   measured on the built part as centre-to-centre spacing: Ø9 holes 3 mm apart
   are 12 mm between centres.

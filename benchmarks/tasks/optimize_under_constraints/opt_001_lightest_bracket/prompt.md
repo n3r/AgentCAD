@@ -11,30 +11,39 @@
      not have — and `check_wall(min_mm=4.0, grid=4)` is red below it. Measured
      across the range, grid=4 reads about 0.2 mm over the leg thickness itself:
 
-       thk 3.0 -> 3.176 (red)   thk 3.5 -> 3.686 (red)   thk 3.8 -> 3.992 (red)
-       thk 4.0 -> 4.196 (green) thk 4.5 -> 4.706 (green) thk 6.0 -> 6.235 (green)
+       thk 3.0  -> 3.176 (red)    thk 3.5 -> 3.686 (red)   thk 3.8 -> 3.992 (red)
+       thk 3.9  -> 4.094 (green)  thk 4.0 -> 4.196 (green)
+       thk 4.05 -> 4.247 (green, the reference)
+       thk 4.5  -> 4.706 (green)  thk 6.0 -> 6.235 (green)
 
-     So the reference is `thk` 4.0: the lightest bracket whose wall is the
-     4 mm the rubric asks for, one whole millimetre inside the range the script
-     declares. Typing the end of the slider (`thk` 3.0) is a **0.925** — it
-     clears every objective window and loses `leg_thickness`.
+     So the reference is `thk` 4.05, a whole millimetre inside the range the
+     script declares. The 0.05 mm over the stated 4 mm is a DESIGNED margin on
+     the requirement — the reference's real wall is 4.05 mm against a 4 mm
+     floor — and not the sampler's overread: at `thk` 4.00 the true wall IS the
+     floor, and a reference that passed only because grid=4 reads 0.196 mm high
+     would be a reference resting on a measurement artefact. Typing the end of
+     the slider (`thk` 3.0) is a **0.925** — it clears every objective window
+     and loses `leg_thickness`.
 
      The sampler's 0.2 mm of overread is measurement slack on the row and not a
-     second requirement: `thk` 3.9 reads 4.094 and is green, so a candidate can
-     sit 0.1 mm under the stated wall. It cannot OUTSCORE the reference by
-     doing it — the objective windows are one-sided, so 3.9 and 4.0 are both
-     1.0 — which is why the row is left at the requirement rather than lifted
-     to chase the sampler.
+     second requirement, and on THIS task it runs in the candidate's favour:
+     `thk` 3.9 reads 4.094 and is green, so a candidate can sit 0.1 mm under
+     the stated wall. It cannot OUTSCORE the reference by doing it — the
+     objective windows are one-sided, so 3.9, 4.0 and 4.05 are all 1.0 — which
+     is why the row is left at the requirement rather than lifted to chase the
+     sampler. The corollary matters more: an agent that does honest nominal
+     arithmetic and lands on `thk` 4.00 scores 1.0, and it does so by being
+     LIGHTER than the reference rather than by being forgiven.
 
-     Objective: minimise `mass_g`. The reference solution (`thk` 4.0, every
-     other parameter unchanged) measures **427.6291 g** and **54475.0446 mm³**.
+     Objective: minimise `mass_g`. The reference solution (`thk` 4.05, every
+     other parameter unchanged) measures **432.7866 g** and **55132.0570 mm³**.
      The objective is a two-rung one-sided window derived from that measured
      value, in BOTH units:
 
-       objective_mass            max = 1.05 x 427.6291   =   449.01 g   (full)
-       objective_mass_relaxed    max = 1.20 x 427.6291   =   513.15 g   (partial)
-       objective_volume          max = 1.05 x 54475.0446 = 57198.80 mm³ (full)
-       objective_volume_relaxed  max = 1.20 x 54475.0446 = 65370.05 mm³ (partial)
+       objective_mass            max = 1.05 x 432.7866   =   454.43 g   (full)
+       objective_mass_relaxed    max = 1.20 x 432.7866   =   519.34 g   (partial)
+       objective_volume          max = 1.05 x 55132.0570 = 57888.66 mm³ (full)
+       objective_volume_relaxed  max = 1.20 x 55132.0570 = 66158.47 mm³ (partial)
 
      A two-rung ladder because `metrics` is scored as the fraction of windows
      satisfied, and a single window would make an optimisation objective a
@@ -51,9 +60,10 @@
 
      Measured proof:
 
-       reference (thk 4.0, steel_a36)   427.6291 g /  54475.0446 mm³ -> 1.0
+       reference (thk 4.05, steel_a36)  432.7866 g /  55132.0570 mm³ -> 1.0
        starter   (thk 10.0, steel_a36) 1024.1152 g / 130460.5317 mm³ -> 0.8
        half-way  (thk 4.5, steel_a36)   479.0633 g /  61027.1686 mm³ -> 0.9
+       nominal answer (thk 4.0)         427.6291 g /  54475.0446 mm³ -> 1.0
        old range floor (thk 6.0)        631.4818 g /  80443.5403 mm³ -> 0.8
        new range floor (thk 3.0)        323.8188 g /  41250.7968 mm³ -> 0.925
          (every metric window green, `leg_thickness` red at 3.176 mm)
@@ -62,9 +72,9 @@
      One constraint the prompt states but the rubric does not measure: the R6
      inner fillet, which is why it is listed under "Not graded". Spending it is
      spending it DOWNWARD, and R2 at the reference thickness measures
-     423.3165 g against R6's 427.6291 g — 4.3126 g, 1.0%, inside the
+     428.4740 g against R6's 432.7866 g — 4.3126 g, 1.0%, inside the
      objective's own 5% slack — so the unmeasured rule cannot move the score.
-     (Growing it costs mass: R12 reads 442.1843 g.)
+     (Growing it costs mass: R12 reads 447.3418 g.)
 -->
 
 The project already holds the part `angle_bracket`, an L-shaped erection
