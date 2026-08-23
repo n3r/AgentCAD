@@ -103,3 +103,5 @@ of factually wrong doc statements.
 Review reports and rulings live in the orchestration record; the four
 verdicts were unanimously FIX-FIRST and every gating finding is addressed
 here. `make test` — 5608 passed, 40 skipped (28:07, shared box); non-passing were the pre-existing prd028 AC6 local solver timeout (skips on CI), the supervisor ballooning-kill flake, and a routes_structure worker-restart timeout cascade — 17/17 pass in 60 s in isolation.
+
+Merged-tree verification (after merging origin/main's f5dabf6 and renumbering): `make test` — 5638 passed, 40 skipped (22:05); the same three documented families (prd028 AC6 local solver timeout, supervisor ballooning-kill, routes_structure timeout cascade) re-run green in isolation (17/17 in 88 s).
