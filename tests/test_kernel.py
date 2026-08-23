@@ -180,17 +180,31 @@ def build(p):
 '''
 
 
-def test_interference_reports_a_boolean_it_could_not_compute(kernel):
+def test_two_overlapping_elbows_are_never_reported_clean(kernel):
     """Two coincident elbows differing only in bend radius — the same two legs
-    running down the same two axes, overlapping over most of their length. OCCT
-    intersects them to **nothing**, with `IsDone()` true and no error raised,
-    and `pairwise_interference` used to read that empty result as `0.0` and
-    report the assembly **clean**. It now fails closed: the pair is listed with
-    `degenerate: True` and a `volume_mm3` that carries no information.
+    running down the same two axes, overlapping over most of their length.
+    `pairwise_interference` used to report this assembly **clean**, because
+    OCCT intersected the pair to nothing with `IsDone()` true and no error
+    raised, and the empty result was read as `0.0`.
 
-    The measured volume stays 0.0 on purpose. The recheck in
-    `handlers/_bop._disagrees` is a detector — its cropped octant sum is not a
-    valid intersection volume — so it is never promoted into the measurement.
+    What this pins is the **platform-invariant** property: the pair is
+    reported, by one of the two honest answers. Which answer you get depends on
+    the OS, and that is not a bug in the guard — it is the bug the guard exists
+    for. Measured: **macOS** returns the empty intersection, so the pair comes
+    back with `degenerate: True` and a `volume_mm3` of 0.0 that carries no
+    information (the recheck in `handlers/_bop._disagrees` is a detector, and
+    its cropped octant sum is never promoted into the measurement). **Linux**
+    (ubuntu-latest, same pinned build123d) computes a real intersection volume
+    for the same two solids and needs no marker. The same operand pair has also
+    been seen answering both ways inside *one* process on one machine,
+    depending on what was booleaned before it — so this could not be pinned to a
+    platform even if we wanted to.
+
+    Silence is the only answer that is not honest, and silence is what this
+    asserts against. The strict mechanics of the degenerate path — the marker,
+    the emit-below-`min_volume` rule, the threshold arithmetic — are pinned
+    deterministically over a stubbed boolean below and in
+    `test_the_recheck_ignores_slivers_below_the_callers_own_floor`.
     """
     items = [
         {"name": "elbow_r24", "script": ELBOW_SCRIPT,
@@ -203,8 +217,42 @@ def test_interference_reports_a_boolean_it_could_not_compute(kernel):
     assert len(result["pairs"]) == 1
     pair = result["pairs"][0]
     assert {pair["a"], pair["b"]} == {"elbow_r24", "elbow_r30"}
-    assert pair["degenerate"] is True
-    assert pair["volume_mm3"] >= 0.0
+    # Either OCCT could not answer (fail closed, marked) or it answered with a
+    # real volume. Never a silent absence, and never a marker-less 0.0.
+    assert pair.get("degenerate") is True or pair["volume_mm3"] > 0.001, pair
+
+
+def _two_boxes():
+    from build123d import Box
+
+    return [("a", Box(10, 10, 10)), ("b", Box(10, 10, 10))]
+
+
+@pytest.mark.parametrize("answer, expected", [
+    # A boolean the kernel could not compute: emitted anyway, marked, even
+    # though its volume is below `min_volume`. This is the whole fail-closed
+    # contract, pinned without asking OCCT to misbehave on cue.
+    ((0.0, True), {"a": "a", "b": "b", "volume_mm3": 0.0, "degenerate": True}),
+    # An ordinary overlap grows no marker.
+    ((500.0, False), {"a": "a", "b": "b", "volume_mm3": 500.0}),
+])
+def test_the_degenerate_marker_rides_the_emitted_pair(monkeypatch, answer,
+                                                      expected):
+    from agentcad.kernel import worker
+
+    monkeypatch.setattr(worker, "checked_common_volume",
+                        lambda *a, **k: answer)
+    assert worker.pairwise_interference(_two_boxes()) == [expected]
+
+
+def test_a_clean_boolean_below_the_threshold_emits_no_pair(monkeypatch):
+    """The condition is `volume > min_volume or degenerate` — the `or` must not
+    have turned the threshold into a no-op."""
+    from agentcad.kernel import worker
+
+    monkeypatch.setattr(worker, "checked_common_volume",
+                        lambda *a, **k: (0.0, False))
+    assert worker.pairwise_interference(_two_boxes()) == []
 
 
 def test_interference_does_not_cry_degenerate_on_a_clean_assembly(kernel):

@@ -257,10 +257,15 @@ ping: True
 - `agentcad/core/specs.py` — `_eval_interference`'s fail message.
 - `agentcad/bench/scoring.py` — `_interference`'s pair detail.
 - `agentcad/core/checks.py` — `_pair_item`.
-- `tests/test_kernel.py` — `test_interference_reports_a_boolean_it_could_not_compute`
+- `tests/test_kernel.py` — `test_two_overlapping_elbows_are_never_reported_clean`
   (the product-path regression) and
   `test_interference_does_not_cry_degenerate_on_a_clean_assembly` (the other
-  half of the guard); `ELBOW_SCRIPT`. Plus the detector's own unit tests:
+  half of the guard); `ELBOW_SCRIPT`. Plus the emit contract over a stubbed
+  boolean — `test_the_degenerate_marker_rides_the_emitted_pair` (parametrised:
+  `(0.0, True)` is emitted *and* marked despite being below `min_volume`;
+  `(500.0, False)` grows no marker) and
+  `test_a_clean_boolean_below_the_threshold_emits_no_pair` (the `or degenerate`
+  did not turn the threshold into a no-op). Plus the detector's own unit tests:
   `test_the_recheck_ignores_slivers_below_the_callers_own_floor` (8 parametrised
   cases over a stubbed boolean — the threshold is arithmetic and is proved
   without asking OCCT anything),
@@ -272,10 +277,15 @@ ping: True
   `CheckRunner._pair_item` touches no `self`, so both call it unbound and the
   file stays kernel-free, as its header promises.
 - `tests/test_bench_kernel_iou.py` — `test_a_degenerate_boolean_is_refused_not_banked_as_a_zero`
-  (STEP exported through the kernel, `KernelError`, `"degenerate"` in the
-  message, `stage: "intersect"`, and the worker still answering `ping`);
-  `ELBOW`; a docstring correction on `test_a_non_finite_intersection_is_an_error_too`,
-  whose mechanism moved from `max(nan, 0.0)` into `_bop`.
+  (STEP exported through the kernel; either a `KernelError` whose message,
+  type and `stage: "intersect"` are pinned, or an honest `iou == 1.0` — never
+  a silent 0.0 — and the worker still answering `ping` either way);
+  `test_a_degenerate_pair_refuses_with_the_stage_the_scorer_reads` and
+  `test_a_trusted_boolean_is_measured_and_not_refused`, both over a stubbed
+  `checked_common_volume` so the refusal contract cannot drift with the
+  platform; `ELBOW`; a docstring correction on
+  `test_a_non_finite_intersection_is_an_error_too`, whose mechanism moved from
+  `max(nan, 0.0)` into `_bop`.
 - `tests/test_specs.py` — `test_a_pair_the_kernel_could_not_boolean_fails_and_says_so`
   and `test_a_measurable_overlap_keeps_the_message_it_always_had`, both
   kernel-free over a stub `check_interference`.
@@ -284,6 +294,23 @@ ping: True
 
 ## Notes
 
+- **The OCCT bug is platform-dependent, and the tests say so** (fix round 2,
+  from a CI failure on `ubuntu-latest`). The coincident elbow pair that
+  differs only in `bend_r` (24 vs 30) answers **empty on macOS** — hence
+  `degenerate: True` — and **computes a real intersection volume on Linux**,
+  on the same pinned build123d. Both are honest; only silence is not. The
+  product-path regression therefore asserts the platform-invariant property —
+  the pair is *reported*, with a marker or with a volume above `min_volume` —
+  and the strict mechanics (marker plumbing, the emit-below-threshold rule, the
+  sliver floor, the bench refusal's type/stage) are pinned over stubbed
+  booleans, where no platform can move them. The same either/or treatment was
+  applied preventively to the bench `iou` test: its script ⊗ STEP pair is
+  degenerate on macOS *and* on Linux today (both CI Linux jobs run that file —
+  `ci.yml`'s ubuntu portability leg via the module's `portability` mark, and
+  `bench.yml`'s ubuntu self-test via `tests/test_bench_*.py`), but a platform
+  that *fixed* the OCCT bug must make that test go green, not red. What it
+  refuses to accept is the one dishonest answer: `iou: 0.0` for a candidate
+  that is the reference.
 - **Plan deviation, argued.** The plan's product-path regression called for two
   elbows with the second at `position=[0,0,5]`. Measured, that pair is **not**
   degenerate (11 194.235 mm³, reproducibly, in a fresh process); the shifted
@@ -315,7 +342,7 @@ ping: True
 ```
 $ uv run pytest -q tests/test_bench_kernel_iou.py tests/test_kernel.py \
       tests/test_specs.py tests/test_bench_scoring.py tests/test_checks.py
-228 passed, 2 skipped in 24.52s
+233 passed, 2 skipped in 25.92s
 $ uv run pytest -q tests/test_motion.py tests/test_bench_runner.py
 26 passed in 23.72s
 $ uv run pytest -q tests/test_prd024_acceptance.py -m "not slow"
@@ -323,9 +350,10 @@ $ uv run pytest -q tests/test_prd024_acceptance.py -m "not slow"
 ```
 
 RED first: with `checked_common_volume`'s empty branch stubbed back to
-`(0.0, False)` — the pre-fix behaviour — both new kernel tests fail
-(`DID NOT RAISE KernelError`, and the interference pair list is empty). Restored,
-both pass.
+`(0.0, False)` — the pre-fix behaviour — both kernel-backed tests fail. Since
+fix round 2 the iou failure is the sharper one, `Obtained: 0.0 / Expected: 1.0
+± 0.001` for a candidate that *is* the reference; the interference pair list is
+empty. Restored, both pass.
 
 ```
 $ uv run agentcad bench score benchmarks/tasks/fix_the_broken_part/fix_005_invalid_shell/reference/project \

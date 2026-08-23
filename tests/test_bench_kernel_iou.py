@@ -390,31 +390,77 @@ def test_a_non_finite_intersection_is_an_error_too():
 
 
 def test_a_degenerate_boolean_is_refused_not_banked_as_a_zero(kernel, tmp_path):
-    """The elbow against *itself*, round-tripped through STEP: the truth is
-    `iou == 1.0` and OCCT's `A & B` answers **empty**, with `IsDone()` true and
-    no error to catch. The old body returned 0.0 from that empty result, so the
-    bench banked a perfect candidate as a total miss — the single worst number
-    this handler can produce after `iou: 1.0` for a NaN.
+    """The elbow against *itself*, round-tripped through STEP. The truth is
+    `iou == 1.0`, and OCCT's `A & B` answers **empty** — `IsDone()` true, no
+    error to catch — so the old body returned 0.0 and the bench banked a
+    perfect candidate as a total miss. That is the single worst number this
+    handler can produce after `iou: 1.0` for a NaN.
+
+    What is asserted is the invariant, not the bug: **a candidate that IS the
+    reference is never scored 0.0.** Two answers are honest — refusing (the
+    boolean could not be computed) and measuring (it could). Which one OCCT
+    gives is platform- and even order-dependent: on the same pinned build123d,
+    macOS answers empty for the sibling pair in `test_kernel.py` while Linux
+    computes a volume, and one process has been seen answering both ways for
+    one operand pair depending on what ran before it. Today both CI Linux jobs
+    and macOS take the refusal branch here, which is why its message and stage
+    are still pinned tightly — but a platform that *fixed* the OCCT bug must
+    make this test go green, not red.
 
     The STEP round trip is not the *cause* (STEP ⊗ STEP is degenerate too —
     changelog 0282:214-223 measured that correctly); it is what stops OCCT
-    taking the same-shape shortcut that hides the bug, so it is the cheapest
-    reliable way to pin the behaviour. The refusal is a kernel error, which the
-    scorer turns into `status: "error"` and *excludes* (FR7), and the worker has
-    to survive it — the last two lines are the point of the test.
+    taking the same-shape shortcut that hides the bug. The refusal is a kernel
+    error, which the scorer turns into `status: "error"` and *excludes* (FR7),
+    and the worker has to survive it — the `ping` is the point of the test.
     """
     step = tmp_path / "elbow.step"
     kernel.request("export", {"script": ELBOW, "params": {}, "format": "step",
                               "out_path": str(step)}, timeout_s=180.0)
 
-    with pytest.raises(KernelError) as exc:
-        kernel.request("iou", {"candidate": {"script": ELBOW, "params": {}},
-                               "reference": {"source": str(step)},
-                               "align": "world",
-                               "rotations_deg": [[0.0, 0.0, 0.0]]},
-                       timeout_s=300.0)
+    try:
+        out = kernel.request(
+            "iou", {"candidate": {"script": ELBOW, "params": {}},
+                    "reference": {"source": str(step)},
+                    "align": "world", "rotations_deg": [[0.0, 0.0, 0.0]]},
+            timeout_s=300.0)
+    except KernelError as exc:
+        assert exc.type == "kernel_error"
+        assert "degenerate" in exc.message
+        assert (exc.details or {}).get("stage") == "intersect"
+    else:
+        # The other honest answer: the shape is the shape, so it is a 1.0.
+        assert out["status"] == "ok"
+        assert out["iou"] == pytest.approx(1.0, abs=1e-3)
+
+    assert kernel.request("ping", {})["ok"] is True
+
+
+def test_a_degenerate_pair_refuses_with_the_stage_the_scorer_reads(monkeypatch):
+    """The refusal itself, pinned over a stubbed boolean so it cannot drift with
+    the platform. `scoring._geometry_part` keys off `exc.type` and
+    `details["stage"]`, so both are part of the contract, not decoration."""
+    from agentcad.kernel.handlers import bench as bench_handler
+
+    monkeypatch.setattr(bench_handler, "checked_common_volume",
+                        lambda *a, **k: (0.0, True))
+
+    with pytest.raises(_StubWorkerError) as exc:
+        _stub_iou(lambda shape: 1000.0)()
 
     assert exc.value.type == "kernel_error"
-    assert "degenerate" in exc.value.message
-    assert (exc.value.details or {}).get("stage") == "intersect"
-    assert kernel.request("ping", {})["ok"] is True
+    assert "degenerate boolean" in exc.value.message
+    assert exc.value.details["stage"] == "intersect"
+
+
+def test_a_trusted_boolean_is_measured_and_not_refused(monkeypatch):
+    """The other side of the same branch: a positive volume flows through
+    untouched, so the refusal is not firing on ordinary geometry."""
+    from agentcad.kernel.handlers import bench as bench_handler
+
+    monkeypatch.setattr(bench_handler, "checked_common_volume",
+                        lambda *a, **k: (500.0, False))
+
+    out = _stub_iou(lambda shape: 1000.0)()
+
+    assert out["status"] == "ok"
+    assert out["intersection_mm3"] == 500.0
