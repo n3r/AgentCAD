@@ -63,9 +63,25 @@ change is **detection**, not healing. Prose corrections land separately (T3).
   recheck crops `solid_a` to each **octant** of the overlap box and booleans the
   pieces against `solid_b`, short-circuiting on the first hit. The subdivision
   is the mechanism, not an optimisation: an octant boundary cuts *through* the
-  tangent junctions, leaving pieces OCCT handles correctly. Any piece that
-  intersects means the two computations disagree, so the whole-solid boolean
-  lied. An exception raised inside the recheck is also a disagreement.
+  tangent junctions, leaving pieces OCCT handles correctly. A piece that
+  intersects **by more than the caller's own `min_volume`** means the two
+  computations disagree, so the whole-solid boolean lied. An exception raised
+  inside the recheck is also a disagreement.
+
+**The `min_volume` floor** (review fix). Without it the detector would be more
+sensitive than the measurement it checks. `pairwise_interference` refuses to
+*report* a pair below `min_volume` (default 0.001 mm³) precisely because OCCT
+leaves ~1e-12 mm³ slivers at a tangential contact — so a recheck firing below
+that line manufactures a pair the measurement would have discarded. The
+realistic victim is a **zero-clearance fit**: a shaft exactly filling its bore,
+a lip seated in its groove. Legitimately empty, ~100 % AABB overlap, therefore
+reaching the recheck on *every* check — a sliver there would be permanent
+phantom interference on the product path and `clear: False` on every motion
+sweep. So `checked_common_volume` takes the caller's `min_volume`
+(`worker.pairwise_interference` passes its own; the bench `iou` path, which has
+no threshold of its own, takes the same 0.001 mm³ default), floored at
+`_SLIVER_VOLUME_MM3 = 1e-9` so that an explicit `min_volume=0` — "report every
+overlap" — still does not make float noise into evidence.
 
 Measured on this machine: the degenerate coincident-elbow pair is detected in
 0.38–0.76 s; a legitimate empty with 100 % AABB overlap (a hollow shell and a
@@ -75,29 +91,50 @@ the origin (one rotated 180°) have zero AABB overlap volume, so the correct
 empty is returned without a recheck.
 
 **Cost analysis.** Nothing changes for a pair whose boolean succeeds — the only
-added work is one `min()` and two comparisons. Only an *empty* result on a pair
-whose AABBs already overlap by half the smaller box pays anything, and the bill
-is then bounded at 8 crops plus one boolean per resulting piece, short-circuited
-on the first hit.
+added work is one `min()` and two comparisons. Only an *empty* result on a
+suspicious pair pays anything, and the bill is then bounded at 8 crops plus one
+boolean per resulting piece, short-circuited on the first hit.
 
-That combination is **not** vanishingly rare, and the changelog should not
-pretend otherwise: forcing `_disagrees` to return `True` drops the interference
-subscore of `asm_001_thrust_chamber` (1.0000 → 0.7500) and
-`asm_003_bolted_joint` (1.0000 → 0.5583) while leaving `asm_004_truss_node`
-untouched, which proves the recheck *does* run on the first two — a cropped
-piece of a casting sitting entirely inside a fastener's AABB and not touching it
-is exactly the suspicious-and-empty shape. What matters is that it costs
-nothing measurable and never lies: with the real detector all three still score
-**1.0000**, and three timed runs of `asm_003` (the most fastener-heavy
-reference) are 16.61/13.52/16.39 s with the recheck enabled against
-13.45/17.72/16.25 s with `_suspicious` stubbed to `False` — indistinguishable
-from run-to-run noise.
+**The selectivity claim is only true of whole-part pairs, and this changelog
+should not have implied otherwise.** `worker.pairwise_interference` also reaches
+the detector from its **crop branch**, where one operand has already been cut
+down to the overlap box: the piece's AABB then sits entirely inside the other
+solid's, so `_suspicious` is ~1.0 and the recheck fires on essentially *every*
+empty result down that branch — which is the fastener path, the one with the
+highest pair cardinality. That is measured, not theorised: forcing `_disagrees`
+to return `True` drops the interference subscore of `asm_001_thrust_chamber`
+(1.0000 → 0.7500), `asm_003_bolted_joint` (→ 0.5583), `asm_002_lid_on_base`
+(→ 0.4250) and `asm_005_rod_and_piston` (→ 0.6833), while leaving
+`asm_004_truss_node` at 1.0000 — so four of the five interference-weighted
+references run the recheck.
 
-**Residual blind spot.** A degenerate *plausible-positive* result — some wrong
-non-zero volume — is not detected. Catching it would mean re-deriving every
-intersection by an independent method, which costs more than the measurement it
-checks. What is covered is the empty-that-should-not-be (the false "clean", the
-false IoU 0) and the negative/NaN cases.
+What matters is that it costs nothing measurable and never lies: with the real
+detector all five still score **1.0000**, and three timed runs of `asm_003` (the
+most fastener-heavy reference) are 16.61/13.52/16.39 s with the recheck enabled
+against 13.45/17.72/16.25 s with `_suspicious` stubbed to `False` —
+indistinguishable from run-to-run noise. **Not measured:**
+`handlers/motion.py:126` calls `pairwise_interference` once per sweep sample, so
+whatever the recheck costs is multiplied by the sample count. `tests/test_motion.py`
+is green and no sweep got visibly slower, but nobody has timed a long sweep over
+a fastener-heavy assembly.
+
+**Residual blind spots.** This narrows the hole; it does not close it, and the
+first version of this section read as if it did. Three false negatives remain:
+
+1. A degenerate *plausible-positive* result — some wrong non-zero volume — is
+   not detected at all. Catching it would mean re-deriving every intersection by
+   an independent method, which costs more than the measurement it checks. The
+   order-dependence makes these real rather than hypothetical: two back-to-back
+   evaluations of the *same* elbow pair in one process were observed answering
+   "empty" and "924.22 mm³".
+2. `SUSPECT_OVERLAP_FRACTION = 0.5` is a **coverage cliff, not only a cost
+   gate**. A degenerate pair whose AABBs overlap by less than half the smaller
+   box is banked clean exactly as before. Measured: the elbow pair shifted 40 mm
+   in Z sits at an overlap fraction of **0.444** — one shift away from falling
+   off the gate — so this is not a remote corner.
+3. `_disagrees` is one subdivision level of one operand, evaluated by the *same*
+   unreliable kernel. It can answer "no disagreement" on a pair that is
+   genuinely degenerate, and there is no second opinion behind it.
 
 ## `worker.py` — a deliberate core edit
 
@@ -145,17 +182,30 @@ POST-FIX interference: {'pairs': [{'a': 'elbow_r24', 'b': 'elbow_r30',
 ping: True
 ```
 
-## AC1 safety (all 25 references still score 1.0)
+## AC1 safety (the five interference-weighted references measured at 1.0)
 
 - `fix_005`'s `task.json` is byte-unchanged; its `geometry` weight is `0.00`, so
   the degenerate boolean never reaches its total. Verified: `bench score` on its
   reference project still reports **1.0000 over 4 subscore(s)**.
 - A geometry-weighted reference (`mfd_003_head_flange`, geometry 0.50) still
-  **1.0000**; the three interference-weighted `assemble_and_clear` references
-  checked (`asm_001`, `asm_003`, `asm_004`, interference 0.40) still **1.0000**
-  each, with `interference` `ok`/1.0000 — and two of the three demonstrably run
-  the recheck (see the cost analysis above), so that is a *measured* absence of
-  false positives, not an untested path.
+  **1.0000**.
+- **All five** interference-weighted `assemble_and_clear` references (weight
+  0.40) still **1.0000** with `interference` `ok`/1.0000:
+
+  | reference | score | recheck runs? |
+  |---|---|---|
+  | `asm_001_thrust_chamber` | 1.0000 | yes |
+  | `asm_002_lid_on_base` | 1.0000 | yes |
+  | `asm_003_bolted_joint` | 1.0000 | yes |
+  | `asm_004_truss_node` | 1.0000 | no |
+  | `asm_005_rod_and_piston` | 1.0000 | yes |
+
+  `asm_002` is the maximal false-degenerate stressor — filleted parts, near-total
+  AABB overlap, a legitimately empty intersection — and it both exercises the
+  recheck and comes back clean. That is a *measured* absence of false positives
+  on four references, not an untested path.
+- The remaining references are not measured here; the orchestrator's full slow
+  set covers them.
 - Structurally, a reference whose booleans succeed today takes the *positive*
   branch and is untouched; only an empty-and-suspicious result runs new code.
 - `interference_fraction` needs no change: a degenerate pair is *in* `pairs`, so
@@ -185,23 +235,42 @@ ping: True
   on its own reads as "they barely touch".
 - `agentcad/bench/scoring.py` — `_interference` preserves `degenerate` into the
   pair detail, emitted only when set.
+- `agentcad/core/checks.py` — `_pair_item` renders a degenerate pair as
+  `"a and b: indeterminate (degenerate boolean) — counted as interfering"` and
+  carries the flag into the row's `details`. The ordinary sentence would have
+  said `"overlap by 0.0 mm³"`, which reads as a rounding artefact — the opposite
+  of "the measurement did not happen".
 
 ## Files
 
 - `agentcad/kernel/handlers/_bop.py` — new; `checked_common_volume`,
-  `SUSPECT_OVERLAP_FRACTION`, `_suspicious`, `_crop`, `_disagrees`. The module
-  docstring is where the measured root cause and the residual blind spot live.
-- `agentcad/kernel/worker.py` — `pairwise_interference` docstring, `_common_vol`,
+  `SUSPECT_OVERLAP_FRACTION`, `DEGENERATE_MIN_VOLUME_MM3`,
+  `_SLIVER_VOLUME_MM3`, `_suspicious`, `_crop`, `_disagrees`. The module
+  docstring is where the measured root cause, the honest selectivity story and
+  the three residual blind spots live.
+- `agentcad/kernel/worker.py` — `pairwise_interference` docstring, `_common_vol`
+  (which now also passes its `min_volume` down as the detector's noise floor),
   `_solid_common`, the pair-emit block; one new import.
 - `agentcad/kernel/handlers/bench.py` — module docstring (a fifth trap, "Four"
   → "Five", and the stale line reference), `_common_volume`, its one call site,
   one new import.
 - `agentcad/core/specs.py` — `_eval_interference`'s fail message.
 - `agentcad/bench/scoring.py` — `_interference`'s pair detail.
+- `agentcad/core/checks.py` — `_pair_item`.
 - `tests/test_kernel.py` — `test_interference_reports_a_boolean_it_could_not_compute`
   (the product-path regression) and
   `test_interference_does_not_cry_degenerate_on_a_clean_assembly` (the other
-  half of the guard); `ELBOW_SCRIPT`.
+  half of the guard); `ELBOW_SCRIPT`. Plus the detector's own unit tests:
+  `test_the_recheck_ignores_slivers_below_the_callers_own_floor` (8 parametrised
+  cases over a stubbed boolean — the threshold is arithmetic and is proved
+  without asking OCCT anything),
+  `test_a_zero_clearance_fit_is_empty_and_not_degenerate` (a real shaft exactly
+  filling a real bore, both orders) and
+  `test_the_intersection_is_measured_by_the_injected_volume_function`.
+- `tests/test_checks.py` — `test_a_pair_the_kernel_could_not_boolean_reads_as_indeterminate`
+  and `test_an_ordinary_overlapping_pair_keeps_the_sentence_it_always_had`.
+  `CheckRunner._pair_item` touches no `self`, so both call it unbound and the
+  file stays kernel-free, as its header promises.
 - `tests/test_bench_kernel_iou.py` — `test_a_degenerate_boolean_is_refused_not_banked_as_a_zero`
   (STEP exported through the kernel, `KernelError`, `"degenerate"` in the
   message, `stage: "intersect"`, and the worker still answering `ping`);
@@ -228,6 +297,14 @@ ping: True
   is the guard. It is reached from the bench only through the kernel handler.
 - A degenerate pair shows in the UI as an interfering pair with volume 0.0.
   Cosmetic, known, not fixed here.
+- **The nested-Compound undercount is pinned with a stub, not with geometry.**
+  `_common_vol` moving from `float(c.volume)` to `_shape_volume` closes a real
+  hole (`Compound.volume` reports only the first child subtree of a *nested*
+  compound), but a boolean that actually returns a nested compound could not be
+  provoked cheaply — the multi-solid intersections tried came back flat, with
+  `.volume` and the solids sum agreeing. The test therefore pins that
+  `checked_common_volume` returns what the **injected** `volume_of` says, using
+  a stub whose `.volume` attribute deliberately disagrees.
 - `_disagrees` crops `solid_a` specifically. `pairwise_interference`'s
   `_solid_common` may have swapped the operands by then, so which solid gets
   cropped is not stable across callers — acceptable for a detector, and stated
@@ -237,9 +314,12 @@ ping: True
 
 ```
 $ uv run pytest -q tests/test_bench_kernel_iou.py tests/test_kernel.py \
-      tests/test_specs.py tests/test_bench_scoring.py tests/test_motion.py \
-      tests/test_bench_runner.py
-191 passed, 2 skipped in 54.43s
+      tests/test_specs.py tests/test_bench_scoring.py tests/test_checks.py
+228 passed, 2 skipped in 24.52s
+$ uv run pytest -q tests/test_motion.py tests/test_bench_runner.py
+26 passed in 23.72s
+$ uv run pytest -q tests/test_prd024_acceptance.py -m "not slow"
+19 passed, 41 deselected in 3.46s
 ```
 
 RED first: with `checked_common_volume`'s empty branch stubbed back to
@@ -259,5 +339,9 @@ bench score: assemble_and_clear/asm_004_truss_node — 1.0000 over 5 subscore(s)
 `ruff check` clean on every touched file (`worker.py` keeps its pre-existing
 E402 block — 15 before, 16 after, the new import line; the file's imports all
 sit below `apply_from_env()` by design).
+
+Fix round 1 also re-ran the RED probe after the `min_volume` change (stub the
+empty branch back to `(0.0, False)`): both kernel tests still fail without the
+guard and pass with it.
 
 `make test` — <orchestrator fills>

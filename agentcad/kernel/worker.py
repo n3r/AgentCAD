@@ -698,8 +698,12 @@ def pairwise_interference(placed, min_volume: float = 0.001) -> list[dict]:
             size[0] * size[1] * size[2]
 
     def _common_vol(a, ba, b, bb):
-        """(volume, degenerate) for one Solid-vs-Solid boolean."""
-        return checked_common_volume(a, ba, b, bb, _shape_volume)
+        """(volume, degenerate) for one Solid-vs-Solid boolean.
+
+        ``min_volume`` rides along so the degeneracy recheck is never more
+        sensitive than this function's own reporting threshold: a pair we would
+        discard as noise must not come back as a phantom degenerate one."""
+        return checked_common_volume(a, ba, b, bb, _shape_volume, min_volume)
 
     def _solid_common(sa, ba, sb, bb):
         box, ov = _crop_box(ba, bb)

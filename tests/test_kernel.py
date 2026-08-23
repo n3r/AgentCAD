@@ -223,6 +223,104 @@ def test_interference_does_not_cry_degenerate_on_a_clean_assembly(kernel):
     assert not any("degenerate" in pair for pair in result["pairs"])
 
 
+# ---- the degeneracy detector itself (kernel/handlers/_bop.py)
+#
+# These are dict-and-stub tests, not geometry: `_disagrees`' threshold is
+# arithmetic and has to be provable without asking OCCT anything.
+
+
+class _StubPoint:
+    def __init__(self, value):
+        self.X = self.Y = self.Z = value
+
+
+class _StubBox:
+    def __init__(self, lo=0.0, hi=10.0):
+        self.min = _StubPoint(lo)
+        self.max = _StubPoint(hi)
+
+
+class _StubSolid:
+    """A solid every boolean answers with — `_bop` reads only `wrapped`,
+    `solids()` and `&`, so this is the whole surface it touches."""
+
+    wrapped = object()
+
+    def solids(self):
+        return [self]
+
+    def __and__(self, other):
+        return self
+
+
+def _disagrees(answer, min_volume):
+    from agentcad.kernel.handlers._bop import _disagrees as fn
+
+    solid, box = _StubSolid(), _StubBox()
+    return fn(solid, box, solid, box, lambda shape: answer, min_volume)
+
+
+@pytest.mark.parametrize("answer, min_volume, expected", [
+    # A tangential-contact sliver is not evidence: the callers already refuse
+    # to REPORT a pair this small, so a detector firing below their own
+    # threshold would manufacture a pair the measurement would have discarded.
+    (1e-12, 0.001, False),
+    (-1e-12, 0.001, False),        # the floor is on the magnitude
+    (0.0, 0.001, False),
+    (0.01, 0.001, True),           # a real disagreement, above the line
+    (-5.0, 0.001, True),
+    # `min_volume=0` means "report every overlap", not "treat float noise as
+    # evidence": `_SLIVER_VOLUME_MM3` (a 1 um cube) still floors it.
+    (1e-12, 0.0, False),
+    (1e-6, 0.0, True),
+    (float("nan"), 0.001, True),   # a volume OCCT could not compute
+])
+def test_the_recheck_ignores_slivers_below_the_callers_own_floor(
+        answer, min_volume, expected):
+    assert _disagrees(answer, min_volume) is expected
+
+
+def test_a_zero_clearance_fit_is_empty_and_not_degenerate():
+    """The realistic false-degenerate: a shaft exactly filling its bore is
+    legitimately empty AND ~100% AABB overlap, so it reaches the recheck on
+    every single check. A false positive here would be permanent phantom
+    interference on the product path and `clear: False` on every motion sweep.
+    Prismatic on purpose — OCCT is honest about these, so the recheck has to
+    agree with it."""
+    from build123d import Box, Cylinder
+    from agentcad.kernel.handlers._bop import checked_common_volume
+
+    def volume_of(shape):
+        solids = shape.solids()
+        return float(sum(s.volume for s in solids)) if solids \
+            else float(shape.volume)
+
+    bore = (Box(40, 40, 20) - Cylinder(radius=8, height=40)).solids()[0]
+    shaft = Cylinder(radius=8, height=20).solids()[0]
+
+    assert checked_common_volume(bore, bore.bounding_box(), shaft,
+                                 shaft.bounding_box(), volume_of) == (0.0, False)
+    assert checked_common_volume(shaft, shaft.bounding_box(), bore,
+                                 bore.bounding_box(), volume_of) == (0.0, False)
+
+
+def test_the_intersection_is_measured_by_the_injected_volume_function():
+    """`worker._common_vol` used to read `float(c.volume)` off the boolean
+    result, and `Compound.volume` reports only the first child subtree of a
+    NESTED compound — an undercount on exactly the multi-piece results a
+    boolean produces. The volume now comes from the injected `_shape_volume`
+    (the solids sum). Pinned with a stub whose two answers differ, because a
+    real nested-Compound intersection is not cheap to provoke on demand."""
+    from agentcad.kernel.handlers._bop import checked_common_volume
+
+    class _Nested(_StubSolid):
+        volume = 40.0          # what `.volume` would have said
+
+    solid, box = _Nested(), _StubBox()
+    assert checked_common_volume(solid, box, solid, box,
+                                 lambda shape: 100.0) == (100.0, False)
+
+
 ANALYSIS_SCRIPT = '''\
 from build123d import *
 

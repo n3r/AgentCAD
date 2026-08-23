@@ -44,6 +44,15 @@ def build(p):
 # `shape.solids()`, so this shape's reported volume is 2000 mm3 while the
 # region it actually occupies is 1500 — the exact double-count the handler's
 # clamp exists for.
+OVERLAPPING_PAIR = """
+from build123d import *
+PARAMS = {}
+
+def build(p):
+    return Compound(children=[Box(10, 10, 10), Pos(5, 0, 0) * Box(10, 10, 10)])
+"""
+
+
 # The bench's own coolant elbow (`fix_005`, reference defaults): an annular
 # section swept along a filleted right-angle centre line. Every face junction
 # along that sweep is G1-tangent — cylinder into torus into cylinder — which is
@@ -65,15 +74,6 @@ def build(p):
             Circle(p.tube_d / 2 - p.wall, mode=Mode.SUBTRACT)
         sweep(path=path.line)
     return part.part
-"""
-
-
-OVERLAPPING_PAIR = """
-from build123d import *
-PARAMS = {}
-
-def build(p):
-    return Compound(children=[Box(10, 10, 10), Pos(5, 0, 0) * Box(10, 10, 10)])
 """
 
 
