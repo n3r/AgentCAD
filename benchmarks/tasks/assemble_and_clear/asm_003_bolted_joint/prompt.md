@@ -1,3 +1,25 @@
+<!-- Reviewer note (stripped from the prompt the agent sees) — how the graded
+     clearance windows were derived. Bounds come from the gap MEASURED on the
+     reference placement:
+
+       row               pair                          measured   window
+       clamp_seat        clamp_plate_1 - tapped_plate_1 0.000 mm  (0, 0.5]
+       head_seat         cap_screw_1 - clamp_plate_1    0.000 mm  (0, 0.5]
+       thread_clearance  cap_screw_1 - tapped_plate_1   1.177 mm  0.5-2.0
+
+     Two of the three pairs are SUPPOSED to touch, and `check_clearance`
+     requires `min_mm > 0`, so `clamp_seat` and `head_seat` carry the
+     smallest floor the evaluator admits (`specs/project.py`'s `TOUCHING`,
+     1e-9 mm, where the worker's `distance >= min - _slack(min)` is
+     `0.0 >= 0.0`). They are ceilings; overlap stays `no_interference`'s row.
+     Without them the clamp plate's placement was ungraded entirely.
+
+     Measured perturbations behind the ceilings: screw lifted 1 mm ->
+     head_seat 1.000 mm (red), thread_clearance still 1.177 mm (its approach
+     is radial inside the counterbore, so it is blind to a 1 mm lift and to a
+     5 mm one); screw 8 mm up -> thread_clearance 3.222 mm (red); screw 2 mm
+     down (bottomed) -> thread_clearance 0.000 mm (red). -->
+
 The project holds the three parts of a bolted joint — `tapped_plate` (a base
 plate with a blind M8 tapped hole and a counterbore), `clamp_plate` (the plate
 being clamped, with a clearance hole) and `cap_screw` (an M8 socket-head cap
@@ -28,6 +50,17 @@ Requirements:
   the screw length leave about 1.2 mm.
 - **No two instances may overlap** by any volume. Faces that touch are fine;
   material that shares space is not.
+
+Seating is graded, not only non-interference — a part parked clear of the
+joint is not assembled. The three graded gaps are:
+
+- `clamp_plate_1` to `tapped_plate_1`: **seated — touching, and never more
+  than 0.5 mm off** that top face.
+- `cap_screw_1` to `clamp_plate_1`: **seated — touching, and never more than
+  0.5 mm off** the clamp plate's top face. A screw left proud of its seat
+  fails here.
+- `cap_screw_1` to `tapped_plate_1`: **0.5 mm to 2.0 mm** — not bottomed out,
+  and still down in the tapped hole.
 
 Do not change any part script and do not change any part's parameters — this
 task is the placement only.
