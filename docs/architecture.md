@@ -88,7 +88,7 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/kernel/acm.py` | ACM1 binary mesh codec (no OCP dependency; the frontend has a JS parser). |
 | `agentcad/kernel/client.py` | Worker lifecycle: spawn, one-request-at-a-time, per-request timeout, kill-and-respawn, stderr tail capture for crash reports. |
 | `agentcad/kernel/pool.py` | `KernelPool`: N `KernelClient`s behind the same `request()` surface; affinity routing + round-robin, lazy spawn. Size 1 ≡ single client. |
-| `agentcad/kernel/handlers/` | Worker handler packs (reference, drawing, analysis, fem, connectors, diff, specs, sketchplane, bench) merged into the worker at startup — see [extension points](#v2-extension-points). |
+| `agentcad/kernel/handlers/` | Worker handler packs (reference, drawing, analysis, fem, connectors, diff, specs, sketchplane, bench, interop, interop_import) merged into the worker at startup — see [extension points](#v2-extension-points). |
 | `agentcad/kernel/refload.py` | Reference-CAD loader (STEP/BREP → solid, STL → mesh-only Face) with an LRU keyed by (realpath, mtime, size). Kernel-side only (imports OCP). |
 | `agentcad/kernel/error_doctor.py` | Catalog of real OCCT/build123d failure signatures → plain-language diagnosis + fix; enriches every worker error's `details.hint`. |
 | `agentcad/kernel/_mates_resolver.py` | Connector evaluation + mate-graph ordering (cycle rejection) + Joint-based resolution to concrete transforms. |
@@ -113,10 +113,10 @@ constraint — and is overridable via `kernel_pool_size` in the config file or
 | `agentcad/core/presence.py` | `PresenceRegistry`: an in-memory, TTL'd (45 s) roster keyed `(lock_key, client_id)`, fed by an HTTP heartbeat and expired lazily on read — never persisted, no background thread. Also `install_claim_guard`/`ensure_*`, the lazy wrapper that teaches `ProjectStore.write_guard` about per-part claims without changing its signature. |
 | `agentcad/core/locks.py` | `TurnLock` (project-wide, explicit) and `ClaimRegistry` (per-part, implicit, human-vs-human, 90 s), plus the client-identity and `write_scope` contextvars that carry "who" and "which part" to the write guard. |
 | `agentcad/core/tools.py` | ToolRegistry — the 17 core tools defined once; discovers and loads `tools_*.py` packs. MCP and chat render from the merged registry. |
-| `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals, specs, run_checks, comments, packages, configs, ui), each exporting `register(registry, service)`. `tools_specs` additionally *wraps* `service._rebuild` and `service.get_part` (the `install_write_guard` precedent) and appends the `specs` gate provider; `tools_run_checks` installs `service.checks` and appends the `checks` gate — and is named for **load order**, since packs load alphabetically and `tools_proposals` resets `gate_providers`. |
+| `agentcad/core/tools_*.py` | Feature tool packs (import, materials, mates, drawing, analysis, sketch, locks, history, versioning, proposals, specs, run_checks, comments, packages, configs, ui, xchange), each exporting `register(registry, service)`. `tools_specs` additionally *wraps* `service._rebuild` and `service.get_part` (the `install_write_guard` precedent) and appends the `specs` gate provider; `tools_run_checks` installs `service.checks` and appends the `checks` gate — and is named for **load order**, since packs load alphabetically and `tools_proposals` resets `gate_providers`. |
 | `agentcad/core/tools_ui.py` | The `ui_open` tool pack (PRD-026): loads at `ui`, registers unconditionally (no gate provider). Validates `view`/`args`, rate-limits to 10 opens/10 s per process, and publishes `{"type": "ui_open", "view", "args", "by": "agent"}` on `service.bus` — `delivered_to` is `EventBus.subscriber_count()`, read *before* the publish. |
 | `agentcad/server/app.py` | Core REST routes (thin), `/api/tools` passthrough, WebSocket channel, static hosting; mounts `routes_*.py` packs under `/api`. |
-| `agentcad/server/routes_*.py` | Route packs (import upload, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve + sketch blocks, history, branches/versions/merge, proposals, specs, checks, comments, presence, packages, configs, ui + the content-addressed mesh route). |
+| `agentcad/server/routes_*.py` | Route packs (import upload + structured-tree preview, materials, single-instance PATCH, drawing + SVG preview, analyze + fem, sketch solve + sketch blocks, history, branches/versions/merge, proposals, specs, checks, comments, presence, packages, configs, ui + the content-addressed mesh route). |
 | `agentcad/server/routes_ui.py` | `POST /api/ui/events` (PRD-026): the browser's fire-and-forget UX telemetry (`dialog_opened`/`dialog_submitted`/`palette_executed`), allow-listed and re-published on `service.bus` with `by: "browser"` and the `X-Agent-Id` client id. Member-only by default (not in `PUBLIC_PATHS`). |
 | `agentcad/bench/` | AgentCAD-Bench (PRD-024): the task-bundle loader, the six-subscore kernel scorer over a muzzled copy, the budgeted runner, the report/baseline gate, the leaderboard and the authoring helper. CLI-only — no tool, route or event. OCP-free, asserted by a test. |
 | `agentcad/agent/mcp_server.py` | MCP stdio server proxying `/api/tools`; auto-starts the HTTP server when unreachable. |
@@ -146,7 +146,50 @@ features compose without editing the core files:
 3. **Route packs** — `agentcad/server/routes_<feature>.py`, each exporting
    `build_router(service, registry) -> APIRouter`; `app.py` mounts them all
    under `/api`. Most just call the matching tool through the registry, so the
-   REST and agent surfaces cannot drift.
+   REST and agent surfaces cannot drift. **The export routes are the known
+   exception** (PRD-017): `POST .../parts/{id}/export` and `POST
+   .../export` call `service.export_part`/`export_assembly` directly and
+   forward only `format`/`tolerance`/`config` from the body — `pmi`,
+   `metadata` and `structured` are tool-surface-only (agent/MCP `callTool`,
+   which the frontend's Export▾ menu itself falls back to for exactly this
+   reason — see `docs/agent-api.md`'s `export_part`/`export_assembly` rows),
+   the same kind of gap `generate_drawing`'s `tabulate` argument documents
+   for itself.
+
+**Growing an *existing* verb from a pack** (the interop pack, PRD-017, is the
+worked example). `ToolRegistry.register` raises on a duplicate name and has no
+overwrite seam, so a pack cannot re-register `export_part` with a wider schema
+— the house idiom is two halves that always move together:
+
+- **wrap the service method** (`service.export_part` / `export_assembly` are
+  captured and replaced behind a `_WRAPPED` sentinel, so a second
+  `build_registry` is idempotent), and
+- **mutate the already-registered `Tool` in place** — its `input_schema`
+  (`format` enum, `pmi?`, `metadata?`, `structured?`), its description, **and
+  its `handler`**. Rebinding the handler is not optional: the registered
+  lambda took the old argument list, and a schema advertising `pmi` over a
+  handler that cannot take the keyword is a `TypeError` at call time. A test
+  asserts the mutation is visible through `build_registry` *and*
+  `GET /api/tools`.
+
+The pack is called **`tools_xchange.py` for its load order**: packs load
+alphabetically, and `tools_structure` (PRD-013) does not delegate to
+`export_assembly` — it *replaces* it. A pack sorting before it would wrap a
+method that is then thrown away, silently taking assembly expansion or interop
+with it; `xchange` sorts after `structure`, `undo` and `versioning`, so what it
+captures is the **final** method, expansion included. (`tools_interop.py` would
+have sorted before — `i` < `s`.) The same file is where a format becomes
+*conditionally* available: `usd` joins the enums, the descriptions and the
+routing only when `usd_available()`, all from one live function, so an agent is
+never shown a format that cannot run (the FEM gating rule).
+
+The kernel side is two packs, `handlers/interop.py` (exports: `export_step_pmi`
+/ `read_step_pmi`, `export_3mf_rich`, `export_step_structured`) and
+`handlers/interop_import.py` (`inspect_cad_tree`, `import_structured`) — split
+so the two halves could be built in parallel, and because only the kernel
+process may import OCP. glTF/GLB and USD are written **server-side** from the
+cached ACM1 meshes (`core/gltf.py`, `core/usd_export.py` — both OCP-free,
+asserted in a fresh interpreter), so they cost no kernel round trip at all.
 
 `AgentCADService` exposes exactly **three seams** the packs fill in; each
 defaults to v1 behavior, so the core runs unchanged if a pack is absent:
@@ -881,7 +924,49 @@ Assembly instances carry `position` (mm) and `rotation_deg` (intrinsic XYZ
 Euler, degrees). The kernel applies `build123d.Location(position, rotation)`;
 the frontend applies `new THREE.Euler(rx, ry, rz, 'XYZ')` — equivalence is
 covered by a kernel test that round-trips a 90° rotation through an STL
-export.
+export. **Structured STEP import reads the same convention back**:
+`gp_Quaternion.GetEulerAngles(gp_Intrinsic_XYZ)` on the composed `gp_Trsf`,
+which is byte-for-byte what `build123d.Location.orientation` does, so an
+imported occurrence re-places exactly.
+
+**Up axis, at the two export boundaries.** AgentCAD is Z-up everywhere.
+**glTF is Y-up by fiat**, so `core/gltf.py` converts with **one root node**
+carrying a fixed −90° X quaternion — never a per-caller flag — and states it in
+the file (`asset.extras: {"source_up_axis": "+Z", "converted_to": "+Y"}`);
+instance translations and rotations underneath it stay in the authored Z-up
+frame, so a node's numbers still match the manifest. **USD carries both
+natively**, so `core/usd_export.py` *declares* rather than converts
+(`upAxis = "Z"`, `metersPerUnit = 0.001`) — and writes the pose as a single
+`xformOp:transform` matrix, because pxr's `rotateXYZ` composes in the reverse
+order of our intrinsic XYZ and the two agree only when at most one angle is
+non-zero.
+
+## Interop formats: what is deterministic, and how an import lands
+
+**Deterministic:** glTF/GLB and USD are byte-identical across two exports of
+one state (sorted keys and node/mesh ordering, floats rounded to 6 decimals, no
+timestamp, no generator version), so a share link or a CI job may cache them by
+content hash. **3MF is not, and never will be:** lib3mf mints a fresh
+production-extension `p:UUID` per object per write, so two exports of one state
+differ in bytes by construction — nothing content-hashes a 3MF (the same rule
+DXF already lives under). Its one date, `CreationDate`, is PRD-014's resolved
+*version* date rather than a wall clock, which is what keeps the rest of the
+package stable; a project with no history gets no date at all rather than a
+placeholder. The determinism test therefore compares the model XML with the
+production-namespace UUIDs stripped.
+
+**Structured import materializes one `.brep` per unique product.** The kernel
+walks the file's XCAF document, writes each unique product's shape to
+`imports/<stem>__<n>_<product>.brep` (atomic, deterministic names), and the
+server registers each one as an ordinary **reference part** through the
+existing, tested path — so `refload`'s content-addressed cache, the mesh
+cache, the STL-boolean rules and LOD all apply unchanged, and exact B-rep is
+preserved. The rejected alternative was a `(file, product_path)` selector on
+the reference record: it threads a new axis through `refload`'s cache key,
+`_content_signature` and every reference call site for no fidelity gain.
+Occurrences then land as ordinary assembly instances — one `set_instances`
+write for the whole batch, so a 41-occurrence import is one undo step on top of
+the per-part ones, not 41.
 
 ## Trust model
 
