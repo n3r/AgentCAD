@@ -1,0 +1,595 @@
+{
+  "_doc": "Shared search fixture (PRD-027 FR3). Consumed by tests/test_search.py (agentcad.core.search) and, from slice 5, by the node test of frontend/js/query_model.js: the two parsers/matchers must agree row for row and rank for rank, and this file is the only place that agreement is written down. `parts` is in manifest order — every `expect` list is in RANK order, and ties fall back to that manifest order. A case with `needs_script: true` depends on script text, which the browser does not have; the client port answers those by calling the server instead. A case with `error: true` must be refused by `parse` with a validation_error. Cases whose note starts with `ranking:` return rows at DIFFERENT ranks and are the ones that pin the rank table: they are written so that manifest order and rank order disagree, and a port that ranks by anything else gets them wrong.",
+  "parts": [
+    {
+      "id": "bracket_l",
+      "label": "L Bracket",
+      "material": "al6061",
+      "folder": "Chassis/Left side",
+      "tags": [
+        "fastener",
+        "bracket"
+      ],
+      "kind": "script",
+      "state": "ok",
+      "script": "from build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # M5 boss mount, left hand\n    # mates to the steel rail\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    },
+    {
+      "id": "bracket_r",
+      "label": "R Bracket",
+      "material": "al6061",
+      "folder": "Chassis/Right side",
+      "tags": [
+        "bracket"
+      ],
+      "kind": "script",
+      "state": "error",
+      "script": "from build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # mirrored boss mount, right hand\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    },
+    {
+      "id": "m5_screw",
+      "label": "M5 Screw",
+      "material": "steel_1018",
+      "folder": "Fasteners",
+      "tags": [
+        "fastener",
+        "screw"
+      ],
+      "kind": "package",
+      "state": "ok",
+      "script": "# agentcad:package 1 {\"content_id\": \"sha256:abababababababababababababababababababababababababababababababab\", \"header_sha256\": \"sha256:397d1fbd7c8c3e697e896567f19257cc5bac45652bed4ff0f4006fee3873de15\", \"index\": \"agentcad-core\", \"name\": \"hardware\", \"part\": \"m5_screw\", \"preset\": null, \"script_sha256\": \"sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\", \"version\": \"1.2.0\"}\n# The publish gate is a CORRECTNESS gate, not a security boundary — this\n# script runs in your kernel worker with your privileges. See\n# docs/packages.md.\n\nfrom build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # pan head, hex drive\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    },
+    {
+      "id": "m3_screw",
+      "label": "M3 Screw",
+      "material": "steel_1018",
+      "folder": "Fasteners",
+      "tags": [
+        "fastener",
+        "screw"
+      ],
+      "kind": "script",
+      "state": "unbuilt",
+      "script": "from build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # pan head, hex drive\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    },
+    {
+      "id": "base_plate",
+      "label": "Base Plate",
+      "material": "al6061",
+      "folder": "Chassis",
+      "tags": [],
+      "kind": "script",
+      "state": "ok",
+      "script": "from build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # counterbore for the fixing studs\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    },
+    {
+      "id": "housing",
+      "label": "Housing",
+      "material": "abs",
+      "folder": "Enclosure",
+      "tags": [
+        "printed"
+      ],
+      "kind": "script",
+      "state": "error",
+      "script": "from build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # wall thickness follows the nozzle\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    },
+    {
+      "id": "lid",
+      "label": "Lid",
+      "material": "abs",
+      "folder": "Enclosure/Top",
+      "tags": [
+        "printed"
+      ],
+      "kind": "script",
+      "state": "ok",
+      "script": "from build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # snap fit rim\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    },
+    {
+      "id": "scanned_frame",
+      "label": "Scanned Frame",
+      "material": "steel_1018",
+      "folder": null,
+      "tags": [],
+      "kind": "reference",
+      "state": "unbuilt",
+      "script": ""
+    },
+    {
+      "id": "shaft",
+      "label": "Drive Shaft",
+      "material": "steel_1018",
+      "folder": "Drivetrain",
+      "tags": [
+        "rotating"
+      ],
+      "kind": "script",
+      "state": "ok",
+      "script": "from build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # helix groove for the retaining ring\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    },
+    {
+      "id": "gear_a",
+      "label": "Gear A",
+      "material": "steel_1018",
+      "folder": "Drivetrain/Gears",
+      "tags": [
+        "rotating",
+        "gear"
+      ],
+      "kind": "script",
+      "state": "ok",
+      "script": "from build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # involute profile, 24 teeth\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    },
+    {
+      "id": "gear_b",
+      "label": "Gear B",
+      "material": "pla",
+      "folder": "Drivetrain/Gears",
+      "tags": [
+        "gear"
+      ],
+      "kind": "script",
+      "state": "unbuilt",
+      "script": "from build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # involute profile, 36 teeth\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    },
+    {
+      "id": "abc_widget",
+      "label": "Widget C",
+      "material": "pla",
+      "folder": "A/bc",
+      "tags": [
+        "misc"
+      ],
+      "kind": "script",
+      "state": "ok",
+      "script": "from build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # sprocket cutout\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    },
+    {
+      "id": "ab_widget",
+      "label": "Widget B",
+      "material": "pla",
+      "folder": "A/b",
+      "tags": [
+        "misc"
+      ],
+      "kind": "script",
+      "state": "ok",
+      "script": "from build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # simple cutout\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    },
+    {
+      "id": "spool",
+      "label": "Filament Spool",
+      "material": "pla",
+      "folder": "Printing",
+      "tags": [
+        "pla",
+        "printed"
+      ],
+      "kind": "script",
+      "state": "ok",
+      "script": "from build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # hub for the reel core\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    },
+    {
+      "id": "rotating_base",
+      "label": "Rotating Base",
+      "material": "al6061",
+      "folder": "Drivetrain",
+      "tags": [],
+      "kind": "script",
+      "state": "ok",
+      "script": "from build123d import *\n\nPARAMS = {\"t\": {\"default\": 4.0, \"min\": 1.0, \"max\": 20.0}}\n\n\ndef build(p):\n    # turntable seat\n    with BuildPart() as part:\n        Box(60, 40, p.t)\n    return part.part\n"
+    }
+  ],
+  "cases": [
+    {
+      "query": "bracket",
+      "note": "free text on id/label/tag",
+      "expect": [
+        "bracket_l",
+        "bracket_r"
+      ]
+    },
+    {
+      "query": "screw",
+      "note": "free text, two rows in manifest order",
+      "expect": [
+        "m5_screw",
+        "m3_screw"
+      ]
+    },
+    {
+      "query": "m5",
+      "note": "id/label beats a script-only hit",
+      "expect": [
+        "m5_screw",
+        "bracket_l"
+      ],
+      "needs_script": true
+    },
+    {
+      "query": "tag:fastener",
+      "note": "exact tag",
+      "expect": [
+        "bracket_l",
+        "m5_screw",
+        "m3_screw"
+      ]
+    },
+    {
+      "query": "-tag:fastener",
+      "note": "negated tag: everything else, manifest order",
+      "expect": [
+        "bracket_r",
+        "base_plate",
+        "housing",
+        "lid",
+        "scanned_frame",
+        "shaft",
+        "gear_a",
+        "gear_b",
+        "abc_widget",
+        "ab_widget",
+        "spool",
+        "rotating_base"
+      ]
+    },
+    {
+      "query": "tag:rotating tag:gear",
+      "note": "two tag terms AND",
+      "expect": [
+        "gear_a"
+      ]
+    },
+    {
+      "query": "material:abs",
+      "note": "exact material id",
+      "expect": [
+        "housing",
+        "lid"
+      ]
+    },
+    {
+      "query": "material:steel",
+      "note": "material is exact, never a prefix",
+      "expect": []
+    },
+    {
+      "query": "material:steel_1018",
+      "note": "exact material id",
+      "expect": [
+        "m5_screw",
+        "m3_screw",
+        "scanned_frame",
+        "shaft",
+        "gear_a"
+      ]
+    },
+    {
+      "query": "state:error",
+      "note": "build state",
+      "expect": [
+        "bracket_r",
+        "housing"
+      ]
+    },
+    {
+      "query": "state:unbuilt",
+      "note": "never built (or a reference part)",
+      "expect": [
+        "m3_screw",
+        "scanned_frame",
+        "gear_b"
+      ]
+    },
+    {
+      "query": "kind:package",
+      "note": "script carries a package provenance header",
+      "expect": [
+        "m5_screw"
+      ]
+    },
+    {
+      "query": "kind:reference",
+      "note": "imported CAD, no script",
+      "expect": [
+        "scanned_frame"
+      ]
+    },
+    {
+      "query": "kind:script",
+      "note": "authored parts",
+      "expect": [
+        "bracket_l",
+        "bracket_r",
+        "m3_screw",
+        "base_plate",
+        "housing",
+        "lid",
+        "shaft",
+        "gear_a",
+        "gear_b",
+        "abc_widget",
+        "ab_widget",
+        "spool",
+        "rotating_base"
+      ]
+    },
+    {
+      "query": "folder:Chassis",
+      "note": "the folder and every sub-folder",
+      "expect": [
+        "bracket_l",
+        "bracket_r",
+        "base_plate"
+      ]
+    },
+    {
+      "query": "folder:\"chassis/left side\"",
+      "note": "quoted value, case-insensitive segments",
+      "expect": [
+        "bracket_l"
+      ]
+    },
+    {
+      "query": "folder:a/b",
+      "note": "segment-wise: A/bc is NOT under a/b",
+      "expect": [
+        "ab_widget"
+      ]
+    },
+    {
+      "query": "folder:A",
+      "note": "one segment matches both children",
+      "expect": [
+        "abc_widget",
+        "ab_widget"
+      ]
+    },
+    {
+      "query": "\"m5 boss\"",
+      "note": "quoted phrase, script text",
+      "expect": [
+        "bracket_l"
+      ],
+      "needs_script": true
+    },
+    {
+      "query": "label:gear",
+      "note": "label substring",
+      "expect": [
+        "gear_a",
+        "gear_b"
+      ]
+    },
+    {
+      "query": "id:gear_",
+      "note": "id substring",
+      "expect": [
+        "gear_a",
+        "gear_b"
+      ]
+    },
+    {
+      "query": "tag:printed state:ok",
+      "note": "two fields AND",
+      "expect": [
+        "lid",
+        "spool"
+      ]
+    },
+    {
+      "query": "counterbore",
+      "note": "script-only hit carries a snippet",
+      "expect": [
+        "base_plate"
+      ],
+      "needs_script": true,
+      "expect_matched_on": {
+        "base_plate": [
+          "script"
+        ]
+      }
+    },
+    {
+      "query": "",
+      "note": "empty query matches everything, manifest order",
+      "expect": [
+        "bracket_l",
+        "bracket_r",
+        "m5_screw",
+        "m3_screw",
+        "base_plate",
+        "housing",
+        "lid",
+        "scanned_frame",
+        "shaft",
+        "gear_a",
+        "gear_b",
+        "abc_widget",
+        "ab_widget",
+        "spool",
+        "rotating_base"
+      ]
+    },
+    {
+      "query": "lid",
+      "note": "free text, one row",
+      "expect": [
+        "lid"
+      ]
+    },
+    {
+      "query": "-material:steel_1018 tag:gear",
+      "note": "negated field + tag",
+      "expect": [
+        "gear_b"
+      ]
+    },
+    {
+      "query": "printed",
+      "note": "free text on a tag",
+      "expect": [
+        "housing",
+        "lid",
+        "spool"
+      ],
+      "expect_matched_on": {
+        "housing": [
+          "tag"
+        ],
+        "lid": [
+          "tag"
+        ]
+      }
+    },
+    {
+      "query": "steel",
+      "note": "ranking: material (2) beats script (4), against manifest order",
+      "expect": [
+        "m5_screw",
+        "m3_screw",
+        "scanned_frame",
+        "shaft",
+        "gear_a",
+        "bracket_l"
+      ],
+      "needs_script": true,
+      "expect_matched_on": {
+        "shaft": [
+          "material"
+        ],
+        "bracket_l": [
+          "script"
+        ]
+      }
+    },
+    {
+      "query": "gear",
+      "note": "free text on id/label/tag",
+      "expect": [
+        "gear_a",
+        "gear_b"
+      ]
+    },
+    {
+      "query": "shaft helix",
+      "note": "two free-text terms AND (label + script)",
+      "expect": [
+        "shaft"
+      ],
+      "needs_script": true,
+      "expect_matched_on": {
+        "shaft": [
+          "id",
+          "label",
+          "script"
+        ]
+      }
+    },
+    {
+      "query": "sprocket",
+      "note": "script-only hit",
+      "expect": [
+        "abc_widget"
+      ],
+      "needs_script": true
+    },
+    {
+      "query": "pla",
+      "note": "ranking: id/label (0) beat tag (1) beat material (2) — three ranks in one query, and manifest order disagrees at every step",
+      "expect": [
+        "base_plate",
+        "spool",
+        "gear_b",
+        "abc_widget",
+        "ab_widget"
+      ],
+      "expect_matched_on": {
+        "base_plate": [
+          "id",
+          "label"
+        ],
+        "spool": [
+          "tag",
+          "material"
+        ],
+        "gear_b": [
+          "material"
+        ]
+      }
+    },
+    {
+      "query": "rotating",
+      "note": "ranking: id/label (0) beat tag (1)",
+      "expect": [
+        "rotating_base",
+        "shaft",
+        "gear_a"
+      ],
+      "expect_matched_on": {
+        "rotating_base": [
+          "id",
+          "label"
+        ],
+        "shaft": [
+          "tag"
+        ]
+      }
+    },
+    {
+      "query": "state:ok counterbore",
+      "note": "field term + script-only text hit: still a script-only match",
+      "expect": [
+        "base_plate"
+      ],
+      "needs_script": true,
+      "expect_matched_on": {
+        "base_plate": [
+          "state",
+          "script"
+        ]
+      }
+    },
+    {
+      "query": "colour:red",
+      "note": "unknown field",
+      "error": true
+    },
+    {
+      "query": "state:building",
+      "note": "unknown state value",
+      "error": true
+    },
+    {
+      "query": "\"unterminated",
+      "note": "unterminated quote",
+      "error": true
+    },
+    {
+      "query": "tag:",
+      "note": "empty field value",
+      "error": true
+    },
+    {
+      "query": "kind:widget",
+      "note": "unknown kind value",
+      "error": true
+    },
+    {
+      "query": "folder:\"\"",
+      "note": "empty quoted value",
+      "error": true
+    },
+    {
+      "query": "folder:/",
+      "note": "a folder value of nothing but separators",
+      "error": true
+    },
+    {
+      "query": "folder://",
+      "note": "ditto, two separators",
+      "error": true
+    }
+  ]
+}

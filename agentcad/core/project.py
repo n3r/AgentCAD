@@ -43,7 +43,15 @@ _DISK_MEMO_S = 5.0
 #: three are content-addressed and rebuildable. The ``<key>.metrics.json``
 #: sidecar is left alone — it is bytes, not megabytes, and a build treats a
 #: sidecar without its mesh as a miss.
-_TRIMMABLE = (".acm", ".faces.u32")
+#:
+#: ``<key>.thumb.png`` (PRD-027 FR4) joins them for the same reason: it is a
+#: 192² render of ``<key>.acm``, so a swept mesh should not leave its picture
+#: behind — and it buckets on the same ``key`` as the mesh, so the two go
+#: together. The **assembly** composite (``asm-<hash>.thumb.png``) buckets on
+#: its own name and is in no keep-set, so it is swept when it is old and the
+#: cache is over the watermark; the next read re-renders it from meshes that
+#: are still there.
+_TRIMMABLE = (".acm", ".faces.u32", ".thumb.png")
 
 #: The cache is trimmed back to this fraction of the budget, so a janitor pass
 #: buys room for several builds rather than running on every one.

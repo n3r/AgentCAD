@@ -266,6 +266,18 @@ class AgentCADService:
                     # "root"; this listing stays kernel-free.
                     "folder": entry.get("folder"),
                     "tags": list(entry.get("tags") or []),
+                    # PRD-027 FR4: the content id the tree row's thumbnail is
+                    # addressed by (`…/thumb.png?k=<thumb_key>`), so the
+                    # browser can ask for an immutable answer. `null` unless
+                    # this build state is `ok` — an unbuilt or failed part has
+                    # nothing to preview, and the route 404s it. Still
+                    # kernel-free: it reads the status the service already has
+                    # and never renders anything here.
+                    "thumb_key": (
+                        status["cache_key"]
+                        if status and status["state"] == "ok"
+                        else None
+                    ),
                 }
             )
         return {
@@ -971,6 +983,13 @@ class AgentCADService:
                         "part": part_id,
                         "metrics": cached_metrics,
                         "cached": True,
+                        # PRD-027 FR4: the content id this build landed on, so
+                        # a subscriber can address the derived artifacts keyed
+                        # by it (the thumbnail warmer, the browser's <img>)
+                        # without a project refetch. Additive: nothing that
+                        # read this event before has to change, and it is the
+                        # same value `mesh_info`/`get_project` already publish.
+                        "cache_key": key,
                         **tag,
                     }
                 )
@@ -1065,6 +1084,7 @@ class AgentCADService:
                 "part": part_id,
                 "metrics": metrics,
                 "cached": False,
+                "cache_key": key,   # PRD-027 FR4 — see the cached branch above
                 **tag,
             }
         )

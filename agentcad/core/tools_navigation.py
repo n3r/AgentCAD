@@ -114,6 +114,96 @@ def register(registry, service) -> None:
 
     # --- search (slice 2) ---
 
+    # Function-local, like the thumbnail slice below: this pack's three slices
+    # were written concurrently against one file, and a module-header import is
+    # the one line all three would have raced on.
+    from .search import GRAMMAR, MAX_LIMIT, Engine
+
+    # One engine per service, installed here because this pack is the only
+    # thing that loads for every service (the route pack and the tool both read
+    # `service.search`). Rebuilding the registry — which the tests do
+    # constantly and a hosted server does once — must NOT throw away a warm
+    # memo, so an engine already bound to THIS service is kept. The identity
+    # check matters: a service copied into an ephemeral check run is a
+    # different store with different files, and inheriting its predecessor's
+    # memo would answer questions about the wrong tree.
+    engine = getattr(service, "search", None)
+    if not isinstance(engine, Engine) or engine.service is not service:
+        service.search = Engine(service)
+
+    def search_parts(project: str, query: str, filters: dict | None = None,
+                     limit: int | None = None) -> dict:
+        """Find parts by text and structured filters (FR3).
+
+        A pure read: it scans the manifest and the scripts the service already
+        owns, makes no kernel call, and never builds anything — a part that has
+        never been built is a result with ``state: "unbuilt"``, not an error
+        and not a reason to start a build.
+        """
+        return service.search.search(project, query, filters=filters,
+                                     limit=limit)
+
+    registry.register(Tool(
+        "search_parts",
+        "Search a project's parts by text and structured filters — the way to "
+        "find something in a project too large to list. Free text searches "
+        "ids, labels, tags, material ids AND script text; field terms filter "
+        "on folder, tags, material, build state and kind. Results are ranked "
+        "(name > tag > material > script text) and each row says what it "
+        "matched on, plus a snippet when the script text is the only thing "
+        "that matched (a filter term does not count). This "
+        "reads the manifest and the scripts: it makes no kernel call, builds "
+        "nothing, and changes nothing. "
+        f"{GRAMMAR} "
+        "filters: an optional object ANDed with the query — "
+        "{tag: str|[str], material, state, kind, folder} — so structured "
+        "filtering needs no quoting; a list ANDs (tag: ['a','b'] means both). "
+        f"limit: 1..{MAX_LIMIT}, default 50; `total` counts every match.",
+        schema(
+            {
+                "project": {"type": "string", "description": "Project name"},
+                "query": {"type": "string",
+                          "description": f"The query. {GRAMMAR}"},
+                # "object", never a type list: the registry validator looks the
+                # type up in a dict, and a list is unhashable (the `folder`
+                # note above). An absent/None filters means "no filters".
+                "filters": {"type": "object",
+                            "description": "Optional {tag, material, state, "
+                                           "kind, folder} object ANDed with "
+                                           "the query."},
+                "limit": {"type": "integer",
+                          "description": f"Max rows to return, 1..{MAX_LIMIT} "
+                                         "(default 50). `total` is the full "
+                                         "count either way."},
+            },
+            ["project", "query"],
+        ),
+        search_parts,
+    ))
+
     # --- thumbnails (slice 3) ---
+
+    # No tool: a thumbnail is a browser asset, not an agent verb (an agent that
+    # wants to SEE geometry has `render_view`). All this pack does is make the
+    # pre-warm object exist.
+    #
+    # It is **constructed here and started nowhere.** `build_registry` runs in
+    # `checks.py`, `packages/gate.py`, `bench/cli.py`'s per-task loop,
+    # `share_build.py` and the MCP/CLI entry points — none of which is an HTTP
+    # server, and each of which would otherwise leave an orphaned daemon thread
+    # and bus subscriber behind. Worse, a late render from a check's warmer
+    # calls `_atomic_write`, which mkdirs — re-creating an `agentcad-check-*`
+    # cell the CLI had already deleted. The thread is started by
+    # `routes_thumbnails.build_router` instead: route packs are mounted only by
+    # `create_app`, so exactly the process that serves `thumb.png` runs it.
+    #
+    # Reuse rather than replace (the `search.Engine` pattern): `build_registry`
+    # is called more than once on one service in several of those callers, and
+    # a fresh object each time would strand the running thread of the last one.
+    from .thumbnails import ThumbnailWarmer
+
+    warmer = getattr(service, "thumbnails", None)
+    if not isinstance(warmer, ThumbnailWarmer) or warmer.service is not service:
+        service.thumbnails = ThumbnailWarmer(service)
 
     # --- bulk (slice 4) ---
