@@ -1,6 +1,6 @@
 # PRD-029 — Agent skills & knowledge packs
 
-- **Status:** in-progress (branch `prd-029-agent-skills`, 2026-08-23)
+- **Status:** completed (PR #33, merged 2026-08-23)
 - **Phase:** v5 — daily-driver depth (early; multiplies every later agent feature)
 - **Created:** 2026-08-09
 - **Origin:** founder idea #4 (Aug 2026), engineering-reviewed
