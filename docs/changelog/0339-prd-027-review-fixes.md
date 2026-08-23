@@ -109,3 +109,8 @@ route and tool, the warmer lifecycle, no native dialogs / no `innerHTML` with
 server strings, and Python/JS grammar parity over 953 fuzzed queries.
 
 `make test` — **6214 passed, 65 skipped** (10m07s on the fixed tree; the run measured 6202 + the 12 self-referential count-guard tests that were red only on this entry's placeholder; the two nits the re-review handed back — an orphaned JSDoc and a trailing space — landed after the run, covered by `node --check` and `test_frontend_navigation.py` 157 passed). Browser smoke (Chrome via Playwright, scratch copies): 6/6 checks pass — filter, multi-select + context menu, `kind:` queries through the server, dashboard + selection cleared on switch, 1 000-row scroll with no focus tug at 43 rendered rows, no unexplained console errors.
+
+After merging `origin/main` a second time (PRD-029 agent skills, PR #33; bench
+hardening, PR #32 — changelogs renumbered 0321–0329 → 0331–0339, tool count
+resolved to the measured **109 / 112**): `make test` — **6552 passed, 76
+skipped** (10m03s), no failures.
