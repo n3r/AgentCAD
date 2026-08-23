@@ -11,6 +11,8 @@ Commands:
     agentcad package validate <dir> [--strict] [--report R] [--budget S]
     agentcad publish <dir> --index NAME [--yank name@version] [--budget S]
     agentcad materials lint <path>… [--profile library|user] [--json]
+    agentcad skill new <name> (--project P | --dir D)
+    agentcad skill lint [<path>…] [--core] [--profile library|user] [--json]
 """
 
 from __future__ import annotations
@@ -338,7 +340,12 @@ def _make_chat_engine(service, registry):
         from .agent.chat import ChatEngine
     except ImportError:
         return None
-    return ChatEngine(registry, service.bus)
+    from .core.skills import SkillBudget
+
+    # The service's own library, so the chat sees exactly the skills every
+    # other surface does; the budget is config/env-driven (PRD-029 §3).
+    return ChatEngine(registry, service.bus, skills=service.skills,
+                      budget=SkillBudget.from_config())
 
 
 def _resolve_mode_or_exit():
@@ -1517,6 +1524,88 @@ def cmd_materials_lint(args) -> int:
     return 1 if has_errors(findings) else 0
 
 
+def cmd_skill(args) -> int:
+    if args.skill_command == "new":
+        return cmd_skill_new(args)
+    if args.skill_command == "lint":
+        return cmd_skill_lint(args)
+    print("agentcad skill: expected a subcommand (new, lint)", file=sys.stderr)
+    return 2
+
+
+def cmd_skill_new(args) -> int:
+    """`agentcad skill new <name> (--project P | --dir D)` — the scaffold.
+
+    `--project` resolves through `_projects_dir`, the same helper `serve` and
+    every other project command use, so an author cannot scaffold into a tree
+    the server is not serving. The skill lands at
+    `<projects>/<project>/skills/<name>/SKILL.md`, which is inside the
+    project's working tree and therefore git-tracked, branched and merged like
+    a part script.
+    """
+    from .core.skills_lint import scaffold
+
+    if bool(args.project) == bool(args.dir):
+        print("agentcad skill new: exactly one of --project or --dir is "
+              "required", file=sys.stderr)
+        return 2
+    if args.project:
+        root = _projects_dir(args) / args.project
+        if not (root / "project.json").is_file():
+            print(f"agentcad skill new: no project {args.project!r} under "
+                  f"{_projects_dir(args)}", file=sys.stderr)
+            return 2
+        target = root / "skills"
+    else:
+        target = Path(args.dir)
+    try:
+        path = scaffold(target, args.name)
+    except (ValueError, FileExistsError, OSError) as exc:
+        print(f"agentcad skill new: {exc}", file=sys.stderr)
+        return 2
+    print(f"wrote {path}")
+    print(f"edit it, then run: agentcad skill lint {path.parent}")
+    return 0
+
+
+def cmd_skill_lint(args) -> int:
+    """`agentcad skill lint [<path>…] [--core]` — the skill lint (PRD-029).
+
+    Thin by design: every rule lives in `core/skills_lint.py`, which is pure,
+    so the core-library test, a future marketplace gate and this command all
+    run the same function. A path may be one skill directory, a flat
+    `<name>.md`, or a `skills/` directory holding many.
+
+    Exit codes are the API: ``0`` clean · ``1`` at least one error · ``2``
+    usage (no paths at all).
+    """
+    import json
+
+    from .core.skills import CORE_DIR
+    from .core.skills_lint import has_errors, lint_paths
+
+    paths = list(args.paths)
+    profile = args.profile or ("library" if args.core else "user")
+    if args.core:
+        paths.append(str(CORE_DIR))
+    if not paths:
+        print("agentcad skill lint: expected at least one path (or --core)",
+              file=sys.stderr)
+        return 2
+    findings = lint_paths(paths, profile)
+
+    if args.json:
+        print(json.dumps([f.to_dict() for f in findings], indent=2))
+    else:
+        for finding in findings:
+            print(finding.row())
+        errors = sum(1 for f in findings if f.level == "error")
+        print(f"{errors} errors, {len(findings) - errors} warnings "
+              f"({profile} profile, {len(paths)} path(s): "
+              f"{', '.join(paths)})")
+    return 1 if has_errors(findings) else 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agentcad", description="Agentic-first CAD")
     parser.add_argument("--version", action="version", version=agentcad.__version__)
@@ -1524,7 +1613,7 @@ def main() -> None:
     sub = parser.add_subparsers(
         dest="command",
         metavar="{serve,open,mcp,new,export,check,bench,package,publish,admin,"
-                "materials}")
+                "materials,skill}")
 
     for name in ("serve", "open"):
         p = sub.add_parser(name, help=f"{name} the AgentCAD server")
@@ -1793,6 +1882,42 @@ def main() -> None:
     lint_p.add_argument("--json", action="store_true",
                         help="print the findings as a JSON list")
 
+    p = sub.add_parser(
+        "skill", help="author agent skills (PRD-029)",
+        description="Skills are loadable markdown guides an agent reads on "
+                    "demand. `new` scaffolds one, `lint` is the gate the "
+                    "shipped library and a contributed skill are both held "
+                    "to.")
+    skill_sub = p.add_subparsers(dest="skill_command", metavar="{new,lint}")
+    new_p = skill_sub.add_parser(
+        "new", help="scaffold a skill directory",
+        description="Write <target>/<name>/SKILL.md plus a snippets/ "
+                    "directory. Refuses to overwrite.")
+    new_p.add_argument("name", help="skill name ([a-z][a-z0-9-]{1,47})")
+    new_p.add_argument("--project", default=None,
+                       help="write into <projects-dir>/<project>/skills/")
+    new_p.add_argument("--dir", default=None,
+                       help="write into this directory instead")
+    new_p.add_argument("--projects-dir", default=None,
+                       help="projects root (default: $AGENTCAD_PROJECTS_DIR, "
+                            "else ~/AgentCAD/projects)")
+    skill_lint_p = skill_sub.add_parser(
+        "lint", help="lint skills",
+        description="Lint a skill directory, a flat <name>.md, or a skills/ "
+                    "directory of them. Exit 0 clean, 1 errors, 2 usage.")
+    skill_lint_p.add_argument("paths", nargs="*", metavar="PATH")
+    skill_lint_p.add_argument("--core", action="store_true",
+                              help="also lint the shipped library "
+                                   "(agentcad/skills/), at the library "
+                                   "profile unless --profile says otherwise")
+    skill_lint_p.add_argument("--profile", default=None,
+                              choices=["library", "user"],
+                              help="library: license/author required and an "
+                                   "over-long body is an error. user "
+                                   "(default): those are warnings")
+    skill_lint_p.add_argument("--json", action="store_true",
+                              help="print the findings as a JSON list")
+
     args = parser.parse_args()
     if args.command == "admin":
         cmd_admin(args)
@@ -1817,5 +1942,7 @@ def main() -> None:
         raise SystemExit(cmd_publish(args))
     elif args.command == "materials":
         raise SystemExit(cmd_materials(args))
+    elif args.command == "skill":
+        raise SystemExit(cmd_skill(args))
     else:
         parser.print_help()
