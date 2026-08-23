@@ -253,13 +253,22 @@ export function handleEvent(ev) {
     // context, so the dock says so — the transparency half of the trust story
     // (spec §7), and an inspectable prompt-injection surface.
     //
-    // The `client` filter is the whole correctness of this chip: the Skills
-    // modal's own preview goes through `load_skill` too (so a human read is
-    // logged like every other surface), and that read must render NOTHING
-    // here. Only the chat engine's own ids — `chat` / `chat:<session>` —
-    // qualify; `browser:<hex>` and `mcp` do not.
+    // TWO filters, and both are the correctness of this chip:
+    //
+    // * `client` — only the chat engine's own ids (`chat`, `chat:<session>`)
+    //   draw one. An MCP agent's load and a plain HTTP read must render
+    //   nothing here. (A human's preview in the Skills panel never reaches
+    //   the bus at all: that read bypasses `load_skill` entirely.)
+    // * the LANE — a load in `chat:lane` belongs to that lane's dock, not
+    //   this one. `handleEvent`'s session filter above already drops another
+    //   lane's events, but deriving the lane from the client id makes the
+    //   chip's own rule independent of whether the event carried the key:
+    //   before it did, a lane's chip rendered here and the matching
+    //   `skill_unloaded` (which has always carried a session) was filtered
+    //   out, so that chip could never be un-struck.
     case "skill_loaded": {
       if (!skillsModel.isChatClient(ev.client)) break;
+      if (skillsModel.sessionOf(ev.client) !== DOCK_SESSION) break;
       addSkillChip(ev);
       scrollDown();
       break;
@@ -268,7 +277,7 @@ export function handleEvent(ev) {
     // a stub). The chip STAYS — the transcript above it was written while the
     // skill was loaded — and is struck through instead.
     case "skill_unloaded": {
-      markSkillUnloaded(ev.name);
+      markSkillUnloaded(ev.name, ev.asset);
       break;
     }
   }
@@ -321,12 +330,15 @@ function addToolChip(name, args, status) {
 }
 
 /** "📘 snap-fits · core" — a flat pill, distinct from a `.tool-chip` (which is
- *  a disclosure with the call's arguments in it). Keyed by `data-skill` so the
- *  matching `skill_unloaded` can find it by name. */
+ *  a disclosure with the call's arguments in it). Keyed by `data-skill` AND
+ *  `data-asset` so the matching `skill_unloaded` finds exactly the entry the
+ *  budget evicted: a skill body and one of its snippets are two entries, and
+ *  striking the guide's chip because a table was evicted would be a lie. */
 function addSkillChip(ev) {
   const div = document.createElement("div");
   div.className = "skill-chip";
   div.dataset.skill = ev.name ? String(ev.name) : "";
+  div.dataset.asset = ev.asset ? String(ev.asset) : "";
   // The label lives in its own span so `.unloaded` can strike THAT and not the
   // "unloaded" word explaining it: a `line-through` set on the chip is painted
   // straight through every inline descendant, and a child cannot opt out.
@@ -338,10 +350,12 @@ function addSkillChip(ev) {
   return div;
 }
 
-function markSkillUnloaded(name) {
+function markSkillUnloaded(name, asset) {
   if (!name) return;
+  const wanted = asset ? String(asset) : "";
   for (const chip of messagesEl.querySelectorAll(".skill-chip")) {
     if (chip.dataset.skill !== String(name)) continue;
+    if ((chip.dataset.asset || "") !== wanted) continue;
     if (chip.classList.contains("unloaded")) continue;
     chip.classList.add("unloaded");
     const note = document.createElement("span");

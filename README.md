@@ -101,6 +101,18 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   hardware: state the budget once, and every later change is refereed against
   it.
 
+- **Agent skills.** Craft knowledge as a first-class, versioned, loadable
+  artifact: sixteen shipped guides (snap-fits, enclosures, brackets, ISO 286
+  fits, FDM rules, the OCCT failure playbook, the whole authoring toolkit) that
+  an agent discovers from a compact index and loads *on demand* with
+  `load_skill` — never all at once, budgeted and LRU-evicted, with every load
+  shown as a chip in the chat. A project teaches its own by dropping a markdown
+  file in `<project>/skills/`, where it branches and merges like any part —
+  and because a skill is *agent instructions*, one arriving from a clone or a
+  pull stays inert until a human reviews and trusts it in the browser (trust is
+  keyed by content digest, and no agent surface can grant it). See
+  [docs/skills.md](docs/skills.md).
+
 - **Geometry CI.** One command certifies a whole project —
   `agentcad check` rebuilds every part, re-resolves the assembly, runs
   interference, evaluates the design specs and regenerates the drawings,
@@ -114,7 +126,7 @@ On top of parametric script parts and validated assemblies, AgentCAD adds:
   change proposal, where a red or stale report blocks the merge. See
   [docs/geometry-ci.md](docs/geometry-ci.md).
 
-The agent tool surface is now **85 tools** (was 17; 88 with the optional
+The agent tool surface is now **106 tools** (was 17; 109 with the optional
 `[fem]` extra installed), and multi-part rebuilds fan out across a small pool of warm kernel
 workers. v3 added typed parameters, per-solid semantics, sheet metal with
 flat patterns, PMI/GD&T with tolerance stack-ups, driven-mate motion sweeps,
@@ -259,10 +271,11 @@ def build(p):
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — processes, components, data flow
-- [docs/agent-api.md](docs/agent-api.md) — the 85-tool agent surface, MCP setup
+- [docs/agent-api.md](docs/agent-api.md) — the 106-tool agent surface, MCP setup
 - [docs/geometry-ci.md](docs/geometry-ci.md) — `agentcad check`, the report schema, the GitHub Action
 - [docs/packages.md](docs/packages.md) — packages, indexes, the publish gate, the bundled catalog
 - [docs/part-authoring.md](docs/part-authoring.md) — the script contract and toolkit
+- [docs/skills.md](docs/skills.md) — agent skills: the format, layers, trust, the lint
 - [docs/user-guide.md](docs/user-guide.md) — the UI, surface by surface
 - [docs/roadmap.md](docs/roadmap.md) — the forward roadmap: a PRD index with statuses
 - [docs/market_research.md](docs/market_research.md) — the market evidence behind it

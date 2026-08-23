@@ -32,7 +32,7 @@ from .model import (
     validate_vec3,
 )
 from .project import ProjectStore
-from .skills import SkillLibrary
+from .skills import SkillBudget, SkillLibrary
 from .templates import CHEATSHEET, DEFAULT_PART_SCRIPT
 
 MESH_TOLERANCE = 0.1
@@ -155,7 +155,7 @@ class AgentCADService:
         # Loadable agent skills (PRD-029): the shipped `agentcad/skills/` plus
         # each project's `skills/`. Pure — no kernel, no OCP — so constructing
         # it here costs nothing until something indexes.
-        self.skills = SkillLibrary(self.store)
+        self.skills = SkillLibrary(self.store, budget=SkillBudget.from_config())
         # Multi-user turn locking: every persistent store write is checked
         # against the per-project turn lock under the caller's identity.
         # With no lock held the guard is a no-op (full backward compat).

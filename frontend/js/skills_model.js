@@ -25,10 +25,25 @@ export const LAYER_BADGE = {
  *  `agent/chat.py` runs its tools under `locks.set_client_id("chat")` for the
  *  default session and `"chat:<session>"` for any other, and a session id is
  *  the house `[a-z0-9_-]{1,32}` slug. Anchored on both ends on purpose: the
- *  browser's own identity is `browser:<8 hex>` and MCP's is `mcp`, so a
- *  human's preview read of a skill (which goes through `load_skill` too, so
- *  the read is logged like every other surface) must render NO chip. */
+ *  browser's own identity is `browser:<8 hex>` and MCP's is `mcp`, so an
+ *  agent's read on another surface must render NO chip here. (A human's own
+ *  preview in the Skills panel never reaches the bus at all — that read
+ *  bypasses `load_skill`, see `server/routes_skills.py`.) */
 const CHAT_CLIENT_RE = /^chat(:[a-z0-9_-]{1,32})?$/;
+
+/** The chat LANE behind a client id, or null when it is not chat's.
+ *
+ *  `"chat"` -> `"main"` (the engine's `DEFAULT_SESSION`), `"chat:<s>"` ->
+ *  `"<s>"`. This is the browser's copy of `core/tools_skills.chat_session`,
+ *  which stamps the same value on the `skill_loaded` event; the dock draws a
+ *  chip only for its own lane, because `skill_unloaded` has always carried a
+ *  session and another lane's is filtered out before the chip could ever be
+ *  un-struck. */
+export function sessionOf(client) {
+  if (!isChatClient(client)) return null;
+  const colon = client.indexOf(":");
+  return colon === -1 ? "main" : client.slice(colon + 1);
+}
 
 /** One index entry (+ the trust document the same payload carries) -> the
  *  badges to draw, in reading order: the layer, then what it shadows, then
@@ -93,10 +108,16 @@ export function needsConsent(entries) {
 /** A `skill_loaded` (or `skill_unloaded`) event -> the chat dock's chip text.
  *  The layer is part of the label, not a tooltip: "which instructions just
  *  entered the agent's context, and who wrote them" is the whole point of
- *  the chip. */
+ *  the chip.
+ *
+ *  An `asset` read is a different fact and gets a different chip: the agent
+ *  read one file OUT of a skill (a snippet, a table) rather than loading the
+ *  guide, so the label names the file instead of the layer — and the two are
+ *  separate budget entries in `agent/chat.py`, evicted separately. */
 export function chipLabel(ev) {
   const e = ev || {};
   const name = e.name ? String(e.name) : "skill";
+  if (e.asset) return `📎 ${name} · ${String(e.asset)}`;
   const layer = e.layer ? String(e.layer) : "";
   return layer ? `📘 ${name} · ${layer}` : `📘 ${name}`;
 }
@@ -165,6 +186,7 @@ export const __skillsModel__ = {
   needsConsent,
   chipLabel,
   isChatClient,
+  sessionOf,
   formatAssets,
   provenanceLine,
   truncationNote,

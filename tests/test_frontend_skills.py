@@ -177,6 +177,37 @@ def test_chip_label_without_a_layer_still_names_the_skill():
     assert run("chipLabel", None) == "📘 skill"
 
 
+def test_chip_label_of_an_asset_read_names_the_file_not_the_layer():
+    """An asset read is its own budget entry (`agent/chat.py`), so it is its
+    own chip: "the agent read this file", not "the agent loaded this guide"."""
+    assert run("chipLabel", {"name": "snap-fits", "layer": "core",
+                             "asset": "snippets/lid.py"}) == \
+        "📎 snap-fits · snippets/lid.py"
+
+
+# ------------------------------------------------------------------- sessionOf
+
+
+@pytest.mark.parametrize("client,session", [
+    ("chat", "main"), ("chat:main", "main"), ("chat:lane", "lane"),
+    ("chat:a_b-1", "a_b-1"),
+])
+def test_session_of_mirrors_the_engines_own_client_ids(client, session):
+    """`agent/chat.py::_call_tool` stamps "chat" for the default lane and
+    "chat:<session>" for any other; `core/tools_skills.py` derives the event's
+    `session` the same way. This is the third copy of one rule, and the reason
+    it is tested in node is that the dock filters chips with it."""
+    assert run("sessionOf", client) == session
+
+
+@pytest.mark.parametrize("client", [
+    "mcp", "local", "browser:7f3a1b2c", "chatty", "chat:", "chat:MAIN",
+    "chat:x/y", "chat:" + "x" * 33, "", None, 7,
+])
+def test_session_of_is_null_for_everything_that_is_not_a_chat_lane(client):
+    assert run("sessionOf", client) is None
+
+
 # ------------------------------------------------------------------ isChatClient
 
 
@@ -286,6 +317,10 @@ def test_the_three_skill_events_reach_the_right_handlers():
     chat = (FRONTEND / "js" / "chat.js").read_text(encoding="utf-8")
     assert "isChatClient(ev.client)" in chat, \
         "the chip must filter on the chat engine's own client ids"
+    # …and on the LANE: a load in `chat:lane` must not draw a chip in the
+    # dock's "main" lane, where its `skill_unloaded` (which carries a session)
+    # is filtered out and the chip could never be un-struck.
+    assert "sessionOf(ev.client) !== DOCK_SESSION" in chat
     assert "addSkillChip" in chat and "markSkillUnloaded" in chat
     # The existing tool-chip flow is untouched.
     assert 'case "chat_tool_call":' in chat and "addToolChip(" in chat
@@ -404,13 +439,28 @@ def test_the_preview_route_carries_the_payload_the_detail_pane_renders(
 
 
 @live
-def test_an_untrusted_preview_refuses_with_the_reason_the_pane_branches_on(
+def test_an_untrusted_preview_is_readable_because_reviewing_is_the_point(
         kernel, tmp_path):
+    """The panel exists so a person can decide whether to trust a skill, and
+    they cannot decide without reading it. The human read is served
+    (`enforce_trust=False`); the index row beside it still says `trusted:
+    false`, which is what draws the "needs review" badge and the Trust button.
+    An agent asking for the same skill is still refused."""
     service, client = _client(kernel, tmp_path)
     proj = _project_with_a_skill(service)
-    r = client.get(f"/api/projects/{proj}/skills/ours",
-                   headers={"X-Agent-Id": "browser:test"})
-    assert r.status_code == 422, r.text
-    err = r.json()["error"]
+    human = {"X-Agent-Id": "browser:test"}
+
+    r = client.get(f"/api/projects/{proj}/skills/ours", headers=human)
+    assert r.status_code == 200, r.text
+    assert "Body." in r.json()["content"]
+
+    row = {s["name"]: s for s in client.get(f"/api/projects/{proj}/skills",
+                                            headers=human).json()["skills"]}
+    assert row["ours"]["trusted"] is False
+
+    refused = client.get(f"/api/projects/{proj}/skills/ours",
+                         headers={"X-Agent-Id": "mcp"})
+    assert refused.status_code == 422, refused.text
+    err = refused.json()["error"]
     assert err["details"]["reason"] == "skill_untrusted"
     assert err["details"].get("hint"), "the pane renders the hint under the error"

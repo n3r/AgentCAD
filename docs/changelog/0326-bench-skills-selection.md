@@ -1,4 +1,4 @@
-# 0315 — PRD-029 slice 5: `bench run --skills` and the with/without comparison
+# 0326 — PRD-029 slice 5: `bench run --skills` and the with/without comparison
 
 - **Commit:** pending
 - **Date:** 2026-08-23

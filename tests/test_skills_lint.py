@@ -317,3 +317,60 @@ def test_a_symlink_loop_does_not_hang_the_lint(tmp_path):
     (path / "snippets").mkdir()
     (path / "snippets" / "back").symlink_to(path, target_is_directory=True)
     assert lint.lint_skill(path, "user") == []
+
+
+# ------------------------------------------ the fix wave: fences and reads
+
+def test_an_unterminated_python_fence_is_an_error(tmp_path):
+    text = GOOD.format(name="open-fence") + "\n```python\nx = 2\n"
+    findings = lint.lint_skill(make_skill(tmp_path, "open-fence", text=text))
+    assert codes(findings) == ["code_fence_unterminated"]
+    assert "line" in findings[0].message
+
+
+def test_an_unterminated_python_fence_is_still_parsed(tmp_path):
+    text = GOOD.format(name="open-broken") + "\n```python\ndef (:\n"
+    findings = lint.lint_skill(make_skill(tmp_path, "open-broken", text=text))
+    assert codes(findings) == ["code_fence_syntax", "code_fence_unterminated"]
+
+
+def test_an_unterminated_non_python_fence_is_an_error_too(tmp_path):
+    text = GOOD.format(name="open-json") + "\n```json\n{\n"
+    findings = lint.lint_skill(make_skill(tmp_path, "open-json", text=text))
+    assert codes(findings) == ["code_fence_unterminated"]
+
+
+def test_a_closed_fence_is_still_clean(tmp_path):
+    text = GOOD.format(name="closed-fence") + "\n```python\nx = 2\n```\n"
+    assert lint.lint_skill(make_skill(tmp_path, "closed-fence", text=text)) == []
+
+
+def test_an_oversize_file_is_a_finding_without_being_read(tmp_path,
+                                                          monkeypatch):
+    path = make_skill(tmp_path, "huge-skill")
+    with open(path / "SKILL.md", "wb") as f:       # sparse: 600 MB of nothing
+        f.truncate(600 * 1024 * 1024)
+
+    def no_read(self, *a, **kw):
+        raise AssertionError(f"read_bytes() would allocate all of {self}")
+
+    monkeypatch.setattr(Path, "read_bytes", no_read)
+    findings = lint.lint_skill(path)
+    assert codes(findings) == ["frontmatter"]
+    assert "ceiling" in findings[0].message
+
+
+def test_an_oversize_snippet_is_a_finding_without_being_read(tmp_path,
+                                                             monkeypatch):
+    path = make_skill(tmp_path, "huge-snippet")
+    (path / "snippets").mkdir()
+    with open(path / "snippets" / "big.py", "wb") as f:
+        f.truncate(600 * 1024 * 1024)
+
+    def no_read(self, *a, **kw):
+        raise AssertionError(f"read_bytes() would allocate all of {self}")
+
+    monkeypatch.setattr(Path, "read_bytes", no_read)
+    findings = lint.lint_skill(path)
+    assert codes(findings) == ["snippet_syntax"]
+    assert "ceiling" in findings[0].message

@@ -352,12 +352,14 @@ async function setEnabled(name, enabled) {
 
 // ------------------------------------------------------------------ preview
 
-/** The preview goes through `GET …/skills/{name}`, which the route pack runs
- *  through `load_skill` — so a human read is logged on the bus exactly like an
- *  agent's, and the chat chip's `client` filter is what keeps this read from
- *  drawing a chip in the dock. An UNTRUSTED project skill is refused here for
- *  the same reason it is refused an agent, so the refusal renders the trust
- *  button rather than an error alone. */
+/** The preview goes through `GET …/skills/{name}`, which serves a HUMAN client
+ *  straight from the library with the trust check skipped — reviewing a skill
+ *  is what trusting it is for, and a panel that hides the text it is asking
+ *  you to approve is a consent dialog with the body blanked out. That read is
+ *  not a `load_skill`, so it publishes nothing and draws no chip in the dock.
+ *  The pane says, above the body, that this one is still unreviewed, and puts
+ *  the Trust button right there. Every other refusal (disabled, invalid,
+ *  capability-gated, unknown) still arrives as an error. */
 async function selectSkill(name) {
   selected = name;
   for (const row of listEl.querySelectorAll(".skill-row")) {
@@ -396,6 +398,10 @@ function renderPreviewError(name, err) {
     hint.textContent = details.hint;
     detailEl.appendChild(hint);
   }
+  // A fallback, not the main path: a human client is served the untrusted
+  // body (see `selectSkill`). This branch is what a view the server does not
+  // count as a person — an embedded or proxied one whose `X-Agent-Id` is not
+  // an explicit principal — gets, and it still offers the way forward.
   if (details.reason === "skill_untrusted") {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -409,6 +415,13 @@ function renderPreviewError(name, err) {
   }
 }
 
+/** The index row behind a previewed name, or null. The preview payload says
+ *  nothing about trust (it is the same payload an agent gets); the row beside
+ *  it is where `trusted` lives. */
+function rowFor(name) {
+  return (entries || []).find((e) => e && e.name === name) || null;
+}
+
 function renderPreview(payload) {
   detailEl.textContent = "";
 
@@ -418,6 +431,28 @@ function renderPreview(payload) {
     ? `${payload.name} ${payload.version}`
     : payload.name;
   detailEl.appendChild(head);
+
+  // Unreviewed: you are reading it BECAUSE you have to decide. Say so above
+  // the body — no agent can load this text until the button below is pressed.
+  const row = rowFor(payload.name);
+  if (row && row.layer === "project" && !row.trusted) {
+    const warn = document.createElement("div");
+    warn.className = "skill-truncated skill-review";
+    warn.textContent =
+      "Not reviewed yet — no agent can load this until you trust it. "
+      + "Read it, then trust it.";
+    detailEl.appendChild(warn);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tb-btn skill-trust";
+    btn.textContent = "Trust this skill";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      await writeTrust(payload.name, true);
+    });
+    detailEl.appendChild(btn);
+  }
 
   const prov = skillsModel.provenanceLine(payload.provenance);
   if (prov) {

@@ -128,7 +128,10 @@ a `Part`/`Solid`/`Compound`. Optional additions: `connectors(p, part)` for
 assembly mates, `SPECS` for executable design intent
 (`from agentcad.toolkit.specs import check_wall, …`), and
 `from agentcad.toolkit import …` for robust ops. Full
-contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool.
+contract + cheat-sheet: `docs/part-authoring.md` and the `part_template` tool
+(which now returns the contract, the build123d basics **and** the index of
+loadable skills — the toolkit craft lives in `agentcad/skills/`, see
+`docs/skills.md`).
 
 ## build123d / OCCT gotchas (hard-won — read before touching geometry)
 
@@ -2808,6 +2811,102 @@ Full documentation: `docs/bench.md`. The design is
   every candidate, the reference included, so a geometry weight would score
   everyone zero on shape rather than surface the defect.
 
+## Skill gotchas (PRD-029 — read before touching `core/skills.py`, `skills_lint.py`, `tools_skills.py`, `routes_skills.py`, `agentcad/skills/` or the chat's skill seam)
+
+Full documentation: `docs/skills.md`. The design is
+`docs/superpowers/specs/2026-08-23-agent-skills-design.md`.
+
+- **The pack `core/tools_skills.py` loads at `sk`** — after `run_checks`/
+  `share`, before `specs`/`versioning`. It therefore reads `service.skills`
+  and `service.bus` **inside its handlers**, never at `register()` time, and
+  it appends nothing to `service.gate_providers`: `tools_proposals` resets
+  that list unconditionally at `pro`, after us (the `tools_run_checks` trap).
+  Route pack: `server/routes_skills.py`.
+
+- **Granting trust is a ROUTE, never a tool.** A skill is agent instructions,
+  so approving one is a human act: `POST …/skills/{name}/trust` / `/untrust` /
+  `PATCH …/enabled` are 403 unless `actor_kind(client) == "human"` **and** the
+  client id is an explicit `browser:<id>` / `user:<id>` principal — a bare
+  `browser` is what the server substitutes for a *missing* `X-Agent-Id`, and
+  accepting it let an agent self-approve by dropping a header (review finding,
+  fixed in 0329). Do not add a human-gated `trust_skill` tool "for symmetry" —
+  a tool in the registry is in every agent's tool list answering "refused for
+  you", and the runtime, not the model, is where that permission belongs.
+  **Trust is keyed by the tree digest** — the SHA-256 over `SKILL.md` *and
+  every asset* (a `git pull` that rewrites a trusted skill, or only its
+  `snippets/x.py`, is the attack) — not by name; the document lives in
+  `<project>/.history/agentcad/skills/trust.json` — inside GIT_DIR, so
+  branch-free, never cloned, restore-proof, a corrupt file reads as **empty**
+  (nothing trusted, nothing lost), and every read-modify-write runs under
+  `trust.lock` (RLock + `fcntl.flock`; 40 concurrent clicks used to lose 30).
+  An **untrusted** project skill is listed but its description/triggers are
+  redacted on every agent surface (`index(redact_untrusted=True)`,
+  `compact_index`) — a cloned description is a prompt-injection line in the
+  system prompt otherwise — and a human reviews it through the route's
+  `load(..., enforce_trust=False)` read, which publishes no `skill_loaded`.
+
+- **Budget eviction rewrites the transcript.** `ChatEngine._skills_loaded` is
+  an LRU per `(project, session)`; going over `max_loaded` (4) or
+  `max_loaded_chars` (40 000) rewrites the evicted skill's earlier
+  `tool_result` **content in place** to `UNLOAD_STUB` and publishes
+  `skill_unloaded`. "Unloaded" that leaves the tokens in the transcript is a
+  lie the next turn pays for; replacing exactly one block keeps the Messages
+  API's `tool_use`/`tool_result` pairing intact and is idempotent. The cost
+  booked is the **whole serialized tool result** (what the transcript holds —
+  `omitted_sections` once made an 800 kB payload count as 24 k), an **asset**
+  read is its own evictable `name#asset` entry, a **re-load** stubs the
+  previous copy first (two full bodies for one booked skill was the common
+  path), a **failed** load records nothing, a single capped skill always fits
+  (`SkillBudget` clamps `max_skill_chars ≤ 0.8 · max_loaded_chars` — the
+  envelope share covers JSON escaping and the capped heading list), and
+  there is deliberately no `unload_skill` tool.
+
+- **`truncate_sections` is a HARD cap of `max_chars + PREAMBLE_CUT_SLACK`
+  (4).** Truncation keeps whole `## ` sections in order, so the payload is a
+  byte-exact prefix of the source; a heading-less over-long preamble is cut at
+  a **line** boundary with any open fence **closed** (that closer is the four
+  characters), and `omitted_sections` opens with `(preamble cut)`. Do not
+  "simplify" the closer away and do not let the cap become advisory — a 900 kB
+  heading-less project skill flowing uncapped into an agent's context is the
+  thing this exists to stop.
+
+- **Frontmatter is our own parser, not PyYAML, and every value is a string.**
+  `version: 1.0` stays `"1.0"` and `no` stays `"no"`. Unknown keys are a
+  **warning** (forward-compatible); a malformed file is a `skill_invalid`
+  entry that is still **listed**, never a silent hole or an exception.
+  `requires` **fails closed**: an unknown capability is refused exactly like a
+  missing one, and the lint calls it `unknown_capability` (error).
+
+- **Core skills lint under the `library` profile** (`license`, `author` and an
+  over-cap body are errors there; warnings under `user`), every ```` ```python ````
+  fence must `ast.parse`, and every `snippets/*.py` must **build green in the
+  kernel** — `tests/test_skills_core_library.py` builds all of them. `agentcad
+  skill lint --core` is the same function CI runs.
+
+- **`part_template` shrank and must stay shrunk.** The nine toolkit sections
+  left `CHEATSHEET` and became core skills; the payload is `{template,
+  cheatsheet, skills, hint}` and the index is best-effort (an `AppError` while
+  scanning yields `[]`, because the one call an agent makes first must not
+  fail on a broken skill directory). Putting a toolkit section back into the
+  sheet re-creates the duplicate FR9 removed — `tests/test_part_template_compat.py`
+  asserts each promoted heading is gone and the sheet stays under 7 000 chars.
+
+- **The chat chip filters on the event's `session`.** `skill_loaded` is
+  published by the **tool** with `locks.current_client_id()` plus the lane it
+  implies (`chat` → `main`, `chat:<s>` → `<s>`, anything else → `null`), so
+  chat, MCP and a browser preview log identically and `chat.js` draws a chip
+  only when that `session` is the dock's own lane (another lane's chip used
+  to land in the main dock and could never be un-struck). The chat engine
+  publishes no second event; a human review read publishes none at all.
+  None of `skill_loaded`/`skill_unloaded`/`skills_changed` is a
+  `project_changed`.
+
+- **A project skill is a plain file in the WORKING TREE** (`store.path_of`,
+  not `canonical_path_of`), which is what makes branch/merge/restore free —
+  and what makes the trust document's canonical location load-bearing. The
+  index rescans the layers on every call, memoised per `(path, mtime_ns,
+  size)`: no watcher, no invalidation bug class.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script
@@ -2889,8 +2988,11 @@ Write the changelog from the real diff, not from memory.
 
 1. `make test` green (state the count; no unexplained skips).
 2. New/changed behavior has a test; a bug fix has a regression test.
-3. Docs updated if the surface changed (README, `docs/*.md`, and the
-   `CHEATSHEET` in `templates.py` for authoring-facing changes).
+3. Docs updated if the surface changed (README, `docs/*.md`, and — for
+   authoring-facing changes — the `CHEATSHEET` in `templates.py` if it is
+   contract/basics, or the matching core skill under `agentcad/skills/` if it
+   is toolkit craft; the sheet no longer carries the toolkit sections, and a
+   changed core skill must still pass `agentcad skill lint --core`).
 4. For UI changes: verify in a real browser (screenshot), zero console errors.
 5. **A `docs/changelog/NNNN-<slug>.md` entry is written and staged with the
    change** (see the Changelog section above).
@@ -2904,6 +3006,7 @@ Write the changelog from the real diff, not from memory.
 - `docs/geometry-ci.md` — `agentcad check`, the report schema, the GitHub Action
 - `docs/bench.md` — AgentCAD-Bench: the task bundle, the six subscores, `agentcad bench`, submitting from outside
 - `docs/part-authoring.md` — the script contract, toolkit, mates, sketch solver
+- `docs/skills.md` — agent skills: the format, layers, the budget, trust, the lint, the shipped library
 - `docs/user-guide.md` — the UI surface by surface
 - `docs/roadmap.md` — the PRD index with statuses (what we're building and why)
 - `docs/prd/` — one detailed PRD per roadmap feature (see `docs/prd/README.md`)

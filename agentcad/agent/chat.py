@@ -117,6 +117,33 @@ SKILLS_RULE = (
 UNLOAD_STUB = ("[skill {name} unloaded to free context budget — call "
                "load_skill again if you need it]")
 
+#: The same, for an evicted ASSET read. It names the file, because "snap-fits
+#: unloaded" while the snap-fits guide is still loaded reads as a bug.
+ASSET_UNLOAD_STUB = ("[asset {asset} of skill {name} unloaded to free context "
+                     "budget — call load_skill again if you need it]")
+
+#: What the PREVIOUS copy becomes when the model loads the same thing twice.
+#: Not an unload — the skill is loaded, by the newer block right below — so it
+#: publishes no `skill_unloaded` and the dock's chip stays as it is. Before
+#: this, a re-load left two full copies in the transcript while the budget
+#: counted one, and a later eviction (which finds a block by the tool_use_id it
+#: remembers) reclaimed only the newest of them.
+RELOAD_STUB = ("[skill {name} was loaded again later in this conversation — "
+               "the current copy is below]")
+
+
+def _unload_stub(name: str, asset: str | None) -> str:
+    """The stub text for an evicted entry, skill or asset."""
+    if asset:
+        return ASSET_UNLOAD_STUB.format(name=name, asset=asset)
+    return UNLOAD_STUB.format(name=name)
+
+
+def _reload_stub(name: str, asset: str | None) -> str:
+    """The stub text for the copy a re-load superseded."""
+    label = f"{name} (asset {asset})" if asset else name
+    return RELOAD_STUB.format(name=label)
+
 
 class ChatUnavailable(ValidationError):
     """Raised when no Anthropic API key is configured (maps to HTTP 422)."""
@@ -191,9 +218,12 @@ class ChatEngine:
         self._history: dict[tuple[str, str], list[dict]] = {}
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._tasks: dict[str, asyncio.Task] = {}
-        #: name -> {"tool_use_id", "chars", "layer"}, oldest first. The budget
-        #: is the engine's because the built-in chat does not own its context;
-        #: an MCP agent does, so the tool has no budget of its own.
+        #: key -> {"tool_use_id", "chars", "layer", "name", "asset"}, oldest
+        #: first. The key is the skill name for a body load and
+        #: ``"{name}#{asset}"`` for one sibling file, so a snippet read is its
+        #: own evictable entry and neither refreshes nor displaces the guide it
+        #: came from. The budget is the engine's because the built-in chat does
+        #: not own its context; an MCP agent does, so the tool has none.
         self._skills_loaded: dict[tuple[str, str],
                                   "OrderedDict[str, dict]"] = {}
 
@@ -226,10 +256,22 @@ class ChatEngine:
 
     def loaded_skills(self, project: str,
                       session: str = DEFAULT_SESSION) -> list[dict]:
-        """What this session currently holds, oldest first."""
+        """What this session currently holds, oldest first.
+
+        Both kinds: a skill body is ``{name, layer, chars}`` and one sibling
+        file adds ``asset``. ``chars`` is the size of the ``tool_result`` in
+        the transcript — the thing the budget is actually about — not the
+        length of the skill's own text.
+        """
         loaded = self._skills_loaded.get((project, session))
-        return [{"name": name, "layer": entry["layer"], "chars": entry["chars"]}
-                for name, entry in (loaded or {}).items()]
+        rows = []
+        for entry in (loaded or {}).values():
+            row = {"name": entry["name"], "layer": entry["layer"],
+                   "chars": entry["chars"]}
+            if entry.get("asset"):
+                row["asset"] = entry["asset"]
+            rows.append(row)
+        return rows
 
     def _system_prompt(self, project: str,
                        session: str = DEFAULT_SESSION) -> str:
@@ -255,32 +297,52 @@ class ChatEngine:
         if not index:
             return SYSTEM_PROMPT
         prompt = f"{SYSTEM_PROMPT}\n\n{SKILLS_RULE}\n{index}"
-        loaded = self.loaded_skills(project, session)
-        if loaded:
-            prompt += ("\nLoaded this session: "
-                       + ", ".join(entry["name"] for entry in loaded))
+        # SKILLS only. An asset costs context and is budgeted like a skill, but
+        # "loaded this session" is a claim the model can act on ("you already
+        # have that guide"), and one snippet out of a guide is not that guide.
+        names = [entry["name"] for entry in self.loaded_skills(project, session)
+                 if not entry.get("asset")]
+        if names:
+            prompt += "\nLoaded this session: " + ", ".join(names)
         return prompt
 
     def _record_skill(self, project: str, session: str, block: dict,
-                      result: Any, history: list[dict]) -> None:
+                      result: Any, cost: int, history: list[dict],
+                      asset: str | None = None) -> None:
         """Book one successful `load_skill`, then evict down to the budget.
 
-        Called only for a body load: `asset` reads one sibling file and is not
-        a skill load, so it neither counts against the budget nor claims a
-        "Loaded this session" line the model cannot act on.
+        `cost` is the length of the `tool_result` this load put in the
+        transcript — the whole serialized payload, not `result["chars"]`. The
+        content is a fraction of it: `provenance`, `assets` and above all
+        `omitted_sections` ride along, and a probe measured 768 kB of omitted
+        headings against a 24 000-char body. A budget that counts the smaller
+        number bounds nothing.
+
+        An `asset` read is booked too, under its own key: it costs context
+        exactly like a body load, and before this it was unbudgeted and
+        unevictable — `asset: "SKILL.md"` sat in the transcript forever while
+        the engine reported nothing loaded.
         """
         if not isinstance(result, dict) or result.get("error"):
             return
         name = result.get("name")
-        chars = result.get("chars")
-        if not isinstance(name, str) or not isinstance(chars, int):
+        if not isinstance(name, str):
             return
+        key = name if asset is None else f"{name}#{asset}"
+        tool_use_id = block.get("id", "")
         loaded = self._skills_loaded.setdefault((project, session),
                                                 OrderedDict())
-        loaded.pop(name, None)          # a re-load refreshes position + size
-        loaded[name] = {"tool_use_id": block.get("id", ""), "chars": chars,
-                        "layer": result.get("layer", "")}
-        self._evict(project, session, loaded, history, keep=name)
+        previous = loaded.pop(key, None)  # a re-load refreshes position + size
+        if previous is not None and previous.get("tool_use_id") not in (
+                "", None, tool_use_id):
+            # The older copy is now unreachable bookkeeping-wise (only the
+            # newest id is remembered), so reclaim it here or never.
+            self._unload_in_history(history, previous["tool_use_id"],
+                                    _reload_stub(name, asset))
+        loaded[key] = {"tool_use_id": tool_use_id, "chars": cost,
+                       "layer": result.get("layer", ""), "name": name,
+                       "asset": asset}
+        self._evict(project, session, loaded, history, keep=key)
 
     def _evict(self, project: str, session: str,
                loaded: "OrderedDict[str, dict]", history: list[dict],
@@ -289,21 +351,31 @@ class ChatEngine:
         while (len(loaded) > budget.max_loaded
                or sum(e["chars"] for e in loaded.values())
                > budget.max_loaded_chars):
-            # Never the skill just loaded: evicting it would answer a load
-            # with an unload and loop forever on an over-cap single skill.
-            victim = next((n for n in loaded if n != keep), None)
+            # Never the entry just loaded: evicting it would answer a load
+            # with an unload, and with nothing else left the loop would never
+            # end. `SkillBudget` normalizes the truncation cap down to
+            # `max_loaded_chars`, so a capped skill's CONTENT is inside the
+            # session budget and one skill can be held; the payload's envelope
+            # (provenance, the omitted-heading list) can still push a
+            # cap-filling skill a little past it, and holding it is the
+            # deliberate choice — the alternative is refusing to answer a load
+            # the model just made.
+            victim = next((k for k in loaded if k != keep), None)
             if victim is None:
                 return
             entry = loaded.pop(victim)
-            self._unload_in_history(history, entry.get("tool_use_id"), victim)
+            self._unload_in_history(history, entry.get("tool_use_id"),
+                                    _unload_stub(entry["name"],
+                                                 entry.get("asset")))
             self.bus.publish({"type": "skill_unloaded", "project": project,
-                              "session": session, "name": victim,
+                              "session": session, "name": entry["name"],
+                              "asset": entry.get("asset"),
                               "reason": "budget"})
 
     @staticmethod
     def _unload_in_history(history: list[dict], tool_use_id: str | None,
-                           name: str) -> None:
-        """Replace one `tool_result`'s content with the unload stub.
+                           text: str) -> None:
+        """Replace one `tool_result`'s content with a stub.
 
         Found by `tool_use_id` — never by position or by name — and the whole
         content is replaced whatever its shape (a string, or the two-block
@@ -319,7 +391,7 @@ class ChatEngine:
                 if (isinstance(block, dict)
                         and block.get("type") == "tool_result"
                         and block.get("tool_use_id") == tool_use_id):
-                    block["content"] = UNLOAD_STUB.format(name=name)
+                    block["content"] = text
                     return
 
     # ----------------------------------------------------------------- turns
@@ -405,7 +477,7 @@ class ChatEngine:
                     break
 
                 results = []
-                skill_loads: list[tuple[dict, Any]] = []
+                skill_loads: list[tuple[dict, Any, int, str | None]] = []
                 for block in tool_uses:
                     name = block.get("name", "")
                     args = block.get("input") or {}
@@ -443,22 +515,31 @@ class ChatEngine:
                             "content": content,
                         }
                     )
-                    # An `asset` read is one sibling file, not a skill load —
-                    # decided from the ARGUMENTS, because the payload of a
-                    # snippet read is otherwise shaped like a body load.
+                    # Which SIBLING file this was, if any — read from the
+                    # ARGUMENTS, because the payload of a snippet read is
+                    # otherwise shaped like a body load. It is booked either
+                    # way; the asset only changes the key it is booked under.
                     asset = args.get("asset") if isinstance(args, dict) else None
-                    if (self._skills is not None and name == "load_skill"
-                            and not asset):
-                        skill_loads.append((block, result))
+                    if self._skills is not None and name == "load_skill":
+                        # The cost is what the TRANSCRIPT holds. For every
+                        # plain result that is `event_json` byte for byte;
+                        # `content` is a list only for an image payload, which
+                        # `load_skill` never returns.
+                        cost = (len(content) if isinstance(content, str)
+                                else len(event_json))
+                        skill_loads.append(
+                            (block, result, cost,
+                             asset if isinstance(asset, str) and asset
+                             else None))
                     calls += 1
                 history.append({"role": "user", "content": results})
 
                 # AFTER the append: an eviction rewrites a `tool_result` in
                 # `history`, and a batch that loads more skills than the budget
                 # holds must be able to rewrite one it just added.
-                for load_block, load_result in skill_loads:
+                for load_block, load_result, cost, asset in skill_loads:
                     self._record_skill(project, session, load_block,
-                                       load_result, history)
+                                       load_result, cost, history, asset)
 
                 if calls >= MAX_TOOL_CALLS_PER_TURN:
                     self.bus.publish(

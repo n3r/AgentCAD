@@ -1,4 +1,4 @@
-# 0313 — PRD-029 slice 3: the cheat-sheet's toolkit sections become ten core skills; `part_template` shrinks
+# 0324 — PRD-029 slice 3: the cheat-sheet's toolkit sections become ten core skills; `part_template` shrinks
 
 - **Commit:** pending
 - **Date:** 2026-08-23

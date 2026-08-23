@@ -599,15 +599,24 @@ def _install_skills(task_service, selection: dict):
     `NotFoundError` / ``skill_not_found``, hinted with ``bench --skills``
     (`core/skills.py`). The bench does not spell that refusal a second time.
     """
-    from ..core.skills import SkillLibrary
+    from ..core.skills import SkillBudget, SkillLibrary
 
     mode = (selection or {}).get("mode") or "all"
     if mode == "all":
         # The service's own library, built by `AgentCADService.__init__` over
         # this cell's store: the shipped surface, not a second construction of
-        # it that could drift from what the product does.
+        # it that could drift from what the product does. Its budget is
+        # `SkillBudget.from_config()`, which is the same object shape
+        # `bench_runner.run_task` hands the engine.
         return task_service.skills
+    # The **same** budget the engine gets. `run_task` derives the engine's
+    # from `SkillBudget.from_config()`; deriving this one the same way means
+    # one config read cannot produce a library that truncates at one cap and
+    # an engine that accounts at another — and `SkillBudget` normalizes
+    # `max_skill_chars` to `max_loaded_chars` on construction, so both sides
+    # normalize identically.
     library = SkillLibrary(task_service.store,
+                           budget=SkillBudget.from_config(),
                            only=frozenset((selection or {}).get("names") or ()))
     task_service.skills = library
     return None if mode == "none" else library

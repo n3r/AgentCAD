@@ -1,4 +1,4 @@
-# 0311 — PRD-029 slice 1+4: skill format, library, lint, CLI, config; six authored core skills
+# 0322 — PRD-029 slice 1+4: skill format, library, lint, CLI, config; six authored core skills
 
 - **Commit:** pending
 - **Date:** 2026-08-23

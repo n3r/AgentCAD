@@ -1,4 +1,4 @@
-# 0314 — PRD-029 slice 6: the Skills modal and the chat's skill chips
+# 0325 — PRD-029 slice 6: the Skills modal and the chat's skill chips
 
 - **Commit:** pending
 - **Date:** 2026-08-23

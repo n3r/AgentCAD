@@ -1,4 +1,4 @@
-# 0310 — PRD-029 Agent skills: design spec + implementation plan
+# 0321 — PRD-029 Agent skills: design spec + implementation plan
 
 - **Commit:** pending
 - **Date:** 2026-08-23
@@ -40,7 +40,7 @@ chip → acceptance + docs).
 - `docs/superpowers/plans/2026-08-23-agent-skills.md` — new
 - `docs/prd/in-progress/PRD-029-agent-skills.md` — moved
 - `docs/roadmap.md` — status row
-- `docs/changelog/0310-prd-029-design.md` — this entry
+- `docs/changelog/0321-prd-029-design.md` — this entry
 
 ## Notes
 Docs only. Baseline `make test` on this branch point (`f5dabf6`, a fresh

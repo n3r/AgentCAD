@@ -43,8 +43,9 @@ from pathlib import Path
 
 from .skills import (CAPABILITIES, KNOWN_KEYS, MAX_DESCRIPTION,
                      MAX_SKILL_FILE_BYTES, MAX_TRIGGER_CHARS, MAX_TRIGGERS,
-                     NAME_RE, VERSION_RE, SkillFormatError, is_flat_skill,
-                     parse_frontmatter, walk_files)
+                     NAME_RE, VERSION_RE, SkillFormatError, SkillTooLarge,
+                     _read_capped, is_flat_skill, parse_frontmatter,
+                     walk_files)
 
 #: How many files the lint will look at inside one skill directory. The walk
 #: is bounded and symlink-safe for the same reason the loader's is: a skill
@@ -189,14 +190,19 @@ class _Unreadable:
 
 
 def _read_text(path: Path):
-    """The file's text, or an :class:`_Unreadable` explaining why not."""
+    """The file's text, or an :class:`_Unreadable` explaining why not.
+
+    Size-checked **before** the read (``skills._read_capped``): a 600 MB
+    SKILL.md in a directory the lint was pointed at used to be allocated in
+    full and only then measured, which made "the lint must survive a hostile
+    directory" true of everything except its own memory.
+    """
     try:
-        raw = path.read_bytes()
+        raw = _read_capped(path, MAX_SKILL_FILE_BYTES)
+    except SkillTooLarge as exc:
+        return _Unreadable(str(exc))
     except OSError as exc:
         return _Unreadable(f"unreadable: {type(exc).__name__}: {exc}")
-    if len(raw) > MAX_SKILL_FILE_BYTES:
-        return _Unreadable(f"the file is {len(raw)} bytes; the ceiling is "
-                           f"{MAX_SKILL_FILE_BYTES} bytes")
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -297,13 +303,34 @@ def _lint_text(text: str, name: str, skill_md: Path, directory: Path | None,
 
 
 def _lint_fences(body: str, skill_md: Path, offset: int) -> list[Finding]:
-    """``ast.parse`` every ```python fence; the message carries the line."""
+    """``ast.parse`` every ```python fence; the message carries the line.
+
+    A fence still open at EOF is ``code_fence_unterminated`` **and** its
+    buffer is parsed anyway. Both halves matter: an unterminated fence is a
+    real defect (``split_sections`` treats every later ``## `` heading as
+    fence content, so truncation stops finding sections), and the old loop
+    only ever parsed a fence when it saw the *closing* marker — so the one
+    place a broken snippet was certain to hide was the end of the file.
+    """
     out: list[Finding] = []
     lines = body.split("\n")
     fence: str | None = None
     start = 0
     language = ""
     buffer: list[str] = []
+
+    def parse(source: str) -> None:
+        if language not in ("python", "py"):
+            return
+        try:
+            ast.parse(source)
+        except SyntaxError as exc:
+            out.append(Finding(
+                str(skill_md), "error", "code_fence_syntax",
+                f"the ```python fence opening at line "
+                f"{start + offset} does not parse: {exc.msg} "
+                f"(fence line {exc.lineno})"))
+
     for i, line in enumerate(lines):
         match = _FENCE_RE.match(line)
         if fence is None:
@@ -314,19 +341,16 @@ def _lint_fences(body: str, skill_md: Path, offset: int) -> list[Finding]:
                 language = match.group(2).lower()
             continue
         if match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence):
-            if language in ("python", "py"):
-                source = "\n".join(buffer)
-                try:
-                    ast.parse(source)
-                except SyntaxError as exc:
-                    out.append(Finding(
-                        str(skill_md), "error", "code_fence_syntax",
-                        f"the ```python fence opening at line "
-                        f"{start + offset} does not parse: {exc.msg} "
-                        f"(fence line {exc.lineno})"))
+            parse("\n".join(buffer))
             fence = None
             continue
         buffer.append(line)
+    if fence is not None:
+        out.append(Finding(
+            str(skill_md), "error", "code_fence_unterminated",
+            f"the ```{language or 'code'} fence opening at line "
+            f"{start + offset} is never closed"))
+        parse("\n".join(buffer))
     return out
 
 

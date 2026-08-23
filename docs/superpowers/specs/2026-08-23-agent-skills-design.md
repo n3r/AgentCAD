@@ -137,13 +137,22 @@ watcher, no cache invalidation bug class. Same-name in a higher layer
 **shadows** the lower one: the entry carries `layer: "project"` and
 `overrides: "core"`; the shadowed entry is not listed (AC3).
 
-Ranking for `list_skills {query}` is deterministic: score = 100 for an exact
-name match, 60 for a name substring, 40 per matching trigger, 10 per query
-token found in the description (tokens are lowercase `[a-z0-9]+`, the
-query is split the same way); ties break by layer precedence (project first)
-then name. A query with no hits returns the full index unranked with
-`matched: false` so the agent still sees what exists. Without a query the
-index is in name order.
+Ranking for `list_skills {query}` is deterministic and runs over **token
+sets**, not substrings. Tokens are lowercase `[a-z0-9]+` of length ≥ 3 (if
+every token of a query is shorter, they are all kept, so `m8` still searches).
+Score = 100 when the query *is* the name; else 60 when a token equals one of
+the name's hyphen-parts or a token of ≥ 4 characters appears in the name; 40
+per trigger whose own token set meets the query's; 10 per description token
+the query also has. Ties break by layer precedence (project first) then name.
+A query with no hits returns the full index unranked with `matched: false` so
+the agent still sees what exists. Without a query the index is in name order.
+
+*Why token sets:* substring scoring made every short word a match. `"make a
+snap fit lid"` contains `"a"`, `"a"` is inside `clamp`, `safe_fillet` and a
+dozen other triggers, and over the shipped library the wrong skill won a query
+whose subject was named in it. The pinned cases are `"make a snap fit lid"` →
+`snap-fits`, `"a bracket for a NEMA 17 motor"` → `brackets-and-mounts`, and
+AC2's `"sheet"` → `sheet-metal`, which is unchanged.
 
 ## 3. Loading, capping, the budget (Decision 3 — FR3, FR4)
 
@@ -160,17 +169,46 @@ is the one thing that can legitimately be larger than the prose.
 
 **The budget is the chat engine's, not the tool's.** MCP agents own their
 context; the built-in chat does not, so `ChatEngine` keeps
-`_skills[(project, session)]: OrderedDict[name → {tool_use_id, chars,
-layer}]`. After a successful `load_skill` call the engine records the
-skill, then evicts LRU entries until `len ≤ max_loaded` (default 4) and
-`Σ chars ≤ max_loaded_chars` (default 40 000). **Eviction is real context
-reclamation:** the evicted skill's earlier `tool_result` content block in
-`_history` is rewritten in place to
+`_skills_loaded[(project, session)]: OrderedDict[key → {tool_use_id, chars,
+layer, name, asset}]`. After a successful `load_skill` call the engine records
+the load, then evicts LRU entries until `len ≤ max_loaded` (default 4) and
+`Σ chars ≤ max_loaded_chars` (default 40 000).
+
+**What is counted, and what an entry is** (both corrected after the first
+implementation shipped):
+
+- `chars` is the length of the **`tool_result` the transcript holds** — the
+  whole serialized payload — not `result["chars"]`. The content is a fraction
+  of it: `provenance`, `assets` and above all `omitted_sections` ride along,
+  and a probe measured 768 kB of omitted headings against a 24 000-char body.
+  Counting the content alone is a budget that bounds nothing.
+- An **asset read is an entry**, keyed `"{name}#{asset}"`, with its own
+  `tool_use_id` and its own eviction. It is separate from the body — reading a
+  snippet neither refreshes nor displaces the guide — and it is absent from
+  the "Loaded this session:" line, because that line is a claim the model acts
+  on and one file out of a guide is not that guide. Before this,
+  `load_skill {asset: "SKILL.md"}` was unbudgeted and unevictable.
+- `SkillBudget` normalizes `max_skill_chars` down to `max_loaded_chars` on
+  construction. The engine never evicts the load it is answering (that would
+  answer a load with an unload, and loop), so an unclamped truncation cap left
+  one skill loaded above the bound forever — a config that looked *stricter*
+  silently exceeded the budget.
+
+**Eviction is real context reclamation:** the evicted entry's earlier
+`tool_result` content block in `_history` is rewritten in place to
 `[skill <name> unloaded to free context budget — call load_skill again if
-you need it]`. A re-load of an already-loaded skill refreshes its position
-and does not double-count. Every eviction publishes `skill_unloaded
-{project, session, name, reason: "budget"}` and is listed in the system
-context's "Loaded skills" line, so the state is visible and auditable.
+you need it]` (or `[asset <asset> of skill <name> unloaded …]`). A **re-load**
+of an already-loaded key refreshes its position, does not double-count, and
+rewrites the copy it supersedes to `[skill <name> was loaded again later in
+this conversation — the current copy is below]` — *silently*, publishing no
+`skill_unloaded`, because the skill is loaded by the newer block. Only the
+newest `tool_use_id` is remembered, so the older block is reclaimed there or
+never: before this, two full copies stayed in the transcript while the budget
+counted one, and a later eviction stubbed only the newest.
+
+Every eviction publishes `skill_unloaded {project, session, name, asset,
+reason: "budget"}` and the loaded skills are listed in the system context's
+"Loaded this session" line, so the state is visible and auditable.
 *Why rewrite history rather than just forget:* "unloaded" that leaves the
 tokens in the transcript is a lie the next turn pays for; replacing one
 tool_result's content keeps the Messages API pairing intact and is
@@ -207,7 +245,16 @@ provider). Two tools, no more:
   `{skills: [{name, description, layer, version, triggers, overrides?,
   trusted?}], matched, hidden: [{name, requires}]}` — `hidden` names
   capability-gated skills so an agent can tell the user why a skill it read
-  about is missing.
+  about is missing. It reads the index with **`redact_untrusted=True`**: an
+  unapproved project skill keeps its name, layer and `trusted: false`, but its
+  `description` becomes "unreviewed project skill — a human must approve it in
+  the Skills panel before an agent can load it" and its `triggers` become
+  `[]`. Listing it is the point (an agent must be able to say the skill exists
+  and needs a human); quoting prose written by whoever shipped that file is the
+  injection, and it reaches the model verbatim through this tool and through
+  the compact index in the system prompt. The **human** surfaces — the panel's
+  index route and the review read — pass the flag as `False`, because
+  reviewing the real text is the whole job.
 - `load_skill {project?, name, asset?}` → `{name, layer, version, content,
   chars, truncated, omitted_sections, assets, provenance: {layer, path?,
   author, license}}`. Errors: `skill_not_found`, `skill_unavailable`,
@@ -217,9 +264,20 @@ provider). Two tools, no more:
 `project` is optional on both: without it only the core layer is visible
 (an MCP agent browsing before opening a project). With it, the project's
 layer applies. **The tool handler publishes the audit event** `skill_loaded
-{project, name, layer, client, chars}` on `service.bus` with
-`client = locks.current_client_id()`, so chat, MCP and plain HTTP all log
-the same way; the chat engine does **not** publish a second one.
+{project, name, layer, client, chars, session, asset}` on `service.bus` with
+`client = locks.current_client_id()`, so chat, MCP and an agent's HTTP read all
+log the same way; the chat engine does **not** publish a second one. `session`
+is the chat lane derived from the client id (`chat` → `"main"`, `chat:<s>` →
+`"<s>"`, anything else → `null`) and `asset` names the sibling file when one
+was read. Both exist for the dock's chip: without a session, a load in
+`chat:lane` drew a chip in the "main" dock, where the matching `skill_unloaded`
+(which has always carried a session) is filtered out — that chip could never be
+un-struck; without `asset`, evicting a snippet struck the chip of the guide it
+came from, which is still loaded.
+
+The compact index redacts the same way, rendering an unapproved project skill
+as `- <name> (unreviewed project skill — not loadable until a human approves
+it in the Skills panel)`.
 
 **The chat seam** (`agent/chat.py`, three edits, no fork): (1)
 `ChatEngine(..., skills: SkillLibrary | None = None, budget: SkillBudget |
@@ -253,24 +311,49 @@ agent instructions — so it needs one human act before an agent consumes it.
 - Trust state lives in `<project>/.history/agentcad/skills/trust.json` —
   inside the project's git dir, so it is **local, never versioned, never
   cloned, restore-proof** (the PRD-008 comments precedent). Shape:
-  `{"version": 1, "trusted": {"<name>": "<sha256 of SKILL.md bytes>"},
+  `{"version": 1, "trusted": {"<name>": "<tree digest>"},
   "disabled": ["<name>"]}`; reads go through a size-capped JSON reader and
   a corrupt file is treated as empty (nothing is trusted, nothing is lost —
-  the file is rebuilt on the next approval).
-- **Trust is keyed by content digest.** Editing a trusted skill makes it
-  untrusted again; the panel shows "changed since you trusted it". *Why
-  digest and not name:* a `git pull` that rewrites a trusted skill is the
-  attack; one click per edit is the cost.
+  the file is rebuilt on the next approval). Writes are serialized with an
+  `RLock` plus an `fcntl.flock` beside the file (the `_index_scope` shape),
+  because `docker compose exec` and a second tab are second writers.
+- **Trust is keyed by content digest, and the digest covers the whole tree:**
+  sha256 over `relpath + "\0" + sha256(bytes)` for the body file and every
+  asset, in sorted-path order. Editing a trusted skill — *or adding or
+  changing one of its snippets* — makes it untrusted again; the panel shows
+  "changed since you trusted it". *Why digest and not name:* a `git pull` that
+  rewrites a trusted skill is the attack; one click per edit is the cost. *Why
+  the tree and not the body:* a skill's snippets are code an agent copies into
+  a part script, so approving the prose while the executable half stays
+  rewritable approves the wrong half.
 - An untrusted project skill **is listed** (`trusted: false`) and
   `load_skill` **refuses** it with `skill_untrusted` + hint ("a human can
   approve it in the Skills panel"). A disabled skill is hidden from the index
   and refused with `skill_not_found`-class `skill_disabled`.
 - **Granting trust is a route, not a tool:** `POST
   /projects/{p}/skills/{name}/trust` (and `/untrust`, `PATCH …/enabled`),
-  refused with 403 unless `actor_kind(client) == "human"`. No agent surface
-  can approve agent instructions. *Why not a human-gated tool:* a tool in
-  the registry is in every agent's tool list, and "refused for you" is noise;
-  the runtime holds the permission (the PRD's own rule).
+  refused with 403 unless the caller is a human **named explicitly**:
+  `actor_kind(client) == "human"` *and* the id is `browser:<non-empty>` or
+  `user:<non-empty>`. `actor_kind` alone is not sufficient — `server/app.py`
+  turns a request with no `X-Agent-Id` header into the bare id `browser`, and
+  `actor_kind("browser")` is `"human"`, so an agent could approve its own
+  instructions by *dropping a header*. `browser`, `chat`, `chat:<s>`, `mcp`,
+  `agent:*` and `local` are all refused, and the gate runs before the name
+  check so a non-human learns nothing about which skills exist. No agent
+  surface can approve agent instructions. *Why not a human-gated tool:* a tool
+  in the registry is in every agent's tool list, and "refused for you" is
+  noise; the runtime holds the permission (the PRD's own rule).
+- **A human may read an untrusted skill.** `GET /projects/{p}/skills/{name}`
+  from a human client reads `SkillLibrary.load(..., enforce_trust=False)`
+  **directly** — no registry call, no `skill_loaded`, no engine bookkeeping —
+  because reviewing a skill is what trusting it is for, and a panel that
+  refuses to show the text it is asking you to approve is a consent dialog
+  with the body blanked out. `enforce_trust=False` skips exactly one check:
+  disabled, invalid, capability-gated and unknown are refused as always. The
+  same URL from any other client still goes through `load_skill` and is still
+  refused with `skill_untrusted`. *Why no audit event:* a person reading a
+  file is not an agent loading instructions, and the chip and the transcript
+  bookkeeping both key off that distinction.
 - The system-context rule paragraph and each `load_skill` result's
   `provenance` make the injection surface inspectable; the chat chip shows
   the layer (§7). Hosted mode: all skill tools/routes are member-only
@@ -286,23 +369,30 @@ On the PRD-026 shell, following `materials.js` exactly:
   (`core` / `project`, plus "overrides core" and "needs review" / "changed"
   states), version, enable toggle, and a preview pane showing `content`
   (rendered as plain text in a `<pre>` — never innerHTML) with the
-  `assets` list. Project skills needing review show **Review & trust** →
-  the trust route; the modal opens with a one-line consent banner when any
-  untrusted project skill exists ("This project provides agent
+  `assets` list. An **untrusted** skill previews too (the human read of §6),
+  with a line above the body saying no agent can load it yet and a **Trust
+  this skill** button beside it. Project skills needing review show **Review
+  & trust** → the trust route; the modal opens with a one-line consent banner
+  when any untrusted project skill exists ("This project provides agent
   instructions — review them before agents can load them"). "Teach" is a
   hint line with the path (`<project>/skills/<name>.md`) — no in-browser
   editor (the file lands in git like any part; the editor is PRD-026's
   script editor territory).
 - **Chat chip:** `chat.js` handles `skill_loaded` with a `client` of
-  `chat`/`chat:<session>` → a `.skill-chip` "📘 snap-fits · project" in the
-  dock (distinct from tool chips), and `skill_unloaded` → the chip gets a
-  struck "unloaded" state. Transparency for the user; an inspectable
+  `chat`/`chat:<session>` **whose lane is this dock's** → a `.skill-chip`
+  "📘 snap-fits · project" (or "📎 snap-fits · snippets/lid.py" for an asset
+  read) in the dock, distinct from tool chips; `skill_unloaded` → the chip
+  with the matching `name` *and* `asset` gets a struck "unloaded" state. The
+  lane filter is `skills_model.sessionOf(ev.client)`, the browser's copy of
+  `tools_skills.chat_session`. Transparency for the user; an inspectable
   prompt-injection surface.
 
 Route pack `server/routes_skills.py`: `GET /projects/{p}/skills` (index with
-trust/disabled state — the modal's one fetch), `GET
-/projects/{p}/skills/{name}` (`load` payload; `?asset=`), the three
-human-only writes of §6. Refusals from the library are `AppError`s → 404/422
+trust/disabled state — the modal's one fetch, read **unredacted** from
+`service.skills.index(p)` because this is the human surface), `GET
+/projects/{p}/skills/{name}` (`load` payload; `?asset=`; the human read of §6
+for a human client, `load_skill` through the registry for anyone else), the
+three human-only writes of §6. Refusals from the library are `AppError`s → 404/422
 through the house envelope.
 
 ## 8. The core library (Decision 8 — FR6, G3, FR9)
@@ -311,10 +401,17 @@ Fourteen skills at launch, all under `agentcad/skills/`, all passing the
 `library` lint profile, every code fence parsing and every snippet building
 green (one parametrised test each):
 
-Promoted verbatim from the cheat-sheet (single source — the section is
-deleted from `templates.py`): `robust-parametrics` (ROBUSTNESS TOOLKIT +
-parametric-guard patterns), `selectors-and-occt-failures` (selectors,
-common failure modes, the degenerate-boolean/fillet/shell playbook),
+Promoted from the cheat-sheet — the eight toolkit sections (`ROBUSTNESS
+TOOLKIT`, `HOLE WIZARD`, `SHEET METAL`, `DESIGN SPECS`, `CONSTRAINT SKETCH
+SOLVER`, `THREADS & FASTENERS`, `RIBS, BOSSES & DRAFT`, `CONNECTORS & MATES`)
+are **deleted** from `templates.py`, single source. The **selectors** block
+and `Common failure modes` are the deliberate exception: they are **copied**,
+not moved, because they are the generic minimum for writing *any* part script
+and the sheet is what an agent reads first
+(`tests/test_part_template_compat.py` pins both halves). The skills:
+`robust-parametrics` (ROBUSTNESS TOOLKIT + parametric-guard patterns),
+`selectors-and-occt-failures` (selectors in depth, common failure modes, the
+degenerate-boolean/fillet/shell playbook),
 `patterns`, `holes`, `threads-and-fasteners` (`requires: [threads]`),
 `ribs-bosses-draft`, `sketch-solver`, `sheet-metal`, `design-specs` (+ the
 spec-first workflow guide), `assemblies-and-mates`.
@@ -329,8 +426,8 @@ Plus `fem-workflow` (`requires: [fem]`) — the capability-gated skill AC4
 needs in the shipped library, not only in a fixture. That is 16; the floor
 is 12.
 
-Each authored skill is ≤ 12 000 chars (half the cap — room for growth
-without truncation), cites its sources in a final `## Sources` section, and
+Each authored skill is ≤ 12 700 chars (about half the 24 000 cap — room for
+growth without truncation; the largest shipped is `fem-workflow` at 12 655), cites its sources in a final `## Sources` section, and
 contains no aggregator names (the materials rule). Bench review of each
 core skill (the PRD's "reviewed by the bench protocol before shipping") is
 deferred with the CI delta (Scope) — the enforceable ship gate here is the
@@ -340,13 +437,17 @@ lint + green snippets + the scripted AC1 run.
 
 `agentcad bench run --skills all|none|<name>[,<name>]` (default `all`)
 restricts the derived service's library: `none` passes `skills=None` to the
-engine (no index, tools refuse with `skill_unavailable`), a list keeps only
-those names. `run.json` records `skills: {"mode": ..., "names": [...]}`;
+engine (no index) and an empty `only` set to the task service, a list keeps
+only those names on both — a skill outside the selection is refused as
+`skill_not_found` with a hint naming `bench --skills` (the library's own
+`only` semantics; one condition, one name — ruling recorded at Slice 5). `run.json` records `skills: {"mode": ..., "names": [...]}`;
 `score.json` stays byte-identical (the selection is provenance, not a
 score). The with/without comparison is `bench report --baseline <without>
 <with>` — the existing command, which already prints per-task deltas — so
 AC5's smoke test runs one scripted-client task twice and asserts both score
-lines and the delta line. No new report command (YAGNI).
+lines and the delta line. `--baseline` takes a baseline *document* (numbers),
+so the without-run's report is converted with the one filter `docs/bench.md`
+shows. No new report command (YAGNI).
 
 ## 10. CLI (Decision 10 — author path)
 
@@ -361,10 +462,11 @@ future entry point (`skills.lint_skill(path, profile)`).
 
 ## 11. Events, errors, docs (Decision 11)
 
-Events: `skill_loaded {project, name, layer, client, chars}`,
-`skill_unloaded {project, session, name, reason}`. Neither is
+Events: `skill_loaded {project, name, layer, client, chars, session, asset}`,
+`skill_unloaded {project, session, name, asset, reason}`. Neither is
 `project_changed` (no manifest moves); trust edits are local state and emit
-`skills_changed {project}` so an open modal refreshes.
+`skills_changed {project}` so an open modal refreshes. A **human's** review
+read publishes nothing at all (§6).
 
 Errors are `ValidationError` subclasses with stable `type`s:
 `skill_not_found`, `skill_unavailable`, `skill_untrusted`, `skill_disabled`,
@@ -387,7 +489,9 @@ bench use), `docs/agent-api.md` (the two tools + events + the
   "Loaded this session" line in the next request's system prompt, and the
   part's `ok: true` with positive volume. The chip is a `chat.js` handler
   over the same event (browser-checked in the final AC pass).
-- **AC2** — `list_skills {query: "sheet"}` ranks `sheet-metal` first;
+- **AC2** — `list_skills {query: "sheet"}` ranks `sheet-metal` first, and so
+  do the sentence-shaped queries a real agent sends (`"make a snap fit lid"` →
+  `snap-fits`, `"a bracket for a NEMA 17 motor"` → `brackets-and-mounts`);
   `load_skill` on a fixture whose body exceeds the cap returns
   `truncated: true`, every kept section byte-intact, `omitted_sections`
   naming the rest.
@@ -397,10 +501,11 @@ bench use), `docs/agent-api.md` (the two tools + events + the
 - **AC4** — `fem-workflow` (`requires: [fem]`) is absent from the index when
   `fem_available()` is monkeypatched false and `load_skill` refuses it with
   `skill_unavailable`; an unknown capability behaves the same.
-- **AC5** — `tests/test_bench_skills.py`: one scripted task run twice,
-  `--skills none` and `--skills snap-fits`; `bench report --baseline` prints
-  both scores and the delta line; `run.json` carries the selection,
-  `score.json` does not.
+- **AC5** — `tests/test_bench_skills.py`, and the acceptance file *runs* the
+  same scenario rather than describing it: one scripted task twice, `--skills
+  none` and `--skills snap-fits`, through the real CLI; `bench report
+  --baseline` prints both scores and the delta line and exits 1 on a
+  regression; `run.json` carries the selection, `score.json` does not.
 - **AC6** — `tests/test_skills_branching.py`: a project skill written on a
   branch is absent after switching back and present again on return
   (PRD-001 `branches`), and a merge carries it over.

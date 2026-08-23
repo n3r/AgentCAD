@@ -1,4 +1,4 @@
-# 0312 — PRD-029 slice 2: `list_skills`/`load_skill`, the chat seam with a budgeted loaded set, skill routes
+# 0323 — PRD-029 slice 2: `list_skills`/`load_skill`, the chat seam with a budgeted loaded set, skill routes
 
 - **Commit:** pending
 - **Date:** 2026-08-23

@@ -445,7 +445,7 @@ instead. Everything else in the app works normally.
 
 **With the key** (set in the environment before `make run` /
 `agentcad serve`) it becomes a full tool-using assistant with the same
-85-tool surface external agents get ([agent-api.md](agent-api.md)):
+106-tool surface external agents get ([agent-api.md](agent-api.md)):
 
 - The hint in the header reads `agent works on <project>` — each chat is
   scoped to the currently open project, with a separate in-memory history
@@ -462,6 +462,66 @@ instead. Everything else in the app works normally.
 Good first prompts: "make the nozzle wall 4 mm and tell me the new mass",
 "create a mounting bracket for a NEMA 17 motor", "run an interference check
 on the assembly".
+
+### Skills
+
+A **skill** is a markdown guide the agent loads on demand — the craft that
+does not fit in one prompt: snap-fit strain limits, enclosure wall tables per
+process, ISO 286 fits, the OCCT failure playbook. Sixteen ship with AgentCAD,
+and a project can add its own. Full reference: [skills.md](skills.md).
+
+**In chat.** When the agent loads one you see a chip in the dock —
+`📘 snap-fits · core` — naming the skill and where it came from, or
+`📎 snap-fits · snippets/lid.py` when it reads one file out of a skill rather
+than the guide. If the agent loads more than its context budget allows, the
+oldest chip gets struck through ("unloaded"): the guide was dropped to make
+room, and the agent will re-read it if it needs it again. The chips are there
+so you can see exactly what text entered the agent's context — and only this
+chat lane's: another agent's session on the same project has its own.
+
+**The Skills modal.** **Agent → Skills…** (also the toolbar button, or the
+`#skills` link) lists everything loadable in the open project:
+
+- a **provenance badge** per row: `core` (shipped with AgentCAD),
+  `project` (from this project's `skills/` directory), `overrides core` (a
+  project skill shadowing a shipped one of the same name), plus
+  `needs review`, `changed since trusted` and `invalid` states;
+- an **enable** toggle that hides a skill from every agent without deleting the
+  file;
+- click a row to **preview** the exact text an agent would get, with its
+  version, author, licence and its snippet/table files listed. **An
+  unreviewed skill previews too** — you cannot decide about text you are not
+  allowed to read — with a line above the body saying no agent can load it yet
+  and a **Trust this skill** button right there.
+
+**Trust — why a project skill starts greyed out.** A project skill is *agent
+instructions*, and it may have arrived with a `git clone`, a pull or a package.
+So AgentCAD will not let any **agent** read one until a human has: the modal
+shows a banner — *"This project provides agent instructions — review them
+before agents can load them"* — and each such row has **Review & trust**.
+
+The order is the point: **read it, then trust it.** You always get the full
+text of an unreviewed skill; the agent gets nothing — not even its own
+description, which is prose the skill's author wrote for a model to read.
+Approval is remembered **by content**, and by the content of the *whole*
+skill: edit the guide, or add or change one of its snippets, and the row goes
+back to "changed since trusted" and you approve it again. Only a person can
+grant this — no agent, local or remote, can approve its own instructions, and
+"a person" means a browser or signed-in session AgentCAD can name, not merely
+a request that left the agent header off. The approval is stored outside the
+project's version control, so it is never cloned or pushed anywhere.
+
+**Teaching the system your own.** Save a markdown file at
+`<project>/skills/<name>.md` (frontmatter with `name`, `description`,
+`version`; the body is ordinary markdown) and it appears in the modal on the
+next open — trust it once and every future agent session applies it. It is a
+file in your project, so it branches, merges and restores with everything
+else. For a scaffold and a checker:
+
+```bash
+.venv/bin/agentcad skill new frame-rules --project myproj
+.venv/bin/agentcad skill lint ~/AgentCAD/projects/myproj/skills
+```
 
 ## The v2 capabilities
 

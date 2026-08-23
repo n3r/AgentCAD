@@ -6,17 +6,43 @@
     POST  /api/projects/{proj}/skills/{name}/untrust       -> withdraw (human)
     PATCH /api/projects/{proj}/skills/{name}/enabled       -> hide/restore (human)
 
-Both reads go through ``registry.call`` rather than ``service.skills``
-directly, so a browser preview logs a ``skill_loaded`` exactly like chat and
-MCP do — one audit path, not three. The chat chip filters on the event's
-``client``, so a browser read renders no chip.
+**The reads are two paths, because they have two audiences.**
+
+A *human* client reads through :meth:`SkillLibrary.load` directly with
+``enforce_trust=False``: reviewing a skill is what trusting it is *for*, and a
+panel that refuses to show you the thing it is asking you to approve is a
+consent dialog with the text blanked out. That read makes no registry call and
+publishes no ``skill_loaded`` — a person reading a file is not an agent loading
+instructions, and logging it as one puts noise in the audit trail the chip and
+the transcript are built on. Everything else the library checks still
+applies: a disabled, invalid, capability-gated or unknown skill is refused
+exactly as it is for an agent.
+
+Any *other* client keeps going through ``registry.call("load_skill")``, so an
+agent's read is the tool's read — trust-enforced, audited, identical to MCP's.
+
+``GET /projects/{proj}/skills`` reads ``service.skills.index(proj)`` without
+redaction for the same reason: the panel is the human surface, and
+``list_skills`` (the agent's) is the one that hides an unreviewed skill's
+prose.
 
 The three writes are **not tools**. Granting trust is approving agent
-instructions, so it must be a human act (``actor_kind`` over the calling
-client id → 403 otherwise); a human-gated tool would sit in every agent's tool
-list answering "refused for you", which is noise, and the runtime — not the
-model — is where that permission belongs. Each publishes ``skills_changed`` so
-an open Skills modal refreshes, and returns the updated index entry.
+instructions, so it must be a human act; a human-gated tool would sit in every
+agent's tool list answering "refused for you", which is noise, and the
+runtime — not the model — is where that permission belongs. Each publishes
+``skills_changed`` so an open Skills modal refreshes, and returns the updated
+index entry.
+
+**A human is an EXPLICIT principal** (:func:`_is_human`), not merely something
+``actor_kind`` calls human. ``server/app.py`` turns a request with no
+``X-Agent-Id`` header into the bare client id ``"browser"``, and
+``proposals.actor_kind("browser")`` is ``"human"`` — so before this rule an
+agent could approve its own instructions by *dropping a header*. The gate now
+demands ``browser:<id>`` (what ``frontend/js/api.js`` mints and stores) or
+``user:<id>`` (a hosted principal, including the composed
+``user:x/browser:y``); ``browser``, ``chat``, ``chat:<s>``, ``mcp``,
+``agent:*`` and ``local`` are all refused. The gate runs *before* the name
+check, so a non-human learns nothing about which skills exist.
 
 The ``{name}`` segment is checked against ``NAME_RE`` *before* it reaches the
 library: a skill name is a slug, and the library resolves names to paths.
@@ -46,13 +72,45 @@ def _skill_name(name: str) -> str:
     return name
 
 
+#: The two explicit principals a person can arrive as: the browser's minted
+#: `browser:<8 hex>` and hosted mode's `user:<name>` (bare or composed with a
+#: browser id). The bare `browser` fallback deliberately does NOT match.
+_PRINCIPAL_PREFIXES = ("browser:", "user:")
+
+
+def _is_human(client: str | None = None) -> bool:
+    """Is the calling client a person we can *name*?
+
+    Two conditions, and both are load-bearing: ``actor_kind`` is the house
+    definition of "human" (and the only place PRD-005a's hosted principals are
+    classified), and the explicit-principal test is what stops the header-less
+    fallback id from inheriting that classification.
+
+    **In local mode this is a consent gate, not a security boundary.** The
+    server takes ``X-Agent-Id`` unvalidated, so any local process can send
+    ``browser:deadbeef`` and approve a skill; the gate raises the bar from
+    "omit a header" to "impersonate the browser on purpose", which is the
+    same bar every other local-mode human act has (and a local part script
+    already runs as the server user — see the hosted-core trap). In hosted
+    mode the principal is the authenticated session's, which is the boundary.
+    """
+    cid = locks.current_client_id() if client is None else client
+    cid = cid or ""
+    if actor_kind(cid) != "human":
+        return False
+    return any(cid.startswith(p) and cid[len(p):].strip()
+               for p in _PRINCIPAL_PREFIXES)
+
+
 def _require_human(action: str) -> None:
     client = locks.current_client_id()
-    if actor_kind(client) != "human":
+    if not _is_human(client):
         raise AuthzError(
             f"only a human can {action}: a skill is agent instructions, so no "
             f"agent surface may approve one",
-            {"client": client, "hint": "do this from the Skills panel"},
+            {"client": client, "hint": "do this from the Skills panel; an "
+                                       "agent id, or a request with no "
+                                       "X-Agent-Id header, is not a person"},
         )
 
 
@@ -61,15 +119,24 @@ def build_router(service, registry) -> APIRouter:
 
     @router.get("/projects/{proj}/skills")
     def list_skills(proj: str):
-        listing = _result(registry.call("list_skills", {"project": proj}))
-        # Read after the tool call: an unknown project must 404 from the
-        # registry, not read as an empty trust document.
-        return {"skills": listing["skills"], "hidden": listing["hidden"],
+        # `path_of` first, and it is the 404: the library reads an absent
+        # `skills/` directory as an empty layer, so without this a typo'd
+        # project would answer with the core list and an empty trust document.
+        service.store.path_of(proj)
+        return {"skills": service.skills.index(proj),
+                "hidden": service.skills.hidden(proj),
                 "trust": service.skills.trust_state(proj)}
 
     @router.get("/projects/{proj}/skills/{name}")
     def get_skill(proj: str, name: str, asset: str | None = None):
-        args = {"project": proj, "name": _skill_name(name)}
+        skill = _skill_name(name)
+        if _is_human():
+            # The review read. Not the tool: no trust check, no audit event,
+            # no chat-engine bookkeeping — a person is reading, not loading.
+            service.store.path_of(proj)
+            return service.skills.load(skill, proj, asset,
+                                       enforce_trust=False)
+        args = {"project": proj, "name": skill}
         if asset is not None:
             args["asset"] = asset
         return _result(registry.call("load_skill", args))
