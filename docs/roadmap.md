@@ -105,11 +105,14 @@ format's proving ground.
 | 5 | **[006](prd/completed/PRD-006-sandboxing-quotas.md)** — **DONE (PR #22)** | Sandboxing becomes *blocking* only when third-party code runs on our servers — which is 031b, not 031a. It was built in parallel with steps 3 and 4 (PR #22), because 005a shipped with "an account is a shell" as its stated price and that price was cheaper to remove than to keep explaining. Windows AppContainer (006b) landed in PR #24 — all three OSes confine. |
 | 6 | **031b** | Open publishing, verified tiers, moderation, economy. |
 
-Demoted behind that chain: **017** (daily-driver depth —
-they buy credibility but do not compound); **013 (PR #23), 014 (PR #25), 015
-(PR #28) and 028 (PR #27) are now DONE** — the first of that depth tier to ship, ahead
-of the rest. **026 and 027 are now DONE** (PRs #29 and #34) — the shell and the navigation were built early because:
-if we are inviting an audience, the shell is the shop window.
+Demoted behind that chain: the daily-driver depth tier (it buys credibility
+but does not compound) — and it has now largely shipped anyway: **013
+(PR #23), 014 (PR #25), 015 (PR #28), 028 (PR #27) and 017 (PR #31) are
+DONE**. **026 and 027 are now DONE** (PRs #29 and #34) — the shell and the
+navigation were built early because:
+if we are inviting an audience, the shell is the shop window. **029 (agent
+skills) is DONE** (PR #33) — the agent-leverage bet, built as soon as the
+bench could measure it.
 
 Success metric for the catalog is **usefulness, not contributors**. We will
 not out-community GrabCAD's 7M engineers; we can plausibly out-*availability*
