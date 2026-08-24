@@ -394,8 +394,16 @@ def test_open_project_is_refused_while_a_tenant_is_set(tenanted, tmp_path):
 def test_every_registered_tool_is_classified(tenanted):
     """The read-only set is curated, so it must not rot in either direction."""
     names = {t.name for t in tenanted.registry.list()}
-    stale = (tenancy_wiring.READ_ONLY_TOOLS | tenancy_wiring.COMMENT_TOOLS
-             | tenancy_wiring.TENANT_FORBIDDEN) - names
+    # A tool gated behind an optional extra registers only when the extra is
+    # installed — CI's PR leg has no `[fem]`, so the FEM analyses are absent
+    # there. A curated `view` floor for one is not "stale" just because the
+    # extra is not installed this run (the FEM-gating precedent, test_analysis).
+    from agentcad.kernel.handlers.fem import fem_available
+    optional = set() if fem_available() else {
+        "fem_static", "fem_modal", "fem_thermal"}
+    classified = (tenancy_wiring.READ_ONLY_TOOLS | tenancy_wiring.COMMENT_TOOLS
+                  | tenancy_wiring.TENANT_FORBIDDEN)
+    stale = classified - names - optional
     assert stale == set(), f"classified tools that no longer exist: {stale}"
     assert not (tenancy_wiring.READ_ONLY_TOOLS
                 & tenancy_wiring.COMMENT_TOOLS)

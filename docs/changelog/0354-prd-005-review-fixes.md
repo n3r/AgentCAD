@@ -104,3 +104,5 @@ tools, OIDC/passkey forgery, audit SQL-injection and cross-org reads,
 fair-scheduling accounting, local-mode no-op. The `0346` changelog's
 passkey count (cited 24, was 23) is superseded — the suite is now 27.
 `make test` (functional half of the wave) — 7077 passed, 51 skipped (test_server isolation-clean; only the pre-existing prd028 AC6 FEM timeout otherwise). RCE + history regression suites — 227 passed. A final full-suite run on the complete wave is cited in the merge close-out.
+
+CI follow-up: `test_every_registered_tool_is_classified` flagged the FEM analyses as stale floor-map entries on the macOS PR leg, which runs without `[fem]` (they register only when the extra is installed) — the staleness check now subtracts the extra-gated tools when `fem_available()` is false (the test_analysis gating precedent).
