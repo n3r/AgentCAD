@@ -1,4 +1,4 @@
-# 0342 — PRD-005 multi-tenant cloud: design spec + slice plan; PRD moved to in-progress
+# 0343 — PRD-005 multi-tenant cloud: design spec + slice plan; PRD moved to in-progress
 
 - **Commit:** pending
 - **Date:** 2026-08-24

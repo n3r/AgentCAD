@@ -1,4 +1,4 @@
-# 0343 — PRD-005 slice 1: tenancy model + authz core
+# 0344 — PRD-005 slice 1: tenancy model + authz core
 
 - **Commit:** pending
 - **Date:** 2026-08-24

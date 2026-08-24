@@ -1,4 +1,4 @@
-# 0352 — PRD-005 slice 10: acceptance tests, final wirings, docs
+# 0353 — PRD-005 slice 10: acceptance tests, final wirings, docs
 
 - **Commit:** pending
 - **Date:** 2026-08-24

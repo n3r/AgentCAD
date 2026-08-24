@@ -1,4 +1,4 @@
-# 0344 — PRD-005 slice 2: git sync, server half
+# 0345 — PRD-005 slice 2: git sync, server half
 
 - **Commit:** pending
 - **Date:** 2026-08-24

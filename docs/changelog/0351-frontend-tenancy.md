@@ -1,4 +1,4 @@
-# 0350 — PRD-005 slice 8: frontend — workspace switcher, members/tokens panels, role affordances
+# 0351 — PRD-005 slice 8: frontend — workspace switcher, members/tokens panels, role affordances
 
 - **Commit:** pending
 - **Date:** 2026-08-24

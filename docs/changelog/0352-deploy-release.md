@@ -1,4 +1,4 @@
-# 0351 — PRD-005 slice 9: deploy-smoke tenancy flow + secrets-gated release pipeline
+# 0352 — PRD-005 slice 9: deploy-smoke tenancy flow + secrets-gated release pipeline
 
 - **Commit:** pending
 - **Date:** 2026-08-24

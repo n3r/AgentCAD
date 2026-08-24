@@ -1,4 +1,4 @@
-# 0347 — PRD-005 slice 6: the sync CLI, credential helper and remote MCP
+# 0348 — PRD-005 slice 6: the sync CLI, credential helper and remote MCP
 
 - **Commit:** pending
 - **Date:** 2026-08-24

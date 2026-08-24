@@ -1,4 +1,4 @@
-# 0345 — PRD-005 slice 3: OIDC sign-in and WebAuthn passkeys (FR1)
+# 0346 — PRD-005 slice 3: OIDC sign-in and WebAuthn passkeys (FR1)
 
 - **Commit:** pending
 - **Date:** 2026-08-24

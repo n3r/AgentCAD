@@ -1,4 +1,4 @@
-# 0346 — PRD-005 slice 4: tenant resolver, RBAC enforcement, qualified keys
+# 0347 — PRD-005 slice 4: tenant resolver, RBAC enforcement, qualified keys
 
 - **Commit:** pending
 - **Date:** 2026-08-24
@@ -127,9 +127,9 @@ tests/test_hosted_hardening.py tests/test_security_guard.py
 tests/test_prd005a_acceptance.py tests/test_service.py tests/test_presence.py
 tests/test_locks.py tests/test_claims.py tests/test_project.py` — **431
 passed, 1 failed**: `test_ac9_the_full_suite_count_is_cited`, which reads
-the *newest* changelog entry and found slice 6's `0347` (written minutes
+the *newest* changelog entry and found slice 6's `0348` (written minutes
 earlier by a concurrent subagent, count not yet filled in). Not this
-slice's, and green with `0346` newest. Regression sweeps: server/project/
+slice's, and green with `0347` newest. Regression sweeps: server/project/
 branches/claims/disk_budget/route_prefix/prd004/prd008/cli_admin/mcp — 235
 passed with one failure in `tests/test_audit.py` (slice 5's in-flight,
 untracked file: `OperationalError('database is locked')`); history/search/
@@ -139,4 +139,4 @@ passed. The controller runs the full suite for the count.
 `make test` — 6982 passed, 51 skipped recorded (13:12); one real 5-test regression in that run (tenancy_wiring.install on cmd_serve's stub services — AttributeError) was fixed before commit (guard honoring the docstring's 'safe on a service with no tenancy'; 183 passed re-verified incl. the integration suite); the rest were the documented flake families (share_publish/sketch_drag green in isolation) and the pre-existing prd028 AC6 local solver timeout (skips on CI).
 
 
-Note: this slice's two cmd_serve wiring lines in `cli.py` ride the 0347 commit (three slices shared that file this wave). 
+Note: this slice's two cmd_serve wiring lines in `cli.py` ride the 0348 commit (three slices shared that file this wave). 

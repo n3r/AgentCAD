@@ -1,4 +1,4 @@
-# 0349 — PRD-005 slice 7: per-tenant fair kernel scheduling
+# 0350 — PRD-005 slice 7: per-tenant fair kernel scheduling
 
 - **Commit:** pending
 - **Date:** 2026-08-24

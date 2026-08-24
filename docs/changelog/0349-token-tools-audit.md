@@ -1,4 +1,4 @@
-# 0348 — PRD-005 slice 5: scoped agent tokens as tools + the audit log
+# 0349 — PRD-005 slice 5: scoped agent tokens as tools + the audit log
 
 - **Commit:** pending
 - **Date:** 2026-08-24
