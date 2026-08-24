@@ -1092,6 +1092,10 @@ def _dispatch_admin(args) -> None:
               f"its next use")
         return
 
+    if getattr(args, "admin_command", "") == "org":
+        _admin_org(args)
+        return
+
     if action == "audit:query":
         _admin_audit_query(args)
         return
@@ -1107,6 +1111,80 @@ def _dispatch_admin(args) -> None:
         print(_enrol_url(token))
         print()
         print(_TRUST_NOTE)
+        return
+
+    raise SystemExit(2)
+
+
+# --------------------------------------------------------- orgs (PRD-005 FR5)
+
+def _tenancy_store():
+    """The orgs document, with **no service and no kernel** — `_auth_store`'s
+    property, for `_auth_store`'s reason.
+
+    Rooted on `<state>/auth`, the SAME directory `AuthStore` uses and not a
+    sibling of it: `orgs.json` joins the identity documents so that it shares
+    their `fcntl.flock` registry rather than deadlocking against it
+    (`SecurityConfig.tenancy` composes exactly this path from `store.root`).
+    Passing `<state>` here instead would write a second, unread document.
+    """
+    from .core.appmode import ensure_state_dir
+    from .core.tenancy import TenancyStore
+
+    return TenancyStore(ensure_state_dir() / "auth")
+
+
+def _admin_org(args) -> None:
+    """`agentcad admin org add|workspace add|member add` — the bootstrap.
+
+    An org, a workspace inside it and a member of it are the three writes that
+    turn a PRD-005a instance into a tenanted one, and until this existed the
+    only way to make them was a `python -c` one-liner over `docker compose
+    exec` (which is precisely what `.github/workflows/deploy-smoke.yml` did,
+    and says it did). They belong to the CLI for the same reason `user add`
+    does: the person doing it has shell access and no session, the server may
+    not be running, and the state files are the authority.
+
+    **This creates no directory under `<projects_dir>`.** A workspace is an
+    entry in a document; the storage root beneath it is made by the first
+    write a member makes inside it (`tenancy_wiring`'s root resolver), which
+    is why `admin org` needs neither a projects dir nor a service.
+    """
+    from .core.tenancy import ROLES
+
+    action = getattr(args, "admin_action", "")
+    sub = getattr(args, "admin_org_action", "")
+    tenants = _tenancy_store()
+
+    if action == "add":
+        tenants.create_org(args.org, label=args.label, admin=args.admin)
+        made = f"created org {args.org!r}"
+        if args.admin:
+            print(f"{made} with {args.admin!r} as its admin")
+        else:
+            # An org with no admin can be administered by nobody until a
+            # member is added, so the omission is worth a word rather than a
+            # silent success.
+            print(f"{made} (no admin yet — "
+                  f"`agentcad admin org member add {args.org} <handle> "
+                  f"--role admin`)")
+        print(f"next: agentcad admin org workspace add {args.org} <workspace>")
+        return
+
+    if action == "workspace" and sub == "add":
+        tenants.create_workspace(args.org, args.workspace, label=args.label)
+        print(f"created workspace {args.org}/{args.workspace}")
+        print(f"members of {args.org!r} address it with "
+              f"`X-Agentcad-Workspace: {args.org}/{args.workspace}` (or with "
+              f"nothing at all, if it is their only one)")
+        return
+
+    if action == "member" and sub == "add":
+        tenants.add_member(args.org, args.handle, args.role)
+        print(f"added {args.handle!r} to {args.org!r} as {args.role}")
+        print(f"that is their DEFAULT role on every project in the org "
+              f"({' < '.join(ROLES)}); a per-project grant overrides it "
+              f"(`grant_role`), and an org admin outranks any override.")
         return
 
     raise SystemExit(2)
@@ -2209,7 +2287,7 @@ def main() -> None:
                     "works over `docker compose exec` with no running server "
                     "and starts no kernel. " + _trust_sentence_capitalized() + ".")
     admin_sub = p.add_subparsers(dest="admin_command",
-                                 metavar="{user,token,enrol,audit}")
+                                 metavar="{user,token,enrol,org,audit}")
 
     user_p = admin_sub.add_parser(
         "user", help="create, list and disable accounts",
@@ -2271,6 +2349,57 @@ def main() -> None:
                     "password. Any earlier outstanding link for the handle "
                     "stops working.")
     a.add_argument("handle")
+
+    org_p = admin_sub.add_parser(
+        "org", help="create orgs and workspaces, and add members (PRD-005 FR5)",
+        description="Tenancy is orgs -> workspaces -> projects. These three "
+                    "writes are the bootstrap of a hosted instance: an org, a "
+                    "workspace inside it, and the people who belong to it. "
+                    "They touch the state files only — no project directory "
+                    "is created, no service and no kernel starts — so this "
+                    "works over `docker compose exec` before anyone signs in. "
+                    "Per-project roles are granted from the running instance "
+                    "(the `grant_role` tool), not from here.")
+    org_sub = org_p.add_subparsers(dest="admin_action",
+                                   metavar="{add,workspace,member}")
+
+    a = org_sub.add_parser(
+        "add", help="create an org, optionally with its first admin",
+        description="`--admin` is part of the SAME atomic write: an org "
+                    "created empty and given a member afterwards is, in "
+                    "between, an org nobody can administer — which is exactly "
+                    "the state an interrupted bootstrap leaves behind.")
+    a.add_argument("org", help="[a-z][a-z0-9_]{0,39}")
+    a.add_argument("--label", default=None, metavar="TEXT",
+                   help="display name (default: the org name)")
+    a.add_argument("--admin", default=None, metavar="HANDLE",
+                   help="an existing account's handle, made org admin")
+
+    ws_p = org_sub.add_parser(
+        "workspace", help="manage the workspaces inside an org")
+    ws_sub = ws_p.add_subparsers(dest="admin_org_action", metavar="{add}")
+    a = ws_sub.add_parser("add", help="create a workspace inside an org")
+    a.add_argument("org")
+    a.add_argument("workspace", help="[a-z][a-z0-9_]{0,39}")
+    a.add_argument("--label", default=None, metavar="TEXT")
+
+    member_p = org_sub.add_parser(
+        "member", help="manage who belongs to an org")
+    member_sub = member_p.add_subparsers(dest="admin_org_action",
+                                         metavar="{add}")
+    a = member_sub.add_parser(
+        "add", help="add a person to an org with a default role",
+        description="The role is the member's DEFAULT on every project in the "
+                    "org; a per-project grant overrides it in either "
+                    "direction, and an org admin outranks any override. A "
+                    "token is never an org member — it reaches a project "
+                    "through its own scope plus an explicit grant.")
+    a.add_argument("org")
+    a.add_argument("handle", help="an account handle, or 'user:<handle>'")
+    a.add_argument("--role", default="view",
+                   choices=["view", "comment", "edit", "admin"],
+                   help="default role in the org (weakest first; "
+                        "default: view)")
 
     audit_p = admin_sub.add_parser(
         "audit", help="query and back up the audit log (PRD-005 FR12)",

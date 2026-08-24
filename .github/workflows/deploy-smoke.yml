@@ -159,24 +159,18 @@ jobs:
             -d '{"password":"anya test password"}' "$(cat enrol2.txt)"
           echo
 
-          # There is no CLI or tool that mints an org yet (`create_org`'s
-          # only caller today is `core/tools_cloud.py`, unwrapped) — this
-          # exec mirrors exactly what that pack does
-          # (`tenancy.TenancyStore(store.root)`), the same "read the state
-          # files directly, no service, no kernel, no port" contract
-          # `agentcad admin` already relies on. `create_org(..., admin=)`
-          # is one atomic write so the org is never briefly adminless.
-          docker compose exec -T agentcad python3 -c "
-          from agentcad.core.appmode import ensure_state_dir
-          from agentcad.core.authstore import AuthStore
-          from agentcad.core import tenancy
-          store = AuthStore(ensure_state_dir() / 'auth')
-          tenants = tenancy.TenancyStore(store.root)
-          tenants.create_org('acme', label='Acme Robotics', admin='smoke')
-          tenants.create_workspace('acme', 'main', label='Mechanical')
-          tenants.add_member('acme', 'anya', 'view')
-          print('acme/main ready: smoke=admin anya=view')
-          "
+          # The org bootstrap is `agentcad admin org`, the same "read the
+          # state files directly, no service, no kernel, no port" contract
+          # `agentcad admin user` already relies on — so this step is the
+          # documented operator path rather than a script that mirrors it.
+          # `org add --admin` is ONE atomic write, so the org is never
+          # briefly adminless.
+          docker compose exec -T agentcad \
+            agentcad admin org add acme --label 'Acme Robotics' --admin smoke
+          docker compose exec -T agentcad \
+            agentcad admin org workspace add acme main --label Mechanical
+          docker compose exec -T agentcad \
+            agentcad admin org member add acme anya --role view
 
       - name: Two projects, and view -> 403 -> grant edit -> 200 (AC2 deployed half)
         run: |
@@ -309,15 +303,15 @@ jobs:
 
       - name: An audit query distinguishes principals (AC6 deployed half)
         run: |
-          # Honest scope: the general "every mutating tool writes a row" tap
-          # (`audit.tap_registry`) is built and unit-tested but not yet
-          # installed anywhere the server runs — see docs/deployment.md,
-          # "Audit". So this step queries what IS wired today: `_instance`
-          # (auth events — sign-ins here) and `acme` (the tenancy-tool taps
-          # `create_agent_token`/`grant_role`/`revoke_agent_token` performed
-          # above). The full human/chat-agent/MCP-agent three-way distinction
-          # on one project (AC6's complete claim) is `tests/test_audit.py`'s
-          # job, not this workflow's.
+          # Scope: `audit.tap_registry` is wired into the serve path since
+          # slice 10 (`core/tenancy_wiring.py`), so every mutating tool call
+          # above — not just the tenancy tools' own taps — has a row in
+          # `acme`. What this step asserts is still the deployed half: the
+          # principals are distinguishable in a real instance's log.
+          # `_instance` holds the auth events (the sign-ins here). The full
+          # human/chat-agent/MCP-agent three-way distinction on one project
+          # (AC6's complete claim) is graded in
+          # `tests/test_prd005_acceptance.py`, not by this workflow.
           docker compose exec -T agentcad \
             agentcad admin audit query acme --json > audit_acme.json
           docker compose exec -T agentcad \

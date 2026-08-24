@@ -109,6 +109,26 @@ Raw HTTP works too: `GET /api/tools` lists the registry;
 - `AuthError` deliberately says nothing about *why*. "No such handle", "wrong
   password", "never enrolled", "disabled" and "expired session" are one
   answer, because the differences are a user-enumeration oracle.
+- **Multi-tenant cloud (PRD-005) adds two more**, on the same
+  class-name-derivation as `AuthzError`/`ratelimited_error` above (zero core
+  edits — the wire type is `type(exc).__name__` minus `Error`, lower-cased,
+  plus `_error`) but with their own class names, so the split is different
+  from the `AuthzError`/`authz_error` pair: **`permission_error`** — HTTP
+  body spells the class name `"PermissionError"` (403, inherited from
+  `AuthzError`), the tool surface `permission_error`; `details` names
+  `{required, project, principal_role}` (the rung needed, the project it is
+  needed on, the rung actually held — `null` for no role at all). Raised by
+  the read floor, the tool-registry floor and the write guard alike — one
+  decision function (`core/authz.require`), three choke points. And
+  **`kernelbusy_error`** — HTTP body `"KernelBusyError"` (429, inherited from
+  `RateLimitedError`), the tool surface `kernelbusy_error` (one word, the
+  house spelling — never `kernel_busy_error`); `details` carries `tenant,
+  in_flight, queued, limit, queue_depth, kernel_pool_size, retry_after_s`
+  (plus `waited_s` when the refusal came from the wait ceiling rather than
+  the queue-depth bound). Raised by the per-tenant kernel fair-scheduling
+  gate ([below](#multi-tenant-cloud--orgs-workspaces-roles-and-tokens-prd-005))
+  when no slot is free for the caller's workspace; it clears as soon as one
+  of that tenant's own in-flight requests finishes.
 - A review thread's anchor resolves into **four** statuses, and they are not
   interchangeable: `ok` (it still points at what it pointed at), `moved`
   (re-matched at a **new** address, which the block carries), `orphaned` (the
@@ -1091,8 +1111,12 @@ snapshot and no rebuild. Each mention adds `notification {to, project, thread,
 comment, from, ts}`, published straight after it. **The bus is a broadcast**:
 every `/ws` client receives every `notification` and filters on `to` itself.
 That is honest for a single-user, 127.0.0.1-only server with no authentication
-— it discloses nothing a `GET` on the same box would not — and per-principal
-delivery arrives with real identity (PRD-005), with no payload change.
+— it discloses nothing a `GET` on the same box would not. **PRD-005 narrows
+the broadcast to a tenant, not to a person**: on a hosted instance with orgs,
+a subscriber only receives an event carrying no tenant or exactly its own
+(see [Multi-tenant cloud](#multi-tenant-cloud--orgs-workspaces-roles-and-tokens-prd-005)) —
+still every client in your org/workspace, filtering on `to` itself as before,
+with no payload change.
 
 ### Presence and per-part claims
 
@@ -1695,7 +1719,7 @@ local server the tool does not exist.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `whoami` | — | `{principal, kind, role, mode}`. `principal` is the **composed** identity (`agent:ci`, or `user:nikita/browser:7f3a1b2c`) — the same string claims, the roster and history trailers carry, not a bare handle. `kind` is `agent` or `user`; `role` is `admin` or `member`; `mode` is `hosted`. |
+| `whoami` | — | `{principal, kind, role, mode}` on a plain 005a instance — see below for what an org adds. `principal` is the **composed** identity (`agent:ci`, or `user:nikita/browser:7f3a1b2c`) — the same string claims, the roster and history trailers carry, not a bare handle. `kind` is `agent` or `user`; `role` is `admin` or `member`; `mode` is `hosted`. |
 
 **Connecting an MCP client to a hosted instance.** Set `AGENTCAD_URL` to the
 public origin and `AGENTCAD_TOKEN` to a bearer minted with
@@ -1705,14 +1729,122 @@ the proxy **refuses to auto-spawn a local server** and says so on stderr —
 silently starting an empty local instance because the remote one is
 unreachable would be a confusing lie. Clearing the token turns the same calls
 into `401`. The decision is made on the parsed **host**, so
-`http://127.0.0.1.evil.example` is remote.
+`http://127.0.0.1.evil.example` is remote. `agentcad login <url>` (see
+[Working offline](user-guide.md#working-offline-git-sync-with-a-hosted-instance))
+is the equivalent for the git-sync and `mcp --remote` CLI path.
 
 Bearer requests are exempt from the browser `Origin` rule (a browser cannot
 attach a bearer cross-site), a token carries the role it was minted with, and
-`admin token revoke` takes effect on the **next** call. An `admin`-role token
-still cannot manage users or mint another token: those routes require a
-signed-in person, because a credential minting a credential is the escalation
-shape to avoid while there is no audit log.
+`admin token revoke` takes effect on the **next** call. An `admin`-role
+**instance** token still cannot manage users or mint another token: those
+routes require a signed-in person — `create_agent_token` below is a *scoped*
+promotion of that rule (see "not a person" there for why it stays true).
+
+### Multi-tenant cloud — orgs, workspaces, roles and tokens (PRD-005)
+
+An instance may host several **organizations**, each with **workspaces**,
+each with **projects** — `<org>/<workspace>/<project>`, never spliced into a
+project id (`{proj}` stays one path segment everywhere; the tenant rides
+request context, not the name). Every tool and route below is reachable only
+when the instance actually has an org: with none, `whoami` and every route
+behave exactly as 005a specified (FR4/AC7 — this is not a special case coded
+around, it is what every wrapper's "no tenant" branch already does).
+
+**Which workspace a call is in.** A request's tenant is resolved once, in
+this precedence: a bearer token's own **scope** (below) > the
+**`X-Agentcad-Workspace: org/ws`** header (also honored on `POST/GET`
+tool calls and, for `/ws`, as `?workspace=org/ws` — a browser cannot set a
+header on a WebSocket) > the signed-in session's active workspace (the
+switcher) > the caller's own membership, when it names exactly one
+`org/workspace` pair. A selection the caller holds no role in at all answers
+a **name-free 404** (`"no such workspace"`) — the same answer whether the org
+doesn't exist, the workspace doesn't, or the caller simply has nothing there,
+because a 403 would itself confirm the org exists. A malformed header is a
+plain **400**. Set the header on every call once you know your org/workspace;
+omit it on a single-org, single-workspace instance and the sole-membership
+rule resolves it for you.
+
+**`whoami`, extended.** With at least one org on the instance, the payload
+above grows: `{..., org, workspace, orgs, roles, scope}` — `org`/`workspace`
+the resolved tenant (`null`/`null` if none resolved); `orgs` every org you
+belong to; `roles` is `{project: role}` for every project you can reach in
+the resolved workspace (so a client can render affordances without a
+round trip per project); `scope` is a bearer token's own `{org, projects,
+role}` (`null` for a person, or a legacy unscoped token).
+
+**Roles.** `view < comment < edit < admin`, a total order: `view` reads,
+`comment` opens/reviews threads and proposals, `edit` changes geometry,
+`admin` changes who may do the above. An org member has a **default** role
+across every project in the org; a **per-project override** may raise or
+lower it in either direction (an org admin cannot be held down by one — org
+admin is a floor, not a demotable rung). An **agent token has no org
+default** — it reaches a project only through an explicit grant in its own
+scope, which is why `create_agent_token`/`grant_role` below are person-only:
+`role_of` can only answer `admin` for a signed-in handle.
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `create_agent_token` | **name, org, projects, role**, workspace, ttl_days | Mints a bearer scoped to `{org, projects, role}` and writes the matching per-project grants for `agent:<name>` — revoking the token later drops them. `projects` is a list of project ids (or `<workspace>/<project>` to span workspaces under one `workspace` default). The **secret is returned once**: `{id, name, principal, role, scope, expires, token, note, granted}`. Requires org **admin**, which only a signed-in person can hold — a token cannot mint a token. Refuses a second *live* token sharing one `name` (both would compose to the same `agent:<name>` principal and their reach would silently union). |
+| `revoke_agent_token` | **token_id** | `{id, revoked: true, grants_revoked: […], note}`. Drops the per-project grants the token was minted with, unless another live token shares its name. Takes effect on the token's **next** request (the same mtime-cached revocation 005a already ships). An **unscoped** (instance-wide) token refuses here with a pointer to `agentcad admin token revoke`/`DELETE /api/auth/tokens/{id}` — there is no org admin who owns it. |
+| `grant_role` | **project, principal, role**, org, workspace | `{org, workspace, project, principal, role}`. Sets (replacing any existing) per-project override for `principal` (`user:<handle>`, `agent:<name>`, or a bare handle read as a person). Requires **admin** on the project. |
+| `revoke_role` | **project, principal**, org, workspace | `{org, workspace, project, principal, revoked: true, note}`. Drops the per-project override; the principal falls back to their org default (a real role for a member, not "no access"). Requires **admin** on the project. |
+| `list_members` | **org**, workspace | `{org, workspace, members: [{handle, role}], workspaces: […]}`, plus `tokens` (never a secret) when the caller holds org **admin**. Requires **view** in the org. |
+| `sync_status` | **project**, org, workspace | `{project, org, workspace, remote, ahead, behind, note}`. **Stub**: `remote` is always `null` today; `note` says so. Use the CLI's `agentcad status --fetch` (see [Working offline](user-guide.md#working-offline-git-sync-with-a-hosted-instance)) for the real ahead/behind comparison until this fills in. Requires **view**. |
+
+`org`/`workspace` arguments are **never an override** of the request's
+already-resolved tenant — naming a different one is a refusal
+(`permission_error`), not a way to act somewhere else by typing its name.
+They exist for a caller whose request carries no tenant at all (no header,
+no session, ambiguous membership) to say which org/workspace they mean.
+
+**Tool floors — the ladder, and closed by default.** Every tool's floor is
+one of `view`/`comment`/`edit`/`admin`; a tool with no explicit floor takes
+**`edit`** — a new tool added tomorrow is refused to a viewer until someone
+decides otherwise, never reachable until someone notices it shouldn't be.
+`view`: every tool that reads, measures, renders or exports without changing
+authored state (`list_projects`, `get_part`, `analyze_part`, `render_view`,
+`export_part`, `get_bom`, `list_releases`, `run_checks`, `list_members`,
+`sync_status`, `share_list`, …). `comment`: the review surface —
+`add_comment`, `resolve_thread`, `reopen_thread`, `proposal_create`,
+`proposal_update`, `proposal_review`, `proposal_packet` (**not**
+`proposal_merge`, which changes the target branch's geometry and is `edit`).
+`admin`: `grant_role`, `revoke_role`, `create_agent_token`,
+`revoke_agent_token`. No floor at all: `whoami` — refusing it to a principal
+who holds nothing would be a riddle with the answer inside it. **One tool is
+refused outright under any tenant, at any role: `open_project`.** It
+registers an absolute filesystem path in a process-global map with no
+tenant in it, so it would otherwise let one org's admin publish a directory
+into every other org's namespace (or outside the projects tree entirely).
+Use `import_cad_file`, or a package. This floor applies identically over
+HTTP, the chat engine and MCP — all three dispatch through the same tool
+registry, so there is exactly one place this is decided.
+
+**The `/git` smart-HTTP surface.** Every project's `.history` repo is
+reachable for `clone`/`fetch`/`push` at
+`https://<host>/git/<org>/<workspace>/<project>.git` — three endpoints only
+(`GET info/refs`, `POST git-upload-pack`, `POST git-receive-pack`; nothing
+else under the repo, including its own config and hooks, is addressable).
+Authenticate with **HTTP Basic**, any username, the bearer token as the
+password (`agentcad login <url>` configures this for you via the git
+credential helper — never put the token in the URL). `view` is required for
+a clone/fetch, `edit` for a push. A push that violates FR9 (force-pushes a
+branch, rewrites or deletes a tag, or deletes any ref) is refused **inside**
+git's own transaction with a `remote: agentcad: …` message explaining why
+(see [Working offline](user-guide.md#working-offline-git-sync-with-a-hosted-instance)
+for the exact wording); everything
+else the CLI's `agentcad clone|push|pull|status` wraps is documented in
+`docs/user-guide.md`, not here — this surface is git speaking git, not a
+tool.
+
+**Events gain tenant scoping.** Every event on `/ws` now carries a `tenant`
+field (`"org/ws"`, or absent for local mode / anything published outside a
+request). A subscriber only ever receives an event that carries **no**
+tenant or **exactly its own** — bound once, at subscribe time (a WebSocket
+has no per-message request to re-read a tenant from). On an untenanted
+instance this is invisible: nothing stamps a tenant, so the old
+"every client sees every event" behavior is unchanged. See
+[Workbench shell](#workbench-shell--ui_open-and-ux-events-prd-026) below for
+what this means for `ui_open`, which used to be a true broadcast.
 
 ### Share links and the customizer (PRD-007)
 
@@ -1750,10 +1882,13 @@ Put a view in front of the human instead of describing where to click.
 
 Three things to read it correctly:
 
-- **It is a broadcast, not a message.** The bus has no per-client routing
-  (every `/ws` client receives every event), so `ui_open` reaches *every*
-  connected browser and the shell shows "opened by agent" attribution. There
-  is no way to address one person; that is PRD-025/005 scope, not this.
+- **It is a broadcast, not a message** — within one tenant. The bus still has
+  no per-client routing (every `/ws` client in the *same* org/workspace
+  receives every event — PRD-005 filters by tenant, not by person), so
+  `ui_open` reaches every connected browser in your workspace and the shell
+  shows "opened by agent" attribution. There is no way to address one
+  person; that is PRD-025 scope, not this. On an untenanted instance nothing
+  has changed: it still reaches every connected browser, full stop.
 - **`delivered_to` is capability-honest.** It is the number of subscribers the
   publish actually reached. `0` is a success *and* a warning — the note reads
   `no browser is connected; nothing will open`, otherwise `published to N

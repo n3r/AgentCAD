@@ -30,7 +30,11 @@ What gets installed (design spec §2 and §3):
    once already).
 4. **``ToolRegistry.call``** — the floor for the tool surface, which is the
    HTTP tool route, the chat engine and MCP at once, because all three call
-   the same registry object.
+   the same registry object; and, outside the floor, ``audit.tap_registry``,
+   so every mutating call by any of those three lands one row in the org's
+   audit log (FR12). The tap is **outermost** on purpose: a refused call is
+   recorded with ``outcome: "permission_error"``, and "who tried what" is
+   exactly the question an audit log is read for.
 5. **``EventBus.publish``/``subscribe``** — the publish side stamps
    ``event["tenant"]``; the subscribe side binds the *subscriber's* tenant at
    subscribe time and drops foreign events on the way into that subscriber's
@@ -53,11 +57,12 @@ and ``routes_sync``'s seams — are process-global while a service is not.
 
 from __future__ import annotations
 
+import sys
 import weakref
 from pathlib import Path
 from typing import Callable
 
-from . import authz, locks, tenancy
+from . import audit, authz, locks, tenancy
 from .model import AppError, AuthError, NotFoundError
 
 # --------------------------------------------------------------- sentinels
@@ -420,6 +425,10 @@ def _install_registry(registry, config) -> None:
     refusal is built here rather than raised because ``ToolRegistry.call``
     answers refusals as ``{"error": …}`` payloads and a raise would become a
     500 on the chat and MCP surfaces, which have no exception handler.
+
+    The audit tap goes on **outside** the floor (see :func:`_tap_audit`), so
+    the row records the outcome the caller actually got — ``"ok"``, the
+    refusal's ``permission_error``, or ``raised:<Class>``.
     """
     inner = registry.call
     if getattr(inner, _CALL, False):
@@ -432,7 +441,91 @@ def _install_registry(registry, config) -> None:
     setattr(call, _CALL, True)
     call._agentcad_inner = inner
     call.__doc__ = inner.__doc__
-    registry.call = call
+    registry.call = _tap_audit(call, config)
+
+
+def _tap_audit(call, config):
+    """``call`` with ``audit.tap_registry`` around it — one row per mutation.
+
+    This is the wiring the tap was built for (changelog 0348 shipped it
+    "tested and deliberately not installed anywhere yet"), and this is the
+    place for it: ``install`` is the one seam that holds the registry every
+    surface shares, and every property the tap needs is already true here —
+    the org comes from the tenant ContextVar, so **local mode writes nothing**,
+    and the sentinel below makes a second ``install`` a no-op.
+
+    The sentinels are re-stamped on the outer callable rather than left to
+    ``functools.wraps`` (which does copy ``__dict__``, and so does carry them
+    across today): ``uninstall`` and the idempotence guard both read them off
+    whatever ``registry.call`` currently is, and neither should depend on an
+    implementation detail of the standard library.
+    """
+    tapped = audit.tap_registry(call, _AuditSink(config))
+    if tapped is call:                       # already tapped: nothing to mark
+        return call
+    setattr(tapped, _CALL, True)
+    tapped._agentcad_inner = getattr(call, "_agentcad_inner", call)
+    return tapped
+
+
+class _AuditSink:
+    """The org's audit log, resolved **per row** instead of at install time.
+
+    :func:`audit.tap_registry` wants an object with ``append(org, row)``.
+    Handing it a real :class:`~agentcad.core.audit.AuditLog` would mean
+    building one while installing, and that is wrong twice over:
+
+    * the security config lives in a process-global slot that is set and
+      cleared around every hosted app (:func:`_config_resolver` says so), so a
+      captured log would name the state directory of an app that has gone; and
+    * constructing one **creates** ``<state>/audit/`` — a directory a local
+      ``agentcad serve`` must never grow, because the tap is installed there
+      too and AC7 is "local mode is unchanged", not "local mode is unchanged
+      except for a database".
+
+    Resolved lazily it is never touched at all without a tenant: ``_record``
+    returns before ``append`` when the org is ``None``, which is every call in
+    local mode. ``audit.for_auth_store`` is the same accessor ``routes_auth``
+    uses, and it goes through ``audit.shared`` — one log object per state
+    directory per process, not one per call.
+    """
+
+    def __init__(self, config) -> None:
+        self._config = config
+        self._warned = False
+
+    def append(self, org, row=None, **fields):
+        log = self._log()
+        return None if log is None else log.append(org, row, **fields)
+
+    def _log(self):
+        """The audit log behind the current security config, or ``None``.
+
+        Never raises, ``_tenancy_store``'s reason turned one notch further:
+        this one is not even an authorization path — it is bookkeeping on the
+        way out of a call that has already happened, and a raise here would
+        turn a broken audit backend into a failed CAD write. The tap's own
+        contract (swallow a storage failure, warn on stderr) covers what
+        happens after this returns a log; this covers not being able to find
+        one at all.
+
+        **No config is not a failure** — it is local mode, and it returns
+        before the ``except``. Anything else is: an instance that has orgs and
+        cannot open their databases is recording nothing, and an audit log
+        that goes quiet without saying so is worse than no audit log, so it
+        says so — once, because this runs per call.
+        """
+        try:
+            cfg = self._config()
+            store = None if cfg is None else getattr(cfg, "store", None)
+            return None if store is None else audit.for_auth_store(store)
+        except Exception as exc:            # noqa: BLE001 — see the docstring
+            if not self._warned:
+                self._warned = True
+                print(f"agentcad: the audit log is unavailable "
+                      f"({type(exc).__name__}: {exc}); mutating tool calls "
+                      f"are NOT being recorded", file=sys.stderr)
+            return None
 
 
 def _refuse_tool(name: str, args: dict, config) -> dict | None:

@@ -626,15 +626,16 @@ sign-in, sign-out, enrolment, and account/instance-token administration
 event — instance-wide) and `tools_cloud.py`'s own admin actions
 (`create_agent_token`, `revoke_agent_token`, `grant_role`, `revoke_role` — a
 project's org). The general "every mutating tool call writes a row" tap
-(`core/audit.py`'s `tap_registry`) is built and unit-tested but **not yet
-installed anywhere the server runs** — so an ordinary `set_part_params` or
-`generate_drawing` call does not yet produce an audit row; only the
-identity- and tenancy-administration actions above do. The full
-three-principal-kind distinction PRD-005 promises (a human edit, a
-chat-agent edit, an MCP-agent edit, all on one project) is proven by the
-test suite today (`tests/test_audit.py`), not by anything reachable over
-`docker compose exec` yet — wiring the general tap into the serve path is a
-named residual, not a silent gap.
+(`core/audit.py`'s `tap_registry`) is **installed on the serve path**
+(`tenancy_wiring._install_registry`, outermost — a refused call is recorded
+with `outcome: "permission_error"`): an ordinary `set_part_params` under a
+tenant produces a row; a request with no tenant produces none, so local
+mode never touches the audit store. The three-principal-kind distinction
+PRD-005 promises (a human edit, a chat-agent edit, an MCP-agent edit, one
+project) is asserted end-to-end in `tests/test_prd005_acceptance.py` and
+by the deploy smoke's audit-query step. One known residual: the four
+`tools_cloud` admin actions currently write a second, pack-local row per
+call (being reconciled).
 
 ---
 

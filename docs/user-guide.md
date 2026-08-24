@@ -1605,6 +1605,18 @@ you as a user.
   Open it in a browser, choose a password (8 characters minimum), and you are
   signed in. The link works once; a second visit is a 404, so ask for a fresh
   one rather than reusing an old mail.
+- **Single sign-on is an additional door, not a replacement — reached by URL,
+  not yet a button on this page.** If your operator has configured OIDC,
+  visiting `/api/auth/oidc/login` signs you in with your identity provider
+  and lands you back in the app; there is no discovery of it from the sign-in
+  form yet, so ask your operator whether it is configured before you go
+  looking. It still ends at the same session, and it cannot register a
+  brand-new account by itself — it signs in a local handle you (or your
+  operator) already created, exactly like the enrolment link above.
+  **Passkeys** have the same server-side support (and the same `[cloud]`
+  extra requirement) but no sign-in-page affordance to trigger the ceremony
+  from a browser yet — password (or SSO) is the way in today. See
+  `docs/deployment.md` for what your operator has to configure first.
 - **The identity chip**, top right, shows who the server thinks you are and
   signs you out. Your session survives a browser restart and the server being
   restarted, and it expires after 14 idle days (30 at the outside).
@@ -1613,23 +1625,81 @@ you as a user.
   `browser:7f3a1b2c` — and per-part claims now actually protect you from other
   *people*, while an agent with a token is never blocked by a human's claim and
   cannot take one.
-- **Everyone shares one project space.** There are two roles: `member` (read
-  and write every project) and `admin` (that, plus managing users and tokens).
-  There is deliberately no per-project permission — see the trust note below.
+- **Everyone shares one project space — unless your operator has turned on
+  organizations.** On a plain instance there are still just two roles:
+  `member` (read and write every project) and `admin` (that, plus managing
+  users and tokens), with no per-project permission. Once your operator has
+  created at least one organization, projects live under
+  `org / workspace / project` and per-project roles apply instead — see
+  "Organizations, workspaces and roles" below. Which kind of instance you are
+  on is not something you have to guess: the workspace chip described there
+  only appears when it applies.
 - **Anonymous visitors can see the public parts catalog and nothing else**:
   the package list, per-version metadata and the shipped preview images. No
   project, no part, no geometry, and nothing that runs the kernel.
 - **For agents and CI**, an admin mints a bearer token
   (`agentcad admin token add ci`). Point an MCP client at the instance with
   `AGENTCAD_URL` and `AGENTCAD_TOKEN`; revoking the token cuts it off on the
-  next call.
+  next call. Inside an organization, an **org admin** can instead mint a
+  token scoped to just that org's projects — see below.
 
 > **Trust.** An account on a hosted instance can execute arbitrary Python on
-> the server — a part script *is* Python, and worker confinement does not exist
-> on Linux yet. So accounts are for people you would give a shell to,
-> registration is closed, and `member` versus `admin` is not a wall between
-> colleagues. That is a statement of what the software does today, not a
-> caveat to skim.
+> the server — a part script *is* Python. So accounts are for people you would
+> give a shell to, and registration is closed. Organizations, workspaces and
+> per-project roles (below) decide who may **call the API** to build, edit or
+> read a project — they are not a filesystem wall around what a script that
+> IS running can touch: a member authorized to build one project still runs
+> as the server user with every other project on the instance readable and
+> writable underneath them, including another organization's. That is a
+> statement of what the software does today, not a caveat to skim.
+
+## Organizations, workspaces and roles (a hosted instance)
+
+Skip this section on a plain hosted instance — it only applies once your
+operator has created at least one **organization**. You will know: a
+**workspace chip** appears in the toolbar reading `org/workspace`, and the
+Model menu grows two new rows.
+
+- **The workspace chip and switcher.** Click the chip (or use "Switch
+  workspace…" from the Model menu, or the command palette) to see every
+  organization and workspace you belong to and jump between them. Switching
+  reloads the page — a different workspace can have entirely different
+  projects, so this is a deliberate re-boot rather than a hot-swap. Your
+  choice is remembered in the browser for next time.
+- **Roles**, weakest to strongest: **viewer** (read only), **commenter**
+  (also opens and reviews threads and proposals), **editor** (also changes
+  geometry), **admin** (also decides who holds which role). An organization
+  gives you a *default* role across every project in it; an admin may
+  additionally raise or lower your role on one specific project without
+  touching the default everywhere else.
+- **What a viewer actually sees.** The 3D view, the parameter list, the
+  script, metrics, drawings, exports, BOMs and releases are all there to
+  read — a viewer can still export a STEP file or render a drawing, because
+  those are derived from geometry that is already visible to them. What
+  disappears: parameter inputs and the script editor go read-only, and
+  branch create/delete, undo/redo and part deletion are hidden from the
+  toolbar and the command palette. Threads and proposals stay fully usable —
+  reviewing is a `comment`-level action, not `edit`. Attempting a write
+  anyway (e.g. through the agent chat) comes back as a plain refusal naming
+  the role you need and the role you actually have, never a silent no-op.
+- **Members and tokens**, from the Model menu ("Org members…" / "Agent
+  tokens…") — visible to everyone in the org, with the write controls shown
+  only to an org admin:
+  - The **members panel** lists everyone's org-default role, and — for an
+    admin — a form to grant or revoke a *per-project* role override for
+    any member or agent token (name it as `user:handle`, `agent:name`, or
+    just a bare handle).
+  - The **tokens panel** lists the scoped agent tokens minted in this org
+    (name, role, which projects, expiry, live/revoked) and, for an admin, a
+    form to mint a new one: name it, pick a workspace, list the project(s)
+    it should reach, its role and an optional expiry. **The secret is shown
+    exactly once**, in a copy-and-dismiss box right after minting — there is
+    nowhere in the product to retrieve it again, only to revoke it and mint
+    a fresh one. Revocation takes effect on the token's very next request.
+  - A scoped token cannot itself mint another token, or grant or revoke a
+    role: minting and granting need a signed-in *person* holding org admin,
+    by construction — an agent has no organization membership of its own,
+    only whatever projects it was explicitly granted.
 
 ## Sharing a part (a hosted instance)
 
@@ -1668,6 +1738,68 @@ Publishing is also an agent tool (`share_create` / `share_list` /
 `share_revoke`) — an agent can drop a share URL into chat or a proposal. See
 `docs/agent-api.md`.
 
+## Working offline: git sync with a hosted instance
+
+Every project on a hosted instance is also an ordinary git repository you
+can clone, edit fully offline (with your own local `agentcad serve`), and
+push back. You need the `agentcad` CLI installed and a bearer token from
+your admin (`agentcad admin token add <you>`, or a scoped token an org admin
+mints for you — see above).
+
+```bash
+agentcad login https://cad.example.com --token acad_xxxxxxxx_…
+agentcad clone https://cad.example.com/git/acme/main/widget.git
+cd widget
+# edit, run `agentcad serve` locally, build offline with your own kernel —
+# this is a real project directory: scripts, manifest and history all present
+agentcad push          # send your branches and tags
+agentcad pull          # bring down anyone else's, merging when needed
+agentcad status --fetch
+```
+
+`login` stores the token once, at `~/.agentcad/sync.json`, permissioned so
+only you can read it, and never asks you to put it in a URL or a git config
+file — every `push`/`pull`/`clone` reaches for it automatically through a
+git credential helper. `clone` takes the same `<org>/<workspace>/<project>`
+URL the workspace switcher's org/workspace names compose into.
+
+**The conflict story.** `push` never forces and never deletes — if the
+server has commits you do not, it refuses **inside git's own transaction**,
+atomically, with a message git prints back to you verbatim:
+
+```
+remote: agentcad: refs/heads/main diverged - pull and merge, never force
+```
+
+The fix is always `agentcad pull`: it fetches, fast-forwards whatever it
+can, and for a branch that has genuinely diverged runs the same
+conflict-aware merge the browser's own merge UI uses — you get named
+conflicts to resolve, never a silent overwrite of somebody's work and never
+a reset of yours. Two more refusals you may see, both permanent (there is no
+"force" that gets around them, by design):
+
+```
+remote: agentcad: refusing to delete refs/heads/old - deletes are refused on the hosted copy
+remote: agentcad: refs/tags/v1 already exists - tags are immutable
+```
+
+Release tags (see [Releases](#releases)) never move or
+disappear once pushed — that immutability is what makes a release
+reproducible. A push that *builds* into something broken is not refused
+either way: the server checks it out and the next open rebuilds it exactly
+like any other change, showing the failure where every build failure shows.
+
+**What syncs, and what never does.** Scripts, the manifest, and the whole
+commit history travel with every clone and push. **`.cache/` and `exports/`
+never do** — they hold rebuilt meshes and generated files that are cheap to
+regenerate locally and expensive to carry over the wire; a fresh clone
+simply rebuilds them from the script. `imports/` (reference CAD you brought
+in) does sync, because there is no script that could regenerate it.
+
+`agentcad mcp --remote <url> --token …` points an MCP client (Claude Code
+included) at a hosted instance instead of your own machine, so an agent can
+work against the shared project directly rather than through a local clone.
+
 ## Where files live
 
 | Path | Contents |
@@ -1683,7 +1815,9 @@ Publishing is also an agent tool (`share_create` / `share_list` /
 | `<project>/exports/` | STEP/STL/3MF part & assembly exports, plus `<part>_drawing.svg`/`.pdf`/`.dxf` drawings, from the Export menu, agent tools, or `agentcad export`. |
 | `examples/` (repo) | The bundled example projects, registered at startup. |
 | `~/.agentcad/config.json` | The persisted port (`AGENTCAD_CONFIG` overrides the path). |
-| `~/.agentcad/state/auth/*.json` | **Hosted mode only.** Accounts, enrolments, sessions and tokens — four atomically-written `0600` documents (`AGENTCAD_STATE_DIR` overrides the directory; in the container it is `/data/state`). Passwords are scrypt digests and session/token secrets are stored only as SHA-256 digests, so the files hold nothing that can be replayed — but back them up as a secret anyway. Never inside a project, and unaffected by `--projects-dir`. |
+| `~/.agentcad/sync.json` | **Hosted git sync only.** `agentcad login`'s token store, `0600` from the first byte, never inside a project (`AGENTCAD_SYNC_CONFIG` overrides the path). Read by the git credential helper; never written into a URL or a git config file. |
+| `~/.agentcad/state/auth/*.json` | **Hosted mode only.** Accounts, enrolments, sessions, tokens, and (once your operator sets up SSO) the OIDC provider config — five atomically-written `0600` documents, plus `orgs.json` beside them once your operator has created an organization (`AGENTCAD_STATE_DIR` overrides the directory; in the container it is `/data/state`). Passwords are scrypt digests and session/token secrets are stored only as SHA-256 digests, so the files hold nothing that can be replayed — but back them up as a secret anyway. Never inside a project, and unaffected by `--projects-dir`. |
+| `~/.agentcad/state/audit/*.db` | **Hosted mode, once an organization exists.** One SQLite database per organization plus one instance-wide `_instance.db` for sign-ins and account administration — never back these up with a plain file copy; see `docs/deployment.md`'s "Audit" section for the safe command. |
 | `~/Library/Logs/AgentCAD.log` | Output of the `AgentCAD.app` wrapper. |
 
 The Anthropic API key is read from the environment only — it is never

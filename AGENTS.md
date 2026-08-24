@@ -3167,6 +3167,189 @@ Full documentation: `docs/skills.md`. The design is
   `build_registry`, so it cannot drift silently again — it had drifted to 85
   documented against 104 registered. A hosted instance adds `whoami` on top.
 
+## Multi-tenant cloud gotchas (PRD-005 — read before touching `core/tenancy.py`, `core/authz.py`, `core/tenancy_wiring.py`, `core/sync.py`/`core/sync_server.py`, `server/routes_sync.py`, `core/audit.py`, `core/tools_cloud.py`, `core/oidc.py` or `kernel/pool.py`'s fair gate)
+
+Every item is traceable to `docs/superpowers/specs/2026-08-24-multi-tenant-cloud-design.md`
+or to a test. Changelogs `0343`–`0351`. One process, one store, one kernel
+pool — tenancy is **ambient per-request state** (`tenancy.tenant_var`), the
+exact `branch_resolver` precedent, never a fleet of stores. Operator-facing
+reference: `docs/deployment.md`.
+
+- **`receive.denyCurrentBranch=updateInstead` is structurally unusable
+  against the `.history` layout, so `sync_server.py` does not use it.**
+  `receive-pack` derives its main work tree by stripping a trailing `/.git`
+  off `GIT_DIR` and **ignores `core.worktree`**; a project's `GIT_DIR` is
+  `<project>/.history`, so it resolves to `.history` itself, finds none of the
+  tracked files there, and rejects every push. The config is `ignore`
+  instead, and `sync_server.materialize()` runs an explicit `checkout -f`
+  after every accepted receive — not an optimization, the only way the work
+  tree ever advances. The same derivation is why `git worktree list` on a
+  client-side clone reports the **GIT_DIR** as the main worktree
+  (`core/sync.py::_worktrees` translates it back).
+- **The pre-receive hook IS the FR9 contract — the three git config knobs
+  cover only `refs/heads/*`.** `denyNonFastForwards`/`denyDeletes` say
+  nothing about tags, so a client with `ignore` set (required by the point
+  above) can force-push a branch or rewrite/delete a PRD-015 release tag with
+  both knobs on. `sync_server.PRE_RECEIVE_HOOK` (versioned via
+  `HOOK_MARKER`/`HOOK_VERSION`, rewritten on a version bump so an upgrade
+  actually tightens a hand-installed hook) refuses, in order: any ref delete
+  (branch or tag), a non-fast-forward branch update
+  (`merge-base --is-ancestor`), and any tag update with a non-zero old value.
+  The null-oid test is `case "$x" in *[!0]*)` — "consists only of zeros" —
+  not a literal 40-zero string, so it is correct in a sha256 repo too.
+  `/bin/sh`, not bash (Debian's `sh` is dash). `pre-receive` is
+  **all-or-nothing**: one bad ref in a push rejects every ref in it, which is
+  the right semantics for "surface divergence, never overwrite" — an
+  `update` hook (accepts good refs, rejects bad ones) is deliberately not
+  used.
+- **Never buffer a git body — spool it, and drain stderr in a loop.**
+  `routes_sync._spool_request` streams the request to an **unlinked temp
+  file** because `app.py`'s one `BaseHTTPMiddleware` makes a full-duplex CGI
+  proxy impossible: `StreamingResponse` and the middleware's disconnect
+  listener share one receive channel, and `git-http-backend` emits its CGI
+  headers before reading a byte on a receive-pack — measured, a 3 MB push
+  stalled at 288 KB. The *response* still streams (the big direction is a
+  clone). Symmetrically, `_proxy`'s `drain_stderr` reads the child's stderr
+  **to EOF in a loop**, never one `read()`: `unpack-objects` writes progress
+  there for as long as it inflates a pack, the pipe fills at 64 KB, and an
+  unattended pipe hangs a large push with no error anywhere.
+- **The sync CLI's credential helper is the only door — never a token in a
+  URL or `http.extraHeader`, both leak (argv, `.git/config`, `ps`).**
+  `core/sync.py` sets a **per-invocation** `credential.helper=` reset +
+  `!agentcad credential` on every network call, so a global keychain helper
+  cannot answer for our host with a stale credential, and
+  `GIT_TERMINAL_PROMPT=0` always. `agentcad credential get` answers
+  `username=x-access-token`/`password=<token>` for a known host and is
+  **silent** otherwise (git falls through); `store`/`erase` are no-ops —
+  `agentcad login` owns `~/.agentcad/sync.json`, and a helper that let git
+  write into it would let a redirect's 401 plant a credential nobody typed.
+  That file is **0600 from the first byte** (`os.open(..., O_EXCL, 0o600)`
+  on a random-suffixed staging name, dir 0700) — never write-then-chmod,
+  which leaves a world-readable window. Keyed by `protocol://host`, because
+  that is exactly how git itself keys a credential query.
+- **`orgs.json` shares `authstore`'s guard BY IDENTITY, not by a second lock
+  on the same file.** `fcntl.flock` is per *open file description*, so a
+  private guard registry on `<state>/auth/.lock` would deadlock the first
+  time a tenancy write happened inside an `AuthStore._scope` (granting a role
+  while creating the account it names is one admin operation, not a
+  theoretical ordering). `core/tenancy.py` imports `authstore._guard_for`
+  directly rather than reimplementing it — `authstore.py` is not edited.
+- **The `PermissionError` builtin collision is deliberate and contained —
+  import the alias.** `core/authz.PermissionError(AuthzError)` is spelled
+  that way (not `PermissionDeniedError`) because `model.error_type` derives
+  the wire string from `__name__`, and FR6 fixes the tool-surface string at
+  `permission_error`; HTTP inherits 403 from `AuthzError` with zero core
+  edits. Containment: the module does no filesystem work and catches no
+  `OSError` family, and every *other* module imports
+  `authz.PermissionDeniedError` (the same class, re-exported) rather than
+  shadowing the builtin itself. **The house split is real here too**: HTTP
+  bodies spell the class name `"PermissionError"`; the tool surface spells
+  `permission_error`. `KernelPool.KernelBusyError` reuses the identical
+  derivation for `kernelbusy_error` (one word — like `notfound_error`,
+  never `kernel_busy_error`), 429 inherited from `RateLimitedError`.
+- **A raw `cp` of the audit WAL database loses rows — `VACUUM INTO` is the
+  only backup.** `core/audit.py`'s spike proof, ported as a regression test:
+  a WAL database keeps recent commits in the `-wal` sidecar until a
+  checkpoint, and copying the `.db` file alone answered `no such table:
+  audit` on a 50-row database. `AuditLog.vacuum_into` writes a fully
+  checkpointed, integrity-checked single file **while writers keep
+  working**, and refuses an existing destination. The audit tree
+  (`<state>/audit/`) sits **beside** `<state>/auth/`, never inside it, so
+  005a's "tar the state dir" statement stays true for identity and is
+  explicitly no longer true for audit — say both halves.
+- **`audit.tap_registry` is no-tenant-no-row, and it is now installed
+  outside the RBAC floor — which makes a known double-row real, not
+  hypothetical.** `tap_registry(call, log)` wraps any `(name, args) -> dict`
+  and writes one row per mutating call (`is_mutating_tool`: everything not
+  `get_/list_/find_/search_/read_/describe_/check_/measure_/inspect_/
+  preview_/validate_/compare_/resolve_`-prefixed, plus the `READ_NAMES` set),
+  resolving org from `tenancy.current_tenant()` — local mode writes nothing,
+  by construction, not by a branch someone remembered to add.
+  `tenancy_wiring._install_registry` wraps it around `registry.call` **outside**
+  the floor (`registry.call = _tap_audit(call, config)`), so the row records
+  the outcome the caller actually got, refusal included. `core/tools_cloud.py`
+  predates that wiring and still records its own four mutating tools'
+  writes directly (`create_agent_token`/`revoke_agent_token`/`grant_role`/
+  `revoke_role`, each ending in its own `_audit(...)` call) — its own
+  docstring names this "the duplication to watch for is one row per
+  action" and says so *before* the wrapper was expected to land. With both
+  now installed, calling one of those four **does** write two rows for one
+  action — identical `action` spelling on both (`_record`'s `action` is
+  `str(name)`, the tool name, the same string `tools_cloud._audit` passes),
+  so the two rows are indistinguishable by `action` and differ only in `id`/
+  `ts`. Not yet reconciled — do not treat a row **count** as meaningful for
+  those four tools until it is.
+- **Tenant resolution precedence, and where 404 stops being name-free.**
+  `security.resolve_tenant` (`server/security.py`): a bearer token's
+  **scope** wins outright (no membership check — an agent has no org
+  default, so requiring one would make every scoped token unusable) >
+  `X-Agentcad-Workspace: org/ws` > the session's active workspace > the
+  principal's own memberships (alphabetically first, when there is exactly
+  one org/workspace pair) > `None` (local mode, or a hosted instance with no
+  orgs — byte-identical to 005a). **Every rung except the scope is checked
+  against the roles document**, and a selection that fails it is a
+  **name-free 404** (`"no such workspace"`) — a 403 there would itself be an
+  existence oracle. Once a tenant is resolved, the **read floor**
+  (`authz.require(..., "view", ...)`) answers with a real **403** naming
+  `{required, project, principal_role}`, because the caller can already see
+  that workspace exists; only a malformed `X-Agentcad-Workspace` header gets
+  a **400** (a client bug, confirms nothing). `resolve_tenant` is the one
+  function that draws this line — do not invent a second 404-vs-403 rule at
+  a different choke point.
+- **`ProjectStore.lock_key` is the qualification funnel, and it is
+  deliberately wider than "the write guard re-keys the turnlock."**
+  `tenancy_wiring._install_lock_key` wraps `store.lock_key` once, and turn
+  locks, per-part claims, presence rosters, undo stacks, build badges, the
+  search index and the navigation roll-up **all** key on that one function's
+  answer — so `tenancy.qualified(proj)` (`org/ws/proj` hosted, `proj` local)
+  makes a cross-tenant name collision impossible everywhere at once instead
+  of in one of seven places a future feature could forget. `EventBus.publish`
+  is a **separate** wrapper (stamps `event["tenant"]`) and `subscribe` binds
+  the tenant **at subscribe time** by replacing the created queue's bound
+  `put_nowait` — never a proxy, because `unsubscribe` is called with the
+  exact object the bus holds.
+- **The kernel pool's per-tenant gate is cache hygiene, not isolation — say
+  so, do not oversell it.** `kernel/pool.py`'s affinity namespacing
+  (`"<org>/<ws>:<affinity>"`) stops two tenants' same-named parts from
+  sharing one worker's shape-LRU *slot name*; on a small pool two namespaced
+  keys still hash-collide onto the same worker, exactly as two bare part ids
+  do today. The fairness half (`max(1, size - 1)` in-flight per tenant, FIFO
+  queue depth 32, 300 s wait ceiling, round-robin drain across tenants with
+  waiters) decides **entry only** — each worker's own single-in-flight lock
+  still serializes the actual call, so a nested same-thread `pool.request`
+  would deadlock at cap 1 (no such call site exists; noted, not defended).
+  With no tenant set, `request()` takes the historical `_pick(affinity)` line
+  byte-for-byte: no key building, no accounting, not one lock acquired.
+- **Workspace naming: tenancy owns the word.** PRD-005's `workspace` (an
+  org's sub-tenant, `orgs.json`'s second level, the `X-Agentcad-Workspace`
+  header) and the shipped shell's `workspace` (a layout `localStorage` key,
+  the `#workspace` DOM id) are two different things that happen to share a
+  spelling — deliberately not renamed (design spec, scope rulings): the
+  shell's is an internal, never-user-facing slot name. PRD-025 (pending)
+  must pick a different user-facing word for its own tabs; this is recorded
+  for that PRD's design, not resolved here.
+- **Local mode byte-identical is THE regression contract, not a property of
+  one test file.** Every wrapper this PRD installs (`tenancy_wiring.install`,
+  the pool's fair gate, the bus stamp/filter, `audit.append`) reads
+  `tenancy.current_tenant()` first and, on `None`, does exactly what it
+  wrapped — the existing full suite (no fixture changes for this PRD) is what
+  proves it stayed that way, the same discipline PRD-005a's AC7 established.
+  If a change here ever needs a new local-mode branch, that branch is the
+  bug, not the fix.
+- **`agentcad admin org add|workspace add|member add` is state-file-only,
+  deliberately.** `cli._admin_org`/`_tenancy_store()` write directly into
+  `orgs.json` (rooted on `<state>/auth`, the same directory `AuthStore` uses,
+  for the same shared-guard reason) — no `ProjectStore`, no service, no
+  kernel, so it works over `docker compose exec` before anyone has signed in
+  and before the server is even up. It creates **no directory** under
+  `<projects_dir>`: a workspace is a document entry, and the storage root
+  beneath it is made lazily by the first write a member makes inside it
+  (`tenancy_wiring`'s `root_resolver`). Per-project role overrides are
+  deliberately **not** here — they go through the `grant_role` tool on a
+  running instance, because `role_of`/`require` need a live service to check
+  against, and the CLI's job is the three writes that make an instance have
+  an org at all, not to duplicate the running RBAC surface.
+
 ## Conventions (match these)
 
 - **Structured errors**: `{"error": {"type", "message", "details"}}`; script
