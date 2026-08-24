@@ -223,12 +223,16 @@ records both, interleaved, with no ambiguity about who did what.
   admin-queryable; retention configurable.
 - FR13. UI identity: presence/lock chips, history, and chat attribution
   render principal names (avatars where a profile exists); `project_history`
-  commits record the acting principal as git author.
+  commits carry the acting principal in the `Client:` trailer
+  (`history.with_client_trailer`/`author_of()`), rendered by the UI — not as
+  the git commit **author**, which stays fixed (`AgentCAD <agentcad@local>`)
+  so per-commit bookkeeping is never dressed up as a cryptographic claim.
 - FR14. One `docker compose up` from the public repo yields the full stack
   (server, TLS proxy, persistent volume); the image wraps the same
   distribution the PyInstaller bundle ships; zero closed components.
 - FR15. Release pipeline produces signed/notarized macOS and signed Windows
-  desktop builds alongside the compose image.
+  desktop builds alongside the compose image (pipeline ships secrets-gated;
+  positive signing evidence requires provisioned certificates).
 
 ## Agent surface
 
@@ -312,7 +316,9 @@ acting principal.
 - AC7. Local mode unchanged: full suite green with no auth configured;
   existing MCP setup keeps working unmodified (existing tests).
 - AC8. The macOS build passes notarization and the Windows build passes
-  signing in the release pipeline (CI evidence).
+  signing in the release pipeline (CI evidence; pipeline ships
+  secrets-gated, positive signing evidence requires provisioned
+  certificates).
 
 ## Risks & open questions
 

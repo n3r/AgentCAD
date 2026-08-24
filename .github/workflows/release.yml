@@ -1,0 +1,294 @@
+name: Release
+
+# PRD-005 FR15/AC8: signed/notarized desktop builds, alongside the compose
+# image, attached to a GitHub release on a `v*` tag.
+#
+# SECRETS-GATED, by design spec ruling (docs/superpowers/specs/
+# 2026-08-24-multi-tenant-cloud-design.md, "Scope rulings"): no agent can
+# conjure a signing identity. This workflow ships and runs the codesign /
+# notarytool / signtool steps end to end WHEN the secrets below are
+# provisioned, and skips them with an explicit `::notice::` when they are
+# not — an UNSIGNED onedir bundle still builds and still uploads either way.
+# AC8's positive half (a build that actually PASSES notarization/signing) is
+# therefore evidence this pipeline produces once the founder provisions
+# certificates, not a claim this run makes by merely existing. See
+# docs/deployment.md, "Desktop builds", for the full secrets list and what
+# an operator does with them.
+#
+# The footgun this workflow is careful about (see also .github/workflows/
+# bench.yml's `guard` job, which hits the same wall from the job-if side):
+# the `secrets` context is not textually safe to drop straight into a
+# step's `if:` comparison chain, and a value containing a quote or backtick
+# interpolated into a `run:` body would be EXECUTED, not tested. So every
+# secret enters through a step's `env:` (never `run:` interpolation), and
+# every gate is a plain boolean computed ONCE into a job-level `env:` var
+# (`HAVE_..._SIGNING`), which downstream `if: env.HAVE_..._SIGNING == …`
+# conditions read — `env` is an ordinary string context, safe in `if:`,
+# where `secrets` directly is not guaranteed to be.
+#
+# Secrets to provision:
+#   macOS:   MACOS_CERT_P12 (base64 .p12), MACOS_CERT_PASSWORD, APPLE_ID,
+#            APPLE_TEAM_ID, APPLE_APP_PASSWORD (an app-specific password,
+#            not the Apple ID's own)
+#   Windows: WINDOWS_CERT_PFX (base64 .pfx), WINDOWS_CERT_PASSWORD
+# Optional, non-secret:
+#   vars.PUBLISH_GHCR = "true" to also push the compose image to
+#   ghcr.io/<owner>/agentcad:<tag> using the automatic GITHUB_TOKEN — off by
+#   default, since publishing an image under the org is a policy choice this
+#   workflow should not make silently.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  # Never cancel a release mid-upload: a superseded run here would leave a
+  # release with some platforms attached and others silently missing.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS build
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      HAVE_MACOS_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' && secrets.MACOS_CERT_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
+    permissions:
+      contents: write   # gh release upload, tag pushes only
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # scripts/build_binary.sh is unmodified — it is the same path a
+      # developer runs locally, and this job exists to prove that path
+      # produces a real artifact, not a CI-only variant of it.
+      - name: Build the onedir bundle
+        run: scripts/build_binary.sh
+
+      - name: Unsigned build notice
+        if: env.HAVE_MACOS_SIGNING != 'true'
+        run: echo "::notice::unsigned build — signing secrets not provisioned"
+
+      - name: Import the signing certificate into a temporary keychain
+        if: env.HAVE_MACOS_SIGNING == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/release-signing.keychain-db"
+          KEYCHAIN_PWD="$(openssl rand -hex 24)"
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          # 6 hours: long enough to outlive this job, short enough that a
+          # leaked runner image does not keep it unlocked indefinitely.
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PWD" "$KEYCHAIN"
+          EXISTING=$(security list-keychains -d user | tr -d '"')
+          security list-keychains -d user -s "$KEYCHAIN" $EXISTING
+          rm -f "$CERT_PATH"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Codesign every binary, then the executable, with hardened runtime
+        if: env.HAVE_MACOS_SIGNING == 'true'
+        run: |
+          set -euo pipefail
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | grep -o '"[^"]*"' | head -1 | tr -d '"')
+          if [ -z "$IDENTITY" ]; then
+            echo "no codesigning identity found in the imported certificate" >&2
+            exit 1
+          fi
+          echo "signing with: $IDENTITY"
+          # A PyInstaller onedir is a flat directory of loose Mach-O
+          # binaries, not an .app bundle — `--deep` on the top level does
+          # not reach them. Sign every dylib/so bottom-up first, then the
+          # entry point last, each with the entitlements + hardened runtime
+          # notarization needs.
+          find dist/agentcad -type f \( -name "*.dylib" -o -name "*.so" \) -print0 \
+            | xargs -0 -I{} codesign --force --timestamp --options runtime \
+                --entitlements packaging/entitlements.plist \
+                --sign "$IDENTITY" "{}"
+          codesign --force --deep --timestamp --options runtime \
+            --entitlements packaging/entitlements.plist \
+            --sign "$IDENTITY" dist/agentcad/agentcad
+          codesign --verify --deep --strict --verbose=2 dist/agentcad/agentcad
+
+      - name: Zip the bundle
+        run: |
+          ARCH="$(uname -m)"
+          echo "ARCH=$ARCH" >> "$GITHUB_ENV"
+          ditto -c -k --keepParent dist/agentcad "agentcad-macos-$ARCH.zip"
+
+      - name: Notarize and staple
+        if: env.HAVE_MACOS_SIGNING == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          xcrun notarytool submit "agentcad-macos-$ARCH.zip" \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait
+          # Apple only GUARANTEES stapling for .app/.pkg/.dmg containers; a
+          # bare onedir executable may refuse it even once notarized — the
+          # notarization record itself (above, `--wait`'d to completion) is
+          # what Gatekeeper's online check reads regardless of whether the
+          # staple attaches, so a staple failure is reported, not fatal.
+          # See docs/deployment.md, "Desktop builds".
+          if ! xcrun stapler staple dist/agentcad/agentcad; then
+            echo "::warning::stapling the bare executable failed or is unsupported for this artifact shape; the online notarization record still stands"
+          fi
+          ditto -c -k --keepParent dist/agentcad "agentcad-macos-$ARCH.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentcad-macos-${{ env.ARCH }}
+          path: agentcad-macos-*.zip
+          if-no-files-found: error
+
+      - name: Attach to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" --generate-notes || true
+          gh release upload "${{ github.ref_name }}" "agentcad-macos-$ARCH.zip" --clobber
+
+  windows:
+    name: Windows build
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      HAVE_WINDOWS_SIGNING: ${{ secrets.WINDOWS_CERT_PFX != '' && secrets.WINDOWS_CERT_PASSWORD != '' }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # NOT scripts/build_binary.sh directly: that script hardcodes the
+      # POSIX venv layout (`.buildvenv/bin/python`, `.buildvenv/bin/
+      # pyinstaller`). `uv venv` on Windows still creates `Scripts/`, the
+      # Windows convention, regardless of the invoking shell — so the
+      # script's hardcoded `bin/` paths do not resolve here. Rather than
+      # edit that script (out of scope for this slice — it is a shared,
+      # cross-platform-intended dev entry point owned outside this change),
+      # this step reproduces its three commands with the Windows-correct
+      # path. If the script is made platform-aware later, this step can go
+      # back to calling it directly.
+      - name: Build the onedir bundle
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12 .buildvenv
+          VIRTUAL_ENV="$PWD/.buildvenv" uv pip install --quiet -e . pyinstaller
+          ".buildvenv/Scripts/pyinstaller.exe" --noconfirm \
+            --distpath dist --workpath build/pyinstaller \
+            packaging/pyinstaller/agentcad.spec
+          echo "built: dist/agentcad"
+
+      - name: Unsigned build notice
+        if: env.HAVE_WINDOWS_SIGNING != 'true'
+        run: echo "::notice::unsigned build — signing secrets not provisioned"
+
+      - name: Sign the executable
+        if: env.HAVE_WINDOWS_SIGNING == 'true'
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/cert.pfx"
+          echo "$WINDOWS_CERT_PFX" | base64 --decode > "$CERT_PATH"
+          SIGNTOOL=$(find "/c/Program Files (x86)/Windows Kits/10/bin" \
+            -iname signtool.exe -ipath "*x64*" 2>/dev/null | sort | tail -1)
+          if [ -z "$SIGNTOOL" ]; then
+            echo "signtool.exe not found on this runner image" >&2
+            exit 1
+          fi
+          echo "signing with: $SIGNTOOL"
+          "$SIGNTOOL" sign /fd SHA256 /f "$CERT_PATH" /p "$WINDOWS_CERT_PASSWORD" \
+            /tr http://timestamp.digicert.com /td SHA256 dist/agentcad/agentcad.exe
+          "$SIGNTOOL" verify /pa dist/agentcad/agentcad.exe
+          rm -f "$CERT_PATH"
+
+      - name: Zip the bundle
+        run: |
+          cd dist
+          7z a -tzip ../agentcad-windows.zip agentcad >/dev/null
+          cd ..
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentcad-windows
+          path: agentcad-windows.zip
+          if-no-files-found: error
+
+      - name: Attach to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" --generate-notes || true
+          gh release upload "${{ github.ref_name }}" agentcad-windows.zip --clobber
+
+  linux-image:
+    name: Linux compose image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image, tagged with the release
+        run: docker build -t "agentcad:${{ github.ref_name }}" .
+
+      # Off by default: an operator's deploy path is `docker compose build`
+      # against a checked-out tag (docs/deployment.md, "Upgrade") and this
+      # job's real job is proving that build still succeeds. Publishing an
+      # image under the repo's ghcr.io namespace is a separate policy
+      # decision, opted into with a plain (non-secret) repository variable
+      # so it never happens silently on a fork or a first tag.
+      - name: Push to ghcr.io (opt-in)
+        if: vars.PUBLISH_GHCR == 'true' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          IMAGE="ghcr.io/${{ github.repository_owner }}/agentcad:${{ github.ref_name }}"
+          docker tag "agentcad:${{ github.ref_name }}" "$IMAGE"
+          docker push "$IMAGE"
+
+      - name: Not published
+        if: vars.PUBLISH_GHCR != 'true' || !startsWith(github.ref, 'refs/tags/')
+        run: |
+          echo "::notice::the compose image was built and proven but not pushed. Set the repository variable PUBLISH_GHCR=true to publish to ghcr.io on a tag; docker compose build against this tag is the documented deploy path (docs/deployment.md)."

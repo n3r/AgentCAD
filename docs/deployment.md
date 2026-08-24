@@ -21,7 +21,10 @@
 >
 > - **A member's script still runs as the server user, and the whole projects
 >   tree is readable and writable to it.** Every project on the instance, not
->   just theirs. Per-project ACLs are PRD-005 and are not built.
+>   just theirs — not even just their org's. PRD-005 (below) adds per-project
+>   *roles*, but a role gates who may **call the API**; it is not a
+>   filesystem boundary around what a script that IS running can touch. See
+>   "Organisations, workspaces and roles" below.
 > - **Registration is closed.** Accounts exist only because an administrator
 >   minted an enrolment link over the CLI. There is no sign-up form and there
 >   will not be one in this release.
@@ -82,6 +85,8 @@ container ships.
 | `AGENTCAD_EXAMPLES` | `1` | `0` skips registering the bundled examples. Compose sets `0`: in a container they live in a read-only image layer, so edits vanish on redeploy. |
 | `AGENTCAD_CONFIG` | `~/.agentcad/config.json` | User config path; also the root the packages/indexes/state defaults derive from. |
 | `AGENTCAD_PACKAGES_DIR` / `AGENTCAD_INDEXES_DIR` | under the config dir | PRD-011 package cache and index checkouts. |
+| `AGENTCAD_SYNC_MAX_PUSH_MB` | `512` | PRD-005. Caps a single `git push`'s body on the server (streamed, never buffered, in both directions). Raise it for a deployment that hosts genuinely large imported CAD. |
+| `AGENTCAD_AUDIT_RETENTION_DAYS` | unset (keep everything) | PRD-005. Days of audit history to keep before opportunistic, hourly-rate-limited pruning starts discarding older rows. Unset, empty, `0`, or unparseable all mean "keep everything" — the failure mode of a mistyped knob is *more* history, never less. See "Audit" below. |
 | `AGENTCAD_QUOTA_<KNOB>` | see [Confinement and quotas](#confinement-and-quotas) | Per-worker caps: `MEMORY_MB`, `ADDRESS_SPACE_MB`, `PIDS`, `PIDS_HEADROOM`, `CPU_PERCENT`, `SAMPLE_INTERVAL_S`, `DISK_MB`. Env beats the config file's `{"quotas": {…}}`, which beats the built-in defaults. `off` switches a knob off, and so does `0` — **except on `ADDRESS_SPACE_MB`, where `0` means *auto*** (3 × `MEMORY_MB`) and only the literal `off` disables it. A value that is not a number **refuses to start** (`error: …`, exit 2) and names both the knob and the layer it came from. |
 | `AGENTCAD_CGROUP_DIR` | unset | A cgroup v2 subtree the operator **delegated** to this container, which is the only tier that OOM-kills rather than sampling. Unset means nothing is probed at all. A path is the compose recipe below; `auto` opts into the own-cgroup (systemd `Delegate=yes`) route, which refuses root and any subtree it does not own; `off` means "not even `auto`". Any failure falls back to rlimit + supervisor **with a health warning**, never silently. |
 | `AGENTCAD_NO_SANDBOX` | unset | Opts out of **confinement** — the seatbelt on macOS, Landlock + seccomp on Linux — and reports `off` with the reason. It does **not** opt out of the quotas: the caps and the rlimits still apply. Do not set it on a hosted instance. |
@@ -256,6 +261,146 @@ remaining 30 days of its life would not be a recovery.
 
 ---
 
+## Single sign-on and passkeys (PRD-005)
+
+Local accounts (the enrolment-link flow above) always work — OIDC and
+passkeys are additive, never a replacement for them, and **neither opens
+registration**: both sign in an existing local handle, they do not create
+one.
+
+**Passkeys** need the optional `[cloud]` extra:
+
+```bash
+uv sync --extra cloud     # or: pip install "agentcad[cloud]"
+```
+
+Without it the passkey routes answer `501` — the same "extra not installed"
+pattern the `[fem]` extra's routes use — and a plain install still serves
+password sign-in and OIDC. `[cloud]` pulls in `webauthn>=3` and `cbor2>=5.6`;
+nothing else in the product needs either.
+
+**OIDC** is *not* gated by the extra: `httpx` and `pyjwt[crypto]` are hard
+dependencies, so single sign-on works on a plain install. Configure one
+provider per instance at `<state-dir>/auth/oidc.json` (inside the container,
+under the `agentcad-data` volume's `state/auth/`), hand-edited or written by
+`docker compose exec`:
+
+```json
+{
+  "enabled": true,
+  "issuer": "https://idp.example.com",
+  "client_id": "agentcad-hosted",
+  "client_secret": "...",
+  "scopes": ["openid", "email", "profile"],
+  "label": "Example SSO",
+  "redirect_uri": null,
+  "allowed_email_domains": ["example.com"],
+  "email_handles": {"nikita@example.com": "nikita"}
+}
+```
+
+`redirect_uri` left `null` derives from `AGENTCAD_PUBLIC_ORIGIN`; set it only
+when the instance sits behind a path prefix a proxy rewrites. `email_handles`
+is the **only** automatic path from a verified IdP identity to an account,
+and it can only ever name a handle that **already exists** — closed
+registration holds through SSO exactly as it holds through the enrolment
+link. `allowed_email_domains` gates *linking* only, never an existing link,
+so an instance that changes its email domain later cannot lock out people
+who already linked. Editing the file takes effect on the next request (no
+restart); a document that is present but malformed raises naming the field,
+because the reader is an operator who just edited it.
+
+---
+
+## Organisations, workspaces and roles (PRD-005)
+
+Every project on a hosted instance now lives under an **organisation** and a
+**workspace**: `org -> workspace -> project`. A project's directory moves to
+`<projects-dir>/orgs/<org>/<workspace>/<project>`; the untenanted flat root
+(everything above this section) is what an instance with **no** orgs still
+uses byte-for-byte — creating the first org is what turns tenancy on, and
+nothing about local mode or a single-admin instance changes until you do.
+
+**Bootstrap.** There is no CLI subcommand for this yet — only the tool
+surface below reaches it, and that needs a signed-in admin, which needs an
+org to admin in the first place. The bootstrap is one Python call against the
+state files directly, the same "no service, no kernel, no port" contract
+`agentcad admin` already relies on, and literally the call `core/tools_cloud.py`
+itself makes (`tenancy.TenancyStore(store.root)`):
+
+```bash
+docker compose exec agentcad python3 -c "
+from agentcad.core.appmode import ensure_state_dir
+from agentcad.core.authstore import AuthStore
+from agentcad.core import tenancy
+store = AuthStore(ensure_state_dir() / 'auth')
+tenants = tenancy.TenancyStore(store.root)
+tenants.create_org('acme', label='Acme Robotics', admin='nikita')
+tenants.create_workspace('acme', 'main', label='Mechanical')
+"
+```
+
+`create_org(..., admin=)` is one atomic write — an org is never briefly
+adminless, which matters because the *next* step (granting anyone else a
+role) needs an admin able to call it. `admin` must already be an enrolled
+local handle (see "Accounts" above); org membership is bookkeeping about a
+person, not a second account, and an agent token can never be one (see
+below).
+
+**The ladder**, weakest first: `view` (reads) < `comment` (review threads,
+proposals) < `edit` (geometry) < `admin` (who may do the above). It is a
+total order — a rung includes every rung below it. **Org admin wins
+outright**: a member whose org role is `admin` is `admin` on every project in
+the org, and a per-project override cannot hold them down (they could always
+rewrite the override themselves, so honouring a demotion would be a fiction
+the members panel would render as a guarantee). Below that, a **per-project
+override** beats the **org default** — the whole of "per-project overrides":
+it may raise an org viewer to `edit` on one project, or hold an org editor to
+`view` on another. An **agent token has no org default at all** (see "Scoped
+agent tokens" below) — it reaches a project only through an explicit grant.
+
+Once an org exists, membership and grants are the agent-tool surface —
+callable over `POST /api/tools/<name>` with a signed-in admin's session (a
+project-`admin` floor; an org admin holds that on every project in the org):
+
+| Tool | Floor | What it does |
+|---|---|---|
+| `whoami` | any signed-in principal | extended with `org`, `workspace`, `orgs`, `roles` once the instance has at least one org — byte-for-byte the old `{principal, kind, role, mode}` on one that has none |
+| `list_members {org, workspace?}` | `view` in the org | members and their org-default roles, the org's workspaces, and (admin only) its scoped tokens — never a secret |
+| `grant_role {project, principal, role, org?, workspace?}` | `admin` on the project | a per-project override, in either direction |
+| `revoke_role {project, principal, org?, workspace?}` | `admin` on the project | drops the override; the principal falls back to their org default |
+
+`principal` is `user:<handle>`, `agent:<name>`, or a bare handle (read as a
+person). `org`/`workspace` are inferred from the caller's active tenant when
+there is exactly one to infer; an API client sending
+`X-Agentcad-Workspace: <org>/<workspace>` (or a browser session that has
+switched workspaces) names it explicitly, and a scoped token's own scope
+always wins and cannot be redirected by an argument that disagrees with it.
+
+**A grant takes effect on the very next request** — no restart, and the same
+browser session that was just refused a write succeeds on its next try the
+moment an admin grants it (this exec is effectively a second writer; the
+guard's own store re-stats the file). A refusal is a structured
+`permission_error` (`403`) naming the rung required and the rung actually
+held — never whether the project *exists*: a caller who holds nothing on a
+project sees the same answer whether it belongs to their own org with no
+grant or to a different org entirely, which is what keeps a cross-tenant
+probe from being an existence oracle. Reaching a workspace by header or
+session that the caller has no role in at all is a **name-free `404`**, for
+the same reason.
+
+**Everyone on one instance still shares one server-user blast radius.** A
+role governs who may *call the API* to build, edit or read a project — it is
+not a filesystem boundary around what a script that IS running can touch. A
+member authorized to build project A still runs as the server user with
+`AGENTCAD_PROJECTS_DIR` wholly readable and writable underneath them,
+including every OTHER org's projects — that has not changed, and per-project
+roles do not change it. PRD-005 isolates *callers* from each other by role;
+it does not isolate *scripts* from each other on disk. Only run this on a VM
+shared by people (and their agents) you would already give a shell to.
+
+---
+
 ## What a stranger can reach
 
 The whole anonymous surface, enumerated. It is a literal in one file
@@ -385,8 +530,167 @@ rather than quietly starting a local server and answering from the wrong
 machine.
 
 Note that admin *routes* require a signed-in person, so an `admin`-role token
-cannot mint another token. A credential that could mint credentials is a
-privilege-escalation shape worth avoiding while there is no audit log.
+cannot mint another token — instance-wide or scoped (below), same rule
+either way. PRD-005a held this while there was no audit log; PRD-005 keeps
+it for a sharper reason: `authz.role_of` can only ever answer `admin` for a
+*person* (see "Organisations, workspaces and roles" above), so a bearer
+token structurally cannot mint, grant or revoke anything — not by policy
+this project chooses to enforce, but because the RBAC model gives an agent
+principal no org membership to hold that role in.
+
+### Scoped agent tokens (PRD-005)
+
+The tokens above are **instance-wide** — a hangover from PRD-005a, and still
+the right shape for a CI credential that has no notion of an org. Once an
+org exists, mint a **scoped** one instead: reachable to a project (or
+several named projects), at a role, and never wider than that — over the
+tool surface, not the CLI, because minting a credential is itself worth an
+audit row (see "Audit" below), and the tool surface is where every mutating
+call gets one.
+
+```bash
+curl -sf -b <admin's session cookie jar> \
+  -H "X-Agentcad-Workspace: acme/main" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"ci","org":"acme","projects":["widget"],"role":"edit"}' \
+  https://cad.example.com/api/tools/create_agent_token
+```
+
+The response's `token` field is shown **once** — the same "SHA-256 digest
+only; a lost token is revoked and replaced, never recovered" contract as an
+instance-wide token. The scope is *also* written as per-project grants for
+the composed principal `agent:<name>`, so
+`revoke_agent_token {token_id}` both kills the credential and drops the
+grants it was minted with (kept if another live token happens to share its
+name). This is a *promotion*, not a new hole: PRD-005a's Decision 14 kept
+minting off the token-authenticated surface specifically "while there is no
+audit log" — the audit log now exists, which is the condition the PRD
+itself named for revisiting it.
+
+---
+
+## Audit (PRD-005)
+
+One SQLite database **per org**, at `<state-dir>/audit/<org>.db`, plus one
+instance-wide database for events that belong to no org — sign-ins,
+enrolments, and account/instance-token administration — at
+`<state-dir>/audit/_instance.db` (`_instance` cannot collide with a real org
+name; the grammar refuses a leading underscore). Rows are
+`{ts, principal, action, project, args_digest, outcome}`. `args_digest` is a
+sha256 of the call's arguments with anything secret-shaped redacted first —
+**never the arguments themselves**: an administrator reading the log may not
+be a member of the project a row is about, and a script body or a parameter
+sweep sitting in it would make the log a second copy of the customer's data.
+The digest is for correlation — the same call, twice, is the same digest.
+
+```bash
+docker compose exec agentcad agentcad admin audit query acme
+docker compose exec agentcad agentcad admin audit query acme \
+  --principal user:anya --since 24h --json
+docker compose exec agentcad agentcad admin audit query _instance --action login
+```
+
+Filters compose with AND; `--since`/`--until` take epoch seconds, an
+ISO-8601 timestamp, or a window like `7d`/`24h`/`30m`; `--principal` matches
+a person **and** every device they used (`user:anya` also matches
+`user:anya/browser:7f3a1b2c`). This reads the files directly — no service,
+no kernel, no port — so it works over `docker compose exec` whether the
+server is up or down, the same contract as `admin user`/`admin token`.
+
+**Retention** is off by default — an audit log that forgets by default is
+not one. Set `AGENTCAD_AUDIT_RETENTION_DAYS` to a positive number of days to
+turn pruning on (see the Configuration table above); pruning is
+opportunistic, running on append and rate-limited to once per org per hour,
+never a cron job of its own.
+
+**Backup: `VACUUM INTO`, never a raw copy.** The database is WAL-mode, so a
+plain `cp`/`tar` taken while the server is writing can capture the main file
+without the `-wal` sidecar holding its most recent commits — measured in the
+PRD-005 spike: a 50-row database copied that way answered `no such table:
+audit`. Use the dedicated command instead, which is safe against a live
+server:
+
+```bash
+docker compose exec agentcad agentcad admin audit backup acme /backup/acme-audit.db
+```
+
+This is **in addition to** the whole-volume tar in "Backup" below, not a
+replacement for it. The audit databases live under `<state-dir>/audit/`,
+outside `auth/`, specifically so 005a's "a `tar` of the state dir is a
+correct backup" statement stays true **for identity** (accounts, sessions,
+tokens) — it was never true for a WAL database, which is why the audit
+store gets its own backup command rather than inheriting the tar's.
+
+**Honest scope.** Two taps write rows today: `routes_auth.py` (every
+sign-in, sign-out, enrolment, and account/instance-token administration
+event — instance-wide) and `tools_cloud.py`'s own admin actions
+(`create_agent_token`, `revoke_agent_token`, `grant_role`, `revoke_role` — a
+project's org). The general "every mutating tool call writes a row" tap
+(`core/audit.py`'s `tap_registry`) is built and unit-tested but **not yet
+installed anywhere the server runs** — so an ordinary `set_part_params` or
+`generate_drawing` call does not yet produce an audit row; only the
+identity- and tenancy-administration actions above do. The full
+three-principal-kind distinction PRD-005 promises (a human edit, a
+chat-agent edit, an MCP-agent edit, all on one project) is proven by the
+test suite today (`tests/test_audit.py`), not by anything reachable over
+`docker compose exec` yet — wiring the general tap into the serve path is a
+named residual, not a silent gap.
+
+---
+
+## Sync: git against a hosted instance (PRD-005)
+
+Every project's history is reachable as an ordinary git remote at
+`<instance>/git/<org>/<workspace>/<project>.git`, authenticated the same way
+as everything else (a bearer token — or, because git speaks Basic, never
+Bearer, a credential helper that turns git's username/password prompt into
+one). `view` clones and fetches; `edit` pushes. `agentcad login` stores a
+token and installs that credential helper, so a plain `git clone`/`push`/
+`pull` against that URL works without ever putting the token in a URL, a
+config file, or `http.extraHeader` — all three leak, into `.git/config`,
+`ps`, and a proxy access log respectively.
+
+```bash
+agentcad login https://cad.example.com --token acad_xxxxxxxx_…
+agentcad clone https://cad.example.com/git/acme/main/widget.git
+#  lands at <projects-dir>/widget, a real local project — scripts, manifest
+#  and history all present, builds fully offline with the local kernel.
+cd widget
+agentcad push          # every local branch and tag, explicit refspecs
+agentcad pull          # fetch + fast-forward, or the PRD-001 merge machinery
+agentcad status --fetch
+```
+
+`push` never forces and never deletes. A push the server cannot fast-forward
+is refused **inside git's own ref transaction** (a pre-receive hook, so the
+refusal is atomic for the whole push — one bad ref rejects every ref in that
+push, on purpose), with a message `git` prints verbatim:
+
+```
+remote: agentcad: refs/heads/main diverged - pull and merge, never force
+remote: agentcad: refusing to delete refs/heads/old - deletes are refused on the hosted copy
+remote: agentcad: refs/tags/v1 already exists - tags are immutable
+```
+
+Branch non-fast-forwards, **every** ref delete (branch or tag), and tag
+*rewrites* are all refused this way — PRD-015 release tags have to stay
+immutable, and git's own `denyNonFastForwards` alone only covers
+`refs/heads/*`. The fix for a divergence is always `agentcad pull`: it
+fetches, fast-forwards what can fast-forward, and merges what cannot through
+the same kernel-validated merge the UI uses, surfacing conflicts rather than
+ever resetting or overwriting local work. A **pushed** state that does not
+build is not a rejected push — the server checks it out and rebuilds on the
+next open, exactly like any other change, and a broken pushed state shows up
+there as an ordinary build error, never as a refusal at push time.
+
+`AGENTCAD_SYNC_MAX_PUSH_MB` (default `512`, see the Configuration table
+above) caps a single push's body on the server. Push and clone bodies are
+**streamed** the whole way, never buffered in memory, in both directions.
+
+`agentcad mcp --remote <url> --token …` points the MCP proxy at a hosted
+instance instead of auto-starting a local server — the same "unreachable
+means say so, never silently answer from the wrong machine" rule as
+`AGENTCAD_URL` above.
 
 ---
 
@@ -438,6 +742,58 @@ The volume is untouched. There is no schema migration step: the state files are
 plain JSON documents, read defensively, and a field added by a later version is
 ignored by an earlier one. Roll back by checking out the previous revision and
 rebuilding.
+
+---
+
+## Desktop builds (release pipeline)
+
+`.github/workflows/release.yml` builds the PyInstaller onedir bundle
+(`scripts/build_binary.sh` — the same command a developer runs locally) for
+macOS and Windows on every `v*` tag (or `workflow_dispatch`), proves the
+compose image still builds on Linux, and attaches every artifact to a GitHub
+release.
+
+**Signing and notarization are secrets-gated, and unsigned by default.** With
+no secrets provisioned the pipeline still builds and still uploads an
+**unsigned** bundle, logged with an explicit
+`::notice::unsigned build — signing secrets not provisioned` rather than
+silently skipping anything. Provision these repository secrets to turn
+signing on:
+
+| Secret | What it is |
+|---|---|
+| `MACOS_CERT_P12` | a Developer ID Application certificate + private key, exported as `.p12`, base64-encoded |
+| `MACOS_CERT_PASSWORD` | the `.p12`'s export password |
+| `APPLE_ID` | the Apple ID enrolled in the Developer Program that owns the certificate |
+| `APPLE_TEAM_ID` | the ten-character team id |
+| `APPLE_APP_PASSWORD` | an **app-specific** password for that Apple ID (never the account password) — `notarytool` needs it |
+| `WINDOWS_CERT_PFX` | a code-signing certificate + private key, `.pfx`, base64-encoded |
+| `WINDOWS_CERT_PASSWORD` | the `.pfx`'s password |
+
+With the macOS five present, the job imports the certificate into a
+throwaway keychain, codesigns every binary in the bundle (hardened runtime,
+`packaging/entitlements.plist`), zips it, submits it to `notarytool --wait`,
+and attempts to staple the result. A staple failure on a bare onedir
+executable (rather than a `.app`/`.pkg`/`.dmg`, the containers Apple
+guarantees stapling for) is reported as a warning, not fatal — the online
+notarization record itself, already waited for, is what Gatekeeper actually
+checks.
+
+With the Windows two present, the job signs the executable with
+`signtool sign /fd SHA256` and a timestamp server, then verifies the
+signature before zipping.
+
+An optional, **non-secret** repository variable `PUBLISH_GHCR=true` also
+pushes the compose image to `ghcr.io/<owner>/agentcad:<tag>`, using the
+workflow's automatic token — off by default, since publishing an image under
+the repository's namespace is a policy choice this pipeline should not make
+on its own the first time someone pushes a tag.
+
+**AC8's positive claim — a build that actually passes notarization/signing —
+is therefore evidence this pipeline produces once the founder provisions the
+certificates above, not something any CI run demonstrates by merely
+existing.** No agent can conjure a signing identity, and this repository's CI
+has never held one.
 
 ---
 
@@ -652,10 +1008,27 @@ Nothing new: it is the error contract that already existed.
 
 ### Still deferred, named so it is not a surprise
 
-No audit log, no per-project ACLs, no organisations, no SSO. No per-account
-compute budget (the caps are per worker per request). Windows confinement
-landed as PRD-006b (an AppContainer, above), but hosted mode is still the
-Linux image — a Windows *host* posture is not built. A narrowed *macOS*
-read posture (the seatbelt equivalent of `hosted`) is not built — hosted mode
-is the Linux image. Attribution exists (history trailers, proposal and comment
-records) but is not a queryable per-instance log.
+PRD-005 shipped organisations/workspaces/per-project roles, OIDC + passkey
+sign-in (local accounts still always work), scoped agent tokens, a queryable
+per-org audit log ("Audit" above — though its general per-tool-call tap is
+not yet wired into the serve path, a named residual there, not a silent
+one), git sync (clone/push/pull against a hosted instance over authenticated
+smart-HTTP), and per-tenant fair kernel scheduling. What is still genuinely
+deferred:
+
+- **SAML/SCIM.** Only generic OIDC (code+PKCE) is built — no enterprise IdP
+  provisioning protocol, no SCIM user/group sync.
+- **Billing.** Nothing here meters or charges for usage; `get_usage`/
+  `/api/health`'s `usage` object is operational visibility, not invoicing.
+- **A multi-process/multi-instance event bus.** The WS fan-out, turn locks,
+  presence and undo stacks are one process's in-memory state — a hosted
+  instance is one process, one store, one kernel pool, by design. Running
+  two behind a load balancer would not share any of that.
+- **No per-account compute budget.** The caps in "Sizing" above are per
+  worker per request, never per account or per org: any member (or their
+  agent) can still queue expensive builds one after another.
+
+Windows confinement landed as PRD-006b (an AppContainer, above), but hosted
+mode is still the Linux image — a Windows *host* posture is not built, and
+neither is a narrowed *macOS* read posture (the seatbelt equivalent of
+`hosted`).

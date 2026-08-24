@@ -141,6 +141,201 @@ jobs:
           curl -sf -b jar "$AGENTCAD_PUBLIC_ORIGIN/api/projects" | grep -q smoke
           docker compose exec -T agentcad agentcad admin user list | grep -q smoke
 
+      # =============================================================
+      # PRD-005: a second user, an org, per-project roles, a scoped
+      # agent token, a git sync round trip and an audit query — the
+      # deployed halves of AC1/AC2/AC5/AC6. Everything above this point
+      # is PRD-005a's single-admin story and is left untouched.
+      # =============================================================
+
+      - name: A second user, an org and a role ladder (AC1/AC2 setup)
+        run: |
+          docker compose exec -T agentcad \
+            agentcad admin user add anya | tee add2.txt
+          grep -o "$AGENTCAD_PUBLIC_ORIGIN/api/auth/enrol/[^ ]*" add2.txt > enrol2.txt
+          test -s enrol2.txt
+          curl -sf -c jar2 -X POST -H 'Content-Type: application/json' \
+            -H "Origin: $AGENTCAD_PUBLIC_ORIGIN" \
+            -d '{"password":"anya test password"}' "$(cat enrol2.txt)"
+          echo
+
+          # There is no CLI or tool that mints an org yet (`create_org`'s
+          # only caller today is `core/tools_cloud.py`, unwrapped) — this
+          # exec mirrors exactly what that pack does
+          # (`tenancy.TenancyStore(store.root)`), the same "read the state
+          # files directly, no service, no kernel, no port" contract
+          # `agentcad admin` already relies on. `create_org(..., admin=)`
+          # is one atomic write so the org is never briefly adminless.
+          docker compose exec -T agentcad python3 -c "
+          from agentcad.core.appmode import ensure_state_dir
+          from agentcad.core.authstore import AuthStore
+          from agentcad.core import tenancy
+          store = AuthStore(ensure_state_dir() / 'auth')
+          tenants = tenancy.TenancyStore(store.root)
+          tenants.create_org('acme', label='Acme Robotics', admin='smoke')
+          tenants.create_workspace('acme', 'main', label='Mechanical')
+          tenants.add_member('acme', 'anya', 'view')
+          print('acme/main ready: smoke=admin anya=view')
+          "
+
+      - name: Two projects, and view -> 403 -> grant edit -> 200 (AC2 deployed half)
+        run: |
+          curl -sf -b jar -H "X-Agentcad-Workspace: acme/main" \
+            -H "Origin: $AGENTCAD_PUBLIC_ORIGIN" -X POST \
+            -H 'Content-Type: application/json' -d '{"name":"widget"}' \
+            "$AGENTCAD_PUBLIC_ORIGIN/api/projects"
+          echo
+          curl -sf -b jar -H "X-Agentcad-Workspace: acme/main" \
+            -H "Origin: $AGENTCAD_PUBLIC_ORIGIN" -X POST \
+            -H 'Content-Type: application/json' -d '{"name":"gadget"}' \
+            "$AGENTCAD_PUBLIC_ORIGIN/api/projects"
+          echo
+
+          # anya is a VIEWER of acme/main: a read succeeds, a write is a
+          # structured 403 (the same PUT the unit suite pins for AC2).
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b jar2 \
+            -H "X-Agentcad-Workspace: acme/main" -X PUT \
+            -H 'Content-Type: application/json' \
+            -H "Origin: $AGENTCAD_PUBLIC_ORIGIN" \
+            -d '{"instances":[]}' \
+            "$AGENTCAD_PUBLIC_ORIGIN/api/projects/widget/assembly")
+          [ "$code" = "403" ] || {
+            echo "viewer edit -> $code (expected 403)"; exit 1; }
+
+          # smoke (org admin) grants anya `edit` on widget only, over the
+          # tool surface a real operator would use.
+          grant=$(curl -sf -b jar -H "X-Agentcad-Workspace: acme/main" \
+            -H "Origin: $AGENTCAD_PUBLIC_ORIGIN" -X POST \
+            -H 'Content-Type: application/json' \
+            -d '{"project":"widget","principal":"anya","role":"edit"}' \
+            "$AGENTCAD_PUBLIC_ORIGIN/api/tools/grant_role")
+          echo "$grant"
+          echo "$grant" | grep -q '"error"' && {
+            echo "grant_role was refused"; exit 1; }
+
+          # No restart, no new app: the SAME anya session now writes.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b jar2 \
+            -H "X-Agentcad-Workspace: acme/main" -X PUT \
+            -H 'Content-Type: application/json' \
+            -H "Origin: $AGENTCAD_PUBLIC_ORIGIN" \
+            -d '{"instances":[]}' \
+            "$AGENTCAD_PUBLIC_ORIGIN/api/projects/widget/assembly")
+          [ "$code" = "200" ] || {
+            echo "edit after grant -> $code (expected 200)"; exit 1; }
+
+      - name: A token scoped to project A only, and the cross-project 403 (AC5 deployed half)
+        run: |
+          mint=$(curl -sf -b jar -H "X-Agentcad-Workspace: acme/main" \
+            -H "Origin: $AGENTCAD_PUBLIC_ORIGIN" -X POST \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"ci","org":"acme","workspace":"main","projects":["widget"],"role":"edit"}' \
+            "$AGENTCAD_PUBLIC_ORIGIN/api/tools/create_agent_token")
+          echo "$mint" | python3 -c "
+          import json, sys
+          row = json.load(sys.stdin)
+          assert 'error' not in row, row
+          assert row.get('id') and row.get('token')
+          print(row['id']); print(row['token'])
+          " > mint_out.txt || { echo "$mint"; exit 1; }
+          # mint_out.txt line 1 is the token id (not secret); line 2 is the
+          # bearer secret, shown once — it is never echoed to the log.
+
+          TOKEN=$(sed -n 2p mint_out.txt)
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"instances":[]}' \
+            "$AGENTCAD_PUBLIC_ORIGIN/api/projects/widget/assembly")
+          [ "$code" = "200" ] || {
+            echo "token edit on A (widget) -> $code (expected 200)"; exit 1; }
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"instances":[]}' \
+            "$AGENTCAD_PUBLIC_ORIGIN/api/projects/gadget/assembly")
+          [ "$code" = "403" ] || {
+            echo "token edit on B (gadget) -> $code (expected 403)"; exit 1; }
+
+      - name: A git clone, edit and push against the deployed instance (the sync smoke)
+        run: |
+          # A throwaway CI credential, so `http.extraHeader` on the command
+          # line is an acceptable shortcut here — it is NOT the recommended
+          # flow (docs/deployment.md, "Sync"): `agentcad login`/`clone`
+          # install a git credential helper precisely so a token never sits
+          # in a URL, a config file or `extraHeader`. The token is never
+          # echoed; it lives only in this step's process environment.
+          TOKEN=$(sed -n 2p mint_out.txt)
+          git -c http.extraHeader="Authorization: Bearer $TOKEN" \
+            clone --quiet "$AGENTCAD_PUBLIC_ORIGIN/git/acme/main/widget.git" \
+            sync_clone
+
+          cd sync_clone
+          echo "ci sync smoke $(date -u +%FT%TZ)" > SMOKE_NOTE.txt
+          git add SMOKE_NOTE.txt
+          git -c user.email=ci@agentcad.test -c user.name=ci \
+            commit --quiet -m "smoke: sync round trip"
+          git -c http.extraHeader="Authorization: Bearer $TOKEN" \
+            push --quiet origin HEAD
+          cd ..
+
+          # The server checks out the pushed commit into the SAME directory
+          # it serves from before the push's HTTP response completes
+          # (routes_sync.py's `after()`), so this is already there.
+          docker compose exec -T agentcad \
+            cat /data/projects/orgs/acme/main/widget/SMOKE_NOTE.txt \
+            | tee materialized.txt
+          grep -q "ci sync smoke" materialized.txt || {
+            echo "the pushed file did not materialize on the server"; exit 1; }
+
+      - name: Revoke the token; the next request is 401 (AC5 revocation)
+        run: |
+          TOKEN_ID=$(sed -n 1p mint_out.txt)
+          TOKEN=$(sed -n 2p mint_out.txt)
+          revoke=$(curl -sf -b jar -H "X-Agentcad-Workspace: acme/main" \
+            -H "Origin: $AGENTCAD_PUBLIC_ORIGIN" -X POST \
+            -H 'Content-Type: application/json' \
+            -d "{\"token_id\":\"$TOKEN_ID\"}" \
+            "$AGENTCAD_PUBLIC_ORIGIN/api/tools/revoke_agent_token")
+          echo "$revoke" | grep -q '"error"' && {
+            echo "$revoke"; exit 1; }
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" \
+            "$AGENTCAD_PUBLIC_ORIGIN/api/projects/widget")
+          [ "$code" = "401" ] || {
+            echo "revoked token -> $code (expected 401)"; exit 1; }
+          rm -f mint_out.txt
+
+      - name: An audit query distinguishes principals (AC6 deployed half)
+        run: |
+          # Honest scope: the general "every mutating tool writes a row" tap
+          # (`audit.tap_registry`) is built and unit-tested but not yet
+          # installed anywhere the server runs — see docs/deployment.md,
+          # "Audit". So this step queries what IS wired today: `_instance`
+          # (auth events — sign-ins here) and `acme` (the tenancy-tool taps
+          # `create_agent_token`/`grant_role`/`revoke_agent_token` performed
+          # above). The full human/chat-agent/MCP-agent three-way distinction
+          # on one project (AC6's complete claim) is `tests/test_audit.py`'s
+          # job, not this workflow's.
+          docker compose exec -T agentcad \
+            agentcad admin audit query acme --json > audit_acme.json
+          docker compose exec -T agentcad \
+            agentcad admin audit query _instance --json > audit_instance.json
+          cat audit_acme.json
+          cat audit_instance.json
+          python3 - <<'PY'
+          import json
+          acme = json.load(open("audit_acme.json"))
+          inst = json.load(open("audit_instance.json"))
+          acme_principals = {row["principal"] for row in acme["rows"]}
+          inst_principals = {row["principal"] for row in inst["rows"]}
+          assert "user:smoke" in acme_principals, acme
+          assert {"user:smoke", "user:anya"} <= inst_principals, inst
+          print("acme principals:", sorted(acme_principals))
+          print("_instance principals:", sorted(inst_principals))
+          PY
+
       - name: Logs on failure
         if: failure()
         run: docker compose logs --no-color --tail 400
