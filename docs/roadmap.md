@@ -175,12 +175,16 @@ commit. The 031a licensing precondition is closed.
 | [030](prd/pending/PRD-030-motion-dynamics.md) | Motion & dynamics — closed-chain kinematics; MuJoCo rigid-body dynamics (reactions, motor sizing); loads→FEM handoff | pending | idea 6 | 013 |
 | [031](prd/pending/PRD-031-marketplace.md) | Marketplace & community hub — validated parametric components/projects/skills; server-side execution only; provenance & disclosure | pending — **split: 031a seeded read-only catalog (step 4) · 031b open publishing (step 6)** | idea 1e | 031a: 011 · 005a · 007 — 031b: + 006 |
 | [032](prd/pending/PRD-032-universal-cad-import.md) | Universal CAD import — neutral-deep + ODA opt-in + consent-gated cloud conversion; fidelity reports; re-import diffs | pending | idea 7 | 017 |
+| [033](prd/pending/PRD-033-guarded-geometry-occt-stewardship.md) | Guarded geometry & OCCT stewardship — one guarded-op contract behind an enumerated registry (measurement, structured degradation or refusal), a defect corpus with an expectation matrix, differential fuzzing and upstream contribution; owning the OCCT build only on a written trigger | pending | founder idea (Aug 2026), prompted by OCCT#1496 | — |
 
 Sequencing inside phases follows each PRD's dependency header; the phase
 order is the strategy: collaboration core first (the wedge), daily-driver
 depth second (adoption), moats third (compounding). PRD-026/027 are early
 v5 (they unblock most UI work); PRD-030's kinematics tier and PRD-032's
-Tier-1 formats can ride late v5.
+Tier-1 formats can ride late v5. PRD-033 is the exception inside v6: its
+guarded-geometry MVP is quality work on already-shipped code and does not
+sit behind the v6 tier, while its fuzzing/upstream and build-pipeline
+phases do.
 
 ## Shipped before the PRD system (v0.1 → v3)
 
@@ -208,6 +212,8 @@ Evidence-backed exclusions (each traceable to
 - **Our own geometry kernel, CAD language, or B-rep foundation model** —
   the kernel graveyard, the DSL tax, and data-poor training runs are
   documented mistakes; OCCT + Python + integrated generation models win.
+  Owning the *build* of OCCT and guarding its answers is PRD-033; writing
+  or buying a kernel remains excluded.
 - **In-house CAM/toolpathing** — the handoff is STEP AP242 + PMI +
   standards drawings + DFM-checked quotes (PRD-021/022).
 - **In-house high-fidelity solvers** (contact/nonlinear FEM, CFD,
