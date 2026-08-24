@@ -72,6 +72,19 @@ PUBLIC_PATHS: frozenset[str] = frozenset({
     "/",                        # index.html off disk; the app needs a login page
     "/api/health",              # trimmed to {status, mode} without a principal
     "/api/auth/login",          # rate limited, indistinguishable failures
+    # PRD-005 slice 3 (FR1) — the four doors a person who is NOT yet signed in
+    # has to be able to knock on, added as **exact paths and not a prefix**:
+    # `/api/auth/oidc/` would have opened `POST /api/auth/oidc/link` (which
+    # must stay authenticated — see `routes_auth.oidc_link_begin` for why a
+    # link started by a GET is an account-takeover shape), and
+    # `/api/auth/passkey/` would have opened the register ceremony, which is
+    # how an anonymous caller would add a credential to somebody's account.
+    # None reaches the kernel; each is rate limited on the same per-address
+    # bucket `/api/auth/login` uses, and each refusal is the same one.
+    "/api/auth/oidc/login",     # 302 to the provider; 404 when unconfigured
+    "/api/auth/oidc/callback",  # state+nonce+PKCE checked before anything else
+    "/api/auth/passkey/login/begin",     # a challenge is a nonce, not a secret
+    "/api/auth/passkey/login/complete",  # verified assertion -> session cookie
 })
 
 #: Prefix rules, matched against the path (and, in the enumeration test,

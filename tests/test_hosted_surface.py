@@ -39,6 +39,17 @@ EXPECTED_PUBLIC = {
     ("POST", "/api/auth/login"),
     ("GET", "/api/auth/enrol/{token}"),
     ("POST", "/api/auth/enrol/{token}"),
+    # PRD-005 slice 3 (FR1) — the four sign-in doors a person who has no
+    # session yet must be able to reach, added to `security.PUBLIC_PATHS` as
+    # **exact paths**, never a prefix: `/api/auth/oidc/` would have opened
+    # `POST /api/auth/oidc/link` and `/api/auth/passkey/` the register
+    # ceremony, which are the two that must stay authenticated. Mounted in the
+    # same change that lists them (`NOT_YET_BUILT` stays `== set()`), and
+    # swept by the kernel-silence test below like everything else here.
+    ("GET", "/api/auth/oidc/login"),
+    ("GET", "/api/auth/oidc/callback"),
+    ("POST", "/api/auth/passkey/login/begin"),
+    ("POST", "/api/auth/passkey/login/complete"),
     ("GET", "/api/public/packages"),
     ("GET", "/api/public/packages/{name}"),
     ("GET", "/api/public/packages/{name}/versions/{version}"),
@@ -207,6 +218,19 @@ def test_static_mounts_are_public(hosted_client):
     "/svg",
     "/embed",
     "/embedding",
+    # PRD-005 slice 3: the four FR1 doors are EXACT paths, so nothing around
+    # them opened. These are the near misses that a prefix would have caught —
+    # the two that would be an account takeover are named first.
+    "/api/auth/oidc/link",              # linking is authenticated + CSRF-checked
+    "/api/auth/passkey/register/begin",  # ...or anyone adds a credential to you
+    "/api/auth/passkey/register/complete",
+    "/api/auth/passkeys",
+    "/api/auth/oidc",
+    "/api/auth/oidc/",
+    "/api/auth/oidc/logins",           # a path is not a prefix
+    "/api/auth/passkey/login",
+    "/api/auth/passkey/login/",
+    "/api/auth/passkey/login/begins",
 ])
 def test_paths_that_must_not_be_public(path):
     """`routes_packages.py`'s search and preview iterate every configured

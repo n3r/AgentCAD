@@ -13,6 +13,10 @@ dependencies = [
     "anthropic>=0.40",
     "mcp>=1.2",
     "httpx>=0.27",
+    # explicit — was an undeclared transitive of mcp. PRD-005's OIDC relying
+    # party (`core/oidc.py`) validates ID tokens with it, so a future mcp that
+    # drops the requirement must not silently take sign-in with it.
+    "pyjwt[crypto]>=2.10",
     "ezdxf>=1.1",
     # The constraint solver (agentcad/toolkit/sketch.py) imports both, and it
     # runs in the SERVER process, which must never import build123d. They were
@@ -23,6 +27,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Hosted-instance extras (PRD-005 FR1). ONLY the WebAuthn wire format lives
+# here: the passkey routes lazy-import `webauthn` inside their handlers and
+# answer 501 without it (`routes_auth.passkeys_available`, the `[fem]`
+# precedent), so a local or a password-only hosted instance never installs it.
+# OIDC is NOT gated — `httpx` and `pyjwt[crypto]` are hard dependencies, so
+# single sign-on works on a plain install. `cbor2` arrives with `webauthn`
+# and is named because the virtual authenticator the tests ship builds COSE
+# keys with it directly.
+cloud = [
+    "webauthn>=3.0",
+    "cbor2>=5.6",
+]
 fem = [
     "gmsh>=4.13",
     "scikit-fem>=10",
