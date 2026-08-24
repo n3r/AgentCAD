@@ -125,6 +125,13 @@
     <button id="theme-btn" class="tb-btn" title="Switch to light theme"
             aria-label="Switch to light theme">☀</button>
 
+    <!-- Hosted mode + at least one org membership only (PRD-005 slice 8):
+         workspace.js fills this with "org/ws" and opens the switcher dialog
+         on click. Stays hidden otherwise — local mode and an untenanted
+         hosted instance (005a with no orgs) render nothing, unchanged. -->
+    <button id="workspace-chip" class="tb-btn hidden" type="button"
+            title="Switch org / workspace">—</button>
+
     <!-- Hosted mode only: auth.js fills this with the handle and a Sign out
          button. Stays empty and hidden in local mode, where there is no
          identity to show. -->

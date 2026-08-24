@@ -5,7 +5,8 @@ Four atomically-written JSON documents under ``<state-dir>/auth/``::
     users.json        {handle: {role, disabled, created, password: {...}|null}}
     enrolments.json   {sha256(token): {handle, expires, used}}
     sessions.json     {sha256(secret): {handle, device, created, last_seen, expires}}
-    tokens.json       {token_id: {name, role, digest, created, expires, revoked}}
+    tokens.json       {token_id: {name, role, digest, created, expires, revoked,
+                                  scope?: {org, workspace, projects, role}}}
 
 **Why JSON and not SQLite.** PRD-005 specifies "per-instance SQLite (WAL)" and
 names *audit volume and membership queries* as the motivation — and the audit
@@ -50,7 +51,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .model import ConflictError, NotFoundError, ValidationError
+from .model import ID_RE, ConflictError, NotFoundError, ValidationError
 
 try:  # pragma: no cover - exercised by the portability suite, not by CI's mac
     import fcntl
@@ -69,9 +70,24 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
 
 ROLES = ("admin", "member")
 
+#: PRD-005 FR3's ladder, for a token's **scope** — a different vocabulary from
+#: :data:`ROLES` above, which is 005a's instance role and stays what it was.
+#: Kept as a literal rather than imported from ``tenancy``, because ``tenancy``
+#: imports *this* module (its lock guard) and the cycle would be real; a test
+#: pins the two tuples equal, the same way ``tenancy.ROLES`` and
+#: ``authz.ROLE_ORDER`` are pinned.
+SCOPE_ROLES = ("view", "comment", "edit", "admin")
+
 USERS, ENROLMENTS, SESSIONS, TOKENS = (
     "users.json", "enrolments.json", "sessions.json", "tokens.json")
-DOCUMENTS = frozenset({USERS, ENROLMENTS, SESSIONS, TOKENS})
+#: PRD-005 FR1's provider configuration — the one document here that is
+#: **written by a human**, not by this module (see :meth:`AuthStore.read_oidc`).
+#: It joins the four rather than becoming an environment variable for the
+#: reason the other four are files: ``agentcad admin ...`` through
+#: ``docker compose exec`` is a supported second writer, and a client secret in
+#: ``docker inspect`` output is worse than one 0600 beside the password hashes.
+OIDC = "oidc.json"
+DOCUMENTS = frozenset({USERS, ENROLMENTS, SESSIONS, TOKENS, OIDC})
 
 LOCK_FILE = ".lock"
 
@@ -581,10 +597,27 @@ class AuthStore:
     # --------------------------------------------------------------- tokens
 
     def add_token(self, name: str, role: str = "member",
-                  ttl_days: int | None = None) -> str:
-        """Mint ``acad_<id8>_<secret43>``. Returned **once**; stored by digest."""
+                  ttl_days: int | None = None,
+                  scope: dict | None = None) -> str:
+        """Mint ``acad_<id8>_<secret43>``. Returned **once**; stored by digest.
+
+        ``scope`` (PRD-005 FR3) is **additive and optional**. Omitted, the
+        record is byte-for-byte what 005a wrote and the token keeps 005a's
+        semantics exactly: instance-wide, bounded only by its instance
+        ``role``. Present, it is :func:`check_token_scope`'s normalized
+        ``{org, workspace, projects, role}`` and the token reaches those
+        projects and no others.
+
+        The asymmetry is deliberate, and it is what "an unscoped token keeps
+        today's behaviour" means in code rather than in prose: only a hosted
+        **administrator** mints an unscoped one (``agentcad admin token add``,
+        ``POST /api/auth/tokens``), while the tenant-facing
+        ``create_agent_token`` tool always writes a scope. An instance that
+        never mints from the tool surface is unchanged by this feature.
+        """
         name = _check_name(name)
         role = _check_role(role)
+        scope = check_token_scope(scope) if scope is not None else None
         secret = _mint_secret()
         with self._scope():
             tokens = dict(self._read(TOKENS, fresh=True))
@@ -598,12 +631,21 @@ class AuthStore:
                 "created": _now(),
                 "expires": (_now() + ttl_days * 86400) if ttl_days else None,
                 "revoked": False,
+                # Written only when there is one, so an unscoped token's row is
+                # the same JSON it was before PRD-005 — nothing to migrate, and
+                # a diff of `tokens.json` across the upgrade is empty.
+                **({"scope": scope} if scope else {}),
             }
             self._write(TOKENS, tokens)
         return f"{BEARER_PREFIX}_{token_id}_{secret}"
 
     def list_tokens(self) -> list[dict]:
-        """Every token, newest last. Never the digest, never the secret."""
+        """Every token, newest last. Never the digest, never the secret.
+
+        ``scope`` appears on a row **only when the token has one**: the key set
+        of a legacy row is unchanged, which is asserted by equality in
+        ``tests/test_authstore.py`` and is the shape 005a's callers destructure.
+        """
         rows = [
             {
                 "id": token_id,
@@ -612,10 +654,52 @@ class AuthStore:
                 "created": row.get("created"),
                 "expires": row.get("expires"),
                 "revoked": bool(row.get("revoked")),
+                **({"scope": _scope_row(row)} if _scope_row(row) else {}),
             }
             for token_id, row in self._read(TOKENS).items()
         ]
         return sorted(rows, key=lambda r: (r["created"] or 0, r["id"]))
+
+    def get_token(self, token_id: str) -> dict | None:
+        """One token's public row (scope included), or ``None``.
+
+        What ``revoke_agent_token`` needs to know *which* org's grants to drop
+        before it revokes — and it is a read of the same rows
+        :meth:`list_tokens` renders, never the digest.
+        """
+        for row in self.list_tokens():
+            if row["id"] == token_id:
+                return row
+        return None
+
+    def live_tokens_named(self, name: str) -> list[dict]:
+        """Every token named *name* that could authenticate right now.
+
+        Names are labels, not keys — 005a mints two tokens called ``ci``
+        happily and a test pins that. But both compose into the **one**
+        principal ``agent:ci``, so a scoped mint has to be able to see the
+        others before it adds a second set of grants under that name.
+        """
+        now = _now()
+        return [
+            row for row in self.list_tokens()
+            if row["name"] == name and not row["revoked"]
+            and not (row["expires"] and float(row["expires"]) <= now)
+        ]
+
+    def scope_for_principal(self, name: str) -> dict | None:
+        """The scope ``agent:<name>`` is speaking with, or ``None``.
+
+        ``None`` for a legacy token, for an unknown name **and for an
+        ambiguous one** — two live scoped tokens sharing a name are two scopes
+        for one principal, and answering with either would be a guess. Reach is
+        never decided here in any case: the tenancy grants are the authority
+        (``authz.role_of``), and this is what ``whoami`` renders so the holder
+        can see what their token was minted for.
+        """
+        scopes = [row["scope"] for row in self.live_tokens_named(name)
+                  if row.get("scope")]
+        return dict(scopes[0]) if len(scopes) == 1 else None
 
     def revoke_token(self, token_id: str) -> None:
         """Mark revoked (rather than delete) so ``admin token list`` still
@@ -654,7 +738,237 @@ class AuthStore:
             return None
         if not hmac.compare_digest(_digest(secret), str(row.get("digest", ""))):
             return None
-        return {"name": row.get("name", ""), "role": row.get("role", "member")}
+        # `scope` is present ONLY for a scoped token, so an unscoped one
+        # resolves to exactly the two keys 005a returned — `security.
+        # resolve_principal` and every test that compares this dict by
+        # equality are untouched, and a caller that never saw a scope keeps
+        # 005a's instance-wide semantics with no branch of its own.
+        scope = _scope_row(row)
+        return {"name": row.get("name", ""), "role": row.get("role", "member"),
+                **({"scope": scope} if scope else {})}
+
+    # ------------------------------------------------- passkeys (PRD-005 FR1)
+    #
+    # Two new **per-user** fields, added beside `role`/`disabled`/`created`/
+    # `password` rather than in documents of their own::
+    #
+    #     "passkeys": [{id, public_key, sign_count, label, created,
+    #                   transports, backed_up}]
+    #     "oidc":     {issuer, subject, email, linked}
+    #
+    # They belong to the account and die with it, so a second document would
+    # only add a way for the two to disagree. Every reader below is
+    # **schema-tolerant** — an absent or malformed field reads as "none", never
+    # as an error — because these fields did not exist when today's
+    # `users.json` files were written and an instance that upgraded must not
+    # need a migration. Nothing here reshapes an existing field: a user row
+    # that never registers a passkey is byte-identical to what it was.
+    #
+    # `id` and `public_key` are **base64url** text (the WebAuthn wire form), so
+    # a credential is JSON without a codec: `webauthn.base64url_to_bytes` is the
+    # inverse, and the route pack is the only thing that needs it.
+
+    def add_passkey(self, handle: str, *, credential_id: str, public_key: str,
+                    sign_count: int = 0, label: str | None = None,
+                    transports: list | None = None,
+                    backed_up: bool | None = None) -> dict:
+        """Register a credential for an existing account. Returns the row.
+
+        A credential id is globally unique (it comes out of an authenticator's
+        CSPRNG), so registering one that already exists anywhere in the store
+        is a conflict rather than a second row: two accounts sharing one
+        credential is an identity that resolves two ways.
+        """
+        credential_id = _check_credential_id(credential_id)
+        if not isinstance(public_key, str) or not public_key:
+            raise ValidationError("a passkey needs its public key",
+                                  {"handle": handle})
+        with self._scope():
+            users = dict(self._read(USERS, fresh=True))
+            row = users.get(handle)
+            if row is None:
+                raise NotFoundError(f"no account {handle!r}", {"handle": handle})
+            for other, other_row in users.items():
+                if any(p.get("id") == credential_id
+                       for p in _passkey_rows(other_row)):
+                    raise ConflictError(
+                        "that passkey is already registered"
+                        + (" on this account" if other == handle else ""),
+                        {"handle": handle})
+            entry = {
+                "id": credential_id,
+                "public_key": public_key,
+                "sign_count": max(0, int(sign_count or 0)),
+                "label": (label or "passkey")[:64],
+                "created": _now(),
+                "transports": [str(t)[:16] for t in (transports or [])][:8],
+                "backed_up": bool(backed_up),
+            }
+            users[handle] = {**row, "passkeys": [*_passkey_rows(row), entry]}
+            self._write(USERS, users)
+        return dict(entry)
+
+    def get_passkeys(self, handle: str) -> list[dict]:
+        """Every credential on an account, oldest first. Public keys included:
+        a public key is public, and the route that lists them is the account's
+        own."""
+        return [dict(p) for p in _passkey_rows(self._read(USERS).get(handle or ""))]
+
+    def find_by_passkey(self, credential_id: str) -> dict | None:
+        """``{handle, ...credential}`` for a credential id, else ``None``.
+
+        This is what makes a **usernameless** sign-in possible: the browser
+        hands back a credential id and this resolves the account, so nobody
+        types a handle. It never raises — it is reached by an anonymous request
+        carrying an attacker's payload.
+        """
+        if not isinstance(credential_id, str) or not credential_id:
+            return None
+        for handle, row in sorted(self._read(USERS).items()):
+            for entry in _passkey_rows(row):
+                if entry.get("id") == credential_id:
+                    return {"handle": handle, **dict(entry)}
+        return None
+
+    def update_sign_count(self, handle: str, credential_id: str,
+                          sign_count: int) -> None:
+        """Record the counter an assertion reported.
+
+        Silent when the credential is gone (it can be removed between the
+        assertion and this write); **never lowers** a stored counter, because
+        the counter's only job is to be monotonic and a regression is what the
+        verifier refuses on.
+        """
+        with self._scope():
+            users = dict(self._read(USERS, fresh=True))
+            row = users.get(handle)
+            if row is None:
+                return
+            rows = _passkey_rows(row)
+            updated, changed = [], False
+            for entry in rows:
+                if (entry.get("id") == credential_id
+                        and int(sign_count or 0) > int(entry.get("sign_count") or 0)):
+                    entry = {**entry, "sign_count": int(sign_count),
+                             "last_used": _now()}
+                    changed = True
+                elif entry.get("id") == credential_id:
+                    entry = {**entry, "last_used": _now()}
+                    changed = True
+                updated.append(entry)
+            if not changed:
+                return
+            users[handle] = {**row, "passkeys": updated}
+            self._write(USERS, users)
+
+    def remove_passkey(self, handle: str, credential_id: str) -> bool:
+        """Delete a credential. ``True`` iff one went."""
+        with self._scope():
+            users = dict(self._read(USERS, fresh=True))
+            row = users.get(handle)
+            if row is None:
+                raise NotFoundError(f"no account {handle!r}", {"handle": handle})
+            kept = [p for p in _passkey_rows(row) if p.get("id") != credential_id]
+            if len(kept) == len(_passkey_rows(row)):
+                return False
+            users[handle] = {**row, "passkeys": kept}
+            self._write(USERS, users)
+        return True
+
+    # ----------------------------------------------------- OIDC link (FR1)
+
+    def link_oidc(self, handle: str, issuer: str, subject: str,
+                  email: str | None = None) -> dict:
+        """Bind an IdP identity to an account. One identity per account.
+
+        Idempotent **and write-free when nothing changed**: an OIDC sign-in
+        calls this every time, and re-writing `users.json` on every sign-in
+        would put an flock + fsync on the login path for no new information.
+        """
+        if not isinstance(issuer, str) or not issuer.strip():
+            raise ValidationError("an OIDC link needs an issuer")
+        if not isinstance(subject, str) or not subject.strip():
+            raise ValidationError("an OIDC link needs a subject")
+        link = {"issuer": issuer.strip().rstrip("/"), "subject": subject.strip(),
+                "email": (email or None), "linked": _now()}
+        with self._scope():
+            users = dict(self._read(USERS, fresh=True))
+            row = users.get(handle)
+            if row is None:
+                raise NotFoundError(f"no account {handle!r}", {"handle": handle})
+            for other, other_row in users.items():
+                current = _oidc_row(other_row)
+                if (other != handle and current
+                        and current.get("issuer") == link["issuer"]
+                        and current.get("subject") == link["subject"]):
+                    raise ConflictError(
+                        "that identity is already linked to another account",
+                        {"issuer": link["issuer"]})
+            current = _oidc_row(row)
+            if (current and current.get("issuer") == link["issuer"]
+                    and current.get("subject") == link["subject"]
+                    and current.get("email") == link["email"]):
+                return dict(current)                 # nothing to write
+            users[handle] = {**row, "oidc": link}
+            self._write(USERS, users)
+        return dict(link)
+
+    def find_oidc(self, handle: str) -> dict | None:
+        """The identity linked to *handle*, or ``None``."""
+        row = _oidc_row(self._read(USERS).get(handle or ""))
+        return dict(row) if row else None
+
+    def find_by_oidc(self, issuer: str, subject: str) -> str | None:
+        """The handle an IdP identity signs in as, or ``None``.
+
+        Never raises: it is the first thing an OIDC callback asks, and that
+        callback is anonymous.
+        """
+        if not isinstance(issuer, str) or not isinstance(subject, str):
+            return None
+        issuer, subject = issuer.strip().rstrip("/"), subject.strip()
+        if not issuer or not subject:
+            return None
+        for handle, row in sorted(self._read(USERS).items()):
+            link = _oidc_row(row)
+            if (link and link.get("issuer") == issuer
+                    and link.get("subject") == subject):
+                return handle
+        return None
+
+    def unlink_oidc(self, handle: str) -> bool:
+        """Drop the link. ``True`` iff one went."""
+        with self._scope():
+            users = dict(self._read(USERS, fresh=True))
+            row = users.get(handle)
+            if row is None:
+                raise NotFoundError(f"no account {handle!r}", {"handle": handle})
+            if _oidc_row(row) is None:
+                return False
+            users[handle] = {k: v for k, v in row.items() if k != "oidc"}
+            self._write(USERS, users)
+        return True
+
+    # ------------------------------------------------- provider configuration
+
+    def read_oidc(self) -> dict:
+        """``oidc.json``, or ``{}`` when the instance has no provider.
+
+        The one document here a **human** writes, so it is read through the
+        same cache and the same "unreadable is not empty" rule as the other
+        four: a syntax error in a hand-edited file must be a loud refusal, not
+        an instance that silently forgets its identity provider.
+        """
+        return dict(self._read(OIDC))
+
+    def write_oidc(self, document: dict) -> dict:
+        """Replace ``oidc.json`` (0600, atomic). Used by tests and by any
+        future admin CLI; the operator's own editor is the other writer."""
+        if not isinstance(document, dict):
+            raise ValidationError("the OIDC configuration must be an object")
+        with self._scope():
+            self._write(OIDC, document)
+        return dict(document)
 
 
 # --------------------------------------------------------------- validation
@@ -687,6 +1001,224 @@ def _check_role(role: object) -> str:
         raise ValidationError(
             f"role must be one of {', '.join(ROLES)}", {"role": role})
     return role
+
+
+# ------------------------------------------------- token scope (PRD-005 FR3)
+#
+# A scope is `{org, workspace, projects, role}` and it is stored **normalized**:
+# every entry of `projects` is a fully qualified `<workspace>/<project>`, sorted
+# and de-duplicated. Normalizing on write rather than on read is PRD-012's
+# ruling for declared configurations, and it buys the same thing here: one
+# spelling in the document, so a comparison is a string comparison and an
+# operator reading `tokens.json` sees exactly what the token reaches.
+#
+# `workspace` is the default the unqualified entries were resolved against. It
+# is kept because it is also **the tenant a bearer request resolves to** when
+# slice 4 wires token scope into `security.resolve_principal`; without it a
+# token that names one workspace's projects would still have no answer to
+# "which workspace am I in".
+
+#: The one place the shape is spelled out for a reader; the validator below is
+#: the enforcement.
+SCOPE_KEYS = ("org", "workspace", "projects", "role")
+
+#: A scope may not name an unbounded number of projects: it is written by a
+#: tool call and read on every authorization question.
+MAX_SCOPE_PROJECTS = 200
+
+
+def check_token_scope(scope: object, *, workspace: str | None = None) -> dict:
+    """Normalize a token scope, or raise ``ValidationError``.
+
+    Accepts ``projects`` entries in either spelling — ``"widget"`` (resolved
+    against ``workspace``, from the scope or the argument) or
+    ``"main/widget"`` — and always **stores the qualified form**. An empty
+    ``projects`` list is refused rather than read as "the whole org": a
+    credential whose reach is decided by an omission is exactly the kind of
+    scope that widens silently as the org grows.
+    """
+    if not isinstance(scope, dict):
+        raise ValidationError(
+            "a token scope is an object {org, projects, role} (workspace "
+            "optional when every project is qualified as '<workspace>/"
+            "<project>')",
+            {"scope": None})
+    unknown = sorted(set(scope) - set(SCOPE_KEYS))
+    if unknown:
+        raise ValidationError(
+            f"unknown token scope field(s): {', '.join(unknown)}",
+            {"unknown": unknown, "expected": list(SCOPE_KEYS)})
+    org = _check_scope_name(scope.get("org"), "org")
+    default_ws = scope.get("workspace") if scope.get("workspace") else workspace
+    if default_ws is not None:
+        default_ws = _check_scope_name(default_ws, "workspace")
+    role = scope.get("role")
+    if role not in SCOPE_ROLES:
+        raise ValidationError(
+            f"a token scope's role must be one of {', '.join(SCOPE_ROLES)} "
+            f"(weakest first)", {"role": role if isinstance(role, str) else None})
+    raw = scope.get("projects")
+    if not isinstance(raw, list) or not raw:
+        raise ValidationError(
+            "a token scope names at least one project. A scope with no "
+            "projects is not 'the whole org' — it is a credential whose reach "
+            "nobody stated, and it would widen every time a project is added.",
+            {"projects": raw if isinstance(raw, list) else None})
+    if len(raw) > MAX_SCOPE_PROJECTS:
+        raise ValidationError(
+            f"a token scope names at most {MAX_SCOPE_PROJECTS} projects",
+            {"count": len(raw), "max": MAX_SCOPE_PROJECTS})
+    qualified: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, str) or not entry:
+            raise ValidationError(
+                "a scoped project is '<project>' or '<workspace>/<project>'",
+                {"project": entry if isinstance(entry, str) else None})
+        head, sep, tail = entry.partition("/")
+        if sep:
+            ws, proj = head, tail
+        elif default_ws is None:
+            raise ValidationError(
+                f"project {entry!r} is unqualified and this scope names no "
+                f"workspace: pass 'workspace' or write '<workspace>/{entry}'.",
+                {"project": entry})
+        else:
+            ws, proj = default_ws, entry
+        qualified.add(f"{_check_scope_name(ws, 'workspace')}/"
+                      f"{_check_scope_name(proj, 'project')}")
+    return {"org": org, "workspace": default_ws,
+            "projects": sorted(qualified), "role": role}
+
+
+def _check_scope_name(value: object, what: str) -> str:
+    """``ID_RE`` per level — ``tenancy.check_name``'s grammar, reached without
+    importing ``tenancy`` (which imports this module)."""
+    if not isinstance(value, str) or not ID_RE.match(value):
+        raise ValidationError(
+            f"invalid {what} name {value!r} in a token scope: must match "
+            f"[a-z][a-z0-9_]{{0,39}}, the same grammar as a project id.",
+            {what: value if isinstance(value, str) else None})
+    return value
+
+
+def _scope_row(row: object) -> dict | None:
+    """The scope on a stored token row, schema-tolerantly.
+
+    An absent field, a ``null``, a string where an object belongs, or a
+    half-written scope all read as "unscoped" — the passkey/OIDC readers'
+    tolerance, for the same reason: rows written before PRD-005 have no scope
+    and that is the ordinary case on every upgraded instance. A malformed scope
+    reading as *unscoped* is the conservative direction only because an
+    unscoped token is still bounded by the instance role and by whatever
+    tenancy grants name it; nothing here widens anybody's reach.
+    """
+    if not isinstance(row, dict):
+        return None
+    scope = row.get("scope")
+    if (not isinstance(scope, dict)
+            or not isinstance(scope.get("org"), str)
+            or not isinstance(scope.get("projects"), list)
+            or scope.get("role") not in SCOPE_ROLES):
+        return None
+    projects = [p for p in scope["projects"] if isinstance(p, str) and p]
+    if not projects:
+        return None
+    workspace = scope.get("workspace")
+    return {"org": scope["org"],
+            "workspace": workspace if isinstance(workspace, str) else None,
+            "projects": sorted(set(projects)),
+            "role": scope["role"]}
+
+
+def scope_allows(scope: object, org: str | None = None,
+                 workspace: str | None = None,
+                 project: str | None = None) -> bool:
+    """May a token carrying *scope* reach ``org/workspace/project``?
+
+    ``scope is None`` answers **True** for everything: that is the legacy,
+    instance-wide token 005a mints, and the whole point of the additive schema
+    is that it behaves today exactly as it did yesterday. What bounds *it* is
+    the instance role and the tenancy grants, unchanged.
+
+    With a scope: the org must match, and — when a project is named — the pair
+    must be in the list. An unqualified question (``workspace=None``) matches
+    the project under **any** workspace of the org, because the caller who has
+    not resolved a workspace yet is asking "could this token possibly be about
+    this project", and answering "no" there would deny a request the tenant
+    resolver was about to make legal.
+
+    Never raises: it is reached from an authorization path holding whatever
+    ``tokens.json`` contained, and an unreadable scope must deny rather than
+    explode. It is also **not** a role check — the role a scope carries is what
+    ``create_agent_token`` writes into the tenancy grants, and
+    ``authz.require`` is what compares rungs.
+    """
+    if scope is None:
+        return True
+    if not isinstance(scope, dict):
+        return False
+    normalized = _scope_row({"scope": scope})
+    if normalized is None:
+        return False
+    if org is not None and normalized["org"] != org:
+        return False
+    if project is None:
+        return True
+    if workspace is not None:
+        return f"{workspace}/{project}" in normalized["projects"]
+    return any(entry.split("/", 1)[-1] == project
+               for entry in normalized["projects"])
+
+
+#: A WebAuthn credential id is base64url text of the authenticator's own
+#: random bytes. Bounded because it arrives from an anonymous request body and
+#: an unbounded id is an unbounded key; the alphabet is checked because it is
+#: compared against stored ids and rendered in a credential list.
+CREDENTIAL_ID_MAX_CHARS = 512
+_CREDENTIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,512}$")
+
+
+def _check_credential_id(credential_id: object) -> str:
+    if (not isinstance(credential_id, str)
+            or not _CREDENTIAL_ID_RE.match(credential_id)):
+        raise ValidationError(
+            f"a passkey credential id is 1-{CREDENTIAL_ID_MAX_CHARS} base64url "
+            f"characters (A-Z, a-z, 0-9, '-', '_', unpadded)",
+            {"length": len(credential_id) if isinstance(credential_id, str)
+             else None})
+    return credential_id
+
+
+def _passkey_rows(row: object) -> list[dict]:
+    """The credentials on a user row, schema-tolerantly.
+
+    An absent field, a ``null``, a string where a list belongs, or a list with
+    junk in it all read as "the credentials that are actually there". A user
+    row written before PRD-005 has none, and that must never be an exception —
+    it is the ordinary case on every upgraded instance.
+    """
+    if not isinstance(row, dict):
+        return []
+    rows = row.get("passkeys")
+    if not isinstance(rows, list):
+        return []
+    return [entry for entry in rows
+            if isinstance(entry, dict)
+            and isinstance(entry.get("id"), str)
+            and isinstance(entry.get("public_key"), str)]
+
+
+def _oidc_row(row: object) -> dict | None:
+    """The OIDC link on a user row, or ``None`` — same tolerance as above."""
+    if not isinstance(row, dict):
+        return None
+    link = row.get("oidc")
+    if (not isinstance(link, dict)
+            or not isinstance(link.get("issuer"), str)
+            or not isinstance(link.get("subject"), str)
+            or not link["issuer"] or not link["subject"]):
+        return None
+    return link
 
 
 def _check_password(password: object) -> str:

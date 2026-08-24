@@ -724,6 +724,33 @@ input, textarea { font: inherit; color: inherit; }
 .bulk-results-id { font-family: var(--mono); white-space: nowrap; }
 .bulk-results-detail { color: var(--dim); }
 
+/* ---- org-members / agent-tokens panels (PRD-005 slice 8, cloud.js) ---- */
+
+.cloud-panel { max-height: 60vh; overflow: auto; }
+.cloud-panel .bulk-results-table { margin-bottom: 10px; }
+.cloud-form {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hairline-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cloud-form .auth-field select,
+.cloud-form .auth-field input {
+  width: 100%;
+}
+.cloud-actions { display: flex; gap: 8px; }
+.cloud-secret {
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid var(--accent-bright);
+  border-radius: 8px;
+  background: var(--raised-2);
+}
+.cloud-secret .auth-field { flex-direction: row; align-items: center; }
+.cloud-secret input { flex: 1; font-family: var(--mono); }
+
 /* ---- the context menu (shell/contextmenu.js) ----
    It reuses `.menu` / `.menu-item`, which are absolutely positioned under a
    `.menu-wrap`; a context menu is anchored to the POINTER instead, so the

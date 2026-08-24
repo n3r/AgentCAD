@@ -69,9 +69,79 @@ export const clientId = (() => {
   return minted;
 })();
 
+// ---- active workspace (PRD-005 Slice 8) ------------------------------------
+// `security.resolve_tenant`'s precedence has a rung for "the session's active
+// workspace" — but there is no route that writes one yet (S4's report left
+// that setter for this slice, and no Python edit is in scope here), so the
+// switcher's only lever is the rung above it: `X-Agentcad-Workspace: org/ws`
+// on every request. This is the ONE place that header is attached — every
+// caller in this file (the shared `request()` funnel and the hand-rolled
+// binary fetches below) reads `workspace` rather than growing its own copy.
+// A browser cannot set a header on a WebSocket, so `wsQuery()` is the same
+// selection spelled as `?workspace=org/ws` for `main.js`'s `connectWS()`
+// (`security._ws_headers` reads it as a fallback for exactly that reason).
+//
+// Local mode and a hosted instance with no orgs never call `setWorkspace`
+// (workspace.js renders nothing for them), so `workspace` stays null and
+// every request is byte-identical to before this slice.
+const WORKSPACE_KEY = "agentcad.workspace";
+
+let workspace = null;
+try {
+  workspace = localStorage.getItem(WORKSPACE_KEY) || null;
+} catch {
+  /* storage disabled: the selection lives for this page only */
+}
+
+/** The active `"org/ws"`, or null when nothing has been selected. */
+export function getWorkspace() {
+  return workspace;
+}
+
+/** Select (or clear, with `null`) the active workspace. Persisted so a
+ *  reload — which is how the switcher applies a selection (see
+ *  `workspace.js`) — keeps it. */
+export function setWorkspace(orgWs) {
+  workspace = orgWs || null;
+  try {
+    if (workspace) localStorage.setItem(WORKSPACE_KEY, workspace);
+    else localStorage.removeItem(WORKSPACE_KEY);
+  } catch {
+    /* ignore: the selection lives for this page only */
+  }
+}
+
+/** `?workspace=org/ws`, or `""` — the WebSocket's spelling of the header
+ *  `wsHeader()` below adds to every ordinary request. */
+export function wsQuery() {
+  return workspace ? `?workspace=${enc(workspace)}` : "";
+}
+
+/** `{"X-Agentcad-Workspace": "org/ws"}`, or `{}` — spread into the identity
+ *  header object at each site that sends one (`request()` plus the hand-rolled
+ *  binary fetches below; `test_presence.py`'s R6 test pins that header
+ *  appearing at each site individually, so this stays a spread rather than
+ *  folding the browser id in behind a shared helper). Exported so `skills.js`,
+ *  which owns its own `req()` funnel, attaches the *same* header rather than
+ *  landing its mutations in the wrong workspace for a user in two orgs. */
+export function wsHeader() {
+  return workspace ? { "X-Agentcad-Workspace": workspace } : {};
+}
+
+/** `{workspace: "org/ws"}`, or `{}` — the query-parameter twin of `wsHeader`,
+ *  for the URLs a header cannot ride: an `<img src>` thumbnail/preview, a
+ *  drawing/BOM download opened as bytes, and (as `wsQuery`) the `sendBeacon`
+ *  presence *leave*. `query()` drops it when null, so local mode and a
+ *  single-workspace instance send byte-identical URLs. `security.resolve_tenant`
+ *  reads `?workspace=` at a lower precedence than the header and a scoped
+ *  token, and still checks membership — so this selects, it never grants. */
+function wsParam() {
+  return workspace ? { workspace } : {};
+}
+
 async function request(method, path, body) {
   let res;
-  const init = { method, headers: { "X-Agent-Id": clientId } };
+  const init = { method, headers: { "X-Agent-Id": clientId, ...wsHeader() } };
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
@@ -196,10 +266,10 @@ export const api = {
    *  still a valid URL (revalidated every time); a part with no mesh 404s,
    *  which the row renders as its placeholder glyph. */
   partThumbUrl: (proj, id, key) =>
-    `/api/projects/${enc(proj)}/parts/${enc(id)}/thumb.png${query({ k: key })}`,
+    `/api/projects/${enc(proj)}/parts/${enc(id)}/thumb.png${query({ k: key, ...wsParam() })}`,
 
   /** The project's assembly preview URL (the dashboard card's hero). */
-  projectThumbUrl: (proj) => `/api/projects/${enc(proj)}/thumb.png`,
+  projectThumbUrl: (proj) => `/api/projects/${enc(proj)}/thumb.png${query(wsParam())}`,
 
   // ---- materials v2 ----
   /** `listMaterials(proj)` is the original call and stays byte-compatible;
@@ -239,10 +309,10 @@ export const api = {
    *  configuration and the dimension table have to ride it too or the preview
    *  would show a base sheet the POST did not write. */
   drawingSvgUrl: (proj, id, params) =>
-    `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing.svg${query(params)}`,
+    `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing.svg${query({ ...params, ...wsParam() })}`,
   /** Same contract as `drawingSvgUrl`, for the PDF twin route (PRD-014 FR11). */
   drawingPdfUrl: (proj, id, params) =>
-    `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing.pdf${query(params)}`,
+    `/api/projects/${enc(proj)}/parts/${enc(id)}/drawing.pdf${query({ ...params, ...wsParam() })}`,
 
   // ---- configurations (PRD-012) ----
   // A configuration is a named parameter set declared on the part; `label` is
@@ -343,12 +413,14 @@ export const api = {
   // materialized worktree (FR5) without touching the working project.
   getBom: (proj, params) =>
     request("GET", `/api/projects/${enc(proj)}/bom${query(params)}`),
-  /** Plain download URLs (no identity header needed: get_bom/export_bom never
-   *  depend on client identity) — the drawingSvgUrl/drawingPdfUrl pattern. */
+  /** Plain download URLs. get_bom/export_bom never depend on the *browser*
+   *  identity, but they are project-scoped, so a user in two orgs that both
+   *  own this project name needs `?workspace=` to reach the right one — a
+   *  download opened as a navigation cannot carry the header. */
   bomCsvUrl: (proj, params) =>
-    `/api/projects/${enc(proj)}/bom.csv${query(params)}`,
+    `/api/projects/${enc(proj)}/bom.csv${query({ ...params, ...wsParam() })}`,
   bomJsonUrl: (proj, params) =>
-    `/api/projects/${enc(proj)}/bom.json${query(params)}`,
+    `/api/projects/${enc(proj)}/bom.json${query({ ...params, ...wsParam() })}`,
   /** body: {part_number?, unit_cost_usd?, supplier?, url?, config?} — only
    *  the fields present are updated. */
   patchBom: (proj, partId, body) =>
@@ -407,7 +479,7 @@ export const api = {
   async getDiffMesh(url) {
     let res;
     try {
-      res = await fetch(url, { headers: { "X-Agent-Id": clientId } });
+      res = await fetch(url, { headers: { "X-Agent-Id": clientId, ...wsHeader() } });
     } catch {
       throw new ApiError(0, {
         error: { type: "network_error", message: "server unreachable", details: {} },
@@ -596,6 +668,7 @@ export const api = {
         headers: {
           "Content-Type": "application/octet-stream",
           "X-Agent-Id": clientId,
+          ...wsHeader(),
         },
         body: arrayBuffer,
       });
@@ -697,7 +770,7 @@ export const api = {
       `/api/projects/${enc(proj)}/parts/${enc(id)}/mesh` +
       (lod ? `?lod=${enc(lod)}` : "");
     try {
-      res = await fetch(url, { headers: { "X-Agent-Id": clientId } });
+      res = await fetch(url, { headers: { "X-Agent-Id": clientId, ...wsHeader() } });
     } catch {
       throw new ApiError(0, {
         error: { type: "network_error", message: "server unreachable", details: {} },
@@ -729,7 +802,7 @@ export const api = {
       `/api/projects/${enc(proj)}/meshes/${enc(key)}` +
       (lod ? `?lod=${enc(lod)}` : "");
     try {
-      res = await fetch(url, { headers: { "X-Agent-Id": clientId } });
+      res = await fetch(url, { headers: { "X-Agent-Id": clientId, ...wsHeader() } });
     } catch {
       throw new ApiError(0, {
         error: { type: "network_error", message: "server unreachable", details: {} },
@@ -758,7 +831,7 @@ export const api = {
     try {
       res = await fetch(
         `/api/projects/${enc(proj)}/parts/${enc(id)}/mesh/faces`,
-        { headers: { "X-Agent-Id": clientId } }
+        { headers: { "X-Agent-Id": clientId, ...wsHeader() } }
       );
     } catch {
       throw new ApiError(0, {

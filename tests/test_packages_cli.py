@@ -333,11 +333,13 @@ def test_help_lists_package_beside_the_other_commands():
     res = _cli("--help")
     assert res.returncode == 0
     # `admin` joined the list in PRD-005a, `bench` in PRD-024, `materials` in
-    # PRD-028 and `skill` in PRD-029; the assertion is per-command rather than
-    # one literal string so the next command to land fails on its own merits
-    # (missing from the metavar) instead of on the punctuation.
+    # PRD-028, `skill` in PRD-029 and the five sync commands in PRD-005; the
+    # assertion is per-command rather than one literal string so the next
+    # command to land fails on its own merits (missing from the metavar)
+    # instead of on the punctuation.
     for command in ("serve", "open", "mcp", "new", "export", "check", "bench",
-                    "package", "publish", "admin", "materials", "skill"):
+                    "package", "publish", "admin", "materials", "skill",
+                    "login", "clone", "push", "pull", "status"):
         assert command in res.stdout, command
     assert ("{serve,open,mcp,new,export,check,bench,package,publish,admin,"
-            "materials,skill}" in res.stdout)
+            "materials,skill,login,clone,push,pull,status}" in res.stdout)

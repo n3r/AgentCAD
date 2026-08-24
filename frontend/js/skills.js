@@ -17,7 +17,7 @@
 // third-party prose whose whole purpose is to be read by a language model;
 // it is never interpolated as markup, and the preview is a `<pre>`.
 
-import { ApiError, clientId } from "./api.js";
+import { ApiError, clientId, wsHeader } from "./api.js";
 import * as dialogs from "./shell/dialogs.js";
 import { state } from "./state.js";
 import * as skillsModel from "./skills_model.js";
@@ -25,12 +25,15 @@ import * as skillsModel from "./skills_model.js";
 // Deliberately a local funnel rather than six new `api.js` methods: this slice
 // owns `skills.js` and not `api.js`, and the four calls are one resource
 // family. It carries the SAME `X-Agent-Id` header every other request does
-// (that header is what makes trust human-gated at all) and raises the same
-// `ApiError`, so `errorText` below and the modal's failure paths behave
-// exactly as `materials.js`'s do.
+// (that header is what makes trust human-gated at all) AND the SAME
+// `X-Agentcad-Workspace` header (`api.js::wsHeader`) — without the second, a
+// `POST …/trust` or `PATCH …/enabled` from a user who belongs to two orgs would
+// land in whichever workspace resolves by default, not the one on screen. It
+// raises the same `ApiError`, so `errorText` below and the modal's failure
+// paths behave exactly as `materials.js`'s do.
 async function req(method, path, body) {
   let res;
-  const init = { method, headers: { "X-Agent-Id": clientId } };
+  const init = { method, headers: { "X-Agent-Id": clientId, ...wsHeader() } };
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);

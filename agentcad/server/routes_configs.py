@@ -62,7 +62,8 @@ import re
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
-from ..core.model import ConflictError, NotFoundError, ValidationError
+from ..core.authz import PermissionDeniedError
+from ..core.model import AuthError, ConflictError, NotFoundError, ValidationError
 # One grammar for a tier suffix, not a second copy of it: a lod names a cache
 # sidecar file, so it must stay a plain token no matter what a query hands us.
 from ..core.service import _LOD_SUFFIX_RE as _LOD_RE
@@ -71,6 +72,9 @@ _RAISE = {
     "notfound_error": NotFoundError,
     "validation_error": ValidationError,
     "conflict_error": ConflictError,
+    # FR6: a tenancy refusal keeps its own status (see routes_comments).
+    "permission_error": PermissionDeniedError,
+    "auth_error": AuthError,
 }
 
 # No error type here is a legitimate 200 body (see the module docstring).

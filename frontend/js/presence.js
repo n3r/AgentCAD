@@ -13,9 +13,10 @@
 //    ever shows a heartbeat failure to the user: presence is a nicety, and a
 //    red toast every 15 s would be worse than not knowing who is around.
 
-import { api, clientId } from "./api.js";
+import { api, clientId, wsQuery } from "./api.js";
 import { state, setState, onKeys } from "./state.js";
 import { INSTANCE_PALETTE } from "./tree.js";
+import { displayPrincipal } from "./auth.js";
 
 const BEAT_MS = 15000; // the server's PRESENCE_HEARTBEAT_S
 const MIN_GAP_MS = 1200; // stay inside the server's 1/s token bucket
@@ -73,7 +74,13 @@ function bump() {
 
 function leave() {
   if (!state.projectName) return;
-  const url = `/api/projects/${encodeURIComponent(state.projectName)}/presence`;
+  // `?workspace=org/ws` because a `sendBeacon` cannot set the header the rest of
+  // the app rides (`api.js::wsQuery`, the `security.resolve_tenant` fallback):
+  // without it the leave would resolve the wrong workspace for a user in two
+  // orgs and drop a presence row that is not ours. Empty in local mode, so the
+  // URL is byte-identical there.
+  const url = `/api/projects/${encodeURIComponent(state.projectName)}/presence`
+    + wsQuery();
   const body = JSON.stringify({ leave: true, client_id: clientId });
   // sendBeacon so the request survives the page going away. It cannot carry
   // headers, so the identity rides in the body — a beacon without one would
@@ -242,10 +249,15 @@ export function otherClaim(partId) {
 
 /** The display label a client is heartbeating under, falling back to its
  *  identity. Labels are presence data — never persisted into a thread, an
- *  audit line or a lock — so this is the only place they come from. */
+ *  audit line or a lock — so this is the only place they come from. The
+ *  fallback runs `id` through `auth.js`'s `displayPrincipal` convention
+ *  (PRD-005 slice 8): in hosted mode `id` is a composed principal
+ *  (`user:nikita/browser:…`, `agent:mcp:claude`) once nobody has picked a
+ *  presence nickname, and `nikita`/`claude (agent)` is what a lock chip or
+ *  the avatar strip should say instead of the raw string. */
 export function labelFor(id) {
   const found = roster().find((client) => client.id === id);
-  return (found && found.label) || id || "someone";
+  return (found && found.label) || displayPrincipal(id) || "someone";
 }
 
 export function stop() {

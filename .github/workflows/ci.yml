@@ -88,8 +88,12 @@ jobs:
           sudo timeout 300 apt-get install -y --no-install-recommends "${apt_opts[@]}" \
             libgl1 libglu1-mesa libxrender1 libxcursor1 libxft2 libxinerama1
 
+      # `--extra cloud` pulls in `webauthn`/`cbor2` (PRD-005 FR1) so the
+      # passkey suite (the virtual ES256 authenticator, 24 tests) actually
+      # runs instead of `importorskip`-ing away — a bare `uv sync --locked`
+      # left the whole auth path with zero CI coverage.
       - name: Sync dependencies (locked)
-        run: uv sync --locked
+        run: uv sync --locked --extra cloud
 
       # PRD-006 Decision 13. Landlock is a boot-time LSM: compiled into the
       # kernel is not enough, it must be in the `lsm=` list, and the ABI
@@ -152,7 +156,7 @@ jobs:
           cache-dependency-glob: uv.lock
 
       - name: Sync dependencies (locked)
-        run: uv sync --locked
+        run: uv sync --locked --extra cloud
 
       # Same serial bench tail as the PR job — the nightly missed the FR6
       # drag budget under parallel co-load twice in the week before this.

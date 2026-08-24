@@ -17,10 +17,21 @@ place to get it wrong.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
-from fastapi.responses import FileResponse, JSONResponse
+import base64
+import binascii
+import importlib
+import importlib.util
+import json
+import sys
+import time
 
-from ..core.model import AuthError, AuthzError, NotFoundError, RateLimitedError
+from fastapi import APIRouter, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+
+from ..core import audit as audit_mod
+from ..core.model import (
+    AuthError, AuthzError, NotFoundError, RateLimitedError, ValidationError,
+)
 from . import security as sec
 
 #: Sent for every failed sign-in, whatever the reason. "No such handle",
@@ -29,6 +40,135 @@ from . import security as sec
 #: genuinely forgot which handle they chose is not helped enough to pay for
 #: it.
 _LOGIN_FAILED = "sign-in failed"
+
+#: What the browser shows in the passkey prompt ("Use your passkey for
+#: AgentCAD?"). Not the instance's hostname — that is the *relying party id*,
+#: which is derived from the public origin.
+PASSKEY_RP_NAME = "AgentCAD"
+
+#: A WebAuthn ceremony is a human pressing a fingerprint sensor. Five minutes
+#: is generous for that and short enough that a challenge lifted off a screen
+#: is dead by the time it is typed anywhere. The cap is what keeps an
+#: anonymous `login/begin` flood bounded in memory.
+PASSKEY_CHALLENGE_TTL_S = 300.0
+PASSKEY_CHALLENGE_MAX = 512
+
+#: SQLite stores a signed 64-bit integer, so an ``OFFSET`` above this raises an
+#: uncaught ``OverflowError`` rather than paging. ``GET /api/auth/audit`` clamps
+#: to it: a caller asking for row 10**30 gets an empty page, never a 500.
+_MAX_OFFSET = 2 ** 63 - 1
+
+
+def passkeys_available() -> bool:
+    """Is the ``agentcad[cloud]`` extra installed?
+
+    ``find_spec`` rather than an import: ``import webauthn`` costs ~105 ms of
+    interpreter time (measured in the PRD-005 spike), and this is asked on
+    every passkey request. The FEM precedent
+    (``kernel/handlers/fem.fem_available``) is the shape; the difference is
+    that FEM gates a *tool registration* and this gates a *route*, so the
+    absent answer is a 501 rather than a missing tool.
+    """
+    try:
+        return importlib.util.find_spec("webauthn") is not None
+    except (ImportError, ValueError):        # a broken half-install
+        return False
+
+
+class _ChallengeStore:
+    """Server-side WebAuthn challenges: in memory, TTL'd, size-capped.
+
+    In memory for :class:`agentcad.core.oidc.PendingFlows`' reason, stated
+    there in full: a hosted AgentCAD is one uvicorn process (``cli.cmd_serve``
+    passes no ``workers=``, and the kernel pool, the event bus and the turn
+    locks are already in-process singletons), the record lives minutes, and
+    losing it to a restart costs one retry. A challenge is not a credential —
+    it is a nonce — so this is not identity state and it does not belong in
+    ``authstore``'s documents, where it would put an flock + fsync on the
+    sign-in path.
+    """
+
+    def __init__(self, ttl_s: float = PASSKEY_CHALLENGE_TTL_S,
+                 cap: int = PASSKEY_CHALLENGE_MAX) -> None:
+        self._ttl = ttl_s
+        self._cap = cap
+        self._rows: dict[str, dict] = {}
+
+    def put(self, key: str, record: dict) -> None:
+        self._prune()
+        if len(self._rows) >= self._cap:
+            for old in sorted(self._rows,
+                              key=lambda k: self._rows[k]["created"]
+                              )[:self._cap // 4 or 1]:
+                self._rows.pop(old, None)
+        # `challenge` is written here rather than by the caller, so the record
+        # a `take` returns always carries the bytes WE minted — the verifier
+        # is never handed a challenge that came out of a request body.
+        #
+        # `time.monotonic`, never `time.time`: an NTP step or a daylight-saving
+        # jump can move the wall clock backwards, and a TTL that compared two
+        # wall-clock readings across such a step would either resurrect an
+        # expired challenge or expire a live one. The monotonic clock cannot go
+        # backwards, so the five-minute window is exactly five minutes of the
+        # process's own elapsed time whatever the wall clock does.
+        self._rows[key] = {**record, "challenge": key,
+                           "created": time.monotonic()}
+
+    def take(self, key: object) -> dict | None:
+        """Pop a challenge. **Single use**: a replayed assertion finds
+        nothing, which is what makes a captured one worthless."""
+        self._prune()
+        if not isinstance(key, str) or not key:
+            return None
+        row = self._rows.pop(key, None)
+        if row is None or time.monotonic() - row["created"] > self._ttl:
+            return None
+        return row
+
+    def _prune(self) -> None:
+        cutoff = time.monotonic() - self._ttl
+        for key in [k for k, row in self._rows.items() if row["created"] < cutoff]:
+            self._rows.pop(key, None)
+
+
+def _b64u(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64u_decode(text: object) -> bytes | None:
+    """Lenient about padding, strict about everything else. ``None`` on junk —
+    every caller is holding an anonymous request body."""
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _client_challenge(credential: object) -> str | None:
+    """The challenge a credential's ``clientDataJSON`` names.
+
+    **A lookup key and nothing else.** The bytes this returns are used to find
+    *our own* record; the challenge the verifier is then given is the one we
+    minted and stored, never this one. Reading attacker-controlled JSON to
+    decide which stored nonce to compare against is safe; comparing it to
+    itself would not be.
+    """
+    if not isinstance(credential, dict):
+        return None
+    raw = _b64u_decode((credential.get("response") or {}).get("clientDataJSON")
+                       if isinstance(credential.get("response"), dict) else None)
+    if raw is None or len(raw) > 8192:
+        return None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, RecursionError, UnicodeDecodeError):
+        # `json.loads` raises RecursionError on deep nesting, and it is NOT a
+        # ValueError (changelog 0181's eleven-site lesson).
+        return None
+    challenge = data.get("challenge") if isinstance(data, dict) else None
+    return challenge if isinstance(challenge, str) and challenge else None
 
 
 def build_router(service, registry) -> APIRouter:
@@ -78,7 +218,79 @@ def build_router(service, registry) -> APIRouter:
         return {"principal": who.client_id, "kind": who.kind,
                 "role": who.role, "mode": cfg.mode.name}
 
-    def _set_session(cfg, response: JSONResponse, secret: str) -> JSONResponse:
+    # ------------------------------------------------------------- the audit
+    #
+    # Auth events are **instance-wide**, not acts inside an org: a person may
+    # be a member of several orgs or of none, and a failed sign-in belongs to
+    # no tenant at all. They therefore land in `audit.INSTANCE_ORG`
+    # (`_instance.db`), a name no org can take because `ID_RE` demands a
+    # leading letter. Tool calls, which always name a project, land in their
+    # own org's database.
+    #
+    # Every tap is `audit.record`, which swallows a storage failure with a
+    # warning: an audit backend that has gone read-only must not be the reason
+    # nobody can sign in. The trade is stated in `core/audit.py` rather than
+    # hidden here.
+
+    def _log():
+        cfg = mounted_config
+        return audit_mod.for_auth_store(cfg.store) if cfg is not None else None
+
+    def _audit(action: str, *, principal: str | None = None,
+               outcome: str = "ok", project: str | None = None,
+               args: object = None) -> None:
+        # `_log()` is resolved INSIDE the swallow, not as an argument to
+        # `record` evaluated before it. `audit.for_auth_store` builds an
+        # `AuditLog`, which *creates* `<state>/audit/` — on an unwritable state
+        # directory that raises an OSError, and evaluated as a `record` argument
+        # it would escape `record`'s own swallow and turn a sign-in into a 500.
+        # A person must be able to sign in even when the audit backend cannot be
+        # opened; the failure is a warning on the way out, never a locked door.
+        try:
+            log = _log()
+        except Exception as exc:            # noqa: BLE001 — see above
+            print(f"agentcad: the audit log is unavailable "
+                  f"({type(exc).__name__}: {exc}); auth event {action!r} is "
+                  f"NOT being recorded", file=sys.stderr)
+            return
+        audit_mod.record(log, audit_mod.INSTANCE_ORG, action,
+                         principal=principal, project=project, args=args,
+                         outcome=outcome)
+
+    def _claimed(handle: object) -> str:
+        """The principal a **failed** attempt claimed to be.
+
+        A sign-in that failed did not authenticate anybody, so this is the
+        handle from the request body, spelled as a principal only when it
+        could be one. What tells a claim from an identity is the row's
+        `outcome` column, never the principal string — which is why the two
+        are recorded together and why the handle is recorded at all: "somebody
+        tried to be nikita 400 times" is the question an audit log exists to
+        answer.
+        """
+        from ..core.authstore import HANDLE_RE
+
+        if isinstance(handle, str) and HANDLE_RE.match(handle):
+            return f"user:{handle}"
+        return "unknown"
+
+    def _refused(exc, action: str, *, principal: str | None = None,
+                 outcome: str | None = None):
+        """Record a refusal and hand the exception back to be raised.
+
+        `raise _refused(AuthError(...), "login", ...)` keeps the tap on the
+        same line as the refusal it records, so a new refusal path cannot
+        silently be an unrecorded one.
+        """
+        wire = (type(exc).__name__.replace("Error", "").lower() + "_error")
+        _audit(action, principal=principal, outcome=outcome or wire)
+        return exc
+
+    def _set_session(cfg, response: Response, secret: str) -> Response:
+        # The annotation was `JSONResponse`; it is `Response` since PRD-005
+        # slice 3, because the OIDC callback hands a browser a redirect with
+        # the very same cookie. The body is unchanged — one place sets this
+        # cookie, whatever the response type.
         response.set_cookie(
             sec.SESSION_COOKIE, secret,
             httponly=True,                  # XSS cannot read it
@@ -104,7 +316,8 @@ def build_router(service, registry) -> APIRouter:
         handle = body.get("handle")
         password = body.get("password")
         if not isinstance(handle, str) or not isinstance(password, str):
-            raise AuthError(_LOGIN_FAILED)
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(handle), outcome="malformed")
 
         # The buckets are taken BEFORE the scrypt call, so a flood cannot
         # spend 63 ms of CPU per request. Address first (the cheaper, broader
@@ -127,18 +340,23 @@ def build_router(service, registry) -> APIRouter:
         for bucket, key in ((cfg.address_rate, f"addr:{address}"),
                             (cfg.login_rate, sec.login_key(handle, address))):
             if not bucket.take(key):
-                raise RateLimitedError(
-                    "too many sign-in attempts",
-                    {"retry_after_s": cfg.retry_after_s(bucket)})
+                raise _refused(
+                    RateLimitedError(
+                        "too many sign-in attempts",
+                        {"retry_after_s": cfg.retry_after_s(bucket)}),
+                    "login", principal=_claimed(handle),
+                    outcome="rate_limited")
 
         if not cfg.store.verify_password(handle, password):
-            raise AuthError(_LOGIN_FAILED)
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(handle), outcome="failed")
 
         device = sec._device(request.headers, None)          # noqa: SLF001
         secret = cfg.store.create_session(handle, device)
         row = cfg.store.resolve_session(secret)
         who = sec.Principal(kind="user", name=handle, role=row["role"],
                             device=device, via="cookie")
+        _audit("login", principal=who.client_id, args={"via": "password"})
         return _set_session(cfg, JSONResponse(_identity(cfg, who)), secret)
 
     @router.post("/auth/logout")
@@ -151,8 +369,14 @@ def build_router(service, registry) -> APIRouter:
         """
         cfg = _config()
         secret = request.cookies.get(sec.SESSION_COOKIE)
+        who = sec.current_principal()
         if secret:
             cfg.store.revoke_session(secret)
+        # Recorded even when there was no session to revoke, with the outcome
+        # saying which: "somebody's browser is repeatedly logging nobody out"
+        # is a signal, and the 200 this route always returns is not.
+        _audit("logout", principal=who.client_id if who else "unknown",
+               outcome="ok" if secret else "no_session")
         response = JSONResponse({"ok": True})
         response.delete_cookie(sec.SESSION_COOKIE, path="/")
         return response
@@ -186,12 +410,20 @@ def build_router(service, registry) -> APIRouter:
     async def enrol(token: str, request: Request):
         cfg = _config()
         body = await _body(request)
-        handle = cfg.store.enrol(token, body.get("password"))
+        try:
+            handle = cfg.store.enrol(token, body.get("password"))
+        except (NotFoundError, ValidationError) as exc:
+            # The principal is genuinely unknown here: an invalid token names
+            # nobody, and a valid one is not spent. `peek_enrolment` would say
+            # who — and would be a way to put a handle in the log by guessing
+            # a token, so it is not asked.
+            raise _refused(exc, "enrol", principal="unknown")
         secret = cfg.store.create_session(
             handle, sec._device(request.headers, None))          # noqa: SLF001
         row = cfg.store.resolve_session(secret)
         who = sec.Principal(kind="user", name=handle, role=row["role"],
                             device=row.get("device"), via="cookie")
+        _audit("enrol", principal=who.client_id)
         return _set_session(cfg, JSONResponse(_identity(cfg, who)), secret)
 
     # ------------------------------------------------------------- users
@@ -209,6 +441,7 @@ def build_router(service, registry) -> APIRouter:
         body = await _body(request)
         role = body.get("role") or "member"
         token = cfg.store.add_user(body.get("handle"), role=role)
+        _audit("user_add", args={"handle": body.get("handle"), "role": role})
         return {"handle": body.get("handle"), "role": role,
                 "enrol_url": f"{cfg.mode.public_origin}/api/auth/enrol/{token}",
                 "trust": TRUST_SENTENCE}
@@ -218,7 +451,8 @@ def build_router(service, registry) -> APIRouter:
         cfg = _config()
         _require_admin()
         cfg.store.disable_user(handle)
-        cfg.store.revoke_sessions_for(handle)
+        dropped = cfg.store.revoke_sessions_for(handle)
+        _audit("user_disable", args={"handle": handle, "sessions": dropped})
         return {"handle": handle, "disabled": True}
 
     # ------------------------------------------------------------ tokens
@@ -250,15 +484,626 @@ def build_router(service, registry) -> APIRouter:
         # which is why this is `split("_", 2)` and never `split("_")`.
         token_id = token.split("_", 2)[1]
         row = next(r for r in cfg.store.list_tokens() if r["id"] == token_id)
+        # The arguments are digested, never stored — and `add_token`'s body
+        # carries no secret anyway (the secret is minted here). What the digest
+        # is for is correlating this row with the `token_revoke` that follows.
+        _audit("token_add", args={"id": token_id, "name": row["name"],
+                                  "role": row["role"]})
         return {**row, "token": token,
                 "note": "this is the only time the token is shown"}
+
+    # ------------------------------------------------- the audit (FR12)
+
+    def _audit_reader(cfg, org: str):
+        """Who may read *org*'s audit log.
+
+        Two doors, and the second is the point of a multi-tenant product: the
+        **instance administrator** (005a's role, the operator of the box) reads
+        anything, including the instance-wide `_instance` log; an **org admin**
+        reads their own org's log and nothing else. A member does not — an
+        audit log names every action of every colleague, and "who is allowed to
+        watch" is an administrative question by construction.
+
+        Always a *person*: `authz.role_of` gives an agent no org default, so a
+        bearer cannot reach `admin` at org level, and the instance-admin branch
+        tests `kind` explicitly. A token that could read the audit log would be
+        a token that could read what its own theft looked like.
+        """
+        who = _principal()
+        if who.kind == "user" and who.role == "admin":
+            return who
+        if who.kind == "user" and org != audit_mod.INSTANCE_ORG:
+            from ..core.authz import can
+            from ..core.tenancy import TenancyStore
+
+            if can(TenancyStore(cfg.store.root), "admin", who.client_id,
+                   org, "*"):
+                return who
+        raise AuthzError(
+            "reading the audit log is for an administrator of this instance "
+            "or of the org",
+            {"required_role": "admin", "org": org, "kind": who.kind})
+
+    @router.get("/auth/audit")
+    def audit_query(request: Request):
+        """Query one org's audit log. Newest first, paginated.
+
+        `org` defaults to `_instance`, where the auth events this file records
+        live; a tenant's tool activity is in `?org=<org>`.
+        """
+        cfg = _config()
+        params = request.query_params
+        org = params.get("org") or audit_mod.INSTANCE_ORG
+        who = _audit_reader(cfg, org)
+        log = _log()
+        limit = _positive(params.get("limit"), audit_mod.DEFAULT_LIMIT, "limit")
+        # Clamped to SQLite's signed-64-bit ceiling: `_positive` accepts any
+        # Python int, and one larger than 2**63-1 handed to `OFFSET ?` raises an
+        # uncaught `OverflowError` ("int too large to convert to SQLite
+        # INTEGER") — a 500 out of a query that should simply answer with no
+        # rows. `_MAX_OFFSET` is that ceiling, and any real page is far below it.
+        offset = min(_positive(params.get("offset"), 0, "offset", floor=0),
+                     _MAX_OFFSET)
+        if not log.path_for(org).exists():
+            # A query must not CREATE a database: `?org=` is caller-supplied,
+            # and an admin sweeping org names would otherwise leave a file per
+            # guess behind. An org with no events answers with no rows.
+            rows, total = [], 0
+        else:
+            rows = log.query(
+                org,
+                principal=params.get("principal"),
+                project=params.get("project"),
+                action=params.get("action"),
+                since=audit_mod.parse_time(params.get("since"), "since"),
+                until=audit_mod.parse_time(params.get("until"), "until"),
+                limit=limit, offset=offset)
+            total = log.count(org)
+        # Reading the log is itself an administrative act, so it is in the log.
+        _audit("audit_query", principal=who.client_id,
+               args={"org": org, "principal": params.get("principal"),
+                     "project": params.get("project"),
+                     "action": params.get("action")})
+        return {"org": org, "rows": rows, "limit": limit, "offset": offset,
+                # Unfiltered, so the UI can say "showing 200 of 12 431".
+                "total": total,
+                "next_offset": (offset + len(rows)) if len(rows) == limit
+                else None}
 
     @router.delete("/auth/tokens/{token_id}")
     def revoke_token(token_id: str):
         cfg = _config()
         _require_admin()
         cfg.store.revoke_token(token_id)
+        _audit("token_revoke", args={"id": token_id})
         return {"id": token_id, "revoked": True}
+
+    # ============================================== OIDC (PRD-005 FR1)
+    #
+    # Three routes and one rule: **an OIDC identity signs in a handle it is
+    # linked to, and linking never creates one** (`core/oidc.py` holds the
+    # policy and the argument). `login` and `callback` are the only two that
+    # are anonymous — they are in `security.PUBLIC_PATHS` by exact path, not by
+    # prefix, so `/api/auth/oidc/link` stays behind the guard and the CSRF rule
+    # that comes with an unsafe method.
+
+    #: One `OidcClient` per provider fingerprint, so editing `oidc.json` takes
+    #: effect on the next request with no restart while the discovery and JWKS
+    #: caches survive the requests in between. The pending-flow store is
+    #: separate and outlives a re-read, so an admin saving the file mid-sign-in
+    #: does not strand a browser at the IdP.
+    _oidc_slot: dict = {}
+
+    def _oidc():
+        """``(client, module)``, or a 404 when this instance has no provider.
+
+        The module is imported **lazily**: `import jwt` costs ~65 ms of
+        interpreter start-up (spike B1) and every app in this process — local
+        ones included — mounts this pack.
+        """
+        cfg = _config()
+        oidc = importlib.import_module("agentcad.core.oidc")
+        config = oidc.OidcConfig.from_document(cfg.store.read_oidc(),
+                                               cfg.mode.public_origin)
+        if config is None:
+            raise NotFoundError(
+                "this instance has no single-sign-on provider configured")
+        if _oidc_slot.get("fingerprint") != config.fingerprint:
+            _oidc_slot["fingerprint"] = config.fingerprint
+            _oidc_slot["client"] = oidc.OidcClient(
+                config, pending=_oidc_slot.setdefault("pending",
+                                                      oidc.PendingFlows()))
+        return _oidc_slot["client"], oidc
+
+    def _address_budget(cfg, request: Request) -> None:
+        """Charge this address the same bucket `POST /auth/login` charges.
+
+        Deliberately the *same* bucket and not a new one: an instance has one
+        anonymous sign-in budget per address, and a second door with its own
+        allowance is a way around the first. Handle-keyed throttling has no
+        meaning here — neither door is given a handle.
+        """
+        address = (request.client.host if request.client else "?") or "?"
+        if not cfg.address_rate.take(f"addr:{address}"):
+            raise RateLimitedError(
+                "too many sign-in attempts",
+                {"retry_after_s": cfg.retry_after_s(cfg.address_rate)})
+
+    def _set_flow_cookie(cfg, response: Response, oidc, pending) -> Response:
+        """Bind this authorization request to **this** browser.
+
+        `oidc.FLOW_COOKIE` carries the whole argument; the short summary is
+        that `state` proves a flow started *here* and this proves it started
+        *in this browser*, which is the difference between a sign-in and a
+        login CSRF that lands a victim inside the attacker's account.
+        """
+        response.set_cookie(
+            oidc.FLOW_COOKIE, pending.binding,
+            httponly=True,
+            samesite="lax",             # the callback is a top-level GET
+            secure=cfg.mode.secure_cookies,
+            max_age=int(oidc.PENDING_TTL_S),
+            path="/api/auth/oidc",
+        )
+        return response
+
+    @router.get("/auth/oidc/login")
+    def oidc_login(request: Request):
+        """Start a sign-in: 302 to the provider. 404 when none is configured."""
+        cfg = _config()
+        _address_budget(cfg, request)
+        client, oidc = _oidc()
+        pending = client.begin()
+        return _set_flow_cookie(
+            cfg, RedirectResponse(client.authorization_url(pending),
+                                  status_code=302), oidc, pending)
+
+    @router.post("/auth/oidc/link")
+    def oidc_link_begin():
+        """Start a **link**: bind a provider identity to the caller's handle.
+
+        A POST, not a GET with a flag, and that is the security control rather
+        than taste. The guard's cross-origin check covers unsafe methods only
+        (`security.guard`, the CSRF branch), so a plain `GET …/login?link=1`
+        could be triggered by a cross-site navigation: the victim's browser
+        starts a flow, the *attacker* authenticates at the IdP in it, and the
+        attacker's identity ends up bound to the victim's account — an account
+        takeover dressed as a convenience.
+        """
+        cfg = _config()
+        who = _principal()
+        if who.kind != "user":
+            raise AuthzError(
+                "only a signed-in person can link a single-sign-on identity",
+                {"kind": who.kind})
+        client, oidc = _oidc()
+        pending = client.begin(link_handle=who.name)
+        # The authenticated ceremony STARTS are recorded; the anonymous ones
+        # (`GET /auth/oidc/login`, `POST /auth/passkey/login/begin`) are not.
+        # Not an oversight: those two are reachable with no credential, and a
+        # row per attempt would let a stranger grow the audit database from the
+        # outside. Their *completions* are recorded, success and failure alike,
+        # which is where the security-relevant fact is.
+        _audit("oidc_link_begin", principal=who.client_id)
+        return _set_flow_cookie(
+            cfg, JSONResponse({"authorization_url":
+                               client.authorization_url(pending),
+                               "handle": who.name}), oidc, pending)
+
+    @router.delete("/auth/oidc/link")
+    def oidc_unlink():
+        cfg = _config()
+        who = _principal()
+        if who.kind != "user":
+            raise AuthzError("only a signed-in person can unlink an identity",
+                             {"kind": who.kind})
+        unlinked = cfg.store.unlink_oidc(who.name)
+        _audit("oidc_unlink", principal=who.client_id,
+               outcome="ok" if unlinked else "no_link")
+        return {"handle": who.name, "unlinked": unlinked}
+
+    @router.get("/auth/oidc/callback")
+    def oidc_callback(request: Request):
+        """Finish the flow. Sets **the same session cookie** `login` sets.
+
+        One session mechanism, whatever authenticated it: `_set_session` is
+        called here verbatim, so revocation, the sliding window and the
+        role-read-from-the-user-row all behave identically for an SSO session
+        and a password one. Nothing about OIDC survives into the session — the
+        store row is the authority, exactly as it is for `POST /auth/login`.
+        """
+        cfg = _config()
+        client, oidc = _oidc()
+        params = request.query_params
+        if params.get("error"):
+            # The provider refused (`access_denied`, `login_required`, ...).
+            # Its own code is echoed because the person needs to know whether
+            # to try again or call an administrator.
+            raise _refused(
+                AuthError("the identity provider refused this sign-in",
+                          {"idp_error": str(params.get("error"))[:64]}),
+                "login", principal="unknown", outcome="idp_refused")
+        verified = client.complete(params.get("code"), params.get("state"),
+                                   request.cookies.get(oidc.FLOW_COOKIE))
+
+        if verified.link_handle:
+            # An explicit link by somebody who is already signed in. Their
+            # session is untouched — re-minting it would sign a person out of
+            # their other browsers for adding a credential.
+            #
+            # The session is re-read here rather than trusted from the pending
+            # record: a browser that signed out (or signed in as somebody
+            # else) between starting the link and finishing it must not bind
+            # the identity to the handle it *used* to hold.
+            who = sec.current_principal()
+            if who is None or who.kind != "user" or who.name != verified.link_handle:
+                raise AuthError("sign in again and re-start the link")
+            handle = oidc.link_identity(cfg.store, client.config, verified)
+            _audit("oidc_link", principal=f"user:{handle}",
+                   args={"issuer": verified.issuer,
+                         "subject": verified.subject})
+            response = JSONResponse({"handle": handle, "linked": True,
+                                     "issuer": verified.issuer,
+                                     "subject": verified.subject,
+                                     "email": verified.email})
+            response.delete_cookie(oidc.FLOW_COOKIE, path="/api/auth/oidc")
+            return response
+
+        handle, how = oidc.sign_in_handle(cfg.store, client.config, verified)
+        device = sec._device(request.headers, None)          # noqa: SLF001
+        secret = cfg.store.create_session(handle, device)
+        row = cfg.store.resolve_session(secret)
+        if row is None:                     # disabled between the two calls
+            raise _refused(AuthError(oidc.UNLINKED), "login",
+                           principal=f"user:{handle}", outcome="disabled")
+        who = sec.Principal(kind="user", name=handle, role=row["role"],
+                            device=device, via="cookie")
+        _audit("login", principal=who.client_id,
+               args={"via": "oidc", "link": how, "issuer": verified.issuer})
+        payload = {**_identity(cfg, who), "via": "oidc", "link": how,
+                   "issuer": verified.issuer, "subject": verified.subject}
+        # A browser lands here by following the provider's redirect, so it is
+        # sent on into the app rather than shown a page of JSON — the
+        # `enrol_page` precedent, and for the same reason. Every non-browser
+        # client (curl, a test, an audit script) gets the payload.
+        wants_html = "text/html" in (request.headers.get("accept") or "")
+        response: Response = (RedirectResponse("/", status_code=303)
+                              if wants_html else JSONResponse(payload))
+        response.delete_cookie(oidc.FLOW_COOKIE, path="/api/auth/oidc")
+        return _set_session(cfg, response, secret)
+
+    # ========================================== passkeys (PRD-005 FR1)
+    #
+    # WebAuthn, behind the `agentcad[cloud]` extra. `webauthn` is imported
+    # INSIDE the handlers (~105 ms, spike B1) and the routes answer 501 when it
+    # is absent — the FEM precedent (`routes_analysis._fem_unavailable`) with
+    # its wording. Local password accounts are untouched and remain the only
+    # thing a no-extra instance needs.
+
+    # TWO stores, not one, and the split is a DoS boundary rather than tidiness
+    # (Lens A #13). `register/begin` is reachable by any signed-in member and
+    # was unthrottled; sharing one 512-slot store with login meant a member
+    # spamming registration ceremonies would evict every in-flight *login*
+    # challenge instance-wide (`put` drops the oldest quarter when full), so an
+    # authenticated member could deny sign-in to everyone. Separate stores put a
+    # register flood's eviction entirely inside the register store: it can crowd
+    # out only other registration ceremonies (the flooder's own), never a
+    # stranger's login challenge. Each keeps its own TTL and cap. The
+    # `purpose` field on every record is kept as belt-and-braces — a login store
+    # can now never hold a `register` record, but the check costs nothing.
+    _register_challenges = _ChallengeStore()
+    _login_challenges = _ChallengeStore()
+
+    def _passkey_gate() -> JSONResponse | None:
+        """The 501 for an instance without the extra, or ``None``."""
+        if passkeys_available():
+            return None
+        return JSONResponse(
+            status_code=501,
+            content={"error": {
+                "type": "PasskeysUnavailable",
+                "message": "passkeys require: pip install 'agentcad[cloud]'",
+                "details": {}}},
+        )
+
+    def _webauthn():
+        return importlib.import_module("webauthn")
+
+    def _relying_party(cfg) -> tuple[str, str]:
+        """``(rp_id, origin)`` for this instance.
+
+        The rp id is the origin's **host with no port** (`AppMode.origin_host`)
+        because that is what WebAuthn calls the relying party id — a port in it
+        makes every ceremony fail with a `SecurityError` in the browser and
+        nothing in the log. The expected origin is the full configured origin,
+        scheme and port included, which is what `clientDataJSON` carries.
+        """
+        return cfg.mode.origin_host, cfg.mode.public_origin
+
+    def _passkey_person():
+        who = _principal()
+        if who.kind != "user":
+            # Decision 14's shape: a bearer token must not mint a credential
+            # that then unlocks the surface the bearer already has. A human
+            # registers a passkey; a token drives the product.
+            raise AuthzError(
+                "only a signed-in person can manage passkeys", {"kind": who.kind})
+        return who
+
+    def _credential(body: dict) -> dict:
+        """The credential out of a request body, in either shape a client
+        sends: the raw `PublicKeyCredential` JSON, or wrapped in
+        `{"credential": ...}`."""
+        if isinstance(body.get("credential"), dict):
+            return body["credential"]
+        return body if isinstance(body.get("response"), dict) else {}
+
+    @router.get("/auth/passkeys")
+    def list_passkeys():
+        """This account's credentials. No `webauthn` needed — it is a read of
+        `users.json`, so it answers on an instance without the extra too (and
+        an instance that *removed* the extra can still revoke what it
+        registered)."""
+        cfg = _config()
+        who = _passkey_person()
+        return {"passkeys": [
+            {k: v for k, v in row.items() if k != "public_key"}
+            for row in cfg.store.get_passkeys(who.name)]}
+
+    @router.delete("/auth/passkeys/{credential_id}")
+    def delete_passkey(credential_id: str):
+        cfg = _config()
+        who = _passkey_person()
+        removed = cfg.store.remove_passkey(who.name, credential_id)
+        if not removed:
+            raise NotFoundError("no such passkey on this account")
+        _audit("passkey_delete", principal=who.client_id,
+               args={"credential_id": credential_id})
+        return {"id": credential_id, "removed": True}
+
+    @router.post("/auth/passkey/register/begin")
+    async def passkey_register_begin(request: Request):
+        cfg = _config()
+        gate = _passkey_gate()
+        if gate is not None:
+            return gate
+        who = _passkey_person()
+        wa = _webauthn()
+        from webauthn.helpers import structs
+
+        body = await _body(request)
+        existing = cfg.store.get_passkeys(who.name)
+        rp_id, _origin = _relying_party(cfg)
+        options = wa.generate_registration_options(
+            rp_id=rp_id,
+            rp_name=PASSKEY_RP_NAME,
+            # The handle, not a random opaque id. WebAuthn prefers an opaque
+            # user id, and the reason is privacy — but this handle is already
+            # public on this instance (presence rosters, comment authors,
+            # history trailers all carry it), and using it keeps
+            # re-registration on one authenticator a *replacement* rather than
+            # a second discoverable credential for the same account. Resolution
+            # never depends on it: `find_by_passkey` goes by credential id.
+            user_id=who.name.encode("utf-8"),
+            user_name=who.name,
+            user_display_name=who.name,
+            # So the same authenticator cannot register twice and leave the
+            # account with a credential it will never be offered.
+            exclude_credentials=[
+                structs.PublicKeyCredentialDescriptor(
+                    id=wa.base64url_to_bytes(row["id"]))
+                for row in existing],
+            authenticator_selection=structs.AuthenticatorSelectionCriteria(
+                # DISCOVERABLE, which is what makes the usernameless sign-in
+                # below possible at all: without a resident key the browser has
+                # nothing to offer when nobody has typed a handle.
+                resident_key=structs.ResidentKeyRequirement.PREFERRED,
+                # REQUIRED, not PREFERRED (Lens A #11): a credential registered
+                # here must be able to prove user verification, so that the
+                # sign-in that requires UV can succeed with it. A passkey is a
+                # second factor on this instance, decided once and enforced on
+                # both ceremonies.
+                user_verification=structs.UserVerificationRequirement.REQUIRED,
+            ),
+        )
+        label = body.get("label")
+        _register_challenges.put(_b64u(options.challenge), {
+            "purpose": "register", "handle": who.name,
+            "label": label if isinstance(label, str) else None})
+        return json.loads(wa.options_to_json(options))
+
+    @router.post("/auth/passkey/register/complete")
+    async def passkey_register_complete(request: Request):
+        cfg = _config()
+        gate = _passkey_gate()
+        if gate is not None:
+            return gate
+        who = _passkey_person()
+        wa = _webauthn()
+        body = await _body(request)
+        credential = _credential(body)
+        record = _register_challenges.take(_client_challenge(credential))
+        if (record is None or record.get("purpose") != "register"
+                or record.get("handle") != who.name):
+            raise _refused(
+                AuthError("this registration has expired; start again"),
+                "passkey_register", principal=who.client_id,
+                outcome="stale_challenge")
+        rp_id, origin = _relying_party(cfg)
+        try:
+            verified = wa.verify_registration_response(
+                credential=json.dumps(credential),
+                # The challenge WE minted, looked up by the one the client
+                # named. Never the client's own bytes.
+                expected_challenge=wa.base64url_to_bytes(record["challenge"]),
+                expected_origin=origin,
+                expected_rp_id=rp_id,
+                # The registering ceremony must prove UV too (Lens A #11), or a
+                # credential that cannot verify the user would be enrolled and
+                # then rejected at every sign-in. Fail here, where the message
+                # can say "your authenticator did not verify you", rather than
+                # silently later.
+                require_user_verification=True,
+            )
+        except Exception as exc:            # noqa: BLE001 — the library's own
+            raise _refused(
+                AuthError(f"this passkey could not be verified "
+                          f"({type(exc).__name__})"),
+                "passkey_register", principal=who.client_id,
+                outcome="unverified") from exc
+        transports = []
+        response = credential.get("response")
+        if isinstance(response, dict) and isinstance(response.get("transports"), list):
+            transports = [t for t in response["transports"] if isinstance(t, str)]
+        row = cfg.store.add_passkey(
+            who.name,
+            credential_id=_b64u(verified.credential_id),
+            public_key=_b64u(verified.credential_public_key),
+            sign_count=verified.sign_count,
+            label=record.get("label") or sec._device(request.headers, None)  # noqa: SLF001
+            or "passkey",
+            transports=transports,
+            backed_up=verified.credential_backed_up,
+        )
+        _audit("passkey_register", principal=who.client_id,
+               args={"credential_id": row["id"], "label": row.get("label")})
+        return {"handle": who.name,
+                **{k: v for k, v in row.items() if k != "public_key"}}
+
+    @router.post("/auth/passkey/login/begin")
+    async def passkey_login_begin(request: Request):
+        """Options for a sign-in. Anonymous, so it says **nothing** about who
+        exists.
+
+        The response is a usernameless challenge with **no `allowCredentials`**,
+        whatever the request body — an unknown handle, a member with no passkey
+        and a member *with* passkeys all get byte-shaped-identical options
+        (Lens A #10). A populated `allowCredentials` is a user-enumeration
+        oracle on an unauthenticated endpoint: it would leak both that a handle
+        exists and the ids of its credentials, and it is exactly what
+        `_LOGIN_FAILED` exists to avoid on the password door. A `handle` may
+        still be sent (older clients do) but it is **ignored** here — the
+        credential the browser returns identifies its own owner, resolved by id
+        in `login/complete`, so the discoverable-credential flow needs no hint
+        and the handle-first flow's leak buys nothing a resident key does not
+        already give.
+
+        `user_verification=REQUIRED` (Decision, Lens A #11): a passkey that
+        proves user verification is a *second* factor — possession of the
+        authenticator **and** a biometric or PIN — so requiring it makes passkey
+        sign-in two-factor by default rather than possession-only. The virtual
+        and every platform authenticator set the UV flag; a roaming key without
+        a PIN is the only thing this turns away, and turning it away is the
+        secure default. (Documented for `docs/deployment.md` — passkeys are 2FA
+        here, UV is not optional.)
+        """
+        cfg = _config()
+        gate = _passkey_gate()
+        if gate is not None:
+            return gate
+        _address_budget(cfg, request)
+        wa = _webauthn()
+        from webauthn.helpers import structs
+
+        # The body is read and discarded: a `handle`, if any, selects nothing.
+        await _body(request)
+        rp_id, _origin = _relying_party(cfg)
+        options = wa.generate_authentication_options(
+            rp_id=rp_id,
+            allow_credentials=None,
+            user_verification=structs.UserVerificationRequirement.REQUIRED,
+        )
+        _login_challenges.put(_b64u(options.challenge),
+                              {"purpose": "login", "handle": None})
+        return json.loads(wa.options_to_json(options))
+
+    @router.post("/auth/passkey/login/complete")
+    async def passkey_login_complete(request: Request):
+        """Verify an assertion and open a session. Every refusal is
+        `_LOGIN_FAILED` — the same one `POST /auth/login` gives, for the same
+        reason."""
+        cfg = _config()
+        gate = _passkey_gate()
+        if gate is not None:
+            return gate
+        # The per-address budget `POST /auth/login` charges (Lens A #12). Begin
+        # was throttled and complete was not, so an anonymous flood could post
+        # 200 assertions and mint 200 durable audit rows for 200 401s. Charged
+        # here — before the challenge lookup, the store read and the scrypt-free
+        # but still non-trivial signature verify — a flood is bounded to the
+        # burst and then throttled, and the rate-limited attempts write no row
+        # (`_address_budget` raises before `_refused`), so the audit database
+        # cannot be grown from the outside. This is what the note in
+        # `security.PUBLIC_PATHS` ("each is rate limited on the same per-address
+        # bucket") has always claimed; it is now true of complete too.
+        _address_budget(cfg, request)
+        wa = _webauthn()
+        body = await _body(request)
+        credential = _credential(body)
+        record = _login_challenges.take(_client_challenge(credential))
+        # Every refusal below is the same `_LOGIN_FAILED` to the caller and a
+        # DIFFERENT `outcome` in the audit row. That is not a leak: the row is
+        # readable only by an administrator, and "which of the five ways did it
+        # fail" is exactly what an operator needs and an attacker must not be
+        # told. The response stays indistinguishable.
+        if record is None or record.get("purpose") != "login":
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal="unknown", outcome="stale_challenge")
+        raw_id = credential.get("rawId") or credential.get("id")
+        found = cfg.store.find_by_passkey(raw_id if isinstance(raw_id, str) else "")
+        if found is None:
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(record.get("handle")),
+                           outcome="unknown_credential")
+        if record.get("handle") and record["handle"] != found["handle"]:
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(record["handle"]),
+                           outcome="credential_mismatch")
+        user = cfg.store.get_user(found["handle"])
+        if user is None or user["disabled"]:
+            # `admin user disable` must stop a passkey exactly as it stops a
+            # password. The user row is the authority, as it is everywhere
+            # else in this file.
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(found["handle"]),
+                           outcome="disabled")
+        rp_id, origin = _relying_party(cfg)
+        try:
+            verified = wa.verify_authentication_response(
+                credential=json.dumps(credential),
+                expected_challenge=wa.base64url_to_bytes(record["challenge"]),
+                expected_origin=origin,
+                expected_rp_id=rp_id,
+                credential_public_key=wa.base64url_to_bytes(found["public_key"]),
+                # The stored counter. A cloned authenticator replays a
+                # *lower* one and the library refuses — which is the only
+                # thing the counter is for.
+                credential_current_sign_count=int(found.get("sign_count") or 0),
+                # Second factor, enforced (Lens A #11): the assertion must carry
+                # the UV flag the `login/begin` options required, so a stolen
+                # authenticator without the owner's biometric or PIN cannot sign
+                # in on possession alone. The library defaults this False; here
+                # a passkey is 2FA and UV is not optional.
+                require_user_verification=True,
+            )
+        except Exception as exc:            # noqa: BLE001 — the library's own
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(found["handle"]),
+                           outcome="unverified") from exc
+        cfg.store.update_sign_count(found["handle"], found["id"],
+                                    verified.new_sign_count)
+        device = sec._device(request.headers, None)          # noqa: SLF001
+        secret = cfg.store.create_session(found["handle"], device)
+        row = cfg.store.resolve_session(secret)
+        if row is None:
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(found["handle"]),
+                           outcome="disabled")
+        who = sec.Principal(kind="user", name=found["handle"], role=row["role"],
+                            device=device, via="cookie")
+        _audit("login", principal=who.client_id, args={"via": "passkey"})
+        return _set_session(cfg, JSONResponse({**_identity(cfg, who),
+                                               "via": "passkey"}), secret)
 
     return router
 
@@ -270,6 +1115,27 @@ TRUST_SENTENCE = (
     "an account on this instance can execute arbitrary Python on the host; "
     "give one only to someone you would give a shell to"
 )
+
+
+def _positive(value: object, default: int, what: str, floor: int = 1) -> int:
+    """A query-string integer, or a 422 that names the parameter.
+
+    Not silently defaulted: `?limit=all` returning 200 rows would look like an
+    answer to a question nobody asked. The upper bound is `AuditLog.query`'s,
+    which clamps rather than refuses — a limit that is too large is a caller
+    asking for everything, and everything is what `MAX_LIMIT` means.
+    """
+    if value is None or value == "":
+        return default
+    try:
+        number = int(str(value))
+    except ValueError as exc:
+        raise ValidationError(f"{what} must be an integer",
+                              {what: str(value)[:32]}) from exc
+    if number < floor:
+        raise ValidationError(f"{what} must be at least {floor}",
+                              {what: number})
+    return number
 
 
 def _enrolment_handle(cfg, token: str) -> str:

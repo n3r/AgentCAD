@@ -132,6 +132,17 @@ export function context() {
       .some((b) => !b.is_current && !b.is_default),
     inField: doc ? inField(doc.activeElement) : false,
     modalOpen: isModalOpen(),
+    // PRD-005 slice 8. `canEdit` is an AFFORDANCE, not enforcement — the
+    // server-side write_guard/registry wrapper (slice 4) is what actually
+    // stops a write; this only decides whether the shell offers the control
+    // at all. `true` everywhere untenanted (local mode, and a hosted
+    // instance with no orgs) — `main.js` computes it from the signed-in
+    // principal's role on the CURRENT project (`whoami.roles`, PRD-005 FR6's
+    // view<comment<edit<admin ladder) and defaults it open when that is
+    // unknown, so a gap here is never a false lockout. `hasOrgs` is the
+    // switcher/members/tokens panels' single eligibility gate.
+    canEdit: state.canEdit !== false,
+    hasOrgs: !!(state.identityOrgs && state.identityOrgs.length),
     sketcherOpen: doc
       ? !!doc.getElementById("sketcher")
         && !doc.getElementById("sketcher").classList.contains("hidden")

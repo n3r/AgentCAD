@@ -412,6 +412,70 @@ This project is built skill-first. Use the Superpowers process skills:
   `import * as virtual` (a named `window` import shadows the global) and focus
   restore is `{preventScroll: true}` · tool count **109 (112 with `[fem]`)** — measured, and pinned to the live registry by `test_prd027_acceptance`,
   guarded against a live `build_registry`.
+- Multi-tenant cloud (`core/tenancy.py`, `authz.py`, `tenancy_wiring.py`,
+  `sync.py`/`sync_server.py`, `routes_sync.py`, `audit.py`, `tools_cloud.py`,
+  `oidc.py`, `kernel/pool.py`'s fair gate; PRD-005): tenancy is **ambient**
+  (`tenancy.tenant_var`, the `branch_resolver` precedent) — one store, one
+  kernel pool, every wrapper no-ops on no tenant, and that (not one test file)
+  **is** the local-mode regression contract · `receive.denyCurrentBranch=
+  updateInstead` is unusable against `.history` (receive-pack strips `/.git`
+  off `GIT_DIR`, ignores `core.worktree`) — it's `ignore` plus an explicit
+  `checkout -f` in the `receive_pack` **route's own `after()`** (not a git
+  hook — there is no post-receive hook here at all); the **pre-receive hook
+  is the whole of FR9**
+  (`denyNonFastForwards`/`denyDeletes` are `refs/heads/*`-only — the hook
+  refuses ref deletes, branch non-FF and tag rewrites, all three, `sh`
+  not bash, all-or-nothing) · never buffer a git body — `routes_sync` spools
+  the request to an unlinked temp file (one `BaseHTTPMiddleware` receive
+  channel makes full-duplex CGI impossible) and drains stderr **to EOF in a
+  loop** (one `read()` hangs a large push on `unpack-objects`' 64 KB pipe) ·
+  the sync CLI's git credential helper is the only door (never a URL/
+  `extraHeader` token — both leak); `~/.agentcad/sync.json` is 0600 **from the
+  first byte** (`O_EXCL`, never write-then-chmod), keyed `protocol://host` ·
+  `orgs.json` shares `authstore`'s guard **by identity** (`_guard_for`) — a
+  private flock on the same lock file self-deadlocks (per-fd, not per-file) ·
+  `authz.PermissionError`/`KernelBusyError` both ride `model.error_type`'s
+  class-name derivation with zero core edits — HTTP spells the class name,
+  the tool surface `permission_error`/`kernelbusy_error` (one word); import
+  `authz.PermissionDeniedError`, never shadow the builtin directly · a raw
+  `cp` of the audit SQLite (WAL) loses unflushed rows — `AuditLog.vacuum_into`
+  only; the audit tree sits **beside** `auth/`, not inside it · `audit.
+  tap_registry` is no-tenant-no-row and is installed **outside** the RBAC
+  floor on `registry.call` (refusals get a row too) — `tools_cloud`'s four
+  mutating tools (`create_agent_token`/`revoke_agent_token`/`grant_role`/
+  `revoke_role`) no longer call `_audit(...)` themselves (that was the
+  pre-wiring duplicate; one row per action now, from the registry tap) ·
+  tenant resolution precedence in
+  `security.resolve_tenant` — token **scope** (no membership check) >
+  `X-Agentcad-Workspace` (or, absent that, `?workspace=org/ws`) > session
+  active workspace > the caller's own memberships, **alphabetically first**
+  when there is more than one (not only when there is exactly one) > `None`
+  — and a selection failing the roles check is a **name-free 404**, never a
+  403 (that would itself be an existence oracle); only the read floor, once a
+  tenant IS resolved, answers 403 · `ProjectStore.lock_key` is the **one**
+  qualification funnel (turn locks, claims, presence, undo, badges, search,
+  nav — all of it), wider on purpose than "the write guard re-keys the
+  turnlock" · the kernel pool's tenant gate (`max(1,size-1)` in-flight, FIFO
+  depth 32, round-robin drain, `org/ws:` affinity namespacing) is **cache
+  hygiene, not isolation** — small pools still hash-collide across tenants ·
+  "workspace" is tenancy's word now; the shell's `workspace` (layout
+  localStorage key, `#workspace` DOM id) is an unrelated internal slot name,
+  deliberately not renamed — PRD-025 picks its own word · **a pushed tree may
+  never write under `.history/`** (`core/sync_server.py`'s `pre-receive`
+  hook): the GIT_DIR is `<project>/.history` *inside* the work tree, so an
+  uncaught `.history/**` path in a pushed commit would land straight in the
+  served repo's own git internals when `checkout -f` materializes it (a
+  planted hook/config/filter running as the unconfined server user) — the
+  hook scans only the newly-pushed commits' trees (`$tips --not --all`, `-c`
+  for merge-introduced paths) and refuses the whole push, same shape as the
+  FR9 ref rules · **`agent/chat.py`'s tool-call loop re-sets the tenant
+  inside the executor thread**: `loop.run_in_executor` does not carry
+  contextvars, so the turn's ambient `tenancy.tenant_var` would read `None`
+  in the worker thread without help — the coroutine reads
+  `tenancy.current_tenant()` *before* handing off and passes it to
+  `_call_tool`, which re-`set_tenant`s it for the duration of that one call.
+  Forgetting this on a new executor hop is a silent no-role-floor,
+  no-audit-row, flat-storage-root bug, not a loud one.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests

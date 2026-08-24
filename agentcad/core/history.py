@@ -198,6 +198,17 @@ class ProjectHistory:
         git_dir = self._locate(project_path)
         cmd = [
             self._git or "git",
+            # DEFENSE IN DEPTH (PRD-005 RCE re-check): this engine is the
+            # executor a landed poison fires through — a repo-local
+            # `.history/config` (`core.fsmonitor`) or a checked-out
+            # `.history/hooks/*` would run as the git-running user on the next
+            # snapshot. The hermetic HOME/`GIT_CONFIG_NOSYSTEM` below suppress
+            # the operator's GLOBAL config but NOT the repo-local one, so pin
+            # both off per call. AgentCAD's history engine never wants a repo
+            # hook or an fsmonitor command; even a future gap in the sync
+            # git-internals belt cannot execute through `_exec`.
+            "-c", "core.fsmonitor=false",
+            "-c", "core.hooksPath=/dev/null",
             "--git-dir", str(git_dir),
             "--work-tree", str(project_path),
             *args,

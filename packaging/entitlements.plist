@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Minimal hardened-runtime entitlements for the PyInstaller onedir bundle
+  (PRD-005 FR15). Written for `.github/workflows/release.yml`'s macOS
+  codesign step; also usable locally (`codesign` with the `entitlements`
+  flag pointed at this file) when testing signing against a real Developer
+  ID certificate outside CI.
+
+  Notarization requires the hardened runtime (the `options runtime` flag to
+  `codesign`), and a frozen CPython interpreter needs these four to keep
+  working under it:
+
+  - allow-jit / allow-unsigned-executable-memory: CPython's own bytecode
+    interpreter and any JIT-ish native extension (numpy, scipy) allocate and
+    execute writable memory pages, which the hardened runtime blocks by
+    default.
+  - disable-library-validation: the bundle carries build123d/OCP's OCCT
+    dylibs and bd_warehouse/lib3mf's native libraries. They are re-signed by
+    this same identity in the release job's codesign loop, but library
+    validation additionally wants the SAME Team ID on every loaded image at
+    *load time*, which a dlopen'd third-party wheel binary is not guaranteed
+    to carry byte-for-byte across every path this app dlopen()s from.
+  - allow-dyld-environment-variables: the frozen worker re-execs itself
+    (`agentcad._spawn`, the hidden `worker` subcommand) and PyInstaller's own
+    bootloader reads DYLD_* variables to find its bundled libraries.
+
+  No network/camera/microphone/file-access entitlements are requested: the
+  app's own confinement (kernel/sandbox_macos.py, the seatbelt profile) is
+  the access-control layer, and this file only unblocks what the hardened
+  runtime would otherwise refuse to a legitimately frozen Python app.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>

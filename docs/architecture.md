@@ -1153,9 +1153,246 @@ Therefore:
   and the absolute-path form of `import_cad_file` (both are host-filesystem
   reach), a presence beacon naming an identity outside the caller's own
   namespace, and the full health body without a principal.
-- **Residuals it does not close, named in the PRD**: cross-project reach for
-  every member (per-project ACLs are PRD-005), an authenticated DoS — the caps
-  bound each kernel job, not how many a member queues — no queryable audit log
-  (history trailers and the proposal/comment `audit.jsonl` carry attribution),
-  no envelope encryption of the state files (`0600` in a volume), and an
-  unmetered — but cacheable and static — anonymous read.
+- **Residuals it does not close, named in the PRD**: an authenticated DoS —
+  the caps bound each kernel job, not how many a member queues — no envelope
+  encryption of the state files (`0600` in a volume), and an unmetered — but
+  cacheable and static — anonymous read. **Cross-project reach for every
+  member and a queryable audit log are what PRD-005 closes** (see the section
+  below): a tenanted project is readable and writable only by the roles
+  `orgs.json` grants, and every mutating tool call plus every auth event lands
+  in the per-org SQLite audit log. What PRD-005 does *not* close is the
+  paragraph above's own point — a script that IS running still shares the
+  server user's whole filesystem reach with every other org's script; RBAC
+  governs who may *call the API*, not what a running script can *touch on
+  disk*. An untenanted hosted instance (no orgs created) is unaffected by any
+  of this: it is 005a, byte-for-byte.
+
+## Multi-tenant cloud (PRD-005)
+
+One process, one `AgentCADService`, one `ProjectStore`, one kernel pool —
+the same load-bearing decision as 005a. A store-per-tenant service fleet
+would multiply kernel workers (~0.5 GB each) with the tenant count; instead
+tenancy arrives as **ambient per-request state**, resolved once by
+`server/security.py::guard` and read back by everything downstream through a
+`ContextVar`, never passed as an argument. Design:
+`docs/superpowers/specs/2026-08-24-multi-tenant-cloud-design.md`; the
+gotcha-level detail lives in `AGENTS.md`'s "Multi-tenant cloud gotchas"
+section; the operator's view is `docs/deployment.md`; the agent-facing
+surface (tools, tool floors, the `/git` remote, error types) is
+`docs/agent-api.md`.
+
+**The model.** `core/tenancy.py` owns `orgs.json` (`<state>/auth/orgs.json`):
+`org -> workspace -> project`, org members with a default role, per-project
+role overrides. It shares `authstore`'s flock **by identity**
+(`authstore._guard_for`) rather than opening a second one on the same lock
+file — `fcntl.flock` is per open file description, so two descriptors on one
+lock file inside one process deadlock each other forever, and granting a
+role while creating the account it names is one admin operation, not a
+hypothetical race. `core/authz.py` owns the ladder — `view < comment < edit <
+admin`, a total order — and the one decision function, `role_of` /
+`require`, that every choke point below calls rather than re-deriving.
+Bootstrapping the document — the first org, its first workspace, its first
+member — is `agentcad admin org add|workspace add|member add` (`cli.py`,
+`_tenancy_store()`): state-file writes only, no service and no kernel, so it
+works over `docker compose exec` before anyone has signed in. Per-project
+overrides are granted from the running instance instead (the `grant_role`
+tool, `docs/agent-api.md`), because a grant needs `role_of` to already answer
+for an admin, which only a live service can check.
+
+**The tenant ContextVar and the `root_resolver` seam.** `tenancy.tenant_var`
+holds `(org, workspace) | None`, set by `guard` right beside
+`set_client_id` — the same seam 005a already used to establish per-request
+identity — and read by `tenancy.qualified(name)` (the *name* half: `org/ws/
+name` hosted, `name` local) and `tenancy.tenant_root(root)` (the *path*
+half: `<root>/orgs/<org>/<ws>`, or `None`). `ProjectStore` gains exactly one
+new seam for this, `root_resolver: () -> Path | None` — the direct sibling
+of the existing `write_guard`/`branch_resolver` seams, installed the same
+way. Every path composition (`list_projects`, `create`, `_locate`, and
+therefore `.cache/`, `exports/`, `imports/`, `.history/` and every branch
+working tree) goes through one private `_root()` that consults it, so
+tenant rooting is inherited rather than threaded through each caller by
+hand. A resolver that raises or answers `None` falls back to today's flat
+root — which is the whole of "local mode is byte-identical" for the
+storage half: nothing downstream had to learn tenancy exists.
+
+**Three RBAC choke points, one decision function, no core edits.**
+`core/tenancy_wiring.py` installs all of them as wrappers (capture the
+current callable, wrap, mark with a sentinel, put it back) over
+`core/tenancy.py`/`core/authz.py`, which nothing else imports on a hot path:
+
+1. **The read floor**, inside `security.guard()`. A route that binds a
+   project path parameter (`{proj}`/`{project}`) needs `view` on it. Which
+   routes those are is computed **once**, from the app's own mounted routes
+   (`security.project_routes`, walking `include_context` because FastAPI
+   leaves `include_router` opaque — a naive `app.routes` walk sees 23 of 83
+   routes) rather than kept as a hand-written table that could drift; the
+   literal-path set is checked before the `{proj}` regex matchers, which is
+   load-bearing (`POST /api/projects/open` must not be read as a project
+   named `open`). `/git/…` is excluded — it carries its own tenant in the
+   URL and its own floor (below).
+2. **The tool registry wrapper**, `ToolRegistry.call`, installed once and
+   covering HTTP, the built-in chat engine and MCP simultaneously because
+   all three dispatch through the same registry object. Every tool has a
+   floor — `view` for reads, `comment` for the review surface, `admin` for
+   role/token management, everything else `edit` by default (fail closed: a
+   tool added tomorrow is refused to a viewer until someone decides
+   otherwise) — plus one tool (`open_project`) refused outright under any
+   tenant, because it registers an absolute filesystem path in a
+   process-global map with no tenant in it.
+3. **The write guard**, in the `presence.ensure_claim_guard` shape:
+   `authz.require("edit", ...)` runs, then the guard it wrapped. One
+   deliberate difference from that shape — the authz check runs **before**
+   the wrapped guard, not after, so a caller who may never write is told
+   that rather than told to wait for a turn that would never help them
+   anyway. Re-installed from `tools_versioning.install_write_guard`'s own
+   seam (which *replaces* `write_guard` rather than composing with it — the
+   PRD-008 lesson, paid for once already) bound to one service by
+   **weakref**, so it cannot attach itself to `core/checks.py`'s ephemeral
+   service, whose `write_guard is None` contract PRD-004 depends on.
+
+A fourth, narrower wrapper closes the one write neither the read floor nor
+the write guard can see: `ProjectStore.create` needs `edit` **in the
+workspace** before the directory is made (the project doesn't exist yet to
+check a per-project floor on), and on success calls
+`TenancyStore.add_project` so the new project is immediately reachable
+through the roles document that just authorized it.
+
+All three (four, counting `create`) read `tenancy.current_tenant()` first
+and, on `None`, do exactly what they wrapped and nothing else — that
+branch, not one test file, is what makes local mode byte-identical (AC7).
+One more wrapper, broader than
+strictly RBAC: `ProjectStore.lock_key` is qualified with `tenancy.qualified`
+once, at the single funnel every keyed piece of per-project state goes
+through — turn locks, per-part claims, presence rosters, undo stacks, build
+badges, the search index and the navigation roll-up all key on its answer,
+so one wrapper is what makes a cross-tenant project-name collision
+impossible everywhere at once, rather than in each of those seven places
+separately.
+
+**The event bus: stamp on publish, filter on subscribe.** `EventBus.publish`
+is wrapped to stamp `event["tenant"] = "org/ws"` (or leave it alone —
+already-tenanted events, and local mode, are untouched). The **filter**
+lives on the *subscribe* side, and specifically on the **queue**, not the
+route: `/ws` (in `app.py`, which this feature does not touch) calls
+`bus.subscribe()` inside the connection's own request context, right after
+`guard_websocket` resolved that connection's tenant, and afterwards only
+ever calls `q.get()` — there is no per-message request to re-read a tenant
+from. So the `subscribe` wrapper reads the tenant **once**, at subscribe
+time, and binds it to that connection for its life by replacing the
+already-created queue's **bound `put_nowait`** — not a proxy object, because
+that queue is the exact instance the bus keeps in its subscriber list and
+the exact instance `unsubscribe` is later called with. Delivery rule: a
+subscriber receives an event that carries no tenant (nothing published one —
+local mode, or anything published outside a request) or exactly its own; an
+untenanted subscriber on a hosted instance therefore hears nothing tenanted,
+which is the safe direction. The non-dict `_WS_STOP` sentinel `app.py` uses
+to wake a disconnected client is never filtered.
+
+**Git sync: a CGI child, not hand-rolled `--stateless-rpc`.** Each project's
+`.history` repo is exposed at `/git/<org>/<ws>/<proj>.git/` through
+`server/routes_sync.py`, which runs `git http-backend` as a **streamed CGI
+subprocess** rather than reimplementing the smart-HTTP protocol directly —
+direct mode silently downgrades to protocol v0 unless two version-numbered
+wire details are maintained forever, and CGI reduces header parsing to one
+`partition(b"\r\n\r\n")`. The request body is **spooled to an unlinked temp
+file** before the child ever starts, in 64 KB chunks, capped by
+`AGENTCAD_SYNC_MAX_PUSH_MB` (default 512) — not an optimization, a
+structural necessity: the app's one `BaseHTTPMiddleware` gives every route a
+`wrapped_receive` that `StreamingResponse`'s disconnect listener also
+drains, so two concurrent consumers exist on one receive channel the moment
+a response starts streaming, and `git-http-backend` emits its CGI headers
+for a receive-pack *before reading a single byte* — measured, a 3 MB push
+stalled at 288 KB under naive full-duplex proxying. The *response* still
+streams (the direction that carries a whole repository), and the child's
+stderr is drained **to EOF in a loop**, never by one `read()` — `git
+unpack-objects` writes progress there for as long as it is inflating a pack,
+the pipe fills at 64 KB, and an unattended pipe hangs a large push with no
+error anywhere.
+
+`git`'s own `receive.denyCurrentBranch=updateInstead` cannot be used: a
+project's `GIT_DIR` is `<project>/.history`, and `receive-pack` derives its
+work tree by stripping the trailing `/.git` off `GIT_DIR` and **ignoring
+`core.worktree`** entirely — it resolves to `.history` itself, finds none of
+the tracked files, and rejects every push. The config is `denyCurrentBranch
+=ignore` instead, and `core/sync_server.py::materialize` runs an explicit
+`checkout -f` under the project's write scope after every accepted receive
+(0.02–0.14 s measured) — a held turn or uncommitted tracked edits skip the
+checkout (`materialized: false`) rather than clobbering either, and the push
+itself is never failed for it: the refs already landed safely. **The
+pre-receive hook is the whole of the FR9 contract**, not a belt beside git's
+own knobs: `denyNonFastForwards`/`denyDeletes` cover only `refs/heads/*`, so
+a client configured with `denyCurrentBranch=ignore` could otherwise
+force-push a branch or rewrite/delete a PRD-015 release tag with both knobs
+set. The hook (POSIX `/bin/sh`, versioned via a marker comment so an
+upgrade rewrites a stale hand-installed copy) refuses, all-or-nothing for
+the whole push: any ref delete, a non-fast-forward branch update
+(`merge-base --is-ancestor`), and any tag update whose old value is
+non-zero — with a `remote: agentcad: …` message git prints verbatim to the
+client (exact wording: `docs/agent-api.md`'s `/git` section and
+`docs/user-guide.md`'s offline walkthrough).
+
+**The audit store — this repo's first SQLite.** `core/audit.py` writes one
+WAL database per org, `<state>/audit/<org>.db` (auth events for the whole
+instance live under the reserved org name `_instance`, since `ID_RE`
+forbids a leading underscore in a real org id). `journal_mode=WAL` +
+`synchronous=NORMAL` + `busy_timeout=30000`, with `(ts)`, `(principal, ts)`
+and `(project, ts)` indexes — a spike measured a 126× query win over JSONL
+at 100k rows, which is the whole justification for breaking 005a's
+"identity stays JSON" rule for this one document. Rows are `{ts, principal,
+action, project, args_digest, outcome}`; arguments are never stored
+verbatim (an admin reading the log may not be a project member), only a
+sha256 of them with any secret-shaped key redacted first, so the digest is
+for correlating "the same call happened twice", not for reconstructing what
+was sent. **Backup is `VACUUM INTO`, never `cp`**: a WAL database keeps
+recent commits in its `-wal` sidecar until a checkpoint, and the spike's
+`cp` of a live 50-row database answered `no such table: audit` — every row
+was still in the sidecar. `AuditLog.vacuum_into` writes a fully
+checkpointed, integrity-checked single file while writers keep working, and
+refuses to overwrite an existing destination. The general tap —
+`audit.tap_registry`, wrapping `ToolRegistry.call` **outside** the RBAC
+floor so a refusal is on the record too — is installed at the same serve
+seam as the RBAC wrappers, with no code at each call site; local mode writes
+nothing, by construction (no tenant, no org, no row), the same discipline as
+every other wrapper here. `core/tools_cloud.py`'s four mutating tools
+(`create_agent_token`/`revoke_agent_token`/`grant_role`/`revoke_role`) no
+longer record their own writes directly — that was a duplicate row from
+before this wrapper existed, now removed, so each call writes exactly the
+one row the registry tap produces (see `AGENTS.md`'s gotcha for the detail).
+
+**Kernel pool fairness: an entry gate, not per-worker queues.**
+`kernel/pool.py::KernelPool.request` reads the ambient tenant and, when one
+is set, adds exactly two things to the existing routing: **namespaced
+affinity** (`"<org>/<ws>:<affinity>"` before hashing, the
+`share_build.SHARE_AFFINITY` precedent) so two tenants' same-named parts
+cannot evict each other from one worker's shape LRU under a shared key —
+cache hygiene, explicitly not isolation, since two namespaced keys can still
+collide on a small pool exactly as two bare part ids do today — and a
+**per-tenant entry gate**: at most `max(1, size - 1)` requests in flight per
+tenant, so one flooding org provably leaves a whole worker's concurrency for
+everyone else. A request past the cap waits FIFO in a per-tenant queue
+(depth 32, 300 s ceiling) or is refused immediately with `KernelBusyError`
+(429, `kernelbusy_error` on the tool surface) once that queue is full — a
+queue that grows without bound would be a request-thread leak, not
+fairness. Releases drain waiting tenants **round-robin**, so no tenant is
+served systematically last. The gate decides entry only; each worker's own
+single-in-flight lock still serializes the actual call, which is what keeps
+this layer small — it never picks a worker on its own, never queues per
+worker, and never holds its lock across a kernel call. With no tenant set,
+`request()` takes the pre-PRD-005 line byte-for-byte: no key building, no
+accounting, not one lock acquired.
+
+**What stayed byte-identical in local mode.** Every wrapper this PRD
+installs — the store's `root_resolver`/`lock_key`/`create`, the write
+guard, the tool registry, the event bus's publish/subscribe, the sync
+route's role/project seams, the kernel pool's fair gate, the audit tap —
+reads `tenancy.current_tenant()` (or the pool's own `tenant_provider`, its
+lazily-imported alias of the same function) first, and on `None` runs
+exactly the code path that existed before this PRD. That is not a property
+one test file asserts; it is what the whole existing suite proves by
+continuing to pass with zero fixture changes, the same discipline 005a's
+AC7 established for hosted mode's own boundary. `server/app.py`,
+`core/service.py`, `core/tools.py` and `agentcad/worker.py` — the four cores
+005a already named as off-limits — are untouched by PRD-005 too; every
+addition here lands through a route/tool pack, a wrapper, `security.py`, or
+one of the two named surgical seams (`ProjectStore.root_resolver`,
+`KernelPool`'s fair pick).
