@@ -16,6 +16,7 @@
 import { api, clientId } from "./api.js";
 import { state, setState, onKeys } from "./state.js";
 import { INSTANCE_PALETTE } from "./tree.js";
+import { displayPrincipal } from "./auth.js";
 
 const BEAT_MS = 15000; // the server's PRESENCE_HEARTBEAT_S
 const MIN_GAP_MS = 1200; // stay inside the server's 1/s token bucket
@@ -242,10 +243,15 @@ export function otherClaim(partId) {
 
 /** The display label a client is heartbeating under, falling back to its
  *  identity. Labels are presence data — never persisted into a thread, an
- *  audit line or a lock — so this is the only place they come from. */
+ *  audit line or a lock — so this is the only place they come from. The
+ *  fallback runs `id` through `auth.js`'s `displayPrincipal` convention
+ *  (PRD-005 slice 8): in hosted mode `id` is a composed principal
+ *  (`user:nikita/browser:…`, `agent:mcp:claude`) once nobody has picked a
+ *  presence nickname, and `nikita`/`claude (agent)` is what a lock chip or
+ *  the avatar strip should say instead of the raw string. */
 export function labelFor(id) {
   const found = roster().find((client) => client.id === id);
-  return (found && found.label) || id || "someone";
+  return (found && found.label) || displayPrincipal(id) || "someone";
 }
 
 export function stop() {

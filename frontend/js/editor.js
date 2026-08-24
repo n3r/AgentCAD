@@ -130,6 +130,19 @@ export function isDirty() {
   return cm.getValue() !== cleanText;
 }
 
+/** PRD-005 slice 8: a viewer's Code tab shows the script but cannot type into
+ *  it — CodeMirror's own `readOnly`, which also keeps the Save & rebuild
+ *  chord inert through `isDirty()`: a read-only buffer can never differ from
+ *  `cleanText`, so there is nothing to save. The button itself is dimmed to
+ *  match, on top of that (never RE-enabled here — `setSaving()` still owns
+ *  the "Rebuilding…" state). */
+export function setReadOnly(readOnly) {
+  if (!cm) return;
+  cm.setOption("readOnly", !!readOnly);
+  if (saveBtn && readOnly) saveBtn.disabled = true;
+  else if (saveBtn && !readOnly) saveBtn.disabled = false;
+}
+
 /** Called on every change to the buffer's dirty state (PRD-008 slice 9 wires
  *  the part claim to it: a dirty buffer claims the part, viewing never does). */
 export function onDirtyChange(fn) {

@@ -16,6 +16,7 @@ import { state, onKeys } from "./state.js";
 import { openTo as openProposal } from "./proposals.js";
 import { relTime } from "./versions.js";
 import * as dialogs from "./shell/dialogs.js";
+import { displayPrincipal } from "./auth.js";
 
 let overlayEl, titleEl, bodyEl, cutBtn, closeBtn;
 let legacy = null;   // the overlay's seat on the shell's dialog stack (PRD-026)
@@ -177,7 +178,7 @@ function renderRow(rel) {
   if (rel.tag) parts.push(`tag: ${rel.tag}`);
   if (rel.approvals && rel.approvals.length) {
     parts.push(`approved by ${rel.approvals
-      .map((a) => `${a.principal} (${relTime(a.ts)})`)
+      .map((a) => `${displayPrincipal(a.principal)} (${relTime(a.ts)})`)
       .join(", ")}`);
   }
   gateLine.textContent = parts.join(" · ");

@@ -26,6 +26,7 @@ import * as merge from "./merge.js";
 import * as viewport from "./viewport.js";
 import * as comments from "./comments.js";
 import * as dialogs from "./shell/dialogs.js";
+import { displayPrincipal } from "./auth.js";
 
 const STATES = [
   "draft", "open", "approved", "changes_requested", "merged", "closed",
@@ -500,7 +501,7 @@ function decorateDiffs(pane) {
     chip.className = "diff-thread-chip";
     chip.textContent = `💬 ${threads.length}`;
     chip.title = threads
-      .map((th) => `${th.author}: ${(th.comments[0] || {}).body || ""}`)
+      .map((th) => `${displayPrincipal(th.author)}: ${(th.comments[0] || {}).body || ""}`)
       .join("\n");
     chip.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1437,7 +1438,7 @@ function dot(stateName) {
 
 function kindBadge(author, kind) {
   const el = span(`prop-kind ${kind === "human" ? "human" : "agent"}`, "");
-  el.textContent = `${author} · ${kind === "human" ? "human" : "agent"}`;
+  el.textContent = `${displayPrincipal(author)} · ${kind === "human" ? "human" : "agent"}`;
   return el;
 }
 

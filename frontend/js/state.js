@@ -37,6 +37,16 @@ export const state = {
   selectionAnchor: null, // the row a Shift-range measures from
   treeFilter: "",        // the sidebar filter box's raw query text
   dashboardOpen: false,  // the all-projects pane is covering the workspace
+  // PRD-005 slice 8 — role affordances. `identityOrgs`/`identityOrg` are the
+  // whoami-extended session's org list and resolved current org (null/empty
+  // outside hosted-with-tenancy); `canEdit` is the shell-wide affordance flag
+  // `shell/actions.js`'s `context()` reads (`main.js`'s `updateCanEdit`
+  // computes it from `whoami.roles[projectName]`, defaulting OPEN whenever a
+  // role is unknown — this gates affordances, not writes).
+  identityOrgs: [],
+  identityOrg: null,
+  identityRoles: {},     // whoami's {project: role} in the resolved workspace
+  canEdit: true,
 };
 
 const listeners = new Map();

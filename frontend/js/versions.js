@@ -7,6 +7,7 @@ import { api, ApiError } from "./api.js";
 import { state, setState } from "./state.js";
 import * as dialogs from "./shell/dialogs.js";
 import { TAG_RE, bare } from "./patterns.js";
+import { displayPrincipal } from "./auth.js";
 
 let actions = null;
 let legacy = null;   // the overlay's seat on the shell's dialog stack
@@ -119,7 +120,7 @@ function render(versions, message) {
     const meta = document.createElement("div");
     meta.className = "ver-meta";
     meta.textContent = [
-      version.author,
+      displayPrincipal(version.author),
       relTime(version.ts),
       (version.commit || "").slice(0, 8),
     ]

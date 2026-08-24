@@ -95,6 +95,13 @@ export function init(a) {
   onKeys(["materials"], () => {
     if (state.part) renderMetrics(state.part);
   });
+  // PRD-005 slice 8: a viewer's Code tab is read-only (so there is nothing to
+  // save — `part.save-script`'s registered `enabled: hasPart` is pinned by an
+  // earlier migration test and stays bare; this is the actual gate). `render()`
+  // right after covers the params pane's own `state.canEdit` sweep for the
+  // FIRST part shown, same as every other `onKeys(["part"], render)` case.
+  onKeys(["canEdit"], () => editor.setReadOnly(!state.canEdit));
+  editor.setReadOnly(!state.canEdit);
   render();
 }
 
@@ -559,6 +566,16 @@ function buildParamControls(part) {
     }
 
     paramsPane.appendChild(wrap);
+  }
+  // PRD-005 slice 8: a viewer (or comment-only) role gets every control
+  // disabled rather than removed — the value stays visible, only editing it
+  // is taken away. One sweep after the loop rather than a per-type branch
+  // above: whichever element type a param built (checkbox/select/text/
+  // number/slider), it disables the same way.
+  if (state.canEdit === false) {
+    for (const control of paramsPane.querySelectorAll("input, select")) {
+      control.disabled = true;
+    }
   }
   appendWarningsHost();
   appendSpecsHost();

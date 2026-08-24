@@ -35,6 +35,7 @@ import * as viewport from "./viewport.js";
 import * as inspector from "./inspector.js";
 import * as editor from "./editor.js";
 import * as dialogs from "./shell/dialogs.js";
+import { displayPrincipal } from "./auth.js";
 
 let actions = null;
 let inboxLegacy = null;     // the inbox overlay's seat on the dialog stack
@@ -632,7 +633,7 @@ function renderComment(thread, comment) {
   const box = el("div", "th-comment");
   const head = el("div", "th-comment-head");
   const who = el("span", `th-who ${comment.author_kind === "agent" ? "agent" : "human"}`);
-  who.textContent = comment.author || "?";
+  who.textContent = comment.author ? displayPrincipal(comment.author) : "?";
   who.title =
     `${comment.author} — ${comment.author_kind}. Identity here is ` +
     "self-asserted bookkeeping, not authentication.";

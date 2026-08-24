@@ -26,10 +26,21 @@ export function enrolToken() {
 
 /** `{principal, kind, role, mode}`, or null when nobody is signed in.
  *  Local mode answers 404 and reports `{mode: "local"}` so one call decides
- *  the whole boot path. */
+ *  the whole boot path.
+ *
+ *  On a signed-in hosted session this ALSO carries the tenancy fields —
+ *  `org`, `workspace`, `orgs`, `roles` (`{project: role}` in the resolved
+ *  workspace) and `scope` — because `GET /api/auth/session` does not have
+ *  them (`routes_auth.py`'s `_identity` is byte-for-byte 005a's four keys)
+ *  while the `whoami` TOOL does (`tools_cloud.py`'s `_extend_whoami`): it is
+ *  the cheapest call that already exists for exactly this, one round trip
+ *  behind the session's own, and it is a no-op subset of `base` on an
+ *  instance with no orgs — so `boot()`'s one `auth.session()` call stays the
+ *  single source every panel (the switcher, the role affordances) reads. */
 export async function session() {
+  let base;
   try {
-    return await api.session();
+    base = await api.session();
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) {
       return { mode: "local", principal: null };
@@ -37,6 +48,40 @@ export async function session() {
     if (err instanceof ApiError && err.status === 401) return null;
     throw err;
   }
+  if (!base || !base.principal) return base;
+  try {
+    const who = await api.callTool("whoami", {});
+    if (who && !who.error) return { ...base, ...who };
+  } catch {
+    /* offline, or the tool call itself failed: the session-only identity is
+       still a valid answer — the switcher and the role gate simply see no
+       orgs, same as an untenanted instance. */
+  }
+  return base;
+}
+
+/** The stripping convention every principal-showing surface uses — lock
+ *  chips (`main.js`), the presence roster (`presence.js`), review threads
+ *  (`comments.js`), proposals (`proposals.js`) and version/release history
+ *  (`versions.js`, `releases.js`). `user:nikita` (or the device-suffixed
+ *  `user:nikita/browser:7f3a1b2c` a session's principal carries) reads as
+ *  `nikita`; `agent:mcp:claude` reads as `claude (agent)` — the LAST
+ *  colon-separated segment, because that is the name a human actually
+ *  recognizes, not the transport (`mcp`/`chat`) in front of it. Anything else
+ *  — a local-mode `browser:7f3a1b2c` id, a presence nickname, `"someone"` —
+ *  is returned unchanged: this is a display convention, not a parser, and a
+ *  shape it does not recognize is not this function's to guess at. The full
+ *  string stays available as a tooltip everywhere this is used, the same
+ *  `renderChip` precedent below. */
+export function displayPrincipal(principal) {
+  if (typeof principal !== "string" || !principal) return principal;
+  if (principal.startsWith("user:")) return principal.slice(5).split("/")[0];
+  if (principal.startsWith("agent:")) {
+    const rest = principal.slice(6);
+    const name = rest.split(":").pop();
+    return `${name} (agent)`;
+  }
+  return principal;
 }
 
 export const login = (handle, password) => api.login(handle, password);
@@ -156,9 +201,10 @@ export function renderChip(host, identity, onSignedOut) {
   }
   host.classList.remove("hidden");
   // The principal carries the device suffix (`user:nikita/browser:7f3a1b2c`);
-  // the chip shows the person, and the full identity is the tooltip — it is
-  // what lock chips, claims and history entries say.
-  const name = identity.principal.replace(/^user:/, "").split("/")[0];
+  // the chip shows the person, and the full identity is the tooltip — the
+  // same `displayPrincipal` convention lock chips, claims and history
+  // entries use.
+  const name = displayPrincipal(identity.principal);
   const chip = el("span", "auth-chip", name);
   chip.title = `${identity.principal} · ${identity.role}`;
   const out = el("button", "tb-btn auth-signout", "Sign out");

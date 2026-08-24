@@ -1,7 +1,7 @@
 // Boot + orchestration: project loading, selection, mesh routing between
 // the API and the viewport, WebSocket event stream, toolbar.
 
-import { api, ApiError, clientId } from "./api.js";
+import { api, ApiError, clientId, wsQuery } from "./api.js";
 import { state, setState, onKeys } from "./state.js";
 import * as viewport from "./viewport.js";
 import * as tree from "./tree.js";
@@ -25,6 +25,8 @@ import * as market from "./market.js";
 import * as materials from "./materials.js";
 import * as skills from "./skills.js";
 import * as auth from "./auth.js";
+import * as workspace from "./workspace.js";
+import * as cloud from "./cloud.js";
 import { setupShare } from "./share-links.js";
 // The server's identifier rules, spelled once (`frontend/js/patterns.js`) and
 // fed to every dialog field's `pattern` through `bare()`.
@@ -416,6 +418,29 @@ async function setRepMode(mode) {
   }
 }
 
+// PRD-005 slice 8. view < comment < edit < admin (CLAUDE.md's ladder,
+// `agentcad/core/authz.py::rank`), reproduced here rather than fetched: this
+// is a display affordance, not the enforcement — the server ladder is the
+// one that matters, and duplicating four names is cheaper than a round trip
+// on every project switch.
+const ROLE_RANK = { view: 0, comment: 1, edit: 2, admin: 3 };
+
+/** Recompute `state.canEdit` for `state.projectName` from
+ *  `state.identityRoles` (whoami's `{project: role}`, current workspace
+ *  only). Untenanted (no `identityOrg`) or a project this map says nothing
+ *  about both default OPEN — the map only ever lists projects the CURRENT
+ *  workspace resolved (`tools_cloud.py::_roles_in`), so an absence here is
+ *  either "no tenancy at all" or a shape this affordance was not built to
+ *  second-guess, and either way failing open (never a false lockout) is the
+ *  right default for something that gates a control's visibility rather
+ *  than a write. */
+function updateCanEdit() {
+  const tenanted = !!state.identityOrg;
+  const role = tenanted ? (state.identityRoles || {})[state.projectName] : null;
+  const canEdit = !tenanted || role == null || ROLE_RANK[role] >= ROLE_RANK.edit;
+  setState({ canEdit });
+}
+
 function updateRepModeToggle() {
   const box = document.getElementById("repmode");
   if (!box) return;
@@ -622,6 +647,14 @@ function materialField() {
 async function addPart(args) {
   if (!state.projectName) {
     toast("Open a project first", "error");
+    return;
+  }
+  // PRD-005 slice 8. The action registry's `when` on this row stays bare
+  // `hasProject` (a pinned migration test), so the viewer gate is here
+  // instead — same outcome (⌘N/"New part…" does nothing for a viewer),
+  // reached one call later.
+  if (!state.canEdit) {
+    toast("Your role on this project is view-only", "error");
     return;
   }
   const prefill = args || {};
@@ -1190,7 +1223,12 @@ let hadConnection = false;
 
 function connectWS() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  ws = new WebSocket(`${proto}//${location.host}/ws`);
+  // A browser cannot set a header on a WebSocket, so the active workspace
+  // (if any — api.js's `wsQuery()`) rides as `?workspace=org/ws` instead;
+  // `security._ws_headers` reads it as the same rung `X-Agentcad-Workspace`
+  // occupies on ordinary requests. Empty in local mode and whenever nothing
+  // has been selected, so this is a no-op there.
+  ws = new WebSocket(`${proto}//${location.host}/ws${wsQuery()}`);
   ws.onopen = () => {
     wsBackoff = 500;
     setState({ connected: true });
@@ -2925,7 +2963,9 @@ function registerActions() {
       // Spec ruling 3. `when` (not `enabled`) on purpose: with no project open
       // there is no part to create and the File row genuinely should not be
       // there, so the chord declines and the browser keeps ⌘N — the one case
-      // where we are not taking a keystroke we cannot act on.
+      // where we are not taking a keystroke we cannot act on. (Pinned by
+      // `test_new_part_takes_the_mod_n_chord_the_spec_ruled_on` — PRD-005
+      // slice 8's viewer gate is in `addPart()` itself instead, below.)
       shortcut: "Mod+N",
       keywords: ["create", "add"], when: hasProject, run: () => addPart() });
   A({ id: "project.import-cad", title: "Import CAD file…", group: "Project",
@@ -2976,11 +3016,14 @@ function registerActions() {
       // In a text field the browser's/CodeMirror's own text undo is the right
       // answer — the binding declines and does not preventDefault.
       shortcut: { chord: "Mod+Z", when: notInField },
-      when: hasProject, run: () => undoLastChange() });
+      // PRD-005 slice 8: undoing/redoing IS a write (it lands as an ordinary
+      // project mutation server-side), so it gets the same `canEdit` gate as
+      // every other Edit/Parts row below.
+      when: (c) => hasProject(c) && c.canEdit, run: () => undoLastChange() });
   A({ id: "edit.redo", title: "Redo", group: "Edit", menu: "edit/11",
       shortcut: [{ chord: "Mod+Y", when: notInField },
                  { chord: "Mod+Shift+Z", when: notInField }],
-      when: hasProject, run: () => redoLastChange() });
+      when: (c) => hasProject(c) && c.canEdit, run: () => redoLastChange() });
   A({ id: "part.save-script", title: "Save & rebuild", group: "Parts",
       menu: "edit/20",
       // CodeMirror binds its own Cmd+S; everywhere else this catches it.
@@ -2989,11 +3032,14 @@ function registerActions() {
       // `preventDefault`s, so a `when`-gated ⌘S with no part selected would
       // fall through to the browser's "Save page as…" — which v0.1 always
       // suppressed outside CodeMirror. The menu still greys the row out, and
-      // the run body keeps v0.1's own `if (state.part)` guard.
+      // the run body keeps v0.1's own `if (state.part)` guard. (Pinned by
+      // `test_the_shell_registers_the_shortcuts_that_exist_today` — PRD-005
+      // slice 8's viewer gate is `saveIfDirty()` itself, and the param/code
+      // editors being read-only, so there is nothing dirty to save.)
       enabled: hasPart,
       run: () => { if (state.part) inspector.saveIfDirty(); } });
   A({ id: "part.delete", title: "Delete part…", group: "Parts",
-      menu: "edit/30", danger: true, when: hasPart,
+      menu: "edit/30", danger: true, when: (c) => hasPart(c) && c.canEdit,
       run: () => deletePart(state.selectedPart) });
   // PRD-027 FR3. A bare `/`, so `shortcuts.js`'s own rule 2 (only chords with
   // a modifier fire inside a text field) is what keeps it from typing itself
@@ -3063,14 +3109,16 @@ function registerActions() {
   A({ id: "model.versions", title: "Versions…", group: "Model",
       menu: "model/30", when: onBranch, run: () => versions.open() });
   A({ id: "model.branches.new", title: "New branch…", group: "Model",
-      menu: "model/31", when: onBranch, run: () => newBranchPrompt() });
+      menu: "model/31", when: (c) => onBranch(c) && c.canEdit,
+      run: () => newBranchPrompt() });
   // Slice 1 could not register this: an argument-free delete would name the
   // branch you are ON, which the server always refuses. Slice 2's picker is
   // what makes the row honest, so it is gated on there BEING another branch
-  // (the current one and the default one are never deletable).
+  // (the current one and the default one are never deletable). PRD-005 slice
+  // 8 adds `canEdit` alongside them.
   A({ id: "model.branches.delete", title: "Delete branch…", group: "Model",
       menu: "model/32", danger: true,
-      when: (c) => !!c.branch && c.hasOtherBranches,
+      when: (c) => !!c.branch && c.hasOtherBranches && c.canEdit,
       run: () => deleteBranchPrompt() });
   A({ id: "model.proposals", title: "Proposals…", group: "Model",
       menu: "model/33", when: onBranch, run: () => proposals.open() });
@@ -3080,6 +3128,24 @@ function registerActions() {
   A({ id: "model.drawing", title: "Drawing preview…", group: "Model",
       menu: "model/41", when: hasPart,
       run: () => drawings.previewSvg(state.projectName, state.selectedPart) });
+  // PRD-005 slice 8. `hasOrgs` is the whole gate — nothing renders and
+  // nothing here is even eligible on local mode or an untenanted hosted
+  // instance (005a with no orgs), the same "no tenant, no UI" rule
+  // `workspace.js` follows. Each panel decides its OWN admin-only controls
+  // once it has loaded (`list_members`'s `tokens` key), because that is a
+  // per-org fact a menu row cannot know without a round trip.
+  A({ id: "workspace.switch", title: "Switch workspace…", group: "Model",
+      menu: "model/29", when: (c) => c.hasOrgs,
+      keywords: ["org", "workspace", "switch", "tenant"],
+      run: () => workspace.open() });
+  A({ id: "cloud.members", title: "Org members…", group: "Model",
+      menu: "model/42", when: (c) => c.hasOrgs,
+      keywords: ["org", "members", "roles", "admin", "grant", "revoke"],
+      run: () => cloud.openMembers() });
+  A({ id: "cloud.tokens", title: "Agent tokens…", group: "Model",
+      menu: "model/43", when: (c) => c.hasOrgs,
+      keywords: ["token", "agent", "mint", "bearer", "scope"],
+      run: () => cloud.openTokens() });
 
   // ----------------------------------------------------------------- Agent
   // PRD-029 FR7. Its own group, not `Model`: a skill is not part of the model
@@ -3256,6 +3322,14 @@ async function boot() {
     return;
   }
   window.addEventListener("agentcad:unauthenticated", showSignIn, { once: true });
+  // PRD-005 slice 8: the tenancy half of `identity` (empty/null outside a
+  // hosted session in at least one org — see `auth.session()`'s docstring).
+  // `updateCanEdit()` (wired below, on `projectName`) reads these two.
+  setState({
+    identityOrgs: identity.orgs || [],
+    identityOrg: identity.org || null,
+    identityRoles: identity.roles || {},
+  });
   // Before the panels and before registerActions(): the table subscribes to
   // `actions.onChange`, so every chord an action declares is bound as the
   // action lands — and a conflict throws from that registration.
@@ -3315,6 +3389,12 @@ async function boot() {
   materials.init(panelApi);
   skills.init(panelApi);
   presence.init();
+  // PRD-005 slice 8: no-ops in local mode and on an untenanted hosted
+  // instance (`identity.orgs` empty) — the switcher renders nothing and the
+  // two panels' menu/palette rows never appear eligible (`hasOrgs` below).
+  workspace.init(identity);
+  cloud.setIdentity(identity);
+  cloud.init(panelApi);
   // After inspector.init: comments.js registers inspector's param decorator
   // and subscribes to `part` behind it, so a badge is applied to rows the
   // inspector has already built.
@@ -3349,6 +3429,8 @@ async function boot() {
   onKeys(["mode"], updateRepModeToggle);
   onKeys(["selectedPart", "projectName"], syncHoleFormPart);
   onKeys(["gizmoMode"], () => viewport.setGizmoMode(state.gizmoMode));
+  onKeys(["projectName", "identityOrg", "identityRoles"], updateCanEdit);
+  updateCanEdit();
   connectWS();
 
   auth.renderChip(document.getElementById("auth-chip"), identity,
