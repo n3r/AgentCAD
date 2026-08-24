@@ -22,6 +22,7 @@ import binascii
 import importlib
 import importlib.util
 import json
+import sys
 import time
 
 from fastapi import APIRouter, Request, Response
@@ -51,6 +52,11 @@ PASSKEY_RP_NAME = "AgentCAD"
 #: anonymous `login/begin` flood bounded in memory.
 PASSKEY_CHALLENGE_TTL_S = 300.0
 PASSKEY_CHALLENGE_MAX = 512
+
+#: SQLite stores a signed 64-bit integer, so an ``OFFSET`` above this raises an
+#: uncaught ``OverflowError`` rather than paging. ``GET /api/auth/audit`` clamps
+#: to it: a caller asking for row 10**30 gets an empty page, never a 500.
+_MAX_OFFSET = 2 ** 63 - 1
 
 
 def passkeys_available() -> bool:
@@ -98,7 +104,15 @@ class _ChallengeStore:
         # `challenge` is written here rather than by the caller, so the record
         # a `take` returns always carries the bytes WE minted — the verifier
         # is never handed a challenge that came out of a request body.
-        self._rows[key] = {**record, "challenge": key, "created": time.time()}
+        #
+        # `time.monotonic`, never `time.time`: an NTP step or a daylight-saving
+        # jump can move the wall clock backwards, and a TTL that compared two
+        # wall-clock readings across such a step would either resurrect an
+        # expired challenge or expire a live one. The monotonic clock cannot go
+        # backwards, so the five-minute window is exactly five minutes of the
+        # process's own elapsed time whatever the wall clock does.
+        self._rows[key] = {**record, "challenge": key,
+                           "created": time.monotonic()}
 
     def take(self, key: object) -> dict | None:
         """Pop a challenge. **Single use**: a replayed assertion finds
@@ -107,12 +121,12 @@ class _ChallengeStore:
         if not isinstance(key, str) or not key:
             return None
         row = self._rows.pop(key, None)
-        if row is None or time.time() - row["created"] > self._ttl:
+        if row is None or time.monotonic() - row["created"] > self._ttl:
             return None
         return row
 
     def _prune(self) -> None:
-        cutoff = time.time() - self._ttl
+        cutoff = time.monotonic() - self._ttl
         for key in [k for k, row in self._rows.items() if row["created"] < cutoff]:
             self._rows.pop(key, None)
 
@@ -225,7 +239,21 @@ def build_router(service, registry) -> APIRouter:
     def _audit(action: str, *, principal: str | None = None,
                outcome: str = "ok", project: str | None = None,
                args: object = None) -> None:
-        audit_mod.record(_log(), audit_mod.INSTANCE_ORG, action,
+        # `_log()` is resolved INSIDE the swallow, not as an argument to
+        # `record` evaluated before it. `audit.for_auth_store` builds an
+        # `AuditLog`, which *creates* `<state>/audit/` — on an unwritable state
+        # directory that raises an OSError, and evaluated as a `record` argument
+        # it would escape `record`'s own swallow and turn a sign-in into a 500.
+        # A person must be able to sign in even when the audit backend cannot be
+        # opened; the failure is a warning on the way out, never a locked door.
+        try:
+            log = _log()
+        except Exception as exc:            # noqa: BLE001 — see above
+            print(f"agentcad: the audit log is unavailable "
+                  f"({type(exc).__name__}: {exc}); auth event {action!r} is "
+                  f"NOT being recorded", file=sys.stderr)
+            return
+        audit_mod.record(log, audit_mod.INSTANCE_ORG, action,
                          principal=principal, project=project, args=args,
                          outcome=outcome)
 
@@ -509,7 +537,13 @@ def build_router(service, registry) -> APIRouter:
         who = _audit_reader(cfg, org)
         log = _log()
         limit = _positive(params.get("limit"), audit_mod.DEFAULT_LIMIT, "limit")
-        offset = _positive(params.get("offset"), 0, "offset", floor=0)
+        # Clamped to SQLite's signed-64-bit ceiling: `_positive` accepts any
+        # Python int, and one larger than 2**63-1 handed to `OFFSET ?` raises an
+        # uncaught `OverflowError` ("int too large to convert to SQLite
+        # INTEGER") — a 500 out of a query that should simply answer with no
+        # rows. `_MAX_OFFSET` is that ceiling, and any real page is far below it.
+        offset = min(_positive(params.get("offset"), 0, "offset", floor=0),
+                     _MAX_OFFSET)
         if not log.path_for(org).exists():
             # A query must not CREATE a database: `?org=` is caller-supplied,
             # and an admin sweeping org names would otherwise leave a file per
@@ -746,7 +780,19 @@ def build_router(service, registry) -> APIRouter:
     # its wording. Local password accounts are untouched and remain the only
     # thing a no-extra instance needs.
 
-    _challenges = _ChallengeStore()
+    # TWO stores, not one, and the split is a DoS boundary rather than tidiness
+    # (Lens A #13). `register/begin` is reachable by any signed-in member and
+    # was unthrottled; sharing one 512-slot store with login meant a member
+    # spamming registration ceremonies would evict every in-flight *login*
+    # challenge instance-wide (`put` drops the oldest quarter when full), so an
+    # authenticated member could deny sign-in to everyone. Separate stores put a
+    # register flood's eviction entirely inside the register store: it can crowd
+    # out only other registration ceremonies (the flooder's own), never a
+    # stranger's login challenge. Each keeps its own TTL and cap. The
+    # `purpose` field on every record is kept as belt-and-braces — a login store
+    # can now never hold a `register` record, but the check costs nothing.
+    _register_challenges = _ChallengeStore()
+    _login_challenges = _ChallengeStore()
 
     def _passkey_gate() -> JSONResponse | None:
         """The 501 for an instance without the extra, or ``None``."""
@@ -852,11 +898,16 @@ def build_router(service, registry) -> APIRouter:
                 # below possible at all: without a resident key the browser has
                 # nothing to offer when nobody has typed a handle.
                 resident_key=structs.ResidentKeyRequirement.PREFERRED,
-                user_verification=structs.UserVerificationRequirement.PREFERRED,
+                # REQUIRED, not PREFERRED (Lens A #11): a credential registered
+                # here must be able to prove user verification, so that the
+                # sign-in that requires UV can succeed with it. A passkey is a
+                # second factor on this instance, decided once and enforced on
+                # both ceremonies.
+                user_verification=structs.UserVerificationRequirement.REQUIRED,
             ),
         )
         label = body.get("label")
-        _challenges.put(_b64u(options.challenge), {
+        _register_challenges.put(_b64u(options.challenge), {
             "purpose": "register", "handle": who.name,
             "label": label if isinstance(label, str) else None})
         return json.loads(wa.options_to_json(options))
@@ -871,7 +922,7 @@ def build_router(service, registry) -> APIRouter:
         wa = _webauthn()
         body = await _body(request)
         credential = _credential(body)
-        record = _challenges.take(_client_challenge(credential))
+        record = _register_challenges.take(_client_challenge(credential))
         if (record is None or record.get("purpose") != "register"
                 or record.get("handle") != who.name):
             raise _refused(
@@ -887,6 +938,12 @@ def build_router(service, registry) -> APIRouter:
                 expected_challenge=wa.base64url_to_bytes(record["challenge"]),
                 expected_origin=origin,
                 expected_rp_id=rp_id,
+                # The registering ceremony must prove UV too (Lens A #11), or a
+                # credential that cannot verify the user would be enrolled and
+                # then rejected at every sign-in. Fail here, where the message
+                # can say "your authenticator did not verify you", rather than
+                # silently later.
+                require_user_verification=True,
             )
         except Exception as exc:            # noqa: BLE001 — the library's own
             raise _refused(
@@ -915,14 +972,30 @@ def build_router(service, registry) -> APIRouter:
 
     @router.post("/auth/passkey/login/begin")
     async def passkey_login_begin(request: Request):
-        """Options for a sign-in. Anonymous, so it says nothing.
+        """Options for a sign-in. Anonymous, so it says **nothing** about who
+        exists.
 
-        A `handle` may be sent (the handle-first flow, for a browser that
-        cannot offer a discoverable credential), but an unknown handle — or one
-        with no passkeys — gets **the same** usernameless challenge a known one
-        with none would: an `allowCredentials` that is empty for strangers and
-        populated for members is a user-enumeration oracle on an unauthenticated
-        endpoint, which is exactly what `_LOGIN_FAILED` exists to avoid.
+        The response is a usernameless challenge with **no `allowCredentials`**,
+        whatever the request body — an unknown handle, a member with no passkey
+        and a member *with* passkeys all get byte-shaped-identical options
+        (Lens A #10). A populated `allowCredentials` is a user-enumeration
+        oracle on an unauthenticated endpoint: it would leak both that a handle
+        exists and the ids of its credentials, and it is exactly what
+        `_LOGIN_FAILED` exists to avoid on the password door. A `handle` may
+        still be sent (older clients do) but it is **ignored** here — the
+        credential the browser returns identifies its own owner, resolved by id
+        in `login/complete`, so the discoverable-credential flow needs no hint
+        and the handle-first flow's leak buys nothing a resident key does not
+        already give.
+
+        `user_verification=REQUIRED` (Decision, Lens A #11): a passkey that
+        proves user verification is a *second* factor — possession of the
+        authenticator **and** a biometric or PIN — so requiring it makes passkey
+        sign-in two-factor by default rather than possession-only. The virtual
+        and every platform authenticator set the UV flag; a roaming key without
+        a PIN is the only thing this turns away, and turning it away is the
+        secure default. (Documented for `docs/deployment.md` — passkeys are 2FA
+        here, UV is not optional.)
         """
         cfg = _config()
         gate = _passkey_gate()
@@ -932,23 +1005,16 @@ def build_router(service, registry) -> APIRouter:
         wa = _webauthn()
         from webauthn.helpers import structs
 
-        body = await _body(request)
-        handle = body.get("handle")
-        allow, bound = [], None
-        if isinstance(handle, str) and handle:
-            rows = cfg.store.get_passkeys(handle)
-            if rows:
-                bound = handle
-                allow = [structs.PublicKeyCredentialDescriptor(
-                    id=wa.base64url_to_bytes(row["id"])) for row in rows]
+        # The body is read and discarded: a `handle`, if any, selects nothing.
+        await _body(request)
         rp_id, _origin = _relying_party(cfg)
         options = wa.generate_authentication_options(
             rp_id=rp_id,
-            allow_credentials=allow or None,
-            user_verification=structs.UserVerificationRequirement.PREFERRED,
+            allow_credentials=None,
+            user_verification=structs.UserVerificationRequirement.REQUIRED,
         )
-        _challenges.put(_b64u(options.challenge),
-                        {"purpose": "login", "handle": bound})
+        _login_challenges.put(_b64u(options.challenge),
+                              {"purpose": "login", "handle": None})
         return json.loads(wa.options_to_json(options))
 
     @router.post("/auth/passkey/login/complete")
@@ -960,10 +1026,21 @@ def build_router(service, registry) -> APIRouter:
         gate = _passkey_gate()
         if gate is not None:
             return gate
+        # The per-address budget `POST /auth/login` charges (Lens A #12). Begin
+        # was throttled and complete was not, so an anonymous flood could post
+        # 200 assertions and mint 200 durable audit rows for 200 401s. Charged
+        # here — before the challenge lookup, the store read and the scrypt-free
+        # but still non-trivial signature verify — a flood is bounded to the
+        # burst and then throttled, and the rate-limited attempts write no row
+        # (`_address_budget` raises before `_refused`), so the audit database
+        # cannot be grown from the outside. This is what the note in
+        # `security.PUBLIC_PATHS` ("each is rate limited on the same per-address
+        # bucket") has always claimed; it is now true of complete too.
+        _address_budget(cfg, request)
         wa = _webauthn()
         body = await _body(request)
         credential = _credential(body)
-        record = _challenges.take(_client_challenge(credential))
+        record = _login_challenges.take(_client_challenge(credential))
         # Every refusal below is the same `_LOGIN_FAILED` to the caller and a
         # DIFFERENT `outcome` in the audit row. That is not a leak: the row is
         # readable only by an administrator, and "which of the five ways did it
@@ -1002,6 +1079,12 @@ def build_router(service, registry) -> APIRouter:
                 # *lower* one and the library refuses — which is the only
                 # thing the counter is for.
                 credential_current_sign_count=int(found.get("sign_count") or 0),
+                # Second factor, enforced (Lens A #11): the assertion must carry
+                # the UV flag the `login/begin` options required, so a stolen
+                # authenticator without the owner's biometric or PIN cannot sign
+                # in on possession alone. The library defaults this False; here
+                # a passkey is 2FA and UV is not optional.
+                require_user_verification=True,
             )
         except Exception as exc:            # noqa: BLE001 — the library's own
             raise _refused(AuthError(_LOGIN_FAILED), "login",

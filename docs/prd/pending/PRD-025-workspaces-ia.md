@@ -7,6 +7,31 @@
 - **Depends on:** PRD-026 (shell implements the frame — hard) · content per tab: PRD-003/019/030 (Test), PRD-021/022 (Produce), PRD-011 (Library), PRD-031 (Market) — all soft/staged
 - **Related:** PRD-016, PRD-027, PRD-029
 
+> **Naming collision with PRD-005, ruled on there (design spec
+> `docs/superpowers/specs/2026-08-24-multi-tenant-cloud-design.md`, "Scope
+> rulings").** PRD-005's tenancy model claims `org → workspace → project` as
+> a first-class, user-facing noun: the workspace switcher, the
+> `X-Agentcad-Workspace` header, the `?workspace=` query fallback, the
+> "Org members…"/"Agent tokens…" panels, and `docs/deployment.md`'s
+> "Organisations, workspaces and roles" all use "workspace" for a tenant's
+> sub-org — a real access-control boundary a person switches *into*. This
+> PRD's title and this PRD's own text (G1's "five workspaces", FR1's
+> "Workspace bar", `state.workspace`, `set_workspace`, the
+> `workspace_changed` event) use the *same word* for something else
+> entirely: a view/tab over one project, with no access-control meaning at
+> all. The two are not the same concept wearing one name by coincidence —
+> a PRD-005 workspace can *contain* several projects, each of which has all
+> five of this PRD's tabs. **The ruling: PRD-005 keeps "workspace"; this PRD
+> renames its tabs to a different word before it ships** (the shipped shell
+> already has a `#workspace` DOM id and layout `localStorage` keys that
+> predate both PRDs and are deliberately left alone — this collision is
+> about a *future* user-facing label, not that existing internal slot name).
+> Pick the replacement in this PRD's own design review (its "Naming" risk
+> below already has an open slot for exactly this kind of choice) — a
+> plausible option is dropping "workspace" for the tab bar entirely and
+> calling it what it is ("phase", "tab", or the founder's per-tab nouns
+> alone), but that choice is this PRD's to make, not PRD-005's.
+
 ## Problem & motivation
 
 Today the workbench is one undifferentiated surface: modeling, analysis,
@@ -205,7 +230,12 @@ read the same via `get_workspace`.
   the router cost is identical either way.
 - **Naming:** "Produce" vs founder's "Production" vs "Make" — pick in
   design; this PRD uses Produce for the verb-parallel set (Build/Test/
-  Produce), and the roadmap keeps the founder's intent either way.
+  Produce), and the roadmap keeps the founder's intent either way. **A
+  second, higher-stakes naming decision belongs in the same review**: the
+  callout at the top of this document records that PRD-005 has claimed
+  "workspace" for its org/workspace/project tenancy model, so this PRD's
+  own use of "workspace" for its five tabs (title included) must be renamed
+  before ship — ruled in PRD-005's design spec, decided here.
 - **Test-tab unification** must not fork analysis state: the checks rail
   reads the same stores tools write, or freshness will lie. The staleness
   model (cache-key comparison) needs a test per check kind.

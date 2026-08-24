@@ -1354,10 +1354,10 @@ floor so a refusal is on the record too — is installed at the same serve
 seam as the RBAC wrappers, with no code at each call site; local mode writes
 nothing, by construction (no tenant, no org, no row), the same discipline as
 every other wrapper here. `core/tools_cloud.py`'s four mutating tools
-(`create_agent_token`/`revoke_agent_token`/`grant_role`/`revoke_role`)
-predate this wrapper and still record their own writes directly, so each of
-those four currently writes **two** rows per call — not yet reconciled (see
-`AGENTS.md`'s gotcha for the detail).
+(`create_agent_token`/`revoke_agent_token`/`grant_role`/`revoke_role`) no
+longer record their own writes directly — that was a duplicate row from
+before this wrapper existed, now removed, so each call writes exactly the
+one row the registry tap produces (see `AGENTS.md`'s gotcha for the detail).
 
 **Kernel pool fairness: an entry gate, not per-worker queues.**
 `kernel/pool.py::KernelPool.request` reads the ambient tenant and, when one

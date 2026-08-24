@@ -188,7 +188,21 @@ def canonical_args(value: object, _depth: int = 0) -> object:
 
 
 def _is_secret_key(name: str) -> bool:
+    """Does *name*'s value need redacting before the digest?
+
+    Substring against :data:`SECRET_KEY_HINTS`, with **one exemption**: a key
+    whose last ``_``-delimited segment is ``id`` is an *identifier*, not a
+    secret, even when the rest of the name contains a hint. ``token_id`` and
+    ``credential_id`` are exactly what an audit reader correlates a revoke or a
+    delete by, and the substring test used to redact them — so every revocation
+    of a different token produced the *same* digest, and the log lost its
+    forensic value at the one place it is read for it. The secret itself still
+    travels under ``token``/``secret``/``client_secret``/``private_key``/…,
+    whose last segment is never ``id``.
+    """
     lowered = name.lower()
+    if lowered.rsplit("_", 1)[-1] == "id":
+        return False
     return any(hint in lowered for hint in SECRET_KEY_HINTS)
 
 
@@ -684,9 +698,8 @@ def tap_registry(call, log: AuditLog, *, org=None, principal=None,
                  is_mutating=None):
     """Wrap a ``ToolRegistry.call`` so every mutating call writes one row.
 
-    **Contract** (this is the hook slice 4's registry wrapper and slice 10's
-    wiring consume — it is built, tested and deliberately *not installed*
-    anywhere yet):
+    **Contract** (this is the hook ``tenancy_wiring.install`` consumes — it
+    wraps the shared ``ToolRegistry`` at the serve seam):
 
     * ``call`` is any ``(name, args) -> dict`` — ``registry.call`` bound, or
       an already-wrapped one. The returned callable has the same signature and

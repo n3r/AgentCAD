@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import struct
+import time
 
 import pytest
 
@@ -202,29 +203,41 @@ def test_a_usernameless_sign_in_lands_the_same_session_cookie(enrolled):
     assert client.get("/api/auth/session").status_code == 401
 
 
-def test_the_handle_first_flow_offers_the_stored_credential(enrolled):
+def test_login_begin_never_offers_stored_credentials(enrolled):
+    """Even for a member WITH a passkey, `login/begin` returns no
+    `allowCredentials` (Lens A #10): a populated list leaks both that the handle
+    exists and its credential ids on an anonymous endpoint. The
+    discoverable-credential flow needs no hint — the credential resolves its own
+    owner by id in `login/complete` — so the sign-in still works with none."""
     client, _store, authenticator = enrolled
     begun = client.post("/api/auth/passkey/login/begin",
                         json={"handle": ADMIN_HANDLE})
-    allowed = begun.json()["allowCredentials"]
-    assert [row["id"] for row in allowed] == [b64u(authenticator.cred_id)]
+    assert begun.json().get("allowCredentials") in (None, [])
     assert authenticate(client, authenticator,
                         handle=ADMIN_HANDLE).status_code == 200
 
 
-def test_an_unknown_handle_is_indistinguishable_from_one_with_no_passkeys(
-        hosted):
+def test_login_begin_is_identical_for_every_handle(enrolled):
     """`allowCredentials` populated for members and empty for strangers is a
-    user-enumeration oracle on an anonymous endpoint."""
-    client, store = hosted
-    store.enrol(store.add_user("anya"), "hunter2hunter2")
+    user-enumeration oracle on an anonymous endpoint. All three cases return the
+    same (empty) shape — an unknown handle, a member with no passkey, AND a
+    member WITH one (Lens A #10). The earlier test compared only the first two,
+    which trivially matched and hid the real leak: the member *with* a passkey."""
+    client, store, _authenticator = enrolled          # nikita HAS a passkey
+    store.enrol(store.add_user("anya"), "hunter2hunter2")   # member, no passkey
 
-    stranger = client.post("/api/auth/passkey/login/begin",
-                           json={"handle": "nobody-here"}).json()
-    member = client.post("/api/auth/passkey/login/begin",
-                         json={"handle": "anya"}).json()
-    assert stranger.get("allowCredentials") in (None, [])
-    assert member.get("allowCredentials") == stranger.get("allowCredentials")
+    def begin(handle):
+        return client.post("/api/auth/passkey/login/begin",
+                           json={"handle": handle}).json()
+
+    stranger = begin("nobody-here")
+    no_passkey = begin("anya")
+    with_passkey = begin(ADMIN_HANDLE)
+    for shape in (stranger, no_passkey, with_passkey):
+        assert shape.get("allowCredentials") in (None, [])
+    assert (with_passkey.get("allowCredentials")
+            == no_passkey.get("allowCredentials")
+            == stranger.get("allowCredentials"))
 
 
 def test_the_sign_count_advances_and_is_stored(enrolled):
@@ -393,11 +406,15 @@ def test_a_credential_signs_in_its_own_owner_whatever_handle_was_named(hosted):
     assert answer.json()["role"] == "member"        # NOT the admin's role
 
 
-def test_a_challenge_bound_to_one_handle_refuses_another_account(enrolled):
-    """When `login/begin` really did bind a handle (that handle has passkeys),
-    the assertion must come from *that* account — the challenge is not a bearer
-    token for whoever holds any credential."""
-    client, store, _nikita = enrolled
+def test_the_named_handle_neither_binds_nor_leaks(enrolled):
+    """`login/begin` naming a handle that really has a passkey (nikita) returns
+    no `allowCredentials` (Lens A #10) AND does not bind the challenge to that
+    handle: a *different* account's credential completes it and signs in ITS OWN
+    owner. Binding is gone on purpose — the credential id is the identity, so the
+    named handle is only an (inert) browser-picker hint. This replaces the old
+    handle-first binding: with no `allowCredentials` there is nothing to bind,
+    and nothing to enumerate."""
+    client, store, _nikita = enrolled                 # nikita has a passkey
     store.enrol(store.add_user("anya"), "hunter2hunter2")
     login(client, "anya", "hunter2hunter2")
     anya = VirtualAuthenticator(user_handle=b"anya")
@@ -405,13 +422,13 @@ def test_a_challenge_bound_to_one_handle_refuses_another_account(enrolled):
     client.cookies.clear()
 
     begun = client.post("/api/auth/passkey/login/begin",
-                        json={"handle": ADMIN_HANDLE})
-    assert begun.json()["allowCredentials"]          # really bound to nikita
+                        json={"handle": ADMIN_HANDLE})   # nikita really has one
+    assert begun.json().get("allowCredentials") in (None, [])   # no leak
     assertion = anya.get(b64u_decode(begun.json()["challenge"]))
     answer = client.post("/api/auth/passkey/login/complete",
                          json={"credential": assertion})
-    assert answer.status_code == 401
-    assert client.get("/api/auth/session").status_code == 401
+    assert answer.status_code == 200                    # anya's own credential
+    assert answer.json()["principal"].startswith("user:anya")
 
 
 # ------------------------------------------------------------- extra gating
@@ -462,6 +479,137 @@ def test_the_availability_check_does_not_import_webauthn(monkeypatch):
     monkeypatch.setattr(importlib.util, "find_spec", watched)
     assert routes_auth.passkeys_available() is True
     assert seen["name"] == "webauthn"
+
+
+# ------------------------------------------------ DoS / oracle hardening
+
+def test_a_passkey_without_user_verification_is_refused(enrolled):
+    """The 2FA ruling (Lens A #11): a passkey here is possession AND user
+    verification, so `login/begin` asks for UV and `login/complete` enforces it.
+    An assertion that clears the UV flag — a stolen roaming key with no PIN — is
+    refused even though its signature is otherwise valid."""
+    client, _store, authenticator = enrolled
+    original = authenticator._auth_data
+
+    def no_uv(*, attested):
+        data = bytearray(original(attested=attested))
+        data[32] &= ~FLAG_UV                 # clear "user verified" in the flags
+        return bytes(data)
+
+    authenticator._auth_data = no_uv
+    answer = authenticate(client, authenticator)
+    assert answer.status_code == 401
+    assert answer.json()["error"]["message"] == "sign-in failed"
+
+
+def test_passkey_login_complete_is_rate_limited(enrolled):
+    """`login/complete` was unthrottled — 200 anonymous posts minted 200 durable
+    audit rows for 200 401s (Lens A #12). It now spends the same per-address
+    bucket the password door and `login/begin` do, charged BEFORE any work, so a
+    flood is bounded to the burst and then 429s (and the throttled attempts, cut
+    before `_refused`, write no audit row)."""
+    client, _store, _auth = enrolled
+    junk = {"id": "AA", "rawId": "AA", "type": "public-key",
+            "response": {"clientDataJSON": "e30",          # b64u of "{}"
+                         "authenticatorData": "AA", "signature": "AA"}}
+    statuses = [client.post("/api/auth/passkey/login/complete",
+                            json={"credential": junk}).status_code
+                for _ in range(25)]
+    assert 429 in statuses, statuses          # the flood is throttled
+    assert 200 not in statuses                # and never a session
+    assert set(statuses) <= {401, 429}
+
+
+def test_challenge_store_is_single_use_ttld_and_capped():
+    """`_ChallengeStore` on its own (Lens A #13's other half): single-use, TTL'd
+    on the MONOTONIC clock, and size-capped by dropping the oldest quarter."""
+    from agentcad.server.routes_auth import _ChallengeStore
+
+    store = _ChallengeStore(ttl_s=0.05, cap=4)
+    store.put("k", {"purpose": "login"})
+    assert store.take("k")["purpose"] == "login"      # present
+    assert store.take("k") is None                    # single use
+
+    store.put("slow", {"purpose": "login"})
+    time.sleep(0.06)
+    assert store.take("slow") is None                 # expired by TTL
+
+    for i in range(4):
+        store.put(f"c{i}", {"purpose": "login"})
+    store.put("c4", {"purpose": "login"})             # over cap: drops the oldest
+    assert store.take("c0") is None
+    assert store.take("c4") is not None
+
+
+@pytest.fixture
+def small_cap_hosted(kernel, tmp_path, monkeypatch):
+    """A hosted app whose passkey challenge stores hold only 3 entries.
+
+    Constructed here rather than via the `hosted` fixture because the cap is a
+    default argument bound at import — the only way to shrink it is to replace
+    the class before `build_router` constructs the two stores."""
+    from fastapi.testclient import TestClient
+
+    from agentcad.core.appmode import AppMode
+    from agentcad.core.authstore import AuthStore
+    from agentcad.core.tools import build_registry
+    from agentcad.server import routes_auth
+    from agentcad.server import security as security_module
+    from agentcad.server.app import create_app
+    from agentcad.server.security import SecurityConfig
+
+    class _SmallStore(routes_auth._ChallengeStore):
+        def __init__(self, ttl_s=routes_auth.PASSKEY_CHALLENGE_TTL_S, cap=3):
+            super().__init__(ttl_s=ttl_s, cap=cap)
+
+    monkeypatch.setattr(routes_auth, "_ChallengeStore", _SmallStore)
+    monkeypatch.setenv("AGENTCAD_CONFIG", str(tmp_path / "cfg" / "config.json"))
+
+    from .conftest import make_test_service
+    service = make_test_service(tmp_path / "projects", kernel)
+    store = AuthStore(tmp_path / "auth")
+    store.enrol(store.add_user(ADMIN_HANDLE, role="admin"), ADMIN_PASSWORD)
+    cfg = SecurityConfig(mode=AppMode("hosted", HOSTED_ORIGIN, b"k" * 32),
+                         store=store)
+    security_module.install(cfg)
+    app = create_app(service, build_registry(service),
+                     extra_allowed_hosts={"testserver"}, security=cfg)
+    client = TestClient(app, base_url=HOSTED_ORIGIN)
+    client.agentcad_store = store
+    try:
+        yield client, store
+    finally:
+        security_module.install(None)
+
+
+def test_a_register_flood_cannot_evict_a_login_challenge(small_cap_hosted):
+    """The store split (Lens A #13): a signed-in member spamming
+    `register/begin` fills only the REGISTER store. A login challenge minted
+    meanwhile survives in the separate LOGIN store and still signs in — where a
+    single shared, register-floodable store would have evicted it (the cap is 3
+    here, so 5 register begins would overflow one shared store)."""
+    client, _store = small_cap_hosted
+    login(client)
+    authenticator = VirtualAuthenticator()
+    assert register(client, authenticator).status_code == 200
+    client.cookies.clear()
+
+    # An anonymous login challenge, then a flood of register ceremonies as the
+    # signed-in admin, then complete the ORIGINAL login.
+    begun = client.post("/api/auth/passkey/login/begin", json={})
+    challenge = begun.json()["challenge"]
+
+    login(client)
+    for _ in range(5):                        # > cap: overflows one shared store
+        assert client.post("/api/auth/passkey/register/begin",
+                           json={}).status_code == 200
+    client.cookies.clear()
+
+    assertion = authenticator.get(b64u_decode(challenge))
+    answer = client.post("/api/auth/passkey/login/complete",
+                         json={"credential": assertion})
+    assert answer.status_code == 200, answer.text     # the login challenge lived
+    assert answer.json()["via"] == "passkey"
 
 
 # -------------------------------------------------- the store, on its own

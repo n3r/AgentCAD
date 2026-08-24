@@ -76,7 +76,7 @@ creates one.
 - `tests/test_oidc.py` — new: in-process mock IdP (RS256, rotatable key)
   behind an `httpx.MockTransport`; 30 tests
 - `tests/test_passkeys.py` — new: the spike's virtual ES256 authenticator
-  driven through the real routes; 24 tests
+  driven through the real routes; 27 tests
 - `tests/test_hosted_surface.py` — `EXPECTED_PUBLIC` grown by four, with nine
   new negation params for the near misses (`NOT_YET_BUILT` stays `== set()`)
 

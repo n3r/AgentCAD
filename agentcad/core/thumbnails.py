@@ -40,7 +40,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from ..kernel import acm
-from . import render
+from . import render, tenancy
 from .model import AppError
 from .project import ProjectStore
 
@@ -507,16 +507,32 @@ _WAKE = object()
 class ThumbnailWarmer:
     """Pre-renders thumbnails off the build path, one at a time.
 
-    One daemon thread consumes ``service.bus.subscribe()`` and turns every
-    ``rebuild_finished`` that carries a ``cache_key`` into a queued render.
-    ``config``-tagged events are ignored on purpose: a configuration matrix
-    build is not a tree row, and warming its key would evict the rows that are.
+    One daemon thread consumes the bus and turns every ``rebuild_finished``
+    that carries a ``cache_key`` into a queued render. ``config``-tagged events
+    are ignored on purpose: a configuration matrix build is not a tree row, and
+    warming its key would evict the rows that are.
+
+    **It is a *system* subscriber (PRD-005 tenancy).** ``create_app`` starts it
+    outside any request, so if it subscribed through the tenant-filtering
+    wrapper (``tenancy_wiring._install_bus``) its queue would bind the *empty*
+    tenant and then drop every tenanted ``rebuild_finished`` on a hosted
+    instance with orgs — the pre-warm would be silently dead there. So it
+    subscribes through the wrapper's ``_agentcad_inner`` seam, which is the
+    unfiltered bus, and carries **each event's own** ``tenant`` into a
+    :func:`tenancy.tenant_scope` around that event's render. It therefore reads
+    exactly one workspace's cache per render, the one that published the event,
+    and never crosses tenants. No change to ``tenancy_wiring`` is needed: the
+    seam it exposes for ``uninstall`` is the same one used here.
 
     The pending set is bounded and **coalesced by ``(project, key)``**; when it
     is full the **oldest** entry is dropped, because freshness catches up on the
-    next read while a stale backlog never would. A render failure is counted and
-    printed to stderr — never raised: a thumbnail that did not appear must not
-    be able to take a build path or a server thread with it.
+    next read while a stale backlog never would. The event's tenant rides as the
+    map's *value* so the coalescing key is unchanged (and so is
+    ``pending()``); two tenants that hash to one ``(project, key)`` — an
+    identical script and params in two orgs — coalesce to one warm, and the
+    loser is a cold first read, never a cross-tenant write. A render failure is
+    counted and printed to stderr — never raised: a thumbnail that did not
+    appear must not be able to take a build path or a server thread with it.
     """
 
     def __init__(self, service, *, maxsize: int = 256) -> None:
@@ -531,7 +547,11 @@ class ThumbnailWarmer:
             "dropped": 0,           # evicted from a full queue, oldest first
             "failed": 0,            # the render raised; logged, never re-raised
         }
-        self._pending: OrderedDict[tuple[str, str], None] = OrderedDict()
+        #: ``(project, key) -> tenant``, where ``tenant`` is the event's
+        #: ``"org/ws"`` stamp or ``None`` (local mode). The key stays a 2-tuple
+        #: so coalescing, ``pending()`` and the drop-oldest contract are
+        #: unchanged; the tenant is the value the render is scoped under.
+        self._pending: OrderedDict[tuple[str, str], str | None] = OrderedDict()
         #: `drain()` barriers, signalled by the thread only at the end of a
         #: cycle that left BOTH the bus queue and the pending set empty.
         self._barriers: list[threading.Event] = []
@@ -552,7 +572,16 @@ class ThumbnailWarmer:
             if self._thread is not None:
                 return
             self._stop.clear()
-            self._queue = self.service.bus.subscribe()
+            # The UNFILTERED bus (see the class docstring): a hosted instance
+            # wraps `bus.subscribe` to bind and filter by the subscriber's
+            # tenant, and this subscriber has none (it is created at app build,
+            # not in a request). `_agentcad_inner` is the wrapper's own seam
+            # (`tenancy_wiring._install_bus` sets it; `uninstall` reads it), so
+            # subscribing through it delivers every tenant's events, which the
+            # per-event `tenant_scope` in `_render_one` then places correctly.
+            # In local mode `subscribe` is the bare method and this is a no-op.
+            subscribe = self.service.bus.subscribe
+            self._queue = getattr(subscribe, "_agentcad_inner", subscribe)()
             self._thread = threading.Thread(
                 target=self._run, name="agentcad-thumbnails", daemon=True)
             thread = self._thread
@@ -600,8 +629,9 @@ class ThumbnailWarmer:
 
     # -- queue -------------------------------------------------------------
 
-    def enqueue(self, proj: str, key: str) -> None:
-        """Ask for ``(proj, key)`` to be warmed. Coalesces; drops the oldest."""
+    def enqueue(self, proj: str, key: str, tenant: str | None = None) -> None:
+        """Ask for ``(proj, key)`` to be warmed under *tenant*. Coalesces
+        (keeping the first tenant seen); drops the oldest when full."""
         entry = (proj, key)
         with self._lock:
             if entry in self._pending:
@@ -609,7 +639,7 @@ class ThumbnailWarmer:
             while len(self._pending) >= self.maxsize:
                 self._pending.popitem(last=False)
                 self.stats["dropped"] += 1
-            self._pending[entry] = None
+            self._pending[entry] = tenant
             q = self._queue
         if q is not None:
             try:
@@ -694,8 +724,12 @@ class ThumbnailWarmer:
         if "config" in event:
             return
         proj, key = event.get("project"), event.get("cache_key")
+        # `tenant` is the `"org/ws"` stamp `tenancy_wiring` puts on every event
+        # published inside a request (absent in local mode). It rides through to
+        # the render so `cache_dir(proj)` resolves the workspace that built it.
+        tenant = event.get("tenant")
         if isinstance(proj, str) and isinstance(key, str) and proj and key:
-            self.enqueue(proj, key)
+            self.enqueue(proj, key, tenant if isinstance(tenant, str) else None)
 
     def _render_pending(self, *, force: bool = False) -> None:
         """Render everything queued. ``force`` ignores the stop flag — it is
@@ -704,36 +738,59 @@ class ThumbnailWarmer:
             with self._lock:
                 if not self._pending:
                     return
-                (proj, key), _ = self._pending.popitem(last=False)
-            self._render_one(proj, key)
+                (proj, key), tenant = self._pending.popitem(last=False)
+            self._render_one(proj, key, tenant)
 
-    def _render_one(self, proj: str, key: str) -> None:
+    @staticmethod
+    def _parse_tenant(stamp: str | None):
+        """The ``(org, ws)`` an event's ``"org/ws"`` stamp names, or ``None``.
+
+        Total over the value and **never raises**: an escape here would kill the
+        warmer thread inside `tenant_scope`. A malformed or absent stamp resolves
+        as no tenant — today's untenanted render — rather than a crash. A real
+        stamp came from `tenancy._stamp` and re-validates through `check_name`.
+        """
+        if not isinstance(stamp, str) or stamp.count("/") != 1:
+            return None
+        org, ws = stamp.split("/")
         try:
-            cache = self.service.store.cache_dir(proj)
-        except Exception:  # noqa: BLE001 — a project deleted since the build
-            self.stats["skipped_missing"] += 1
-            return
-        if thumb_path(cache, key).is_file():
-            self.stats["skipped_exists"] += 1
-            return
-        if mesh_for_key(cache, key) is None:
-            self.stats["skipped_missing"] += 1
-            return
-        if not may_write(self.service, proj):
-            # The warmer exists only to WRITE a file ahead of a reader, so
-            # over budget there is nothing for it to do: rendering into memory
-            # and dropping the bytes would spend the CPU for nothing. A route
-            # asked for the same picture still renders and serves it.
-            self.stats["skipped_budget"] += 1
-            return
-        try:
-            png = render_part_thumb(cache, key)
-        except Exception as exc:  # noqa: BLE001 — see the class docstring
-            self.stats["failed"] += 1
-            print(f"[thumbnails] {proj}/{key}: render failed: {exc}",
-                  file=sys.stderr)
-            return
-        if png is None:
-            self.stats["skipped_too_large"] += 1
-        else:
-            self.stats["rendered"] += 1
+            return (tenancy.check_name(org, "org"),
+                    tenancy.check_name(ws, "workspace"))
+        except Exception:  # noqa: BLE001 — a hand-edited or truncated stamp
+            return None
+
+    def _render_one(self, proj: str, key: str, tenant: str | None = None) -> None:
+        # Under the event's own tenant, so `cache_dir(proj)` (which reads the
+        # store's tenant-aware root resolver) lands in the workspace that built
+        # this key rather than the untenanted root. `None` restores today's
+        # local-mode behaviour exactly.
+        with tenancy.tenant_scope(self._parse_tenant(tenant)):
+            try:
+                cache = self.service.store.cache_dir(proj)
+            except Exception:  # noqa: BLE001 — a project deleted since the build
+                self.stats["skipped_missing"] += 1
+                return
+            if thumb_path(cache, key).is_file():
+                self.stats["skipped_exists"] += 1
+                return
+            if mesh_for_key(cache, key) is None:
+                self.stats["skipped_missing"] += 1
+                return
+            if not may_write(self.service, proj):
+                # The warmer exists only to WRITE a file ahead of a reader, so
+                # over budget there is nothing for it to do: rendering into
+                # memory and dropping the bytes would spend the CPU for nothing.
+                # A route asked for the same picture still renders and serves it.
+                self.stats["skipped_budget"] += 1
+                return
+            try:
+                png = render_part_thumb(cache, key)
+            except Exception as exc:  # noqa: BLE001 — see the class docstring
+                self.stats["failed"] += 1
+                print(f"[thumbnails] {proj}/{key}: render failed: {exc}",
+                      file=sys.stderr)
+                return
+            if png is None:
+                self.stats["skipped_too_large"] += 1
+            else:
+                self.stats["rendered"] += 1

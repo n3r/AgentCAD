@@ -753,6 +753,174 @@ def test_a_push_without_a_token_fails_with_the_servers_message(
     assert "agentcad login" in str(exc.value)
 
 
+# ------------------------------------------ poisoned remote / server defenses
+
+def _server_git(project: Path, *args: str, inp: str | None = None):
+    """A raw plumbing call against a served project's history repo."""
+    git_dir = str(project / ".history")
+    return subprocess.run(
+        ["git", "--git-dir", git_dir, "--work-tree", str(project), *args],
+        input=inp, capture_output=True, text=True, timeout=60,
+        env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "HOME": git_dir,
+             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
+
+
+def _poison_master(project: Path, subpath: str = "hooks/post-merge") -> str:
+    """Advance the served project's master to a commit whose tree writes an
+    executable into `.history/<subpath>` — a compromised/hostile server."""
+    def g(*args, inp=None):
+        return _server_git(project, *args, inp=inp)
+    blob = g("hash-object", "-w", "--stdin",
+             inp="#!/bin/sh\ntouch /tmp/PWNED_client\n").stdout.strip()
+    parts = subpath.split("/")
+    tree = g("mktree", inp=f"100755 blob {blob}\t{parts[-1]}\n").stdout.strip()
+    for comp in reversed(parts[:-1]):
+        tree = g("mktree", inp=f"040000 tree {tree}\t{comp}\n").stdout.strip()
+    base_tree = g("ls-tree", "HEAD").stdout
+    root = g("mktree",
+             inp=base_tree + f"040000 tree {tree}\t.history\n").stdout.strip()
+    head = g("rev-parse", "HEAD").stdout.strip()
+    commit = g("commit-tree", root, "-p", head, inp="poison\n").stdout.strip()
+    g("update-ref", "refs/heads/master", commit)
+    return commit
+
+
+def test_clone_refuses_a_poisoned_default_branch(local_instance, tmp_path):
+    """A hostile server whose default branch writes into `.history`: the clone
+    belt refuses before a byte is checked out, and cleans up after itself."""
+    base, project, _service = local_instance
+    _poison_master(project)
+    dest = tmp_path / "clone"
+
+    with pytest.raises(sync.SyncError) as exc:
+        sync.clone(url_for(base), dest)
+
+    assert "git internals" in str(exc.value)
+    assert not dest.exists()
+    assert str(dest.resolve()) not in sync.load()["clones"]
+
+
+def test_clone_refuses_a_hostile_default_branch_name(local_instance, tmp_path):
+    """A server advertising HEAD `refs/heads/-evil`: the short name would reach
+    `git checkout` as an option. `_head_branch` refuses it as argv."""
+    base, project, _service = local_instance
+    head = _server_git(project, "rev-parse", "HEAD").stdout.strip()
+    _server_git(project, "update-ref", "--", "refs/heads/-evil", head)
+    _server_git(project, "symbolic-ref", "HEAD", "refs/heads/-evil")
+    dest = tmp_path / "clone"
+
+    with pytest.raises(sync.SyncError) as exc:
+        sync.clone(url_for(base), dest)
+
+    assert "-evil" in str(exc.value)
+    assert not dest.exists()
+
+
+def test_pull_refuses_a_poisoned_remote_branch(local_instance, tmp_path):
+    """A clean clone, then the server advances master to a poisoned commit. The
+    fast-forward belt refuses; the local ref never moves and nothing is planted
+    into the workstation's `.history`."""
+    base, project, _service = local_instance
+    dest = tmp_path / "clone"
+    sync.clone(url_for(base), dest)
+    before = ProjectHistory().head(dest)
+    _poison_master(project)
+
+    with pytest.raises(sync.SyncError) as exc:
+        sync.pull(dest, merger=None)
+
+    assert "git internals" in str(exc.value)
+    assert ProjectHistory().head(dest) == before
+    assert not (dest / ".history" / "hooks" / "post-merge").is_file()
+
+
+def _poison_master_named(project: Path, topdir: str) -> str:
+    """Advance master to a commit whose tree writes `<topdir>/config` — a
+    case/spelling VARIANT of `.history` (e.g. `.History`), the PRD-005 re-check
+    bypass, straight into what folds to the live GIT_DIR on a case-insensitive
+    workstation."""
+    def g(*args, inp=None):
+        return _server_git(project, *args, inp=inp)
+    cfg = g("hash-object", "-w", "--stdin",
+            inp='[core]\n\tfsmonitor = "touch /tmp/PWNED_client"\n').stdout.strip()
+    tree = g("mktree", inp=f"100644 blob {cfg}\tconfig\n").stdout.strip()
+    base_tree = g("ls-tree", "HEAD").stdout
+    root = g("mktree",
+             inp=base_tree + f"040000 tree {tree}\t{topdir}\n").stdout.strip()
+    head = g("rev-parse", "HEAD").stdout.strip()
+    commit = g("commit-tree", root, "-p", head, inp="casefold\n").stdout.strip()
+    g("update-ref", "refs/heads/master", commit)
+    return commit
+
+
+def test_clone_refuses_a_case_folded_history_default_branch(local_instance,
+                                                            tmp_path):
+    """A hostile server whose default branch writes `.History/config` — the
+    case-fold bypass. The clone belt now folds, so it refuses before a byte is
+    checked out (where `.History` would land on the live `.history` GIT_DIR)."""
+    base, project, _service = local_instance
+    _poison_master_named(project, ".History")
+    dest = tmp_path / "clone"
+
+    with pytest.raises(sync.SyncError) as exc:
+        sync.clone(url_for(base), dest)
+
+    assert "git internals" in str(exc.value)
+    assert not dest.exists()
+
+
+def test_pull_refuses_a_case_folded_history_remote_branch(local_instance,
+                                                          tmp_path):
+    """A clean clone, then the server advances master to `.HISTORY/config`. The
+    fast-forward belt folds and refuses; the local ref never moves and nothing
+    lands in the workstation's live `.history`."""
+    base, project, _service = local_instance
+    dest = tmp_path / "clone"
+    sync.clone(url_for(base), dest)
+    before = ProjectHistory().head(dest)
+    live = (dest / ".history" / "config").read_text()
+    _poison_master_named(project, ".HISTORY")
+
+    with pytest.raises(sync.SyncError) as exc:
+        sync.pull(dest, merger=None)
+
+    assert "git internals" in str(exc.value)
+    assert ProjectHistory().head(dest) == before
+    # The live GIT_DIR config is git's own, unchanged — nothing folded onto it.
+    assert (dest / ".history" / "config").read_text() == live
+    assert "fsmonitor" not in (dest / ".history" / "config").read_text()
+
+
+def test_clone_token_is_restored_when_the_clone_fails(hosted_instance, tmp_path):
+    """`clone --token` must not clobber a working token: a wrong one that fails
+    the clone is rolled back to what the user already had."""
+    base, _project, _service, token = hosted_instance
+    sync.login(base, token)                     # a good, verified token
+    dest = tmp_path / "clone"
+
+    with pytest.raises(sync.SyncError):
+        sync.clone(url_for(base), dest, token="acad_wrong_token")
+
+    assert sync.token_for(base) == token        # the good token survives
+    assert not dest.exists()
+    assert str(dest.resolve()) not in sync.load()["clones"]
+
+
+def test_clone_forgets_a_first_token_when_the_clone_fails(hosted_instance,
+                                                          tmp_path):
+    """The other half: a `--token` that was the FIRST for the instance and then
+    failed leaves no unverified credential behind."""
+    base, _project, _service, _token = hosted_instance   # no login → no token
+    dest = tmp_path / "clone"
+
+    with pytest.raises(sync.SyncError):
+        sync.clone(url_for(base), dest, token="acad_wrong_token")
+
+    assert sync.token_for(base) is None
+    assert not dest.exists()
+
+
 # --------------------------------------------------------------- remote MCP
 
 @pytest.mark.timeout(300)

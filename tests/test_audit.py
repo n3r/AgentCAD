@@ -140,6 +140,24 @@ def test_secrets_never_reach_the_digest():
     assert a != args_digest({"name": "ci"})
 
 
+def test_an_id_suffix_is_an_identifier_not_a_secret():
+    """`token_id`/`credential_id` are what an audit reader correlates a revoke
+    or delete by, so they are NOT redacted — the substring test used to, and
+    every revocation of a different token then digested identically, which is
+    exactly no forensic value where the log is read for it."""
+    # Two revocations of DIFFERENT token ids now digest differently.
+    assert args_digest({"token_id": "deadbeef"}) \
+        != args_digest({"token_id": "feedface"})
+    assert canonical_args({"token_id": "deadbeef"})["token_id"] == "deadbeef"
+    assert canonical_args({"credential_id": "abc"})["credential_id"] == "abc"
+    # The secret itself still travels under a secret-shaped key and is redacted.
+    assert canonical_args({"token": "acad_1_x"})["token"] == audit.REDACTED
+    assert canonical_args({"client_secret": "s"})["client_secret"] \
+        == audit.REDACTED
+    # The exemption is the LAST `_`-segment only: `tokenid` still redacts.
+    assert canonical_args({"tokenid": "x"})["tokenid"] == audit.REDACTED
+
+
 @pytest.mark.parametrize("key", [
     "token", "AGENTCAD_TOKEN", "password", "new_password", "secret",
     "client_secret", "api_key", "authorization", "cookie", "private_key",

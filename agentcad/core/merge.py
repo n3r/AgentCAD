@@ -279,6 +279,16 @@ class MergeOrchestrator:
             )
 
         tree_oid, stages = self._merge_tree(canonical, target_head, source_head)
+        # SECURITY (PRD-005 belt): the merge RESULT is what a later
+        # ``reset --hard`` writes into a live work tree — and for the default
+        # branch that tree IS the project directory, whose GIT_DIR is
+        # ``<project>/.history`` *inside* it. ``git merge-tree`` can SYNTHESIZE
+        # a path present in neither parent tip (directory-rename detection —
+        # the same case Fixer 1's ``-c`` combined diff proved), so scanning the
+        # incoming tip is not enough: the tree that lands is what must be clean.
+        # Refuse BEFORE staging — nothing is written, no ref moves, so a pull's
+        # scratch branch is trivially cleaned up.
+        self._assert_no_git_internals(canonical, tree_oid, source, target)
         conflicts, bodies = self._file_conflicts(
             canonical, stages, target, source
         )
@@ -371,6 +381,10 @@ class MergeOrchestrator:
         ``validation: null``. Nothing is staged here — the source branch's own
         worktree already *is* the merged tree.
         """
+        # The result that lands here is ``source_head`` itself, ``reset --hard``
+        # into the target tree — refuse a poisoned one before the ref moves
+        # (same belt as the staged path; see :meth:`_assert_no_git_internals`).
+        self._assert_no_git_internals(canonical, source_head, source, target)
         merged = self._manifest_at(canonical, source_head, source)
         with self._holding_target(proj, target_tree):
             report = self._validate(
@@ -954,6 +968,39 @@ class MergeOrchestrator:
                 f"{result.stderr.strip() or result.stdout.strip()}"
             )
         return _parse_merge_tree(result.stdout)
+
+    def _assert_no_git_internals(self, canonical: Path, tree_ish: str,
+                                 source: str, target: str) -> None:
+        """Refuse a merge whose RESULT tree writes into the repo's git internals.
+
+        ``.history/**`` (the GIT_DIR nested in the work tree) or any ``.git``
+        path component. The merged tree is ``reset --hard``'d into a live work
+        tree — the project directory for the default branch — so such a path
+        plants a hook or a ``config`` straight into ``<project>/.history`` and
+        runs as the server/workstation user on the next git call. This is a
+        divergent ``agentcad pull``'s last belt: a poisoned incoming branch (or
+        a merge that SYNTHESIZES the path — directory-rename detection produces
+        one present in neither parent) reaches the staged merge here, bypassing
+        the checkout/ff belts in ``sync.py``.
+
+        Reuses PRD-005's shared predicate (``sync_server.tree_git_internals``)
+        rather than reinventing the regex. Raised, never returned as a
+        ``merge_conflict``: no resolution can make a ``.history`` path safe, and
+        the caller (``sync.merge_diverged``) recognises the ``git_internals``
+        detail to abort the pull cleanly.
+        """
+        from .sync_server import tree_git_internals
+
+        offending = tree_git_internals(canonical, tree_ish)
+        if offending:
+            raise ValidationError(
+                f"refusing to merge {source!r} into {target!r}: the merge "
+                f"result writes into the project's git internals "
+                f"({', '.join(offending[:5])}) — a poisoned branch. Nothing "
+                "was changed.",
+                {"git_internals": offending[:20], "source": source,
+                 "target": target},
+            )
 
     def _blob_bytes(self, canonical: Path, oid: str | None) -> bytes | None:
         """A blob's exact bytes, or None when the stage is absent."""

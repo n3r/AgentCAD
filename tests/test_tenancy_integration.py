@@ -16,12 +16,13 @@ every wrapper and then asserts each one is its own identity function.
 
 from __future__ import annotations
 
+import importlib
 import json
 import queue
 
 import pytest
 
-from agentcad.core import authz, locks, tenancy, tenancy_wiring
+from agentcad.core import audit, authz, locks, tenancy, tenancy_wiring
 from agentcad.core.tenancy import TenancyStore
 
 from tests.conftest import HOSTED_ORIGIN, login, make_test_service
@@ -483,9 +484,17 @@ def test_the_stamp_is_the_wire_spelling(tenanted):
     assert _drain(q) == []
     with tenancy.tenant_scope((ACME, WS)):
         seen = bus.subscribe()
-        bus.publish({"type": "project_changed", "project": "widget"})
+        # The acting principal rides alongside the tenant (PRD-005:
+        # "project_changed gains the acting principal") — the wire spelling of
+        # `locks.current_client_id()`, stamped in the same publish wrapper.
+        token = locks.client_id_var.set("user:anya/browser:1")
+        try:
+            bus.publish({"type": "project_changed", "project": "widget"})
+        finally:
+            locks.client_id_var.reset(token)
     assert _drain(seen) == [{"type": "project_changed", "project": "widget",
-                             "tenant": f"{ACME}/{WS}"}]
+                             "tenant": f"{ACME}/{WS}",
+                             "client": "user:anya/browser:1"}]
 
 
 def test_a_websocket_hears_its_own_org_only(tenanted):
@@ -708,3 +717,100 @@ def test_the_claim_guard_is_not_installed_twice(tenanted):
     guard = tenanted.service.store.write_guard
     ensure_claim_guard(tenanted.service)
     assert tenanted.service.store.write_guard is guard
+
+
+# ------------------------------------------------ the wire envelope (FR6)
+
+_ROUTE_PACKS = (
+    "routes_comments", "routes_configs", "routes_specs", "routes_checks",
+    "routes_packages", "routes_proposals", "routes_versioning",
+)
+
+
+def _http_status(exc) -> int:
+    """The status ``app.py`` would give *exc*, by its own isinstance walk."""
+    from agentcad.server.app import _ERROR_STATUS
+
+    return next((code for cls, code in _ERROR_STATUS.items()
+                 if isinstance(exc, cls)), 400)
+
+
+@pytest.mark.parametrize("pack", _ROUTE_PACKS)
+def test_a_route_packs_result_maps_a_tenancy_refusal_to_its_own_status(pack):
+    """FR6, per pack family: a route pack calls ``registry.call`` and hands the
+    payload to its ``_result``. With the floor wrapper installed a viewer gets a
+    ``permission_error``/``auth_error`` envelope, and ``_result`` must raise the
+    class ``app.py`` maps to 403/401 — not the 422 an unmapped type fell
+    through to.
+    """
+    from agentcad.core.model import AuthError
+
+    module = importlib.import_module(f"agentcad.server.{pack}")
+    details = {"required": "edit", "project": "widget", "principal_role": "view"}
+
+    with pytest.raises(authz.PermissionError) as perm:
+        module._result({"error": {"type": "permission_error",
+                                  "message": "needs edit", "details": details}})
+    assert perm.value.details == details          # {required, project, role}
+    assert _http_status(perm.value) == 403
+
+    with pytest.raises(AuthError) as auth:
+        module._result({"error": {"type": "auth_error",
+                                  "message": "no credential", "details": {}}})
+    assert _http_status(auth.value) == 401
+
+
+def test_a_viewer_post_to_a_route_pack_is_a_403_permission_error(tenanted):
+    """The same, end to end over HTTP: `add_comment` is comment-floored and
+    `vee` holds only `view`, so the comments route answers 403 with the rung
+    named — the real path the `_result` map above is unit-tested against."""
+    anya, vee = tenanted.as_("anya"), tenanted.as_("vee")
+    make_project(anya, "widget")
+    resp = vee.post("/api/projects/widget/comments",
+                    json={"body": "no", "anchor": {"kind": "part", "part": "x"}})
+    assert resp.status_code == 403
+    error = resp.json()["error"]
+    assert error["type"] == "PermissionError"
+    assert error["details"]["required"] == "comment"
+    assert error["details"]["project"] == "widget"
+
+
+# ---------------------------------------------- the audit tap's floor (F7)
+
+def test_the_audit_tap_records_by_the_floor_not_a_name_heuristic(tenanted):
+    """A view-floored tool whose NAME is not a read prefix (`run_specs`) writes
+    NO row; an edit-floored tool writes exactly one. The old prefix heuristic
+    (`audit.is_mutating_tool`) logged `run_specs`/`branch_list`/`run_checks`/
+    `export_bom` as actions — the tap now asks the floor table instead."""
+    anya = tenanted.as_("anya")
+    make_project(anya, "widget")
+    log = audit.for_auth_store(tenanted.store)
+
+    with tenancy.tenant_scope((ACME, WS)):
+        token = locks.client_id_var.set("user:anya")     # an org editor
+        try:
+            tenanted.registry.call("run_specs", {"project": "widget"})
+            tenanted.registry.call(
+                "set_assembly", {"project": "widget", "instances": []})
+        finally:
+            locks.client_id_var.reset(token)
+
+    # The floor table and `_is_mutating` agree: `run_specs` is a read.
+    assert tenancy_wiring.floor_of("run_specs") == "view"
+    assert tenancy_wiring._is_mutating("run_specs") is False
+    assert log.query(ACME, action="run_specs") == []
+    assert len(log.query(ACME, action="set_assembly")) == 1
+
+
+# --------------------------------------- the package tools' floor (A#6)
+
+@pytest.mark.parametrize("name", ("validate_package", "package_from_step"))
+def test_a_viewer_cannot_reach_a_package_filesystem_primitive(tenanted, name):
+    """`validate_package`/`package_from_step` take a caller-supplied host path
+    and write/scaffold at `dest` — a filesystem primitive, so `edit`, never the
+    viewer rung they used to sit at."""
+    make_project(tenanted.as_("anya"), "widget")
+    assert tenancy_wiring.floor_of(name) == "edit"
+    refused = tool(tenanted.as_("vee"), name, project="widget")
+    assert refused["error"]["type"] == "permission_error", (name, refused)
+    assert refused["error"]["details"]["required"] == "edit"

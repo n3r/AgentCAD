@@ -420,7 +420,9 @@ This project is built skill-first. Use the Superpowers process skills:
   **is** the local-mode regression contract · `receive.denyCurrentBranch=
   updateInstead` is unusable against `.history` (receive-pack strips `/.git`
   off `GIT_DIR`, ignores `core.worktree`) — it's `ignore` plus an explicit
-  post-receive `checkout -f`; the **pre-receive hook is the whole of FR9**
+  `checkout -f` in the `receive_pack` **route's own `after()`** (not a git
+  hook — there is no post-receive hook here at all); the **pre-receive hook
+  is the whole of FR9**
   (`denyNonFastForwards`/`denyDeletes` are `refs/heads/*`-only — the hook
   refuses ref deletes, branch non-FF and tag rewrites, all three, `sh`
   not bash, all-or-nothing) · never buffer a git body — `routes_sync` spools
@@ -438,14 +440,16 @@ This project is built skill-first. Use the Superpowers process skills:
   `authz.PermissionDeniedError`, never shadow the builtin directly · a raw
   `cp` of the audit SQLite (WAL) loses unflushed rows — `AuditLog.vacuum_into`
   only; the audit tree sits **beside** `auth/`, not inside it · `audit.
-  tap_registry` is no-tenant-no-row and is now installed **outside** the RBAC
+  tap_registry` is no-tenant-no-row and is installed **outside** the RBAC
   floor on `registry.call` (refusals get a row too) — `tools_cloud`'s four
   mutating tools (`create_agent_token`/`revoke_agent_token`/`grant_role`/
-  `revoke_role`) predate that wiring and still call `_audit(...)` themselves,
-  so each writes **two** rows per action, not yet reconciled · tenant
-  resolution precedence in
+  `revoke_role`) no longer call `_audit(...)` themselves (that was the
+  pre-wiring duplicate; one row per action now, from the registry tap) ·
+  tenant resolution precedence in
   `security.resolve_tenant` — token **scope** (no membership check) >
-  `X-Agentcad-Workspace` > session active workspace > sole membership > `None`
+  `X-Agentcad-Workspace` (or, absent that, `?workspace=org/ws`) > session
+  active workspace > the caller's own memberships, **alphabetically first**
+  when there is more than one (not only when there is exactly one) > `None`
   — and a selection failing the roles check is a **name-free 404**, never a
   403 (that would itself be an existence oracle); only the read floor, once a
   tenant IS resolved, answers 403 · `ProjectStore.lock_key` is the **one**
@@ -456,7 +460,22 @@ This project is built skill-first. Use the Superpowers process skills:
   hygiene, not isolation** — small pools still hash-collide across tenants ·
   "workspace" is tenancy's word now; the shell's `workspace` (layout
   localStorage key, `#workspace` DOM id) is an unrelated internal slot name,
-  deliberately not renamed — PRD-025 picks its own word.
+  deliberately not renamed — PRD-025 picks its own word · **a pushed tree may
+  never write under `.history/`** (`core/sync_server.py`'s `pre-receive`
+  hook): the GIT_DIR is `<project>/.history` *inside* the work tree, so an
+  uncaught `.history/**` path in a pushed commit would land straight in the
+  served repo's own git internals when `checkout -f` materializes it (a
+  planted hook/config/filter running as the unconfined server user) — the
+  hook scans only the newly-pushed commits' trees (`$tips --not --all`, `-c`
+  for merge-introduced paths) and refuses the whole push, same shape as the
+  FR9 ref rules · **`agent/chat.py`'s tool-call loop re-sets the tenant
+  inside the executor thread**: `loop.run_in_executor` does not carry
+  contextvars, so the turn's ambient `tenancy.tenant_var` would read `None`
+  in the worker thread without help — the coroutine reads
+  `tenancy.current_tenant()` *before* handing off and passes it to
+  `_call_tool`, which re-`set_tenant`s it for the duration of that one call.
+  Forgetting this on a new executor hop is a silent no-role-floor,
+  no-audit-row, flat-storage-root bug, not a loud one.
 - Tests: session-scoped `kernel` fixture; examples run on a **copy**;
   `TestClient(base_url="http://127.0.0.1")` and
   `create_app(..., extra_allowed_hosts={"testserver"})`; FEM tests

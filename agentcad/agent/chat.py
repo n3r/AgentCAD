@@ -41,7 +41,7 @@ import uuid
 from collections import OrderedDict
 from typing import Any, Callable
 
-from ..core import locks
+from ..core import locks, tenancy
 from ..core.model import AppError, ValidationError
 from ..core.service import EventBus
 from ..core.skills import SkillBudget
@@ -490,8 +490,16 @@ class ChatEngine:
                             "args": args,
                         }
                     )
+                    # `run_in_executor` does NOT carry contextvars into the
+                    # worker thread, so the turn's ambient tenant (set by the
+                    # request that started this turn and inherited through
+                    # `asyncio.create_task`) would be `None` inside the tool
+                    # call — no role floor, no audit row, the flat storage
+                    # root. Capture it here, in the task that still has it, and
+                    # hand it across the boundary for `_call_tool` to re-set.
+                    tenant = tenancy.current_tenant()
                     result = await loop.run_in_executor(
-                        None, self._call_tool, name, args, session
+                        None, self._call_tool, name, args, session, tenant
                     )
                     ok = not (
                         isinstance(result, dict)
@@ -573,19 +581,37 @@ class ChatEngine:
                 }
             )
 
-    def _call_tool(self, name: str, args: dict, session: str = DEFAULT_SESSION):
-        """Run one registry call under the chat identity (turn locking).
+    def _call_tool(self, name: str, args: dict, session: str = DEFAULT_SESSION,
+                   tenant=None):
+        """Run one registry call under the chat identity and its tenant.
 
         The default session keeps the plain "chat" identity; any other session
         is stamped "chat:<session>" so a turn lock it acquires names the lane
         that holds it. Executor threads do not inherit the event-loop task's
         contextvars, and a reused worker thread keeps whatever its ambient
-        context last held — so the identity is set explicitly at the start of
-        every call rather than relying on per-work-item context isolation.
+        context last held — so **both** the identity and the tenant are set
+        explicitly at the start of every call rather than relying on
+        per-work-item context isolation.
+
+        Why the tenant is threaded in rather than the whole context copied: the
+        chat is deliberately attributed as the ``"chat"`` principal, which
+        ``audit.current_principal_id`` reads by finding **no** HTTP principal in
+        this thread's context. A ``copy_context()`` of the request would carry
+        ``security``'s principal ContextVar across too, and the audit row would
+        name the human who typed the message instead of the chat agent. Setting
+        the one ContextVar that is genuinely missing keeps the thread's context
+        otherwise clean — ``current_config`` still resolves via the module-level
+        config, so the floor check, the audit tap and the tenant-rooted store
+        all see the right tenant. ``tenant is None`` (local mode) sets and
+        restores ``None``, so AC7 is untouched.
         """
         cid = "chat" if session == DEFAULT_SESSION else f"chat:{session}"
         locks.set_client_id(cid)
-        return self.registry.call(name, args)
+        token = tenancy.set_tenant(tenant)
+        try:
+            return self.registry.call(name, args)
+        finally:
+            tenancy.reset_tenant(token)
 
     @staticmethod
     def _repair_history(history: list[dict]) -> None:

@@ -68,7 +68,8 @@ from .. import config as user_config
 # a different set from the one `ProjectHistory._refresh_excludes` maintains
 # would track `.cache/` on one machine and not the other, and FR8's "derived
 # data never syncs" would hold only where the project was created.
-from .history import _EXCLUDE_LINES
+from .history import _EXCLUDE_LINES, valid_ref_name
+from .model import ValidationError
 
 #: A clone of a real project is not a 10 s operation (``history``'s timeout).
 DEFAULT_TIMEOUT = 120.0
@@ -77,6 +78,17 @@ DEFAULT_TIMEOUT = 120.0
 #: ``packages/_git.py`` rule, for the same reason: defence that only works when
 #: the *other* defence works is not defence.
 _METACHARACTERS = set(";|&$`<>()\n\r\t\\\"'*?[]{}!~ ")
+
+#: The one predicate that decides whether a tree path lands in a repo's git
+#: internals, imported from the server half so client, server and merge all fold
+#: identically (case, NTFS trailing dot/space, HFS-ignorable unicode). A
+#: malicious server, or a poisoned remote branch a collaborator pushed, can
+#: advertise a tree that writes into this clone's own GIT_DIR
+#: (``<project>/.history``) — a ``post-merge`` hook, a ``config`` — which then
+#: runs as the user on the checkout/merge a clone or pull performs. A byte-exact
+#: test missed ``.History`` on macOS/Windows (the PRD-005 re-check); the shared
+#: fold does not. ``.gitignore``/``.gitattributes`` do not fold to ``.git``.
+from .sync_server import is_git_internal_path
 
 #: The schemes an AgentCAD instance is reachable on. ``http://`` is here
 #: because a developer instance and every test in this repo is
@@ -89,6 +101,17 @@ _SCHEMES = ("https://", "http://")
 #: branch into branch — so it gets a namespace of its own, and
 #: :func:`push_refspecs` keeps it off the wire.
 INTERNAL_BRANCH_PREFIX = "incoming/"
+
+#: The refusal a divergent pull raises when the fetched other side — its tip, or
+#: the merge it would produce — writes into this clone's own git internals. A
+#: poisoned ``.history/hooks/post-merge``/``.history/config`` materialized into
+#: ``<project>/.history`` runs as the user on the next git call. Fixer 1's
+#: checkout/ff belts close the fast-forward path; this is the same rule for the
+#: staged merge a DIVERGENT pull drives through ``MergeOrchestrator``.
+_MERGE_INTERNALS_MSG = (
+    "refusing to merge a branch that writes into .history/ — the remote's git "
+    "internals are not yours to pull"
+)
 
 #: What a git credential helper puts in the ``username`` field. The server
 #: **ignores it** (``routes_sync._promote_basic_to_bearer`` discards the user
@@ -217,8 +240,19 @@ def _pins() -> list[str]:
     checkout would push a whole-file diff of nothing on its first commit.
     ``-c`` beats every config scope, so a user's global setting cannot re-break
     it (the ``packages/_git.py`` lesson, measured on PR #15's CI).
+
+    ``core.hooksPath=/dev/null`` + ``core.fsmonitor=false``: a *poisoned remote*
+    or a collaborator's push can carry a ``.history/hooks/post-merge`` /
+    ``post-checkout`` and a ``.history/config`` with an ``fsmonitor`` command
+    into a clone. On this workstation those would run as the user — on a plain
+    ``git status`` (``fsmonitor``) or the checkout/merge a pull performs. Pinned
+    off on **every** call so no repo-carried config can make a sync run code.
+    (The materialize belt, :func:`_assert_no_git_internals`, is what stops the
+    files landing at all; this is the second lock on the same door.)
     """
-    return ["-c", "core.autocrlf=false"]
+    return ["-c", "core.autocrlf=false",
+            "-c", "core.hooksPath=/dev/null",
+            "-c", "core.fsmonitor=false"]
 
 
 def _credential_pins() -> list[str]:
@@ -297,6 +331,36 @@ def _exec(cmd, *, cwd, env, timeout, check) -> subprocess.CompletedProcess:
 
 def history_dir(project_dir) -> Path:
     return Path(project_dir) / ".history"
+
+
+def git_internals_in_tree(project_dir, ref: str) -> list[str]:
+    """Paths in *ref*'s tree that would write into this clone's git internals.
+
+    ``.history/**`` or any ``.git`` component. Reads the object out of the
+    shared ``.history`` object store, so it answers for the default branch, a
+    branch with no checkout, or a fetched ``refs/remotes/*`` ref alike. Empty
+    list = the tree is safe to check out or fast-forward into.
+    """
+    result = local(project_dir, "ls-tree", "-r", "-t", "--name-only", "-z",
+                   ref, check=False)
+    return sorted(path for path in (result.stdout or "").split("\0")
+                  if path and is_git_internal_path(path))
+
+
+def _assert_no_git_internals(project_dir, ref: str) -> None:
+    """Refuse a checkout/merge of a tree that carries our git internals.
+
+    The client half of the server's pre-receive rule: a poisoned remote (or a
+    branch a collaborator managed to push before the server was hardened) must
+    not be materialized onto this workstation, where a planted
+    ``.history/hooks/post-merge`` runs as the user.
+    """
+    offending = git_internals_in_tree(project_dir, ref)
+    if offending:
+        raise SyncError(
+            f"refusing to check out {ref!r}: it writes into the project's git "
+            f"internals ({', '.join(offending[:5])}) — a poisoned remote. "
+            "Nothing was changed.")
 
 
 # ------------------------------------------------------------------- urls
@@ -653,24 +717,27 @@ def clone(url: str, dest, *, token: str | None = None) -> dict:
     :func:`pull` moves the ones with no checkout by ``update-ref``.
     """
     parsed = parse_repo_url(url)
+    instance = parsed["instance"]
     dest = Path(dest).expanduser()
     if dest.exists() and any(dest.iterdir()):
         raise SyncError(f"{dest} already exists and is not empty")
     # Stored BEFORE the clone, because the credential helper is what answers
-    # the server's 401 mid-clone — and rolled back if this was the first token
-    # for the instance and the clone then failed, so a typo does not leave a
-    # credential behind that `login` never verified.
-    added = False
-    if token and token_for(parsed["instance"]) != token:
-        added = token_for(parsed["instance"]) is None
-        remember_instance(parsed["instance"], token)
+    # the server's 401 mid-clone — and rolled back on failure so a typo'd
+    # `--token` neither leaves an unverified credential behind (there was none)
+    # NOR overwrites a working token the user already had (there was one, and
+    # `previous` is exactly what we put back).
+    previous = _instance_entry(instance)
+    replaced = False
+    if token and token_for(instance) != token:
+        remember_instance(instance, token)
+        replaced = True
     git_dir = history_dir(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
         try:
             run("clone", "--bare", "--", parsed["url"], str(git_dir))
         except SyncError as exc:
-            raise _translated(parsed["instance"], exc) from exc
+            raise _translated(instance, exc) from exc
         config = [
             ("core.bare", "false"),
             ("core.worktree", str(dest.resolve())),
@@ -688,6 +755,9 @@ def clone(url: str, dest, *, token: str | None = None) -> dict:
             run("--git-dir", str(git_dir), "config", key, value)
         _write_excludes(git_dir)
         branch = _head_branch(git_dir) or "master"
+        # Before writing a single tracked file: refuse a poisoned tree that
+        # would plant a hook/config into this clone's own `.history`.
+        _assert_no_git_internals(dest, branch)
         local(dest, "checkout", "-f", branch, "--")
         # One incremental fetch, immediately: `--bare` put the server's
         # branches in `refs/heads/*` and left `refs/remotes/` empty, so until
@@ -698,18 +768,46 @@ def clone(url: str, dest, *, token: str | None = None) -> dict:
         # where a broken one would otherwise surface as a failing push days
         # later.
         fetch_remote(dest)
+        # INSIDE the try: a `verify_layout` that raises must clean up like any
+        # other failure, and `remember_clone` must not record a clone that
+        # never fully materialized.
+        verify_layout(dest)
+        remember_clone(dest, parsed["url"])
     except BaseException:
         # A half-made clone is not a project: it would fail every read with a
         # different message than "you have not cloned this yet".
         shutil.rmtree(dest, ignore_errors=True)
-        if added:
-            forget_instance(parsed["instance"])
+        _forget_clone(dest)
+        if replaced:
+            _restore_instance(instance, previous)
         raise
-    remember_clone(dest, parsed["url"])
-    verify_layout(dest)
     return {"path": str(dest), "branch": branch, "remote": parsed["url"],
             "project": parsed["project"], "org": parsed["org"],
             "workspace": parsed["workspace"]}
+
+
+def _instance_entry(instance: str) -> dict | None:
+    """The stored ``instances[instance]`` entry (token + principal), or None."""
+    entry = load()["instances"].get(instance)
+    return entry if isinstance(entry, dict) else None
+
+
+def _restore_instance(instance: str, previous: dict | None) -> None:
+    """Put an instance entry back exactly as it was — or remove it if there
+    was none. The rollback for a `clone --token` whose clone then failed."""
+    document = load()
+    if previous is None:
+        document["instances"].pop(instance, None)
+    else:
+        document["instances"][instance] = previous
+    save(document)
+
+
+def _forget_clone(project_dir) -> None:
+    """Drop any ``clones[...]`` entry for *project_dir* (no-op if absent)."""
+    document = load()
+    if document["clones"].pop(str(Path(project_dir).resolve()), None) is not None:
+        save(document)
 
 
 def _write_excludes(git_dir: Path) -> None:
@@ -728,12 +826,29 @@ def _write_excludes(git_dir: Path) -> None:
 
 
 def _head_branch(git_dir: Path) -> str | None:
-    result = _exec([executable(), "--git-dir", str(git_dir), "symbolic-ref",
-                    "--short", "HEAD"],
+    """The branch the (cloned) HEAD points at, **validated as a ref name**.
+
+    The name comes from the *server's* advertised HEAD, and it is then handed
+    to ``git checkout <branch> --`` as argv. A malicious server that advertised
+    ``refs/heads/-evil`` (short: ``-evil``) or a name carrying a revision
+    expression would otherwise turn a clone into argument injection. Anything
+    ``history.valid_ref_name`` rejects is refused here rather than run; an empty
+    HEAD (an unborn remote) is a plain ``None`` and the caller falls back to
+    ``master``.
+    """
+    result = _exec([executable(), *_pins(), "--git-dir", str(git_dir),
+                    "symbolic-ref", "--short", "HEAD"],
                    cwd=None, env=_base_env(), timeout=DEFAULT_TIMEOUT,
                    check=False)
     name = (result.stdout or "").strip()
-    return name or None
+    if not name:
+        return None
+    if not valid_ref_name(name):
+        raise SyncError(
+            f"the server advertised an unusable default branch {name!r} — a "
+            "ref name may not start with '-' or carry a revision expression. "
+            "Refusing rather than passing it to git as an argument.")
+    return name
 
 
 def verify_layout(project_dir) -> None:
@@ -1153,6 +1268,10 @@ def _fast_forward(project_dir, branch: str, remote_ref: str,
     files, and it is unable to discard anything, refusing a dirty tree instead.
     """
     project_dir = Path(project_dir)
+    # Refuse a fetched tip that carries our git internals — for every path,
+    # including the `update-ref` one, whose tree `BranchManager` materializes
+    # later without a second look. A poisoned remote never advances a ref here.
+    _assert_no_git_internals(project_dir, remote_ref)
     if tree is None:
         local(project_dir, "update-ref", f"refs/heads/{branch}", remote_ref)
         return
@@ -1203,9 +1322,34 @@ def merge_diverged(service, proj: str, branch: str, remote_ref: str, *,
     head = service.history.resolve_ref(canonical, remote_ref)
     if head is None:
         raise SyncError(f"cannot resolve {remote_ref!r} in {canonical}")
+    # BELT (PRD-005): the fetched tip itself must not carry our git internals.
+    # ``MergeOrchestrator`` would materialize the incoming side into a scratch
+    # worktree and, on landing, ``reset --hard`` the merge into a live tree —
+    # bypassing the checkout/ff belts. Refuse BEFORE parking it as
+    # ``incoming/<branch>``: nothing is created, the local tree is untouched.
+    offending = git_internals_in_tree(canonical, head)
+    if offending:
+        raise SyncError(
+            f"{_MERGE_INTERNALS_MSG} ({', '.join(offending[:5])}). "
+            "Nothing was changed.")
     _reset_incoming(service, proj, canonical, incoming, head)
-    result = service.merges.merge(proj, incoming, branch,
-                                  allow_invalid=allow_invalid)
+    try:
+        result = service.merges.merge(proj, incoming, branch,
+                                      allow_invalid=allow_invalid)
+    except ValidationError as exc:
+        # The staged-merge belt (``merge.py::_assert_no_git_internals``) fired:
+        # the RESULT tree — which a merge can synthesize a ``.history`` path
+        # into, present in NEITHER tip — would land in the work tree. It refused
+        # before staging or moving a ref, so nothing landed; drop the scratch
+        # branch we parked and refuse the whole pull, exactly as a failed merge
+        # leaves the local tree unchanged.
+        planted = (exc.details or {}).get("git_internals")
+        if planted:
+            _forget_incoming(service, proj, incoming)
+            raise SyncError(
+                f"{_MERGE_INTERNALS_MSG} ({', '.join(planted[:5])}). "
+                "Nothing was changed.") from exc
+        raise
     if isinstance(result, dict) and "error" not in result:
         # The merge landed (or was already up to date): the scratch branch has
         # served its purpose and a project's branch list should not grow one
@@ -1229,3 +1373,22 @@ def _reset_incoming(service, proj: str, canonical: Path, incoming: str,
             # and let `merge` refuse with its own (precise) message.
             return
     service.branches.create(proj, incoming, head)
+
+
+def _forget_incoming(service, proj: str, incoming: str) -> None:
+    """Undo the scratch ``incoming/<branch>`` a refused merge left parked.
+
+    The staged-merge belt refuses BEFORE anything is staged or any ref moves,
+    so the only residue is the branch (and its worktree) :func:`_reset_incoming`
+    created. Abort any staged merge first for good measure, then delete the
+    branch — best-effort, because a pull that is already refusing must not turn
+    a failed cleanup into a second, more confusing error.
+    """
+    try:
+        service.merges.abort(proj)
+    except Exception:                           # noqa: BLE001 — bookkeeping
+        pass
+    try:
+        service.branches.delete(proj, incoming)
+    except Exception:                           # noqa: BLE001 — bookkeeping
+        pass

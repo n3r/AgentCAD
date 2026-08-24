@@ -116,8 +116,11 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset({
     "list_notifications",
     # materials, packages, skills
     "list_materials", "get_material", "find_materials", "hole_standards",
-    "list_packages", "search_packages", "validate_package",
-    "package_from_step", "list_skills", "load_skill",
+    "list_packages", "search_packages", "list_skills", "load_skill",
+    # NB: ``validate_package`` and ``package_from_step`` are NOT here. Both take
+    # a caller-supplied host path and write/scaffold at ``dest`` — a filesystem
+    # primitive, not "derived data a viewer could already produce" — so they
+    # fall through to the ``edit`` floor with every other authoring tool.
     # the shell
     "ui_open",
     # hosted-only packs (PRD-005a/005 slice 5, PRD-007): the reads
@@ -168,6 +171,19 @@ def floor_of(tool: str) -> str:
     if tool in ADMIN_TOOLS:
         return "admin"
     return "edit"
+
+
+def _is_mutating(name: str) -> bool:
+    """Does a call to *name* deserve an audit row? The floor table answers.
+
+    A tool changes authored state exactly when it needs more than ``view`` —
+    the same map the write floor consults, so the audit log and the RBAC floor
+    can never disagree about what a mutation is. ``whoami`` (the one
+    :data:`NO_FLOOR_TOOLS` entry) reads identity and is excluded, because
+    ``floor_of`` would otherwise default it to ``edit`` and log an identity read
+    as an action.
+    """
+    return name not in NO_FLOOR_TOOLS and floor_of(name) != "view"
 
 
 # ------------------------------------------------------------------ install
@@ -459,8 +475,17 @@ def _tap_audit(call, config):
     across today): ``uninstall`` and the idempotence guard both read them off
     whatever ``registry.call`` currently is, and neither should depend on an
     implementation detail of the standard library.
+
+    **What counts as a mutation is the floor table, not a name heuristic.** The
+    tap is handed :func:`_is_mutating`, so "does this deserve a row" and "does a
+    viewer need `edit` for this" are the *same* answer over the *same* map —
+    ``audit.is_mutating_tool``'s prefix guess disagreed with it (``branch_list``,
+    ``project_history``, ``run_checks``, ``export_bom`` are ``view``-floored
+    reads it logged as actions). ``audit.py`` stays floor-agnostic; the floor
+    knowledge lives here, with the floor.
     """
-    tapped = audit.tap_registry(call, _AuditSink(config))
+    tapped = audit.tap_registry(call, _AuditSink(config),
+                                is_mutating=_is_mutating)
     if tapped is call:                       # already tapped: nothing to mark
         return call
     setattr(tapped, _CALL, True)
@@ -596,8 +621,14 @@ def _install_bus(bus) -> None:
             if stamp is not None and isinstance(event, dict) \
                     and event.get("tenant") is None:
                 # A copy: the caller's dict is theirs, and several call sites
-                # build one event and publish it twice.
-                event = {**event, "tenant": stamp}
+                # build one event and publish it twice. The acting principal
+                # rides alongside the tenant — PRD-005's "project_changed gains
+                # the acting principal": `client` says *who*, in the workspace
+                # `tenant` names, caused this event. Both are stamped together
+                # and only when a tenant is set, so local mode is untouched
+                # (AC7) and a re-published, already-tenanted event keeps its own.
+                event = {**event, "tenant": stamp,
+                         "client": locks.current_client_id()}
             publish_inner(event)
 
         setattr(publish, _PUBLISH, True)

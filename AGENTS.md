@@ -3202,6 +3202,23 @@ reference: `docs/deployment.md`.
   the right semantics for "surface divergence, never overwrite" — an
   `update` hook (accepts good refs, rejects bad ones) is deliberately not
   used.
+- **A pushed tree may never write under `.history/` — that IS the repo's own
+  git internals, checked out into it by `checkout -f`.** `GIT_DIR` is
+  `<project>/.history` *inside* the work tree (the point above), so an
+  uncaught `.history/**` path in a pushed commit's tree would land straight
+  in the served repo's live internals when materialization runs — a planted
+  hook, a `core.hooksPath` config, a filter driver — and then execute as the
+  unconfined server user on the *next* git operation. Git's own `verify_path`
+  guards only the literal name `.git` (and even that only when
+  `core.protectHFS`/`NTFS` do not object), never `.history`, and
+  `.gitignore`/`.gitattributes` cannot match it either. `PRE_RECEIVE_HOOK`
+  closes this with a bounded scan: `git log -c --name-only --diff-filter=d
+  --root $tips --not --all` over only the **newly-pushed** commits (never the
+  whole tree or the whole history — `--not --all` excludes everything the
+  server already has), `-c` so a path introduced only by a merge (present in
+  the merge result, absent from every parent) cannot slip past a plain
+  name-only log. A match refuses the whole push, same all-or-nothing shape as
+  the ref rules above.
 - **Never buffer a git body — spool it, and drain stderr in a loop.**
   `routes_sync._spool_request` streams the request to an **unlinked temp
   file** because `app.py`'s one `BaseHTTPMiddleware` makes a full-duplex CGI
@@ -3257,9 +3274,8 @@ reference: `docs/deployment.md`.
   (`<state>/audit/`) sits **beside** `<state>/auth/`, never inside it, so
   005a's "tar the state dir" statement stays true for identity and is
   explicitly no longer true for audit — say both halves.
-- **`audit.tap_registry` is no-tenant-no-row, and it is now installed
-  outside the RBAC floor — which makes a known double-row real, not
-  hypothetical.** `tap_registry(call, log)` wraps any `(name, args) -> dict`
+- **`audit.tap_registry` is no-tenant-no-row, and it is installed outside the
+  RBAC floor.** `tap_registry(call, log)` wraps any `(name, args) -> dict`
   and writes one row per mutating call (`is_mutating_tool`: everything not
   `get_/list_/find_/search_/read_/describe_/check_/measure_/inspect_/
   preview_/validate_/compare_/resolve_`-prefixed, plus the `READ_NAMES` set),
@@ -3267,35 +3283,61 @@ reference: `docs/deployment.md`.
   by construction, not by a branch someone remembered to add.
   `tenancy_wiring._install_registry` wraps it around `registry.call` **outside**
   the floor (`registry.call = _tap_audit(call, config)`), so the row records
-  the outcome the caller actually got, refusal included. `core/tools_cloud.py`
-  predates that wiring and still records its own four mutating tools'
-  writes directly (`create_agent_token`/`revoke_agent_token`/`grant_role`/
-  `revoke_role`, each ending in its own `_audit(...)` call) — its own
-  docstring names this "the duplication to watch for is one row per
-  action" and says so *before* the wrapper was expected to land. With both
-  now installed, calling one of those four **does** write two rows for one
-  action — identical `action` spelling on both (`_record`'s `action` is
-  `str(name)`, the tool name, the same string `tools_cloud._audit` passes),
-  so the two rows are indistinguishable by `action` and differ only in `id`/
-  `ts`. Not yet reconciled — do not treat a row **count** as meaningful for
-  those four tools until it is.
+  the outcome the caller actually got, refusal included.
+  `tenancy_wiring.floor_of`/`_is_mutating` — not `audit.is_mutating_tool`'s
+  own prefix guess — decide what counts as a mutation here, because that
+  guess disagreed with the RBAC floor table on several `view`-floored reads
+  (`branch_list`, `project_history`, `run_checks`, `export_bom`).
+  `core/tools_cloud.py`'s four admin tools (`create_agent_token`/
+  `revoke_agent_token`/`grant_role`/`revoke_role`) no longer call `_audit(...)`
+  themselves — that was a duplicate row from before this wrapper existed, and
+  it is gone now: one row per action, from the registry tap, same as every
+  other mutating tool.
 - **Tenant resolution precedence, and where 404 stops being name-free.**
   `security.resolve_tenant` (`server/security.py`): a bearer token's
   **scope** wins outright (no membership check — an agent has no org
   default, so requiring one would make every scoped token unusable) >
-  `X-Agentcad-Workspace: org/ws` > the session's active workspace > the
-  principal's own memberships (alphabetically first, when there is exactly
-  one org/workspace pair) > `None` (local mode, or a hosted instance with no
-  orgs — byte-identical to 005a). **Every rung except the scope is checked
-  against the roles document**, and a selection that fails it is a
-  **name-free 404** (`"no such workspace"`) — a 403 there would itself be an
-  existence oracle. Once a tenant is resolved, the **read floor**
-  (`authz.require(..., "view", ...)`) answers with a real **403** naming
-  `{required, project, principal_role}`, because the caller can already see
-  that workspace exists; only a malformed `X-Agentcad-Workspace` header gets
-  a **400** (a client bug, confirms nothing). `resolve_tenant` is the one
-  function that draws this line — do not invent a second 404-vs-403 rule at
-  a different choke point.
+  `X-Agentcad-Workspace: org/ws` (or, whenever the header is absent,
+  `?workspace=org/ws` at the same rung — the header wins if both are
+  present; the query form is what a header-less `<img src>` GET, a
+  `sendBeacon`, or the `/ws` WebSocket use, none of which can set a header) >
+  the session's active workspace > the principal's own memberships
+  (`security._default_tenant`: **alphabetically first**, whether there is
+  one org/workspace pair or several — NOT "only when there is exactly one";
+  dropping a multi-membership caller to the untenanted root instead would
+  quietly create their projects outside every org) > `None` (local mode, or
+  a hosted instance with no orgs — byte-identical to 005a). **Every rung
+  except the scope is checked against the roles document**, and a selection
+  that fails it is a **name-free 404** (`"no such workspace"`) — a 403 there
+  would itself be an existence oracle. Once a tenant is resolved, the **read
+  floor** (`authz.require(..., "view", ...)`) answers with a real **403**
+  naming `{required, project, principal_role}`, because the caller can
+  already see that workspace exists; only a malformed `X-Agentcad-Workspace`
+  header gets a **400** (a client bug, confirms nothing). `resolve_tenant` is
+  the one function that draws this line — do not invent a second
+  404-vs-403 rule at a different choke point.
+- **A bearer token CAN grant/revoke a role — just never mint or revoke a
+  token.** `create_agent_token`/`revoke_agent_token` check **org-level**
+  admin (`authz.role_of(..., proj=None)`), which only ever resolves for a
+  *person* (org membership/org-default role, `tenancy.handle_of`: a token is
+  never an org member) — structurally closed to every token. `grant_role`/
+  `revoke_role` check **project-level** admin instead
+  (`authz.role_of(..., proj=project)`), and `role_of`'s step 2 (the
+  per-project override) applies to an agent principal exactly as it applies
+  to a person: a token minted with `role: "admin"` on a project holds that
+  override there, and can call `grant_role`/`revoke_role` on that project
+  like any other admin. Do not write "a token cannot grant or revoke a
+  role" — it is narrower than that, and the narrower claim is the one that
+  is actually true.
+- **`agent/chat.py`'s tool-call loop must re-set the tenant across the
+  executor hop.** `loop.run_in_executor` does not carry contextvars into the
+  worker thread, so `tenancy.tenant_var` reads `None` there unless something
+  hands it across — the coroutine reads `tenancy.current_tenant()` **before**
+  the `run_in_executor` call (while it still has the ambient value) and
+  passes it as an argument to `_call_tool`, which `tenancy.set_tenant`s it
+  for the duration of that one call and resets it after. A new executor hop
+  added later that skips this is a silent bug (no role floor, no audit row,
+  the flat storage root), not a loud one — nothing raises.
 - **`ProjectStore.lock_key` is the qualification funnel, and it is
   deliberately wider than "the write guard re-keys the turnlock."**
   `tenancy_wiring._install_lock_key` wraps `store.lock_key` once, and turn

@@ -277,7 +277,19 @@ uv sync --extra cloud     # or: pip install "agentcad[cloud]"
 Without it the passkey routes answer `501` — the same "extra not installed"
 pattern the `[fem]` extra's routes use — and a plain install still serves
 password sign-in and OIDC. `[cloud]` pulls in `webauthn>=3` and `cbor2>=5.6`;
-nothing else in the product needs either.
+nothing else in the product needs either. **The compose image ships with
+`[cloud]` already installed** (`Dockerfile`'s `uv sync` carries `--extra
+cloud`), so a `docker compose` deployment can serve passkeys with no extra
+step; the manual `uv sync --extra cloud` above is for a bare `pip`/`uv`
+install (a desktop build, or a hosted instance run outside the image).
+
+Registering and signing in with a passkey asks the authenticator for **user
+verification** — a PIN, biometric or security-key touch, not mere physical
+presence — so an enrolled credential is not usable by whoever merely holds
+the device. The exact requirement level (`preferred` vs. `required`) is set
+once in `server/routes_auth.py`'s WebAuthn options and applies to every
+instance; check that file for the shipped value, since it is the kind of
+detail that is easy for a doc to drift from.
 
 **OIDC** is *not* gated by the extra: `httpx` and `pyjwt[crypto]` are hard
 dependencies, so single sign-on works on a plain install. Configure one
@@ -321,31 +333,25 @@ Every project on a hosted instance now lives under an **organisation** and a
 uses byte-for-byte — creating the first org is what turns tenancy on, and
 nothing about local mode or a single-admin instance changes until you do.
 
-**Bootstrap.** There is no CLI subcommand for this yet — only the tool
-surface below reaches it, and that needs a signed-in admin, which needs an
-org to admin in the first place. The bootstrap is one Python call against the
-state files directly, the same "no service, no kernel, no port" contract
-`agentcad admin` already relies on, and literally the call `core/tools_cloud.py`
-itself makes (`tenancy.TenancyStore(store.root)`):
+**Bootstrap.** `agentcad admin org add|workspace add|member add` — the same
+"no service, no kernel, no port" contract `agentcad admin user`/`admin
+token` already rely on, so this works over `docker compose exec` before
+anyone signs in and whether or not the server is up:
 
 ```bash
-docker compose exec agentcad python3 -c "
-from agentcad.core.appmode import ensure_state_dir
-from agentcad.core.authstore import AuthStore
-from agentcad.core import tenancy
-store = AuthStore(ensure_state_dir() / 'auth')
-tenants = tenancy.TenancyStore(store.root)
-tenants.create_org('acme', label='Acme Robotics', admin='nikita')
-tenants.create_workspace('acme', 'main', label='Mechanical')
-"
+docker compose exec agentcad agentcad admin org add acme --label 'Acme Robotics' --admin nikita
+docker compose exec agentcad agentcad admin org workspace add acme main --label Mechanical
+docker compose exec agentcad agentcad admin org member add acme anya --role view
 ```
 
-`create_org(..., admin=)` is one atomic write — an org is never briefly
-adminless, which matters because the *next* step (granting anyone else a
-role) needs an admin able to call it. `admin` must already be an enrolled
-local handle (see "Accounts" above); org membership is bookkeeping about a
-person, not a second account, and an agent token can never be one (see
-below).
+`org add --admin` is one atomic write — an org is never briefly adminless,
+which matters because the *next* step (granting anyone else a role) needs an
+admin able to call it. The `--admin`/`member add` handle must already be an
+enrolled local handle (see "Accounts" above); org membership is bookkeeping
+about a person, not a second account, and an agent token can never be one
+(see below). `member add --role` sets that person's **org-default** role
+(`view` if omitted); per-project overrides come later, from the running
+instance (`grant_role`, below), not from this bootstrap.
 
 **The ladder**, weakest first: `view` (reads) < `comment` (review threads,
 proposals) < `edit` (geometry) < `admin` (who may do the above). It is a
@@ -530,13 +536,26 @@ rather than quietly starting a local server and answering from the wrong
 machine.
 
 Note that admin *routes* require a signed-in person, so an `admin`-role token
-cannot mint another token — instance-wide or scoped (below), same rule
-either way. PRD-005a held this while there was no audit log; PRD-005 keeps
-it for a sharper reason: `authz.role_of` can only ever answer `admin` for a
-*person* (see "Organisations, workspaces and roles" above), so a bearer
-token structurally cannot mint, grant or revoke anything — not by policy
-this project chooses to enforce, but because the RBAC model gives an agent
-principal no org membership to hold that role in.
+cannot mint or revoke another token — instance-wide or scoped (below), same
+rule either way. PRD-005a held this while there was no audit log; PRD-005
+keeps it for a sharper reason: `create_agent_token`/`revoke_agent_token`
+require **org-level** admin (`authz.role_of` with no project named), and that
+can only ever come from org membership or an org-default role — both of
+which are bookkeeping about a *person* (`tenancy.handle_of`: a token is
+never an org member). A bearer token therefore structurally cannot mint or
+revoke a token, not by policy this project chooses to enforce, but because
+the RBAC model gives an agent principal no org membership to hold that role
+in.
+
+**This does not mean a token can never grant or revoke a role.** `grant_role`
+and `revoke_role` check **project-level** admin, and the RBAC ladder's
+per-project override (see "Organisations, workspaces and roles" below)
+applies to an agent principal exactly as it does to a person: a token minted
+with `role: "admin"` on a project holds that override there, and can call
+`grant_role`/`revoke_role` on that project like any other admin — it just
+cannot touch org membership or mint another credential. The floor that is
+genuinely closed to every token is **token minting**, not the RBAC surface as
+a whole.
 
 ### Scoped agent tokens (PRD-005)
 
@@ -621,21 +640,31 @@ correct backup" statement stays true **for identity** (accounts, sessions,
 tokens) — it was never true for a WAL database, which is why the audit
 store gets its own backup command rather than inheriting the tar's.
 
-**Honest scope.** Two taps write rows today: `routes_auth.py` (every
-sign-in, sign-out, enrolment, and account/instance-token administration
-event — instance-wide) and `tools_cloud.py`'s own admin actions
-(`create_agent_token`, `revoke_agent_token`, `grant_role`, `revoke_role` — a
-project's org). The general "every mutating tool call writes a row" tap
-(`core/audit.py`'s `tap_registry`) is **installed on the serve path**
+**What writes a row.** `routes_auth.py` taps every sign-in, sign-out,
+enrolment, and account/instance-token administration event (instance-wide).
+Everything else — every mutating tool call, from any of the three surfaces
+that share one `ToolRegistry` (HTTP, chat, MCP) — goes through the general
+tap, `core/audit.py`'s `tap_registry`, **installed on the serve path**
 (`tenancy_wiring._install_registry`, outermost — a refused call is recorded
-with `outcome: "permission_error"`): an ordinary `set_part_params` under a
-tenant produces a row; a request with no tenant produces none, so local
-mode never touches the audit store. The three-principal-kind distinction
-PRD-005 promises (a human edit, a chat-agent edit, an MCP-agent edit, one
-project) is asserted end-to-end in `tests/test_prd005_acceptance.py` and
-by the deploy smoke's audit-query step. One known residual: the four
-`tools_cloud` admin actions currently write a second, pack-local row per
-call (being reconciled).
+with `outcome: "permission_error"`). That single tap covers `tools_cloud.py`'s
+own admin actions too (`create_agent_token`, `revoke_agent_token`,
+`grant_role`, `revoke_role`); there is no second, pack-local write for them
+to duplicate. An ordinary `set_part_params` under a tenant produces a row; a
+request with no tenant produces none, so local mode never touches the audit
+store. The three-principal-kind distinction PRD-005 promises (a human edit,
+a chat-agent edit, an MCP-agent edit, one project) is asserted end-to-end in
+`tests/test_prd005_acceptance.py`; the deploy smoke's audit-query step
+checks only that two *human* principals (`user:smoke`, `user:anya`) are
+distinguishable in a real deployed instance's log — the full three-way
+distinction is graded by the acceptance test, not by that workflow.
+
+**Reading it over HTTP.** `GET /api/auth/audit?org=<org>` answers the same
+query the CLI does — `principal`, `project`, `action`, `since`, `until`,
+`limit`, `offset` as query params, newest first, paginated (`next_offset`
+when a page is full). `org` defaults to `_instance`. Open to the **instance**
+administrator for any org, and to an **org** admin for their own org only —
+never a plain member, and never a token (the same "a token cannot read what
+its own theft looked like" rule as minting).
 
 ---
 
@@ -1011,11 +1040,10 @@ Nothing new: it is the error contract that already existed.
 
 PRD-005 shipped organisations/workspaces/per-project roles, OIDC + passkey
 sign-in (local accounts still always work), scoped agent tokens, a queryable
-per-org audit log ("Audit" above — though its general per-tool-call tap is
-not yet wired into the serve path, a named residual there, not a silent
-one), git sync (clone/push/pull against a hosted instance over authenticated
-smart-HTTP), and per-tenant fair kernel scheduling. What is still genuinely
-deferred:
+per-org audit log with its general per-tool-call tap wired into the serve
+path ("Audit" above), git sync (clone/push/pull against a hosted instance
+over authenticated smart-HTTP), and per-tenant fair kernel scheduling. What
+is still genuinely deferred:
 
 - **SAML/SCIM.** Only generic OIDC (code+PKCE) is built — no enterprise IdP
   provisioning protocol, no SCIM user/group sync.

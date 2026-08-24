@@ -38,12 +38,16 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
 
-from ..core.model import ConflictError, NotFoundError, ValidationError
+from ..core.authz import PermissionDeniedError
+from ..core.model import AuthError, ConflictError, NotFoundError, ValidationError
 
 _RAISE = {
     "notfound_error": NotFoundError,
     "validation_error": ValidationError,
     "conflict_error": ConflictError,
+    # FR6: a tenancy refusal keeps its own status (see routes_comments).
+    "permission_error": PermissionDeniedError,
+    "auth_error": AuthError,
 }
 
 # No error type here is a legitimate 200 body (see the module docstring).

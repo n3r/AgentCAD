@@ -1753,16 +1753,23 @@ around, it is what every wrapper's "no tenant" branch already does).
 **Which workspace a call is in.** A request's tenant is resolved once, in
 this precedence: a bearer token's own **scope** (below) > the
 **`X-Agentcad-Workspace: org/ws`** header (also honored on `POST/GET`
-tool calls and, for `/ws`, as `?workspace=org/ws` — a browser cannot set a
-header on a WebSocket) > the signed-in session's active workspace (the
-switcher) > the caller's own membership, when it names exactly one
-`org/workspace` pair. A selection the caller holds no role in at all answers
-a **name-free 404** (`"no such workspace"`) — the same answer whether the org
-doesn't exist, the workspace doesn't, or the caller simply has nothing there,
+tool calls) — or, whenever the header is absent, **`?workspace=org/ws`** at
+the same rung (the header wins if both are present; this is what a
+header-less `<img src>` GET, a `sendBeacon`, or the `/ws` WebSocket use,
+since none of them can set a header) > the signed-in session's active
+workspace (the switcher) > **the caller's own memberships** — not only when
+there is exactly one: with several, the alphabetically first `org/workspace`
+pair is the default (`security._default_tenant`), stated rather than
+discovered, because dropping a caller with several memberships to the
+untenanted root instead would quietly create their projects outside every
+org. A selection the caller holds no role in at all answers a **name-free
+404** (`"no such workspace"`) — the same answer whether the org doesn't
+exist, the workspace doesn't, or the caller simply has nothing there,
 because a 403 would itself confirm the org exists. A malformed header is a
-plain **400**. Set the header on every call once you know your org/workspace;
-omit it on a single-org, single-workspace instance and the sole-membership
-rule resolves it for you.
+plain **400**. Set the header (or the query fallback) on every call once you
+know your org/workspace; a caller with exactly one membership never needs
+to, and one with several still gets a deterministic (if not necessarily
+intended) default rather than a refusal.
 
 **`whoami`, extended.** With at least one org on the instance, the payload
 above grows: `{..., org, workspace, orgs, roles, scope}` — `org`/`workspace`
@@ -1779,8 +1786,15 @@ across every project in the org; a **per-project override** may raise or
 lower it in either direction (an org admin cannot be held down by one — org
 admin is a floor, not a demotable rung). An **agent token has no org
 default** — it reaches a project only through an explicit grant in its own
-scope, which is why `create_agent_token`/`grant_role` below are person-only:
-`role_of` can only answer `admin` for a signed-in handle.
+scope. `create_agent_token`/`revoke_agent_token` below are person-only:
+they check **org-level** admin (no project named), and `role_of` can only
+answer `admin` there for a signed-in handle — a token is never an org
+member. `grant_role`/`revoke_role` check **project-level** admin instead,
+and the per-project override applies to a token exactly as it applies to a
+person: a token minted with `role: "admin"` on a project holds that
+override there, and may call `grant_role`/`revoke_role` on that project like
+any other admin. The floor closed to every token is minting and revoking
+*tokens*, not the RBAC surface as a whole.
 
 | Tool | Arguments | Returns |
 |---|---|---|

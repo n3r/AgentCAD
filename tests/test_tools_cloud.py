@@ -350,6 +350,10 @@ def test_minting_leaves_an_audit_row(org):
     client, store, _tenants = org
     _tool(client, "create_agent_token", name="ci", org="acme",
           workspace="main", projects=["widget"], role="edit")
+    # Exactly one row, from the GENERAL registry tap `tenancy_wiring` installs —
+    # the tools no longer self-tap (PRD-005 review, Lens B F8), and the tap is a
+    # strict superset. `len == 1` is now load-bearing: it proves the tap did not
+    # double a row the tool once wrote for itself.
     rows = _log(store).query("acme", action="create_agent_token")
     assert len(rows) == 1
     assert rows[0]["principal"] == "user:nikita"
@@ -491,14 +495,18 @@ def test_a_non_member_gets_a_permission_error_not_an_existence_oracle(org):
     assert refused["error"]["details"] == missing["error"]["details"]
 
 
-# -------------------------------------------------------------- sync stub
+# -------------------------------------------------------------- sync status
 
 
-def test_sync_status_is_a_documented_stub(org):
+def test_sync_status_reports_no_upstream_on_the_hosted_copy(org):
     body = _tool(org[0], "sync_status", project="widget", org="acme",
                  workspace="main")
     assert body["remote"] is None
-    assert "slice 6" in body["note"]
+    assert body["ahead"] is None and body["behind"] is None
+    # The note is the honest hosted answer, not a forward-reference to an
+    # unbuilt slice: the project directory IS the authoritative copy here.
+    assert "authoritative copy" in body["note"]
+    assert "slice" not in body["note"]
     assert body["project"] == "widget" and body["org"] == "acme"
 
 

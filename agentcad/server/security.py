@@ -443,6 +443,12 @@ def resolve_tenant(cfg: SecurityConfig, principal: Principal | None, headers
        org member, so requiring membership would make every token unusable).
     2. **``X-Agentcad-Workspace: org/ws``** — how an API client, the MCP
        server and a browser that has switched workspaces say where they are.
+       When the header is absent, **``?workspace=org/ws``** stands in for it at
+       the same rung (:class:`_ws_headers`): the header wins when both are
+       present, and the query is what a header-less ``<img src>`` GET, a
+       ``sendBeacon`` and a ``WebSocket`` use. Both are only a *selection* — a
+       scoped token above still wins, and the membership check below still
+       applies, so neither can reach a workspace this principal cannot see.
     3. **The session's active workspace**, when the session row carries one
        (slice 8's switcher writes it; today it never does).
     4. **The principal's own memberships**, when they name exactly one
@@ -761,7 +767,7 @@ def guard(cfg: SecurityConfig | None, request) -> JSONResponse | None:
     # runs the downstream app in a task whose context is COPIED from this one,
     # so a reset afterwards would restore a variable the endpoint never saw,
     # and every hosted request passes through this line before it can read one.
-    tenant, refusal = resolve_tenant(cfg, principal, request.headers)
+    tenant, refusal = resolve_tenant(cfg, principal, _ws_headers(request))
     if refusal is not None:
         return refusal
     tenancy.tenant_var.set(tenant)
@@ -791,22 +797,35 @@ def guard(cfg: SecurityConfig | None, request) -> JSONResponse | None:
 
 
 class _ws_headers:
-    """``ws.headers``, with ``?workspace=org/ws`` standing in for the header.
+    """``source.headers``, with ``?workspace=org/ws`` standing in for the header.
 
-    A browser cannot set a header on a ``WebSocket`` — the API has no room for
-    one — so the query string is the only way a switched workspace can reach
-    the socket before the session carries an active one. Reading it here rather
-    than in ``app.py`` keeps the ``/ws`` route untouched.
+    Works for a ``WebSocket`` **and** an HTTP ``Request`` — both expose
+    ``.headers`` and ``.query_params`` with the same shape. The query string is
+    load-bearing in two cases a header cannot reach:
+
+    * a browser cannot set a header on a ``WebSocket`` (the API has no room for
+      one), so ``?workspace=`` is the only way a switched workspace can reach
+      the socket before the session carries an active one; and
+    * an ``<img src>`` thumbnail/preview GET and the ``sendBeacon`` presence
+      *leave* are structurally header-less too, so ``frontend/js/api.js`` spells
+      the same selection as ``?workspace=`` on those URLs.
+
+    Reading it here rather than in ``app.py`` keeps the ``/ws`` route and the
+    HTTP middleware untouched. **Lower precedence than the header** (the header
+    is consulted first, the query only when it is absent) and lower than a
+    scoped token, and membership is still checked in :func:`resolve_tenant` — a
+    query param can no more move a scoped token or reach a foreign workspace
+    than the header can.
     """
 
-    def __init__(self, ws) -> None:
-        self._ws = ws
+    def __init__(self, source) -> None:
+        self._source = source
 
     def get(self, key, default=None):
-        found = self._ws.headers.get(key, None)
+        found = self._source.headers.get(key, None)
         if found is None and key == WORKSPACE_HEADER:
             try:
-                found = self._ws.query_params.get("workspace")
+                found = self._source.query_params.get("workspace")
             except Exception:               # noqa: BLE001 — no query params
                 found = None
         return default if found is None else found

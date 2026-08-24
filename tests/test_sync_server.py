@@ -144,6 +144,17 @@ def _basic(token: str, user: str = "agentcad") -> str:
     return "Basic " + base64.b64encode(raw).decode()
 
 
+def _fs_is_case_insensitive(root: Path) -> bool:
+    """Does *root*'s filesystem fold case? (macOS APFS/HFS+ and Windows NTFS
+    do — the machines the case-fold bypass actually bites.)"""
+    probe = root / "AgentCadCaseProbe"
+    probe.mkdir()
+    try:
+        return (root / "agentcadcaseprobe").exists()
+    finally:
+        probe.rmdir()
+
+
 @pytest.fixture(autouse=True)
 def _isolated_config(monkeypatch, tmp_path):
     """Never the developer's real `~/.agentcad/config.json` (the hosted
@@ -401,6 +412,311 @@ def test_deleting_a_tag_or_a_branch_is_refused(local, home, tmp_path):
     assert "refs/heads/feature" in sync_server._run(project, "show-ref").stdout
 
 
+# ------------------------- FR: git internals never travel in a pushed tree
+
+def _plant(clone: Path, env: dict, files: dict[str, str]) -> str:
+    """Write *files* (relative paths) into *clone*, commit them, return HEAD.
+
+    Used to plant `.history/**` paths — a plain `git clone` (not the AgentCAD
+    layout) has its GIT_DIR at `.git`, so `.history` is an ordinary tracked
+    directory here and `git add` will happily stage it."""
+    for rel, text in files.items():
+        target = clone / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    git("add", "-A", cwd=clone, env=env)
+    git("commit", "-m", "plant", cwd=clone, env=env)
+    return git("rev-parse", "HEAD", cwd=clone, env=env).stdout.strip()
+
+
+def test_a_push_writing_into_history_is_refused(local, home, tmp_path):
+    """The RCE: a pushed tree carrying `.history/hooks/post-receive` /
+    `.history/config` would be written into the served repo's live GIT_DIR by
+    `checkout -f` and run as the server user. The pre-receive rule refuses it,
+    all-or-nothing, and nothing lands."""
+    base, project, _service = local
+    env = client_env(home)
+    git("clone", url_for(base), str(tmp_path / "a"), cwd=tmp_path, env=env)
+    clone = tmp_path / "a"
+    server_head = sync_server._run(project, "rev-parse", "HEAD").stdout.strip()
+
+    _plant(clone, env, {
+        ".history/hooks/post-receive": "#!/bin/sh\ntouch /tmp/PWNED\n",
+        ".history/config": "[core]\n\thooksPath = /tmp/attacker\n",
+        "parts/legit.py": "# legit\n",
+    })
+    refused = git("push", "origin", "HEAD", cwd=clone, env=env, check=False)
+
+    assert refused.returncode != 0
+    assert "writes into .history/" in refused.stderr
+    # The whole push is one ref transaction: the server head never moved and
+    # the legit file in the same push did not land either.
+    assert sync_server._run(project, "rev-parse",
+                            "HEAD").stdout.strip() == server_head
+    assert not (project / "parts" / "legit.py").exists()
+    # The attacker's files were never written into the live internals, and the
+    # MANAGED hook (in the server-owned dir) is untouched.
+    assert not (project / ".history" / "hooks" / "post-receive").is_file()
+    managed = sync_server.hooks_dir(project / ".history") / "pre-receive"
+    assert sync_server.HOOK_MARKER in managed.read_text()
+
+
+def test_a_merge_that_only_introduces_history_is_refused(local, home, tmp_path):
+    """A file present in a MERGE result but in neither parent is invisible to a
+    plain `git log --name-only`; the rule uses a combined diff (`-c`) so a
+    merge cannot smuggle a `.history/**` path past it."""
+    base, project, _service = local
+    env = client_env(home)
+    git("clone", url_for(base), str(tmp_path / "a"), cwd=tmp_path, env=env)
+    clone = tmp_path / "a"
+
+    git("checkout", "-b", "l", cwd=clone, env=env)
+    _plant(clone, env, {"parts/l.py": "# l\n"})
+    git("checkout", "master", cwd=clone, env=env)
+    git("checkout", "-b", "r", cwd=clone, env=env)
+    _plant(clone, env, {"parts/r.py": "# r\n"})
+    git("checkout", "l", cwd=clone, env=env)
+    git("merge", "--no-ff", "--no-commit", "r", cwd=clone, env=env, check=False)
+    (clone / ".history").mkdir(exist_ok=True)
+    (clone / ".history" / "config").write_text("evil\n", encoding="utf-8")
+    git("add", "-A", cwd=clone, env=env)
+    git("commit", "-m", "merge that adds .history", cwd=clone, env=env)
+
+    refused = git("push", "origin", "refs/heads/l:refs/heads/l", cwd=clone,
+                  env=env, check=False)
+    assert refused.returncode != 0
+    assert "writes into .history/" in refused.stderr
+    assert "refs/heads/l" not in sync_server._run(project, "show-ref").stdout
+
+
+def test_a_nested_dot_git_path_is_refused(local, home, tmp_path):
+    """`git add` blocks a `.git` component, but a crafted tree does not.
+    Build one with plumbing and confirm the rule catches `.git` at any depth."""
+    base, project, _service = local
+    env = client_env(home)
+    git("clone", url_for(base), str(tmp_path / "a"), cwd=tmp_path, env=env)
+    clone = tmp_path / "a"
+
+    def g(*args, inp=None):
+        return git(*args, cwd=clone, env=env) if inp is None else \
+            subprocess.run(["git", *args], cwd=str(clone), env=env, input=inp,
+                           capture_output=True, text=True, timeout=60)
+    blob = g("hash-object", "-w", "--stdin", inp="evil\n").stdout.strip()
+    inner = g("mktree", inp=f"100644 blob {blob}\tconfig\n").stdout.strip()
+    base_tree = g("ls-tree", "HEAD").stdout
+    root = g("mktree", inp=base_tree + f"040000 tree {inner}\t.git\n").stdout.strip()
+    head = git("rev-parse", "HEAD", cwd=clone, env=env).stdout.strip()
+    commit = g("commit-tree", root, "-p", head, inp="crafted\n").stdout.strip()
+    git("update-ref", "refs/heads/craft", commit, cwd=clone, env=env)
+
+    refused = git("push", "origin", "refs/heads/craft:refs/heads/craft",
+                  cwd=clone, env=env, check=False)
+    assert refused.returncode != 0
+    assert "writes into .history/" in refused.stderr
+    assert "refs/heads/craft" not in sync_server._run(project,
+                                                      "show-ref").stdout
+
+
+def test_a_case_folded_history_push_is_refused(local, home, tmp_path):
+    """The PRD-005 re-check bypass, end to end against real git: a pushed tree
+    spelling `.History/config` + `.History/hooks/post-checkout` passed the old
+    case-SENSITIVE rule, then folded onto the live `.history` GIT_DIR on this
+    (case-insensitive) filesystem at checkout. Built with plumbing so `.History`
+    lands in a committed tree, and pushed on its own branch."""
+    assert _fs_is_case_insensitive(tmp_path), (
+        "this bypass only bites a case-insensitive fs; the test is a no-op "
+        "proof otherwise — run it where the attack is real")
+    base, project, _service = local
+    env = client_env(home)
+    git("clone", url_for(base), str(tmp_path / "a"), cwd=tmp_path, env=env)
+    clone = tmp_path / "a"
+
+    def g(*args, inp=None):
+        return git(*args, cwd=clone, env=env) if inp is None else \
+            subprocess.run(["git", *args], cwd=str(clone), env=env, input=inp,
+                           capture_output=True, text=True, timeout=60)
+    cfg = g("hash-object", "-w", "--stdin",
+            inp='[core]\n\tfsmonitor = "touch /tmp/PWNED"\n').stdout.strip()
+    hook = g("hash-object", "-w", "--stdin",
+             inp="#!/bin/sh\ntouch /tmp/PWNED\n").stdout.strip()
+    inner = g("mktree",
+              inp=f"100755 blob {hook}\tpost-checkout\n").stdout.strip()
+    upper = g("mktree", inp=f"100644 blob {cfg}\tconfig\n"
+                            f"040000 tree {inner}\thooks\n").stdout.strip()
+    base_tree = g("ls-tree", "HEAD").stdout
+    # `.History` — the exact spelling that the case-sensitive belt missed.
+    root = g("mktree",
+             inp=base_tree + f"040000 tree {upper}\t.History\n").stdout.strip()
+    head = git("rev-parse", "HEAD", cwd=clone, env=env).stdout.strip()
+    poison = g("commit-tree", root, "-p", head, inp="casefold\n").stdout.strip()
+    git("update-ref", "refs/heads/fold", poison, cwd=clone, env=env)
+
+    refused = git("push", "origin", "refs/heads/fold:refs/heads/fold",
+                  cwd=clone, env=env, check=False)
+    assert refused.returncode != 0
+    assert "writes into .history/" in refused.stderr
+    # The ref never advanced on the server, so materialize is never even asked.
+    assert "refs/heads/fold" not in sync_server._run(project,
+                                                     "show-ref").stdout
+
+
+def test_materialize_refuses_a_case_folded_history_tree(kernel, tmp_path):
+    """Belt behind the hook, on THIS filesystem: even if a `.History` commit is
+    HEAD (a repo that predates v3, or was populated out of band), the folded
+    `tree_git_internals` predicate refuses the `checkout -f`, so the variant
+    never reaches the live GIT_DIR to fold onto `.history`."""
+    service = make_test_service(tmp_path / "projects", kernel)
+    project = seed(service)
+    git_dir = str(project / ".history")
+
+    def g(*args, inp=None):
+        return subprocess.run(
+            ["git", "--git-dir", git_dir, "--work-tree", str(project), *args],
+            input=inp, capture_output=True, text=True, timeout=60,
+            env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "HOME": git_dir,
+                 "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
+    blob = g("hash-object", "-w", "--stdin", inp="evil\n").stdout.strip()
+    upper = g("mktree", inp=f"100644 blob {blob}\tconfig\n").stdout.strip()
+    base_tree = g("ls-tree", "HEAD").stdout
+    root = g("mktree",
+             inp=base_tree + f"040000 tree {upper}\t.HISTORY\n").stdout.strip()
+    head = g("rev-parse", "HEAD").stdout.strip()
+    commit = g("commit-tree", root, "-p", head, inp="poison\n").stdout.strip()
+    g("update-ref", "refs/heads/master", commit)
+
+    result = sync_server.materialize(project)
+    assert result["materialized"] is False
+    assert result["reason"] == "git_internals_in_tree"
+    assert ".HISTORY/config" in result["offending"]
+    # Nothing folded onto the live GIT_DIR: `.history/config` is git's, untouched.
+    assert "evil" not in (project / ".history" / "config").read_text()
+
+
+def test_the_managed_hook_and_its_sidecar_are_installed_and_versioned(
+        local, home, tmp_path):
+    """The hook delegates its NTFS/HFS folds to a `checkpaths.py` sidecar; both
+    are installed in the server-owned dir, the hook is v3, and the sidecar is
+    the module's script verbatim (so the fold the hook runs IS the fold the
+    server runs)."""
+    _base, project, _service = local
+    sync_server.prepare_repo(project)
+    hooks = sync_server.hooks_dir(project / ".history")
+    assert (hooks / "pre-receive").read_text() == sync_server.PRE_RECEIVE_HOOK
+    assert sync_server.HOOK_MARKER in (hooks / "pre-receive").read_text()
+    assert "v3" in sync_server.HOOK_MARKER
+    sidecar = hooks / sync_server.CHECKPATHS_NAME
+    assert sidecar.read_text() == sync_server.CHECKPATHS_SCRIPT
+
+
+def test_a_stale_hook_and_sidecar_are_rewritten(local, home, tmp_path):
+    """A hand-edited (or downgraded) hook/sidecar is replaced, not trusted — the
+    security fix has to actually reach a repo that a prior version prepared."""
+    _base, project, _service = local
+    sync_server.prepare_repo(project)
+    hooks = sync_server.hooks_dir(project / ".history")
+    (hooks / "pre-receive").write_text("#!/bin/sh\nexit 0\n")
+    (hooks / sync_server.CHECKPATHS_NAME).write_text("# stale\n")
+
+    result = sync_server.prepare_repo(project, force=True)
+
+    assert result["hook"] == "installed"
+    assert (hooks / "pre-receive").read_text() == sync_server.PRE_RECEIVE_HOOK
+    assert (hooks / sync_server.CHECKPATHS_NAME).read_text() \
+        == sync_server.CHECKPATHS_SCRIPT
+
+
+def test_an_unmanaged_hook_in_history_never_runs(local, home, tmp_path):
+    """`core.hooksPath` points at a server-owned dir holding only the managed
+    `pre-receive`. An unmanaged `post-receive` sitting in `.history/hooks/`
+    (planted out of band, or that predates the hardening) is never consulted —
+    the marker it would touch stays absent across a perfectly good push."""
+    base, project, _service = local
+    env = client_env(home)
+    git("clone", url_for(base), str(tmp_path / "a"), cwd=tmp_path, env=env)
+    clone = tmp_path / "a"
+
+    marker = tmp_path / "pwned"
+    unmanaged = project / ".history" / "hooks" / "post-receive"
+    unmanaged.parent.mkdir(parents=True, exist_ok=True)
+    unmanaged.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    os.chmod(unmanaged, 0o755)
+
+    _commit(clone, env, "ok.py", "# ok\n")
+    git("push", "origin", "HEAD", cwd=clone, env=env)
+
+    assert (project / "parts" / "ok.py").is_file()      # the push landed
+    assert not marker.exists()                          # ...and no hook ran
+
+
+def test_materialize_refuses_a_tree_carrying_git_internals(kernel, tmp_path):
+    """Belt behind the pre-receive rule: even if a poisoned commit is HEAD (a
+    repo that predates the hook, or was populated out of band), `materialize`
+    refuses to `checkout -f` it, so the bytes never reach the live GIT_DIR."""
+    service = make_test_service(tmp_path / "projects", kernel)
+    project = seed(service)
+    git_dir = str(project / ".history")
+
+    def g(*args, inp=None):
+        return subprocess.run(
+            ["git", "--git-dir", git_dir, "--work-tree", str(project), *args],
+            input=inp, capture_output=True, text=True, timeout=60,
+            env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "HOME": git_dir,
+                 "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
+    blob = g("hash-object", "-w", "--stdin", inp="evil\n").stdout.strip()
+    inner = g("mktree", inp=f"100644 blob {blob}\tpost-receive\n").stdout.strip()
+    hooks = g("mktree", inp=f"040000 tree {inner}\thooks\n").stdout.strip()
+    base_tree = g("ls-tree", "HEAD").stdout
+    root = g("mktree",
+             inp=base_tree + f"040000 tree {hooks}\t.history\n").stdout.strip()
+    head = g("rev-parse", "HEAD").stdout.strip()
+    commit = g("commit-tree", root, "-p", head, inp="poison\n").stdout.strip()
+    g("update-ref", "refs/heads/master", commit)
+
+    result = sync_server.materialize(project)
+    assert result["materialized"] is False
+    assert result["reason"] == "git_internals_in_tree"
+    assert ".history/hooks/post-receive" in result["offending"]
+    # Nothing was written into the live internals.
+    assert not (project / ".history" / "hooks" / "post-receive").is_file()
+
+
+def test_history_exec_never_fires_a_repo_local_poison(kernel, tmp_path):
+    """Defense in depth (PRD-005 re-check step 5): even if a poison DID land in
+    the live GIT_DIR, AgentCAD's own history engine must not execute it. The
+    engine's hermetic HOME/`GIT_CONFIG_NOSYSTEM` suppress the operator's GLOBAL
+    config but NOT a repo-local `.history/config`, so `_exec` pins
+    `core.fsmonitor=false` + `core.hooksPath=/dev/null` per call. Plant both a
+    repo-local `core.fsmonitor` command AND a `post-checkout` hook and prove
+    neither fires across real history operations."""
+    service = make_test_service(tmp_path / "projects", kernel)
+    project = seed(service)
+    history = ProjectHistory()
+    git_dir = project / ".history"
+    marker = tmp_path / "PWNED"
+
+    # A repo-local fsmonitor command — runs on almost every git call — and a
+    # post-checkout hook, both writing the marker. This is exactly the state a
+    # landed poison (or a future belt gap) would leave the GIT_DIR in.
+    with (git_dir / "config").open("a", encoding="utf-8") as handle:
+        handle.write(f'[core]\n\tfsmonitor = "touch {marker}"\n')
+    hook = git_dir / "hooks" / "post-checkout"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    os.chmod(hook, 0o755)
+
+    # Drive the engine the way the app does: a status, a snapshot, a checkout.
+    history._run(project, "status", "--porcelain", check=False)
+    (project / "parts" / "poke.py").write_text("# poke\n", encoding="utf-8")
+    history.snapshot(project, "poke")
+    history._run(project, "checkout", "-f", "HEAD", "--", check=False)
+
+    assert not marker.exists(), (
+        "history._exec executed a repo-local fsmonitor/hook — the per-call "
+        "safety pins are not in force")
+
+
 # ----------------------------------------------------------------- hosted
 
 @pytest.fixture
@@ -562,14 +878,22 @@ def test_prepare_repo_is_idempotent_and_versioned(kernel, tmp_path):
 
     first = sync_server.prepare_repo(project)
     assert first["hook"] == "installed"
-    assert set(first["config"]) == {name for name, _ in
-                                    sync_server.REPO_CONFIG}
+    # Everything in REPO_CONFIG, plus the server-owned `core.hooksPath`.
+    assert set(first["config"]) == ({name for name, _ in sync_server.REPO_CONFIG}
+                                    | {"core.hooksPath"})
     assert sync_server.prepare_repo(project) == {"config": [],
                                                  "hook": "current"}
 
-    hook = project / ".history" / "hooks" / "pre-receive"
+    # The managed hook lives in the SERVER-OWNED dir, not `.history/hooks` —
+    # so an unmanaged hook name a push could plant there is never consulted.
+    hook = sync_server.hooks_dir(project / ".history") / "pre-receive"
+    assert hook.parent == project / ".history" / "agentcad-hooks"
     assert os.access(hook, os.X_OK)
     assert sync_server.HOOK_MARKER in hook.read_text()
+    # And `core.hooksPath` actually points at it (absolute).
+    config = sync_server._config_map(project)
+    assert config["core.hookspath"] == str(hook.parent.resolve())
+    assert config["core.fsmonitor"] == "false"
 
     # An older (or hand-edited) hook is REWRITTEN, not trusted: the rules are
     # the server's, and a stale one is a silently weaker instance.
@@ -580,10 +904,34 @@ def test_prepare_repo_is_idempotent_and_versioned(kernel, tmp_path):
     # `git config --list` answers in ITS spelling, not ours (variable names
     # are case-insensitive and come back lower-cased) — which is why
     # `prepare_repo` compares that way and does not rewrite on every request.
-    config = sync_server._config_map(project)
     assert config["receive.denycurrentbranch"] == "ignore"
     assert config["http.receivepack"] == "true"
     assert sync_server.prepare_repo(project, force=True)["config"] == []
+
+
+def test_prepare_repo_neutralizes_injected_dangerous_config(kernel, tmp_path):
+    """A `filter.*` smudge command, a `core.hooksPath` redirect and a
+    `core.fsmonitor` command are the shapes a checked-out `.history/config`
+    would plant. `prepare_repo` resets/unsets them every time it runs, so the
+    repo config a push might rewrite is never the authority."""
+    service = make_test_service(tmp_path / "projects", kernel)
+    project = seed(service)
+    sync_server.prepare_repo(project)
+    owned = str(sync_server.hooks_dir(project / ".history").resolve())
+
+    # Simulate what a checkout of a malicious `.history/config` would leave.
+    sync_server._run(project, "config", "filter.evil.smudge", "touch /tmp/x")
+    sync_server._run(project, "config", "core.hooksPath", "/tmp/attacker")
+    sync_server._run(project, "config", "core.fsmonitor", "/tmp/evilfsmonitor")
+    sync_server._run(project, "config", "core.sshCommand", "/tmp/evilssh")
+
+    written = sync_server.reconcile_repo(project)["config"]
+    assert "filter.evil.smudge" in written
+    config = sync_server._config_map(project)
+    assert "filter.evil.smudge" not in config
+    assert config["core.hookspath"] == owned          # reset to ours
+    assert config["core.fsmonitor"] == "false"        # reset to false
+    assert "core.sshcommand" not in config            # unset
 
 
 def test_prepare_repo_refuses_a_project_with_no_history(tmp_path):

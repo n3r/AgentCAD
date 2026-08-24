@@ -30,6 +30,13 @@ concurrency:
   group: deploy-smoke-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: this workflow only checks out the repo and drives a
+# locally built compose stack over curl/docker exec — it never pushes,
+# uploads a release artifact or writes packages, so the default GITHUB_TOKEN
+# needs no more than read access to the repo contents.
+permissions:
+  contents: read
+
 jobs:
   smoke:
     name: docker compose up
@@ -219,6 +226,7 @@ jobs:
 
       - name: A token scoped to project A only, and the cross-project 403 (AC5 deployed half)
         run: |
+          set -euo pipefail
           mint=$(curl -sf -b jar -H "X-Agentcad-Workspace: acme/main" \
             -H "Origin: $AGENTCAD_PUBLIC_ORIGIN" -X POST \
             -H 'Content-Type: application/json' \
@@ -230,7 +238,13 @@ jobs:
           assert 'error' not in row, row
           assert row.get('id') and row.get('token')
           print(row['id']); print(row['token'])
-          " > mint_out.txt || { echo "$mint"; exit 1; }
+          " > mint_out.txt || {
+            # Never echo \$mint on this path: it carries the freshly minted
+            # bearer secret in the clear, and this job's log is public. Report
+            # the failure shape, not the value.
+            echo "create_agent_token did not return the expected {id, token} shape"
+            exit 1
+          }
           # mint_out.txt line 1 is the token id (not secret); line 2 is the
           # bearer secret, shown once — it is never echoed to the log.
 

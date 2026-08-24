@@ -236,6 +236,7 @@ def hosted(kernel, tmp_path, monkeypatch):
     """`(client, store)` for a hosted app with one enrolled admin, `nikita`."""
     from fastapi.testclient import TestClient
 
+    from agentcad.core import tenancy_wiring
     from agentcad.core.appmode import AppMode
     from agentcad.core.authstore import AuthStore
     from agentcad.core.tools import build_registry
@@ -265,11 +266,21 @@ def hosted(kernel, tmp_path, monkeypatch):
     # the registry first would leave a real hosted server without the tool
     # while every route test still passed.
     security_module.install(cfg)
-    app = create_app(service, build_registry(service),
+    registry = build_registry(service)
+    # Faithful to `cli.cmd_serve`: the tenancy wrappers (store root resolver,
+    # lock-key qualification, the write-guard and tool-registry floors, the
+    # audit tap, the event tenant/principal stamp, the sync seams) are installed
+    # after `build_registry`. Every wrapper no-ops until a request resolves a
+    # tenant, so a plain hosted test with no orgs is byte-for-byte unchanged;
+    # what it buys is that the `org`-fixture tests exercise the REAL audit tap
+    # rather than a self-tap the tools once carried (PRD-005 review, Lens B F8).
+    tenancy_wiring.install(service, registry)
+    app = create_app(service, registry,
                      extra_allowed_hosts={"testserver"}, security=cfg)
     client = TestClient(app, base_url=HOSTED_ORIGIN)
     client.agentcad_store = store
     client.agentcad_service = service
+    client.agentcad_registry = registry
     client.agentcad_kernel = counter
     client.agentcad_config = cfg
     try:
@@ -278,7 +289,10 @@ def hosted(kernel, tmp_path, monkeypatch):
         # The module-level slot `create_app` sets is process-global by design
         # (tool registration and the CLI are not inside a request). Clear it,
         # or the next test in this worker builds a LOCAL app that still
-        # believes it is hosted.
+        # believes it is hosted. `tenancy_wiring` leaves two process-global
+        # seams (`tools_versioning.install_write_guard`, `routes_sync`) that
+        # `uninstall` must put back for the same reason.
+        tenancy_wiring.uninstall(service, registry)
         security_module.install(None)
 
 

@@ -301,7 +301,15 @@ acting principal.
   (browser session, staged instance).
 - AC2. A third user without access receives structured `permission_error` on
   read and write; granting view then edit flips each capability without a
-  restart (test).
+  restart (test). **Amended**: `permission_error` (403) is what a person who
+  *has some role in the org/workspace* but not enough on this project gets —
+  a person with **no membership in the org/workspace at all** gets a
+  name-free **404** (`"no such workspace"`) the moment they try to address
+  it, the same answer whether the org exists and they hold nothing there or
+  the org does not exist at all, because a 403 there would itself confirm
+  the org exists (FR5's "no cross-tenant path reachable" extends to "no
+  cross-tenant *existence check* reachable" — `security.resolve_tenant`).
+  The acceptance test covers both shapes, not only the 403 one.
 - AC3. A laptop clone builds and edits fully offline, then `agentcad push`
   syncs; a deliberately divergent branch surfaces PRD-001 merge conflicts
   rather than overwriting (test + CLI session).

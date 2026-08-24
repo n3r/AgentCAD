@@ -124,6 +124,15 @@ def build_router(service, registry) -> APIRouter:
     # `start()` is idempotent, so a second `create_app` on one service reuses
     # the running thread; `AGENTCAD_THUMBNAILS=off` is honoured here because
     # this is now the only place that could start it.
+    #
+    # Tenancy (PRD-005): `create_app` runs after `tenancy_wiring.install`
+    # wrapped `bus.subscribe` to filter by the subscriber's tenant, and it runs
+    # OUTSIDE any request — so a naive `subscribe()` here would bind the empty
+    # tenant and the warmer would never see a tenanted `rebuild_finished`,
+    # leaving the pre-warm dead on every hosted instance with orgs. `start()`
+    # instead subscribes through the wrapper's own unfiltered seam and renders
+    # each event under its own tenant (see `ThumbnailWarmer`), so no change to
+    # `tenancy_wiring` is required.
     warmer = getattr(service, "thumbnails", None)
     if not isinstance(warmer, thumbnails.ThumbnailWarmer):
         warmer = service.thumbnails = thumbnails.ThumbnailWarmer(service)

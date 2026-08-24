@@ -38,9 +38,12 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shlex
 import shutil
 import subprocess
+import sys
 import threading
+import unicodedata
 from pathlib import Path
 
 #: Hard timeout for the short plumbing calls this module makes. Deliberately
@@ -52,8 +55,95 @@ GIT_TIMEOUT_S = 120.0
 #: Bumped whenever :data:`PRE_RECEIVE_HOOK` changes. The marker is written into
 #: the hook, so :func:`prepare_repo` rewrites an out-of-date hook in place
 #: instead of leaving an old rule set running on an upgraded server.
-HOOK_VERSION = 1
+HOOK_VERSION = 3
 HOOK_MARKER = f"# agentcad pre-receive hook v{HOOK_VERSION}"
+
+#: The name of the fold-check sidecar the hook delegates to, installed beside
+#: ``pre-receive`` in the server-owned hooks dir. See :data:`CHECKPATHS_SCRIPT`.
+CHECKPATHS_NAME = "checkpaths.py"
+
+#: The interpreter the pre-receive hook runs the fold sidecar with, baked in at
+#: import time. ``sys.executable`` is the server's own Python — the one process
+#: that is guaranteed present — quoted for the ``/bin/sh`` the hook is written
+#: in; the hook falls back to ``python3``/``python`` on PATH if this path has
+#: gone stale (a moved venv), and to the in-process :func:`materialize` backstop
+#: if none of them run.
+_HOOK_PYTHON = shlex.quote(sys.executable or "python3")
+
+#: The exact path-component names that address a project's git internals. The
+#: GIT_DIR of a project's history repo is ``<project>/.history`` *inside* the
+#: work tree, so a pushed/pulled/merged tree carrying either of these — at any
+#: depth — is written straight into the served repo's live git internals when
+#: ``checkout -f`` materializes it (a ``post-receive`` hook, a ``config`` with
+#: ``core.hooksPath``/``core.fsmonitor``/a filter driver), and the planted code
+#: then runs as the unconfined server (or, via clone/pull, the workstation)
+#: user. ``git``'s own ``verify_path`` guards only the literal name ``.git``
+#: (and even that only when ``core.protectHFS``/``NTFS`` do not object), never
+#: ``.history``. Everything is compared AFTER :func:`_fold_component`, never
+#: literally, so ``.gitignore``/``.gitattributes`` (which do not fold to
+#: ``.git``) stay allowed.
+_GIT_INTERNAL_NAMES = frozenset((".git", ".history"))
+
+#: Codepoints Apple's HFS+ ignores when comparing filenames, and which git's
+#: own ``core.protectHFS`` strips before testing a component against ``.git``
+#: (git's ``utf8.c::is_hfs_dotgit`` / ``next_hfs_char``): the zero-width
+#: joiner/non-joiner, the bidi/directional formatting marks, and the BOM. On
+#: HFS+ ``.g<U+200C>it`` and ``.git`` are the SAME file, so both must fold to
+#: ``.git``.
+_HFS_IGNORABLE = frozenset(
+    "\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e"
+    "\u206a\u206b\u206c\u206d\u206e\u206f\ufeff"
+)
+
+
+def _fold_component(component: str) -> str:
+    """A path component reduced to the name a case-insensitive, NTFS or HFS+
+    filesystem would actually *create on disk* for it.
+
+    A case-sensitive, byte-exact predicate is the hole the PRD-005 re-check
+    drove through: ``.History/config`` passes a literal ``.history`` test, but
+    on macOS APFS/HFS+ or Windows NTFS it folds onto the live ``.history``
+    GIT_DIR at checkout. This mirrors the evasions git's own
+    ``core.protectNTFS``/``core.protectHFS`` defend against, in order:
+
+    * an NTFS **alternate data stream** ``name:stream`` writes ``name`` — so
+      ``.git::$DATA`` targets ``.git``; compare the base name only;
+    * HFS+ **ignores** the :data:`_HFS_IGNORABLE` codepoints anywhere in a name;
+    * a **decomposed** spelling is precomposed (NFC) so it cannot smuggle a
+      distinct byte string that names the same file;
+    * Windows **strips trailing dots and spaces** from every component, so
+      ``.git.`` and ``.git `` both name ``.git``;
+    * a case-insensitive filesystem **folds case**, so ``.GIT``/``.History``
+      name ``.git``/``.history``.
+
+    ``.gitignore``/``.gitattributes``/``x.history`` survive every fold as
+    themselves and are therefore NOT in :data:`_GIT_INTERNAL_NAMES` — only the
+    exact ``.git``/``.history`` component is.
+    """
+    component = component.split(":", 1)[0]
+    component = "".join(ch for ch in component if ch not in _HFS_IGNORABLE)
+    component = unicodedata.normalize("NFC", component)
+    component = component.rstrip(". ")
+    return component.casefold()
+
+
+def is_git_internal_path(path: str) -> bool:
+    """True when ANY component of *path* folds to ``.git`` or ``.history``.
+
+    The single source of truth every sync/merge belt (:func:`tree_git_internals`
+    here, ``sync.git_internals_in_tree`` on the client, ``merge`` via this
+    function) shares, and the exact same fold the pre-receive hook applies out
+    of process — so a case, trailing-dot/space or unicode variant that a
+    case-insensitive filesystem would collapse onto the live GIT_DIR is refused
+    everywhere at once. Component-wise (never a single mega-regex) so an
+    evasion has to defeat the per-component fold, not a pattern's anchors.
+    Backslash is treated as a separator too: on Windows it is one, and a Unix
+    repo has no business carrying a ``.git\\x`` component either.
+    """
+    for component in path.replace("\\", "/").split("/"):
+        if component and _fold_component(component) in _GIT_INTERNAL_NAMES:
+            return True
+    return False
 
 #: The FR9 contract, as three rules and in this order:
 #:
@@ -70,10 +160,64 @@ HOOK_MARKER = f"# agentcad pre-receive hook v{HOOK_VERSION}"
 #: That is the right semantics for "surface divergence, never overwrite"; an
 #: ``update`` hook would accept the good refs and is deliberately not used.
 #:
+#: The fold-check the pre-receive hook delegates its git-internals scan to.
+#:
+#: A ``/bin/sh`` ``grep`` cannot see the NTFS trailing-dot/space or the HFS
+#: zero-width-codepoint evasions the PRD-005 re-check used, so the hook pipes
+#: its changed-path list into THIS, run by the server's own interpreter. It is
+#: a **self-contained duplicate** of :func:`_fold_component` /
+#: :func:`is_git_internal_path` — no ``import agentcad`` (a security hook must
+#: not depend on the package being importable, or on its startup cost), stdlib
+#: only — and ``tests/test_git_internals_predicate.py`` asserts the two agree
+#: over a shared battery so they cannot drift. Exit ``3`` on a hit (the hook
+#: rejects the push), ``0`` when clean; any OTHER exit (a missing interpreter,
+#: a crash) is deliberately NOT treated as a hit by the hook, because
+#: :func:`materialize`'s in-process fold is the authoritative backstop that
+#: refuses the checkout regardless — so a misconfigured interpreter can never
+#: brick honest pushes, and a poisoned tree can never reach a checkout.
+CHECKPATHS_SCRIPT = '''\
+import sys
+import unicodedata
+
+_IGNORABLE = frozenset(
+    "\\u200c\\u200d\\u200e\\u200f\\u202a\\u202b\\u202c\\u202d\\u202e"
+    "\\u206a\\u206b\\u206c\\u206d\\u206e\\u206f\\ufeff"
+)
+_NAMES = frozenset((".git", ".history"))
+
+
+def _fold(component):
+    component = component.split(":", 1)[0]
+    component = "".join(ch for ch in component if ch not in _IGNORABLE)
+    component = unicodedata.normalize("NFC", component)
+    component = component.rstrip(". ")
+    return component.casefold()
+
+
+def _hit(path):
+    for component in path.replace("\\\\", "/").split("/"):
+        if component and _fold(component) in _NAMES:
+            return True
+    return False
+
+
+def main():
+    for line in sys.stdin.read().split("\\n"):
+        if line and _hit(line):
+            return 3
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
 #: The null-oid test is ``case "$x" in *[!0]*)`` — "consists only of zeros" —
 #: rather than a literal 40-zero string, so the hook is correct in a sha256
 #: repository too. ``/bin/sh``, not bash: Debian's ``sh`` is dash and every
-#: construct here is POSIX.
+#: construct here is POSIX. The interpreter for the fold sidecar is baked in at
+#: write time (:data:`_HOOK_PYTHON`), with a ``python3``/``python`` PATH
+#: fallback, so the hook does not have to guess it at receive time.
 PRE_RECEIVE_HOOK = f"""#!/bin/sh
 {HOOK_MARKER}
 # Managed by agentcad/core/sync_server.py — edits are overwritten on upgrade.
@@ -83,7 +227,22 @@ PRE_RECEIVE_HOOK = f"""#!/bin/sh
 #   2. no non-fast-forward branch updates
 #   3. no tag rewrites (PRD-015 release tags are immutable)
 # New branches and new tags, and fast-forward branch updates, pass.
+#
+# SECURITY: a pushed commit whose tree writes into the repo's own git
+#   internals (any '.history'/'.git' path component, AT ANY DEPTH and in ANY
+#   case/NTFS/HFS spelling) is refused. The GIT_DIR is '<project>/.history'
+#   inside the work tree, so materialization ('checkout -f') would otherwise
+#   plant a hook/config straight into the live internals and run it as the
+#   server user. A case variant ('.History') folds onto the live GIT_DIR on a
+#   case-insensitive filesystem, so the scan below is case-insensitive AND
+#   delegates the NTFS/HFS folds to the checkpaths.py sidecar.
+AGENTCAD_PY={_HOOK_PYTHON}
+if [ ! -x "$AGENTCAD_PY" ]; then
+    AGENTCAD_PY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "")
+fi
+AGENTCAD_CHECK=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/{CHECKPATHS_NAME}
 rc=0
+tips=""
 while read -r old new ref
 do
     oldz=no
@@ -96,6 +255,8 @@ do
         rc=1
         continue
     fi
+    # A non-deleting update: remember the new tip for the tree scan below.
+    tips="$tips $new"
 
     case "$ref" in
     refs/heads/*)
@@ -116,6 +277,40 @@ do
         ;;
     esac
 done
+
+# Reject a push that writes into the repo's git internals. Bounded on cost: a
+# COMBINED-diff name scan ('-c') over only the newly-pushed commits ('$tips
+# --not --all' excludes everything the server already has), never the whole
+# tree or the whole history. '-c' is load-bearing — a plain name-only log
+# omits merge commits, and a file introduced only by a merge (present in the
+# merge result, in no parent) would slip past. '--diff-filter=d' ignores
+# deletions (removing a stray '.history' path is fine); '--root' makes the
+# very first push's root commit show its whole tree as additions.
+if [ -n "$tips" ]; then
+    paths=$(git log -c --name-only --pretty=format: --diff-filter=d --root \\
+            $tips --not --all 2>/dev/null)
+    hit=no
+    # Fast belt: the case-insensitive ('-i') '.git'/'.history' forms, which
+    # covers every realistic attack ('.History', '.GIT', mixed case, any
+    # depth) loudly at push time and needs no interpreter.
+    if printf '%s\\n' "$paths" | grep -iqE '(^|/)\\.(git|history)(/|$)'; then
+        hit=yes
+    elif [ -n "$AGENTCAD_PY" ] && [ -f "$AGENTCAD_CHECK" ]; then
+        # Exhaustive belt: NTFS trailing dot/space, an alternate data stream,
+        # and the HFS-ignorable unicode codepoints a '/bin/sh' grep cannot see.
+        # Exit 3 == a folded hit; any other exit (missing interpreter, crash)
+        # is left to materialize()'s in-process backstop, never treated as a
+        # hit, so a stale interpreter cannot reject an honest push.
+        printf '%s\\n' "$paths" | "$AGENTCAD_PY" "$AGENTCAD_CHECK"
+        if [ "$?" -eq 3 ]; then
+            hit=yes
+        fi
+    fi
+    if [ "$hit" = yes ]; then
+        echo "agentcad: refusing a commit that writes into .history/ - the project's git internals are not yours to push" >&2
+        rc=1
+    fi
+fi
 exit $rc
 """
 
@@ -129,7 +324,28 @@ REPO_CONFIG: tuple[tuple[str, str], ...] = (
     ("http.receivepack", "true"),
     ("receive.denyNonFastForwards", "true"),
     ("receive.denyDeletes", "true"),
+    # A `core.fsmonitor` command runs on almost every git call; a checked-out
+    # or injected one would run as the server user. We never want it, so it is
+    # pinned off in the repo config (and again per-call in `_SAFETY_PINS`).
+    ("core.fsmonitor", "false"),
 )
+
+#: Config keys that must be **absent**: an open-ended value is arbitrary code.
+#: A ``filter.<name>.smudge``/``clean`` command runs on ``checkout``;
+#: ``core.sshCommand`` on any network call. We cannot ``-c``-override an
+#: unknown filter name, so :func:`_enforce` unsets every ``filter.*`` key it
+#: finds (and these) rather than trusting the repo config a push could have
+#: rewritten via a checked-out ``.history/config``.
+_FORBIDDEN_CONFIG = ("core.sshcommand", "core.fsmonitorhookversion")
+
+#: Per-call belt for every server-side git invocation (:func:`_run`): no repo
+#: or operator config can make a routine plumbing call — a ``checkout`` running
+#: ``post-checkout``, any command consulting ``core.fsmonitor`` — execute code.
+#: ``receive-pack`` is spawned by the HTTP backend, not ``_run``, so the FR9
+#: ``pre-receive`` hook (which lives in the repo's ``core.hooksPath`` dir) is
+#: untouched by this.
+_SAFETY_PINS: tuple[str, ...] = (
+    "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
 
 
 class SyncError(RuntimeError):
@@ -232,7 +448,7 @@ def _run(project_path: Path, *args: str, check: bool = True
     ``--work-tree`` (a hook's inherited env is not enough — spike §A2/§A3).
     """
     git_dir = history_dir(project_path)
-    cmd = [git_executable(), "--git-dir", str(git_dir),
+    cmd = [git_executable(), *_SAFETY_PINS, "--git-dir", str(git_dir),
            "--work-tree", str(project_path), *args]
     try:
         result = subprocess.run(
@@ -260,25 +476,45 @@ _prepared: dict[str, tuple[int, int]] = {}
 _prepare_lock = threading.Lock()
 
 
+def hooks_dir(git_dir: Path) -> Path:
+    """The **server-owned** hooks directory — ``core.hooksPath`` points here.
+
+    Deliberately *not* the default ``.history/hooks``. Two things follow. A
+    push's checkout can never make an *unmanaged* hook run (``post-receive``,
+    ``update``, ``push-to-checkout`` …): git consults only this directory, and
+    the only file we ever place in it is the managed ``pre-receive``. And
+    because ``core.hooksPath`` is then a value the server writes and re-asserts
+    (never one derived from the repo config a push could rewrite), a
+    ``.history/config`` that tried to redirect it is reset on the next
+    reconcile. It lives under the GIT_DIR — inside the work tree — but that is
+    exactly the region the pre-receive rule and the materialize belt keep any
+    push out of.
+    """
+    return git_dir / "agentcad-hooks"
+
+
 def _stamp(git_dir: Path) -> tuple[int, int]:
     def mtime(path: Path) -> int:
         try:
             return path.stat().st_mtime_ns
         except OSError:
             return -1
-    return mtime(git_dir / "config"), mtime(git_dir / "hooks" / "pre-receive")
+    return (mtime(git_dir / "config"),
+            mtime(hooks_dir(git_dir) / "pre-receive"))
 
 
 def prepare_repo(project_path: Path | str, *, force: bool = False) -> dict:
     """Make a project's history repo safe to serve over smart HTTP.
 
-    Idempotent, and cheap on the second call. Sets :data:`REPO_CONFIG` and
-    installs :data:`PRE_RECEIVE_HOOK`, rewriting the hook whenever its
-    :data:`HOOK_MARKER` version differs from the one on disk — so a server
-    upgrade that tightens a rule actually tightens it, and a hand-edited hook
-    is replaced rather than trusted.
+    Idempotent, and cheap on the second call. Sets :data:`REPO_CONFIG` plus a
+    server-owned ``core.hooksPath``, unsets the open-ended dangerous keys
+    (:data:`_FORBIDDEN_CONFIG`, every ``filter.*``), and installs
+    :data:`PRE_RECEIVE_HOOK` — rewriting the hook whenever its
+    :data:`HOOK_MARKER` version differs from the one on disk, so a server
+    upgrade that tightens a rule actually tightens it and a hand-edited hook is
+    replaced rather than trusted.
 
-    Returns ``{"config": [keys set], "hook": "installed"|"current"}``.
+    Returns ``{"config": [keys changed], "hook": "installed"|"current"}``.
     """
     project_path = Path(project_path)
     git_dir = history_dir(project_path)
@@ -293,17 +529,54 @@ def prepare_repo(project_path: Path | str, *, force: bool = False) -> dict:
         return {"config": [], "hook": "current"}
 
     with _prepare_lock:
-        existing = _config_map(project_path)
-        written = []
-        for name, value in REPO_CONFIG:
-            # `git config --list` lower-cases the variable name (the section
-            # and key are case-insensitive to git); compare in its spelling,
-            # not ours, or every request rewrites the config.
-            if existing.get(name.lower()) != value:
-                _run(project_path, "config", name, value)
-                written.append(name)
-        hook = _install_hook(git_dir, force=force)
+        result = _enforce(project_path, git_dir, force=force)
         _prepared[key] = _stamp(git_dir)
+    return result
+
+
+def reconcile_repo(project_path: Path | str) -> dict:
+    """Re-assert config + hook **without trusting the mtime cache**.
+
+    Called by :func:`materialize` before every checkout, so a config a prior
+    push's checkout might have written (a ``core.hooksPath`` redirect, a
+    ``filter.*`` smudge command, ``core.fsmonitor``) is healed on the very next
+    push even when its mtime happens to match the cached stamp. Cheap: one
+    ``git config --list`` and a write only on genuine drift.
+    """
+    project_path = Path(project_path)
+    git_dir = history_dir(project_path)
+    with _prepare_lock:
+        result = _enforce(project_path, git_dir, force=False)
+        _prepared[str(git_dir)] = _stamp(git_dir)
+    return result
+
+
+def _enforce(project_path: Path, git_dir: Path, *, force: bool) -> dict:
+    """The body of :func:`prepare_repo`/:func:`reconcile_repo` (lock held)."""
+    existing = _config_map(project_path)
+    written: list[str] = []
+
+    desired = list(REPO_CONFIG) + [
+        # An ABSOLUTE, server-owned hooks dir — see :func:`hooks_dir`.
+        ("core.hooksPath", str(hooks_dir(git_dir).resolve())),
+    ]
+    for name, value in desired:
+        # `git config --list` lower-cases the variable name (the section and
+        # key are case-insensitive to git); compare in its spelling, not ours,
+        # or every request rewrites the config.
+        if existing.get(name.lower()) != value:
+            _run(project_path, "config", name, value)
+            written.append(name)
+
+    # Unset the open-ended dangerous keys. `filter.<name>.smudge`/`clean` is a
+    # command run on checkout; enumerated from the live config because we
+    # cannot name an arbitrary filter to `-c`-override it.
+    for key in sorted(existing):
+        if key.startswith("filter.") or key in _FORBIDDEN_CONFIG:
+            _run(project_path, "config", "--unset-all", key, check=False)
+            written.append(key)
+
+    hook = _install_hook(git_dir, force=force)
     return {"config": written, "hook": hook}
 
 
@@ -323,23 +596,36 @@ def _config_map(project_path: Path) -> dict[str, str]:
 
 
 def _install_hook(git_dir: Path, *, force: bool = False) -> str:
-    hooks = git_dir / "hooks"
+    hooks = hooks_dir(git_dir)
     path = hooks / "pre-receive"
-    try:
-        current = path.read_text(encoding="utf-8") if path.is_file() else ""
-    except OSError:
-        current = ""
-    if not force and current == PRE_RECEIVE_HOOK:
-        # Executable bit too: a hook without it is silently not run, which is
-        # the worst possible failure mode for this particular file.
-        if os.access(path, os.X_OK):
-            return "current"
+    sidecar = hooks / CHECKPATHS_NAME
+
+    def _read(p: Path) -> str:
+        try:
+            return p.read_text(encoding="utf-8") if p.is_file() else ""
+        except OSError:
+            return ""
+
+    # The sidecar the hook delegates its NTFS/HFS folds to is versioned WITH the
+    # hook: both must match, and pre-receive must be executable (a hook without
+    # the bit is silently not run — the worst failure mode for this file).
+    if (not force and _read(path) == PRE_RECEIVE_HOOK
+            and _read(sidecar) == CHECKPATHS_SCRIPT
+            and os.access(path, os.X_OK)):
+        return "current"
     hooks.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"pre-receive.{os.getpid()}.tmp")
-    tmp.write_text(PRE_RECEIVE_HOOK, encoding="utf-8")
-    os.chmod(tmp, 0o755)
-    os.replace(tmp, path)
+    _atomic_write_text(sidecar, CHECKPATHS_SCRIPT, mode=0o644)
+    # pre-receive LAST: it references the sidecar, so the sidecar must already
+    # be in place the first time the hook fires.
+    _atomic_write_text(path, PRE_RECEIVE_HOOK, mode=0o755)
     return "installed"
+
+
+def _atomic_write_text(path: Path, text: str, *, mode: int) -> None:
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
 
 
 # --------------------------------------------------------- materialization
@@ -444,6 +730,10 @@ def materialize(project_path: Path | str, write_context=None, *,
     context = write_context() if write_context is not None \
         else contextlib.nullcontext()
     with context:
+        # Re-assert the security config on every push (FR: not just on an mtime
+        # change). Cheap, idempotent, and it heals a config a prior checkout
+        # might have touched before this checkout runs.
+        reconcile_repo(project_path)
         if dirty and not force:
             return {"materialized": False, "reason": "uncommitted_edits",
                     "branch": default_branch(project_path), "changed": 0,
@@ -458,10 +748,39 @@ def materialize(project_path: Path | str, write_context=None, *,
             # pushed to it yet. Nothing to check out, and not an error.
             return {"materialized": False, "reason": "unborn_branch",
                     "branch": branch, "changed": 0}
+        # Belt for the pre-receive rule (a repo that predates the hook, or was
+        # populated out of band): NEVER checkout a tree that carries the repo's
+        # own git internals. Refuse the materialization — the refs already
+        # landed, so the bytes are safe on the server, but they are not written
+        # into the live GIT_DIR where a planted hook/config would run.
+        offending = tree_git_internals(project_path, branch)
+        if offending:
+            return {"materialized": False, "reason": "git_internals_in_tree",
+                    "branch": branch, "changed": 0,
+                    "offending": offending[:10]}
         changed = _run(project_path, "diff", "--name-only", "HEAD", "--",
                        check=False)
         count = len([line for line in (changed.stdout or "").splitlines()
                      if line])
+        # `-c core.hooksPath=/dev/null -c core.fsmonitor=false` (via
+        # `_SAFETY_PINS` in `_run`) so a `post-checkout` hook or an
+        # `fsmonitor` command in the repo config cannot run on this checkout.
         _run(project_path, "checkout", "-f", branch, "--")
         return {"materialized": True, "reason": None, "branch": branch,
                 "changed": count}
+
+
+def tree_git_internals(project_path: Path | str, ref: str) -> list[str]:
+    """Paths in *ref*'s tree that land in the repo's git internals, sorted.
+
+    A component that folds to ``.history`` (the GIT_DIR nested in the work
+    tree) or ``.git`` — at any depth, in any case/NTFS/HFS spelling
+    (:func:`is_git_internal_path`). ``-r -t`` so a tree/gitlink entry named
+    ``.git``/``.history`` is caught even with nothing under it. ``-z`` and a NUL
+    split so a path with an embedded newline cannot smuggle a component past a
+    line-oriented scan. Empty list = safe to check out.
+    """
+    result = _run(Path(project_path), "ls-tree", "-r", "-t", "--name-only",
+                  "-z", ref, check=False)
+    return sorted(path for path in (result.stdout or "").split("\0")
+                  if path and is_git_internal_path(path))

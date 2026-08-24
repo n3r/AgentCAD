@@ -24,12 +24,16 @@ FROM python:3.12-slim AS builder
 
 # uv resolves and installs from the committed lockfile; --locked makes a
 # lockfile that no longer matches pyproject.toml a build failure rather than a
-# silent re-resolve.
+# silent re-resolve. `--extra cloud` pulls in `webauthn`/`cbor2` (PRD-005
+# FR1) so the shipped hosted image can actually serve passkeys — without it
+# `routes_auth`'s passkey handlers 501 on every instance built from this
+# image, and `docker compose` (the documented hosted deploy) is the only way
+# most operators run AgentCAD at all.
 RUN pip install --no-cache-dir uv==0.5.11
 
 WORKDIR /app
 COPY . /app
-RUN uv sync --locked --no-dev
+RUN uv sync --locked --no-dev --extra cloud
 
 # ----------------------------------------------------------------- runtime
 FROM python:3.12-slim

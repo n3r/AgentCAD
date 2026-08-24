@@ -50,6 +50,7 @@ Four of them need a note before you read them.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from pathlib import Path
@@ -497,10 +498,14 @@ def test_ac6_the_audit_log_distinguishes_a_person_the_chat_agent_and_a_token(
 
     The chat dock genuinely is a third thing: it has no HTTP principal at all
     and identifies itself by setting `locks.set_client_id("chat")` inside its
-    executor (`agent/chat.py::_call_tool`), which is simulated here by doing
-    exactly that around a direct registry call — the same call the executor
-    makes. An audit that only read `security.current_principal()` would record
-    it as whoever was signed in, or as nobody.
+    executor (`agent/chat.py::_call_tool`). It is driven here through the REAL
+    path — `_call_tool` dispatched on the event loop's executor exactly as
+    `_run_turn_locked` does — not a hand-set tenant: `run_in_executor` does not
+    propagate contextvars, so the turn's tenant is captured in the async caller
+    and threaded across the boundary, and it is that thread the floor, the
+    audit row and the storage root all read. An audit that only read
+    `security.current_principal()` would record it as whoever was signed in, or
+    as nobody.
     """
     anya, nikita = tenanted.as_("anya"), tenanted.as_("nikita")
     assert make_project(anya, "widget").status_code == 201
@@ -509,15 +514,25 @@ def test_ac6_the_audit_log_distinguishes_a_person_the_chat_agent_and_a_token(
     assert "error" not in tool(anya, "set_assembly", project="widget",
                                instances=[])
 
-    # 2. the built-in chat agent: no request, no principal, a client id.
-    #    It is granted `edit` like anything else — `chat` reads as a handle
-    #    (`user:chat`) in the roles document, and as an *agent* in the log.
+    # 2. the built-in chat agent, through its executor. It is granted `edit`
+    #    like anything else — `chat` reads as a handle in the roles document,
+    #    and as an *agent* in the log.
+    from agentcad.agent.chat import ChatEngine
+
     tenanted.orgs.grant_role(ACME, WS, "widget", "chat", "edit")
-    with tenancy.tenant_scope((ACME, WS)):
-        locks.set_client_id("chat")
-        answered = tenanted.registry.call("set_assembly",
-                                          {"project": "widget",
-                                           "instances": []})
+    engine = ChatEngine(tenanted.registry, tenanted.service.bus, api_key=None)
+
+    async def _chat_edit():
+        # What `_run_turn_locked` does at the dispatch site: capture the turn's
+        # ambient tenant, then hand it to `_call_tool` across the executor.
+        with tenancy.tenant_scope((ACME, WS)):
+            tenant = tenancy.current_tenant()
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None, engine._call_tool, "set_assembly",
+                {"project": "widget", "instances": []}, "main", tenant)
+
+    answered = asyncio.run(_chat_edit())
     assert "error" not in answered, answered
 
     # 3. an agent token.

@@ -26,12 +26,14 @@ it a promotion rather than a hole:
   drift from it.
 
 **On the tool-layer audit.** The general "every mutating tool writes a row" tap
-is ``audit.tap_registry``, and it belongs to the registry wrapper slice 4
-installs at the serve seam. It is built and tested but **not installed
-anywhere yet**, so this pack records its own writes directly rather than
-waiting for it. When the wrapper lands, these rows are the same shape it
-produces; the duplication to watch for is one row per action, which is why the
-actions here are named for the tool.
+is ``audit.tap_registry``, installed around the shared ``ToolRegistry`` by
+``tenancy_wiring.install`` at the serve seam. It is a strict superset of what
+this pack could record for itself — it also lands a row for a *refused* call,
+which is exactly the "who tried to mint a token" question an audit log is read
+for — so this pack keeps **no** self-tap: a second ``audit.record`` beside the
+tap would double every successful action. The floor table drives what the tap
+counts as a mutation (``tenancy_wiring._is_mutating``), and these tools are all
+``admin``-floored, so each lands exactly one row.
 
 **``whoami`` is extended, not replaced.** ``tools_auth`` registers it and
 ``ToolRegistry.register`` refuses a duplicate name, so this pack wraps the
@@ -48,7 +50,6 @@ from __future__ import annotations
 import functools
 import sys
 
-from . import audit as audit_mod
 from . import tenancy
 from .authstore import check_token_scope
 from .authz import PermissionDeniedError, can, require
@@ -67,13 +68,17 @@ _WRAPPED = "_agentcad_cloud_wrapped"
 #: reads as "anywhere in acme".
 ANY_WORKSPACE = "*"
 
-#: ``sync_status``'s answer until slice 6 lands the client half. Stated in the
-#: payload rather than only in this docstring, because the reader who needs it
-#: is an agent looking at the tool's output.
+#: ``sync_status``'s note, stated in the payload rather than only here because
+#: the reader who needs it is an agent looking at the tool's output. This is the
+#: honest hosted answer, not a forward-reference: on a hosted instance the
+#: project directory **is** the authoritative copy, so there is nothing upstream
+#: for it to be ahead or behind of. "Ahead/behind" is a property of a *local*
+#: working copy syncing to this instance, and it is that client that reports it.
 SYNC_STUB_NOTE = (
-    "local-only: remote comparison is wired in slice 6 (PRD-005 FR8-client). "
-    "`remote: null` means this instance has not been told about a remote, not "
-    "that the project is in sync with one."
+    "on a hosted instance the project directory is the authoritative copy, so "
+    "it has no upstream to compare against: `remote`, `ahead` and `behind` are "
+    "null by design. Ahead/behind is a property of a local working copy syncing "
+    "to this instance, reported by that client."
 )
 
 
@@ -88,7 +93,6 @@ def register(registry, service) -> None:
     # tenancy write inside an identity write cannot deadlock (tenancy's module
     # docstring has the whole argument).
     tenants = tenancy.TenancyStore(store.root)
-    log = audit_mod.for_auth_store(store)
 
     # -------------------------------------------------------------- helpers
 
@@ -152,10 +156,6 @@ def register(registry, service) -> None:
             # by a caller whose floor has not been checked yet.
             {"org": org})
 
-    def _audit(action, *, org, project=None, args=None, outcome="ok"):
-        audit_mod.record(log, org, action, principal=_who().client_id,
-                         project=project, args=args, outcome=outcome)
-
     # --------------------------------------------------------------- whoami
 
     _extend_whoami(registry, module, store, tenants)
@@ -207,10 +207,6 @@ def register(registry, service) -> None:
             scope=scope)
         token_id = secret.split("_", 2)[1]   # the secret's alphabet includes "_"
         row = store.get_token(token_id) or {}
-        _audit("create_agent_token", org=org,
-               args={"name": name, "org": org, "workspace": ws,
-                     "projects": scope["projects"], "role": scope["role"],
-                     "ttl_days": ttl_days})
         return {
             "id": token_id,
             "name": name,
@@ -260,7 +256,6 @@ def register(registry, service) -> None:
                 except NotFoundError:
                     continue                 # already gone; not an error
                 dropped.append(qualified)
-        _audit("revoke_agent_token", org=org, args={"token_id": token_id})
         return {"id": token_id, "revoked": True, "grants_revoked": dropped,
                 "note": "it stops authenticating on its next use"}
 
@@ -274,8 +269,6 @@ def register(registry, service) -> None:
         require(tenants, "admin", who.client_id, org, ws, project)
         key = tenants.grant_role(org, ws, project, principal,
                                  tenancy.check_role(role))
-        _audit("grant_role", org=org, project=project,
-               args={"project": project, "principal": key, "role": role})
         return {"org": org, "workspace": ws, "project": project,
                 "principal": key, "role": role}
 
@@ -286,8 +279,6 @@ def register(registry, service) -> None:
         require(tenants, "admin", who.client_id, org, ws, project)
         tenants.revoke_role(org, ws, project, principal)
         key = tenancy.principal_key(principal)
-        _audit("revoke_role", org=org, project=project,
-               args={"project": project, "principal": key})
         return {"org": org, "workspace": ws, "project": project,
                 "principal": key, "revoked": True,
                 # The override goes; the org default stays. Said in the payload
@@ -316,11 +307,17 @@ def register(registry, service) -> None:
                 if (row.get("scope") or {}).get("org") == org]
         return payload
 
-    # ------------------------------------------------------------ sync stub
+    # ------------------------------------------------------------ sync status
 
     def sync_status(project: str, org: str | None = None,
                     workspace: str | None = None) -> dict:
-        """The shape slice 6 fills in. Documented as a stub, in the payload."""
+        """Whether this project has an upstream to compare against.
+
+        On a hosted instance the project directory is the authoritative copy,
+        so the honest answer is that there is none: ``remote``/``ahead``/
+        ``behind`` are null and the payload's ``note`` says why. See
+        :data:`SYNC_STUB_NOTE`.
+        """
         tenant = tenancy.current_tenant()
         if tenant is not None or org:
             org, ws = _tenant(org, workspace, require_workspace=True)
@@ -418,9 +415,9 @@ def register(registry, service) -> None:
     ))
     registry.register(Tool(
         "sync_status",
-        "Whether this project has a git remote and how it compares. STUB: "
-        "remote comparison lands in slice 6; today it reports remote: null "
-        "with a note saying so.",
+        "Whether this project has an upstream to compare against. On a hosted "
+        "instance the project is the authoritative copy, so it has no upstream: "
+        "remote/ahead/behind are null, with a note saying why. Requires view.",
         schema(
             {"project": {"type": "string"}, "org": {"type": "string"},
              "workspace": {"type": "string"}},

@@ -1613,10 +1613,13 @@ you as a user.
   looking. It still ends at the same session, and it cannot register a
   brand-new account by itself — it signs in a local handle you (or your
   operator) already created, exactly like the enrolment link above.
-  **Passkeys** have the same server-side support (and the same `[cloud]`
-  extra requirement) but no sign-in-page affordance to trigger the ceremony
-  from a browser yet — password (or SSO) is the way in today. See
-  `docs/deployment.md` for what your operator has to configure first.
+  **Passkeys** have the same kind of server-side support — reached the
+  ceremony exists, but there is no sign-in-page affordance to trigger it
+  from a browser yet, so password (or SSO) is the way in today. Passkeys
+  need their operator's server to have installed the optional `[cloud]`
+  extra; **OIDC does not** — it runs on a plain install, with no extra
+  required. See `docs/deployment.md` for what your operator has to
+  configure first.
 - **The identity chip**, top right, shows who the server thinks you are and
   signs you out. Your session survives a browser restart and the server being
   restarted, and it expires after 14 idle days (30 at the outside).
@@ -1658,7 +1661,8 @@ you as a user.
 Skip this section on a plain hosted instance — it only applies once your
 operator has created at least one **organization**. You will know: a
 **workspace chip** appears in the toolbar reading `org/workspace`, and the
-Model menu grows two new rows.
+Model menu grows three new rows: "Switch workspace…", "Org members…" and
+"Agent tokens…".
 
 - **The workspace chip and switcher.** Click the chip (or use "Switch
   workspace…" from the Model menu, or the command palette) to see every
@@ -1678,10 +1682,14 @@ Model menu grows two new rows.
   those are derived from geometry that is already visible to them. What
   disappears: parameter inputs and the script editor go read-only, and
   branch create/delete, undo/redo and part deletion are hidden from the
-  toolbar and the command palette. Threads and proposals stay fully usable —
-  reviewing is a `comment`-level action, not `edit`. Attempting a write
-  anyway (e.g. through the agent chat) comes back as a plain refusal naming
-  the role you need and the role you actually have, never a silent no-op.
+  toolbar and the command palette. **Threads and proposals are read-only to
+  a viewer**, not fully usable: they can see every thread and every
+  proposal, including its diff and packet (that is a `view`-floor read),
+  but opening or resolving a thread and creating, updating or reviewing a
+  proposal all need `comment` or above — the same floor "commenter" names in
+  the role list above. Attempting a write anyway (e.g. through the agent
+  chat) comes back as a plain refusal naming the role you need and the role
+  you actually have, never a silent no-op.
 - **Members and tokens**, from the Model menu ("Org members…" / "Agent
   tokens…") — visible to everyone in the org, with the write controls shown
   only to an org admin:
@@ -1696,10 +1704,13 @@ Model menu grows two new rows.
     exactly once**, in a copy-and-dismiss box right after minting — there is
     nowhere in the product to retrieve it again, only to revoke it and mint
     a fresh one. Revocation takes effect on the token's very next request.
-  - A scoped token cannot itself mint another token, or grant or revoke a
-    role: minting and granting need a signed-in *person* holding org admin,
-    by construction — an agent has no organization membership of its own,
-    only whatever projects it was explicitly granted.
+  - A scoped token cannot itself mint or revoke a token: that needs a
+    signed-in *person* holding **org-level** admin, by construction — an
+    agent has no organization membership of its own, only whatever projects
+    it was explicitly granted. It *can* grant or revoke a role on a project
+    it was itself minted `admin` on — that only needs **project-level**
+    admin, which an explicit grant gives a token exactly as it gives a
+    person.
 
 ## Sharing a part (a hosted instance)
 

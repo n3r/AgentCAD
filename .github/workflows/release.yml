@@ -63,8 +63,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned to a commit SHA, not the mutable `v5` tag: this job later
+      # imports MACOS_CERT_P12 into a temporary keychain and holds
+      # contents:write + GH_TOKEN, so a compromised or re-pointed `v5` tag
+      # would run with signing-key access. v5.4.2, the newest v5.x release
+      # as of this pin — bump the SHA (and this comment) deliberately, never
+      # widen back to a floating tag.
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -167,10 +173,16 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
+          # Never interpolate github.ref_name directly into a run: body — a
+          # tag such as `v9.9.9$(id)` would be EXECUTED by the shell, not
+          # treated as a string, in a job that holds contents:write, GH_TOKEN
+          # and an unlocked signing keychain. Route it through env: and
+          # reference it as a quoted shell variable instead.
+          TAG: ${{ github.ref_name }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" --generate-notes || true
-          gh release upload "${{ github.ref_name }}" "agentcad-macos-$ARCH.zip" --clobber
+          gh release create "$TAG" \
+            --title "$TAG" --generate-notes || true
+          gh release upload "$TAG" "agentcad-macos-$ARCH.zip" --clobber
 
   windows:
     name: Windows build
@@ -253,10 +265,13 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
+          # Same rule as the macOS job: route the attacker-controlled tag
+          # name through env:, never interpolate it into the run: body.
+          TAG: ${{ github.ref_name }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" --generate-notes || true
-          gh release upload "${{ github.ref_name }}" agentcad-windows.zip --clobber
+          gh release create "$TAG" \
+            --title "$TAG" --generate-notes || true
+          gh release upload "$TAG" agentcad-windows.zip --clobber
 
   linux-image:
     name: Linux compose image
@@ -269,7 +284,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build the image, tagged with the release
-        run: docker build -t "agentcad:${{ github.ref_name }}" .
+        env:
+          # Route the tag through env: rather than interpolating it into the
+          # run: body — see the macOS job's "Attach to the GitHub release"
+          # step for why.
+          TAG: ${{ github.ref_name }}
+        run: docker build -t "agentcad:$TAG" .
 
       # Off by default: an operator's deploy path is `docker compose build`
       # against a checked-out tag (docs/deployment.md, "Upgrade") and this
@@ -281,11 +301,18 @@ jobs:
         if: vars.PUBLISH_GHCR == 'true' && startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
+          # `github.actor`/`github.repository_owner` are not attacker
+          # steerable the way a pushed tag is, but the rule for this file is
+          # "no `${{ }}` in a run: body, ever" so a future edit can't
+          # reintroduce the injection by copying a neighboring line.
+          ACTOR: ${{ github.actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          IMAGE="ghcr.io/${{ github.repository_owner }}/agentcad:${{ github.ref_name }}"
-          docker tag "agentcad:${{ github.ref_name }}" "$IMAGE"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          IMAGE="ghcr.io/$REPO_OWNER/agentcad:$TAG"
+          docker tag "agentcad:$TAG" "$IMAGE"
           docker push "$IMAGE"
 
       - name: Not published

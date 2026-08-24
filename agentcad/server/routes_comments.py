@@ -51,12 +51,20 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from ..core.model import ConflictError, NotFoundError, ValidationError
+from ..core.authz import PermissionDeniedError
+from ..core.model import AuthError, ConflictError, NotFoundError, ValidationError
 
 _RAISE = {
     "notfound_error": NotFoundError,
     "validation_error": ValidationError,
     "conflict_error": ConflictError,
+    # FR6: a tenancy refusal must reach the wire as its own status, not as the
+    # 422 an unmapped type would fall through to. ``permission_error`` ->
+    # ``PermissionError`` (403 via the ``AuthzError`` isinstance walk),
+    # ``auth_error`` -> ``AuthError`` (401). Both carry the tool payload's
+    # ``details`` — ``{required, project, principal_role}`` — through the raise.
+    "permission_error": PermissionDeniedError,
+    "auth_error": AuthError,
 }
 
 # No error type here is a legitimate 200 body (see the module docstring).
