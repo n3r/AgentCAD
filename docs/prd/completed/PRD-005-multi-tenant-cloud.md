@@ -1,6 +1,6 @@
 # PRD-005 — Multi-tenant cloud service
 
-- **Status:** pending — **the remainder after the PRD-005a carve-out** (orgs,
+- **Status:** completed (PR #35)
   workspaces, per-project roles, audit principals, OIDC/passkeys, per-tenant
   fair scheduling, local-first sync, signed desktop builds)
 - **Phase:** v4 — collaborative core
