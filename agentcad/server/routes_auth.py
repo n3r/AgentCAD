@@ -27,7 +27,10 @@ import time
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
-from ..core.model import AuthError, AuthzError, NotFoundError, RateLimitedError
+from ..core import audit as audit_mod
+from ..core.model import (
+    AuthError, AuthzError, NotFoundError, RateLimitedError, ValidationError,
+)
 from . import security as sec
 
 #: Sent for every failed sign-in, whatever the reason. "No such handle",
@@ -201,6 +204,60 @@ def build_router(service, registry) -> APIRouter:
         return {"principal": who.client_id, "kind": who.kind,
                 "role": who.role, "mode": cfg.mode.name}
 
+    # ------------------------------------------------------------- the audit
+    #
+    # Auth events are **instance-wide**, not acts inside an org: a person may
+    # be a member of several orgs or of none, and a failed sign-in belongs to
+    # no tenant at all. They therefore land in `audit.INSTANCE_ORG`
+    # (`_instance.db`), a name no org can take because `ID_RE` demands a
+    # leading letter. Tool calls, which always name a project, land in their
+    # own org's database.
+    #
+    # Every tap is `audit.record`, which swallows a storage failure with a
+    # warning: an audit backend that has gone read-only must not be the reason
+    # nobody can sign in. The trade is stated in `core/audit.py` rather than
+    # hidden here.
+
+    def _log():
+        cfg = mounted_config
+        return audit_mod.for_auth_store(cfg.store) if cfg is not None else None
+
+    def _audit(action: str, *, principal: str | None = None,
+               outcome: str = "ok", project: str | None = None,
+               args: object = None) -> None:
+        audit_mod.record(_log(), audit_mod.INSTANCE_ORG, action,
+                         principal=principal, project=project, args=args,
+                         outcome=outcome)
+
+    def _claimed(handle: object) -> str:
+        """The principal a **failed** attempt claimed to be.
+
+        A sign-in that failed did not authenticate anybody, so this is the
+        handle from the request body, spelled as a principal only when it
+        could be one. What tells a claim from an identity is the row's
+        `outcome` column, never the principal string — which is why the two
+        are recorded together and why the handle is recorded at all: "somebody
+        tried to be nikita 400 times" is the question an audit log exists to
+        answer.
+        """
+        from ..core.authstore import HANDLE_RE
+
+        if isinstance(handle, str) and HANDLE_RE.match(handle):
+            return f"user:{handle}"
+        return "unknown"
+
+    def _refused(exc, action: str, *, principal: str | None = None,
+                 outcome: str | None = None):
+        """Record a refusal and hand the exception back to be raised.
+
+        `raise _refused(AuthError(...), "login", ...)` keeps the tap on the
+        same line as the refusal it records, so a new refusal path cannot
+        silently be an unrecorded one.
+        """
+        wire = (type(exc).__name__.replace("Error", "").lower() + "_error")
+        _audit(action, principal=principal, outcome=outcome or wire)
+        return exc
+
     def _set_session(cfg, response: Response, secret: str) -> Response:
         # The annotation was `JSONResponse`; it is `Response` since PRD-005
         # slice 3, because the OIDC callback hands a browser a redirect with
@@ -231,7 +288,8 @@ def build_router(service, registry) -> APIRouter:
         handle = body.get("handle")
         password = body.get("password")
         if not isinstance(handle, str) or not isinstance(password, str):
-            raise AuthError(_LOGIN_FAILED)
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(handle), outcome="malformed")
 
         # The buckets are taken BEFORE the scrypt call, so a flood cannot
         # spend 63 ms of CPU per request. Address first (the cheaper, broader
@@ -254,18 +312,23 @@ def build_router(service, registry) -> APIRouter:
         for bucket, key in ((cfg.address_rate, f"addr:{address}"),
                             (cfg.login_rate, sec.login_key(handle, address))):
             if not bucket.take(key):
-                raise RateLimitedError(
-                    "too many sign-in attempts",
-                    {"retry_after_s": cfg.retry_after_s(bucket)})
+                raise _refused(
+                    RateLimitedError(
+                        "too many sign-in attempts",
+                        {"retry_after_s": cfg.retry_after_s(bucket)}),
+                    "login", principal=_claimed(handle),
+                    outcome="rate_limited")
 
         if not cfg.store.verify_password(handle, password):
-            raise AuthError(_LOGIN_FAILED)
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(handle), outcome="failed")
 
         device = sec._device(request.headers, None)          # noqa: SLF001
         secret = cfg.store.create_session(handle, device)
         row = cfg.store.resolve_session(secret)
         who = sec.Principal(kind="user", name=handle, role=row["role"],
                             device=device, via="cookie")
+        _audit("login", principal=who.client_id, args={"via": "password"})
         return _set_session(cfg, JSONResponse(_identity(cfg, who)), secret)
 
     @router.post("/auth/logout")
@@ -278,8 +341,14 @@ def build_router(service, registry) -> APIRouter:
         """
         cfg = _config()
         secret = request.cookies.get(sec.SESSION_COOKIE)
+        who = sec.current_principal()
         if secret:
             cfg.store.revoke_session(secret)
+        # Recorded even when there was no session to revoke, with the outcome
+        # saying which: "somebody's browser is repeatedly logging nobody out"
+        # is a signal, and the 200 this route always returns is not.
+        _audit("logout", principal=who.client_id if who else "unknown",
+               outcome="ok" if secret else "no_session")
         response = JSONResponse({"ok": True})
         response.delete_cookie(sec.SESSION_COOKIE, path="/")
         return response
@@ -313,12 +382,20 @@ def build_router(service, registry) -> APIRouter:
     async def enrol(token: str, request: Request):
         cfg = _config()
         body = await _body(request)
-        handle = cfg.store.enrol(token, body.get("password"))
+        try:
+            handle = cfg.store.enrol(token, body.get("password"))
+        except (NotFoundError, ValidationError) as exc:
+            # The principal is genuinely unknown here: an invalid token names
+            # nobody, and a valid one is not spent. `peek_enrolment` would say
+            # who — and would be a way to put a handle in the log by guessing
+            # a token, so it is not asked.
+            raise _refused(exc, "enrol", principal="unknown")
         secret = cfg.store.create_session(
             handle, sec._device(request.headers, None))          # noqa: SLF001
         row = cfg.store.resolve_session(secret)
         who = sec.Principal(kind="user", name=handle, role=row["role"],
                             device=row.get("device"), via="cookie")
+        _audit("enrol", principal=who.client_id)
         return _set_session(cfg, JSONResponse(_identity(cfg, who)), secret)
 
     # ------------------------------------------------------------- users
@@ -336,6 +413,7 @@ def build_router(service, registry) -> APIRouter:
         body = await _body(request)
         role = body.get("role") or "member"
         token = cfg.store.add_user(body.get("handle"), role=role)
+        _audit("user_add", args={"handle": body.get("handle"), "role": role})
         return {"handle": body.get("handle"), "role": role,
                 "enrol_url": f"{cfg.mode.public_origin}/api/auth/enrol/{token}",
                 "trust": TRUST_SENTENCE}
@@ -345,7 +423,8 @@ def build_router(service, registry) -> APIRouter:
         cfg = _config()
         _require_admin()
         cfg.store.disable_user(handle)
-        cfg.store.revoke_sessions_for(handle)
+        dropped = cfg.store.revoke_sessions_for(handle)
+        _audit("user_disable", args={"handle": handle, "sessions": dropped})
         return {"handle": handle, "disabled": True}
 
     # ------------------------------------------------------------ tokens
@@ -377,14 +456,92 @@ def build_router(service, registry) -> APIRouter:
         # which is why this is `split("_", 2)` and never `split("_")`.
         token_id = token.split("_", 2)[1]
         row = next(r for r in cfg.store.list_tokens() if r["id"] == token_id)
+        # The arguments are digested, never stored — and `add_token`'s body
+        # carries no secret anyway (the secret is minted here). What the digest
+        # is for is correlating this row with the `token_revoke` that follows.
+        _audit("token_add", args={"id": token_id, "name": row["name"],
+                                  "role": row["role"]})
         return {**row, "token": token,
                 "note": "this is the only time the token is shown"}
+
+    # ------------------------------------------------- the audit (FR12)
+
+    def _audit_reader(cfg, org: str):
+        """Who may read *org*'s audit log.
+
+        Two doors, and the second is the point of a multi-tenant product: the
+        **instance administrator** (005a's role, the operator of the box) reads
+        anything, including the instance-wide `_instance` log; an **org admin**
+        reads their own org's log and nothing else. A member does not — an
+        audit log names every action of every colleague, and "who is allowed to
+        watch" is an administrative question by construction.
+
+        Always a *person*: `authz.role_of` gives an agent no org default, so a
+        bearer cannot reach `admin` at org level, and the instance-admin branch
+        tests `kind` explicitly. A token that could read the audit log would be
+        a token that could read what its own theft looked like.
+        """
+        who = _principal()
+        if who.kind == "user" and who.role == "admin":
+            return who
+        if who.kind == "user" and org != audit_mod.INSTANCE_ORG:
+            from ..core.authz import can
+            from ..core.tenancy import TenancyStore
+
+            if can(TenancyStore(cfg.store.root), "admin", who.client_id,
+                   org, "*"):
+                return who
+        raise AuthzError(
+            "reading the audit log is for an administrator of this instance "
+            "or of the org",
+            {"required_role": "admin", "org": org, "kind": who.kind})
+
+    @router.get("/auth/audit")
+    def audit_query(request: Request):
+        """Query one org's audit log. Newest first, paginated.
+
+        `org` defaults to `_instance`, where the auth events this file records
+        live; a tenant's tool activity is in `?org=<org>`.
+        """
+        cfg = _config()
+        params = request.query_params
+        org = params.get("org") or audit_mod.INSTANCE_ORG
+        who = _audit_reader(cfg, org)
+        log = _log()
+        limit = _positive(params.get("limit"), audit_mod.DEFAULT_LIMIT, "limit")
+        offset = _positive(params.get("offset"), 0, "offset", floor=0)
+        if not log.path_for(org).exists():
+            # A query must not CREATE a database: `?org=` is caller-supplied,
+            # and an admin sweeping org names would otherwise leave a file per
+            # guess behind. An org with no events answers with no rows.
+            rows, total = [], 0
+        else:
+            rows = log.query(
+                org,
+                principal=params.get("principal"),
+                project=params.get("project"),
+                action=params.get("action"),
+                since=audit_mod.parse_time(params.get("since"), "since"),
+                until=audit_mod.parse_time(params.get("until"), "until"),
+                limit=limit, offset=offset)
+            total = log.count(org)
+        # Reading the log is itself an administrative act, so it is in the log.
+        _audit("audit_query", principal=who.client_id,
+               args={"org": org, "principal": params.get("principal"),
+                     "project": params.get("project"),
+                     "action": params.get("action")})
+        return {"org": org, "rows": rows, "limit": limit, "offset": offset,
+                # Unfiltered, so the UI can say "showing 200 of 12 431".
+                "total": total,
+                "next_offset": (offset + len(rows)) if len(rows) == limit
+                else None}
 
     @router.delete("/auth/tokens/{token_id}")
     def revoke_token(token_id: str):
         cfg = _config()
         _require_admin()
         cfg.store.revoke_token(token_id)
+        _audit("token_revoke", args={"id": token_id})
         return {"id": token_id, "revoked": True}
 
     # ============================================== OIDC (PRD-005 FR1)
@@ -487,6 +644,13 @@ def build_router(service, registry) -> APIRouter:
                 {"kind": who.kind})
         client, oidc = _oidc()
         pending = client.begin(link_handle=who.name)
+        # The authenticated ceremony STARTS are recorded; the anonymous ones
+        # (`GET /auth/oidc/login`, `POST /auth/passkey/login/begin`) are not.
+        # Not an oversight: those two are reachable with no credential, and a
+        # row per attempt would let a stranger grow the audit database from the
+        # outside. Their *completions* are recorded, success and failure alike,
+        # which is where the security-relevant fact is.
+        _audit("oidc_link_begin", principal=who.client_id)
         return _set_flow_cookie(
             cfg, JSONResponse({"authorization_url":
                                client.authorization_url(pending),
@@ -499,7 +663,10 @@ def build_router(service, registry) -> APIRouter:
         if who.kind != "user":
             raise AuthzError("only a signed-in person can unlink an identity",
                              {"kind": who.kind})
-        return {"handle": who.name, "unlinked": cfg.store.unlink_oidc(who.name)}
+        unlinked = cfg.store.unlink_oidc(who.name)
+        _audit("oidc_unlink", principal=who.client_id,
+               outcome="ok" if unlinked else "no_link")
+        return {"handle": who.name, "unlinked": unlinked}
 
     @router.get("/auth/oidc/callback")
     def oidc_callback(request: Request):
@@ -518,8 +685,10 @@ def build_router(service, registry) -> APIRouter:
             # The provider refused (`access_denied`, `login_required`, ...).
             # Its own code is echoed because the person needs to know whether
             # to try again or call an administrator.
-            raise AuthError("the identity provider refused this sign-in",
-                            {"idp_error": str(params.get("error"))[:64]})
+            raise _refused(
+                AuthError("the identity provider refused this sign-in",
+                          {"idp_error": str(params.get("error"))[:64]}),
+                "login", principal="unknown", outcome="idp_refused")
         verified = client.complete(params.get("code"), params.get("state"),
                                    request.cookies.get(oidc.FLOW_COOKIE))
 
@@ -536,6 +705,9 @@ def build_router(service, registry) -> APIRouter:
             if who is None or who.kind != "user" or who.name != verified.link_handle:
                 raise AuthError("sign in again and re-start the link")
             handle = oidc.link_identity(cfg.store, client.config, verified)
+            _audit("oidc_link", principal=f"user:{handle}",
+                   args={"issuer": verified.issuer,
+                         "subject": verified.subject})
             response = JSONResponse({"handle": handle, "linked": True,
                                      "issuer": verified.issuer,
                                      "subject": verified.subject,
@@ -548,9 +720,12 @@ def build_router(service, registry) -> APIRouter:
         secret = cfg.store.create_session(handle, device)
         row = cfg.store.resolve_session(secret)
         if row is None:                     # disabled between the two calls
-            raise AuthError(oidc.UNLINKED)
+            raise _refused(AuthError(oidc.UNLINKED), "login",
+                           principal=f"user:{handle}", outcome="disabled")
         who = sec.Principal(kind="user", name=handle, role=row["role"],
                             device=device, via="cookie")
+        _audit("login", principal=who.client_id,
+               args={"via": "oidc", "link": how, "issuer": verified.issuer})
         payload = {**_identity(cfg, who), "via": "oidc", "link": how,
                    "issuer": verified.issuer, "subject": verified.subject}
         # A browser lands here by following the provider's redirect, so it is
@@ -636,6 +811,8 @@ def build_router(service, registry) -> APIRouter:
         removed = cfg.store.remove_passkey(who.name, credential_id)
         if not removed:
             raise NotFoundError("no such passkey on this account")
+        _audit("passkey_delete", principal=who.client_id,
+               args={"credential_id": credential_id})
         return {"id": credential_id, "removed": True}
 
     @router.post("/auth/passkey/register/begin")
@@ -697,7 +874,10 @@ def build_router(service, registry) -> APIRouter:
         record = _challenges.take(_client_challenge(credential))
         if (record is None or record.get("purpose") != "register"
                 or record.get("handle") != who.name):
-            raise AuthError("this registration has expired; start again")
+            raise _refused(
+                AuthError("this registration has expired; start again"),
+                "passkey_register", principal=who.client_id,
+                outcome="stale_challenge")
         rp_id, origin = _relying_party(cfg)
         try:
             verified = wa.verify_registration_response(
@@ -709,8 +889,11 @@ def build_router(service, registry) -> APIRouter:
                 expected_rp_id=rp_id,
             )
         except Exception as exc:            # noqa: BLE001 — the library's own
-            raise AuthError(f"this passkey could not be verified "
-                            f"({type(exc).__name__})") from exc
+            raise _refused(
+                AuthError(f"this passkey could not be verified "
+                          f"({type(exc).__name__})"),
+                "passkey_register", principal=who.client_id,
+                outcome="unverified") from exc
         transports = []
         response = credential.get("response")
         if isinstance(response, dict) and isinstance(response.get("transports"), list):
@@ -725,6 +908,8 @@ def build_router(service, registry) -> APIRouter:
             transports=transports,
             backed_up=verified.credential_backed_up,
         )
+        _audit("passkey_register", principal=who.client_id,
+               args={"credential_id": row["id"], "label": row.get("label")})
         return {"handle": who.name,
                 **{k: v for k, v in row.items() if k != "public_key"}}
 
@@ -779,20 +964,32 @@ def build_router(service, registry) -> APIRouter:
         body = await _body(request)
         credential = _credential(body)
         record = _challenges.take(_client_challenge(credential))
+        # Every refusal below is the same `_LOGIN_FAILED` to the caller and a
+        # DIFFERENT `outcome` in the audit row. That is not a leak: the row is
+        # readable only by an administrator, and "which of the five ways did it
+        # fail" is exactly what an operator needs and an attacker must not be
+        # told. The response stays indistinguishable.
         if record is None or record.get("purpose") != "login":
-            raise AuthError(_LOGIN_FAILED)
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal="unknown", outcome="stale_challenge")
         raw_id = credential.get("rawId") or credential.get("id")
         found = cfg.store.find_by_passkey(raw_id if isinstance(raw_id, str) else "")
         if found is None:
-            raise AuthError(_LOGIN_FAILED)
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(record.get("handle")),
+                           outcome="unknown_credential")
         if record.get("handle") and record["handle"] != found["handle"]:
-            raise AuthError(_LOGIN_FAILED)
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(record["handle"]),
+                           outcome="credential_mismatch")
         user = cfg.store.get_user(found["handle"])
         if user is None or user["disabled"]:
             # `admin user disable` must stop a passkey exactly as it stops a
             # password. The user row is the authority, as it is everywhere
             # else in this file.
-            raise AuthError(_LOGIN_FAILED)
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(found["handle"]),
+                           outcome="disabled")
         rp_id, origin = _relying_party(cfg)
         try:
             verified = wa.verify_authentication_response(
@@ -807,16 +1004,21 @@ def build_router(service, registry) -> APIRouter:
                 credential_current_sign_count=int(found.get("sign_count") or 0),
             )
         except Exception as exc:            # noqa: BLE001 — the library's own
-            raise AuthError(_LOGIN_FAILED) from exc
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(found["handle"]),
+                           outcome="unverified") from exc
         cfg.store.update_sign_count(found["handle"], found["id"],
                                     verified.new_sign_count)
         device = sec._device(request.headers, None)          # noqa: SLF001
         secret = cfg.store.create_session(found["handle"], device)
         row = cfg.store.resolve_session(secret)
         if row is None:
-            raise AuthError(_LOGIN_FAILED)
+            raise _refused(AuthError(_LOGIN_FAILED), "login",
+                           principal=_claimed(found["handle"]),
+                           outcome="disabled")
         who = sec.Principal(kind="user", name=found["handle"], role=row["role"],
                             device=device, via="cookie")
+        _audit("login", principal=who.client_id, args={"via": "passkey"})
         return _set_session(cfg, JSONResponse({**_identity(cfg, who),
                                                "via": "passkey"}), secret)
 
@@ -830,6 +1032,27 @@ TRUST_SENTENCE = (
     "an account on this instance can execute arbitrary Python on the host; "
     "give one only to someone you would give a shell to"
 )
+
+
+def _positive(value: object, default: int, what: str, floor: int = 1) -> int:
+    """A query-string integer, or a 422 that names the parameter.
+
+    Not silently defaulted: `?limit=all` returning 200 rows would look like an
+    answer to a question nobody asked. The upper bound is `AuditLog.query`'s,
+    which clamps rather than refuses — a limit that is too large is a caller
+    asking for everything, and everything is what `MAX_LIMIT` means.
+    """
+    if value is None or value == "":
+        return default
+    try:
+        number = int(str(value))
+    except ValueError as exc:
+        raise ValidationError(f"{what} must be an integer",
+                              {what: str(value)[:32]}) from exc
+    if number < floor:
+        raise ValidationError(f"{what} must be at least {floor}",
+                              {what: number})
+    return number
 
 
 def _enrolment_handle(cfg, token: str) -> str:
